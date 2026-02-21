@@ -27,6 +27,16 @@
 
 **Shodh** (Sanskrit: शोध — "research") is an open-source, local-first AI assistant that runs entirely on your machine. It combines a production-grade RAG engine (LanceDB + Tantivy), a multi-agent framework with tool calling, and a polished desktop UI — all wrapped in a single Tauri binary. No cloud required. Your data never leaves your device.
 
+<p align="center">
+  <img src="docs/screenshots/chat.png" alt="Shodh — Main Interface" width="800" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/splash.png" alt="Splash Screen" width="390" />
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/onboarding.png" alt="Onboarding" width="390" />
+</p>
+
 ## Why Shodh?
 
 Most RAG tools are either cloud-locked SaaS products or Python scripts held together with duct tape. Shodh is different:

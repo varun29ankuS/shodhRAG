@@ -1,0 +1,14 @@
+            ) : (
+              <>
+                {/* Handle both string format ("code") and object format ({Code: {...}}) */}
+                {(typeof selectedArtifact.artifact_type === 'string' ? selectedArtifact.artifact_type.toLowerCase() === 'code' : selectedArtifact.artifact_type.Code) && (
+                  <CodeArtifact artifact={selectedArtifact} theme={theme} />
+                )}
+                {(typeof selectedArtifact.artifact_type === 'string' ? selectedArtifact.artifact_type.toLowerCase() === 'markdown' : selectedArtifact.artifact_type.Markdown) && (
+                  <MarkdownArtifact artifact={selectedArtifact} />
+                )}
+                {(typeof selectedArtifact.artifact_type === 'string' ? selectedArtifact.artifact_type.toLowerCase() === 'mermaid' : selectedArtifact.artifact_type.Mermaid) && (
+                  <MermaidArtifact artifact={selectedArtifact} />
+                )}
+              </>
+            )}

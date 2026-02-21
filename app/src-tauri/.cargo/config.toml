@@ -1,0 +1,20 @@
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=-crt-static"]
+
+[build]
+# Use shorter path to avoid Windows MAX_PATH issues
+target-dir = "C:/build/kalki-rag"
+
+[env]
+RUSTFLAGS = "-C target-feature=-crt-static"
+# Force all C/C++ code (esaxx-rs, onig_sys, etc.) to use dynamic CRT (/MD)
+# to match the pre-built ONNX Runtime binaries downloaded by ort-sys
+CFLAGS = "/MD"
+CXXFLAGS = "/MD"
+# Force CMake to use Visual Studio generator instead of auto-detecting
+# This prevents conflicts when both Ninja and Visual Studio are installed
+CMAKE_GENERATOR = "Visual Studio 17 2022"
+# Force CMake to reconfigure on every build to prevent cache corruption
+CMAKE_BUILD_PARALLEL_LEVEL = "8"
+# Explicitly set the architecture
+CMAKE_GENERATOR_PLATFORM = "x64"

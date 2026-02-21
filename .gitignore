@@ -1,0 +1,40 @@
+# Rust
+/target/
+**/target/
+Cargo.lock
+!app/src-tauri/Cargo.lock
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+
+# Runtime data
+**/memory_store*/
+**/kalki_data*/
+**/models/
+*.pdb
+*.dll
+*.exe
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Misc
+nul
+*.log
+combined_extraction.txt
+*.json.new

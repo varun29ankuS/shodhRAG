@@ -1,0 +1,70 @@
+[package]
+name = "shodh-rag"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight RAG engine powered by LanceDB and Tantivy"
+authors = ["Roshera Team"]
+
+[dependencies]
+# Vector storage + ANN
+lancedb = "0.26"
+arrow-array = "57"
+arrow-schema = "57"
+arrow = { version = "57", features = ["prettyprint"] }
+
+# Full-text search
+tantivy = "0.22"
+
+# Embeddings (ONNX)
+ort = "2.0.0-rc.10"
+ndarray = "0.16"
+tokenizers = "0.20"
+
+# Knowledge graph
+petgraph = "0.6"
+
+# Core
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+thiserror = "1"
+parking_lot = "0.12"
+rayon = "1.8"
+tracing = "0.1"
+lru = "0.12"
+futures = "0.3"
+futures-util = "0.3"
+
+# LLM module dependencies
+async-trait = "0.1"
+reqwest = { version = "0.11", features = ["json", "stream"] }
+indicatif = "0.17"
+bytes = "1"
+dashmap = "5.5"
+sysinfo = "0.30"
+
+# Document parsing
+pdf-extract = "0.7"
+lopdf = "0.32"
+zip = "2"
+calamine = "0.24"
+
+# Windows OCR (Windows.Media.Ocr + Windows.Data.Pdf)
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Media_Ocr",
+    "Data_Pdf",
+    "Graphics_Imaging",
+    "Storage",
+    "Storage_Streams",
+    "Foundation",
+    "Globalization",
+] }
+
+# Utilities
+regex = "1"
+walkdir = "2"
+dirs = "5"

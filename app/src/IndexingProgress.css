@@ -1,0 +1,108 @@
+/* Indexing Progress Overlay */
+.indexing-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  backdrop-filter: blur(4px);
+}
+
+.indexing-modal {
+  background: var(--background, #0A0E27);
+  border-radius: 16px;
+  padding: 24px;
+  min-width: 400px;
+  max-width: 500px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+}
+
+.indexing-header {
+  margin-bottom: 20px;
+}
+
+.indexing-header h3 {
+  font-size: 20px;
+  color: var(--text, #E4E4E7);
+  margin: 0;
+}
+
+.indexing-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.indexing-current-file {
+  font-size: 14px;
+  color: var(--text-dim, #94969C);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 8px;
+  background: var(--surface, #151932);
+  border-radius: 8px;
+  font-family: monospace;
+}
+
+.indexing-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 14px;
+}
+
+.files-count {
+  color: var(--text, #E4E4E7);
+}
+
+.percentage {
+  color: var(--accent, #00D4AA);
+  font-weight: 600;
+  font-size: 18px;
+}
+
+.scanning {
+  color: var(--text-dim, #94969C);
+  font-style: italic;
+}
+
+.progress-bar-container {
+  margin: 8px 0;
+}
+
+.indexing-progress {
+  background: linear-gradient(90deg, var(--accent, #00D4AA), var(--accent-hover, #00B894));
+  transition: width 0.3s ease;
+  animation: indexing-pulse 2s infinite;
+}
+
+@keyframes indexing-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.8; }
+}
+
+@keyframes progress-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(200%);
+  }
+}
+
+.indexing-note {
+  font-size: 12px;
+  color: var(--text-dim, #94969C);
+  text-align: center;
+  padding: 8px;
+  background: var(--surface, #151932);
+  border-radius: 8px;
+  border-left: 3px solid var(--accent, #00D4AA);
+}

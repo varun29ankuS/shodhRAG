@@ -1,0 +1,180 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Light theme - High contrast, bold, premium */
+    --background: 210 17% 98%;
+    --foreground: 0 0% 0%;
+
+    --muted: 210 17% 95%;
+    --muted-foreground: 215 14% 34%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 0%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 0%;
+
+    --border: 214 32% 91%;
+    --input: 0 0% 100%;
+
+    /* Vibrant Shodh Orange */
+    --primary: 16 100% 60%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Bold Blue */
+    --secondary: 221 83% 53%;
+    --secondary-foreground: 0 0% 100%;
+
+    /* Purple Accent */
+    --accent: 258 90% 66%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --ring: 16 100% 60%;
+
+    --radius: 0.75rem;
+  }
+
+  [data-theme="dark"] {
+    /* Dark theme - Deep, rich, professional */
+    --background: 240 10% 4%;
+    --foreground: 0 0% 98%;
+
+    --muted: 240 4% 10%;
+    --muted-foreground: 240 5% 65%;
+
+    --popover: 240 10% 6%;
+    --popover-foreground: 0 0% 98%;
+
+    --card: 240 10% 10%;
+    --card-foreground: 0 0% 98%;
+
+    --border: 240 6% 15%;
+    --input: 240 10% 10%;
+
+    /* Shodh Orange vibrant in dark */
+    --primary: 16 100% 60%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 217 91% 60%;
+    --secondary-foreground: 0 0% 100%;
+
+    --accent: 240 4% 16%;
+    --accent-foreground: 0 0% 98%;
+
+    --destructive: 0 63% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --ring: 16 100% 60%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-feature-settings: "cv11", "ss01";
+    font-variation-settings: "opsz" auto;
+  }
+}
+
+/* Custom scrollbar */
+@layer components {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: theme('colors.muted.DEFAULT') transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    @apply bg-muted rounded-full;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground;
+  }
+}
+
+/* Gradient text for branding */
+@layer utilities {
+  .gradient-text {
+    @apply bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent;
+  }
+
+  .gradient-bg {
+    @apply bg-gradient-to-r from-primary to-secondary;
+  }
+
+  .shimmer {
+    @apply relative overflow-hidden before:absolute before:inset-0 before:-translate-x-full before:animate-shimmer before:bg-gradient-to-r before:from-transparent before:via-white/20 before:to-transparent;
+  }
+}
+
+/* Premium UI Components */
+@layer components {
+  .btn-primary {
+    @apply bg-primary text-primary-foreground hover:bg-primary/90 font-bold px-4 py-2 rounded-lg transition-all shadow-lg hover:shadow-xl hover:-translate-y-0.5;
+  }
+
+  .btn-secondary {
+    @apply bg-card text-card-foreground hover:bg-foreground hover:text-background border-2 border-border font-bold px-4 py-2 rounded-lg transition-all shadow-md hover:shadow-lg;
+  }
+
+  .btn-ghost {
+    @apply bg-transparent text-foreground hover:bg-foreground/10 font-semibold px-4 py-2 rounded-lg transition-all;
+  }
+
+  .input-field {
+    @apply bg-input border-2 border-border text-foreground placeholder:text-muted-foreground px-4 py-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary transition-all shadow-sm font-medium;
+  }
+
+  .card-elevated {
+    @apply bg-card border-2 border-border rounded-xl shadow-lg hover:shadow-xl transition-all duration-200;
+  }
+
+  .card-premium {
+    @apply bg-gradient-to-br from-card to-card border-2 border-border rounded-xl shadow-xl hover:shadow-2xl transition-all duration-300;
+  }
+
+  /* Citation Badge Styles - Shodh Design Language */
+  .citation-badge-container {
+    @apply inline-block relative mx-1;
+  }
+
+  .citation-badge {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1
+           rounded-md text-xs font-medium
+           transition-all duration-200 cursor-pointer
+           border
+           hover:shadow-md
+           hover:scale-105;
+    /* Theme-aware colors applied via inline styles */
+  }
+
+  .citation-index {
+    @apply font-bold;
+  }
+
+  .citation-file {
+    @apply text-[10px] opacity-70 font-normal;
+  }
+
+  /* Citation styles moved to inline ThemeContext styles in CitationBadge.tsx */
+}

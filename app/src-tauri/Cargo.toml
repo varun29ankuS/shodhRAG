@@ -2,7 +2,7 @@
 name = "shodh-rag-app"
 version = "0.1.0"
 description = "Shodh-RAG Tauri App with Tree-sitter Intelligence"
-authors = ["Roshera Team"]
+authors = ["Shodh"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

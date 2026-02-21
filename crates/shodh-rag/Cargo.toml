@@ -3,7 +3,7 @@ name = "shodh-rag"
 version = "0.1.0"
 edition = "2021"
 description = "Lightweight RAG engine powered by LanceDB and Tantivy"
-authors = ["Roshera Team"]
+authors = ["Shodh"]
 
 [dependencies]
 # Vector storage + ANN

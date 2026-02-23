@@ -2,7 +2,6 @@
 //! Handles department-level isolation, access levels, and compliance
 
 use serde::{Serialize, Deserialize};
-use std::collections::HashSet;
 use uuid::Uuid;
 
 /// Document metadata for enterprise filtering

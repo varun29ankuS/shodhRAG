@@ -75,7 +75,7 @@ pub async fn watch_folder(
 
     let watcher_state = app.state::<Arc<Mutex<FileWatcherManager>>>();
     let manager = watcher_state.lock().unwrap_or_else(|e| e.into_inner());
-    manager.watch_folder(path_buf, Some(space_id)).await?;
+    manager.watch_folder(path_buf, Some(space_id))?;
 
     tracing::info!("Watching folder: {}", path);
     Ok(())
@@ -108,7 +108,7 @@ pub async fn watch_global_folder(
 
     let watcher_state = app.state::<Arc<Mutex<FileWatcherManager>>>();
     let manager = watcher_state.lock().unwrap_or_else(|e| e.into_inner());
-    manager.watch_folder(path_buf, None).await?;
+    manager.watch_folder(path_buf, None)?;
 
     tracing::info!("Watching global folder: {}", path);
     Ok(())

@@ -208,7 +208,7 @@ impl AgentRegistry {
     }
 
     /// Load agents from a directory
-    pub async fn load_from_directory(&self, dir_path: &str) -> Result<Vec<String>> {
+    pub async fn load_from_directory(&mut self, dir_path: &str) -> Result<Vec<String>> {
         let path = Path::new(dir_path);
         if !path.exists() {
             anyhow::bail!("Directory does not exist: {}", dir_path);

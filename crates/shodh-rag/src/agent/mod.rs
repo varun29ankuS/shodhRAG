@@ -290,7 +290,7 @@ impl AgentSystem {
 
     /// Load agents from a directory (YAML/JSON files)
     pub async fn load_agents_from_directory(&self, dir_path: &str) -> Result<Vec<String>> {
-        let registry = self.registry.write().await;
+        let mut registry = self.registry.write().await;
         registry.load_from_directory(dir_path).await
     }
 

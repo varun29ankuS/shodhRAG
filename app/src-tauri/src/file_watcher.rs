@@ -33,7 +33,7 @@ impl FileWatcherManager {
         }
     }
 
-    pub async fn watch_folder(
+    pub fn watch_folder(
         &self,
         path: PathBuf,
         space_id: Option<String>,
@@ -234,7 +234,7 @@ pub async fn start_watching_folder(
     
     // Create a new FileWatcherManager instance for this specific watch
     let file_watcher = FileWatcherManager::new(app_handle.clone());
-    file_watcher.watch_folder(path_buf.clone(), space_id).await?;
+    file_watcher.watch_folder(path_buf.clone(), space_id)?;
     
     // Store it in the app state
     let watcher_manager = app_handle.state::<Arc<Mutex<FileWatcherManager>>>();

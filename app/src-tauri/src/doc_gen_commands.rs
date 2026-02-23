@@ -134,7 +134,7 @@ pub async fn generate_document(
         "md" | _ => {
             // Generate markdown format
             if request.use_rag && request.query.is_some() {
-        let query = request.query.as_ref().unwrap();
+        let query = request.query.as_deref().unwrap_or("");
         
         // First, perform RAG search with more results for comprehensive generation
         let search_results = {
@@ -382,7 +382,7 @@ FORMATTING RULES (produce a pristine, publication-ready document):
     // Extract source IDs for metadata
     let source_ids = if request.use_rag && request.query.is_some() {
         // We need to get the search results again to extract source IDs
-        let query = request.query.as_ref().unwrap();
+        let query = request.query.as_deref().unwrap_or("");
         let rag_guard = rag_state.rag.read().await;
         let rag = &*rag_guard;
         match rag.search(query, 5).await {
@@ -427,7 +427,7 @@ pub async fn generate_from_rag(
 ) -> Result<GenerateDocumentResponse, String> {
     // Get current LLM mode to determine provider limits
     let llm_mode = {
-        let config_guard = llm_state.config.lock().unwrap();
+        let config_guard = llm_state.config.lock().unwrap_or_else(|e| e.into_inner());
         config_guard.mode.clone()
     };
 

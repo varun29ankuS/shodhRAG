@@ -1,7 +1,5 @@
-// Selective warning suppression for ported code
-#![cfg_attr(not(feature = "strict"), allow(dead_code))]
-#![cfg_attr(not(feature = "strict"), allow(unused_variables))]
-#![cfg_attr(not(feature = "strict"), allow(unused_imports))]
+// Allow unused variables for ported code with integration points
+#![allow(unused_variables)]
 
 pub mod chat;
 pub mod config;

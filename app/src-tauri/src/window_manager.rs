@@ -49,7 +49,7 @@ impl MultiWindowManager {
 
         // Calculate position for tiling
         let (x, y) = position.unwrap_or_else(|| {
-            let windows = self.windows.lock().unwrap();
+            let windows = self.windows.lock().unwrap_or_else(|e| e.into_inner());
             let count = windows.len() as i32;
             // Tile windows
             (100 + (count * 50), 100 + (count * 30))
@@ -84,7 +84,7 @@ impl MultiWindowManager {
             size: (800, 600),
         };
 
-        self.windows.lock().unwrap().insert(window_id.clone(), doc_window);
+        self.windows.lock().unwrap_or_else(|e| e.into_inner()).insert(window_id.clone(), doc_window);
 
         // Emit window opened event
         app.emit_all("window:opened", &window_id)
@@ -128,13 +128,13 @@ impl MultiWindowManager {
             highlight_differences: true,
         };
 
-        self.comparisons.lock().unwrap().insert(comparison_id.clone(), comparison);
+        self.comparisons.lock().unwrap_or_else(|e| e.into_inner()).insert(comparison_id.clone(), comparison);
 
         Ok(comparison_id)
     }
 
     pub fn tile_windows(&self, app: &AppHandle, layout: &str) -> Result<(), String> {
-        let windows = self.windows.lock().unwrap();
+        let windows = self.windows.lock().unwrap_or_else(|e| e.into_inner());
         let window_count = windows.len();
 
         if window_count == 0 {
@@ -202,7 +202,7 @@ impl MultiWindowManager {
     }
 
     pub fn sync_scroll(&self, source_window_id: &str, scroll_position: f32) -> Result<(), String> {
-        let comparisons = self.comparisons.lock().unwrap();
+        let comparisons = self.comparisons.lock().unwrap_or_else(|e| e.into_inner());
 
         // Find comparisons involving this window
         for (_, comparison) in comparisons.iter() {
@@ -216,11 +216,11 @@ impl MultiWindowManager {
     }
 
     pub fn get_all_windows(&self) -> Vec<DocumentWindow> {
-        self.windows.lock().unwrap().values().cloned().collect()
+        self.windows.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect()
     }
 
     pub fn close_window(&self, window_id: &str) -> Result<(), String> {
-        self.windows.lock().unwrap().remove(window_id);
+        self.windows.lock().unwrap_or_else(|e| e.into_inner()).remove(window_id);
         Ok(())
     }
 }

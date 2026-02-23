@@ -858,18 +858,20 @@ pub async fn add_note_to_rag(
     let mut rag_guard = state.rag.write().await;
     let rag = &mut *rag_guard;
 
+    let note_source = format!("note://{}", note_id);
+
     // Create metadata for the note
         let mut metadata = HashMap::new();
         metadata.insert("type".to_string(), "note".to_string());
         metadata.insert("note_id".to_string(), note_id.clone());
         metadata.insert("tags".to_string(), tags.join(", "));
-        metadata.insert("source".to_string(), "user_notes".to_string());
-        
+        metadata.insert("source".to_string(), note_source.clone());
+
         // Create citation for the note
         let citation = Citation {
             title: format!("User Note: {}", note_id),
             authors: vec!["User".to_string()],
-            source: "Personal Notes".to_string(),
+            source: note_source,
             year: chrono::Utc::now().format("%Y").to_string(),
             url: None,
             doi: None,
@@ -891,11 +893,18 @@ pub async fn add_note_to_rag(
 #[tauri::command]
 pub async fn remove_note_from_rag(
     note_id: String,
-    _state: State<'_, RagState>,
+    state: State<'_, RagState>,
 ) -> Result<String, String> {
-    // Note: For full implementation, you'd need to track document IDs per note
-    // and remove them from the storage. For now, we'll just acknowledge the request.
-    Ok(format!("Note {} removal from RAG acknowledged", note_id))
+    let mut rag_guard = state.rag.write().await;
+    let rag = &mut *rag_guard;
+
+    let source = format!("note://{}", note_id);
+    let deleted = rag.delete_by_source(&source)
+        .await
+        .map_err(|e| format!("Failed to remove note from RAG: {}", e))?;
+
+    tracing::info!(note_id = %note_id, deleted = deleted, "Removed note from RAG index");
+    Ok(format!("Removed {} chunks for note {} from RAG", deleted, note_id))
 }
 
 /// Get list of documents in a space

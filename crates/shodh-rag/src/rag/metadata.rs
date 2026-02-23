@@ -117,7 +117,7 @@ impl AccessLevel {
 }
 
 /// Document source types
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SourceType {
     PDF,
     DOCX,
@@ -258,8 +258,9 @@ impl MetadataFilter {
         
         // Check source type
         if let Some(ref types) = self.source_types {
-            // This would need PartialEq implementation for SourceType
-            // Simplified for now
+            if !types.is_empty() && !types.contains(&metadata.source_type) {
+                return false;
+            }
         }
         
         // Check author

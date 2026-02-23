@@ -3,6 +3,7 @@
 //! Sophisticated go/no-go decision making for document retrieval.
 //! Analyzes query intent, domain relevance, and selects optimal retrieval strategy.
 
+use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
@@ -819,26 +820,59 @@ impl RequirementExtractor {
     }
 
     fn extract_date_range(&self, query: &str) -> Option<DateRange> {
+        // Dynamic year detection via regex
+        if let Some(cap) = YEAR_RE.find(query) {
+            let year = cap.as_str();
+            return Some(DateRange {
+                field: "date".to_string(),
+                start: Some(format!("{}-01-01", year)),
+                end: Some(format!("{}-12-31", year)),
+            });
+        }
+
         let query_lower = query.to_lowercase();
 
-        // Simple year detection
-        if query_lower.contains("2023") {
+        // Relative date expressions
+        if query_lower.contains("this year") {
+            let year = chrono::Utc::now().format("%Y");
             return Some(DateRange {
                 field: "date".to_string(),
-                start: Some("2023-01-01".to_string()),
-                end: Some("2023-12-31".to_string()),
+                start: Some(format!("{}-01-01", year)),
+                end: Some(format!("{}-12-31", year)),
             });
         }
 
-        if query_lower.contains("2024") {
+        if query_lower.contains("last year") {
+            let year = chrono::Utc::now().year() - 1;
             return Some(DateRange {
                 field: "date".to_string(),
-                start: Some("2024-01-01".to_string()),
-                end: Some("2024-12-31".to_string()),
+                start: Some(format!("{}-01-01", year)),
+                end: Some(format!("{}-12-31", year)),
             });
         }
 
-        // Could expand to handle "last month", "this year", etc.
+        if query_lower.contains("last month") {
+            let now = chrono::Utc::now();
+            let last_month = if now.month() == 1 {
+                chrono::NaiveDate::from_ymd_opt(now.year() - 1, 12, 1).unwrap()
+            } else {
+                chrono::NaiveDate::from_ymd_opt(now.year(), now.month() - 1, 1).unwrap()
+            };
+            let end_of_last_month = chrono::NaiveDate::from_ymd_opt(
+                now.year(),
+                now.month(),
+                1,
+            )
+            .unwrap()
+            .pred_opt()
+            .unwrap();
+            return Some(DateRange {
+                field: "date".to_string(),
+                start: Some(last_month.format("%Y-%m-%d").to_string()),
+                end: Some(end_of_last_month.format("%Y-%m-%d").to_string()),
+            });
+        }
+
         None
     }
 

@@ -20,7 +20,8 @@ pub struct LLMState {
     pub custom_tokenizer_path: Arc<Mutex<Option<PathBuf>>>,
 }
 
-/// API keys storage (should be encrypted in production)
+/// API keys held in memory for the current session.
+/// Keys are never serialized to disk (see `#[serde(skip_serializing)]` on LLMMode).
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct ApiKeys {
     pub openai: Option<String>,
@@ -124,7 +125,7 @@ pub fn set_custom_model_path(
     match extension {
         Some("onnx") => {
             // Store the custom path
-            *state.custom_model_path.lock().unwrap() = Some(path.clone());
+            *state.custom_model_path.lock().unwrap_or_else(|e| e.into_inner()) = Some(path.clone());
 
             // Check for associated .data file (ONNX specific)
             let data_file = path.with_extension("onnx.data");
@@ -138,7 +139,7 @@ pub fn set_custom_model_path(
         },
         Some("gguf") => {
             // Store the custom path
-            *state.custom_model_path.lock().unwrap() = Some(path.clone());
+            *state.custom_model_path.lock().unwrap_or_else(|e| e.into_inner()) = Some(path.clone());
 
             Ok(format!(
                 "✅ GGUF model path set successfully\n📁 Path: {}\n🚀 Backend: llama.cpp (tokenizer built-in)",
@@ -165,7 +166,7 @@ pub fn set_custom_tokenizer_path(
     }
     
     // Store the custom tokenizer path
-    *state.custom_tokenizer_path.lock().unwrap() = Some(path);
+    *state.custom_tokenizer_path.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
     
     Ok(format!("Tokenizer path set successfully: {}", tokenizer_path))
 }
@@ -175,12 +176,12 @@ pub fn set_custom_tokenizer_path(
 pub async fn initialize_llm_with_custom_path(
     state: State<'_, LLMState>,
 ) -> Result<String, String> {
-    let custom_model_path = state.custom_model_path.lock().unwrap().clone();
-    let custom_tokenizer_path = state.custom_tokenizer_path.lock().unwrap().clone();
+    let custom_model_path = state.custom_model_path.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let custom_tokenizer_path = state.custom_tokenizer_path.lock().unwrap_or_else(|e| e.into_inner()).clone();
     
     if let Some(model_path) = custom_model_path {
         // Create config with custom model
-        let mut config = state.config.lock().unwrap().clone();
+        let mut config = state.config.lock().unwrap_or_else(|e| e.into_inner()).clone();
         config.mode = LLMMode::Local {
             model: LocalModel::Custom { 
                 name: "custom".to_string(),
@@ -194,7 +195,7 @@ pub async fn initialize_llm_with_custom_path(
         };
         
         // Update stored config
-        *state.config.lock().unwrap() = config.clone();
+        *state.config.lock().unwrap_or_else(|e| e.into_inner()) = config.clone();
         
         // Pass both model and tokenizer paths
         // Create a custom manager that knows about both paths
@@ -224,7 +225,7 @@ pub async fn initialize_llm(
     state: State<'_, LLMState>,
     mode: String,
 ) -> Result<String, String> {
-    let config = state.config.lock().unwrap().clone();
+    let config = state.config.lock().unwrap_or_else(|e| e.into_inner()).clone();
     
     // Parse mode string to LLMMode
     let llm_mode = parse_llm_mode(&mode)?;
@@ -234,7 +235,7 @@ pub async fn initialize_llm(
     new_config.mode = llm_mode;
     
     // Update stored config
-    *state.config.lock().unwrap() = new_config.clone();
+    *state.config.lock().unwrap_or_else(|e| e.into_inner()) = new_config.clone();
     
     // Create and initialize manager
     let mut manager = LLMManager::new(new_config);
@@ -256,7 +257,7 @@ pub async fn switch_llm_mode(
 ) -> Result<String, String> {
     // Check if user wants to use custom model
     if mode == "custom" {
-        let custom_path = state.custom_model_path.lock().unwrap().clone();
+        let custom_path = state.custom_model_path.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if custom_path.is_none() {
             return Err("Please select a model file first using the Browse button".to_string());
         }
@@ -290,7 +291,7 @@ pub async fn switch_llm_mode(
         };
 
         // Get API key (handle Kimi specially since it uses OpenAI-compatible API but separate key)
-        let api_keys = state.api_keys.lock().unwrap();
+        let api_keys = state.api_keys.lock().unwrap_or_else(|e| e.into_inner());
         let api_key_opt = if provider.as_deref() == Some("kimi") {
             api_keys.kimi.clone()
         } else {
@@ -339,9 +340,9 @@ pub async fn switch_llm_mode(
     };
     
     // Update config
-    let mut config = state.config.lock().unwrap().clone();
+    let mut config = state.config.lock().unwrap_or_else(|e| e.into_inner()).clone();
     config.mode = llm_mode.clone();
-    *state.config.lock().unwrap() = config.clone();
+    *state.config.lock().unwrap_or_else(|e| e.into_inner()) = config.clone();
     
     // Switch mode or create new manager
     tracing::info!("Attempting to switch to mode: {}", mode);
@@ -778,7 +779,7 @@ pub async fn get_llm_info(
     
     tracing::info!("Provider info: {:?}", info);
     let memory = manager.memory_usage();
-    let config = state.config.lock().unwrap().clone();
+    let config = state.config.lock().unwrap_or_else(|e| e.into_inner()).clone();
     tracing::info!("Config mode: {:?}", config.mode);
     
     Ok(LLMInfo {
@@ -796,15 +797,17 @@ pub async fn get_llm_info(
     })
 }
 
-/// Set API key
+/// Set API key for a provider. Keys are held in memory for the current session.
+/// For persistent secure storage, integrate with the OS keychain
+/// (Windows Credential Manager / macOS Keychain / Linux Secret Service).
 #[tauri::command]
 pub fn set_api_key(
     state: State<'_, LLMState>,
     provider: String,
     api_key: String,
 ) -> Result<(), String> {
-    let mut api_keys = state.api_keys.lock().unwrap();
-    
+    let mut api_keys = state.api_keys.lock().unwrap_or_else(|e| e.into_inner());
+
     match provider.as_str() {
         "openai" => api_keys.openai = Some(api_key),
         "anthropic" => api_keys.anthropic = Some(api_key),
@@ -816,9 +819,7 @@ pub fn set_api_key(
         "baseten" => api_keys.baseten = Some(api_key),
         _ => return Err("Unknown provider".to_string()),
     }
-    
-    // TODO: Save to secure storage
-    
+
     Ok(())
 }
 
@@ -830,7 +831,7 @@ pub async fn is_model_cached(
 ) -> Result<bool, String> {
     // For custom models, check if path is set
     if model == "custom" {
-        let has_custom = state.custom_model_path.lock().unwrap().is_some();
+        let has_custom = state.custom_model_path.lock().unwrap_or_else(|e| e.into_inner()).is_some();
         return Ok(has_custom);
     }
     
@@ -939,7 +940,7 @@ pub fn update_llm_config(
     top_p: Option<f32>,
     top_k: Option<usize>,
 ) -> Result<(), String> {
-    let mut config = state.config.lock().unwrap();
+    let mut config = state.config.lock().unwrap_or_else(|e| e.into_inner());
     
     if let Some(temp) = temperature {
         config.temperature = temp;
@@ -962,7 +963,7 @@ pub fn update_llm_config(
 pub fn get_custom_model_path(
     state: State<'_, LLMState>,
 ) -> Result<Option<String>, String> {
-    let path = state.custom_model_path.lock().unwrap().clone();
+    let path = state.custom_model_path.lock().unwrap_or_else(|e| e.into_inner()).clone();
     Ok(path.map(|p| p.to_string_lossy().to_string()))
 }
 

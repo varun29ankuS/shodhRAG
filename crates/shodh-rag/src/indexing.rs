@@ -83,28 +83,28 @@ impl Default for IndexingState {
 
 impl IndexingState {
     pub fn pause(&self) {
-        *self.is_paused.lock().unwrap() = true;
+        *self.is_paused.lock().unwrap_or_else(|e| e.into_inner()) = true;
     }
 
     pub fn resume(&self) {
-        *self.is_paused.lock().unwrap() = false;
+        *self.is_paused.lock().unwrap_or_else(|e| e.into_inner()) = false;
     }
 
     pub fn cancel(&self) {
-        *self.should_cancel.lock().unwrap() = true;
+        *self.should_cancel.lock().unwrap_or_else(|e| e.into_inner()) = true;
     }
 
     pub fn reset(&self) {
-        *self.should_cancel.lock().unwrap() = false;
-        *self.is_paused.lock().unwrap() = false;
+        *self.should_cancel.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        *self.is_paused.lock().unwrap_or_else(|e| e.into_inner()) = false;
     }
 
     pub fn is_cancelled(&self) -> bool {
-        *self.should_cancel.lock().unwrap()
+        *self.should_cancel.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn is_paused(&self) -> bool {
-        *self.is_paused.lock().unwrap()
+        *self.is_paused.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 

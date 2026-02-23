@@ -161,13 +161,13 @@ impl MCPManager {
             },
         };
 
-        // Discover tools
-        let client_mut = Arc::clone(&client);
-        // SAFETY: We just created this client, no one else has access yet
-        let tools = unsafe {
-            let ptr = Arc::as_ptr(&client_mut) as *mut dyn MCPClient;
-            (*ptr).discover_tools().await?
-        };
+        // Discover tools — we're the sole owner so get_mut is safe
+        let mut client_owned = client;
+        let tools = Arc::get_mut(&mut client_owned)
+            .ok_or_else(|| anyhow::anyhow!("Failed to get mutable access to MCP client"))?
+            .discover_tools()
+            .await?;
+        let client = client_owned;
 
         tracing::info!("  ✓ Discovered {} tools from {}", tools.len(), config.name);
 

@@ -44,8 +44,6 @@ pub mod conversation_continuity;
 mod personal_assistant;
 mod builtin_agents;
 mod autonomous;
-mod planner;
-mod workflow;
 mod metrics;
 mod monitor;
 mod code_executor;
@@ -79,15 +77,6 @@ pub use autonomous::{
     AutonomousAgent, Task, TaskContext, TaskConstraints, TaskPlan, PlanStep,
     StepAction, StepStatus, TaskResult, TaskArtifact, ArtifactType,
     ExecutionProgress, TaskExecutor,
-};
-pub use planner::{
-    AdvancedPlanner, EnhancedTaskPlan, ExecutionGraph, ExecutionNode,
-    ParallelGroup, RiskLevel, AlternativePlan, PlanningResult, PlanningAnalysis,
-};
-pub use workflow::{
-    WorkflowEngine, WorkflowTemplate, WorkflowStep, WorkflowInstance,
-    WorkflowStatus, WorkflowResult, WorkflowParameter, WorkflowCategory,
-    ParameterType, create_builtin_workflows,
 };
 pub use metrics::{
     AgentMetricsCollector, ExecutionRecord, ExecutionStatus, AgentMetrics,

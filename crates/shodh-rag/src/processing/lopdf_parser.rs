@@ -87,7 +87,15 @@ impl LoPdfParser {
         let mut title = None;
         let mut author = None;
 
-        if let Ok(info) = doc.get_object((1, 0)) {
+        // Resolve Info dict from the PDF trailer rather than assuming a fixed object ID.
+        let info_obj = doc.trailer.get(b"Info").ok().and_then(|info_ref| {
+            match info_ref {
+                Object::Reference(ref_id) => doc.get_object(*ref_id).ok(),
+                other => Some(other),
+            }
+        });
+
+        if let Some(info) = info_obj {
             if let Ok(dict) = info.as_dict() {
                 if let Ok(obj) = dict.get(b"Title") {
                     if let Ok(bytes) = obj.as_str() {

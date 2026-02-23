@@ -16,7 +16,6 @@ pub mod onnx_llm_production;
 pub mod onnxruntime_genai_sys;  // Low-level FFI bindings
 pub mod onnxruntime_genai;      // Safe Rust wrappers
 pub mod local;
-pub mod external;
 pub mod simple_external;
 pub mod streaming;
 pub mod model_manager;
@@ -30,14 +29,13 @@ pub mod gqa_cache;
 pub use llamacpp_provider::LlamaCppProvider;
 pub use genai_provider::GenAIProvider;
 pub use local::LocalModelProvider;
-pub use external::ExternalProvider;
 pub use simple_external::SimpleExternalProvider;
 pub use streaming::{StreamingResponse, TokenStream};
 pub use model_manager::{ModelManager, ModelDownloader};
 
 
 /// LLM operation mode
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum LLMMode {
     /// Local model running in-process
     Local {
@@ -48,11 +46,32 @@ pub enum LLMMode {
     /// External API provider
     External {
         provider: ApiProvider,
+        #[serde(skip_serializing)]
         api_key: String,
         model: String,
     },
     /// LLM disabled, RAG-only mode
     Disabled,
+}
+
+impl std::fmt::Debug for LLMMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local { model, device, quantization } => f
+                .debug_struct("Local")
+                .field("model", model)
+                .field("device", device)
+                .field("quantization", quantization)
+                .finish(),
+            Self::External { provider, model, .. } => f
+                .debug_struct("External")
+                .field("provider", provider)
+                .field("api_key", &"[REDACTED]")
+                .field("model", model)
+                .finish(),
+            Self::Disabled => write!(f, "Disabled"),
+        }
+    }
 }
 
 /// Supported local models
@@ -507,12 +526,7 @@ impl LLMManager {
     }
     
     /// Create new LLM manager with custom model and tokenizer paths
-    pub fn new_with_paths(config: LLMConfig, model_path: PathBuf, tokenizer_path: Option<PathBuf>) -> Self {
-        // Store tokenizer path in environment variable for ONNX provider to pick up
-        if let Some(tokenizer) = tokenizer_path {
-            std::env::set_var("ROSHERA_TOKENIZER_PATH", tokenizer);
-        }
-        
+    pub fn new_with_paths(config: LLMConfig, model_path: PathBuf, _tokenizer_path: Option<PathBuf>) -> Self {
         Self {
             config,
             provider: None,
@@ -858,13 +872,13 @@ mod tests {
     fn test_llm_config_default() {
         let config = LLMConfig::default();
         assert!(matches!(config.mode, LLMMode::Disabled));
-        assert_eq!(config.max_tokens, 1024);
+        assert_eq!(config.max_tokens, 8192);
     }
 
     #[test]
     fn test_local_model_info() {
         let model = LocalModel::Phi3Mini;
-        assert_eq!(model.model_id(), "microsoft/Phi-3-mini-4k-instruct");
-        assert_eq!(model.size_gb(), 3.8);
+        assert_eq!(model.model_id(), "microsoft/Phi-3-mini-4k-instruct-onnx");
+        assert_eq!(model.size_gb(), 2.0);
     }
 }

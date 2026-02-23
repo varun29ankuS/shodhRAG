@@ -1019,9 +1019,9 @@ Return ONLY the JSON object, no markdown code blocks."#,
             std::fs::create_dir_all(&agents_dir)?;
         }
 
-        let agent_file = agents_dir.join(format!("{}.yaml", agent_def.name.to_lowercase()));
-        let yaml_content = serde_json::to_string_pretty(&agent_def)?;
-        std::fs::write(&agent_file, &yaml_content)?;
+        let agent_file = agents_dir.join(format!("{}.json", agent_def.name.to_lowercase()));
+        let json_content = serde_json::to_string_pretty(&agent_def)?;
+        std::fs::write(&agent_file, &json_content)?;
 
         emit(
             "complete",

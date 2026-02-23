@@ -267,13 +267,20 @@ impl MemorySystem {
     fn load_from_disk(&self) -> Result<()> {
         let path = self.config.storage_path.join("memories.json");
         if path.exists() {
-            let json = std::fs::read_to_string(&path)
-                .map_err(|e| anyhow::anyhow!("Failed to read memories file: {}", e))?;
-            let data: Vec<Memory> = serde_json::from_str(&json)
-                .map_err(|e| {
+            let json = match std::fs::read_to_string(&path) {
+                Ok(j) => j,
+                Err(e) => {
+                    tracing::warn!("Failed to read memories.json, starting fresh: {}", e);
+                    return Ok(());
+                }
+            };
+            let data: Vec<Memory> = match serde_json::from_str(&json) {
+                Ok(d) => d,
+                Err(e) => {
                     tracing::warn!("Corrupt memories.json, starting fresh: {}", e);
-                    anyhow::anyhow!("Failed to parse memories: {}", e)
-                })?;
+                    return Ok(());
+                }
+            };
             let mut memories = self.memories.write()
                 .map_err(|e| anyhow::anyhow!("Memory lock poisoned: {}", e))?;
             *memories = data;

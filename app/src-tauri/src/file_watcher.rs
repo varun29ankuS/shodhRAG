@@ -59,7 +59,7 @@ impl FileWatcherManager {
             .map_err(|e| format!("Failed to watch path: {}", e))?;
 
         // Store watcher
-        let mut watchers = self.watchers.lock().unwrap();
+        let mut watchers = self.watchers.lock().unwrap_or_else(|e| e.into_inner());
         watchers.insert(
             path.clone(),
             WatcherState {
@@ -90,7 +90,7 @@ impl FileWatcherManager {
     }
 
     pub fn stop_watching(&self, path: &Path) -> Result<(), String> {
-        let mut watchers = self.watchers.lock().unwrap();
+        let mut watchers = self.watchers.lock().unwrap_or_else(|e| e.into_inner());
         if watchers.remove(path).is_some() {
             tracing::info!("Stopped watching: {:?}", path);
             Ok(())
@@ -108,7 +108,7 @@ impl FileWatcherManager {
     ) {
         // Debounce events (ignore if same file changed within 2 seconds)
         let should_process = {
-            let mut watchers = watchers.lock().unwrap();
+            let mut watchers = watchers.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(state) = watchers.get_mut(watch_path) {
                 let now = SystemTime::now();
                 let mut process = true;
@@ -215,7 +215,7 @@ impl FileWatcherManager {
     }
 
     pub fn get_watching_paths(&self) -> Vec<PathBuf> {
-        let watchers = self.watchers.lock().unwrap();
+        let watchers = self.watchers.lock().unwrap_or_else(|e| e.into_inner());
         watchers.keys().cloned().collect()
     }
 }
@@ -238,7 +238,7 @@ pub async fn start_watching_folder(
     
     // Store it in the app state
     let watcher_manager = app_handle.state::<Arc<Mutex<FileWatcherManager>>>();
-    let mut manager = watcher_manager.lock().unwrap();
+    let mut manager = watcher_manager.lock().unwrap_or_else(|e| e.into_inner());
     *manager = file_watcher;
     
     Ok(format!("Started watching: {}", path))
@@ -253,7 +253,7 @@ pub async fn stop_watching_folder(
     let path_buf = PathBuf::from(&path);
     
     let result = {
-        let manager = watcher_manager.lock().unwrap();
+        let manager = watcher_manager.lock().unwrap_or_else(|e| e.into_inner());
         manager.stop_watching(&path_buf)
     };
     
@@ -266,7 +266,7 @@ pub async fn get_watched_folders(app_handle: AppHandle) -> Result<Vec<String>, S
     let watcher_manager = app_handle.state::<Arc<Mutex<FileWatcherManager>>>();
     
     let paths = {
-        let manager = watcher_manager.lock().unwrap();
+        let manager = watcher_manager.lock().unwrap_or_else(|e| e.into_inner());
         manager
             .get_watching_paths()
             .into_iter()

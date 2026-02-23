@@ -207,26 +207,3 @@ pub async fn debug_rag_state(
         data_dir
     ))
 }
-
-/// Recalculate storage statistics from actual data
-#[tauri::command]
-pub async fn recalculate_stats(
-    state: State<'_, RagState>,
-) -> Result<String, String> {
-    tracing::debug!("Recalculating storage statistics...");
-
-    let rag_guard = state.rag.read().await;
-    let rag = &*rag_guard;
-
-    let stats = rag.get_statistics().await.unwrap_or_default();
-    let total_chunks = stats.get("total_chunks").cloned().unwrap_or_default();
-    let fts_indexed = stats.get("fts_indexed").cloned().unwrap_or_default();
-
-    Ok(format!(
-        "Stats calculated:\n\
-         - Total Chunks: {}\n\
-         - FTS Indexed: {}",
-        total_chunks,
-        fts_indexed
-    ))
-}

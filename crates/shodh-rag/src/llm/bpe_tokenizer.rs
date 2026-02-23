@@ -390,6 +390,19 @@ impl BPETokenizer {
 
 impl Default for BPETokenizer {
     fn default() -> Self {
-        Self::create_default_tokenizer().unwrap()
+        Self::create_default_tokenizer().unwrap_or_else(|e| {
+            tracing::error!("Failed to create default BPE tokenizer: {}. Using minimal fallback.", e);
+            Self {
+                encoder: HashMap::new(),
+                decoder: HashMap::new(),
+                bpe_ranks: HashMap::new(),
+                special_tokens: HashMap::new(),
+                vocab_size: 0,
+                unk_token: "<unk>".to_string(),
+                pad_token: "<pad>".to_string(),
+                eos_token: "</s>".to_string(),
+                bos_token: "<s>".to_string(),
+            }
+        })
     }
 }

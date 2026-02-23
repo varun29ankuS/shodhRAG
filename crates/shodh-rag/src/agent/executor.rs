@@ -685,8 +685,8 @@ impl AgentExecutor {
                     let output = format!(
                         "Generated response with temperature {} using system prompt: '{}'",
                         temperature,
-                        if system_prompt.len() > 50 {
-                            format!("{}...", &system_prompt[..50])
+                        if system_prompt.chars().count() > 50 {
+                            format!("{}...", system_prompt.chars().take(50).collect::<String>())
                         } else {
                             system_prompt.clone()
                         }

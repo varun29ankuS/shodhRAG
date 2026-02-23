@@ -250,15 +250,16 @@ impl AgentRegistry {
         Ok(())
     }
 
-    /// Load agent from file
-    fn load_agent_from_file(&self, file_path: &Path) -> Result<String> {
+    /// Load agent from file and register it
+    fn load_agent_from_file(&mut self, file_path: &Path) -> Result<String> {
         let content = fs::read_to_string(file_path)
             .context("Failed to read agent file")?;
 
         let definition: AgentDefinition = serde_json::from_str(&content)
                 .context("Failed to parse agent definition")?;
 
-        Ok(definition.id.clone())
+        let id = self.register(definition)?;
+        Ok(id)
     }
 
     /// Save agent to file

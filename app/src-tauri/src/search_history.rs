@@ -156,7 +156,7 @@ impl SearchHistoryManager {
         }
         
         // Sort by score and take top N
-        suggestions.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        suggestions.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         suggestions.truncate(limit);
         
         suggestions

@@ -18,7 +18,6 @@ mod storage_commands;
 mod smart_templates;
 mod template_commands;
 mod query_rewriter;
-mod answer_validator;
 mod retrieval_commands;
 mod context_commands;
 mod whatsapp_bot;
@@ -216,9 +215,11 @@ pub fn run() {
             app.manage(WhatsAppBotState::default());
             app.manage(TelegramBotState {
                 process: Mutex::new(None),
+                server_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
             app.manage(DiscordBotState {
                 process: Mutex::new(None),
+                server_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
             app.manage(Arc::new(GoogleDriveState::new()));
 
@@ -293,102 +294,9 @@ pub fn run() {
                 });
             }
 
-            // Start WhatsApp HTTP server for receiving messages from the bridge
-            let whatsapp_bot_state = app.state::<WhatsAppBotState>();
-            let whatsapp_rag_state = app.state::<RagState>();
-            let bot_state_clone = WhatsAppBotState {
-                bot: whatsapp_bot_state.bot.clone(),
-                bridge_process: std::sync::Mutex::new(None),
-            };
-            let rag_state_clone = RagState {
-                rag: whatsapp_rag_state.rag.clone(),
-                notes: Mutex::new(Vec::new()),
-                space_manager: Mutex::new(SpaceManager::with_data_dir(app_data_dir.clone())),
-                conversation_manager: whatsapp_rag_state.conversation_manager.clone(),
-                memory_system: whatsapp_rag_state.memory_system.clone(),
-                personal_assistant: whatsapp_rag_state.personal_assistant.clone(),
-                app_paths: whatsapp_rag_state.app_paths.clone(),
-                rag_initialized: whatsapp_rag_state.rag_initialized.clone(),
-                initialization_lock: whatsapp_rag_state.initialization_lock.clone(),
-                artifact_store: whatsapp_rag_state.artifact_store.clone(),
-                conversation_id: whatsapp_rag_state.conversation_id.clone(),
-                agent_system: whatsapp_rag_state.agent_system.clone(),
-                llm_manager: whatsapp_rag_state.llm_manager.clone(),
-            };
-
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = whatsapp_http_server::start_server(bot_state_clone, rag_state_clone).await {
-                    tracing::error!("Failed to start WhatsApp HTTP server: {}", e);
-                }
-            });
-
-            // Start Telegram HTTP server for receiving messages from the bridge
-            let telegram_rag_state = app.state::<RagState>();
-            let telegram_llm_state = app.state::<LLMState>();
-            let telegram_rag_clone = RagState {
-                rag: telegram_rag_state.rag.clone(),
-                notes: Mutex::new(Vec::new()),
-                space_manager: Mutex::new(SpaceManager::with_data_dir(app_data_dir.clone())),
-                conversation_manager: telegram_rag_state.conversation_manager.clone(),
-                memory_system: telegram_rag_state.memory_system.clone(),
-                personal_assistant: telegram_rag_state.personal_assistant.clone(),
-                app_paths: telegram_rag_state.app_paths.clone(),
-                rag_initialized: telegram_rag_state.rag_initialized.clone(),
-                initialization_lock: telegram_rag_state.initialization_lock.clone(),
-                artifact_store: telegram_rag_state.artifact_store.clone(),
-                conversation_id: telegram_rag_state.conversation_id.clone(),
-                agent_system: telegram_rag_state.agent_system.clone(),
-                llm_manager: telegram_rag_state.llm_manager.clone(),
-            };
-            let telegram_llm_clone = LLMState {
-                manager: telegram_llm_state.manager.clone(),
-                model_manager: telegram_llm_state.model_manager.clone(),
-                config: telegram_llm_state.config.clone(),
-                api_keys: telegram_llm_state.api_keys.clone(),
-                custom_model_path: telegram_llm_state.custom_model_path.clone(),
-                custom_tokenizer_path: telegram_llm_state.custom_tokenizer_path.clone(),
-            };
-
-            let telegram_app_handle = app.app_handle().clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = telegram_http_server::start_server(telegram_rag_clone, telegram_llm_clone, Some(telegram_app_handle)).await {
-                    tracing::error!("Failed to start Telegram HTTP server: {}", e);
-                }
-            });
-
-            // Start Discord HTTP server for receiving messages from the bridge
-            let discord_rag_state = app.state::<RagState>();
-            let discord_llm_state = app.state::<LLMState>();
-            let discord_rag_clone = RagState {
-                rag: discord_rag_state.rag.clone(),
-                notes: Mutex::new(Vec::new()),
-                space_manager: Mutex::new(SpaceManager::with_data_dir(app_data_dir.clone())),
-                conversation_manager: discord_rag_state.conversation_manager.clone(),
-                memory_system: discord_rag_state.memory_system.clone(),
-                personal_assistant: discord_rag_state.personal_assistant.clone(),
-                app_paths: discord_rag_state.app_paths.clone(),
-                rag_initialized: discord_rag_state.rag_initialized.clone(),
-                initialization_lock: discord_rag_state.initialization_lock.clone(),
-                artifact_store: discord_rag_state.artifact_store.clone(),
-                conversation_id: discord_rag_state.conversation_id.clone(),
-                agent_system: discord_rag_state.agent_system.clone(),
-                llm_manager: discord_rag_state.llm_manager.clone(),
-            };
-            let discord_llm_clone = LLMState {
-                manager: discord_llm_state.manager.clone(),
-                model_manager: discord_llm_state.model_manager.clone(),
-                config: discord_llm_state.config.clone(),
-                api_keys: discord_llm_state.api_keys.clone(),
-                custom_model_path: discord_llm_state.custom_model_path.clone(),
-                custom_tokenizer_path: discord_llm_state.custom_tokenizer_path.clone(),
-            };
-
-            let discord_app_handle = app.app_handle().clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = discord_http_server::start_server(discord_rag_clone, discord_llm_clone, Some(discord_app_handle)).await {
-                    tracing::error!("Failed to start Discord HTTP server: {}", e);
-                }
-            });
+            // Bot HTTP servers (WhatsApp, Telegram, Discord) are now started lazily
+            // when the user explicitly starts a bot via whatsapp_initialize / start_telegram_bot / start_discord_bot.
+            // This avoids binding ports 3456/3458/3459 unconditionally on app launch.
 
             // Initialize LLM manager on startup
             let llm_state = app.state::<LLMState>();
@@ -396,7 +304,7 @@ pub fn run() {
             let config_clone = llm_state.config.clone();
 
             tauri::async_runtime::spawn(async move {
-                let config = config_clone.lock().unwrap().clone();
+                let config = config_clone.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
                 let model_dir = if cfg!(debug_assertions) {
                     let exe_dir = std::env::current_exe()

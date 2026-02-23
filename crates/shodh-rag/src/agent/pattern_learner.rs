@@ -419,7 +419,6 @@ impl PatternLearner {
 
         match &activity.activity_type {
             ActivityType::FileEdited(file) => {
-                // Learn file access patterns
                 if let Some(project) = &activity.project {
                     patterns.file_patterns
                         .entry(project.clone())
@@ -428,7 +427,6 @@ impl PatternLearner {
                 }
             },
             ActivityType::Search(query) => {
-                // Learn search patterns
                 let words: Vec<&str> = query.split_whitespace().collect();
                 if !words.is_empty() {
                     let prefix = words[0].to_string();
@@ -439,90 +437,52 @@ impl PatternLearner {
                 }
             },
             ActivityType::CommandExecuted(cmd) => {
-                // Learn tool usage patterns
                 let tool = cmd.split_whitespace().next().unwrap_or("unknown");
                 let current = *patterns.tool_patterns.get(tool).unwrap_or(&0.0);
                 patterns.tool_patterns.insert(tool.to_string(), (current + 0.1).min(1.0));
             },
-            // NEW: Learn from click tracking
             ActivityType::ResultClicked { result_id, query, rank, score } => {
-                // Learn click patterns - which results get clicked for which queries
-                self.learn_click_pattern(query, result_id, *rank, *score).await?;
+                let key = format!("click:{}", query);
+                let pattern_data = serde_json::json!({
+                    "result_id": result_id,
+                    "rank": rank,
+                    "score": score,
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                });
+                patterns.search_patterns
+                    .entry(key)
+                    .or_insert_with(Vec::new)
+                    .push(pattern_data.to_string());
+                tracing::debug!(query = %query, result_id = %result_id, rank = rank, "Learned click pattern");
             },
             ActivityType::ResultViewed { result_id, dwell_time_seconds } => {
-                // Learn dwell time patterns - how long users spend on results
-                self.learn_dwell_pattern(result_id, *dwell_time_seconds).await?;
+                let key = format!("dwell:{}", result_id);
+                let pattern_data = serde_json::json!({
+                    "dwell_time_seconds": dwell_time_seconds,
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                });
+                patterns.file_patterns
+                    .entry(key)
+                    .or_insert_with(Vec::new)
+                    .push(pattern_data.to_string());
+                tracing::debug!(result_id = %result_id, dwell_time_seconds = dwell_time_seconds, "Learned dwell time pattern");
             },
             ActivityType::ResultIgnored { result_id, query, rank } => {
-                // Learn negative signals - results that were shown but ignored
-                self.learn_ignore_pattern(query, result_id, *rank).await?;
+                let key = format!("ignore:{}", query);
+                let pattern_data = serde_json::json!({
+                    "result_id": result_id,
+                    "rank": rank,
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                });
+                patterns.search_patterns
+                    .entry(key)
+                    .or_insert_with(Vec::new)
+                    .push(pattern_data.to_string());
+                tracing::debug!(query = %query, result_id = %result_id, rank = rank, "Learned ignore pattern");
             },
             _ => {}
         }
 
-        Ok(())
-    }
-
-    // NEW: Click pattern learning
-    async fn learn_click_pattern(&self, query: &str, result_id: &str, rank: usize, score: f32) -> Result<()> {
-        let mut patterns = self.context_patterns.write().await;
-
-        // Store pattern: query → clicked results
-        let key = format!("click:{}", query);
-        let pattern_data = serde_json::json!({
-            "result_id": result_id,
-            "rank": rank,
-            "score": score,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
-        });
-
-        patterns.search_patterns
-            .entry(key)
-            .or_insert_with(Vec::new)
-            .push(pattern_data.to_string());
-
-        tracing::debug!(query = %query, result_id = %result_id, rank = rank, "Learned click pattern");
-        Ok(())
-    }
-
-    // NEW: Dwell time pattern learning
-    async fn learn_dwell_pattern(&self, result_id: &str, dwell_time: u64) -> Result<()> {
-        let mut patterns = self.context_patterns.write().await;
-
-        // Store dwell time for this result
-        let key = format!("dwell:{}", result_id);
-        let pattern_data = serde_json::json!({
-            "dwell_time_seconds": dwell_time,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
-        });
-
-        patterns.file_patterns
-            .entry(key)
-            .or_insert_with(Vec::new)
-            .push(pattern_data.to_string());
-
-        tracing::debug!(result_id = %result_id, dwell_time_seconds = dwell_time, "Learned dwell time pattern");
-        Ok(())
-    }
-
-    // NEW: Ignore pattern learning (negative signal)
-    async fn learn_ignore_pattern(&self, query: &str, result_id: &str, rank: usize) -> Result<()> {
-        let mut patterns = self.context_patterns.write().await;
-
-        // Store pattern: query → ignored results (to de-rank them)
-        let key = format!("ignore:{}", query);
-        let pattern_data = serde_json::json!({
-            "result_id": result_id,
-            "rank": rank,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
-        });
-
-        patterns.search_patterns
-            .entry(key)
-            .or_insert_with(Vec::new)
-            .push(pattern_data.to_string());
-
-        tracing::debug!(query = %query, result_id = %result_id, rank = rank, "Learned ignore pattern");
         Ok(())
     }
 

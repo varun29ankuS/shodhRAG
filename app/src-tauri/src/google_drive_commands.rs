@@ -155,7 +155,9 @@ impl GoogleDriveState {
             }
         } else {
             let tokens = self.tokens.read();
-            Ok(tokens.as_ref().unwrap().access_token.clone())
+            tokens.as_ref()
+                .map(|t| t.access_token.clone())
+                .ok_or_else(|| "Not authenticated: no access token available".to_string())
         }
     }
 }

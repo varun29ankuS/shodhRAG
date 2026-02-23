@@ -652,16 +652,3 @@ impl SessionMemory {
     }
 }
 
-/// Memory statistics
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct MemoryStats {
-    pub total_memories: usize,
-    pub working_memory_count: usize,
-    pub session_memory_count: usize,
-    pub long_term_memory_count: usize,
-    pub compressed_count: usize,
-    pub promotions_to_session: usize,
-    pub promotions_to_longterm: usize,
-    pub total_retrievals: usize,
-    pub average_importance: f32,
-}

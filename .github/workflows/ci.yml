@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-C target-feature=-crt-static"
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+        working-directory: shodh
+
+  check:
+    name: Check + Clippy
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "shodh -> target"
+
+      - name: Install Protobuf compiler
+        run: choco install protoc -y
+
+      - name: Cargo check
+        run: cargo check --workspace
+        working-directory: shodh
+
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+        working-directory: shodh
+        continue-on-error: true
+
+  test:
+    name: Tests
+    runs-on: windows-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "shodh -> target"
+
+      - name: Install Protobuf compiler
+        run: choco install protoc -y
+
+      - name: Unit tests
+        run: cargo test --package shodh-rag --lib
+        working-directory: shodh

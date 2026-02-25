@@ -20,7 +20,6 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all --check
-        working-directory: shodh
 
   check:
     name: Check + Clippy
@@ -33,19 +32,15 @@ jobs:
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "shodh -> target"
 
       - name: Install Protobuf compiler
         run: choco install protoc -y
 
       - name: Cargo check
         run: cargo check --workspace
-        working-directory: shodh
 
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
-        working-directory: shodh
         continue-on-error: true
 
   test:
@@ -58,12 +53,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "shodh -> target"
 
       - name: Install Protobuf compiler
         run: choco install protoc -y
 
       - name: Unit tests
         run: cargo test --package shodh-rag --lib
-        working-directory: shodh

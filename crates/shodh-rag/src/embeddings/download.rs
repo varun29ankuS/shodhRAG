@@ -63,7 +63,13 @@ pub async fn ensure_e5_model(model_dir: &Path) -> Result<PathBuf> {
 /// Returns the model directory path.
 pub async fn ensure_reranker_model(model_dir: &Path) -> Result<PathBuf> {
     let target_dir = model_dir.join(RERANKER_DIR);
-    ensure_model_files(&target_dir, RERANKER_REPO, RERANKER_FILES, "cross-encoder reranker").await?;
+    ensure_model_files(
+        &target_dir,
+        RERANKER_REPO,
+        RERANKER_FILES,
+        "cross-encoder reranker",
+    )
+    .await?;
     Ok(target_dir)
 }
 
@@ -97,8 +103,13 @@ async fn ensure_model_files(
         "Auto-downloading model files from HuggingFace"
     );
 
-    tokio::fs::create_dir_all(target_dir).await
-        .map_err(|e| anyhow!("Failed to create model directory {}: {}", target_dir.display(), e))?;
+    tokio::fs::create_dir_all(target_dir).await.map_err(|e| {
+        anyhow!(
+            "Failed to create model directory {}: {}",
+            target_dir.display(),
+            e
+        )
+    })?;
 
     let client = reqwest::Client::builder()
         .user_agent("shodh-rag/1.0")
@@ -113,7 +124,10 @@ async fn ensure_model_files(
         download_with_retry(&client, &url, &dest, file.local_name, display_name).await?;
     }
 
-    tracing::info!(model = display_name, "All model files downloaded successfully");
+    tracing::info!(
+        model = display_name,
+        "All model files downloaded successfully"
+    );
     Ok(())
 }
 
@@ -163,12 +177,20 @@ async fn download_streaming(
     use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
 
-    let response = client.get(url).send().await
+    let response = client
+        .get(url)
+        .send()
+        .await
         .map_err(|e| anyhow!("HTTP request failed for {}: {}", filename, e))?;
 
     let status = response.status();
     if !status.is_success() {
-        return Err(anyhow!("HTTP {} downloading {} from {}", status, filename, url));
+        return Err(anyhow!(
+            "HTTP {} downloading {} from {}",
+            status,
+            filename,
+            url
+        ));
     }
 
     let total_size = response.content_length().unwrap_or(0);
@@ -183,7 +205,8 @@ async fn download_streaming(
 
     // Write to a temp file first, then rename (atomic-ish)
     let tmp_dest = dest.with_extension("downloading");
-    let mut file = tokio::fs::File::create(&tmp_dest).await
+    let mut file = tokio::fs::File::create(&tmp_dest)
+        .await
         .map_err(|e| anyhow!("Failed to create {}: {}", tmp_dest.display(), e))?;
 
     let mut stream = response.bytes_stream();
@@ -192,7 +215,8 @@ async fn download_streaming(
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| anyhow!("Stream error downloading {}: {}", filename, e))?;
-        file.write_all(&chunk).await
+        file.write_all(&chunk)
+            .await
             .map_err(|e| anyhow!("Write error for {}: {}", filename, e))?;
         downloaded += chunk.len() as u64;
 
@@ -216,7 +240,8 @@ async fn download_streaming(
     drop(file);
 
     // Rename temp file to final destination
-    tokio::fs::rename(&tmp_dest, dest).await
+    tokio::fs::rename(&tmp_dest, dest)
+        .await
         .map_err(|e| anyhow!("Failed to finalize {}: {}", filename, e))?;
 
     tracing::info!(

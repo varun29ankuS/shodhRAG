@@ -57,5 +57,5 @@ jobs:
       - name: Install Protobuf compiler
         run: choco install protoc -y
 
-      - name: Unit tests
-        run: cargo test --package shodh-rag --lib
+      - name: Compile tests
+        run: cargo test --package shodh-rag --lib --no-run

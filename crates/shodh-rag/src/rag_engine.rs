@@ -4,6 +4,7 @@ use std::path::Path;
 use uuid::Uuid;
 
 use crate::config::RAGConfig;
+use crate::embeddings::download;
 use crate::embeddings::e5::{E5Config, E5Embeddings};
 use crate::embeddings::EmbeddingModel;
 use crate::processing::chunker::TextChunker;
@@ -41,15 +42,19 @@ impl RAGEngine {
         let text_search = TextSearch::new(config.data_dir.to_str().unwrap_or("./data"))
             .context("Failed to initialize Tantivy search")?;
 
-        let embeddings: Box<dyn EmbeddingModel> = if config.embedding.use_e5 {
-            let e5_config = E5Config::auto_detect(&config.embedding.model_dir)
-                .ok_or_else(|| anyhow::anyhow!("E5 model not found at configured path"))?;
+        // Auto-download E5 embedding model if not present
+        download::ensure_e5_model(&config.embedding.model_dir)
+            .await
+            .context("Failed to download E5 embedding model")?;
+
+        let embeddings: Box<dyn EmbeddingModel> = {
+            let e5_config = E5Config::auto_detect(&config.embedding.model_dir).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "E5 model not found at {}. Auto-download may have failed.",
+                    config.embedding.model_dir.display()
+                )
+            })?;
             Box::new(E5Embeddings::new(e5_config).context("Failed to load E5 embeddings")?)
-        } else {
-            return Err(anyhow::anyhow!(
-                "No embedding model available. Place E5 model in: {}",
-                config.embedding.model_dir.display()
-            ));
         };
 
         let chunker = TextChunker::new(
@@ -58,8 +63,11 @@ impl RAGEngine {
             config.chunking.min_chunk_size,
         );
 
-        // Try to load cross-encoder reranker if enabled and model exists
+        // Auto-download and load cross-encoder reranker if enabled
         let reranker = if config.features.enable_reranking || config.features.enable_cross_encoder {
+            if let Err(e) = download::ensure_reranker_model(&config.embedding.model_dir).await {
+                tracing::warn!("Failed to download reranker model: {}, continuing without reranking", e);
+            }
             let reranker_dir = config.embedding.model_dir.join("ms-marco-MiniLM-L6-v2");
             match CrossEncoderReranker::new(&reranker_dir) {
                 Ok(r) => {

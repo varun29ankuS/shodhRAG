@@ -1,3 +1,4 @@
+pub mod download;
 pub mod e5;
 pub mod tokenizer;
 

@@ -92,15 +92,14 @@ impl Default for RAGConfig {
             data_dir.join("models")
         };
 
-        let e5_available = model_dir.join("multilingual-e5-base").exists();
-        let dimension = if e5_available { 768 } else { 384 };
-
+        // E5 model is auto-downloaded on first run, so default to enabled.
+        // Dimension 768 matches multilingual-e5-base.
         Self {
             data_dir,
             embedding: EmbeddingConfig {
                 model_dir,
-                dimension,
-                use_e5: e5_available,
+                dimension: 768,
+                use_e5: true,
                 cache_size: 1000,
             },
             chunking: ChunkingConfig {

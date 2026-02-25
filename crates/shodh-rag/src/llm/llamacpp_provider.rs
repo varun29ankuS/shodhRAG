@@ -1,15 +1,15 @@
 //! llama.cpp LLM Provider - Stubbed for lightweight build
 //! Use API providers (OpenAI, Anthropic, etc.) instead.
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use std::path::Path;
 
-use super::{
-    LLMProvider, GenerationConfig, ProviderInfo, MemoryUsage,
-    LocalModel, DeviceType, QuantizationType,
-};
 use super::streaming::TokenStream;
+use super::{
+    DeviceType, GenerationConfig, LLMProvider, LocalModel, MemoryUsage, ProviderInfo,
+    QuantizationType,
+};
 
 pub struct LlamaCppProvider;
 
@@ -20,7 +20,9 @@ impl LlamaCppProvider {
         _quantization: QuantizationType,
         _cache_dir: &Path,
     ) -> Result<Self> {
-        Err(anyhow!("Local LLM (llama.cpp) is not available in this build. Use an API provider instead."))
+        Err(anyhow!(
+            "Local LLM (llama.cpp) is not available in this build. Use an API provider instead."
+        ))
     }
 }
 
@@ -30,11 +32,20 @@ impl LLMProvider for LlamaCppProvider {
         Err(anyhow!("LlamaCpp provider not available"))
     }
 
-    async fn generate_stream(&self, _prompt: &str, _config: &GenerationConfig) -> Result<TokenStream> {
+    async fn generate_stream(
+        &self,
+        _prompt: &str,
+        _config: &GenerationConfig,
+    ) -> Result<TokenStream> {
         Err(anyhow!("LlamaCpp provider not available"))
     }
 
-    async fn generate_with_context(&self, _query: &str, _context: Vec<String>, _config: &GenerationConfig) -> Result<String> {
+    async fn generate_with_context(
+        &self,
+        _query: &str,
+        _context: Vec<String>,
+        _config: &GenerationConfig,
+    ) -> Result<String> {
         Err(anyhow!("LlamaCpp provider not available"))
     }
 
@@ -49,9 +60,15 @@ impl LLMProvider for LlamaCppProvider {
         }
     }
 
-    async fn is_ready(&self) -> bool { false }
+    async fn is_ready(&self) -> bool {
+        false
+    }
 
     fn memory_usage(&self) -> MemoryUsage {
-        MemoryUsage { ram_mb: 0, vram_mb: None, model_size_mb: 0 }
+        MemoryUsage {
+            ram_mb: 0,
+            vram_mb: None,
+            model_size_mb: 0,
+        }
     }
 }

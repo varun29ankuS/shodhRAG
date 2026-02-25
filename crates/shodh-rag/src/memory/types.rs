@@ -1,9 +1,9 @@
 //! Type definitions for the memory system
 
-use serde::{Serialize, Deserialize};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 /// Unique identifier for memories
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -287,14 +287,14 @@ pub struct ConceptRelationship {
 /// Types of relationships
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RelationshipType {
-    IsA,           // Inheritance
-    HasA,          // Composition
-    Uses,          // Dependency
-    RelatedTo,     // General association
-    Causes,        // Causation
-    PartOf,        // Part-whole
-    Similar,       // Similarity
-    Opposite,      // Antonym/opposite
+    IsA,       // Inheritance
+    HasA,      // Composition
+    Uses,      // Dependency
+    RelatedTo, // General association
+    Causes,    // Causation
+    PartOf,    // Part-whole
+    Similar,   // Similarity
+    Opposite,  // Antonym/opposite
 }
 
 /// Raw experience data to be stored (ENHANCED)
@@ -352,19 +352,19 @@ pub struct Query {
 /// Retrieval modes
 #[derive(Debug, Clone)]
 pub enum RetrievalMode {
-    Similarity,     // Vector similarity search
-    Temporal,       // Time-based retrieval
-    Causal,        // Cause-effect chains
-    Associative,   // Related memories
-    Hybrid,        // Combination of methods
+    Similarity,  // Vector similarity search
+    Temporal,    // Time-based retrieval
+    Causal,      // Cause-effect chains
+    Associative, // Related memories
+    Hybrid,      // Combination of methods
 }
 
 /// Criteria for forgetting memories
 #[derive(Debug, Clone)]
 pub enum ForgetCriteria {
-    OlderThan(u32),           // Days
-    LowImportance(f32),       // Threshold
-    Pattern(String),          // Regex pattern
+    OlderThan(u32),     // Days
+    LowImportance(f32), // Threshold
+    Pattern(String),    // Regex pattern
 }
 
 /// Working memory - fast access, limited size
@@ -399,7 +399,9 @@ impl WorkingMemory {
     }
 
     pub fn search(&self, query: &Query, limit: usize) -> anyhow::Result<Vec<Memory>> {
-        let mut results: Vec<Memory> = self.memories.values()
+        let mut results: Vec<Memory> = self
+            .memories
+            .values()
             .filter(|m| {
                 // Apply filters
                 if let Some(threshold) = query.importance_threshold {
@@ -408,7 +410,10 @@ impl WorkingMemory {
                     }
                 }
                 if let Some(types) = &query.experience_types {
-                    if !types.iter().any(|t| std::mem::discriminant(&m.experience.experience_type) == std::mem::discriminant(t)) {
+                    if !types.iter().any(|t| {
+                        std::mem::discriminant(&m.experience.experience_type)
+                            == std::mem::discriminant(t)
+                    }) {
                         return false;
                     }
                 }
@@ -424,7 +429,8 @@ impl WorkingMemory {
 
         // Sort by importance and recency
         results.sort_by(|a, b| {
-            b.importance.partial_cmp(&a.importance)
+            b.importance
+                .partial_cmp(&a.importance)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then(b.last_accessed.cmp(&a.last_accessed))
         });
@@ -472,7 +478,8 @@ impl WorkingMemory {
     }
 
     pub fn remove_older_than(&mut self, cutoff: DateTime<Utc>) -> anyhow::Result<()> {
-        let to_remove: Vec<MemoryId> = self.memories
+        let to_remove: Vec<MemoryId> = self
+            .memories
             .iter()
             .filter(|(_, m)| m.created_at < cutoff)
             .map(|(id, _)| id.clone())
@@ -485,7 +492,8 @@ impl WorkingMemory {
     }
 
     pub fn remove_below_importance(&mut self, threshold: f32) -> anyhow::Result<()> {
-        let to_remove: Vec<MemoryId> = self.memories
+        let to_remove: Vec<MemoryId> = self
+            .memories
             .iter()
             .filter(|(_, m)| m.importance < threshold)
             .map(|(id, _)| id.clone())
@@ -498,7 +506,8 @@ impl WorkingMemory {
     }
 
     pub fn remove_matching(&mut self, regex: &regex::Regex) -> anyhow::Result<usize> {
-        let to_remove: Vec<MemoryId> = self.memories
+        let to_remove: Vec<MemoryId> = self
+            .memories
             .iter()
             .filter(|(_, m)| regex.is_match(&m.experience.content))
             .map(|(id, _)| id.clone())
@@ -529,7 +538,9 @@ impl SessionMemory {
     }
 
     pub fn add(&mut self, memory: Memory) -> anyhow::Result<()> {
-        let memory_size = serde_json::to_string(&memory).map(|s| s.len()).unwrap_or(1024);
+        let memory_size = serde_json::to_string(&memory)
+            .map(|s| s.len())
+            .unwrap_or(1024);
 
         // Check if adding would exceed limit
         if self.current_size_bytes + memory_size > self.max_size_mb * 1024 * 1024 {
@@ -543,7 +554,8 @@ impl SessionMemory {
     }
 
     fn evict_to_make_space(&mut self, needed_bytes: usize) -> anyhow::Result<()> {
-        let mut sorted: Vec<(MemoryId, f32)> = self.memories
+        let mut sorted: Vec<(MemoryId, f32)> = self
+            .memories
             .iter()
             .map(|(id, m)| (id.clone(), m.importance))
             .collect();
@@ -555,7 +567,9 @@ impl SessionMemory {
                 break;
             }
             if let Some(memory) = self.memories.remove(&id) {
-                let size = serde_json::to_string(&memory).map(|s| s.len()).unwrap_or(1024);
+                let size = serde_json::to_string(&memory)
+                    .map(|s| s.len())
+                    .unwrap_or(1024);
                 self.current_size_bytes -= size;
             }
         }
@@ -563,7 +577,9 @@ impl SessionMemory {
     }
 
     pub fn search(&self, query: &Query, limit: usize) -> anyhow::Result<Vec<Memory>> {
-        let mut results: Vec<Memory> = self.memories.values()
+        let mut results: Vec<Memory> = self
+            .memories
+            .values()
             .filter(|m| {
                 if let Some(threshold) = query.importance_threshold {
                     if m.importance < threshold {
@@ -575,7 +591,11 @@ impl SessionMemory {
             .cloned()
             .collect();
 
-        results.sort_by(|a, b| b.importance.partial_cmp(&a.importance).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.importance
+                .partial_cmp(&a.importance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results.truncate(limit);
         Ok(results)
     }
@@ -597,7 +617,9 @@ impl SessionMemory {
     }
 
     pub fn get_important(&self, threshold: f32) -> anyhow::Result<Vec<Memory>> {
-        Ok(self.memories.values()
+        Ok(self
+            .memories
+            .values()
             .filter(|m| m.importance >= threshold)
             .cloned()
             .collect())
@@ -605,14 +627,17 @@ impl SessionMemory {
 
     pub fn remove(&mut self, id: &MemoryId) -> anyhow::Result<()> {
         if let Some(memory) = self.memories.remove(id) {
-            let size = serde_json::to_string(&memory).map(|s| s.len()).unwrap_or(1024);
+            let size = serde_json::to_string(&memory)
+                .map(|s| s.len())
+                .unwrap_or(1024);
             self.current_size_bytes -= size;
         }
         Ok(())
     }
 
     pub fn remove_older_than(&mut self, cutoff: DateTime<Utc>) -> anyhow::Result<()> {
-        let to_remove: Vec<MemoryId> = self.memories
+        let to_remove: Vec<MemoryId> = self
+            .memories
             .iter()
             .filter(|(_, m)| m.created_at < cutoff)
             .map(|(id, _)| id.clone())
@@ -625,7 +650,8 @@ impl SessionMemory {
     }
 
     pub fn remove_below_importance(&mut self, threshold: f32) -> anyhow::Result<()> {
-        let to_remove: Vec<MemoryId> = self.memories
+        let to_remove: Vec<MemoryId> = self
+            .memories
             .iter()
             .filter(|(_, m)| m.importance < threshold)
             .map(|(id, _)| id.clone())
@@ -638,7 +664,8 @@ impl SessionMemory {
     }
 
     pub fn remove_matching(&mut self, regex: &regex::Regex) -> anyhow::Result<usize> {
-        let to_remove: Vec<MemoryId> = self.memories
+        let to_remove: Vec<MemoryId> = self
+            .memories
             .iter()
             .filter(|(_, m)| regex.is_match(&m.experience.content))
             .map(|(id, _)| id.clone())
@@ -651,4 +678,3 @@ impl SessionMemory {
         Ok(count)
     }
 }
-

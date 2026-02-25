@@ -2,14 +2,14 @@
 //!
 //! Tracks currently running agents and provides progress updates.
 
-use super::executor::{ExecutionResult, AgentProgress};
 use super::context::AgentContext;
+use super::executor::{AgentProgress, ExecutionResult};
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 // ============================================================================
@@ -100,7 +100,8 @@ impl AgentMonitor {
         };
 
         self.active_executions.insert(execution_id.clone(), active);
-        self.cancel_tokens.insert(execution_id, cancel_token.clone());
+        self.cancel_tokens
+            .insert(execution_id, cancel_token.clone());
 
         cancel_token
     }
@@ -128,7 +129,10 @@ impl AgentMonitor {
     }
 
     /// Subscribe to progress updates for an execution
-    pub async fn subscribe_to_execution(&self, execution_id: &str) -> Result<mpsc::UnboundedReceiver<AgentProgress>> {
+    pub async fn subscribe_to_execution(
+        &self,
+        execution_id: &str,
+    ) -> Result<mpsc::UnboundedReceiver<AgentProgress>> {
         let (tx, rx) = mpsc::unbounded_channel();
 
         if let Some(mut subs) = self.subscribers.get_mut(execution_id) {
@@ -167,7 +171,9 @@ impl AgentMonitor {
 
     /// Get specific execution status
     pub async fn get_execution_status(&self, execution_id: &str) -> Option<ActiveExecution> {
-        self.active_executions.get(execution_id).map(|e| e.value().clone())
+        self.active_executions
+            .get(execution_id)
+            .map(|e| e.value().clone())
     }
 
     /// Get all active executions for a specific agent

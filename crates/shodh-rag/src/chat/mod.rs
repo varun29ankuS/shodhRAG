@@ -14,9 +14,8 @@ static ARTIFACT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
 static STRIP_ARTIFACT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?s)<artifact[^>]*>.*?</artifact>").expect("strip artifact regex is valid")
 });
-static CITATION_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"\[(\d+)\]").expect("citation regex is valid")
-});
+static CITATION_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\[(\d+)\]").expect("citation regex is valid"));
 
 // ============================================================================
 // Types
@@ -332,7 +331,11 @@ pub fn extract_artifacts(content: &str) -> (Vec<Artifact>, String) {
                 let lang_end = after_ticks + newline_pos;
                 let language_opt = if newline_pos > 0 {
                     let lang = content[after_ticks..lang_end].trim();
-                    if !lang.is_empty() { Some(lang) } else { None }
+                    if !lang.is_empty() {
+                        Some(lang)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 };
@@ -346,9 +349,19 @@ pub fn extract_artifacts(content: &str) -> (Vec<Artifact>, String) {
 
                     let is_mermaid = matches!(
                         language_opt,
-                        Some("mermaid" | "flowchart" | "sequence" | "class"
-                            | "erdiagram" | "er" | "state" | "gantt"
-                            | "gitgraph" | "git" | "journey")
+                        Some(
+                            "mermaid"
+                                | "flowchart"
+                                | "sequence"
+                                | "class"
+                                | "erdiagram"
+                                | "er"
+                                | "state"
+                                | "gantt"
+                                | "gitgraph"
+                                | "git"
+                                | "journey"
+                        )
                     );
 
                     let is_table = language_opt == Some("table");
@@ -379,10 +392,13 @@ pub fn extract_artifacts(content: &str) -> (Vec<Artifact>, String) {
                         block_ranges.push((abs_start, block_end));
                         idx += 1;
                     } else if is_table {
-                        let table_title = code_content.lines().next()
+                        let table_title = code_content
+                            .lines()
+                            .next()
                             .filter(|line| line.contains('|'))
                             .map(|line| {
-                                let cols: Vec<&str> = line.split('|')
+                                let cols: Vec<&str> = line
+                                    .split('|')
                                     .map(|s| s.trim())
                                     .filter(|s| !s.is_empty())
                                     .collect();
@@ -406,10 +422,13 @@ pub fn extract_artifacts(content: &str) -> (Vec<Artifact>, String) {
                         block_ranges.push((abs_start, block_end));
                         idx += 1;
                     } else if is_chart {
-                        let chart_title = serde_json::from_str::<serde_json::Value>(code_content.trim())
-                            .ok()
-                            .and_then(|v| v.get("title").and_then(|t| t.as_str()).map(String::from))
-                            .unwrap_or_else(|| format!("Chart {}", idx + 1));
+                        let chart_title =
+                            serde_json::from_str::<serde_json::Value>(code_content.trim())
+                                .ok()
+                                .and_then(|v| {
+                                    v.get("title").and_then(|t| t.as_str()).map(String::from)
+                                })
+                                .unwrap_or_else(|| format!("Chart {}", idx + 1));
                         artifacts.push(Artifact {
                             id: format!("chart-{}", idx),
                             artifact_type: ArtifactType::Chart,
@@ -465,13 +484,17 @@ pub fn extract_artifacts(content: &str) -> (Vec<Artifact>, String) {
 
 /// Strip artifact tags from content for display.
 pub fn strip_artifact_tags(content: &str) -> String {
-    STRIP_ARTIFACT_RE.replace_all(content, "").trim().to_string()
+    STRIP_ARTIFACT_RE
+        .replace_all(content, "")
+        .trim()
+        .to_string()
 }
 
 /// Validate citations — strip references to non-existent sources.
 pub fn validate_citations(response: &str, num_sources: usize) -> String {
     let mut result = response.to_string();
-    let invalid: Vec<String> = CITATION_RE.captures_iter(response)
+    let invalid: Vec<String> = CITATION_RE
+        .captures_iter(response)
         .filter_map(|cap| {
             if let Ok(n) = cap[1].parse::<usize>() {
                 if n > num_sources || n == 0 {
@@ -492,7 +515,8 @@ pub fn validate_citations(response: &str, num_sources: usize) -> String {
 pub fn force_bullet_format(content: &str) -> String {
     // Already structured — don't touch it
     let has_headers = content.contains("## ") || content.contains("# ");
-    let has_bullets = content.contains("\n- ") || content.contains("\n* ") || content.contains("\n1.");
+    let has_bullets =
+        content.contains("\n- ") || content.contains("\n* ") || content.contains("\n1.");
     let has_paragraphs = content.matches("\n\n").count() >= 2;
 
     if has_headers || has_bullets || has_paragraphs {
@@ -512,7 +536,10 @@ pub fn force_bullet_format(content: &str) -> String {
 
     let mut formatted = String::new();
     for sentence in &sentences {
-        if sentence.chars().all(|c| c.is_whitespace() || c == '[' || c == ']' || c.is_numeric() || c == ',') {
+        if sentence
+            .chars()
+            .all(|c| c.is_whitespace() || c == '[' || c == ']' || c.is_numeric() || c == ',')
+        {
             continue;
         }
         formatted.push_str(&format!("- {}.\n", sentence.trim()));
@@ -531,8 +558,8 @@ pub async fn build_corpus_stats(
     rag: &crate::rag_engine::RAGEngine,
     space_id: Option<&str>,
 ) -> anyhow::Result<crate::rag::CorpusStats> {
-    use std::collections::{HashMap, HashSet};
     use crate::types::MetadataFilter;
+    use std::collections::{HashMap, HashSet};
 
     let filter = space_id.map(|sid| MetadataFilter {
         space_id: Some(sid.to_string()),
@@ -567,7 +594,9 @@ pub async fn build_corpus_stats(
         let is_new_doc = seen_docs.insert(doc_id);
 
         if is_new_doc {
-            let ext = chunk.metadata.get("file_extension")
+            let ext = chunk
+                .metadata
+                .get("file_extension")
                 .or_else(|| chunk.metadata.get("file_type"))
                 .cloned()
                 .unwrap_or_else(|| "unknown".to_string())
@@ -576,12 +605,19 @@ pub async fn build_corpus_stats(
         }
 
         // Exclude space_metadata documents
-        if chunk.metadata.get("doc_type").map(|t| t == "space_metadata").unwrap_or(false) {
+        if chunk
+            .metadata
+            .get("doc_type")
+            .map(|t| t == "space_metadata")
+            .unwrap_or(false)
+        {
             continue;
         }
 
         for word in chunk.snippet.split_whitespace() {
-            let clean = word.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+            let clean = word
+                .trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase();
             if clean.len() > 2 {
                 vocabulary.insert(clean);
             }
@@ -589,32 +625,49 @@ pub async fn build_corpus_stats(
         total_length += chunk.snippet.len();
     }
 
-    let avg_doc_length = if chunks.is_empty() { 0 } else { total_length / chunks.len() };
+    let avg_doc_length = if chunks.is_empty() {
+        0
+    } else {
+        total_length / chunks.len()
+    };
 
     // Build domain term frequencies in a single pass over chunks.
     // Count how many chunks contain each term using per-chunk word sets.
     let total_docs_f = chunks.len().max(1) as f32;
     let mut term_doc_count: HashMap<String, usize> = HashMap::new();
     for chunk in &chunks {
-        if chunk.metadata.get("doc_type").map(|t| t == "space_metadata").unwrap_or(false) {
+        if chunk
+            .metadata
+            .get("doc_type")
+            .map(|t| t == "space_metadata")
+            .unwrap_or(false)
+        {
             continue;
         }
-        let chunk_words: HashSet<String> = chunk.snippet
+        let chunk_words: HashSet<String> = chunk
+            .snippet
             .split_whitespace()
-            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+            .map(|w| {
+                w.trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_lowercase()
+            })
             .filter(|w| w.len() > 2)
             .collect();
         for word in &chunk_words {
             *term_doc_count.entry(word.clone()).or_insert(0) += 1;
         }
     }
-    let domain_terms: HashMap<String, f32> = term_doc_count.into_iter()
+    let domain_terms: HashMap<String, f32> = term_doc_count
+        .into_iter()
         .map(|(term, count)| (term, count as f32 / total_docs_f))
         .collect();
 
     tracing::debug!(
         "build_corpus_stats: {} chunks, {} unique docs, vocab={}, space_id={:?}",
-        chunks.len(), seen_docs.len(), vocabulary.len(), space_id
+        chunks.len(),
+        seen_docs.len(),
+        vocabulary.len(),
+        space_id
     );
 
     Ok(crate::rag::CorpusStats {

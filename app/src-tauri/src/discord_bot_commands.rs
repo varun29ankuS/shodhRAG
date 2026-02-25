@@ -1,15 +1,15 @@
 //! Auto-start Discord bot bridge
 
-use std::process::{Command, Child};
-use std::sync::Mutex;
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
-use crate::rag_commands::RagState;
-use crate::llm_commands::LLMState;
-use crate::space_manager::SpaceManager;
 use crate::discord_http_server;
+use crate::llm_commands::LLMState;
+use crate::rag_commands::RagState;
+use crate::space_manager::SpaceManager;
 
 pub struct DiscordBotState {
     pub process: Mutex<Option<Child>>,
@@ -26,7 +26,8 @@ fn ensure_http_server(app: &AppHandle, server_started: &Arc<AtomicBool>) {
     let rag_state = app.state::<RagState>();
     let llm_state = app.state::<LLMState>();
 
-    let app_data_dir = app.path()
+    let app_data_dir = app
+        .path()
         .app_data_dir()
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
 
@@ -56,7 +57,9 @@ fn ensure_http_server(app: &AppHandle, server_started: &Arc<AtomicBool>) {
 
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = discord_http_server::start_server(rag_clone, llm_clone, Some(app_handle)).await {
+        if let Err(e) =
+            discord_http_server::start_server(rag_clone, llm_clone, Some(app_handle)).await
+        {
             tracing::error!("Failed to start Discord HTTP server: {}", e);
         }
     });
@@ -76,15 +79,24 @@ pub async fn start_discord_bot(
     {
         let process_guard = state.process.lock().unwrap_or_else(|e| e.into_inner());
         if process_guard.is_some() {
-            return Err("Discord bot is already running. Stop it first before starting a new instance.".to_string());
+            return Err(
+                "Discord bot is already running. Stop it first before starting a new instance."
+                    .to_string(),
+            );
         }
     }
 
     // Get the bridge directory - try multiple possible locations
     let possible_dirs = vec![
-        std::env::current_dir().ok().map(|d| d.join("discord-bridge")),
-        std::env::current_dir().ok().map(|d| d.join("..").join("discord-bridge")),
-        std::env::current_dir().ok().map(|d| d.join("..").join("..").join("discord-bridge")),
+        std::env::current_dir()
+            .ok()
+            .map(|d| d.join("discord-bridge")),
+        std::env::current_dir()
+            .ok()
+            .map(|d| d.join("..").join("discord-bridge")),
+        std::env::current_dir()
+            .ok()
+            .map(|d| d.join("..").join("..").join("discord-bridge")),
         Some(std::path::PathBuf::from("./discord-bridge")),
         Some(std::path::PathBuf::from("../discord-bridge")),
         Some(std::path::PathBuf::from("../../discord-bridge")),
@@ -96,7 +108,10 @@ pub async fn start_discord_bot(
         .find(|dir| dir.exists())
         .ok_or_else(|| {
             let current = std::env::current_dir().unwrap_or_default();
-            format!("discord-bridge directory not found. Current dir: {:?}", current)
+            format!(
+                "discord-bridge directory not found. Current dir: {:?}",
+                current
+            )
         })?;
 
     tracing::info!("Using bridge directory: {:?}", bridge_dir);
@@ -170,15 +185,15 @@ pub async fn start_discord_bot(
 }
 
 #[tauri::command]
-pub async fn stop_discord_bot(
-    state: State<'_, DiscordBotState>,
-) -> Result<(), String> {
+pub async fn stop_discord_bot(state: State<'_, DiscordBotState>) -> Result<(), String> {
     tracing::info!("Stopping Discord bot...");
 
     let mut process_guard = state.process.lock().unwrap_or_else(|e| e.into_inner());
 
     if let Some(mut child) = process_guard.take() {
-        child.kill().map_err(|e| format!("Failed to kill process: {}", e))?;
+        child
+            .kill()
+            .map_err(|e| format!("Failed to kill process: {}", e))?;
         tracing::info!("Discord bot stopped");
         Ok(())
     } else {
@@ -187,9 +202,7 @@ pub async fn stop_discord_bot(
 }
 
 #[tauri::command]
-pub async fn check_discord_bot_status(
-    state: State<'_, DiscordBotState>,
-) -> Result<bool, String> {
+pub async fn check_discord_bot_status(state: State<'_, DiscordBotState>) -> Result<bool, String> {
     let mut process_guard = state.process.lock().unwrap_or_else(|e| e.into_inner());
 
     if let Some(ref mut child) = *process_guard {
@@ -198,9 +211,7 @@ pub async fn check_discord_bot_status(
                 *process_guard = None;
                 Ok(false)
             }
-            Ok(None) => {
-                Ok(true)
-            }
+            Ok(None) => Ok(true),
             Err(e) => {
                 tracing::warn!("Failed to check Discord bot process: {}", e);
                 Ok(false)

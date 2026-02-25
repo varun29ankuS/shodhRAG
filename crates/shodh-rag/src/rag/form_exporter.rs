@@ -1,10 +1,14 @@
 //! Export forms as downloadable HTML or JSON files
 
+use super::structured_output::{FieldType, FormField};
 use anyhow::Result;
-use super::structured_output::{FormField, FieldType};
 
 /// Export form as standalone HTML file with embedded CSS and JavaScript
-pub fn export_form_as_html(title: &str, description: Option<&str>, fields: &[FormField]) -> Result<String> {
+pub fn export_form_as_html(
+    title: &str,
+    description: Option<&str>,
+    fields: &[FormField],
+) -> Result<String> {
     let desc_html = description
         .map(|d| format!("    <p class=\"description\">{}</p>\n", html_escape(d)))
         .unwrap_or_default();
@@ -184,7 +188,12 @@ pub fn export_form_as_html(title: &str, description: Option<&str>, fields: &[For
         ));
 
         match field.field_type {
-            FieldType::Text | FieldType::Email | FieldType::Number | FieldType::Date | FieldType::Tel | FieldType::Url => {
+            FieldType::Text
+            | FieldType::Email
+            | FieldType::Number
+            | FieldType::Date
+            | FieldType::Tel
+            | FieldType::Url => {
                 let input_type = match field.field_type {
                     FieldType::Text => "text",
                     FieldType::Email => "email",
@@ -226,7 +235,9 @@ pub fn export_form_as_html(title: &str, description: Option<&str>, fields: &[For
                     field.id,
                     if field.required { "required" } else { "" }
                 ));
-                html.push_str("                    <option value=\"\">-- Select an option --</option>\n");
+                html.push_str(
+                    "                    <option value=\"\">-- Select an option --</option>\n",
+                );
 
                 if let Some(options) = &field.options {
                     for option in options {
@@ -356,7 +367,11 @@ pub fn export_form_as_json_schema(
         .iter()
         .map(|f| {
             let mut prop = match f.field_type {
-                FieldType::Text | FieldType::Email | FieldType::Tel | FieldType::Url | FieldType::Textarea => {
+                FieldType::Text
+                | FieldType::Email
+                | FieldType::Tel
+                | FieldType::Url
+                | FieldType::Textarea => {
                     json!({ "type": "string" })
                 }
                 FieldType::Number => json!({ "type": "number" }),
@@ -414,10 +429,12 @@ fn html_escape(s: &str) -> String {
 /// Sanitize string for use in HTML ID attributes
 fn sanitize_id(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' {
-            c
-        } else {
-            '_'
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
         })
         .collect()
 }
@@ -425,7 +442,7 @@ fn sanitize_id(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rag::structured_output::{FormField, FieldType};
+    use crate::rag::structured_output::{FieldType, FormField};
 
     #[test]
     fn test_export_simple_form() {

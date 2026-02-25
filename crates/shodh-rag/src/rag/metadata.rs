@@ -1,7 +1,7 @@
 //! Metadata management and access control for enterprise RAG
 //! Handles department-level isolation, access levels, and compliance
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Document metadata for enterprise filtering
@@ -9,34 +9,34 @@ use uuid::Uuid;
 pub struct DocumentMetadata {
     /// Unique document identifier
     pub doc_id: Uuid,
-    
+
     /// Chunk identifier within document
     pub chunk_id: usize,
-    
+
     /// Unix timestamp
     pub timestamp: i64,
-    
+
     /// Department (HR, Finance, Engineering, etc.)
     pub department: Option<String>,
-    
+
     /// Access level (0=public, 1=internal, 2=confidential, 3=restricted)
     pub access_level: AccessLevel,
-    
+
     /// Language code (ISO 639-1)
     pub language: String,
-    
+
     /// Source type
     pub source_type: SourceType,
-    
+
     /// Custom tags
     pub tags: Vec<String>,
-    
+
     /// Author/owner
     pub author: Option<String>,
-    
+
     /// Compliance flags
     pub compliance: ComplianceFlags,
-    
+
     /// Custom fields for additional metadata
     pub custom_fields: std::collections::HashMap<String, String>,
 }
@@ -70,23 +70,23 @@ impl DocumentMetadata {
             ..Default::default()
         }
     }
-    
+
     /// Builder pattern for fluent API
     pub fn with_department(mut self, dept: impl Into<String>) -> Self {
         self.department = Some(dept.into());
         self
     }
-    
+
     pub fn with_access_level(mut self, level: AccessLevel) -> Self {
         self.access_level = level;
         self
     }
-    
+
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
         self.tags = tags;
         self
     }
-    
+
     pub fn with_source(mut self, source: SourceType) -> Self {
         self.source_type = source;
         self
@@ -130,17 +130,17 @@ pub enum SourceType {
     Slack,
     Database,
     API,
-    File,  // Generic file source
-    WEB,   // Web search result
+    File, // Generic file source
+    WEB,  // Web search result
 }
 
 /// Compliance flags for regulatory requirements
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComplianceFlags {
-    pub pii_present: bool,      // Contains Personally Identifiable Information
-    pub gdpr_relevant: bool,    // Subject to GDPR
-    pub hipaa_relevant: bool,   // Subject to HIPAA
-    pub financial_data: bool,   // Contains financial information
+    pub pii_present: bool,           // Contains Personally Identifiable Information
+    pub gdpr_relevant: bool,         // Subject to GDPR
+    pub hipaa_relevant: bool,        // Subject to HIPAA
+    pub financial_data: bool,        // Contains financial information
     pub retention_days: Option<u32>, // Data retention period
 }
 
@@ -161,31 +161,31 @@ impl Default for ComplianceFlags {
 pub struct MetadataFilter {
     /// Filter by departments
     pub departments: Option<Vec<String>>,
-    
+
     /// Maximum access level user can see
     pub max_access_level: AccessLevel,
-    
+
     /// Filter by languages
     pub languages: Option<Vec<String>>,
-    
+
     /// Date range (start, end) as Unix timestamps
     pub date_range: Option<(i64, i64)>,
-    
+
     /// Required tags (AND condition)
     pub required_tags: Option<Vec<String>>,
-    
+
     /// Any of these tags (OR condition)
     pub any_tags: Option<Vec<String>>,
-    
+
     /// Excluded tags
     pub excluded_tags: Option<Vec<String>>,
-    
+
     /// Filter by source types
     pub source_types: Option<Vec<SourceType>>,
-    
+
     /// Filter by author
     pub authors: Option<Vec<String>>,
-    
+
     /// Compliance requirements
     pub compliance_filter: Option<ComplianceFilter>,
 }
@@ -203,26 +203,26 @@ impl MetadataFilter {
                 return false; // No department but filter requires one
             }
         }
-        
+
         // Check access level
         if metadata.access_level > self.max_access_level {
             return false;
         }
-        
+
         // Check language
         if let Some(ref langs) = self.languages {
             if !langs.contains(&metadata.language) {
                 return false;
             }
         }
-        
+
         // Check date range
         if let Some((start, end)) = self.date_range {
             if metadata.timestamp < start || metadata.timestamp > end {
                 return false;
             }
         }
-        
+
         // Check required tags (AND)
         if let Some(ref req_tags) = self.required_tags {
             for tag in req_tags {
@@ -231,7 +231,7 @@ impl MetadataFilter {
                 }
             }
         }
-        
+
         // Check any tags (OR)
         if let Some(ref any_tags) = self.any_tags {
             let mut found = false;
@@ -245,7 +245,7 @@ impl MetadataFilter {
                 return false;
             }
         }
-        
+
         // Check excluded tags
         if let Some(ref excl_tags) = self.excluded_tags {
             for tag in excl_tags {
@@ -254,14 +254,14 @@ impl MetadataFilter {
                 }
             }
         }
-        
+
         // Check source type
         if let Some(ref types) = self.source_types {
             if !types.is_empty() && !types.contains(&metadata.source_type) {
                 return false;
             }
         }
-        
+
         // Check author
         if let Some(ref authors) = self.authors {
             if let Some(ref author) = metadata.author {
@@ -272,14 +272,14 @@ impl MetadataFilter {
                 return false;
             }
         }
-        
+
         // Check compliance
         if let Some(ref comp_filter) = self.compliance_filter {
             if !comp_filter.matches(&metadata.compliance) {
                 return false;
             }
         }
-        
+
         true
     }
 }
@@ -299,19 +299,19 @@ impl ComplianceFilter {
         if self.exclude_pii && flags.pii_present {
             return false;
         }
-        
+
         if self.gdpr_only && !flags.gdpr_relevant {
             return false;
         }
-        
+
         if self.hipaa_only && !flags.hipaa_relevant {
             return false;
         }
-        
+
         if self.exclude_financial && flags.financial_data {
             return false;
         }
-        
+
         if let Some(min_days) = self.min_retention_days {
             if let Some(retention) = flags.retention_days {
                 if retention < min_days {
@@ -321,7 +321,7 @@ impl ComplianceFilter {
                 return false; // No retention period set
             }
         }
-        
+
         true
     }
 }
@@ -353,7 +353,7 @@ impl UserContext {
             compliance_filter: None,
         }
     }
-    
+
     /// Check if user can access document
     pub fn can_access(&self, metadata: &DocumentMetadata) -> bool {
         // Check department access
@@ -365,12 +365,12 @@ impl UserContext {
                 }
             }
         }
-        
+
         // Check access level
         if metadata.access_level > self.access_level {
             return false;
         }
-        
+
         true
     }
 }
@@ -378,7 +378,7 @@ impl UserContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_access_control() {
         let user = UserContext {
@@ -389,9 +389,9 @@ mod tests {
             roles: vec!["developer".to_string()],
             languages: vec!["en".to_string(), "hi".to_string()],
         };
-        
+
         let mut metadata = DocumentMetadata {
-            doc_id: "doc1".to_string(),
+            doc_id: Uuid::new_v4(),
             chunk_id: 0,
             timestamp: 1234567890,
             department: Some("Engineering".to_string()),
@@ -401,20 +401,21 @@ mod tests {
             tags: vec!["technical".to_string()],
             author: Some("john@company.com".to_string()),
             compliance: ComplianceFlags::default(),
+            custom_fields: std::collections::HashMap::new(),
         };
-        
+
         assert!(user.can_access(&metadata));
-        
+
         // User shouldn't access restricted documents
         metadata.access_level = AccessLevel::Restricted;
         assert!(!user.can_access(&metadata));
-        
+
         // User shouldn't access other departments
         metadata.access_level = AccessLevel::Internal;
         metadata.department = Some("Finance".to_string());
         assert!(!user.can_access(&metadata));
     }
-    
+
     #[test]
     fn test_metadata_filter() {
         let filter = MetadataFilter {
@@ -429,9 +430,9 @@ mod tests {
             authors: None,
             compliance_filter: None,
         };
-        
+
         let metadata = DocumentMetadata {
-            doc_id: "doc1".to_string(),
+            doc_id: Uuid::new_v4(),
             chunk_id: 0,
             timestamp: 1500000000,
             department: Some("HR".to_string()),
@@ -441,8 +442,9 @@ mod tests {
             tags: vec!["policy".to_string(), "approved".to_string()],
             author: None,
             compliance: ComplianceFlags::default(),
+            custom_fields: std::collections::HashMap::new(),
         };
-        
+
         assert!(filter.matches(&metadata));
     }
 }

@@ -1,8 +1,8 @@
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
-use chrono::Utc;
 use uuid::Uuid;
 
 use crate::rag_commands::RagState;
@@ -70,9 +70,15 @@ pub struct CalendarEvent {
     pub created_at: String,
 }
 
-fn default_priority() -> String { "medium".to_string() }
-fn default_status() -> String { "pending".to_string() }
-fn default_source() -> String { "user".to_string() }
+fn default_priority() -> String {
+    "medium".to_string()
+}
+fn default_status() -> String {
+    "pending".to_string()
+}
+fn default_source() -> String {
+    "user".to_string()
+}
 
 // ── Storage ──────────────────────────────────────────────────────
 
@@ -96,12 +102,14 @@ fn calendar_path(app: &AppHandle) -> Result<PathBuf, String> {
 fn read_calendar(app: &AppHandle) -> Result<CalendarDataFile, String> {
     let path = calendar_path(app)?;
     if !path.exists() {
-        return Ok(CalendarDataFile { tasks: Vec::new(), events: Vec::new() });
+        return Ok(CalendarDataFile {
+            tasks: Vec::new(),
+            events: Vec::new(),
+        });
     }
-    let data = fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read calendar data: {}", e))?;
-    serde_json::from_str(&data)
-        .map_err(|e| format!("Failed to parse calendar data: {}", e))
+    let data =
+        fs::read_to_string(&path).map_err(|e| format!("Failed to read calendar data: {}", e))?;
+    serde_json::from_str(&data).map_err(|e| format!("Failed to parse calendar data: {}", e))
 }
 
 fn write_calendar(app: &AppHandle, data: &CalendarDataFile) -> Result<(), String> {
@@ -109,10 +117,8 @@ fn write_calendar(app: &AppHandle, data: &CalendarDataFile) -> Result<(), String
     let tmp_path = path.with_extension("json.tmp");
     let json = serde_json::to_string_pretty(data)
         .map_err(|e| format!("Failed to serialize calendar data: {}", e))?;
-    fs::write(&tmp_path, &json)
-        .map_err(|e| format!("Failed to write temp file: {}", e))?;
-    fs::rename(&tmp_path, &path)
-        .map_err(|e| format!("Failed to rename temp file: {}", e))?;
+    fs::write(&tmp_path, &json).map_err(|e| format!("Failed to write temp file: {}", e))?;
+    fs::rename(&tmp_path, &path).map_err(|e| format!("Failed to rename temp file: {}", e))?;
     Ok(())
 }
 
@@ -171,7 +177,9 @@ fn spawn_index_task(app: &AppHandle, task: &TodoItem) {
     let rag_task = to_rag_task(task);
     tokio::spawn(async move {
         let mut engine = rag.write().await;
-        if let Err(e) = shodh_rag::agent::calendar_indexer::index_task(&mut engine, &rag_task, "calendar").await {
+        if let Err(e) =
+            shodh_rag::agent::calendar_indexer::index_task(&mut engine, &rag_task, "calendar").await
+        {
             tracing::warn!(task_id = %rag_task.id, error = %e, "Failed to index task in RAG");
         }
     });
@@ -197,7 +205,10 @@ fn spawn_index_event(app: &AppHandle, event: &CalendarEvent) {
     let rag_event = to_rag_event(event);
     tokio::spawn(async move {
         let mut engine = rag.write().await;
-        if let Err(e) = shodh_rag::agent::calendar_indexer::index_event(&mut engine, &rag_event, "calendar").await {
+        if let Err(e) =
+            shodh_rag::agent::calendar_indexer::index_event(&mut engine, &rag_event, "calendar")
+                .await
+        {
             tracing::warn!(event_id = %rag_event.id, error = %e, "Failed to index event in RAG");
         }
     });
@@ -280,13 +291,24 @@ pub async fn update_task(
     reminder: Option<String>,
 ) -> Result<TodoItem, String> {
     let mut data = read_calendar(&app)?;
-    let task = data.tasks.iter_mut().find(|t| t.id == id)
+    let task = data
+        .tasks
+        .iter_mut()
+        .find(|t| t.id == id)
         .ok_or_else(|| format!("Task not found: {}", id))?;
 
-    if let Some(v) = title { task.title = v; }
-    if let Some(v) = description { task.description = v; }
-    if let Some(v) = due_date { task.due_date = Some(v); }
-    if let Some(v) = priority { task.priority = v; }
+    if let Some(v) = title {
+        task.title = v;
+    }
+    if let Some(v) = description {
+        task.description = v;
+    }
+    if let Some(v) = due_date {
+        task.due_date = Some(v);
+    }
+    if let Some(v) = priority {
+        task.priority = v;
+    }
     if let Some(v) = status {
         if v == "completed" && task.status != "completed" {
             task.completed_at = Some(Utc::now().to_rfc3339());
@@ -295,9 +317,15 @@ pub async fn update_task(
         }
         task.status = v;
     }
-    if let Some(v) = tags { task.tags = v; }
-    if let Some(v) = project { task.project = Some(v); }
-    if let Some(v) = reminder { task.reminder = Some(v); }
+    if let Some(v) = tags {
+        task.tags = v;
+    }
+    if let Some(v) = project {
+        task.project = Some(v);
+    }
+    if let Some(v) = reminder {
+        task.reminder = Some(v);
+    }
     task.updated_at = Utc::now().to_rfc3339();
 
     let updated = task.clone();
@@ -328,9 +356,16 @@ pub async fn delete_task(app: AppHandle, id: String) -> Result<bool, String> {
 // ── Subtask Commands ─────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn add_subtask(app: AppHandle, task_id: String, title: String) -> Result<TodoItem, String> {
+pub async fn add_subtask(
+    app: AppHandle,
+    task_id: String,
+    title: String,
+) -> Result<TodoItem, String> {
     let mut data = read_calendar(&app)?;
-    let task = data.tasks.iter_mut().find(|t| t.id == task_id)
+    let task = data
+        .tasks
+        .iter_mut()
+        .find(|t| t.id == task_id)
         .ok_or_else(|| format!("Task not found: {}", task_id))?;
 
     task.subtasks.push(SubTask {
@@ -350,12 +385,22 @@ pub async fn add_subtask(app: AppHandle, task_id: String, title: String) -> Resu
 }
 
 #[tauri::command]
-pub async fn toggle_subtask(app: AppHandle, task_id: String, subtask_id: String) -> Result<TodoItem, String> {
+pub async fn toggle_subtask(
+    app: AppHandle,
+    task_id: String,
+    subtask_id: String,
+) -> Result<TodoItem, String> {
     let mut data = read_calendar(&app)?;
-    let task = data.tasks.iter_mut().find(|t| t.id == task_id)
+    let task = data
+        .tasks
+        .iter_mut()
+        .find(|t| t.id == task_id)
         .ok_or_else(|| format!("Task not found: {}", task_id))?;
 
-    let subtask = task.subtasks.iter_mut().find(|s| s.id == subtask_id)
+    let subtask = task
+        .subtasks
+        .iter_mut()
+        .find(|s| s.id == subtask_id)
         .ok_or_else(|| format!("Subtask not found: {}", subtask_id))?;
 
     subtask.completed = !subtask.completed;
@@ -370,9 +415,16 @@ pub async fn toggle_subtask(app: AppHandle, task_id: String, subtask_id: String)
 }
 
 #[tauri::command]
-pub async fn delete_subtask(app: AppHandle, task_id: String, subtask_id: String) -> Result<TodoItem, String> {
+pub async fn delete_subtask(
+    app: AppHandle,
+    task_id: String,
+    subtask_id: String,
+) -> Result<TodoItem, String> {
     let mut data = read_calendar(&app)?;
-    let task = data.tasks.iter_mut().find(|t| t.id == task_id)
+    let task = data
+        .tasks
+        .iter_mut()
+        .find(|t| t.id == task_id)
         .ok_or_else(|| format!("Task not found: {}", task_id))?;
 
     task.subtasks.retain(|s| s.id != subtask_id);
@@ -441,15 +493,30 @@ pub async fn update_event(
     color: Option<String>,
 ) -> Result<CalendarEvent, String> {
     let mut data = read_calendar(&app)?;
-    let event = data.events.iter_mut().find(|e| e.id == id)
+    let event = data
+        .events
+        .iter_mut()
+        .find(|e| e.id == id)
         .ok_or_else(|| format!("Event not found: {}", id))?;
 
-    if let Some(v) = title { event.title = v; }
-    if let Some(v) = description { event.description = v; }
-    if let Some(v) = start_time { event.start_time = v; }
-    if let Some(v) = end_time { event.end_time = Some(v); }
-    if let Some(v) = all_day { event.all_day = v; }
-    if let Some(v) = color { event.color = Some(v); }
+    if let Some(v) = title {
+        event.title = v;
+    }
+    if let Some(v) = description {
+        event.description = v;
+    }
+    if let Some(v) = start_time {
+        event.start_time = v;
+    }
+    if let Some(v) = end_time {
+        event.end_time = Some(v);
+    }
+    if let Some(v) = all_day {
+        event.all_day = v;
+    }
+    if let Some(v) = color {
+        event.color = Some(v);
+    }
 
     let updated = event.clone();
     write_calendar(&app, &data)?;
@@ -501,8 +568,19 @@ pub async fn reindex_all_calendar_data(app: &AppHandle) {
 
     tokio::spawn(async move {
         let mut engine = rag.write().await;
-        match shodh_rag::agent::calendar_indexer::reindex_all(&mut engine, &rag_tasks, &rag_events, "calendar").await {
-            Ok((t, e)) => tracing::info!(tasks = t, events = e, "Calendar data reindexed into RAG on startup"),
+        match shodh_rag::agent::calendar_indexer::reindex_all(
+            &mut engine,
+            &rag_tasks,
+            &rag_events,
+            "calendar",
+        )
+        .await
+        {
+            Ok((t, e)) => tracing::info!(
+                tasks = t,
+                events = e,
+                "Calendar data reindexed into RAG on startup"
+            ),
             Err(e) => tracing::warn!(error = %e, "Failed to reindex calendar data into RAG"),
         }
     });

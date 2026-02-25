@@ -1,7 +1,7 @@
 //! MCP Transport implementations - Stdio, HTTP, WebSocket
 
 use super::*;
-use anyhow::{Result, Context as AnyhowContext};
+use anyhow::{Context as AnyhowContext, Result};
 use serde_json::{json, Value};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -34,12 +34,17 @@ impl StdioMCPClient {
             .stderr(Stdio::piped());
 
         // Spawn process
-        let mut child = cmd.spawn()
+        let mut child = cmd
+            .spawn()
             .with_context(|| format!("Failed to spawn MCP server: {}", config.name))?;
 
-        let stdin = child.stdin.take()
+        let stdin = child
+            .stdin
+            .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to get stdin"))?;
-        let stdout = child.stdout.take()
+        let stdout = child
+            .stdout
+            .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to get stdout"))?;
 
         let client = Self {
@@ -91,7 +96,8 @@ impl StdioMCPClient {
 
     async fn send_request(&self, request: Value) -> Result<()> {
         let mut stdin_guard = self.stdin.lock().await;
-        let stdin = stdin_guard.as_mut()
+        let stdin = stdin_guard
+            .as_mut()
             .ok_or_else(|| anyhow::anyhow!("Stdin not available"))?;
 
         let request_str = serde_json::to_string(&request)?;
@@ -104,7 +110,8 @@ impl StdioMCPClient {
 
     async fn receive_response(&self) -> Result<Value> {
         let mut stdout_guard = self.stdout.lock().await;
-        let stdout = stdout_guard.as_mut()
+        let stdout = stdout_guard
+            .as_mut()
             .ok_or_else(|| anyhow::anyhow!("Stdout not available"))?;
 
         let mut line = String::new();
@@ -119,7 +126,8 @@ impl StdioMCPClient {
     }
 
     fn next_request_id(&self) -> u64 {
-        self.request_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        self.request_id
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -233,7 +241,8 @@ impl MCPClient for StdioMCPClient {
 impl Drop for StdioMCPClient {
     fn drop(&mut self) {
         // Mark as disconnected
-        self.connected.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.connected
+            .store(false, std::sync::atomic::Ordering::SeqCst);
 
         // Kill process
         if let Ok(mut process_guard) = self.process.try_lock() {

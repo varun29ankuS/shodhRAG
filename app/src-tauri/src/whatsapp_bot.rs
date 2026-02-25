@@ -1,20 +1,20 @@
 //! WhatsApp Bot integration with RAG
 //! Provides personal assistant capabilities through WhatsApp messaging
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WhatsAppMessage {
     pub id: String,
-    pub from: String,           // Phone number
-    pub from_name: String,       // Contact name
-    pub body: String,            // Message text
+    pub from: String,      // Phone number
+    pub from_name: String, // Contact name
+    pub body: String,      // Message text
     pub timestamp: DateTime<Utc>,
-    pub chat_id: String,         // Individual or group chat ID
+    pub chat_id: String, // Individual or group chat ID
     pub is_group: bool,
 }
 
@@ -22,16 +22,16 @@ pub struct WhatsAppMessage {
 pub struct WhatsAppContact {
     pub phone: String,
     pub name: String,
-    pub assigned_space: Option<String>,  // Which knowledge space to use
-    pub is_authorized: bool,              // Whether they can access the bot
-    pub conversation_id: Option<String>,  // Memory conversation ID
+    pub assigned_space: Option<String>, // Which knowledge space to use
+    pub is_authorized: bool,            // Whether they can access the bot
+    pub conversation_id: Option<String>, // Memory conversation ID
     pub preferences: ContactPreferences,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContactPreferences {
     pub language: String,
-    pub response_style: ResponseStyle,  // Formal, casual, technical
+    pub response_style: ResponseStyle, // Formal, casual, technical
     pub max_response_length: usize,
     pub include_sources: bool,
 }
@@ -108,7 +108,8 @@ impl WhatsAppBot {
     /// Check if contact is authorized to use the bot
     pub async fn is_authorized(&self, phone: &str) -> bool {
         let contacts = self.contacts.read().await;
-        contacts.get(phone)
+        contacts
+            .get(phone)
             .map(|c| c.is_authorized)
             .unwrap_or(false)
     }
@@ -116,7 +117,8 @@ impl WhatsAppBot {
     /// Get or create conversation for a contact
     pub async fn get_conversation(&self, contact_phone: &str) -> Option<Conversation> {
         let conversations = self.conversations.read().await;
-        conversations.values()
+        conversations
+            .values()
             .find(|c| c.contact == contact_phone)
             .cloned()
     }
@@ -189,7 +191,8 @@ impl WhatsAppBot {
     /// List all authorized contacts
     pub async fn list_authorized_contacts(&self) -> Vec<WhatsAppContact> {
         let contacts = self.contacts.read().await;
-        contacts.values()
+        contacts
+            .values()
             .filter(|c| c.is_authorized)
             .cloned()
             .collect()
@@ -200,13 +203,9 @@ impl WhatsAppBot {
         let contacts = self.contacts.read().await;
         let conversations = self.conversations.read().await;
 
-        let total_messages: usize = conversations.values()
-            .map(|c| c.messages.len())
-            .sum();
+        let total_messages: usize = conversations.values().map(|c| c.messages.len()).sum();
 
-        let total_responses: usize = conversations.values()
-            .map(|c| c.responses.len())
-            .sum();
+        let total_responses: usize = conversations.values().map(|c| c.responses.len()).sum();
 
         BotStats {
             total_contacts: contacts.len(),

@@ -1,11 +1,11 @@
 //! Agent Registry - Storage and management of agent definitions
 
 use super::definition::AgentDefinition;
-use anyhow::{Result, Context as AnyhowContext};
+use anyhow::{Context as AnyhowContext, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 
 /// Metadata about a registered agent
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,8 +161,7 @@ impl AgentRegistry {
         if let Some(ref storage_path) = self.storage_path {
             let agent_file = storage_path.join(format!("{}.json", agent_id));
             if agent_file.exists() {
-                fs::remove_file(agent_file)
-                    .context("Failed to delete agent file")?;
+                fs::remove_file(agent_file).context("Failed to delete agent file")?;
             }
         }
 
@@ -175,7 +174,8 @@ impl AgentRegistry {
             metadata.execution_count += 1;
 
             // Update average execution time
-            let total_time = metadata.avg_execution_time_ms * (metadata.execution_count - 1) + execution_time_ms;
+            let total_time =
+                metadata.avg_execution_time_ms * (metadata.execution_count - 1) + execution_time_ms;
             metadata.avg_execution_time_ms = total_time / metadata.execution_count;
         }
 
@@ -252,11 +252,10 @@ impl AgentRegistry {
 
     /// Load agent from file and register it
     fn load_agent_from_file(&mut self, file_path: &Path) -> Result<String> {
-        let content = fs::read_to_string(file_path)
-            .context("Failed to read agent file")?;
+        let content = fs::read_to_string(file_path).context("Failed to read agent file")?;
 
-        let definition: AgentDefinition = serde_json::from_str(&content)
-                .context("Failed to parse agent definition")?;
+        let definition: AgentDefinition =
+            serde_json::from_str(&content).context("Failed to parse agent definition")?;
 
         let id = self.register(definition)?;
         Ok(id)
@@ -265,11 +264,10 @@ impl AgentRegistry {
     /// Save agent to file
     fn save_agent_to_file(&self, agent_id: &str, file_path: &Path) -> Result<()> {
         let definition = self.get(agent_id)?;
-        let content = serde_json::to_string_pretty(&definition)
-            .context("Failed to serialize agent")?;
+        let content =
+            serde_json::to_string_pretty(&definition).context("Failed to serialize agent")?;
 
-        fs::write(file_path, content)
-            .context("Failed to write agent file")?;
+        fs::write(file_path, content).context("Failed to write agent file")?;
 
         Ok(())
     }
@@ -320,7 +318,9 @@ impl AgentRegistry {
     fn save_agent_to_storage(&self, agent_id: &str) -> Result<()> {
         if let Some(ref storage_path) = self.storage_path {
             let definition = self.get(agent_id)?;
-            let metadata = self.metadata.get(agent_id)
+            let metadata = self
+                .metadata
+                .get(agent_id)
                 .ok_or_else(|| anyhow::anyhow!("Metadata not found for agent: {}", agent_id))?;
 
             // Save definition

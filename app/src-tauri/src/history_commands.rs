@@ -1,10 +1,10 @@
 //! Tauri commands for search and chat history management
 
-use crate::search_history::{SearchHistoryManager, SearchEntry, SearchSuggestion};
-use crate::chat_history::{ChatHistoryManager, ChatMessage, MessageRole, ExportFormat};
+use crate::chat_history::{ChatHistoryManager, ChatMessage, ExportFormat, MessageRole};
+use crate::search_history::{SearchEntry, SearchHistoryManager, SearchSuggestion};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::State;
-use std::collections::HashMap;
 
 // ===== Search History Commands =====
 
@@ -64,7 +64,7 @@ pub async fn add_chat_message(
         "system" => MessageRole::System,
         _ => return Err("Invalid role".to_string()),
     };
-    
+
     let mut manager = manager.lock().map_err(|e| e.to_string())?;
     manager.add_message(space_id, role, content)
 }
@@ -107,7 +107,7 @@ pub async fn export_chat_history(
         "text" => ExportFormat::Text,
         _ => return Err("Invalid export format".to_string()),
     };
-    
+
     let manager = manager.lock().map_err(|e| e.to_string())?;
     manager.export_chat_history(space_id.as_deref(), export_format)
 }
@@ -124,15 +124,21 @@ pub async fn search_with_history(
 ) -> Result<Vec<crate::space_commands::SearchResult>, String> {
     // Perform the actual search first
     let response = if let Some(space_id) = space_id.clone() {
-        crate::space_commands::search_in_space(rag_state.clone(), space_id.clone(), query.clone(), max_results).await?
+        crate::space_commands::search_in_space(
+            rag_state.clone(),
+            space_id.clone(),
+            query.clone(),
+            max_results,
+        )
+        .await?
     } else {
         crate::space_commands::search_global(rag_state, query.clone(), max_results).await?
     };
-    
+
     // Add to search history with result count
     let result_count = response.len();
     let mut manager = search_manager.lock().map_err(|e| e.to_string())?;
     manager.add_search(query, space_id, result_count)?;
-    
+
     Ok(response)
 }

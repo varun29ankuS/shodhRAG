@@ -38,22 +38,19 @@ impl RAGEngine {
         .await
         .context("Failed to initialize LanceDB store")?;
 
-        let text_search = TextSearch::new(
-            config.data_dir.to_str().unwrap_or("./data"),
-        )
-        .context("Failed to initialize Tantivy search")?;
+        let text_search = TextSearch::new(config.data_dir.to_str().unwrap_or("./data"))
+            .context("Failed to initialize Tantivy search")?;
 
-        let embeddings: Box<dyn EmbeddingModel> =
-            if config.embedding.use_e5 {
-                let e5_config = E5Config::auto_detect(&config.embedding.model_dir)
-                    .ok_or_else(|| anyhow::anyhow!("E5 model not found at configured path"))?;
-                Box::new(E5Embeddings::new(e5_config).context("Failed to load E5 embeddings")?)
-            } else {
-                return Err(anyhow::anyhow!(
-                    "No embedding model available. Place E5 model in: {}",
-                    config.embedding.model_dir.display()
-                ));
-            };
+        let embeddings: Box<dyn EmbeddingModel> = if config.embedding.use_e5 {
+            let e5_config = E5Config::auto_detect(&config.embedding.model_dir)
+                .ok_or_else(|| anyhow::anyhow!("E5 model not found at configured path"))?;
+            Box::new(E5Embeddings::new(e5_config).context("Failed to load E5 embeddings")?)
+        } else {
+            return Err(anyhow::anyhow!(
+                "No embedding model available. Place E5 model in: {}",
+                config.embedding.model_dir.display()
+            ));
+        };
 
         let chunker = TextChunker::new(
             config.chunking.chunk_size,
@@ -66,11 +63,17 @@ impl RAGEngine {
             let reranker_dir = config.embedding.model_dir.join("ms-marco-MiniLM-L6-v2");
             match CrossEncoderReranker::new(&reranker_dir) {
                 Ok(r) => {
-                    tracing::info!("Cross-encoder reranker loaded from {}", reranker_dir.display());
+                    tracing::info!(
+                        "Cross-encoder reranker loaded from {}",
+                        reranker_dir.display()
+                    );
                     Some(r)
                 }
                 Err(e) => {
-                    tracing::warn!("Reranker not available ({}), continuing without reranking", e);
+                    tracing::warn!(
+                        "Reranker not available ({}), continuing without reranking",
+                        e
+                    );
                     None
                 }
             }
@@ -106,10 +109,7 @@ impl RAGEngine {
             .or_else(|| metadata.get("source"))
             .cloned()
             .unwrap_or_default();
-        let space_id = metadata
-            .get("space_id")
-            .cloned()
-            .unwrap_or_default();
+        let space_id = metadata.get("space_id").cloned().unwrap_or_default();
 
         let doc_id = Uuid::new_v4();
 
@@ -122,13 +122,14 @@ impl RAGEngine {
         }
 
         // Embed the contextualized text (with document context prefix) for better vector representation
-        let chunk_texts: Vec<&str> = chunks.iter().map(|c| c.contextualized_text.as_str()).collect();
+        let chunk_texts: Vec<&str> = chunks
+            .iter()
+            .map(|c| c.contextualized_text.as_str())
+            .collect();
         let embeddings = self.embeddings.embed_documents(&chunk_texts)?;
 
-        let citation_json =
-            serde_json::to_string(&citation).unwrap_or_else(|_| "{}".to_string());
-        let metadata_json =
-            serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string());
+        let citation_json = serde_json::to_string(&citation).unwrap_or_else(|_| "{}".to_string());
+        let metadata_json = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string());
         let now = chrono::Utc::now().timestamp();
 
         let mut chunk_records = Vec::with_capacity(chunks.len());
@@ -226,27 +227,27 @@ impl RAGEngine {
                 .get("title")
                 .cloned()
                 .unwrap_or_else(|| parsed.title.clone());
-            let space_id = merged_metadata
-                .get("space_id")
-                .cloned()
-                .unwrap_or_default();
+            let space_id = merged_metadata.get("space_id").cloned().unwrap_or_default();
 
-            let chunks = self.chunker.chunk_structured(
-                &parsed.structured_sections,
-                &title,
-                &source,
-            );
+            let chunks =
+                self.chunker
+                    .chunk_structured(&parsed.structured_sections, &title, &source);
 
             if chunks.is_empty() {
                 return Ok(Vec::new());
             }
 
             let doc_id = Uuid::new_v4();
-            let chunk_texts: Vec<&str> = chunks.iter().map(|c| c.contextualized_text.as_str()).collect();
+            let chunk_texts: Vec<&str> = chunks
+                .iter()
+                .map(|c| c.contextualized_text.as_str())
+                .collect();
             let embeddings = self.embeddings.embed_documents(&chunk_texts)?;
 
-            let citation_json = serde_json::to_string(&citation).unwrap_or_else(|_| "{}".to_string());
-            let metadata_json = serde_json::to_string(&merged_metadata).unwrap_or_else(|_| "{}".to_string());
+            let citation_json =
+                serde_json::to_string(&citation).unwrap_or_else(|_| "{}".to_string());
+            let metadata_json =
+                serde_json::to_string(&merged_metadata).unwrap_or_else(|_| "{}".to_string());
             let now = chrono::Utc::now().timestamp();
 
             let mut chunk_records = Vec::with_capacity(chunks.len());
@@ -288,14 +289,19 @@ impl RAGEngine {
                 ));
             }
 
-            self.store.upsert_chunks(chunk_records).await
+            self.store
+                .upsert_chunks(chunk_records)
+                .await
                 .context("Failed to store structured chunks in LanceDB")?;
             self.text_search.index_chunks_batch(&fts_batch)?;
             self.text_search.commit()?;
 
             tracing::info!(
                 "Ingested structured document '{}' ({} chunks, {} sections) into space '{}'",
-                title, chunk_ids.len(), parsed.structured_sections.len(), space_id,
+                title,
+                chunk_ids.len(),
+                parsed.structured_sections.len(),
+                space_id,
             );
 
             return Ok(chunk_ids);
@@ -306,11 +312,7 @@ impl RAGEngine {
     }
 
     /// Search with hybrid vector + FTS fusion
-    pub async fn search(
-        &self,
-        query: &str,
-        k: usize,
-    ) -> Result<Vec<SimpleSearchResult>> {
+    pub async fn search(&self, query: &str, k: usize) -> Result<Vec<SimpleSearchResult>> {
         let results = self.search_comprehensive(query, k, None).await?;
 
         Ok(results
@@ -415,11 +417,7 @@ impl RAGEngine {
         // Vector search via LanceDB
         let vector_hits = self
             .store
-            .vector_search(
-                &query_embedding,
-                candidate_count,
-                lance_filter.as_deref(),
-            )
+            .vector_search(&query_embedding, candidate_count, lance_filter.as_deref())
             .await?;
 
         let vector_results: Vec<(String, f32)> = vector_hits
@@ -428,11 +426,9 @@ impl RAGEngine {
             .collect();
 
         // Full-text search via Tantivy — use SAME candidate count for balanced fusion
-        let fts_results = self.text_search.search_filtered(
-            query,
-            candidate_count,
-            source_filter,
-        )?;
+        let fts_results =
+            self.text_search
+                .search_filtered(query, candidate_count, source_filter)?;
 
         tracing::info!(
             query = query,
@@ -550,8 +546,7 @@ impl RAGEngine {
 
                 match reranker.rerank(query, &candidates, candidates.len()) {
                     Ok(reranked) => {
-                        let rerank_scores: HashMap<String, f32> =
-                            reranked.into_iter().collect();
+                        let rerank_scores: HashMap<String, f32> = reranked.into_iter().collect();
 
                         // Update scores where reranking succeeded; keep original score
                         // for any candidates the cross-encoder couldn't tokenize.
@@ -561,7 +556,9 @@ impl RAGEngine {
                             }
                         }
                         results.sort_by(|a, b| {
-                            b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
+                            b.score
+                                .partial_cmp(&a.score)
+                                .unwrap_or(std::cmp::Ordering::Equal)
                         });
                     }
                     Err(e) => {
@@ -717,17 +714,13 @@ impl RAGEngine {
     ) -> Result<Vec<ComprehensiveResult>> {
         let predicate = filter.as_ref().and_then(|f| f.to_lance_predicate());
 
-        let hits = self
-            .store
-            .list_chunks(predicate.as_deref(), limit)
-            .await?;
+        let hits = self.store.list_chunks(predicate.as_deref(), limit).await?;
 
         let mut results = Vec::with_capacity(hits.len());
         for hit in hits {
             let metadata: HashMap<String, String> =
                 serde_json::from_str(&hit.metadata_json).unwrap_or_default();
-            let citation: Citation =
-                serde_json::from_str(&hit.citation_json).unwrap_or_default();
+            let citation: Citation = serde_json::from_str(&hit.citation_json).unwrap_or_default();
 
             let mut full_metadata = metadata;
             full_metadata.insert("doc_id".to_string(), hit.doc_id.clone());
@@ -798,7 +791,11 @@ impl RAGEngine {
             }
         }
         // Restore original order by score (descending)
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 
     /// Maximal Marginal Relevance — penalize repeated documents to ensure diversity.

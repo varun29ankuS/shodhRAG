@@ -52,7 +52,15 @@ impl ContextQueryIntent {
 
         // Pattern 1: Greetings (very short, common phrases)
         if word_count <= 5 {
-            let greetings = ["hi", "hello", "hey", "thanks", "thank you", "bye", "goodbye"];
+            let greetings = [
+                "hi",
+                "hello",
+                "hey",
+                "thanks",
+                "thank you",
+                "bye",
+                "goodbye",
+            ];
             if greetings.iter().any(|g| q.contains(g)) {
                 return ContextQueryIntent::Greeting;
             }
@@ -61,8 +69,13 @@ impl ContextQueryIntent {
         // Pattern 2: Simple questions (short, no complex intent)
         if word_count <= 10 {
             let simple_patterns = [
-                "can you", "are you", "do you", "will you",
-                "what is your", "who are you", "how are you"
+                "can you",
+                "are you",
+                "do you",
+                "will you",
+                "what is your",
+                "who are you",
+                "how are you",
             ];
             if simple_patterns.iter().any(|p| q.contains(p)) {
                 return ContextQueryIntent::SimpleQuestion;
@@ -71,9 +84,15 @@ impl ContextQueryIntent {
 
         // Pattern 3: System queries (asking about user's environment)
         let system_patterns = [
-            "what am i working on", "what files", "what processes",
-            "my system", "my computer", "my ram", "my cpu",
-            "running processes", "active applications"
+            "what am i working on",
+            "what files",
+            "what processes",
+            "my system",
+            "my computer",
+            "my ram",
+            "my cpu",
+            "running processes",
+            "active applications",
         ];
         if system_patterns.iter().any(|p| q.contains(p)) {
             return ContextQueryIntent::SystemQuery;
@@ -81,9 +100,17 @@ impl ContextQueryIntent {
 
         // Pattern 4: Code analysis (technical terms)
         let code_patterns = [
-            "explain this", "what does this do", "how does",
-            "function", "class", "method", "code", "bug",
-            "error", "implement", "refactor"
+            "explain this",
+            "what does this do",
+            "how does",
+            "function",
+            "class",
+            "method",
+            "code",
+            "bug",
+            "error",
+            "implement",
+            "refactor",
         ];
         if code_patterns.iter().any(|p| q.contains(p)) {
             return ContextQueryIntent::CodeAnalysis;
@@ -91,8 +118,13 @@ impl ContextQueryIntent {
 
         // Pattern 5: Document queries (explicit or implicit)
         let doc_patterns = [
-            "according to", "in the document", "what does",
-            "tell me about", "explain", "summarize", "find"
+            "according to",
+            "in the document",
+            "what does",
+            "tell me about",
+            "explain",
+            "summarize",
+            "find",
         ];
         if doc_patterns.iter().any(|p| q.contains(p)) {
             return ContextQueryIntent::DocumentQuery;
@@ -122,14 +154,20 @@ pub fn build_tiered_context(tier: ContextTier) -> String {
     // Tier 1: ALWAYS include (minimal overhead)
     context.push_str("You are Shodh - an intelligent AI assistant.\n");
     context.push_str("IMPORTANT: Always respond in the SAME language as the user's input (English for English, Hindi for Hindi, etc.).\n");
-    context.push_str(&format!("Current time: {}\n\n", now.format("%Y-%m-%d %H:%M")));
+    context.push_str(&format!(
+        "Current time: {}\n\n",
+        now.format("%Y-%m-%d %H:%M")
+    ));
 
     if tier == ContextTier::Minimal {
-        return context;  // STOP HERE for greetings/simple questions
+        return context; // STOP HERE for greetings/simple questions
     }
 
     // Tier 2: Standard capabilities
-    if matches!(tier, ContextTier::Standard | ContextTier::RAG | ContextTier::SystemAware) {
+    if matches!(
+        tier,
+        ContextTier::Standard | ContextTier::RAG | ContextTier::SystemAware
+    ) {
         context.push_str("# CAPABILITIES\n");
         context.push_str("- Answer questions about code and documents\n");
         context.push_str("- Provide clear, concise explanations\n");
@@ -161,12 +199,16 @@ pub fn build_tiered_context(tier: ContextTier) -> String {
 
         if let Ok(processes) = list_running_processes() {
             // Filter to interesting processes only
-            let interesting: Vec<_> = processes.iter()
+            let interesting: Vec<_> = processes
+                .iter()
                 .filter(|p| {
                     let name = p.name.to_lowercase();
-                    name.contains("code") || name.contains("chrome") ||
-                    name.contains("firefox") || name.contains("node") ||
-                    name.contains("python") || name.contains("cargo")
+                    name.contains("code")
+                        || name.contains("chrome")
+                        || name.contains("firefox")
+                        || name.contains("node")
+                        || name.contains("python")
+                        || name.contains("cargo")
                 })
                 .take(5)
                 .collect();
@@ -200,22 +242,46 @@ mod tests {
 
     #[test]
     fn test_greeting_classification() {
-        assert_eq!(ContextQueryIntent::classify("hi"), ContextQueryIntent::Greeting);
-        assert_eq!(ContextQueryIntent::classify("hello there"), ContextQueryIntent::Greeting);
-        assert_eq!(ContextQueryIntent::classify("thanks!"), ContextQueryIntent::Greeting);
+        assert_eq!(
+            ContextQueryIntent::classify("hi"),
+            ContextQueryIntent::Greeting
+        );
+        assert_eq!(
+            ContextQueryIntent::classify("hello there"),
+            ContextQueryIntent::Greeting
+        );
+        assert_eq!(
+            ContextQueryIntent::classify("thanks!"),
+            ContextQueryIntent::Greeting
+        );
     }
 
     #[test]
     fn test_simple_question_classification() {
-        assert_eq!(ContextQueryIntent::classify("can you talk?"), ContextQueryIntent::SimpleQuestion);
-        assert_eq!(ContextQueryIntent::classify("are you working?"), ContextQueryIntent::SimpleQuestion);
-        assert_eq!(ContextQueryIntent::classify("how are you?"), ContextQueryIntent::SimpleQuestion);
+        assert_eq!(
+            ContextQueryIntent::classify("can you talk?"),
+            ContextQueryIntent::SimpleQuestion
+        );
+        assert_eq!(
+            ContextQueryIntent::classify("are you working?"),
+            ContextQueryIntent::SimpleQuestion
+        );
+        assert_eq!(
+            ContextQueryIntent::classify("how are you?"),
+            ContextQueryIntent::SimpleQuestion
+        );
     }
 
     #[test]
     fn test_system_query_classification() {
-        assert_eq!(ContextQueryIntent::classify("what am i working on?"), ContextQueryIntent::SystemQuery);
-        assert_eq!(ContextQueryIntent::classify("what files are open?"), ContextQueryIntent::SystemQuery);
+        assert_eq!(
+            ContextQueryIntent::classify("what am i working on?"),
+            ContextQueryIntent::SystemQuery
+        );
+        assert_eq!(
+            ContextQueryIntent::classify("what files are open?"),
+            ContextQueryIntent::SystemQuery
+        );
     }
 
     #[test]
@@ -225,13 +291,25 @@ mod tests {
         let rag = build_tiered_context(ContextTier::RAG);
 
         // Minimal should be tiny
-        assert!(minimal.len() < 200, "Minimal context too large: {} chars", minimal.len());
+        assert!(
+            minimal.len() < 200,
+            "Minimal context too large: {} chars",
+            minimal.len()
+        );
 
         // Standard should be moderate
-        assert!(standard.len() < 500, "Standard context too large: {} chars", standard.len());
+        assert!(
+            standard.len() < 500,
+            "Standard context too large: {} chars",
+            standard.len()
+        );
 
         // RAG should be larger but still reasonable
-        assert!(rag.len() < 1000, "RAG context too large: {} chars", rag.len());
+        assert!(
+            rag.len() < 1000,
+            "RAG context too large: {} chars",
+            rag.len()
+        );
 
         // Should be increasing in size
         assert!(minimal.len() < standard.len());

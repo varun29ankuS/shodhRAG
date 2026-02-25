@@ -1,7 +1,7 @@
-use tauri::{Manager, WebviewWindow, WebviewUrl, LogicalSize, LogicalPosition};
 use crate::file_watcher::FileWatcherManager;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use tauri::{LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindow};
 
 #[tauri::command]
 pub async fn create_floating_widget(app: tauri::AppHandle) -> Result<(), String> {
@@ -13,36 +13,33 @@ pub async fn create_floating_widget(app: tauri::AppHandle) -> Result<(), String>
     }
 
     // Create the floating widget window using Tauri v2 API
-    let _widget_window = tauri::WebviewWindowBuilder::new(
-        &app,
-        "widget",
-        WebviewUrl::App("widget.html".into())
-    )
-    .title("Vectora Widget")
-    .inner_size(80.0, 80.0)
-    .resizable(false)
-    .decorations(false)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .transparent(true)
-    .position(100.0, 100.0)
-    .build()
-    .map_err(|e| e.to_string())?;
+    let _widget_window =
+        tauri::WebviewWindowBuilder::new(&app, "widget", WebviewUrl::App("widget.html".into()))
+            .title("Vectora Widget")
+            .inner_size(80.0, 80.0)
+            .resizable(false)
+            .decorations(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .transparent(true)
+            .position(100.0, 100.0)
+            .build()
+            .map_err(|e| e.to_string())?;
 
     // Position in top-right corner
     if let Ok(monitor) = _widget_window.current_monitor() {
         if let Some(monitor) = monitor {
             let size = monitor.size();
             let scale = monitor.scale_factor();
-            let logical_size = LogicalSize::new(
-                size.width as f64 / scale,
-                size.height as f64 / scale
-            );
+            let logical_size =
+                LogicalSize::new(size.width as f64 / scale, size.height as f64 / scale);
 
-            _widget_window.set_position(tauri::Position::Logical(LogicalPosition::new(
-                logical_size.width - 100.0,
-                20.0
-            ))).map_err(|e| e.to_string())?;
+            _widget_window
+                .set_position(tauri::Position::Logical(LogicalPosition::new(
+                    logical_size.width - 100.0,
+                    20.0,
+                )))
+                .map_err(|e| e.to_string())?;
         }
     }
 
@@ -82,10 +79,7 @@ pub async fn watch_folder(
 }
 
 #[tauri::command]
-pub async fn unwatch_folder(
-    app: tauri::AppHandle,
-    path: String,
-) -> Result<(), String> {
+pub async fn unwatch_folder(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let path_buf = PathBuf::from(&path);
 
     let watcher_state = app.state::<Arc<Mutex<FileWatcherManager>>>();
@@ -97,10 +91,7 @@ pub async fn unwatch_folder(
 }
 
 #[tauri::command]
-pub async fn watch_global_folder(
-    app: tauri::AppHandle,
-    path: String,
-) -> Result<(), String> {
+pub async fn watch_global_folder(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let path_buf = PathBuf::from(&path);
     if !path_buf.exists() || !path_buf.is_dir() {
         return Err(format!("Invalid folder path: {}", path));
@@ -115,10 +106,7 @@ pub async fn watch_global_folder(
 }
 
 #[tauri::command]
-pub async fn scan_global_folder(
-    app: tauri::AppHandle,
-    path: String,
-) -> Result<(), String> {
+pub async fn scan_global_folder(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let path_buf = PathBuf::from(&path);
     if !path_buf.exists() || !path_buf.is_dir() {
         return Err(format!("Invalid folder path: {}", path));
@@ -143,13 +131,20 @@ pub async fn scan_global_folder(
         }
     }
 
-    tracing::info!("Scanned global folder {}: found {} supported files", path, files.len());
+    tracing::info!(
+        "Scanned global folder {}: found {} supported files",
+        path,
+        files.len()
+    );
     use tauri::Emitter;
-    let _ = app.emit("global-folder-scanned", serde_json::json!({
-        "path": path,
-        "files": files,
-        "count": files.len(),
-    }));
+    let _ = app.emit(
+        "global-folder-scanned",
+        serde_json::json!({
+            "path": path,
+            "files": files,
+            "count": files.len(),
+        }),
+    );
 
     Ok(())
 }

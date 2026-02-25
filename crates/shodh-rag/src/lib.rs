@@ -17,11 +17,11 @@ pub mod templates;
 pub mod types;
 
 // Ported modules from old shodh-rag
+pub mod agent;
 pub mod llm;
 pub mod memory;
-pub mod agent;
-pub mod system;
 pub mod rag;
+pub mod system;
 
 // Re-export primary types for convenience
 pub use config::RAGConfig;
@@ -32,18 +32,17 @@ pub use types::{
 
 // Re-export comprehensive_system types for backward compatibility
 pub mod comprehensive_system {
-    pub use crate::types::{Citation, ComprehensiveResult, SimpleSearchResult, DocumentFormat};
     pub use crate::config::RAGConfig as ComprehensiveRAGConfig;
     pub use crate::rag_engine::RAGEngine as ComprehensiveRAG;
+    pub use crate::types::{Citation, ComprehensiveResult, DocumentFormat, SimpleSearchResult};
 }
 
 // Re-export LLM types
 pub use llm::{
-    LLMManager, LLMConfig, LLMMode, LocalModel, ApiProvider,
-    DeviceType, QuantizationType, GenerationConfig,
-    ProviderInfo, MemoryUsage, ModelManager,
+    ApiProvider, DeviceType, GenerationConfig, LLMConfig, LLMManager, LLMMode, LocalModel,
+    MemoryUsage, ModelManager, ProviderInfo, QuantizationType,
 };
 
 // Re-export common types
+pub use anyhow::{Error, Result};
 pub use uuid::Uuid;
-pub use anyhow::{Result, Error};

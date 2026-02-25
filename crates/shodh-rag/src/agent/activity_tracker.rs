@@ -1,7 +1,7 @@
 //! Activity Tracking - Records and analyzes user activities within the agent framework
 
 use anyhow::Result;
-use chrono::{DateTime, NaiveDate, Utc, Timelike, Datelike};
+use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -32,9 +32,21 @@ pub enum ActivityType {
     CommandExecuted(String),
     ProjectSwitched(String),
     // Click tracking for personalization
-    ResultClicked { result_id: String, query: String, rank: usize, score: f32 },
-    ResultViewed { result_id: String, dwell_time_seconds: u64 },
-    ResultIgnored { result_id: String, query: String, rank: usize },
+    ResultClicked {
+        result_id: String,
+        query: String,
+        rank: usize,
+        score: f32,
+    },
+    ResultViewed {
+        result_id: String,
+        dwell_time_seconds: u64,
+    },
+    ResultIgnored {
+        result_id: String,
+        query: String,
+        rank: usize,
+    },
 }
 
 // ============================================================================
@@ -105,12 +117,7 @@ impl ActivityTracker {
     /// Get recent activities
     pub async fn get_recent_activities(&self, limit: usize) -> Result<Vec<Activity>> {
         let activities = self.activities.read().await;
-        Ok(activities
-            .iter()
-            .rev()
-            .take(limit)
-            .cloned()
-            .collect())
+        Ok(activities.iter().rev().take(limit).cloned().collect())
     }
 
     /// Get activities for a specific date
@@ -119,7 +126,8 @@ impl ActivityTracker {
         let activities = self.activities.read().await;
 
         if let Some(ids) = by_date.get(&date) {
-            Ok(ids.iter()
+            Ok(ids
+                .iter()
                 .filter_map(|id| activities.iter().find(|a| a.id == *id))
                 .cloned()
                 .collect())
@@ -183,14 +191,18 @@ impl ActivityTracker {
     async fn update_indexes(&self, activity: &Activity) -> Result<()> {
         // Update date index
         let date = activity.timestamp.date_naive();
-        self.by_date.write().await
+        self.by_date
+            .write()
+            .await
             .entry(date)
             .or_insert_with(Vec::new)
             .push(activity.id);
 
         // Update project index
         if let Some(ref project) = activity.project {
-            self.by_project.write().await
+            self.by_project
+                .write()
+                .await
                 .entry(project.clone())
                 .or_insert_with(Vec::new)
                 .push(activity.id);
@@ -209,7 +221,9 @@ impl ActivityTracker {
             ActivityType::ResultIgnored { .. } => "result_ignored",
         };
 
-        self.by_type.write().await
+        self.by_type
+            .write()
+            .await
             .entry(type_key.to_string())
             .or_insert_with(Vec::new)
             .push(activity.id);
@@ -280,16 +294,19 @@ impl ActivityTracker {
 
         for window in activities.windows(2) {
             if let [first, second] = window {
-                let key = format!("{:?} -> {:?}",
+                let key = format!(
+                    "{:?} -> {:?}",
                     self.activity_type_name(&first.activity_type),
-                    self.activity_type_name(&second.activity_type));
+                    self.activity_type_name(&second.activity_type)
+                );
                 *bigrams.entry(key).or_insert(0) += 1;
             }
         }
 
         // Convert to sequences
         for (sequence, count) in bigrams.iter() {
-            if *count > 2 {  // Only include patterns that occur more than twice
+            if *count > 2 {
+                // Only include patterns that occur more than twice
                 sequences.push(ActivitySequence {
                     pattern: sequence.clone(),
                     frequency: *count,
@@ -299,7 +316,7 @@ impl ActivityTracker {
         }
 
         sequences.sort_by(|a, b| b.frequency.cmp(&a.frequency));
-        sequences.truncate(5);  // Keep top 5
+        sequences.truncate(5); // Keep top 5
 
         sequences
     }

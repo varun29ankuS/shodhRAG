@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
-use tauri::{AppHandle, Manager, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
 pub struct FileWatcherManager {
@@ -33,15 +33,11 @@ impl FileWatcherManager {
         }
     }
 
-    pub fn watch_folder(
-        &self,
-        path: PathBuf,
-        space_id: Option<String>,
-    ) -> Result<(), String> {
+    pub fn watch_folder(&self, path: PathBuf, space_id: Option<String>) -> Result<(), String> {
         let (tx, mut rx) = mpsc::channel(100);
         let app_handle = self.app_handle.clone();
         let space_id_clone = space_id.clone();
-        
+
         // Create watcher with debouncing
         let watcher = RecommendedWatcher::new(
             move |res: Result<Event, notify::Error>| {
@@ -50,7 +46,8 @@ impl FileWatcherManager {
                 }
             },
             Config::default().with_poll_interval(Duration::from_secs(2)),
-        ).map_err(|e| format!("Failed to create watcher: {}", e))?;
+        )
+        .map_err(|e| format!("Failed to create watcher: {}", e))?;
 
         // Start watching
         let mut watcher = watcher;
@@ -72,7 +69,7 @@ impl FileWatcherManager {
         // Spawn event handler
         let watchers_clone = self.watchers.clone();
         let path_clone = path.clone();
-        
+
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 Self::handle_event(
@@ -81,7 +78,8 @@ impl FileWatcherManager {
                     &space_id_clone,
                     &watchers_clone,
                     &path_clone,
-                ).await;
+                )
+                .await;
             }
         });
 
@@ -112,10 +110,12 @@ impl FileWatcherManager {
             if let Some(state) = watchers.get_mut(watch_path) {
                 let now = SystemTime::now();
                 let mut process = true;
-                
+
                 for path in &event.paths {
                     if let Some(last_time) = state.last_events.get(path) {
-                        if now.duration_since(*last_time).unwrap_or_default() < Duration::from_secs(2) {
+                        if now.duration_since(*last_time).unwrap_or_default()
+                            < Duration::from_secs(2)
+                        {
                             process = false;
                             break;
                         }
@@ -175,9 +175,28 @@ impl FileWatcherManager {
             let ext_str = ext.to_string_lossy().to_lowercase();
             matches!(
                 ext_str.as_str(),
-                "txt" | "md" | "pdf" | "html" | "json" | "csv" | "docx" | 
-                "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "java" | "cpp" | 
-                "c" | "h" | "go" | "rb" | "php" | "swift" | "kt"
+                "txt"
+                    | "md"
+                    | "pdf"
+                    | "html"
+                    | "json"
+                    | "csv"
+                    | "docx"
+                    | "rs"
+                    | "py"
+                    | "js"
+                    | "ts"
+                    | "jsx"
+                    | "tsx"
+                    | "java"
+                    | "cpp"
+                    | "c"
+                    | "h"
+                    | "go"
+                    | "rb"
+                    | "php"
+                    | "swift"
+                    | "kt"
             )
         } else {
             false
@@ -194,13 +213,14 @@ impl FileWatcherManager {
             ]);
 
             // Use invoke to call the add_document command
-            if let Err(e) = app_handle
-                .emit("auto-index-file", serde_json::json!({
+            if let Err(e) = app_handle.emit(
+                "auto-index-file",
+                serde_json::json!({
                     "path": path.to_string_lossy(),
                     "content": content,
                     "metadata": metadata,
-                }))
-            {
+                }),
+            ) {
                 tracing::error!("Failed to auto-index file: {}", e);
             }
         }
@@ -208,10 +228,13 @@ impl FileWatcherManager {
 
     async fn remove_from_index(app_handle: &AppHandle, path: &Path, space_id: &Option<String>) {
         // Emit event to remove from index
-        let _ = app_handle.emit("remove-from-index", serde_json::json!({
-            "path": path.to_string_lossy(),
-            "space_id": space_id,
-        }));
+        let _ = app_handle.emit(
+            "remove-from-index",
+            serde_json::json!({
+                "path": path.to_string_lossy(),
+                "space_id": space_id,
+            }),
+        );
     }
 
     pub fn get_watching_paths(&self) -> Vec<PathBuf> {
@@ -231,32 +254,29 @@ pub async fn start_watching_folder(
     if !path_buf.exists() {
         return Err(format!("Path does not exist: {}", path));
     }
-    
+
     // Create a new FileWatcherManager instance for this specific watch
     let file_watcher = FileWatcherManager::new(app_handle.clone());
     file_watcher.watch_folder(path_buf.clone(), space_id)?;
-    
+
     // Store it in the app state
     let watcher_manager = app_handle.state::<Arc<Mutex<FileWatcherManager>>>();
     let mut manager = watcher_manager.lock().unwrap_or_else(|e| e.into_inner());
     *manager = file_watcher;
-    
+
     Ok(format!("Started watching: {}", path))
 }
 
 #[tauri::command]
-pub async fn stop_watching_folder(
-    app_handle: AppHandle,
-    path: String,
-) -> Result<String, String> {
+pub async fn stop_watching_folder(app_handle: AppHandle, path: String) -> Result<String, String> {
     let watcher_manager = app_handle.state::<Arc<Mutex<FileWatcherManager>>>();
     let path_buf = PathBuf::from(&path);
-    
+
     let result = {
         let manager = watcher_manager.lock().unwrap_or_else(|e| e.into_inner());
         manager.stop_watching(&path_buf)
     };
-    
+
     result?;
     Ok(format!("Stopped watching: {}", path))
 }
@@ -264,7 +284,7 @@ pub async fn stop_watching_folder(
 #[tauri::command]
 pub async fn get_watched_folders(app_handle: AppHandle) -> Result<Vec<String>, String> {
     let watcher_manager = app_handle.state::<Arc<Mutex<FileWatcherManager>>>();
-    
+
     let paths = {
         let manager = watcher_manager.lock().unwrap_or_else(|e| e.into_inner());
         manager
@@ -273,6 +293,6 @@ pub async fn get_watched_folders(app_handle: AppHandle) -> Result<Vec<String>, S
             .map(|p| p.to_string_lossy().to_string())
             .collect()
     };
-    
+
     Ok(paths)
 }

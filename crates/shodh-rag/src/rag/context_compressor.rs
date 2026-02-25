@@ -61,10 +61,7 @@ pub fn compress_chunk(chunk: &str, query: &str, max_sentences: usize) -> String 
     selected_indices.sort();
 
     // Reconstruct compressed text
-    let compressed: Vec<&str> = selected_indices
-        .iter()
-        .map(|&idx| sentences[idx])
-        .collect();
+    let compressed: Vec<&str> = selected_indices.iter().map(|&idx| sentences[idx]).collect();
 
     compressed.join(" ")
 }

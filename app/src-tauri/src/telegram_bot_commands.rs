@@ -1,13 +1,13 @@
 //! Auto-start Telegram bot bridge
 
-use std::process::{Command, Child};
-use std::sync::Mutex;
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
-use crate::rag_commands::RagState;
 use crate::llm_commands::LLMState;
+use crate::rag_commands::RagState;
 use crate::space_manager::SpaceManager;
 use crate::telegram_http_server;
 
@@ -26,7 +26,8 @@ fn ensure_http_server(app: &AppHandle, server_started: &Arc<AtomicBool>) {
     let rag_state = app.state::<RagState>();
     let llm_state = app.state::<LLMState>();
 
-    let app_data_dir = app.path()
+    let app_data_dir = app
+        .path()
         .app_data_dir()
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
 
@@ -56,7 +57,9 @@ fn ensure_http_server(app: &AppHandle, server_started: &Arc<AtomicBool>) {
 
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = telegram_http_server::start_server(rag_clone, llm_clone, Some(app_handle)).await {
+        if let Err(e) =
+            telegram_http_server::start_server(rag_clone, llm_clone, Some(app_handle)).await
+        {
             tracing::error!("Failed to start Telegram HTTP server: {}", e);
         }
     });
@@ -97,9 +100,15 @@ pub async fn start_telegram_bot(
 
     // Get the bridge directory - try multiple possible locations
     let possible_dirs = vec![
-        std::env::current_dir().ok().map(|d| d.join("telegram-bridge")),
-        std::env::current_dir().ok().map(|d| d.join("..").join("telegram-bridge")),
-        std::env::current_dir().ok().map(|d| d.join("..").join("..").join("telegram-bridge")),
+        std::env::current_dir()
+            .ok()
+            .map(|d| d.join("telegram-bridge")),
+        std::env::current_dir()
+            .ok()
+            .map(|d| d.join("..").join("telegram-bridge")),
+        std::env::current_dir()
+            .ok()
+            .map(|d| d.join("..").join("..").join("telegram-bridge")),
         Some(std::path::PathBuf::from("./telegram-bridge")),
         Some(std::path::PathBuf::from("../telegram-bridge")),
         Some(std::path::PathBuf::from("../../telegram-bridge")),
@@ -111,7 +120,10 @@ pub async fn start_telegram_bot(
         .find(|dir| dir.exists())
         .ok_or_else(|| {
             let current = std::env::current_dir().unwrap_or_default();
-            format!("telegram-bridge directory not found. Current dir: {:?}", current)
+            format!(
+                "telegram-bridge directory not found. Current dir: {:?}",
+                current
+            )
         })?;
 
     tracing::info!("Using bridge directory: {:?}", bridge_dir);
@@ -185,9 +197,7 @@ pub async fn start_telegram_bot(
 }
 
 #[tauri::command]
-pub async fn stop_telegram_bot(
-    state: State<'_, TelegramBotState>,
-) -> Result<(), String> {
+pub async fn stop_telegram_bot(state: State<'_, TelegramBotState>) -> Result<(), String> {
     tracing::info!("Stopping Telegram bot...");
 
     let child = {
@@ -200,7 +210,9 @@ pub async fn stop_telegram_bot(
         // Wait for process to exit without blocking the async runtime
         tokio::task::spawn_blocking(move || {
             let _ = child.wait();
-        }).await.ok();
+        })
+        .await
+        .ok();
         tracing::info!("Telegram bot stopped");
     } else {
         tracing::info!("No Telegram bot process was running");
@@ -217,9 +229,7 @@ pub async fn stop_telegram_bot(
 }
 
 #[tauri::command]
-pub async fn check_telegram_bot_status(
-    state: State<'_, TelegramBotState>,
-) -> Result<bool, String> {
+pub async fn check_telegram_bot_status(state: State<'_, TelegramBotState>) -> Result<bool, String> {
     let mut process_guard = state.process.lock().unwrap_or_else(|e| e.into_inner());
 
     if let Some(ref mut child) = *process_guard {

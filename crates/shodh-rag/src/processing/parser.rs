@@ -64,8 +64,15 @@ impl DocumentParser {
         };
 
         if !structured_sections.is_empty() {
-            let field_count = structured_sections.iter().filter(|s| matches!(s, DocumentSection::FormFields { .. })).count();
-            tracing::info!(sections = structured_sections.len(), form_field_groups = field_count, "PDF structured extraction complete");
+            let field_count = structured_sections
+                .iter()
+                .filter(|s| matches!(s, DocumentSection::FormFields { .. }))
+                .count();
+            tracing::info!(
+                sections = structured_sections.len(),
+                form_field_groups = field_count,
+                "PDF structured extraction complete"
+            );
         }
 
         Ok(ParsedDocument {
@@ -253,7 +260,9 @@ impl DocumentParser {
 
         // If lopdf produced no page text but we have fallback content,
         // add it as a single text section
-        let has_text_sections = sections.iter().any(|s| matches!(s, DocumentSection::Text { .. }));
+        let has_text_sections = sections
+            .iter()
+            .any(|s| matches!(s, DocumentSection::Text { .. }));
         if !has_text_sections && !fallback_content.trim().is_empty() {
             sections.push(DocumentSection::Text {
                 content: fallback_content.to_string(),
@@ -317,7 +326,10 @@ impl DocumentParser {
 
         let sheet_names: Vec<String> = workbook.sheet_names().to_vec();
         if sheet_names.is_empty() {
-            return Err(anyhow::anyhow!("Spreadsheet has no sheets: {}", path.display()));
+            return Err(anyhow::anyhow!(
+                "Spreadsheet has no sheets: {}",
+                path.display()
+            ));
         }
 
         let mut all_text = String::new();
@@ -549,7 +561,10 @@ fn cell_to_string(cell: &Data) -> String {
             if f.fract() == 0.0 && f.abs() < i64::MAX as f64 {
                 (*f as i64).to_string()
             } else {
-                format!("{:.4}", f).trim_end_matches('0').trim_end_matches('.').to_string()
+                format!("{:.4}", f)
+                    .trim_end_matches('0')
+                    .trim_end_matches('.')
+                    .to_string()
             }
         }
         Data::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),

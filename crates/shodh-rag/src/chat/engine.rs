@@ -23,9 +23,9 @@ use crate::rag_engine::RAGEngine;
 
 use super::{
     build_corpus_stats, estimate_tokens, extract_artifacts, force_bullet_format,
-    validate_citations, AssistantResponse, ChatContext, Citation,
-    ConversationMessage, EventEmitter, Intent, ResponseMetadata, SearchResult, UserMessage,
-    CODE_GENERATION_PROMPT, GENERAL_CHAT_PROMPT, RAG_SYSTEM_PROMPT,
+    validate_citations, AssistantResponse, ChatContext, Citation, ConversationMessage,
+    EventEmitter, Intent, ResponseMetadata, SearchResult, UserMessage, CODE_GENERATION_PROMPT,
+    GENERAL_CHAT_PROMPT, RAG_SYSTEM_PROMPT,
 };
 use crate::rag::structured_output::STRUCTURED_OUTPUT_INSTRUCTIONS;
 
@@ -126,8 +126,14 @@ impl ChatEngine {
         // 3. Route to handler
         let mut response = match intent {
             Intent::Search => {
-                self.handle_search(&message, &context, &relevant_memories, emitter, router_output)
-                    .await?
+                self.handle_search(
+                    &message,
+                    &context,
+                    &relevant_memories,
+                    emitter,
+                    router_output,
+                )
+                .await?
             }
             Intent::CodeGeneration => self.handle_code_generation(&message, &context).await?,
             Intent::AgentChat => self.handle_agent_chat(&message, &context, emitter).await?,
@@ -135,9 +141,7 @@ impl ChatEngine {
                 self.handle_agent_creation(&message, &context, emitter)
                     .await?
             }
-            Intent::ToolAction => {
-                self.handle_tool_action(&message, &context, emitter).await?
-            }
+            Intent::ToolAction => self.handle_tool_action(&message, &context, emitter).await?,
             Intent::General => self.handle_general_chat(&message, &context).await?,
         };
 
@@ -246,7 +250,9 @@ impl ChatEngine {
 
         tracing::debug!(
             "Fallback QueryAnalyzer: intent={:?}, should_retrieve={}, confidence={:.2}",
-            analysis.intent, analysis.decision.should_retrieve, analysis.decision.confidence
+            analysis.intent,
+            analysis.decision.should_retrieve,
+            analysis.decision.confidence
         );
 
         Ok((
@@ -258,27 +264,59 @@ impl ChatEngine {
     fn is_agent_creation(query_lower: &str) -> bool {
         // Exclude "run" / "execute" / "use" requests — those are agent execution, not creation
         let execution_patterns = [
-            "run it", "run the agent", "run agent", "execute", "use the agent",
-            "use it", "use agent", "start the agent", "start agent",
+            "run it",
+            "run the agent",
+            "run agent",
+            "execute",
+            "use the agent",
+            "use it",
+            "use agent",
+            "start the agent",
+            "start agent",
         ];
         if execution_patterns.iter().any(|p| query_lower.contains(p)) {
             return false;
         }
 
         let creation_patterns = [
-            "create an agent", "create a agent", "create agent",
-            "make an agent", "make a agent", "make agent",
-            "build an agent", "build a agent", "build agent",
-            "i need an agent", "i need a agent",
-            "generate an agent", "generate a agent", "generate agent",
+            "create an agent",
+            "create a agent",
+            "create agent",
+            "make an agent",
+            "make a agent",
+            "make agent",
+            "build an agent",
+            "build a agent",
+            "build agent",
+            "i need an agent",
+            "i need a agent",
+            "generate an agent",
+            "generate a agent",
+            "generate agent",
             "new agent",
-            "create a team", "create a crew", "build a team", "build a crew",
-            "make a team", "make a crew", "assemble a team", "assemble a crew",
+            "create a team",
+            "create a crew",
+            "build a team",
+            "build a crew",
+            "make a team",
+            "make a crew",
+            "assemble a team",
+            "assemble a crew",
         ];
         let purpose_keywords = [
-            "for analyzing", "for reviewing", "for summarizing", "for coding",
-            "for research", "for legal", "for medical", "for financial",
-            "that helps", "that specializes", "specialized in", "to help", "to handle",
+            "for analyzing",
+            "for reviewing",
+            "for summarizing",
+            "for coding",
+            "for research",
+            "for legal",
+            "for medical",
+            "for financial",
+            "that helps",
+            "that specializes",
+            "specialized in",
+            "to help",
+            "to handle",
         ];
 
         let has_creation = creation_patterns.iter().any(|p| query_lower.contains(p));
@@ -290,15 +328,41 @@ impl ChatEngine {
     /// calendar events, file operations, etc.)
     fn is_tool_action(query_lower: &str) -> bool {
         let action_patterns = [
-            "create a task", "create task", "add a task", "add task",
-            "new task", "make a task", "add to my todo", "add to todo",
-            "remind me", "set a reminder", "set reminder", "create a reminder",
-            "schedule a meeting", "schedule meeting", "create an event", "create event",
-            "add an event", "add event", "new event", "delete task", "remove task",
-            "delete event", "remove event", "mark as done", "mark as complete",
-            "complete the task", "update task", "update the task", "change the task",
-            "add a subtask", "add subtask", "list my tasks", "show my tasks",
-            "what are my tasks", "what's on my todo",
+            "create a task",
+            "create task",
+            "add a task",
+            "add task",
+            "new task",
+            "make a task",
+            "add to my todo",
+            "add to todo",
+            "remind me",
+            "set a reminder",
+            "set reminder",
+            "create a reminder",
+            "schedule a meeting",
+            "schedule meeting",
+            "create an event",
+            "create event",
+            "add an event",
+            "add event",
+            "new event",
+            "delete task",
+            "remove task",
+            "delete event",
+            "remove event",
+            "mark as done",
+            "mark as complete",
+            "complete the task",
+            "update task",
+            "update the task",
+            "change the task",
+            "add a subtask",
+            "add subtask",
+            "list my tasks",
+            "show my tasks",
+            "what are my tasks",
+            "what's on my todo",
         ];
         action_patterns.iter().any(|p| query_lower.contains(p))
     }
@@ -307,16 +371,42 @@ impl ChatEngine {
     /// or other creative content that the LLM should produce — NOT search for.
     fn is_content_generation(query_lower: &str) -> bool {
         let generation_verbs = [
-            "show", "draw", "create", "make", "generate", "build",
-            "design", "sketch", "illustrate", "render", "produce",
+            "show",
+            "draw",
+            "create",
+            "make",
+            "generate",
+            "build",
+            "design",
+            "sketch",
+            "illustrate",
+            "render",
+            "produce",
         ];
         let content_nouns = [
-            "flowchart", "flow chart", "diagram", "visualization",
-            "architecture diagram", "sequence diagram", "class diagram",
-            "er diagram", "entity relationship", "mind map", "mindmap",
-            "org chart", "organization chart", "pie chart", "bar chart",
-            "gantt chart", "timeline", "infographic", "wireframe",
-            "mermaid", "graph", "tree diagram", "state diagram",
+            "flowchart",
+            "flow chart",
+            "diagram",
+            "visualization",
+            "architecture diagram",
+            "sequence diagram",
+            "class diagram",
+            "er diagram",
+            "entity relationship",
+            "mind map",
+            "mindmap",
+            "org chart",
+            "organization chart",
+            "pie chart",
+            "bar chart",
+            "gantt chart",
+            "timeline",
+            "infographic",
+            "wireframe",
+            "mermaid",
+            "graph",
+            "tree diagram",
+            "state diagram",
         ];
 
         // "show me a flowchart" / "draw a diagram" / "create a visualization"
@@ -332,9 +422,22 @@ impl ChatEngine {
     fn is_code_generation(query_lower: &str) -> bool {
         let gen = ["generate", "create", "write", "implement", "build"];
         let code = [
-            "code", "function", "class", "method", "api", "endpoint",
-            "component", "module", "script", "program", "algorithm",
-            "struct", "interface", "trait", "type", "enum",
+            "code",
+            "function",
+            "class",
+            "method",
+            "api",
+            "endpoint",
+            "component",
+            "module",
+            "script",
+            "program",
+            "algorithm",
+            "struct",
+            "interface",
+            "trait",
+            "type",
+            "enum",
         ];
         gen.iter().any(|k| query_lower.contains(k)) && code.iter().any(|k| query_lower.contains(k))
     }
@@ -444,11 +547,8 @@ impl ChatEngine {
                 let llm_guard = llm_arc.read().await;
                 if let Some(ref llm_manager) = *llm_guard {
                     let rerank_start = std::time::Instant::now();
-                    results = crate::reranking::llm_rerank(
-                        llm_manager,
-                        &message.content,
-                        results,
-                    ).await;
+                    results =
+                        crate::reranking::llm_rerank(llm_manager, &message.content, results).await;
                     let elapsed = rerank_start.elapsed().as_millis() as u64;
                     rerank_latency_ms = Some(elapsed);
                     tracing::info!(
@@ -531,7 +631,10 @@ impl ChatEngine {
             });
         }
 
-        let best_score = search_results.iter().map(|r| r.score).fold(0.0f32, f32::max);
+        let best_score = search_results
+            .iter()
+            .map(|r| r.score)
+            .fold(0.0f32, f32::max);
         let low_confidence = best_score < 0.2;
 
         // === Context Curation Pipeline ===
@@ -663,7 +766,9 @@ impl ChatEngine {
                     match tokio::time::timeout(
                         generation_timeout,
                         llm_manager.generate_stream(&prompt),
-                    ).await {
+                    )
+                    .await
+                    {
                         Ok(Ok(mut token_stream)) => {
                             let mut accumulated = String::new();
                             while let Some(token) = token_stream.next().await {
@@ -693,10 +798,9 @@ impl ChatEngine {
                         }
                     }
                 } else {
-                    match tokio::time::timeout(
-                        generation_timeout,
-                        llm_manager.generate(&prompt),
-                    ).await {
+                    match tokio::time::timeout(generation_timeout, llm_manager.generate(&prompt))
+                        .await
+                    {
                         Ok(result) => result,
                         Err(_) => {
                             tracing::warn!("LLM generation timed out after 90s");
@@ -741,7 +845,10 @@ impl ChatEngine {
         Ok(AssistantResponse {
             content,
             artifacts: Vec::new(),
-            citations: search_results.iter().filter_map(|r| r.citation.clone()).collect(),
+            citations: search_results
+                .iter()
+                .filter_map(|r| r.citation.clone())
+                .collect(),
             suggestions: vec![
                 "Tell me more".to_string(),
                 "Show related information".to_string(),
@@ -780,7 +887,9 @@ impl ChatEngine {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("LLM not initialized"))?;
 
-        let code_instructions = context.custom_system_prompt.as_ref()
+        let code_instructions = context
+            .custom_system_prompt
+            .as_ref()
             .map(|custom| format!("{}\n\n{}", custom, CODE_GENERATION_PROMPT))
             .unwrap_or_else(|| CODE_GENERATION_PROMPT.to_string());
         let prompt = format!(
@@ -918,8 +1027,16 @@ impl ChatEngine {
 
         // Check if user wants a crew/team rather than a single agent
         let content_lower = message.content.to_lowercase();
-        let crew_keywords = ["crew", "team of agents", "multiple agents", "group of agents",
-            "assemble a team", "build a team", "create a team", "make a team"];
+        let crew_keywords = [
+            "crew",
+            "team of agents",
+            "multiple agents",
+            "group of agents",
+            "assemble a team",
+            "build a team",
+            "create a team",
+            "make a team",
+        ];
         if crew_keywords.iter().any(|kw| content_lower.contains(kw)) {
             return self.handle_crew_creation(message, _context, emitter).await;
         }
@@ -935,7 +1052,11 @@ impl ChatEngine {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("LLM not initialized"))?;
 
-        emit("analyzing", "Analyzing request and generating agent definition...", 30);
+        emit(
+            "analyzing",
+            "Analyzing request and generating agent definition...",
+            30,
+        );
 
         let agent_gen_prompt = format!(
             r#"You are an AI agent designer. Create a detailed agent definition based on the user's request.
@@ -1044,23 +1165,46 @@ Return ONLY the JSON object, no markdown code blocks."#,
 
         // Auto-execute the agent if the user's request implies they want a result
         // e.g. "create an agent to summarize this space" -> create + run
-        let task_keywords = ["summarize", "summary", "analyze", "review", "extract",
-            "compare", "find", "search", "list", "describe", "explain", "give me",
-            "tell me", "what", "how", "run"];
+        let task_keywords = [
+            "summarize",
+            "summary",
+            "analyze",
+            "review",
+            "extract",
+            "compare",
+            "find",
+            "search",
+            "list",
+            "describe",
+            "explain",
+            "give me",
+            "tell me",
+            "what",
+            "how",
+            "run",
+        ];
         let content_lower = message.content.to_lowercase();
         let should_auto_execute = task_keywords.iter().any(|kw| content_lower.contains(kw));
 
         if should_auto_execute {
-            emit("executing", &format!("Running {} on your data...", agent_def.name), 85);
+            emit(
+                "executing",
+                &format!("Running {} on your data...", agent_def.name),
+                85,
+            );
 
             // Build context for agent execution
             let agent_context = AgentContext {
                 query: Some(message.content.clone()),
                 user_info: None,
                 space_id: _context.space_id.clone(),
-                session_id: _context.conversation_id.clone()
+                session_id: _context
+                    .conversation_id
+                    .clone()
                     .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-                conversation_history: _context.conversation_history.clone()
+                conversation_history: _context
+                    .conversation_history
+                    .clone()
                     .unwrap_or_default()
                     .iter()
                     .map(|msg| ConversationTurn {
@@ -1074,7 +1218,10 @@ Return ONLY the JSON object, no markdown code blocks."#,
                 metadata: HashMap::new(),
             };
 
-            match agent_system.execute_agent(&agent_def.id, agent_context).await {
+            match agent_system
+                .execute_agent(&agent_def.id, agent_context)
+                .await
+            {
                 Ok(result) => {
                     emit("complete", "Agent execution complete!", 100);
 
@@ -1108,7 +1255,11 @@ Return ONLY the JSON object, no markdown code blocks."#,
             }
         }
 
-        emit("complete", &format!("Agent '{}' created successfully!", agent_def.name), 100);
+        emit(
+            "complete",
+            &format!("Agent '{}' created successfully!", agent_def.name),
+            100,
+        );
 
         let response_content = format!(
             "**Agent Created Successfully!**\n\n\
@@ -1169,20 +1320,31 @@ Return ONLY the JSON object, no markdown code blocks."#,
 
         // Immediately stream a visible token so the user doesn't stare at "Thinking..."
         if let Some(em) = emitter {
-            let initial = "**Designing crew...** Analyzing your request and creating specialized agents.\n\n";
-            em.emit("chat_token", serde_json::json!({
-                "token": initial,
-                "accumulated": initial,
-            }));
+            let initial =
+                "**Designing crew...** Analyzing your request and creating specialized agents.\n\n";
+            em.emit(
+                "chat_token",
+                serde_json::json!({
+                    "token": initial,
+                    "accumulated": initial,
+                }),
+            );
         }
 
-        let llm_guard_opt = self.llm_manager.as_ref()
+        let llm_guard_opt = self
+            .llm_manager
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("LLM not configured"))?;
         let llm_guard = llm_guard_opt.read().await;
-        let llm_manager = llm_guard.as_ref()
+        let llm_manager = llm_guard
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("LLM not initialized"))?;
 
-        emit("analyzing", "AI is designing crew roles and workflow...", 30);
+        emit(
+            "analyzing",
+            "AI is designing crew roles and workflow...",
+            30,
+        );
 
         // Ask LLM to design a crew
         let crew_gen_prompt = format!(
@@ -1235,17 +1397,21 @@ RULES:
                         "accumulated": "**Designing crew...** Analyzing your request and creating specialized agents.\n\nModel warming up, retrying...\n\n",
                     }));
                 }
-                llm_manager.generate(&crew_gen_prompt).await
-                    .map_err(|e2| anyhow::anyhow!("Crew design generation failed after retry: {}", e2))?
+                llm_manager.generate(&crew_gen_prompt).await.map_err(|e2| {
+                    anyhow::anyhow!("Crew design generation failed after retry: {}", e2)
+                })?
             }
             Err(e) => return Err(anyhow::anyhow!("Crew design generation failed: {}", e)),
         };
 
         emit("parsing", "Parsing crew definition...", 50);
 
-        let json_str = llm_response.trim()
-            .trim_start_matches("```json").trim_start_matches("```")
-            .trim_end_matches("```").trim();
+        let json_str = llm_response
+            .trim()
+            .trim_start_matches("```json")
+            .trim_start_matches("```")
+            .trim_end_matches("```")
+            .trim();
 
         let crew_json: serde_json::Value = serde_json::from_str(json_str)
             .map_err(|e| anyhow::anyhow!("Failed to parse crew JSON: {}", e))?;
@@ -1254,12 +1420,14 @@ RULES:
 
         // Get agent system
         let agent_system_guard = self.agent_system.read().await;
-        let agent_system_arc = agent_system_guard.as_ref()
+        let agent_system_arc = agent_system_guard
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Agent system not initialized"))?;
         let agent_system = agent_system_arc.write().await;
 
         // Create each agent and collect their IDs
-        let agents_json = crew_json["agents"].as_array()
+        let agents_json = crew_json["agents"]
+            .as_array()
             .ok_or_else(|| anyhow::anyhow!("No agents array in crew definition"))?;
 
         let mut crew_members = Vec::new();
@@ -1267,21 +1435,34 @@ RULES:
 
         for (idx, agent_json) in agents_json.iter().enumerate() {
             let agent_name = agent_json["name"].as_str().unwrap_or("Agent").to_string();
-            let agent_role = agent_json["role"].as_str().unwrap_or("specialist").to_string();
+            let agent_role = agent_json["role"]
+                .as_str()
+                .unwrap_or("specialist")
+                .to_string();
             let agent_goal = agent_json["goal"].as_str().unwrap_or("").to_string();
-            let agent_desc = agent_json["description"].as_str().unwrap_or(&agent_name).to_string();
-            let system_prompt = agent_json["system_prompt"].as_str().unwrap_or("You are a helpful AI assistant.").to_string();
+            let agent_desc = agent_json["description"]
+                .as_str()
+                .unwrap_or(&agent_name)
+                .to_string();
+            let system_prompt = agent_json["system_prompt"]
+                .as_str()
+                .unwrap_or("You are a helpful AI assistant.")
+                .to_string();
 
             let capabilities: Vec<crate::agent::AgentCapability> = agent_json["capabilities"]
                 .as_array()
-                .map(|arr| arr.iter().filter_map(|v| {
-                    match v.as_str()? {
-                        "RAGSearch" => Some(crate::agent::AgentCapability::RAGSearch),
-                        "CodeAnalysis" => Some(crate::agent::AgentCapability::CodeAnalysis),
-                        "DocumentGeneration" => Some(crate::agent::AgentCapability::DocumentGeneration),
-                        _ => None,
-                    }
-                }).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| match v.as_str()? {
+                            "RAGSearch" => Some(crate::agent::AgentCapability::RAGSearch),
+                            "CodeAnalysis" => Some(crate::agent::AgentCapability::CodeAnalysis),
+                            "DocumentGeneration" => {
+                                Some(crate::agent::AgentCapability::DocumentGeneration)
+                            }
+                            _ => None,
+                        })
+                        .collect()
+                })
                 .unwrap_or_else(|| vec![crate::agent::AgentCapability::RAGSearch]);
 
             let agent_def = AgentDefinition {
@@ -1304,7 +1485,9 @@ RULES:
                 metadata: HashMap::new(),
             };
 
-            let agent_id = agent_system.register_agent(agent_def).await
+            let agent_id = agent_system
+                .register_agent(agent_def)
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to register agent '{}': {}", agent_name, e))?;
 
             crew_members.push(crate::agent::CrewMember {
@@ -1324,8 +1507,13 @@ RULES:
         let process_str = crew_json["process"].as_str().unwrap_or("sequential");
 
         let process = if process_str == "hierarchical" {
-            let coord_id = crew_members.first().map(|m| m.agent_id.clone()).unwrap_or_default();
-            crate::agent::CrewProcess::Hierarchical { coordinator_id: coord_id }
+            let coord_id = crew_members
+                .first()
+                .map(|m| m.agent_id.clone())
+                .unwrap_or_default();
+            crate::agent::CrewProcess::Hierarchical {
+                coordinator_id: coord_id,
+            }
         } else {
             crate::agent::CrewProcess::Sequential
         };
@@ -1339,15 +1527,20 @@ RULES:
             config: crate::agent::CrewConfig::default(),
         };
 
-        let crew_id = agent_system.register_crew(crew_def).await
+        let crew_id = agent_system
+            .register_crew(crew_def)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to register crew: {}", e))?;
 
         emit("executing", &format!("Running crew '{}'...", crew_name), 85);
 
         // Stream the crew header so the user sees the team before agents execute
-        let agents_summary = created_agent_names.iter().enumerate()
+        let agents_summary = created_agent_names
+            .iter()
+            .enumerate()
             .map(|(i, name)| format!("{}. {}", i + 1, name))
-            .collect::<Vec<_>>().join("\n");
+            .collect::<Vec<_>>()
+            .join("\n");
 
         let header = format!(
             "**Crew '{}' — {} agents, sequential**\n\n**Team:**\n{}\n\n",
@@ -1356,17 +1549,29 @@ RULES:
             agents_summary,
         );
 
-        let initial_prefix = "**Designing crew...** Analyzing your request and creating specialized agents.\n\n";
+        let initial_prefix =
+            "**Designing crew...** Analyzing your request and creating specialized agents.\n\n";
         if let Some(em) = emitter {
             let accumulated = format!("{}{}", initial_prefix, header);
-            em.emit("chat_token", serde_json::json!({
-                "token": &header,
-                "accumulated": &accumulated,
-            }));
+            em.emit(
+                "chat_token",
+                serde_json::json!({
+                    "token": &header,
+                    "accumulated": &accumulated,
+                }),
+            );
         }
 
         // Auto-execute the crew — pass emitter so each agent streams progress
-        match agent_system.execute_crew(&crew_id, &message.content, context.space_id.as_deref(), emitter).await {
+        match agent_system
+            .execute_crew(
+                &crew_id,
+                &message.content,
+                context.space_id.as_deref(),
+                emitter,
+            )
+            .await
+        {
             Ok(result) => {
                 emit("complete", "Crew execution complete!", 100);
 
@@ -1374,21 +1579,29 @@ RULES:
                 let full_content = format!(
                     "{}{}\n\n*Completed in {}ms*",
                     header,
-                    result.agent_outputs.iter().enumerate().map(|(i, ao)| {
-                        format!(
-                            "---\n### Agent {}: {}\n*Role: {} | Goal: —*\n\n{}\n\n",
-                            i + 1,
-                            ao.agent_name,
-                            ao.role,
-                            ao.output,
-                        )
-                    }).collect::<String>(),
+                    result
+                        .agent_outputs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, ao)| {
+                            format!(
+                                "---\n### Agent {}: {}\n*Role: {} | Goal: —*\n\n{}\n\n",
+                                i + 1,
+                                ao.agent_name,
+                                ao.role,
+                                ao.output,
+                            )
+                        })
+                        .collect::<String>(),
                     result.execution_time_ms,
                 );
 
                 // Emit chat_complete so frontend finalizes the streamed message
                 if let Some(em) = emitter {
-                    em.emit("chat_complete", serde_json::json!({ "content": &full_content }));
+                    em.emit(
+                        "chat_complete",
+                        serde_json::json!({ "content": &full_content }),
+                    );
                 }
 
                 return Ok(AssistantResponse {
@@ -1416,9 +1629,12 @@ RULES:
 
         emit("complete", &format!("Crew '{}' created!", crew_name), 100);
 
-        let agents_summary = created_agent_names.iter().enumerate()
+        let agents_summary = created_agent_names
+            .iter()
+            .enumerate()
             .map(|(i, name)| format!("{}. {}", i + 1, name))
-            .collect::<Vec<_>>().join("\n");
+            .collect::<Vec<_>>()
+            .join("\n");
 
         Ok(AssistantResponse {
             content: format!(
@@ -1460,7 +1676,8 @@ RULES:
 
         // Build tool schemas from the registry
         let tool_descriptions = self.tool_registry.get_tool_descriptions();
-        let tool_schemas = crate::agent::tool_loop::tool_descriptions_to_schemas(&tool_descriptions);
+        let tool_schemas =
+            crate::agent::tool_loop::tool_descriptions_to_schemas(&tool_descriptions);
 
         // Build the system prompt with tool-calling instructions
         let now = chrono::Utc::now();
@@ -1481,7 +1698,14 @@ RULES:
         let mut messages = vec![crate::llm::ChatMessage::system(&system_prompt)];
 
         if let Some(history) = &context.conversation_history {
-            for msg in history.iter().rev().take(6).collect::<Vec<_>>().into_iter().rev() {
+            for msg in history
+                .iter()
+                .rev()
+                .take(6)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+            {
                 match msg.role.as_str() {
                     "user" => messages.push(crate::llm::ChatMessage::user(&msg.content)),
                     "assistant" => messages.push(crate::llm::ChatMessage::assistant(&msg.content)),
@@ -1555,8 +1779,9 @@ RULES:
         }
 
         let bridge = emitter.map(|em| EmitterBridge { inner: em });
-        let bridge_ref: Option<&dyn crate::agent::tool_loop::ToolLoopEmitter> =
-            bridge.as_ref().map(|b| b as &dyn crate::agent::tool_loop::ToolLoopEmitter);
+        let bridge_ref: Option<&dyn crate::agent::tool_loop::ToolLoopEmitter> = bridge
+            .as_ref()
+            .map(|b| b as &dyn crate::agent::tool_loop::ToolLoopEmitter);
 
         let start_time = std::time::Instant::now();
         let result = crate::agent::tool_loop::run_tool_loop(
@@ -1634,7 +1859,9 @@ RULES:
             .saturating_sub(estimate_tokens(&message.content) + 100);
         let history_text = Self::truncate_to_budget(&history_text, available_for_history);
 
-        let general_instructions = context.custom_system_prompt.as_ref()
+        let general_instructions = context
+            .custom_system_prompt
+            .as_ref()
             .map(|custom| format!("{}\n\n{}", custom, GENERAL_CHAT_PROMPT))
             .unwrap_or_else(|| GENERAL_CHAT_PROMPT.to_string());
         let prompt = format!(
@@ -1876,7 +2103,11 @@ RULES:
                 while i < words.len() {
                     let word = words[i].trim_matches(|c: char| !c.is_alphanumeric());
                     if word.len() > 1
-                        && word.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+                        && word
+                            .chars()
+                            .next()
+                            .map(|c| c.is_uppercase())
+                            .unwrap_or(false)
                         && !Self::is_common_sentence_starter(word)
                     {
                         // Try to capture multi-word names (e.g., "Anushree Sharma")
@@ -1885,7 +2116,11 @@ RULES:
                         while j < words.len() {
                             let next = words[j].trim_matches(|c: char| !c.is_alphanumeric());
                             if next.len() > 1
-                                && next.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+                                && next
+                                    .chars()
+                                    .next()
+                                    .map(|c| c.is_uppercase())
+                                    .unwrap_or(false)
                                 && !Self::is_common_sentence_starter(next)
                             {
                                 name_parts.push(next.to_string());
@@ -1916,7 +2151,9 @@ RULES:
                 let mut seen = std::collections::HashSet::new();
                 for msg in h.iter() {
                     for word in msg.content.split_whitespace() {
-                        let clean = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '/' && c != '\\');
+                        let clean = word.trim_matches(|c: char| {
+                            !c.is_alphanumeric() && c != '.' && c != '/' && c != '\\'
+                        });
                         if clean.contains('.')
                             && clean.len() > 4
                             && !clean.starts_with("http")
@@ -1955,15 +2192,14 @@ RULES:
         // (terms the system has already discussed are likely relevant)
         let concepts_mentioned: Vec<String> = history
             .map(|h| {
-                let mut concept_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+                let mut concept_counts: std::collections::HashMap<String, usize> =
+                    std::collections::HashMap::new();
                 for msg in h.iter().filter(|m| m.role == "assistant") {
                     for word in msg.content.split_whitespace() {
                         let clean = word
                             .trim_matches(|c: char| !c.is_alphanumeric())
                             .to_lowercase();
-                        if clean.len() > 4
-                            && !Self::is_stop_word(&clean)
-                        {
+                        if clean.len() > 4 && !Self::is_stop_word(&clean) {
                             *concept_counts.entry(clean).or_insert(0) += 1;
                         }
                     }
@@ -1987,32 +2223,163 @@ RULES:
     fn is_common_sentence_starter(word: &str) -> bool {
         matches!(
             word,
-            "The" | "This" | "That" | "These" | "Those" | "What" | "Where" | "When"
-            | "How" | "Why" | "Who" | "Which" | "Can" | "Could" | "Would" | "Should"
-            | "Will" | "Do" | "Does" | "Did" | "Is" | "Are" | "Was" | "Were" | "Have"
-            | "Has" | "Had" | "It" | "If" | "In" | "On" | "At" | "To" | "For" | "But"
-            | "And" | "Or" | "Not" | "Yes" | "No" | "Found" | "Based" | "According"
-            | "Here" | "There" | "Some" | "Any" | "All" | "Each" | "Every" | "My"
-            | "Your" | "His" | "Her" | "Its" | "Our" | "Their" | "From" | "With"
-            | "About" | "After" | "Before" | "Between" | "During" | "Since" | "Until"
-            | "Sure" | "Thanks" | "Thank" | "Please" | "Sorry" | "Let" | "Try"
-            | "Show" | "Tell" | "Give" | "Also" | "However" | "Moreover" | "Furthermore"
+            "The"
+                | "This"
+                | "That"
+                | "These"
+                | "Those"
+                | "What"
+                | "Where"
+                | "When"
+                | "How"
+                | "Why"
+                | "Who"
+                | "Which"
+                | "Can"
+                | "Could"
+                | "Would"
+                | "Should"
+                | "Will"
+                | "Do"
+                | "Does"
+                | "Did"
+                | "Is"
+                | "Are"
+                | "Was"
+                | "Were"
+                | "Have"
+                | "Has"
+                | "Had"
+                | "It"
+                | "If"
+                | "In"
+                | "On"
+                | "At"
+                | "To"
+                | "For"
+                | "But"
+                | "And"
+                | "Or"
+                | "Not"
+                | "Yes"
+                | "No"
+                | "Found"
+                | "Based"
+                | "According"
+                | "Here"
+                | "There"
+                | "Some"
+                | "Any"
+                | "All"
+                | "Each"
+                | "Every"
+                | "My"
+                | "Your"
+                | "His"
+                | "Her"
+                | "Its"
+                | "Our"
+                | "Their"
+                | "From"
+                | "With"
+                | "About"
+                | "After"
+                | "Before"
+                | "Between"
+                | "During"
+                | "Since"
+                | "Until"
+                | "Sure"
+                | "Thanks"
+                | "Thank"
+                | "Please"
+                | "Sorry"
+                | "Let"
+                | "Try"
+                | "Show"
+                | "Tell"
+                | "Give"
+                | "Also"
+                | "However"
+                | "Moreover"
+                | "Furthermore"
         )
     }
 
     fn is_stop_word(word: &str) -> bool {
         matches!(
             word,
-            "the" | "this" | "that" | "these" | "those" | "what" | "where"
-            | "when" | "how" | "why" | "who" | "which" | "have" | "has" | "had"
-            | "been" | "being" | "will" | "would" | "could" | "should" | "about"
-            | "with" | "from" | "into" | "through" | "during" | "before" | "after"
-            | "above" | "below" | "between" | "under" | "again" | "further" | "then"
-            | "once" | "here" | "there" | "some" | "other" | "more" | "most" | "very"
-            | "just" | "also" | "than" | "each" | "every" | "both" | "does" | "doing"
-            | "their" | "them" | "they" | "your" | "yours" | "information" | "based"
-            | "found" | "following" | "according" | "contains" | "including" | "provide"
-            | "provided" | "shows" | "shown" | "document" | "documents" | "context"
+            "the"
+                | "this"
+                | "that"
+                | "these"
+                | "those"
+                | "what"
+                | "where"
+                | "when"
+                | "how"
+                | "why"
+                | "who"
+                | "which"
+                | "have"
+                | "has"
+                | "had"
+                | "been"
+                | "being"
+                | "will"
+                | "would"
+                | "could"
+                | "should"
+                | "about"
+                | "with"
+                | "from"
+                | "into"
+                | "through"
+                | "during"
+                | "before"
+                | "after"
+                | "above"
+                | "below"
+                | "between"
+                | "under"
+                | "again"
+                | "further"
+                | "then"
+                | "once"
+                | "here"
+                | "there"
+                | "some"
+                | "other"
+                | "more"
+                | "most"
+                | "very"
+                | "just"
+                | "also"
+                | "than"
+                | "each"
+                | "every"
+                | "both"
+                | "does"
+                | "doing"
+                | "their"
+                | "them"
+                | "they"
+                | "your"
+                | "yours"
+                | "information"
+                | "based"
+                | "found"
+                | "following"
+                | "according"
+                | "contains"
+                | "including"
+                | "provide"
+                | "provided"
+                | "shows"
+                | "shown"
+                | "document"
+                | "documents"
+                | "context"
         )
     }
 
@@ -2138,7 +2505,12 @@ RULES:
             .map(|r| {
                 r.text
                     .split_whitespace()
-                    .map(|w| w.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect::<String>())
+                    .map(|w| {
+                        w.to_lowercase()
+                            .chars()
+                            .filter(|c| c.is_alphanumeric())
+                            .collect::<String>()
+                    })
                     .filter(|w| w.len() > 2)
                     .collect()
             })
@@ -2273,7 +2645,11 @@ RULES:
             .filter_map(|id| best_by_id.remove(&id))
             .collect();
 
-        merged.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        merged.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         merged.truncate(limit);
         merged
     }

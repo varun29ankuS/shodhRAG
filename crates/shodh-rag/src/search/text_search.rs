@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
-use tantivy::schema::{self, Schema, STORED, TEXT, Value as TantivyValue};
+use tantivy::schema::{self, Schema, Value as TantivyValue, STORED, TEXT};
 use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument};
 
 pub struct TextSearch {
@@ -66,10 +66,7 @@ impl TextSearch {
         Ok(())
     }
 
-    pub fn index_chunks_batch(
-        &self,
-        chunks: &[(String, String, String, String)],
-    ) -> Result<()> {
+    pub fn index_chunks_batch(&self, chunks: &[(String, String, String, String)]) -> Result<()> {
         let writer = self.writer.lock();
         for (id, text, title, source) in chunks {
             writer.add_document(doc!(
@@ -151,7 +148,8 @@ impl TextSearch {
     pub fn get_text_by_id(&self, id: &str) -> Result<Option<String>> {
         let searcher = self.reader.searcher();
         let term = tantivy::Term::from_field_text(self.id_field, id);
-        let term_query = tantivy::query::TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
+        let term_query =
+            tantivy::query::TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
         let top_docs = searcher.search(&term_query, &TopDocs::with_limit(1))?;
         if let Some((_score, addr)) = top_docs.first() {
             if let Ok(doc) = searcher.doc::<TantivyDocument>(*addr) {

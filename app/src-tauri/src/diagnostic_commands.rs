@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
-use tauri::State;
 use crate::rag_commands::RagState;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tauri::State;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,72 +40,80 @@ pub async fn get_index_diagnostics(
 
     // Get all documents (or sample)
     let max_docs = sample_count.unwrap_or(20);
-    let search_results = rag.list_documents(None, max_docs)
+    let search_results = rag
+        .list_documents(None, max_docs)
         .await
         .map_err(|e| format!("List error: {}", e))?;
 
-        let mut total_chunks = 0;
-        let mut documents_with_content = 0;
-        let mut empty_documents = 0;
-        let mut file_types: HashMap<String, usize> = HashMap::new();
-        let mut spaces: HashMap<String, usize> = HashMap::new();
-        let mut sample_documents = Vec::new();
+    let mut total_chunks = 0;
+    let mut documents_with_content = 0;
+    let mut empty_documents = 0;
+    let mut file_types: HashMap<String, usize> = HashMap::new();
+    let mut spaces: HashMap<String, usize> = HashMap::new();
+    let mut sample_documents = Vec::new();
 
-        for (idx, result) in search_results.iter().enumerate() {
-            // Check if document has content
-            let has_content = !result.snippet.trim().is_empty() && result.snippet != "...";
+    for (idx, result) in search_results.iter().enumerate() {
+        // Check if document has content
+        let has_content = !result.snippet.trim().is_empty() && result.snippet != "...";
 
-            if has_content {
-                documents_with_content += 1;
-            } else {
-                empty_documents += 1;
-            }
-
-            // Count file types
-            if let Some(file_type) = result.metadata.get("file_type") {
-                *file_types.entry(file_type.clone()).or_insert(0) += 1;
-            }
-
-            // Count spaces
-            if let Some(space_id) = result.metadata.get("space_id") {
-                *spaces.entry(space_id.clone()).or_insert(0) += 1;
-            }
-
-            // Get full text if available
-            let full_text = result.metadata.get("full_text")
-                .or_else(|| result.metadata.get("content"))
-                .cloned()
-                .unwrap_or_else(|| result.snippet.clone());
-
-            // Create diagnostic info
-            let diagnostic = DocumentDiagnostic {
-                id: format!("doc-{}", idx),
-                title: result.metadata.get("title")
-                    .or_else(|| result.metadata.get("filename"))
-                    .cloned()
-                    .unwrap_or_else(|| format!("Document {}", idx)),
-                snippet: if result.snippet.len() > 200 {
-                    format!("{}...", &result.snippet[..200])
-                } else {
-                    result.snippet.clone()
-                },
-                full_text_length: full_text.len(),
-                metadata: result.metadata.clone(),
-                chunk_count: 1, // Will be updated if we can get chunk info
-                indexing_status: if has_content { "OK" } else { "EMPTY" }.to_string(),
-            };
-
-            sample_documents.push(diagnostic);
-
-            // Limit sample size
-            if sample_documents.len() >= 10 {
-                break;
-            }
+        if has_content {
+            documents_with_content += 1;
+        } else {
+            empty_documents += 1;
         }
+
+        // Count file types
+        if let Some(file_type) = result.metadata.get("file_type") {
+            *file_types.entry(file_type.clone()).or_insert(0) += 1;
+        }
+
+        // Count spaces
+        if let Some(space_id) = result.metadata.get("space_id") {
+            *spaces.entry(space_id.clone()).or_insert(0) += 1;
+        }
+
+        // Get full text if available
+        let full_text = result
+            .metadata
+            .get("full_text")
+            .or_else(|| result.metadata.get("content"))
+            .cloned()
+            .unwrap_or_else(|| result.snippet.clone());
+
+        // Create diagnostic info
+        let diagnostic = DocumentDiagnostic {
+            id: format!("doc-{}", idx),
+            title: result
+                .metadata
+                .get("title")
+                .or_else(|| result.metadata.get("filename"))
+                .cloned()
+                .unwrap_or_else(|| format!("Document {}", idx)),
+            snippet: if result.snippet.len() > 200 {
+                format!("{}...", &result.snippet[..200])
+            } else {
+                result.snippet.clone()
+            },
+            full_text_length: full_text.len(),
+            metadata: result.metadata.clone(),
+            chunk_count: 1, // Will be updated if we can get chunk info
+            indexing_status: if has_content { "OK" } else { "EMPTY" }.to_string(),
+        };
+
+        sample_documents.push(diagnostic);
+
+        // Limit sample size
+        if sample_documents.len() >= 10 {
+            break;
+        }
+    }
 
     // Get total counts from statistics
     let stats = rag.get_statistics().await.unwrap_or_default();
-    let total_chunks_stat: usize = stats.get("total_chunks").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let total_chunks_stat: usize = stats
+        .get("total_chunks")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
 
     Ok(IndexDiagnostics {
         total_documents: search_results.len(),
@@ -132,29 +140,38 @@ pub async fn get_document_content(
 
     // Search for the specific document
     let query = title.clone().or(file_path.clone()).unwrap_or_default();
-    let results = rag.search_comprehensive(&query, 10, None)
+    let results = rag
+        .search_comprehensive(&query, 10, None)
         .await
         .map_err(|e| format!("Search error: {}", e))?;
 
-        // Find matching document
-        for result in results {
-            let matches = if let Some(ref t) = title {
-                result.metadata.get("title").map_or(false, |v| v.contains(t))
-            } else if let Some(ref p) = file_path {
-                result.metadata.get("file_path").map_or(false, |v| v.contains(p))
-            } else {
-                false
-            };
+    // Find matching document
+    for result in results {
+        let matches = if let Some(ref t) = title {
+            result
+                .metadata
+                .get("title")
+                .map_or(false, |v| v.contains(t))
+        } else if let Some(ref p) = file_path {
+            result
+                .metadata
+                .get("file_path")
+                .map_or(false, |v| v.contains(p))
+        } else {
+            false
+        };
 
-            if matches {
-                // Try to get full content from metadata or snippet
-                let content = result.metadata.get("full_text")
-                    .or_else(|| result.metadata.get("content"))
-                    .cloned()
-                    .unwrap_or_else(|| result.snippet.clone());
+        if matches {
+            // Try to get full content from metadata or snippet
+            let content = result
+                .metadata
+                .get("full_text")
+                .or_else(|| result.metadata.get("content"))
+                .cloned()
+                .unwrap_or_else(|| result.snippet.clone());
 
-                return Ok(format!(
-                    "Document: {}\n\
+            return Ok(format!(
+                "Document: {}\n\
                      File: {}\n\
                      Space: {}\n\
                      Score: {:.3}\n\
@@ -163,25 +180,36 @@ pub async fn get_document_content(
                      Content:\n{}\n\
                      ---\n\
                      Metadata: {:?}",
-                    result.metadata.get("title").unwrap_or(&"Unknown".to_string()),
-                    result.metadata.get("file_path").unwrap_or(&"Unknown".to_string()),
-                    result.metadata.get("space_id").unwrap_or(&"Unknown".to_string()),
-                    result.score,
-                    content.len(),
-                    if content.is_empty() { "[EMPTY CONTENT]" } else { &content },
-                    result.metadata
-                ));
-            }
+                result
+                    .metadata
+                    .get("title")
+                    .unwrap_or(&"Unknown".to_string()),
+                result
+                    .metadata
+                    .get("file_path")
+                    .unwrap_or(&"Unknown".to_string()),
+                result
+                    .metadata
+                    .get("space_id")
+                    .unwrap_or(&"Unknown".to_string()),
+                result.score,
+                content.len(),
+                if content.is_empty() {
+                    "[EMPTY CONTENT]"
+                } else {
+                    &content
+                },
+                result.metadata
+            ));
         }
+    }
 
     Err(format!("Document not found: {:?} {:?}", title, file_path))
 }
 
 /// Debug command to inspect RAG state
 #[tauri::command]
-pub async fn debug_rag_state(
-    state: State<'_, RagState>,
-) -> Result<String, String> {
+pub async fn debug_rag_state(state: State<'_, RagState>) -> Result<String, String> {
     tracing::debug!("Debugging RAG state...");
 
     let rag_guard = state.rag.read().await;
@@ -190,7 +218,10 @@ pub async fn debug_rag_state(
     let stats = rag.get_statistics().await.unwrap_or_default();
     let total_chunks = stats.get("total_chunks").cloned().unwrap_or_default();
     let fts_indexed = stats.get("fts_indexed").cloned().unwrap_or_default();
-    let dimension = stats.get("embedding_dimension").cloned().unwrap_or_default();
+    let dimension = stats
+        .get("embedding_dimension")
+        .cloned()
+        .unwrap_or_default();
     let data_dir = stats.get("data_dir").cloned().unwrap_or_default();
 
     Ok(format!(
@@ -201,9 +232,6 @@ pub async fn debug_rag_state(
          - Embedding Dimension: {}\n\
          - Data Dir: {}\n\
          - Search: Hybrid (LanceDB + Tantivy)",
-        total_chunks,
-        fts_indexed,
-        dimension,
-        data_dir
+        total_chunks, fts_indexed, dimension, data_dir
     ))
 }

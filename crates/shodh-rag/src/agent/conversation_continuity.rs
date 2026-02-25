@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::memory::{MemorySystem, Experience, ExperienceType, Query, RetrievalMode, Memory};
+use crate::memory::{Experience, ExperienceType, Memory, MemorySystem, Query, RetrievalMode};
 
 /// Manages conversation history and context
 pub struct ConversationManager {
@@ -79,9 +79,7 @@ impl ConversationManager {
     pub fn new() -> Result<Self> {
         // Create a new memory system if not provided
         let memory_config = crate::memory::MemoryConfig::default();
-        let memory_system = Arc::new(RwLock::new(
-            MemorySystem::new(memory_config)?
-        ));
+        let memory_system = Arc::new(RwLock::new(MemorySystem::new(memory_config)?));
 
         Ok(Self {
             memory_system,
@@ -259,7 +257,9 @@ impl ConversationManager {
 
         if let Some(last_snapshot) = stack.last() {
             // Retrieve from memory system
-            let conversation = self.retrieve_conversation(last_snapshot.conversation_id).await?;
+            let conversation = self
+                .retrieve_conversation(last_snapshot.conversation_id)
+                .await?;
             return Ok(conversation);
         }
 
@@ -286,21 +286,26 @@ impl ConversationManager {
         for memory_item in memories {
             // Extract conversation details from RichContext if available
             if let Some(rich_ctx) = &memory_item.experience.context {
-                let conversation_id = if let Some(conv_id_str) = &rich_ctx.conversation.conversation_id {
-                    Uuid::parse_str(conv_id_str).unwrap_or(memory_item.id.0)
-                } else {
-                    memory_item.id.0
-                };
+                let conversation_id =
+                    if let Some(conv_id_str) = &rich_ctx.conversation.conversation_id {
+                        Uuid::parse_str(conv_id_str).unwrap_or(memory_item.id.0)
+                    } else {
+                        memory_item.id.0
+                    };
 
-                let topic = rich_ctx.conversation.topic
+                let topic = rich_ctx
+                    .conversation
+                    .topic
                     .clone()
                     .unwrap_or_else(|| memory_item.experience.content.clone());
 
                 // Build summary from conversation context
                 let summary = if !rich_ctx.conversation.recent_messages.is_empty() {
-                    format!("Discussed: {}. Key entities: {}",
+                    format!(
+                        "Discussed: {}. Key entities: {}",
                         rich_ctx.conversation.recent_messages.join(", "),
-                        rich_ctx.conversation.mentioned_entities.join(", "))
+                        rich_ctx.conversation.mentioned_entities.join(", ")
+                    )
                 } else {
                     memory_item.experience.content.clone()
                 };
@@ -353,7 +358,9 @@ impl ConversationManager {
         for memory_item in recent_memories {
             if memory_item.experience.experience_type == ExperienceType::Conversation {
                 // Check for unresolved questions or tasks
-                if let Some(unresolved) = self.find_unresolved_items(&memory_item.experience.content) {
+                if let Some(unresolved) =
+                    self.find_unresolved_items(&memory_item.experience.content)
+                {
                     suggestions.push(format!("Continue discussing: {}", unresolved));
                 }
             }
@@ -362,10 +369,7 @@ impl ConversationManager {
         // Add context-based suggestions
         if let Some(ref conversation) = *self.current_conversation.read().await {
             if let Some(last_task) = conversation.context.tasks_created.last() {
-                suggestions.push(format!(
-                    "Follow up on task: {}",
-                    last_task
-                ));
+                suggestions.push(format!("Follow up on task: {}", last_task));
             }
 
             if !conversation.context.decisions_made.is_empty() {
@@ -390,7 +394,14 @@ impl ConversationManager {
         }
 
         // Extract concepts (simplified)
-        let concepts = ["memory", "assistant", "pattern", "storage", "index", "search"];
+        let concepts = [
+            "memory",
+            "assistant",
+            "pattern",
+            "storage",
+            "index",
+            "search",
+        ];
         for concept in concepts {
             if content.to_lowercase().contains(concept) {
                 if !context.concepts_mentioned.contains(&concept.to_string()) {
@@ -400,18 +411,21 @@ impl ConversationManager {
         }
 
         // Extract decisions (look for decision keywords)
-        if content.contains("let's") || content.contains("we should") || content.contains("decision:") {
+        if content.contains("let's")
+            || content.contains("we should")
+            || content.contains("decision:")
+        {
             // This would need more sophisticated NLP
         }
     }
 
     fn is_important_message(&self, content: &str) -> bool {
         // Heuristics for importance
-        content.len() > 100 ||
-        content.contains("important") ||
-        content.contains("decision") ||
-        content.contains("conclusion") ||
-        content.contains("summary")
+        content.len() > 100
+            || content.contains("important")
+            || content.contains("decision")
+            || content.contains("conclusion")
+            || content.contains("summary")
     }
 
     fn generate_summary(&self, conversation: &Conversation) -> String {
@@ -493,7 +507,7 @@ impl ConversationManager {
     fn reconstruct_context(
         &self,
         snapshot: &ConversationSnapshot,
-        memories: &[crate::memory::Memory]
+        memories: &[crate::memory::Memory],
     ) -> Result<ContinuationContext> {
         Ok(ContinuationContext {
             last_topic: snapshot.topic.clone(),

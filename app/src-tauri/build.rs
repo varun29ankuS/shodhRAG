@@ -15,13 +15,18 @@ fn copy_genai_dll() {
 
     // Navigate from OUT_DIR to the actual target/debug or target/release directory
     let target_dir = Path::new(&out_dir)
-        .parent().unwrap()
-        .parent().unwrap()
-        .parent().unwrap();
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
 
     let libs_dir = Path::new(&manifest_dir)
-        .parent().unwrap()
-        .parent().unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
         .join("libs");
 
     // Copy all required DLLs
@@ -41,7 +46,11 @@ fn copy_genai_dll() {
                 Err(e) => println!("cargo:warning=⚠ Failed to copy {}: {}", dll_name, e),
             }
         } else {
-            println!("cargo:warning=⚠ {} not found at: {}", dll_name, dll_source.display());
+            println!(
+                "cargo:warning=⚠ {} not found at: {}",
+                dll_name,
+                dll_source.display()
+            );
         }
 
         // Rerun if DLL changes

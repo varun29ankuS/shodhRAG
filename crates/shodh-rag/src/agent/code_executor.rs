@@ -9,12 +9,12 @@
 //! - Timeout enforcement via tokio
 //! - Deno's built-in permission model for TypeScript
 
-use anyhow::{Result, Context as AnyhowContext, anyhow};
+use anyhow::{anyhow, Context as AnyhowContext, Result};
 use serde::{Deserialize, Serialize};
-use std::process::Stdio;
-use std::time::{Duration, Instant};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::Stdio;
+use std::time::{Duration, Instant};
 use tokio::process::Command as AsyncCommand;
 
 /// Maximum output size (stdout + stderr) in bytes. Prevents OOM from infinite-output scripts.
@@ -22,15 +22,26 @@ const MAX_OUTPUT_BYTES: usize = 1_048_576; // 1 MB
 
 /// Environment variable name prefixes that are stripped from the child process.
 const SENSITIVE_ENV_PREFIXES: &[&str] = &[
-    "API_KEY", "API_SECRET", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL",
-    "AWS_", "AZURE_", "GCP_", "OPENAI_", "ANTHROPIC_", "GOOGLE_API",
-    "BOT_TOKEN", "ROSHERA_", "DATABASE_URL", "REDIS_URL",
+    "API_KEY",
+    "API_SECRET",
+    "SECRET",
+    "TOKEN",
+    "PASSWORD",
+    "CREDENTIAL",
+    "AWS_",
+    "AZURE_",
+    "GCP_",
+    "OPENAI_",
+    "ANTHROPIC_",
+    "GOOGLE_API",
+    "BOT_TOKEN",
+    "ROSHERA_",
+    "DATABASE_URL",
+    "REDIS_URL",
 ];
 
 /// Environment variable exact names that are stripped.
-const SENSITIVE_ENV_EXACT: &[&str] = &[
-    "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
-];
+const SENSITIVE_ENV_EXACT: &[&str] = &["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"];
 
 /// Programming language for code generation
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -149,16 +160,20 @@ impl CodeExecutor {
     }
 
     /// Execute code in specified language with mandatory safety validation and sandboxing.
-    pub async fn execute_code(&self, code: &str, language: CodeLanguage) -> Result<CodeExecutionResult> {
+    pub async fn execute_code(
+        &self,
+        code: &str,
+        language: CodeLanguage,
+    ) -> Result<CodeExecutionResult> {
         // Mandatory safety check — never bypass
         validate_code_safety(code, &language)?;
 
         let start_time = Instant::now();
 
         // Create an isolated temp directory for this execution
-        let sandbox_dir = std::env::temp_dir().join(format!("shodh_sandbox_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&sandbox_dir)
-            .context("Failed to create sandbox directory")?;
+        let sandbox_dir =
+            std::env::temp_dir().join(format!("shodh_sandbox_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&sandbox_dir).context("Failed to create sandbox directory")?;
 
         let result = self.execute_in_sandbox(code, &language, &sandbox_dir).await;
 
@@ -195,8 +210,7 @@ impl CodeExecutor {
         let (cleanup_path, command_name, args) = match language {
             CodeLanguage::Python => {
                 let path = sandbox_dir.join(format!("script_{}.py", script_id));
-                std::fs::write(&path, code)
-                    .context("Failed to write Python script")?;
+                std::fs::write(&path, code).context("Failed to write Python script")?;
 
                 let args = vec![
                     "-I".to_string(), // Isolated mode: no user site-packages, no PYTHON* env vars
@@ -209,14 +223,10 @@ impl CodeExecutor {
             }
             CodeLanguage::TypeScript => {
                 let path = sandbox_dir.join(format!("script_{}.ts", script_id));
-                std::fs::write(&path, code)
-                    .context("Failed to write TypeScript script")?;
+                std::fs::write(&path, code).context("Failed to write TypeScript script")?;
 
                 // Deno's permission model is the best sandbox we have
-                let mut args = vec![
-                    "run".to_string(),
-                    "--no-prompt".to_string(),
-                ];
+                let mut args = vec!["run".to_string(), "--no-prompt".to_string()];
 
                 if self.config.allow_network {
                     args.push("--allow-net".to_string());
@@ -233,8 +243,7 @@ impl CodeExecutor {
             }
             CodeLanguage::JavaScript => {
                 let path = sandbox_dir.join(format!("script_{}.js", script_id));
-                std::fs::write(&path, code)
-                    .context("Failed to write JavaScript script")?;
+                std::fs::write(&path, code).context("Failed to write JavaScript script")?;
 
                 let args = vec![path.to_string_lossy().to_string()];
 
@@ -244,7 +253,8 @@ impl CodeExecutor {
                 let project_dir = sandbox_dir.join(format!("rust_{}", script_id));
                 std::fs::create_dir_all(&project_dir)?;
 
-                let cargo_toml = "[package]\nname = \"agent_script\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+                let cargo_toml =
+                    "[package]\nname = \"agent_script\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
                 std::fs::write(project_dir.join("Cargo.toml"), cargo_toml)?;
 
                 let src_dir = project_dir.join("src");
@@ -262,7 +272,8 @@ impl CodeExecutor {
                 (None, "cargo".to_string(), args)
             }
             CodeLanguage::Java => {
-                let class_name = extract_java_class_name(code).unwrap_or_else(|| "Main".to_string());
+                let class_name =
+                    extract_java_class_name(code).unwrap_or_else(|| "Main".to_string());
                 let path = sandbox_dir.join(format!("{}.java", class_name));
                 std::fs::write(&path, code)?;
 
@@ -343,7 +354,9 @@ impl CodeExecutor {
         };
 
         // Execute with sandbox constraints
-        let result = self.execute_sandboxed(&command_name, &args, sandbox_dir).await?;
+        let result = self
+            .execute_sandboxed(&command_name, &args, sandbox_dir)
+            .await?;
 
         // Clean up individual script files (sandbox dir cleanup handles the rest)
         if let Some(path) = cleanup_path {
@@ -363,14 +376,14 @@ impl CodeExecutor {
         use tokio::time::timeout;
 
         let mut cmd = AsyncCommand::new(command);
-        cmd.args(args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
 
         // Set CWD to sandbox directory (isolates relative file operations)
-        let working_dir = self.config.working_dir.as_deref().unwrap_or_else(|| {
-            sandbox_dir.to_str().unwrap_or(".")
-        });
+        let working_dir = self
+            .config
+            .working_dir
+            .as_deref()
+            .unwrap_or_else(|| sandbox_dir.to_str().unwrap_or("."));
         cmd.current_dir(working_dir);
 
         // Sanitize environment: remove sensitive variables
@@ -477,7 +490,7 @@ impl CodeExecutor {
 
                 imports
             }
-            _ => String::from("// Tool bindings not available for this language\n")
+            _ => String::from("// Tool bindings not available for this language\n"),
         }
     }
 }
@@ -512,40 +525,75 @@ pub fn validate_code_safety(code: &str, language: &CodeLanguage) -> Result<()> {
 
     let dangerous_patterns: Vec<&str> = match language {
         CodeLanguage::Python => vec![
-            "import os", "from os", "import subprocess", "from subprocess",
-            "os.system", "os.popen", "os.exec",
-            "eval(", "exec(", "__import__", "compile(",
-            "import shutil", "from shutil",
-            "import socket", "from socket",
-            "import ctypes", "from ctypes",
-            "import signal", "from signal",
-            "rm -rf", "rmdir", "deltree",
+            "import os",
+            "from os",
+            "import subprocess",
+            "from subprocess",
+            "os.system",
+            "os.popen",
+            "os.exec",
+            "eval(",
+            "exec(",
+            "__import__",
+            "compile(",
+            "import shutil",
+            "from shutil",
+            "import socket",
+            "from socket",
+            "import ctypes",
+            "from ctypes",
+            "import signal",
+            "from signal",
+            "rm -rf",
+            "rmdir",
+            "deltree",
         ],
         CodeLanguage::Rust => vec![
-            "std::process::command", "unsafe", "std::fs::remove",
-            "std::ptr", "std::mem::transmute",
+            "std::process::command",
+            "unsafe",
+            "std::fs::remove",
+            "std::ptr",
+            "std::mem::transmute",
         ],
         CodeLanguage::Java => vec![
-            "runtime.getruntime", "processbuilder", "system.exit",
-            "files.delete", "file.delete", "runtime.exec",
-            "java.net.socket", "java.net.url",
+            "runtime.getruntime",
+            "processbuilder",
+            "system.exit",
+            "files.delete",
+            "file.delete",
+            "runtime.exec",
+            "java.net.socket",
+            "java.net.url",
         ],
         CodeLanguage::CSharp => vec![
-            "process.start", "file.delete", "directory.delete",
-            "unsafe", "system.net", "system.io.file",
+            "process.start",
+            "file.delete",
+            "directory.delete",
+            "unsafe",
+            "system.net",
+            "system.io.file",
         ],
         CodeLanguage::Go => vec![
-            "os/exec", "os.remove", "os.removeall", "syscall",
-            "net.dial", "net.listen",
+            "os/exec",
+            "os.remove",
+            "os.removeall",
+            "syscall",
+            "net.dial",
+            "net.listen",
         ],
         CodeLanguage::JavaScript | CodeLanguage::TypeScript => vec![
-            "child_process", "require('fs')", "require(\"fs\")",
-            "fs.unlink", "fs.rm", "fs.writeFile",
-            "eval(", "function(", "new function",
+            "child_process",
+            "require('fs')",
+            "require(\"fs\")",
+            "fs.unlink",
+            "fs.rm",
+            "fs.writeFile",
+            "eval(",
+            "function(",
+            "new function",
         ],
         _ => vec![
-            "system(", "exec(", "eval(", "rm ", "del ", "format ",
-            "popen(", "spawn(",
+            "system(", "exec(", "eval(", "rm ", "del ", "format ", "popen(", "spawn(",
         ],
     };
 
@@ -647,7 +695,8 @@ mod tests {
     #[tokio::test]
     async fn test_execute_python_safe_code() {
         let executor = CodeExecutor::default();
-        let code = "print('Hello from sandboxed execution!')\nresult = 2 + 2\nprint(f'2 + 2 = {result}')";
+        let code =
+            "print('Hello from sandboxed execution!')\nresult = 2 + 2\nprint(f'2 + 2 = {result}')";
 
         let result = executor.execute_python(code).await.unwrap();
 

@@ -73,7 +73,9 @@ pub struct ToolRegistry {
 impl ToolRegistry {
     /// Create a new tool registry with permission manager
     pub fn new() -> Self {
-        use super::filesystem_tools::{PermissionManager, ReadFileTool, WriteFileTool, ListDirectoryTool};
+        use super::filesystem_tools::{
+            ListDirectoryTool, PermissionManager, ReadFileTool, WriteFileTool,
+        };
         use std::sync::Arc as StdArc;
 
         let rag_engine_ref = new_shared_rag_engine();
@@ -89,7 +91,9 @@ impl ToolRegistry {
         let permission_manager = StdArc::new(PermissionManager::new());
 
         // Register built-in tools
-        registry.register(Arc::new(RAGSearchTool { rag_engine: rag_engine_ref }));
+        registry.register(Arc::new(RAGSearchTool {
+            rag_engine: rag_engine_ref,
+        }));
         registry.register(Arc::new(CodeAnalysisTool));
         registry.register(Arc::new(DocumentGenerationTool));
 
@@ -115,7 +119,10 @@ impl ToolRegistry {
     }
 
     /// Inject the RAG engine into the calendar store so mutations trigger semantic indexing.
-    pub async fn set_calendar_rag_engine(&self, engine: Arc<AsyncRwLock<crate::rag_engine::RAGEngine>>) {
+    pub async fn set_calendar_rag_engine(
+        &self,
+        engine: Arc<AsyncRwLock<crate::rag_engine::RAGEngine>>,
+    ) {
         self.calendar_store.write().await.set_rag_engine(engine);
     }
 
@@ -217,9 +224,7 @@ impl AgentTool for RAGSearchTool {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing query parameter"))?;
 
-        let top_k = input.parameters["top_k"]
-            .as_i64()
-            .unwrap_or(5) as usize;
+        let top_k = input.parameters["top_k"].as_i64().unwrap_or(5) as usize;
 
         // Use the live RAG engine to perform real document search
         let engine_guard = self.rag_engine.read().await;
@@ -264,7 +269,13 @@ impl AgentTool for RAGSearchTool {
                         let header = if heading.is_empty() {
                             format!("[{}] {} (score: {:.3})", i + 1, r.title, r.score)
                         } else {
-                            format!("[{}] {} > {} (score: {:.3})", i + 1, r.title, heading, r.score)
+                            format!(
+                                "[{}] {} > {} (score: {:.3})",
+                                i + 1,
+                                r.title,
+                                heading,
+                                r.score
+                            )
                         };
                         format!("{}\n{}\n", header, r.text)
                     })
@@ -406,7 +417,8 @@ impl AgentTool for CodeAnalysisTool {
         for (i, line) in lines.iter().enumerate() {
             let trimmed = line.trim();
             for (pattern, _) in &function_patterns {
-                if trimmed.starts_with(pattern) || trimmed.starts_with(&format!("pub {}", pattern)) {
+                if trimmed.starts_with(pattern) || trimmed.starts_with(&format!("pub {}", pattern))
+                {
                     // Extract just the signature (up to opening brace or end of line)
                     let sig = trimmed.split('{').next().unwrap_or(trimmed).trim();
                     functions.push(format!("L{}: {}", i + 1, sig));
@@ -419,11 +431,16 @@ impl AgentTool for CodeAnalysisTool {
         let mut types: Vec<String> = Vec::new();
         for (i, line) in lines.iter().enumerate() {
             let trimmed = line.trim();
-            if trimmed.starts_with("struct ") || trimmed.starts_with("pub struct ")
-                || trimmed.starts_with("enum ") || trimmed.starts_with("pub enum ")
-                || trimmed.starts_with("trait ") || trimmed.starts_with("pub trait ")
-                || trimmed.starts_with("class ") || trimmed.starts_with("interface ")
-                || trimmed.starts_with("type ") || trimmed.starts_with("pub type ")
+            if trimmed.starts_with("struct ")
+                || trimmed.starts_with("pub struct ")
+                || trimmed.starts_with("enum ")
+                || trimmed.starts_with("pub enum ")
+                || trimmed.starts_with("trait ")
+                || trimmed.starts_with("pub trait ")
+                || trimmed.starts_with("class ")
+                || trimmed.starts_with("interface ")
+                || trimmed.starts_with("type ")
+                || trimmed.starts_with("pub type ")
             {
                 let sig = trimmed.split('{').next().unwrap_or(trimmed).trim();
                 types.push(format!("L{}: {}", i + 1, sig));
@@ -431,18 +448,31 @@ impl AgentTool for CodeAnalysisTool {
         }
 
         // Import/use statements count
-        let imports = lines.iter().filter(|l| {
-            let t = l.trim();
-            t.starts_with("use ") || t.starts_with("import ") || t.starts_with("from ")
-                || t.starts_with("#include") || t.starts_with("require")
-        }).count();
+        let imports = lines
+            .iter()
+            .filter(|l| {
+                let t = l.trim();
+                t.starts_with("use ")
+                    || t.starts_with("import ")
+                    || t.starts_with("from ")
+                    || t.starts_with("#include")
+                    || t.starts_with("require")
+            })
+            .count();
 
         // Comment lines
-        let comment_lines = lines.iter().filter(|l| {
-            let t = l.trim();
-            t.starts_with("//") || t.starts_with("#") || t.starts_with("/*") || t.starts_with("*")
-                || t.starts_with("///") || t.starts_with("<!--")
-        }).count();
+        let comment_lines = lines
+            .iter()
+            .filter(|l| {
+                let t = l.trim();
+                t.starts_with("//")
+                    || t.starts_with("#")
+                    || t.starts_with("/*")
+                    || t.starts_with("*")
+                    || t.starts_with("///")
+                    || t.starts_with("<!--")
+            })
+            .count();
 
         let analysis_result = serde_json::json!({
             "file": file_path,
@@ -460,7 +490,8 @@ impl AgentTool for CodeAnalysisTool {
             "types": types,
         });
 
-        let summary = format!(
+        let summary =
+            format!(
             "Analyzed {} ({}): {} lines ({} code, {} blank, {} comments), {} functions, {} types",
             file_path, language, total_lines, code_lines, blank_lines, comment_lines,
             functions.len(), types.len()
@@ -532,9 +563,16 @@ impl AgentTool for DocumentGenerationTool {
         if !valid_formats.contains(&format) {
             return Ok(ToolResult {
                 success: false,
-                output: format!("Unsupported format: {}. Supported: {}", format, valid_formats.join(", ")),
+                output: format!(
+                    "Unsupported format: {}. Supported: {}",
+                    format,
+                    valid_formats.join(", ")
+                ),
                 data: serde_json::json!({ "error": "Invalid format" }),
-                error: Some(format!("Format must be one of: {}", valid_formats.join(", "))),
+                error: Some(format!(
+                    "Format must be one of: {}",
+                    valid_formats.join(", ")
+                )),
             });
         }
 
@@ -570,7 +608,12 @@ impl AgentTool for DocumentGenerationTool {
 
         Ok(ToolResult {
             success: true,
-            output: format!("Document saved: {} ({} bytes, {} format)", abs_path, file_content.len(), format),
+            output: format!(
+                "Document saved: {} ({} bytes, {} format)",
+                abs_path,
+                file_content.len(),
+                format
+            ),
             data: serde_json::json!({
                 "format": format,
                 "output_path": abs_path,
@@ -600,7 +643,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_rag_search_tool_without_engine() {
-        let tool = RAGSearchTool { rag_engine: new_shared_rag_engine() };
+        let tool = RAGSearchTool {
+            rag_engine: new_shared_rag_engine(),
+        };
         let input = ToolInput {
             tool_id: "rag_search".to_string(),
             parameters: serde_json::json!({

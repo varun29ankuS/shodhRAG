@@ -1,9 +1,9 @@
 //! Autonomous Agent - Task execution with retry logic and self-correction
 
-use anyhow::{Result, Context as AnyhowContext};
+use anyhow::{Context as AnyhowContext, Result};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use chrono::{DateTime, Utc};
 
 /// Task to be executed autonomously
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -280,7 +280,12 @@ impl AutonomousAgent {
                             total_steps,
                             execution_time_seconds: elapsed,
                             cost_usd: total_cost,
-                            error: Some(format!("Step {} failed after {} retries: {}", i + 1, max_retries, e)),
+                            error: Some(format!(
+                                "Step {} failed after {} retries: {}",
+                                i + 1,
+                                max_retries,
+                                e
+                            )),
                             artifacts,
                         });
                     }
@@ -307,7 +312,12 @@ impl AutonomousAgent {
         };
 
         self.task_history.push(result.clone());
-        tracing::info!(completed = steps_completed, total = plan.steps.len(), duration_seconds = elapsed, "Task completed");
+        tracing::info!(
+            completed = steps_completed,
+            total = plan.steps.len(),
+            duration_seconds = elapsed,
+            "Task completed"
+        );
 
         Ok(result)
     }
@@ -336,14 +346,19 @@ impl AutonomousAgent {
                         self.attempt_self_correction(step, &e.to_string()).await?;
 
                         // Wait before retry (exponential backoff)
-                        let delay = std::time::Duration::from_secs(2u64.pow(step.retry_count as u32));
+                        let delay =
+                            std::time::Duration::from_secs(2u64.pow(step.retry_count as u32));
                         tokio::time::sleep(delay).await;
                     }
                 }
             }
         }
 
-        anyhow::bail!("Step failed after {} retries: {}", step.max_retries, last_error.unwrap_or_default())
+        anyhow::bail!(
+            "Step failed after {} retries: {}",
+            step.max_retries,
+            last_error.unwrap_or_default()
+        )
     }
 
     /// Attempt to correct the step based on error
@@ -351,7 +366,9 @@ impl AutonomousAgent {
         // Simple correction strategies
         if error.contains("timeout") {
             // Increase timeout or simplify task
-            tracing::debug!("Self-correction: Detected timeout, will retry with adjusted parameters");
+            tracing::debug!(
+                "Self-correction: Detected timeout, will retry with adjusted parameters"
+            );
         } else if error.contains("permission") {
             // Check permissions or use alternative approach
             tracing::debug!("Self-correction: Permission issue detected");
@@ -381,21 +398,19 @@ impl AutonomousAgent {
     fn generate_plan_steps(&self, task: &Task) -> Result<Vec<PlanStep>> {
         // This is a simplified version
         // Real implementation would use LLM to analyze task and generate steps
-        Ok(vec![
-            PlanStep {
-                id: "step_1".to_string(),
-                description: format!("Analyze requirement: {}", task.description),
-                action: StepAction::RagSearch {
-                    query: task.description.clone(),
-                    filters: None,
-                },
-                expected_output: "Relevant context from knowledge base".to_string(),
-                dependencies: vec![],
-                retry_count: 0,
-                max_retries: 3,
-                status: StepStatus::Pending,
+        Ok(vec![PlanStep {
+            id: "step_1".to_string(),
+            description: format!("Analyze requirement: {}", task.description),
+            action: StepAction::RagSearch {
+                query: task.description.clone(),
+                filters: None,
             },
-        ])
+            expected_output: "Relevant context from knowledge base".to_string(),
+            dependencies: vec![],
+            retry_count: 0,
+            max_retries: 3,
+            status: StepStatus::Pending,
+        }])
     }
 
     /// Synthesize final output from artifacts

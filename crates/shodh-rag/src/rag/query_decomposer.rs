@@ -12,9 +12,8 @@ static CONJUNCTION_SPLIT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
         .expect("conjunction regex is valid")
 });
 
-static QUESTION_MARK_SPLIT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"\?\s+").expect("question mark split regex is valid")
-});
+static QUESTION_MARK_SPLIT_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\?\s+").expect("question mark split regex is valid"));
 
 static ENUMERATED_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?m)^\s*(?:\d+[.)]\s*|[-•]\s+)(.+)$").expect("enumerated regex is valid")
@@ -232,10 +231,8 @@ pub fn merge_results<T: HasIdAndScore>(mut result_sets: Vec<Vec<T>>, limit: usiz
     }
 
     // Simpler approach: flatten with interleaving
-    let mut iterators: Vec<std::vec::IntoIter<T>> = result_sets
-        .into_iter()
-        .map(|v| v.into_iter())
-        .collect();
+    let mut iterators: Vec<std::vec::IntoIter<T>> =
+        result_sets.into_iter().map(|v| v.into_iter()).collect();
 
     let mut round = 0;
     loop {
@@ -313,14 +310,17 @@ mod tests {
 
     #[test]
     fn test_comparative_decomposition() {
-        let result = decompose_query("compare the difference between savings account and fixed deposit");
+        let result =
+            decompose_query("compare the difference between savings account and fixed deposit");
         assert_eq!(result.strategy, DecompositionStrategy::Comparative);
         assert!(result.sub_queries.len() >= 2);
     }
 
     #[test]
     fn test_enumerated_decomposition() {
-        let result = decompose_query("1. What is the account number 2. What is the IFSC code 3. What is the balance");
+        let result = decompose_query(
+            "1. What is the account number 2. What is the IFSC code 3. What is the balance",
+        );
         assert_eq!(result.strategy, DecompositionStrategy::Enumerated);
         assert_eq!(result.sub_queries.len(), 3);
     }

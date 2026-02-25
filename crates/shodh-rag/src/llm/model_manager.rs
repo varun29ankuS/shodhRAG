@@ -1,18 +1,18 @@
 //! Model management - production-grade downloading, caching, and loading
 //! World-class implementation with proper streaming and error recovery
 
-use anyhow::{Result, anyhow};
-use std::path::{Path, PathBuf};
-use tokio::fs;
-use reqwest::Client;
-use indicatif::{ProgressBar, ProgressStyle};
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use tokio::io::AsyncWriteExt;
+use anyhow::{anyhow, Result};
 use bytes::Bytes;
+use indicatif::{ProgressBar, ProgressStyle};
+use reqwest::Client;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::fs;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::RwLock;
 
-use super::LocalModel;
 use super::model_config;
+use super::LocalModel;
 
 /// Model manager for handling model downloads and caching
 pub struct ModelManager {
@@ -25,9 +25,10 @@ pub struct ModelManager {
 impl ModelManager {
     pub fn new(cache_dir: PathBuf) -> Self {
         // Try to get HuggingFace token from environment
-        let hf_token = std::env::var("HUGGINGFACE_TOKEN").ok()
+        let hf_token = std::env::var("HUGGINGFACE_TOKEN")
+            .ok()
             .or_else(|| std::env::var("HF_TOKEN").ok());
-        
+
         // Create a robust HTTP client
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(3600)) // 1 hour for large files
@@ -36,7 +37,7 @@ impl ModelManager {
             .pool_max_idle_per_host(10)
             .build()
             .unwrap_or_default();
-        
+
         Self {
             cache_dir,
             download_progress: Arc::new(RwLock::new(DownloadProgress::default())),
@@ -44,59 +45,59 @@ impl ModelManager {
             client,
         }
     }
-    
+
     /// Check if model is cached
     pub async fn is_cached(&self, model: &LocalModel) -> bool {
         match model {
             LocalModel::Custom { .. } => {
                 // For custom models, always return true (user provides the path)
                 true
-            },
+            }
             _ => {
                 // For predefined models, return false to prompt user to browse
                 false
             }
         }
     }
-    
+
     /// Check if model is downloaded (synchronous version for use in Tauri commands)
     pub fn is_model_downloaded(&self, model: &LocalModel) -> bool {
         match model {
             LocalModel::Custom { .. } => {
                 // For custom models, always return true (user provides the path)
                 true
-            },
+            }
             _ => {
                 // For predefined models, return false to prompt user to browse
                 false
             }
         }
     }
-    
+
     /// Get model path
     pub fn get_model_path(&self, model: &LocalModel) -> PathBuf {
         self.cache_dir.join(model.model_id())
     }
-    
+
     /// Download model if not cached
     pub async fn ensure_model(&self, model: &LocalModel) -> Result<PathBuf> {
         let model_path = self.get_model_path(model);
-        
+
         if !self.is_cached(model).await {
             self.download_model(model).await?;
         }
-        
+
         Ok(model_path)
     }
-    
+
     /// Download model - production implementation with chunked streaming
     pub async fn download_model(&self, model: &LocalModel) -> Result<()> {
         let model_id = model.model_id();
         let model_path = self.get_model_path(model);
-        
+
         // Create model directory
         fs::create_dir_all(&model_path).await?;
-        
+
         // Update progress
         {
             let mut progress = self.download_progress.write().await;
@@ -107,7 +108,7 @@ impl ModelManager {
             progress.is_complete = false;
             progress.error = None;
         }
-        
+
         // Get the actual download URL based on model (ONNX versions)
         let (url, filename) = match model {
             LocalModel::Phi3Mini => (
@@ -143,9 +144,9 @@ impl ModelManager {
                 return Err(anyhow!("Custom model download not supported: {}", filename));
             }
         };
-        
+
         let file_path = model_path.join(filename);
-        
+
         // Check if file exists and is complete
         if let Ok(metadata) = fs::metadata(&file_path).await {
             let expected_min_size = (model.size_gb() * 1024.0 * 1024.0 * 1024.0 * 0.8) as u64;
@@ -162,7 +163,7 @@ impl ModelManager {
                 return Ok(());
             }
         }
-        
+
         // Perform the download with retries
         for attempt in 1..=3 {
             match self.download_with_resume(&url, &file_path, model).await {
@@ -181,7 +182,8 @@ impl ModelManager {
                         // Final attempt failed
                         {
                             let mut progress = self.download_progress.write().await;
-                            progress.error = Some(format!("Download failed after 3 attempts: {}", e));
+                            progress.error =
+                                Some(format!("Download failed after 3 attempts: {}", e));
                             progress.is_downloading = false;
                         }
                         return Err(e);
@@ -191,56 +193,62 @@ impl ModelManager {
                 }
             }
         }
-        
+
         Err(anyhow!("Download failed after all attempts"))
     }
-    
+
     /// Download with resume support and streaming
-    async fn download_with_resume(&self, url: &str, file_path: &Path, model: &LocalModel) -> Result<()> {
+    async fn download_with_resume(
+        &self,
+        url: &str,
+        file_path: &Path,
+        model: &LocalModel,
+    ) -> Result<()> {
         // Check if partial file exists
         let mut resume_from = 0u64;
         if let Ok(metadata) = fs::metadata(&file_path).await {
             resume_from = metadata.len();
             tracing::info!(resume_from = resume_from, "Resuming download");
         }
-        
+
         // Build request with resume header if needed
         let mut request = self.client.get(url);
-        
+
         // Add HuggingFace token if available
         if let Some(token) = &self.hf_token {
             request = request.bearer_auth(token);
         }
-        
+
         // Add range header for resume
         if resume_from > 0 {
             request = request.header("Range", format!("bytes={}-", resume_from));
         }
-        
+
         let response = request.send().await?;
-        
+
         // Check response status
         if !response.status().is_success() && response.status().as_u16() != 206 {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
             return Err(anyhow!("Download failed: {} - {}", status, error_text));
         }
-        
+
         let total_size = if resume_from > 0 {
             // If resuming, add the already downloaded size
             response.content_length().unwrap_or(0) + resume_from
         } else {
-            response.content_length()
+            response
+                .content_length()
                 .unwrap_or((model.size_gb() * 1024.0 * 1024.0 * 1024.0) as u64)
         };
-        
+
         // Update total size
         {
             let mut progress = self.download_progress.write().await;
             progress.total_size = total_size;
             progress.downloaded = resume_from;
         }
-        
+
         // Create progress bar
         let pb = ProgressBar::new(total_size);
         pb.set_style(
@@ -250,7 +258,7 @@ impl ModelManager {
                 .progress_chars("#>-"),
         );
         pb.set_position(resume_from);
-        
+
         // Open file for writing (append if resuming)
         let mut file = if resume_from > 0 {
             tokio::fs::OpenOptions::new()
@@ -261,38 +269,38 @@ impl ModelManager {
         } else {
             tokio::fs::File::create(&file_path).await?
         };
-        
+
         // Stream download with proper chunking
         let mut downloaded = resume_from;
-        
+
         // Get the response body as bytes
         let content = response.bytes().await?;
-        
+
         // Write all content at once
         file.write_all(&content).await?;
         downloaded += content.len() as u64;
-        
+
         // Update progress
         pb.set_position(downloaded);
-        
+
         // Update global progress
         {
             let mut progress = self.download_progress.write().await;
             progress.downloaded = downloaded;
-            
+
             // Calculate speed
             if pb.elapsed().as_secs() > 0 {
                 let speed = downloaded / pb.elapsed().as_secs();
                 progress.download_speed = Some(speed);
             }
         }
-        
+
         // Final flush
         file.flush().await?;
         file.sync_all().await?;
-        
+
         pb.finish_with_message("Download complete");
-        
+
         // Verify file size
         let final_metadata = fs::metadata(&file_path).await?;
         if final_metadata.len() < (model.size_gb() * 1024.0 * 1024.0 * 1024.0 * 0.8) as u64 {
@@ -302,15 +310,15 @@ impl ModelManager {
                 model.size_gb()
             ));
         }
-        
+
         Ok(())
     }
-    
+
     /// Get download progress
     pub async fn get_progress(&self) -> DownloadProgress {
         self.download_progress.read().await.clone()
     }
-    
+
     /// Delete cached model
     pub async fn delete_model(&self, model: &LocalModel) -> Result<()> {
         let model_path = self.get_model_path(model);
@@ -319,15 +327,15 @@ impl ModelManager {
         }
         Ok(())
     }
-    
+
     /// Get cached models
     pub async fn list_cached_models(&self) -> Result<Vec<String>> {
         let mut models = Vec::new();
-        
+
         if !self.cache_dir.exists() {
             return Ok(models);
         }
-        
+
         let mut entries = fs::read_dir(&self.cache_dir).await?;
         while let Some(entry) = entries.next_entry().await? {
             if entry.file_type().await?.is_dir() {
@@ -340,7 +348,8 @@ impl ModelManager {
                             if filename.ends_with(".gguf") {
                                 // Check file size to ensure it's complete
                                 if let Ok(metadata) = file_entry.metadata().await {
-                                    if metadata.len() > 100_000_000 { // At least 100MB
+                                    if metadata.len() > 100_000_000 {
+                                        // At least 100MB
                                         models.push(name.to_string());
                                         break;
                                     }
@@ -351,10 +360,10 @@ impl ModelManager {
                 }
             }
         }
-        
+
         Ok(models)
     }
-    
+
     /// Get cache size
     pub async fn get_cache_size(&self) -> Result<u64> {
         if !self.cache_dir.exists() {
@@ -384,11 +393,13 @@ impl DownloadProgress {
         }
         (self.downloaded as f32 / self.total_size as f32) * 100.0
     }
-    
+
     pub fn speed_mb_per_sec(&self) -> f32 {
-        self.download_speed.map(|s| s as f32 / 1024.0 / 1024.0).unwrap_or(0.0)
+        self.download_speed
+            .map(|s| s as f32 / 1024.0 / 1024.0)
+            .unwrap_or(0.0)
     }
-    
+
     pub fn eta_seconds(&self) -> Option<u64> {
         if let Some(speed) = self.download_speed {
             if speed > 0 {
@@ -409,40 +420,42 @@ impl ModelDownloader {
     pub fn new(manager: Arc<ModelManager>) -> Self {
         Self { manager }
     }
-    
+
     /// Download model in background
     pub async fn download_async(&self, model: LocalModel) -> Result<()> {
         let manager = self.manager.clone();
-        
+
         tokio::spawn(async move {
             if let Err(e) = manager.download_model(&model).await {
                 tracing::error!(error = %e, "Failed to download model");
-                
+
                 // Update error in progress
                 let mut progress = manager.download_progress.write().await;
                 progress.error = Some(e.to_string());
                 progress.is_downloading = false;
             }
         });
-        
+
         Ok(())
     }
 }
 
 /// Calculate directory size recursively
-fn dir_size(path: &Path) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + '_>> {
+fn dir_size(
+    path: &Path,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + '_>> {
     Box::pin(async move {
         let mut size = 0u64;
-        
+
         if !path.exists() {
             return Ok(0);
         }
-        
+
         let mut entries = fs::read_dir(path).await?;
-        
+
         while let Some(entry) = entries.next_entry().await? {
             let metadata = entry.metadata().await?;
-            
+
             if metadata.is_dir() {
                 // Recursive call with Box::pin
                 size += Box::pin(dir_size(&entry.path())).await?;
@@ -450,7 +463,7 @@ fn dir_size(path: &Path) -> std::pin::Pin<Box<dyn std::future::Future<Output = R
                 size += metadata.len();
             }
         }
-        
+
         Ok(size)
     })
 }

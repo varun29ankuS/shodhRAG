@@ -1,9 +1,9 @@
 //! Download tokenizer files for LLM models
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
+use reqwest;
 use std::path::Path;
 use tokio::fs;
-use reqwest;
 
 /// Tokenizer URLs for different models - Production Grade with Commercial Licenses
 const TOKENIZER_URLS: &[(&str, &str)] = &[
@@ -68,14 +68,19 @@ pub async fn download_all_tokenizers(cache_dir: &Path) -> Result<()> {
                     tracing::info!("Successfully downloaded {}", filename);
                     success_count += 1;
                     break;
-                },
+                }
                 Err(e) => {
                     retry_count += 1;
                     last_error = Some(e.to_string());
 
                     if retry_count < max_retries {
                         let wait_time = std::time::Duration::from_secs(2u64.pow(retry_count));
-                        tracing::warn!("Retry {}/{} after {:?}...", retry_count, max_retries, wait_time);
+                        tracing::warn!(
+                            "Retry {}/{} after {:?}...",
+                            retry_count,
+                            max_retries,
+                            wait_time
+                        );
                         tokio::time::sleep(wait_time).await;
                     }
                 }
@@ -83,20 +88,26 @@ pub async fn download_all_tokenizers(cache_dir: &Path) -> Result<()> {
         }
 
         if retry_count >= max_retries {
-            tracing::error!("Failed to download {}: {}", filename, last_error.unwrap_or_default());
+            tracing::error!(
+                "Failed to download {}: {}",
+                filename,
+                last_error.unwrap_or_default()
+            );
             failed_downloads.push(filename.to_string());
         }
     }
 
     tracing::info!(
         "Tokenizer download complete: {}/{} successful",
-        success_count, TOKENIZER_URLS.len()
+        success_count,
+        TOKENIZER_URLS.len()
     );
 
     if !failed_downloads.is_empty() {
         tracing::warn!(
             "Failed to download {} tokenizers: {:?}. The system will use fallback tokenizers.",
-            failed_downloads.len(), failed_downloads
+            failed_downloads.len(),
+            failed_downloads
         );
     }
 
@@ -132,12 +143,14 @@ pub async fn download_model_tokenizer(model: &str, cache_dir: &Path) -> Result<(
         .build()?;
 
     // Find URLs
-    let json_url = TOKENIZER_URLS.iter()
+    let json_url = TOKENIZER_URLS
+        .iter()
         .find(|(name, _)| *name == json_file)
         .map(|(_, url)| *url)
         .ok_or_else(|| anyhow!("URL not found for {}", json_file))?;
 
-    let config_url = TOKENIZER_URLS.iter()
+    let config_url = TOKENIZER_URLS
+        .iter()
         .find(|(name, _)| *name == config_file)
         .map(|(_, url)| *url)
         .ok_or_else(|| anyhow!("URL not found for {}", config_file))?;

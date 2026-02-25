@@ -99,12 +99,24 @@ fn build_router_prompt(user_message: &str, context: &ConversationContext) -> Str
     }
 
     if !context.entities.is_empty() {
-        let entities: String = context.entities.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+        let entities: String = context
+            .entities
+            .iter()
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
         parts.push(format!("Entities mentioned: {}", entities));
     }
 
     if !context.files_discussed.is_empty() {
-        let files: String = context.files_discussed.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+        let files: String = context
+            .files_discussed
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
         parts.push(format!("Files discussed: {}", files));
     }
 
@@ -151,11 +163,9 @@ fn parse_router_response(raw: &str) -> Result<RouterOutput> {
         RouterIntent::General
     };
 
-    let rewritten_query = extract_json_string(json_str, "rewritten_query")
-        .unwrap_or_default();
+    let rewritten_query = extract_json_string(json_str, "rewritten_query").unwrap_or_default();
 
-    let search_queries = extract_json_array(json_str, "search_queries")
-        .unwrap_or_default();
+    let search_queries = extract_json_array(json_str, "search_queries").unwrap_or_default();
 
     let reasoning = extract_json_string(json_str, "reasoning")
         .unwrap_or_else(|| "LLM router (partial parse)".to_string());
@@ -359,7 +369,8 @@ mod tests {
     #[test]
     fn test_build_prompt_with_context() {
         let mut ctx = ConversationContext::default();
-        ctx.recent_messages.push("user: who is anushree".to_string());
+        ctx.recent_messages
+            .push("user: who is anushree".to_string());
         ctx.entities.push("Anushree Sharma".to_string());
 
         let prompt = build_router_prompt("what is her salary", &ctx);

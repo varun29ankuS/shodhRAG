@@ -12,7 +12,7 @@
 //! - AgentTools: Available tools that agents can use
 //! - AgentContext: Execution context (conversation history, user data, etc.)
 
-use anyhow::{Result, Context as AnyhowContext};
+use anyhow::{Context as AnyhowContext, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -31,77 +31,74 @@ pub struct Suggestion {
     pub reason: String,
 }
 
-mod definition;
-mod executor;
-mod tools;
-mod filesystem_tools;
-mod context;
-mod registry;
 mod activity_tracker;
-mod pattern_learner;
-mod project_context;
-pub mod conversation_continuity;
-mod personal_assistant;
-mod builtin_agents;
 mod autonomous;
+mod builtin_agents;
+pub mod calendar_indexer;
+pub mod calendar_tools;
+mod code_executor;
+mod context;
+pub mod conversation_continuity;
+pub mod crew;
+mod definition;
+pub mod dynamic_tool;
+mod executor;
+mod filesystem_tools;
 mod metrics;
 mod monitor;
-mod code_executor;
-pub mod tool_loop;
-pub mod rag_tools;
-pub mod dynamic_tool;
 pub mod orchestrator;
-pub mod crew;
-pub mod calendar_tools;
-pub mod calendar_indexer;
+mod pattern_learner;
+mod personal_assistant;
+mod project_context;
+pub mod rag_tools;
+mod registry;
+pub mod tool_loop;
+mod tools;
 
-pub use definition::{AgentDefinition, AgentConfig, AgentCapability, ToolConfig};
-pub use executor::{AgentExecutor, ExecutionResult, ExecutionStep, AgentProgress, StepType};
-pub use tools::{AgentTool, ToolRegistry, ToolResult, ToolInput, ToolDescription};
-pub use filesystem_tools::{
-    PermissionManager, FilePermission, PermissionRequest, PermissionDecision, PermissionScope,
-    ReadFileTool, WriteFileTool, ListDirectoryTool, AuditEntry,
-};
-pub use context::{AgentContext, ConversationTurn, ContextVariable, UserInfo};
-pub use registry::{AgentRegistry, AgentMetadata};
 pub use activity_tracker::{
-    Activity, ActivityType, ActivityTracker,
-    ActivityStats, ActivityPatterns, ActivitySequence
+    Activity, ActivityPatterns, ActivitySequence, ActivityStats, ActivityTracker, ActivityType,
 };
-pub use pattern_learner::{PatternLearner, ClickPatternData};
-pub use project_context::ProjectContextManager;
-pub use conversation_continuity::{ConversationManager, Conversation, Message, MessageRole};
-pub use personal_assistant::{PersonalAssistant, AssistantResponse, DailySummary};
-pub use builtin_agents::create_builtin_agents;
 pub use autonomous::{
-    AutonomousAgent, Task, TaskContext, TaskConstraints, TaskPlan, PlanStep,
-    StepAction, StepStatus, TaskResult, TaskArtifact, ArtifactType,
-    ExecutionProgress, TaskExecutor,
+    ArtifactType, AutonomousAgent, ExecutionProgress, PlanStep, StepAction, StepStatus, Task,
+    TaskArtifact, TaskConstraints, TaskContext, TaskExecutor, TaskPlan, TaskResult,
+};
+pub use builtin_agents::create_builtin_agents;
+pub use code_executor::{
+    validate_code_safety, CodeExecutionResult, CodeExecutor, CodeLanguage, ExecutionConfig,
+};
+pub use context::{AgentContext, ContextVariable, ConversationTurn, UserInfo};
+pub use conversation_continuity::{Conversation, ConversationManager, Message, MessageRole};
+pub use crew::{
+    execute_crew, CrewAgentOutput, CrewConfig, CrewDefinition, CrewExecutionResult, CrewMember,
+    CrewProcess,
+};
+pub use definition::{AgentCapability, AgentConfig, AgentDefinition, ToolConfig};
+pub use dynamic_tool::{register_dynamic_tools, DynamicTool, DynamicToolDef, ToolCallback};
+pub use executor::{AgentExecutor, AgentProgress, ExecutionResult, ExecutionStep, StepType};
+pub use filesystem_tools::{
+    AuditEntry, FilePermission, ListDirectoryTool, PermissionDecision, PermissionManager,
+    PermissionRequest, PermissionScope, ReadFileTool, WriteFileTool,
 };
 pub use metrics::{
-    AgentMetricsCollector, ExecutionRecord, ExecutionStatus, AgentMetrics,
-    AgentHealthStatus, HealthState, DashboardSummary,
+    AgentHealthStatus, AgentMetrics, AgentMetricsCollector, DashboardSummary, ExecutionRecord,
+    ExecutionStatus, HealthState,
 };
-pub use monitor::{AgentMonitor, ActiveExecution};
-pub use code_executor::{
-    CodeExecutor, CodeLanguage, ExecutionConfig, CodeExecutionResult,
-    validate_code_safety,
-};
-pub use tool_loop::{
-    run_tool_loop, run_tool_loop_stream, tool_descriptions_to_schemas,
-    ToolLoopConfig, ToolLoopResult, ToolLoopEvent, ToolInvocation, ToolLoopEmitter,
-};
+pub use monitor::{ActiveExecution, AgentMonitor};
+pub use orchestrator::{create_coordinator_agent, register_agent_tools, AgentDelegateTool};
+pub use pattern_learner::{ClickPatternData, PatternLearner};
+pub use personal_assistant::{AssistantResponse, DailySummary, PersonalAssistant};
+pub use project_context::ProjectContextManager;
 pub use rag_tools::register_rag_tools;
-pub use dynamic_tool::{DynamicTool, DynamicToolDef, ToolCallback, register_dynamic_tools};
-pub use orchestrator::{AgentDelegateTool, register_agent_tools, create_coordinator_agent};
-pub use crew::{
-    CrewDefinition, CrewMember, CrewProcess, CrewConfig,
-    CrewExecutionResult, CrewAgentOutput, execute_crew,
+pub use registry::{AgentMetadata, AgentRegistry};
+pub use tool_loop::{
+    run_tool_loop, run_tool_loop_stream, tool_descriptions_to_schemas, ToolInvocation,
+    ToolLoopConfig, ToolLoopEmitter, ToolLoopEvent, ToolLoopResult,
 };
+pub use tools::{AgentTool, ToolDescription, ToolInput, ToolRegistry, ToolResult};
 
 use crate::llm::LLMManager;
-use std::sync::atomic::{AtomicBool, Ordering};
 use dashmap::DashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Main agent system that ties everything together
 pub struct AgentSystem {
@@ -143,7 +140,9 @@ impl AgentSystem {
     /// Pass the same `Arc<RwLock<Option<LLMManager>>>` that your app state holds.
     pub fn set_llm_manager_ref(&mut self, llm_ref: Arc<RwLock<Option<LLMManager>>>) {
         self.llm_manager_ref = Some(llm_ref);
-        tracing::info!("AgentSystem: LLM manager reference set, agents can now use tool-calling loop");
+        tracing::info!(
+            "AgentSystem: LLM manager reference set, agents can now use tool-calling loop"
+        );
     }
 
     /// Get the LLM manager reference (for crew execution and other subsystems)
@@ -154,7 +153,9 @@ impl AgentSystem {
     /// Inject the live RAG engine into the tool registry so RAGSearchTool performs real searches.
     pub async fn set_rag_engine(&self, engine: Arc<RwLock<crate::rag_engine::RAGEngine>>) {
         self.tool_registry.set_rag_engine(engine).await;
-        tracing::info!("AgentSystem: RAG engine injected into tool registry — agents can now search documents");
+        tracing::info!(
+            "AgentSystem: RAG engine injected into tool registry — agents can now search documents"
+        );
     }
 
     /// Cancel a running agent execution
@@ -175,7 +176,10 @@ impl AgentSystem {
 
     /// Get list of currently running agent IDs
     pub fn get_running_agents(&self) -> Vec<String> {
-        self.running_agents.iter().map(|entry| entry.key().clone()).collect()
+        self.running_agents
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect()
     }
 
     /// Create a new agent system with built-in agents pre-registered
@@ -242,15 +246,19 @@ impl AgentSystem {
 
         // Start tracking
         let execution_id = uuid::Uuid::new_v4().to_string();
-        let cancel_token = self.monitor.start_tracking(
-            execution_id.clone(),
-            agent_id.to_string(),
-            definition.name.clone(),
-            &context,
-        ).await;
+        let cancel_token = self
+            .monitor
+            .start_tracking(
+                execution_id.clone(),
+                agent_id.to_string(),
+                definition.name.clone(),
+                &context,
+            )
+            .await;
 
         // Store cancel token for this execution
-        self.running_agents.insert(execution_id.clone(), cancel_token.clone());
+        self.running_agents
+            .insert(execution_id.clone(), cancel_token.clone());
 
         // Execute agent with LLM manager if available
         let mut executor = AgentExecutor::new(
@@ -271,13 +279,16 @@ impl AgentSystem {
 
         // Record metrics
         if let Ok(ref exec_result) = result {
-            let _ = self.metrics_collector.record_execution(
-                agent_id,
-                &definition.name,
-                &context,
-                exec_result,
-                started_at,
-            ).await;
+            let _ = self
+                .metrics_collector
+                .record_execution(
+                    agent_id,
+                    &definition.name,
+                    &context,
+                    exec_result,
+                    started_at,
+                )
+                .await;
         }
 
         result
@@ -313,14 +324,22 @@ impl AgentSystem {
 
         // Validate all agent IDs exist
         for member in &crew_def.agents {
-            self.get_agent(&member.agent_id).await
-                .map_err(|_| anyhow::anyhow!("Agent '{}' not found in registry", member.agent_id))?;
+            self.get_agent(&member.agent_id).await.map_err(|_| {
+                anyhow::anyhow!("Agent '{}' not found in registry", member.agent_id)
+            })?;
         }
 
         // Validate hierarchical coordinator
         if let crew::CrewProcess::Hierarchical { ref coordinator_id } = crew_def.process {
-            if !crew_def.agents.iter().any(|a| a.agent_id == *coordinator_id) {
-                anyhow::bail!("Coordinator '{}' must be a member of the crew", coordinator_id);
+            if !crew_def
+                .agents
+                .iter()
+                .any(|a| a.agent_id == *coordinator_id)
+            {
+                anyhow::bail!(
+                    "Coordinator '{}' must be a member of the crew",
+                    coordinator_id
+                );
             }
         }
 
@@ -333,7 +352,8 @@ impl AgentSystem {
     /// Get a crew by ID
     pub async fn get_crew(&self, crew_id: &str) -> Result<crew::CrewDefinition> {
         let crews = self.crews.read().await;
-        crews.get(crew_id)
+        crews
+            .get(crew_id)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Crew '{}' not found", crew_id))
     }

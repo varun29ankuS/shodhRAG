@@ -6,12 +6,12 @@
 pub mod types;
 
 use anyhow::Result;
-use serde::{Serialize, Deserialize};
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
-use std::path::PathBuf;
-use uuid::Uuid;
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+use uuid::Uuid;
 
 pub use types::*;
 
@@ -83,12 +83,19 @@ impl MemorySystem {
             compressed: false,
         };
 
-        let mut memories = self.memories.write().map_err(|e| anyhow::anyhow!("Lock: {}", e))?;
+        let mut memories = self
+            .memories
+            .write()
+            .map_err(|e| anyhow::anyhow!("Lock: {}", e))?;
         memories.push(memory);
 
         let max = self.config.working_memory_size;
         if memories.len() > max * 2 {
-            memories.sort_by(|a, b| b.importance.partial_cmp(&a.importance).unwrap_or(std::cmp::Ordering::Equal));
+            memories.sort_by(|a, b| {
+                b.importance
+                    .partial_cmp(&a.importance)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
             memories.truncate(max);
         }
 
@@ -101,21 +108,32 @@ impl MemorySystem {
 
     /// Retrieve memories matching a query, respecting the requested retrieval mode.
     pub fn retrieve(&self, query: &Query) -> Result<Vec<Memory>> {
-        let memories = self.memories.read().map_err(|e| anyhow::anyhow!("Lock: {}", e))?;
+        let memories = self
+            .memories
+            .read()
+            .map_err(|e| anyhow::anyhow!("Lock: {}", e))?;
 
         // Phase 1: filter by hard constraints (type, time, importance)
-        let mut candidates: Vec<Memory> = memories.iter()
+        let mut candidates: Vec<Memory> = memories
+            .iter()
             .filter(|m| {
                 if let Some(threshold) = query.importance_threshold {
-                    if m.importance < threshold { return false; }
+                    if m.importance < threshold {
+                        return false;
+                    }
                 }
                 if let Some(types) = &query.experience_types {
                     if !types.iter().any(|t| {
-                        std::mem::discriminant(&m.experience.experience_type) == std::mem::discriminant(t)
-                    }) { return false; }
+                        std::mem::discriminant(&m.experience.experience_type)
+                            == std::mem::discriminant(t)
+                    }) {
+                        return false;
+                    }
                 }
                 if let Some((start, end)) = &query.time_range {
-                    if m.created_at < *start || m.created_at > *end { return false; }
+                    if m.created_at < *start || m.created_at > *end {
+                        return false;
+                    }
                 }
                 true
             })
@@ -134,19 +152,30 @@ impl MemorySystem {
                     let query_lower = text.to_lowercase();
                     let query_words: Vec<&str> = query_lower.split_whitespace().collect();
 
-                    candidates = candidates.into_iter()
+                    candidates = candidates
+                        .into_iter()
                         .map(|mut m| {
                             let content_lower = m.experience.content.to_lowercase();
-                            let entity_lower: Vec<String> = m.experience.entities.iter()
+                            let entity_lower: Vec<String> = m
+                                .experience
+                                .entities
+                                .iter()
                                 .map(|e| e.to_lowercase())
                                 .collect();
 
                             // Word overlap score
-                            let word_hits = query_words.iter()
-                                .filter(|w| content_lower.contains(*w) || entity_lower.iter().any(|e| e.contains(*w)))
+                            let word_hits = query_words
+                                .iter()
+                                .filter(|w| {
+                                    content_lower.contains(*w)
+                                        || entity_lower.iter().any(|e| e.contains(*w))
+                                })
                                 .count();
-                            let text_score = if query_words.is_empty() { 0.0 }
-                                else { word_hits as f32 / query_words.len() as f32 };
+                            let text_score = if query_words.is_empty() {
+                                0.0
+                            } else {
+                                word_hits as f32 / query_words.len() as f32
+                            };
 
                             // Recency decay (halve score per 7 days)
                             let age_days = (Utc::now() - m.created_at).num_days().max(0) as f32;
@@ -160,10 +189,18 @@ impl MemorySystem {
                         .filter(|m| m.importance > 0.05) // drop irrelevant
                         .collect();
 
-                    candidates.sort_by(|a, b| b.importance.partial_cmp(&a.importance).unwrap_or(std::cmp::Ordering::Equal));
+                    candidates.sort_by(|a, b| {
+                        b.importance
+                            .partial_cmp(&a.importance)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
                 } else {
                     // No query text — fall back to importance sort
-                    candidates.sort_by(|a, b| b.importance.partial_cmp(&a.importance).unwrap_or(std::cmp::Ordering::Equal));
+                    candidates.sort_by(|a, b| {
+                        b.importance
+                            .partial_cmp(&a.importance)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
                 }
             }
             RetrievalMode::Causal | RetrievalMode::Associative => {
@@ -171,13 +208,20 @@ impl MemorySystem {
                 if let Some(ref text) = query.query_text {
                     let query_lower = text.to_lowercase();
                     candidates.sort_by(|a, b| {
-                        let a_hits = a.experience.entities.iter()
+                        let a_hits = a
+                            .experience
+                            .entities
+                            .iter()
                             .filter(|e| query_lower.contains(&e.to_lowercase()))
                             .count();
-                        let b_hits = b.experience.entities.iter()
+                        let b_hits = b
+                            .experience
+                            .entities
+                            .iter()
                             .filter(|e| query_lower.contains(&e.to_lowercase()))
                             .count();
-                        b_hits.cmp(&a_hits)
+                        b_hits
+                            .cmp(&a_hits)
                             .then_with(|| b.created_at.cmp(&a.created_at))
                     });
                 } else {
@@ -205,21 +249,32 @@ impl MemorySystem {
 
         // Content length signal (longer = more substance)
         let len = experience.content.len();
-        if len > 200 { score += 0.15; }
-        else if len > 50 { score += 0.05; }
+        if len > 200 {
+            score += 0.15;
+        } else if len > 50 {
+            score += 0.05;
+        }
 
         // Entity richness
-        if experience.entities.len() > 3 { score += 0.1; }
-        else if !experience.entities.is_empty() { score += 0.05; }
+        if experience.entities.len() > 3 {
+            score += 0.1;
+        } else if !experience.entities.is_empty() {
+            score += 0.05;
+        }
 
         // Metadata richness
-        if experience.metadata.len() > 2 { score += 0.05; }
+        if experience.metadata.len() > 2 {
+            score += 0.05;
+        }
 
         score.min(1.0)
     }
 
     pub fn stats(&self) -> Result<MemoryStats> {
-        let memories = self.memories.read().map_err(|e| anyhow::anyhow!("Lock: {}", e))?;
+        let memories = self
+            .memories
+            .read()
+            .map_err(|e| anyhow::anyhow!("Lock: {}", e))?;
         Ok(MemoryStats {
             working_memory_count: memories.len(),
             ..Default::default()
@@ -227,7 +282,10 @@ impl MemorySystem {
     }
 
     pub fn forget(&self, criteria: ForgetCriteria) -> Result<usize> {
-        let mut memories = self.memories.write().map_err(|e| anyhow::anyhow!("Lock: {}", e))?;
+        let mut memories = self
+            .memories
+            .write()
+            .map_err(|e| anyhow::anyhow!("Lock: {}", e))?;
         let before = memories.len();
 
         match criteria {
@@ -258,7 +316,10 @@ impl MemorySystem {
     }
 
     fn persist_to_disk(&self) -> Result<()> {
-        let memories = self.memories.read().map_err(|e| anyhow::anyhow!("Lock: {}", e))?;
+        let memories = self
+            .memories
+            .read()
+            .map_err(|e| anyhow::anyhow!("Lock: {}", e))?;
         let json = serde_json::to_string(&*memories)?;
         std::fs::write(self.config.storage_path.join("memories.json"), json)?;
         Ok(())
@@ -281,7 +342,9 @@ impl MemorySystem {
                     return Ok(());
                 }
             };
-            let mut memories = self.memories.write()
+            let mut memories = self
+                .memories
+                .write()
                 .map_err(|e| anyhow::anyhow!("Memory lock poisoned: {}", e))?;
             *memories = data;
         }

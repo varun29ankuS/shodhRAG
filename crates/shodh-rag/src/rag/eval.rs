@@ -68,11 +68,7 @@ pub struct QueryMetrics {
 ///
 /// `k_values` specifies which K values to compute metrics at (e.g., [1, 3, 5, 10]).
 /// `results_fn` is called for each query and should return ranked results.
-pub fn evaluate<F>(
-    eval_set: &[EvalQuery],
-    k_values: &[usize],
-    mut results_fn: F,
-) -> EvalMetrics
+pub fn evaluate<F>(eval_set: &[EvalQuery], k_values: &[usize], mut results_fn: F) -> EvalMetrics
 where
     F: FnMut(&str) -> Vec<EvalResult>,
 {
@@ -113,7 +109,10 @@ where
         num_queries: eval_set.len(),
         mrr: mrr_sum / n,
         recall_at: recall_sums.into_iter().map(|(k, v)| (k, v / n)).collect(),
-        precision_at: precision_sums.into_iter().map(|(k, v)| (k, v / n)).collect(),
+        precision_at: precision_sums
+            .into_iter()
+            .map(|(k, v)| (k, v / n))
+            .collect(),
         ndcg_at: ndcg_sums.into_iter().map(|(k, v)| (k, v / n)).collect(),
         hit_rate_at: hit_sums.into_iter().map(|(k, v)| (k, v / n)).collect(),
         per_query,
@@ -150,10 +149,7 @@ fn evaluate_single(
         let top_k = &results[..results.len().min(k)];
 
         // Count relevant in top K
-        let relevant_in_k = top_k
-            .iter()
-            .filter(|r| is_relevant(r, eval_query))
-            .count();
+        let relevant_in_k = top_k.iter().filter(|r| is_relevant(r, eval_query)).count();
 
         // Recall@K
         let recall = if num_relevant > 0 {
@@ -234,7 +230,11 @@ fn compute_ndcg(results: &[EvalResult], eval_query: &EvalQuery, k: usize) -> f64
 
     // Ideal DCG: sort all relevant docs by relevance descending
     let mut ideal_scores: Vec<f64> = if !eval_query.graded_relevance.is_empty() {
-        eval_query.graded_relevance.values().map(|&v| v as f64).collect()
+        eval_query
+            .graded_relevance
+            .values()
+            .map(|&v| v as f64)
+            .collect()
     } else {
         vec![1.0; eval_query.relevant_ids.len()]
     };
@@ -386,9 +386,7 @@ mod tests {
         }];
 
         // Perfect ordering: a(1.0), b(0.5), c(0.25)
-        let metrics = evaluate(&eval_set, &[3], |_| {
-            make_results(&["a", "b", "c"])
-        });
+        let metrics = evaluate(&eval_set, &[3], |_| make_results(&["a", "b", "c"]));
 
         // With ideal ordering, nDCG should be 1.0
         assert!((*metrics.ndcg_at.get(&3).unwrap() - 1.0).abs() < 1e-10);

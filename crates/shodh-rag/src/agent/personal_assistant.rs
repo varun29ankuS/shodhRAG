@@ -6,8 +6,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use super::{
-    AgentSystem, ActivityTracker, PatternLearner, ProjectContextManager,
-    ConversationManager, Activity, Suggestion, ClickPatternData
+    Activity, ActivityTracker, AgentSystem, ClickPatternData, ConversationManager, PatternLearner,
+    ProjectContextManager, Suggestion,
 };
 use crate::memory::MemorySystem;
 
@@ -31,7 +31,8 @@ impl PersonalAssistant {
         let activity_tracker = Arc::new(ActivityTracker::new()?);
         let pattern_learner = Arc::new(PatternLearner::new()?);
         let project_context = Arc::new(ProjectContextManager::new()?);
-        let conversation_manager = Arc::new(ConversationManager::new_with_memory(memory_system.clone())?);
+        let conversation_manager =
+            Arc::new(ConversationManager::new_with_memory(memory_system.clone())?);
 
         tracing::info!("PersonalAssistant initialized successfully");
 
@@ -85,7 +86,9 @@ impl PersonalAssistant {
     }
 
     pub async fn get_click_patterns(&self, query: &str) -> Result<ClickPatternData> {
-        self.pattern_learner.get_click_patterns_for_query(query).await
+        self.pattern_learner
+            .get_click_patterns_for_query(query)
+            .await
     }
 
     pub async fn get_all_click_patterns(&self) -> Result<Vec<(String, ClickPatternData)>> {
@@ -93,8 +96,14 @@ impl PersonalAssistant {
         Ok(patterns.into_iter().collect())
     }
 
-    pub async fn calculate_personalization_boost(&self, result_id: &str, query: &str) -> Result<f32> {
-        self.pattern_learner.calculate_personalization_boost(result_id, query).await
+    pub async fn calculate_personalization_boost(
+        &self,
+        result_id: &str,
+        query: &str,
+    ) -> Result<f32> {
+        self.pattern_learner
+            .calculate_personalization_boost(result_id, query)
+            .await
     }
 
     pub async fn list_available_agents(&self) -> Result<Vec<crate::agent::AgentMetadata>> {
@@ -121,7 +130,11 @@ impl PersonalAssistant {
         })
     }
 
-    pub async fn chat(&self, message: &str, _session_id: Option<&str>) -> Result<AssistantResponse> {
+    pub async fn chat(
+        &self,
+        message: &str,
+        _session_id: Option<&str>,
+    ) -> Result<AssistantResponse> {
         // Simplified chat - would integrate with agent execution
         Ok(AssistantResponse {
             message: format!("Processing: {}", message),

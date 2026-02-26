@@ -1,9 +1,9 @@
 //! Image upload, OCR (Windows OCR API), and form export commands
 
 use serde::{Deserialize, Serialize};
-use shodh_rag::rag::{export_form_as_html, export_form_as_json_schema, FormField};
 use tauri::State;
 use uuid::Uuid;
+use shodh_rag::rag::{FormField, export_form_as_html, export_form_as_json_schema};
 
 use crate::rag_commands::RagState;
 
@@ -42,12 +42,13 @@ async fn run_ocr(image_bytes: &[u8]) -> Result<(String, f32), String> {
 async fn run_ocr_on_file(path: std::path::PathBuf) -> Result<(String, f32), String> {
     // WinRT IAsyncOperation does not implement Rust Future — run blocking on a separate thread
     tokio::task::spawn_blocking(move || {
-        use windows::core::HSTRING;
+        use windows::Storage::{StorageFile, FileAccessMode};
         use windows::Graphics::Imaging::BitmapDecoder;
         use windows::Media::Ocr::OcrEngine;
-        use windows::Storage::{FileAccessMode, StorageFile};
+        use windows::core::HSTRING;
 
-        let abs_path = std::fs::canonicalize(&path).map_err(|e| format!("Path error: {}", e))?;
+        let abs_path = std::fs::canonicalize(&path)
+            .map_err(|e| format!("Path error: {}", e))?;
         let path_str = abs_path.to_string_lossy().to_string();
         // Strip \\?\ prefix that canonicalize adds on Windows
         let clean_path = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
@@ -57,8 +58,7 @@ async fn run_ocr_on_file(path: std::path::PathBuf) -> Result<(String, f32), Stri
             .get()
             .map_err(|e| format!("GetFileFromPath get failed: {}", e))?;
 
-        let stream = file
-            .OpenAsync(FileAccessMode::Read)
+        let stream = file.OpenAsync(FileAccessMode::Read)
             .map_err(|e| format!("OpenAsync failed: {}", e))?
             .get()
             .map_err(|e| format!("OpenAsync get failed: {}", e))?;
@@ -68,8 +68,7 @@ async fn run_ocr_on_file(path: std::path::PathBuf) -> Result<(String, f32), Stri
             .get()
             .map_err(|e| format!("BitmapDecoder get failed: {}", e))?;
 
-        let bitmap = decoder
-            .GetSoftwareBitmapAsync()
+        let bitmap = decoder.GetSoftwareBitmapAsync()
             .map_err(|e| format!("GetSoftwareBitmap failed: {}", e))?
             .get()
             .map_err(|e| format!("GetSoftwareBitmap get failed: {}", e))?;
@@ -77,14 +76,12 @@ async fn run_ocr_on_file(path: std::path::PathBuf) -> Result<(String, f32), Stri
         let engine = OcrEngine::TryCreateFromUserProfileLanguages()
             .map_err(|e| format!("OCR engine creation failed: {}", e))?;
 
-        let ocr_result = engine
-            .RecognizeAsync(&bitmap)
+        let ocr_result = engine.RecognizeAsync(&bitmap)
             .map_err(|e| format!("RecognizeAsync failed: {}", e))?
             .get()
             .map_err(|e| format!("RecognizeAsync get failed: {}", e))?;
 
-        let text = ocr_result
-            .Text()
+        let text = ocr_result.Text()
             .map_err(|e| format!("Text() failed: {}", e))?
             .to_string();
 
@@ -119,8 +116,10 @@ pub async fn process_image_from_base64(
         &image_data
     };
 
-    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw_b64)
-        .map_err(|e| format!("Invalid base64: {}", e))?;
+    let bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        raw_b64,
+    ).map_err(|e| format!("Invalid base64: {}", e))?;
 
     let (extracted_text, confidence) = match run_ocr(&bytes).await {
         Ok((text, conf)) => (text, conf),
@@ -154,7 +153,8 @@ pub async fn process_image_from_file(
 ) -> Result<ImageProcessResult, String> {
     let image_id = Uuid::new_v4().to_string();
 
-    let bytes = std::fs::read(&file_path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let bytes = std::fs::read(&file_path)
+        .map_err(|e| format!("Failed to read file: {}", e))?;
 
     let (extracted_text, confidence) = match run_ocr(&bytes).await {
         Ok((text, conf)) => (text, conf),
@@ -200,22 +200,19 @@ pub async fn search_images(
 ) -> Result<Vec<serde_json::Value>, String> {
     let rag = state.rag.read().await;
 
-    let results = rag
-        .search(&query, limit.unwrap_or(10))
+    let results = rag.search(&query, limit.unwrap_or(10))
         .await
         .map_err(|e| format!("Search failed: {}", e))?;
 
     let image_results: Vec<_> = results
         .into_iter()
         .filter(|r| r.metadata.values().any(|v| v.contains("image")))
-        .map(|r| {
-            serde_json::json!({
-                "id": r.doc_id.to_string(),
-                "text": r.text,
-                "score": r.score,
-                "source": r.source,
-            })
-        })
+        .map(|r| serde_json::json!({
+            "id": r.doc_id.to_string(),
+            "text": r.text,
+            "score": r.score,
+            "source": r.source,
+        }))
         .collect();
 
     Ok(image_results)

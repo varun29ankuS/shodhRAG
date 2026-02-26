@@ -286,6 +286,7 @@ pub fn get_default_mcp_servers() -> Vec<MCPServerConfig> {
             env: HashMap::new(),
             transport: TransportType::Stdio,
         },
+
         // GitHub MCP Server
         MCPServerConfig {
             name: "github".to_string(),
@@ -302,6 +303,7 @@ pub fn get_default_mcp_servers() -> Vec<MCPServerConfig> {
             },
             transport: TransportType::Stdio,
         },
+
         // Brave Search MCP Server
         MCPServerConfig {
             name: "brave-search".to_string(),
@@ -317,6 +319,7 @@ pub fn get_default_mcp_servers() -> Vec<MCPServerConfig> {
             },
             transport: TransportType::Stdio,
         },
+
         // Postgres MCP Server
         MCPServerConfig {
             name: "postgres".to_string(),
@@ -332,6 +335,7 @@ pub fn get_default_mcp_servers() -> Vec<MCPServerConfig> {
             },
             transport: TransportType::Stdio,
         },
+
         // Google Drive MCP Server
         MCPServerConfig {
             name: "google-drive".to_string(),
@@ -343,6 +347,7 @@ pub fn get_default_mcp_servers() -> Vec<MCPServerConfig> {
             env: HashMap::new(),
             transport: TransportType::Stdio,
         },
+
         // Slack MCP Server
         MCPServerConfig {
             name: "slack".to_string(),

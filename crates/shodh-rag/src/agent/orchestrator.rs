@@ -19,7 +19,7 @@ use super::executor::{AgentExecutor, ExecutionResult};
 use super::metrics::AgentMetricsCollector;
 use super::monitor::AgentMonitor;
 use super::registry::AgentRegistry;
-use super::tools::{AgentTool, ToolInput, ToolRegistry, ToolResult};
+use super::tools::{AgentTool, ToolInput, ToolResult, ToolRegistry};
 
 /// An AgentTool that delegates execution to another agent.
 /// When invoked, it runs the target agent with the provided query
@@ -92,7 +92,9 @@ impl AgentTool for AgentDelegateTool {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'query' parameter"))?;
 
-        let extra_context = input.parameters["context"].as_str().unwrap_or("");
+        let extra_context = input.parameters["context"]
+            .as_str()
+            .unwrap_or("");
 
         // Look up the agent definition
         let registry = self.registry.read().await;

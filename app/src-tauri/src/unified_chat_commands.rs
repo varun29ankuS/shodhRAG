@@ -1,14 +1,12 @@
 //! Tauri commands for unified chat system
 
-use crate::artifact_store::ArtifactStore;
-use crate::chat_engine::{
-    Artifact, AssistantResponse, ChatContext, ChatEngine, MessagePlatform, UserMessage,
-};
+use tauri::{State, Manager};
 use crate::rag_commands::RagState;
-use serde_json;
+use crate::chat_engine::{ChatEngine, UserMessage, ChatContext, AssistantResponse, MessagePlatform, Artifact};
+use crate::artifact_store::ArtifactStore;
 use std::sync::Arc;
-use tauri::{Manager, State};
 use tokio::sync::RwLock as AsyncRwLock;
+use serde_json;
 
 /// Internal unified chat function - can be called by both Tauri commands and HTTP servers
 pub async fn unified_chat_internal(
@@ -18,11 +16,7 @@ pub async fn unified_chat_internal(
     platform: MessagePlatform,
     app_handle: Option<tauri::AppHandle>,
 ) -> Result<AssistantResponse, String> {
-    tracing::info!(
-        "🔵 unified_chat_internal called from {:?}: {}",
-        platform,
-        message.chars().take(50).collect::<String>()
-    );
+    tracing::info!("🔵 unified_chat_internal called from {:?}: {}", platform, message.chars().take(50).collect::<String>());
 
     // Get components from state
     let rag = rag_state.rag.clone();
@@ -56,14 +50,7 @@ pub async fn unified_chat_internal(
     // Debug: Check if LLM manager is initialized
     {
         let llm_guard = rag_state.llm_manager.read().await;
-        tracing::info!(
-            "LLM Manager Status: {}",
-            if llm_guard.is_some() {
-                "Initialized"
-            } else {
-                "Not Initialized"
-            }
-        );
+        tracing::info!("LLM Manager Status: {}", if llm_guard.is_some() { "Initialized" } else { "Not Initialized" });
     }
 
     // Wire LLM manager + RAG engine into AgentSystem for real tool-calling execution (lazy init)
@@ -86,16 +73,13 @@ pub async fn unified_chat_internal(
         personal_assistant,
         llm_manager,
         memory_system,
-    )
-    .await;
+    ).await;
 
     // Wire calendar store path so calendar tools can persist data
     if let Some(ref handle) = app_handle {
         if let Ok(app_dir) = handle.path().app_data_dir() {
             let _ = std::fs::create_dir_all(&app_dir);
-            engine
-                .set_calendar_path(app_dir.join("calendar_data.json"))
-                .await;
+            engine.set_calendar_path(app_dir.join("calendar_data.json")).await;
         }
     }
 
@@ -109,22 +93,14 @@ pub async fn unified_chat_internal(
 
     // Process message with optional streaming support via EventEmitter trait
     let emitter = app_handle.map(|h| crate::chat_engine::TauriEventEmitter::new(h));
-    let emitter_ref: Option<&dyn shodh_rag::chat::EventEmitter> = emitter
-        .as_ref()
-        .map(|e| e as &dyn shodh_rag::chat::EventEmitter);
-    let response = engine
-        .process_message(user_msg, context.unwrap_or_default(), emitter_ref)
-        .await
+    let emitter_ref: Option<&dyn shodh_rag::chat::EventEmitter> = emitter.as_ref().map(|e| e as &dyn shodh_rag::chat::EventEmitter);
+    let response = engine.process_message(user_msg, context.unwrap_or_default(), emitter_ref).await
         .map_err(|e| format!("Failed to process message: {}", e))?;
 
     // Store artifacts in artifact store
     if !response.artifacts.is_empty() {
         let mut artifact_store = rag_state.artifact_store.write().await;
-        let conversation_id = rag_state
-            .conversation_id
-            .read()
-            .await
-            .clone()
+        let conversation_id = rag_state.conversation_id.read().await.clone()
             .unwrap_or_else(|| "default".to_string());
 
         for artifact in &response.artifacts {
@@ -144,14 +120,7 @@ pub async fn unified_chat(
     message: String,
     context: Option<ChatContext>,
 ) -> Result<AssistantResponse, String> {
-    unified_chat_internal(
-        &state,
-        message,
-        context,
-        MessagePlatform::Desktop,
-        Some(app_handle),
-    )
-    .await
+    unified_chat_internal(&state, message, context, MessagePlatform::Desktop, Some(app_handle)).await
 }
 
 /// Apply artifact content to a file
@@ -162,19 +131,14 @@ pub async fn apply_artifact_to_file(
     artifact_id: String,
     file_path: Option<String>,
 ) -> Result<String, String> {
-    use std::io::Write;
     use tauri_plugin_dialog::DialogExt;
+    use std::io::Write;
 
-    tracing::info!(
-        "📝 apply_artifact_to_file: artifact_id={}, file_path={:?}",
-        artifact_id,
-        file_path
-    );
+    tracing::info!("📝 apply_artifact_to_file: artifact_id={}, file_path={:?}", artifact_id, file_path);
 
     // Get artifact from store
     let artifact_store = state.artifact_store.read().await;
-    let artifact = artifact_store
-        .get_artifact(&artifact_id)
+    let artifact = artifact_store.get_artifact(&artifact_id)
         .ok_or_else(|| format!("Artifact not found: {}", artifact_id))?
         .clone();
 
@@ -202,8 +166,8 @@ pub async fn apply_artifact_to_file(
     };
 
     // Write artifact content to file
-    let mut file =
-        std::fs::File::create(&target_path).map_err(|e| format!("Failed to create file: {}", e))?;
+    let mut file = std::fs::File::create(&target_path)
+        .map_err(|e| format!("Failed to create file: {}", e))?;
 
     file.write_all(artifact.content.as_bytes())
         .map_err(|e| format!("Failed to write content: {}", e))?;
@@ -224,12 +188,10 @@ pub async fn update_artifact(
 
     let mut artifact_store = state.artifact_store.write().await;
 
-    artifact_store
-        .update_artifact(&artifact_id, new_content)
+    artifact_store.update_artifact(&artifact_id, new_content)
         .map_err(|e| format!("Failed to update artifact: {}", e))?;
 
-    let updated = artifact_store
-        .get_artifact(&artifact_id)
+    let updated = artifact_store.get_artifact(&artifact_id)
         .ok_or_else(|| "Artifact not found after update".to_string())?
         .clone();
 
@@ -244,12 +206,10 @@ pub async fn get_artifact_history(
 ) -> Result<Vec<serde_json::Value>, String> {
     let artifact_store = state.artifact_store.read().await;
 
-    let history = artifact_store
-        .get_history(&artifact_id)
+    let history = artifact_store.get_history(&artifact_id)
         .ok_or_else(|| format!("Artifact not found: {}", artifact_id))?;
 
-    let history_json: Vec<serde_json::Value> = history
-        .iter()
+    let history_json: Vec<serde_json::Value> = history.iter()
         .map(|v| serde_json::to_value(v).unwrap())
         .collect();
 
@@ -261,17 +221,12 @@ pub async fn get_artifact_history(
 pub async fn get_conversation_artifacts(
     state: State<'_, RagState>,
 ) -> Result<Vec<Artifact>, String> {
-    let conversation_id = state
-        .conversation_id
-        .read()
-        .await
-        .clone()
+    let conversation_id = state.conversation_id.read().await.clone()
         .unwrap_or_else(|| "default".to_string());
 
     let artifact_store = state.artifact_store.read().await;
 
-    let artifacts = artifact_store
-        .get_conversation_artifacts(&conversation_id)
+    let artifacts = artifact_store.get_conversation_artifacts(&conversation_id)
         .into_iter()
         .cloned()
         .collect();

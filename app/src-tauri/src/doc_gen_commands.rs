@@ -1,22 +1,22 @@
-use crate::llm_commands::LLMState;
-use crate::rag_commands::RagState;
-use docx_rs::*;
-use printpdf::*;
-use rust_xlsxwriter::*;
 use serde::{Deserialize, Serialize};
+use tauri::{State, Emitter};
+use crate::rag_commands::RagState;
+use crate::llm_commands::LLMState;
 use shodh_rag::comprehensive_system::SimpleSearchResult;
-use shodh_rag::llm::{ApiProvider, LLMMode};
+use shodh_rag::llm::{LLMMode, ApiProvider};
+use uuid::Uuid;
+use printpdf::*;
 use std::fs::File;
 use std::io::BufWriter;
-use tauri::{Emitter, State};
-use uuid::Uuid;
+use docx_rs::*;
+use rust_xlsxwriter::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DocumentLength {
-    Brief,    // ~2k tokens (1-2 pages)
-    Standard, // ~8k tokens (4-8 pages)
-    Detailed, // ~32k tokens (16-32 pages)
-    Maximum,  // Provider max (could be 100k+)
+    Brief,       // ~2k tokens (1-2 pages)
+    Standard,    // ~8k tokens (4-8 pages)
+    Detailed,    // ~32k tokens (16-32 pages)
+    Maximum,     // Provider max (could be 100k+)
 }
 
 impl DocumentLength {
@@ -43,20 +43,20 @@ impl DocumentLength {
 fn get_provider_max_tokens(llm_mode: &LLMMode) -> usize {
     match llm_mode {
         LLMMode::External { provider, .. } => match provider {
-            ApiProvider::Anthropic => 100_000, // Claude Opus/Sonnet can generate huge outputs
-            ApiProvider::OpenRouter => 32_768, // Most OpenRouter models support this
-            ApiProvider::OpenAI => 16_384,     // GPT-4 Turbo max output
-            ApiProvider::Together => 8_192,    // Together AI typical max
-            ApiProvider::Grok => 8_192,        // Grok default
-            ApiProvider::Perplexity => 4_096,  // Perplexity default
-            ApiProvider::Google => 8_192,      // Gemini 2.5 Pro max output tokens
-            ApiProvider::Replicate => 8_192,   // Replicate typical max
-            ApiProvider::Baseten => 16_384,    // GPT-OSS-120B supports 16K output
-            ApiProvider::Ollama => 8_192,      // Ollama, depends on model
-            ApiProvider::HuggingFace { .. } => 4_096, // HuggingFace varies by model
-            ApiProvider::Custom { .. } => 8_192, // Custom endpoints, conservative default
+            ApiProvider::Anthropic => 100_000,    // Claude Opus/Sonnet can generate huge outputs
+            ApiProvider::OpenRouter => 32_768,    // Most OpenRouter models support this
+            ApiProvider::OpenAI => 16_384,        // GPT-4 Turbo max output
+            ApiProvider::Together => 8_192,       // Together AI typical max
+            ApiProvider::Grok => 8_192,           // Grok default
+            ApiProvider::Perplexity => 4_096,     // Perplexity default
+            ApiProvider::Google => 8_192,         // Gemini 2.5 Pro max output tokens
+            ApiProvider::Replicate => 8_192,      // Replicate typical max
+            ApiProvider::Baseten => 16_384,       // GPT-OSS-120B supports 16K output
+            ApiProvider::Ollama => 8_192,               // Ollama, depends on model
+            ApiProvider::HuggingFace { .. } => 4_096,  // HuggingFace varies by model
+            ApiProvider::Custom { .. } => 8_192,  // Custom endpoints, conservative default
         },
-        LLMMode::Local { .. } => 4_096, // Local ONNX models are architecturally limited
+        LLMMode::Local { .. } => 4_096,  // Local ONNX models are architecturally limited
         LLMMode::Disabled => 4_096,
     }
 }
@@ -110,149 +110,119 @@ pub async fn generate_document(
     llm_state: State<'_, LLMState>,
 ) -> Result<GenerateDocumentResponse, String> {
     tracing::info!("Generating document with format: {}", request.format);
-
+    
     // Generate content based on format
     let content = match request.format.as_str() {
-        "html" => {
-            generate_html_report(request.clone(), rag_state.clone(), llm_state.clone()).await?
-        }
+        "html" => generate_html_report(request.clone(), rag_state.clone(), llm_state.clone()).await?,
         "pdf" => {
-            let pdf_bytes =
-                generate_pdf_report(request.clone(), rag_state.clone(), llm_state.clone()).await?;
+            let pdf_bytes = generate_pdf_report(request.clone(), rag_state.clone(), llm_state.clone()).await?;
             // Return base64 encoded PDF
             base64::encode(pdf_bytes)
-        }
-        "txt" => {
-            generate_text_report(request.clone(), rag_state.clone(), llm_state.clone()).await?
-        }
+        },
+        "txt" => generate_text_report(request.clone(), rag_state.clone(), llm_state.clone()).await?,
         "docx" => {
-            let docx_bytes =
-                generate_docx_content(request.clone(), rag_state.clone(), llm_state.clone())
-                    .await?;
+            let docx_bytes = generate_docx_content(request.clone(), rag_state.clone(), llm_state.clone()).await?;
             // Return base64 encoded DOCX
             base64::encode(docx_bytes)
-        }
+        },
         "xlsx" | "csv" => {
-            let xlsx_bytes =
-                generate_spreadsheet_content(request.clone(), rag_state.clone(), llm_state.clone())
-                    .await?;
+            let xlsx_bytes = generate_spreadsheet_content(request.clone(), rag_state.clone(), llm_state.clone()).await?;
             // Return base64 encoded Excel
             base64::encode(xlsx_bytes)
-        }
-        "json" => {
-            generate_json_report(request.clone(), rag_state.clone(), llm_state.clone()).await?
-        }
+        },
+        "json" => generate_json_report(request.clone(), rag_state.clone(), llm_state.clone()).await?,
         "md" | _ => {
             // Generate markdown format
             if request.use_rag && request.query.is_some() {
-                let query = request.query.as_deref().unwrap_or("");
+        let query = request.query.as_ref().unwrap();
+        
+        // First, perform RAG search with more results for comprehensive generation
+        let search_results = {
+            let rag_guard = rag_state.rag.read().await;
+            let rag = &*rag_guard;
+            match rag.search(query, 15).await {  // Get more results for better context
+                    Ok(mut results) => {
+                        // Sort by relevance
+                        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
-                // First, perform RAG search with more results for comprehensive generation
-                let search_results = {
-                    let rag_guard = rag_state.rag.read().await;
-                    let rag = &*rag_guard;
-                    match rag.search(query, 15).await {
-                        // Get more results for better context
-                        Ok(mut results) => {
-                            // Sort by relevance
-                            results.sort_by(|a, b| {
-                                b.score
-                                    .partial_cmp(&a.score)
-                                    .unwrap_or(std::cmp::Ordering::Equal)
-                            });
-
-                            // Log what we found for debugging
-                            tracing::info!(
-                                "📚 Found {} documents for generation query: {}",
-                                results.len(),
-                                query
-                            );
-                            for (i, result) in results.iter().enumerate().take(5) {
-                                if let Some(title) = result.metadata.get("title") {
-                                    tracing::info!(
-                                        "  {}. {} (score: {:.3})",
-                                        i + 1,
-                                        title,
-                                        result.score
-                                    );
-                                }
+                        // Log what we found for debugging
+                        tracing::info!("📚 Found {} documents for generation query: {}", results.len(), query);
+                        for (i, result) in results.iter().enumerate().take(5) {
+                            if let Some(title) = result.metadata.get("title") {
+                                tracing::info!("  {}. {} (score: {:.3})", i+1, title, result.score);
                             }
+                        }
 
-                            results
-                        }
-                        Err(e) => {
-                            tracing::warn!("RAG search failed: {}", e);
-                            vec![]
-                        }
+                        results
+                    },
+                    Err(e) => {
+                        tracing::warn!("RAG search failed: {}", e);
+                        vec![]
                     }
-                };
+                }
+        };
 
-                // Extract context with metadata for richer document generation
-                let context: Vec<String> = search_results
-                    .iter()
-                    .map(|r| {
-                        let mut context_item = String::new();
+        // Extract context with metadata for richer document generation
+        let context: Vec<String> = search_results.iter()
+            .map(|r| {
+                let mut context_item = String::new();
 
-                        // Add file metadata if available
-                        if let Some(filename) =
-                            r.metadata.get("filename").or(r.metadata.get("title"))
-                        {
-                            context_item.push_str(&format!("[Source: {}]\n", filename));
-                        }
+                // Add file metadata if available
+                if let Some(filename) = r.metadata.get("filename").or(r.metadata.get("title")) {
+                    context_item.push_str(&format!("[Source: {}]\n", filename));
+                }
 
-                        // Add file type for code awareness
-                        if let Some(ext) = r.metadata.get("file_extension") {
-                            let file_type = match ext.as_str() {
-                                "rs" => "Rust Code",
-                                "py" => "Python Code",
-                                "js" | "ts" => "JavaScript/TypeScript",
-                                "md" => "Markdown Documentation",
-                                "json" => "JSON Data",
-                                _ => "Text",
-                            };
-                            context_item.push_str(&format!("[Type: {}]\n", file_type));
-                        }
+                // Add file type for code awareness
+                if let Some(ext) = r.metadata.get("file_extension") {
+                    let file_type = match ext.as_str() {
+                        "rs" => "Rust Code",
+                        "py" => "Python Code",
+                        "js" | "ts" => "JavaScript/TypeScript",
+                        "md" => "Markdown Documentation",
+                        "json" => "JSON Data",
+                        _ => "Text"
+                    };
+                    context_item.push_str(&format!("[Type: {}]\n", file_type));
+                }
 
-                        // Add the actual content
-                        context_item.push_str("---\n");
-                        context_item.push_str(&r.text);
-                        context_item.push_str("\n---\n");
+                // Add the actual content
+                context_item.push_str("---\n");
+                context_item.push_str(&r.text);
+                context_item.push_str("\n---\n");
 
-                        context_item
-                    })
-                    .collect();
+                context_item
+            })
+            .collect();
 
-                // Generate content using LLM (with or without RAG context)
-                let llm_content = {
-                    let manager_lock = llm_state.manager.read().await;
-                    if let Some(manager) = manager_lock.as_ref() {
-                        // Check if we have sources or generating directly from LLM knowledge
-                        let has_sources = !context.is_empty();
+        // Generate content using LLM (with or without RAG context)
+        let llm_content = {
+            let manager_lock = llm_state.manager.read().await;
+            if let Some(manager) = manager_lock.as_ref() {
+                // Check if we have sources or generating directly from LLM knowledge
+                let has_sources = !context.is_empty();
 
-                        // Analyze the context to understand what type of content we have (if any)
-                        let has_code = has_sources
-                            && context.iter().any(|c| {
-                                c.contains("[Type: Rust Code]")
-                                    || c.contains("[Type: Python Code]")
-                                    || c.contains("[Type: JavaScript/TypeScript]")
-                            });
+                // Analyze the context to understand what type of content we have (if any)
+                let has_code = has_sources && context.iter().any(|c|
+                    c.contains("[Type: Rust Code]") ||
+                    c.contains("[Type: Python Code]") ||
+                    c.contains("[Type: JavaScript/TypeScript]")
+                );
 
-                        let has_docs = has_sources
-                            && context
-                                .iter()
-                                .any(|c| c.contains("[Type: Markdown Documentation]"));
+                let has_docs = has_sources && context.iter().any(|c|
+                    c.contains("[Type: Markdown Documentation]")
+                );
 
-                        // Refuse generation without sources — prevents hallucination
-                        if !has_sources {
-                            return Err(
+                // Refuse generation without sources — prevents hallucination
+                if !has_sources {
+                    return Err(
                         "Cannot generate document: No relevant information found in the knowledge base \
                         for this query. Please add documents to your knowledge base first, then try again."
                             .to_string(),
                     );
-                        }
+                }
 
-                        // Grounding + formatting preamble shared by every prompt variant
-                        let grounding_rules = "\
+                // Grounding + formatting preamble shared by every prompt variant
+                let grounding_rules = "\
 GROUNDING RULES (non-negotiable):
 - You MUST use ONLY the Source Materials below. You have NO other knowledge.
 - For EVERY claim, cite the source with [Source N] inline where N is the source number.
@@ -271,15 +241,10 @@ FORMATTING RULES (produce a pristine, publication-ready document):
 - Keep language concise, professional, and formal.
 - End with a ## References section listing every source used (numbered to match inline citations).\n";
 
-                        // Build the prompt based on content type
-                        let doc_prompt = if has_code
-                            && (query.contains("implement")
-                                || query.contains("code")
-                                || query.contains("function")
-                                || query.contains("class"))
-                        {
-                            format!(
-                                "Create a professional technical document.\n\n\
+                // Build the prompt based on content type
+                let doc_prompt = if has_code && (query.contains("implement") || query.contains("code") || query.contains("function") || query.contains("class")) {
+                    format!(
+                        "Create a professional technical document.\n\n\
                         Topic: {query}\n\n\
                         {grounding_rules}\n\
                         Document structure:\n\
@@ -294,15 +259,12 @@ FORMATTING RULES (produce a pristine, publication-ready document):
                         ## References\n\
                         List all sources used.\n\n\
                         Source Materials:\n{context}",
-                                query = query,
-                                grounding_rules = grounding_rules,
-                                context = context.join("\n\n"),
-                            )
-                        } else if query.contains("report")
-                            || query.contains("analysis")
-                            || query.contains("summary")
-                        {
-                            format!(
+                        query = query,
+                        grounding_rules = grounding_rules,
+                        context = context.join("\n\n"),
+                    )
+                } else if query.contains("report") || query.contains("analysis") || query.contains("summary") {
+                    format!(
                         "Create a professional report.\n\n\
                         Topic: {query}\n\n\
                         {grounding_rules}\n\
@@ -324,8 +286,8 @@ FORMATTING RULES (produce a pristine, publication-ready document):
                         grounding_rules = grounding_rules,
                         context = context.join("\n\n"),
                     )
-                        } else {
-                            format!(
+                } else {
+                    format!(
                         "Create a professional document.\n\n\
                         Topic: {query}\n\n\
                         {grounding_rules}\n\
@@ -343,67 +305,54 @@ FORMATTING RULES (produce a pristine, publication-ready document):
                         grounding_rules = grounding_rules,
                         context = context.join("\n\n"),
                     )
-                        };
-
-                        // Get max_tokens from request data, default to 8192
-                        let max_tokens = request
-                            .data
-                            .get("max_tokens")
-                            .and_then(|v| v.as_u64())
-                            .map(|v| v as usize)
-                            .unwrap_or(8_192);
-
-                        tracing::info!(
-                            "🎯 Using max_tokens: {} for document generation",
-                            max_tokens
-                        );
-
-                        // Generate with RAG context (sources are guaranteed present at this point)
-                        tracing::info!("📚 Generating with {} sources", context.len());
-                        match manager
-                            .generate_with_rag_custom(&doc_prompt, context.clone(), max_tokens)
-                            .await
-                        {
-                            Ok(generated) => generated,
-                            Err(e) => {
-                                tracing::warn!(
-                                    "LLM generation failed, using context summary: {}",
-                                    e
-                                );
-                                format!(
-                                    "# {} Report\n\n## Query\n{}\n\n## Found Information\n\n{}",
-                                    query,
-                                    query,
-                                    context.join("\n\n---\n\n")
-                                )
-                            }
-                        }
-                    } else {
-                        // LLM not configured
-                        if !context.is_empty() {
-                            // Have sources but no LLM - show sources
-                            format!(
-                                "# {} Report\n\n## Query\n{}\n\n## Found Information\n\n{}",
-                                query,
-                                query,
-                                context.join("\n\n---\n\n")
-                            )
-                        } else {
-                            // No sources and no LLM - return error
-                            return Err("Cannot generate document: LLM is not configured. Please configure an LLM provider to generate documents.".to_string());
-                        }
-                    }
                 };
 
-                // The LLM output already contains proper section structure and a References
-                // section (enforced by the prompt). Just prepend a clean header with metadata.
-                format!(
-                    "# {}\n\n**Date:** {}  \n**Query:** {}\n\n---\n\n{}",
-                    query,
-                    chrono::Utc::now().format("%B %d, %Y"),
-                    query,
-                    llm_content.trim(),
-                )
+                // Get max_tokens from request data, default to 8192
+                let max_tokens = request.data.get("max_tokens")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(8_192);
+
+                tracing::info!("🎯 Using max_tokens: {} for document generation", max_tokens);
+
+                // Generate with RAG context (sources are guaranteed present at this point)
+                tracing::info!("📚 Generating with {} sources", context.len());
+                match manager.generate_with_rag_custom(&doc_prompt, context.clone(), max_tokens).await {
+                    Ok(generated) => generated,
+                    Err(e) => {
+                        tracing::warn!("LLM generation failed, using context summary: {}", e);
+                        format!("# {} Report\n\n## Query\n{}\n\n## Found Information\n\n{}",
+                            query,
+                            query,
+                            context.join("\n\n---\n\n")
+                        )
+                    }
+                }
+            } else {
+                // LLM not configured
+                if !context.is_empty() {
+                    // Have sources but no LLM - show sources
+                    format!("# {} Report\n\n## Query\n{}\n\n## Found Information\n\n{}",
+                        query,
+                        query,
+                        context.join("\n\n---\n\n")
+                    )
+                } else {
+                    // No sources and no LLM - return error
+                    return Err("Cannot generate document: LLM is not configured. Please configure an LLM provider to generate documents.".to_string());
+                }
+            }
+        };
+        
+        // The LLM output already contains proper section structure and a References
+        // section (enforced by the prompt). Just prepend a clean header with metadata.
+        format!(
+            "# {}\n\n**Date:** {}  \n**Query:** {}\n\n---\n\n{}",
+            query,
+            chrono::Utc::now().format("%B %d, %Y"),
+            query,
+            llm_content.trim(),
+        )
             } else {
                 format!(
                     "# Generated Document\n\n## Content\n{}",
@@ -412,13 +361,11 @@ FORMATTING RULES (produce a pristine, publication-ready document):
             }
         }
     };
-
+    
     // Generate title
     let title = if let Some(query) = &request.query {
-        format!(
-            "{}_report.{}",
-            query
-                .chars()
+        format!("{}_report.{}", 
+            query.chars()
                 .filter(|c| c.is_alphanumeric() || c.is_whitespace())
                 .collect::<String>()
                 .replace(' ', "_")
@@ -426,17 +373,16 @@ FORMATTING RULES (produce a pristine, publication-ready document):
             request.format
         )
     } else {
-        format!(
-            "document_{}.{}",
+        format!("document_{}.{}", 
             chrono::Utc::now().timestamp(),
             request.format
         )
     };
-
+    
     // Extract source IDs for metadata
     let source_ids = if request.use_rag && request.query.is_some() {
         // We need to get the search results again to extract source IDs
-        let query = request.query.as_deref().unwrap_or("");
+        let query = request.query.as_ref().unwrap();
         let rag_guard = rag_state.rag.read().await;
         let rag = &*rag_guard;
         match rag.search(query, 5).await {
@@ -446,15 +392,15 @@ FORMATTING RULES (produce a pristine, publication-ready document):
     } else {
         vec![]
     };
-
+    
     // Create response with full content preview (no artificial limit)
     let response = GenerateDocumentResponse {
         id: uuid::Uuid::new_v4().to_string(),
         title,
         format: request.format.clone(),
         size: content.len(),
-        pages: Some((content.len() / 2000).max(1)), // Estimate ~2000 chars per page
-        preview: Some(content.clone()),             // Full content, no truncation
+        pages: Some((content.len() / 2000).max(1)),  // Estimate ~2000 chars per page
+        preview: Some(content.clone()),  // Full content, no truncation
         content_base64: Some(base64::encode(content.as_bytes())),
         metadata: DocumentMetadata {
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -463,7 +409,7 @@ FORMATTING RULES (produce a pristine, publication-ready document):
             generation_time_ms: 100,
         },
     };
-
+    
     Ok(response)
 }
 
@@ -481,7 +427,7 @@ pub async fn generate_from_rag(
 ) -> Result<GenerateDocumentResponse, String> {
     // Get current LLM mode to determine provider limits
     let llm_mode = {
-        let config_guard = llm_state.config.lock().unwrap_or_else(|e| e.into_inner());
+        let config_guard = llm_state.config.lock().unwrap();
         config_guard.mode.clone()
     };
 
@@ -491,19 +437,11 @@ pub async fn generate_from_rag(
     let actual_max = requested_tokens.min(provider_max);
 
     tracing::info!("📄 Generating {} document for prompt: {}", format, prompt);
-    tracing::info!(
-        "   Length: {:?} (requested: {}k, provider max: {}k, using: {}k tokens)",
-        length,
-        requested_tokens / 1000,
-        provider_max / 1000,
-        actual_max / 1000
-    );
+    tracing::info!("   Length: {:?} (requested: {}k, provider max: {}k, using: {}k tokens)",
+             length, requested_tokens/1000, provider_max/1000, actual_max/1000);
 
     if requested_tokens > provider_max {
-        tracing::info!(
-            "⚠️  Requested length exceeds provider capability, capping at {}k tokens",
-            provider_max / 1000
-        );
+        tracing::info!("⚠️  Requested length exceeds provider capability, capping at {}k tokens", provider_max/1000);
     }
 
     let include_refs = include_references.unwrap_or(true);
@@ -585,108 +523,98 @@ pub async fn get_source_documents(
 ) -> Result<Vec<serde_json::Value>, String> {
     let mut source_docs = Vec::new();
     let mut seen_docs = std::collections::HashSet::new();
-
+    
     // We need to get the actual document metadata from the RAG system
     let rag_guard = rag_state.rag.read().await;
     let rag = &*rag_guard;
 
     // Fetch actual document metadata for each ID
-    for id_str in document_ids.iter() {
-        // Skip duplicates
-        if !seen_docs.insert(id_str.clone()) {
-            continue;
-        }
-
-        // Parse the UUID if possible
-        if let Ok(doc_id) = Uuid::parse_str(id_str) {
-            // Get document statistics to find metadata
-            let _stats = rag.get_statistics().await.unwrap_or_default();
-
-            // Since we don't have direct document lookup, we search for it
-            // This is a production workaround until we implement proper document storage
-            let search_results = rag.search(id_str, 1).await.map_err(|e| e.to_string())?;
-
-            if let Some(result) = search_results.first() {
-                // Extract actual metadata from the search result
-                let doc_type = result
-                    .metadata
-                    .get("format")
-                    .or_else(|| result.metadata.get("type"))
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        if result.source.ends_with(".pdf") {
-                            "pdf".to_string()
-                        } else if result.source.ends_with(".docx") {
-                            "docx".to_string()
-                        } else if result.source.ends_with(".txt") {
-                            "txt".to_string()
-                        } else if result.source.ends_with(".md") {
-                            "markdown".to_string()
+        for id_str in document_ids.iter() {
+            // Skip duplicates
+            if !seen_docs.insert(id_str.clone()) {
+                continue;
+            }
+            
+            // Parse the UUID if possible
+            if let Ok(doc_id) = Uuid::parse_str(id_str) {
+                // Get document statistics to find metadata
+                let _stats = rag.get_statistics().await.unwrap_or_default();
+                
+                // Since we don't have direct document lookup, we search for it
+                // This is a production workaround until we implement proper document storage
+                let search_results = rag.search(id_str, 1).await.map_err(|e| e.to_string())?;
+                
+                if let Some(result) = search_results.first() {
+                    // Extract actual metadata from the search result
+                    let doc_type = result.metadata.get("format")
+                        .or_else(|| result.metadata.get("type"))
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            if result.source.ends_with(".pdf") { "pdf".to_string() }
+                            else if result.source.ends_with(".docx") { "docx".to_string() }
+                            else if result.source.ends_with(".txt") { "txt".to_string() }
+                            else if result.source.ends_with(".md") { "markdown".to_string() }
+                            else { "document".to_string() }
+                        });
+                    
+                    let file_size = result.metadata.get("size")
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or_else(|| result.text.len());
+                    
+                    let sections = if let Some(heading) = &result.heading {
+                        vec![heading.clone()]
+                    } else {
+                        vec!["Content".to_string()]
+                    };
+                    
+                    let doc_info = serde_json::json!({
+                        "id": result.doc_id.to_string(),
+                        "title": result.title.clone(),
+                        "source": result.source.clone(),
+                        "type": doc_type,
+                        "size": file_size,
+                        "sections": sections,
+                        "path": result.source.clone(),
+                        "last_modified": result.metadata.get("modified_date")
+                            .cloned()
+                            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+                        "author": result.metadata.get("author").cloned(),
+                        "department": result.metadata.get("department").cloned(),
+                        "tags": result.metadata.get("tags")
+                            .and_then(|t| serde_json::from_str::<Vec<String>>(t).ok())
+                            .unwrap_or_default(),
+                        "score": result.score,
+                        "preview": if result.text.len() > 200 {
+                            format!("{}...", &result.text[..200])
                         } else {
-                            "document".to_string()
+                            result.text.clone()
                         }
                     });
-
-                let file_size = result
-                    .metadata
-                    .get("size")
-                    .and_then(|s| s.parse::<usize>().ok())
-                    .unwrap_or_else(|| result.text.len());
-
-                let sections = if let Some(heading) = &result.heading {
-                    vec![heading.clone()]
+                    
+                    source_docs.push(doc_info);
                 } else {
-                    vec!["Content".to_string()]
-                };
-
-                let doc_info = serde_json::json!({
-                    "id": result.doc_id.to_string(),
-                    "title": result.title.clone(),
-                    "source": result.source.clone(),
-                    "type": doc_type,
-                    "size": file_size,
-                    "sections": sections,
-                    "path": result.source.clone(),
-                    "last_modified": result.metadata.get("modified_date")
-                        .cloned()
-                        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
-                    "author": result.metadata.get("author").cloned(),
-                    "department": result.metadata.get("department").cloned(),
-                    "tags": result.metadata.get("tags")
-                        .and_then(|t| serde_json::from_str::<Vec<String>>(t).ok())
-                        .unwrap_or_default(),
-                    "score": result.score,
-                    "preview": if result.text.len() > 200 {
-                        format!("{}...", &result.text[..200])
-                    } else {
-                        result.text.clone()
-                    }
-                });
-
-                source_docs.push(doc_info);
+                    // Fallback: Document not found in search, use ID info
+                    source_docs.push(serde_json::json!({
+                        "id": id_str,
+                        "title": format!("Document {}", id_str.chars().take(8).collect::<String>()),
+                        "type": "document",
+                        "size": 0,
+                        "sections": ["Unknown"],
+                        "error": "Document metadata not found"
+                    }));
+                }
             } else {
-                // Fallback: Document not found in search, use ID info
+                // Invalid UUID
                 source_docs.push(serde_json::json!({
                     "id": id_str,
-                    "title": format!("Document {}", id_str.chars().take(8).collect::<String>()),
-                    "type": "document",
+                    "title": "Invalid Document ID",
+                    "type": "unknown",
                     "size": 0,
-                    "sections": ["Unknown"],
-                    "error": "Document metadata not found"
+                    "sections": [],
+                    "error": "Invalid document identifier"
                 }));
             }
-        } else {
-            // Invalid UUID
-            source_docs.push(serde_json::json!({
-                "id": id_str,
-                "title": "Invalid Document ID",
-                "type": "unknown",
-                "size": 0,
-                "sections": [],
-                "error": "Invalid document identifier"
-            }));
         }
-    }
 
     Ok(source_docs)
 }
@@ -712,9 +640,11 @@ async fn generate_html_report(
             }
         }
     };
-
+    
     // Extract context
-    let context: Vec<String> = search_results.iter().map(|r| r.text.clone()).collect();
+    let context: Vec<String> = search_results.iter()
+        .map(|r| r.text.clone())
+        .collect();
 
     // Check if we have content to work with
     if context.is_empty() {
@@ -758,18 +688,13 @@ async fn generate_html_report(
                     .join("\n\n"),
             );
 
-            match manager
-                .generate_with_rag(&doc_prompt, context.clone())
-                .await
-            {
+            match manager.generate_with_rag(&doc_prompt, context.clone()).await {
                 Ok(generated) => generated,
                 Err(e) => {
                     tracing::warn!("LLM generation failed: {}", e);
-                    format!(
-                        "<h2>Report on: {}</h2>\n<h3>Information Found:</h3>\n{}",
+                    format!("<h2>Report on: {}</h2>\n<h3>Information Found:</h3>\n{}",
                         query,
-                        context
-                            .iter()
+                        context.iter()
                             .map(|c| format!("<p>{}</p>", c))
                             .collect::<Vec<_>>()
                             .join("\n")
@@ -777,11 +702,9 @@ async fn generate_html_report(
                 }
             }
         } else {
-            format!(
-                "<h2>Report on: {}</h2>\n<h3>Information Found:</h3>\n{}",
+            format!("<h2>Report on: {}</h2>\n<h3>Information Found:</h3>\n{}",
                 query,
-                context
-                    .iter()
+                context.iter()
                     .map(|c| format!("<p>{}</p>", c))
                     .collect::<Vec<_>>()
                     .join("\n")
@@ -791,13 +714,10 @@ async fn generate_html_report(
 
     // Create sources HTML
     let sources_html = if !search_results.is_empty() {
-        let source_items: Vec<String> = search_results
-            .iter()
+        let source_items: Vec<String> = search_results.iter()
             .enumerate()
             .map(|(i, r)| {
-                let title = r
-                    .metadata
-                    .get("title")
+                let title = r.metadata.get("title")
                     .cloned()
                     .unwrap_or_else(|| format!("Document {}", i + 1));
                 let snippet = if r.text.len() > 200 {
@@ -813,14 +733,11 @@ async fn generate_html_report(
                         <blockquote>{}</blockquote>
                     </div>
                     "#,
-                    i + 1,
-                    title,
-                    r.score,
-                    snippet
+                    i + 1, title, r.score, snippet
                 )
             })
             .collect();
-
+        
         format!(
             r#"
             <section class="sources">
@@ -831,11 +748,9 @@ async fn generate_html_report(
             source_items.join("\n")
         )
     } else {
-        String::from(
-            r#"<section class="sources"><h2>Sources</h2><p><em>No sources were found for this query.</em></p></section>"#,
-        )
+        String::from(r#"<section class="sources"><h2>Sources</h2><p><em>No sources were found for this query.</em></p></section>"#)
     };
-
+    
     // Generate complete HTML document with embedded styles
     Ok(format!(
         r#"<!DOCTYPE html>
@@ -1024,10 +939,12 @@ async fn get_report_content(
             }
         }
     };
-
+    
     // Extract context
-    let context: Vec<String> = search_results.iter().map(|r| r.text.clone()).collect();
-
+    let context: Vec<String> = search_results.iter()
+        .map(|r| r.text.clone())
+        .collect();
+    
     // Require sources — refuse to generate from nothing
     if context.is_empty() {
         return Err(format!(
@@ -1080,16 +997,10 @@ async fn get_report_content(
                     .join("\n\n"),
             );
 
-            match manager
-                .generate_with_rag(&doc_prompt, context.clone())
-                .await
-            {
+            match manager.generate_with_rag(&doc_prompt, context.clone()).await {
                 Ok(generated) => generated,
                 Err(e) => {
-                    format!(
-                        "Unable to generate AI content: {}. Using context-based summary.",
-                        e
-                    )
+                    format!("Unable to generate AI content: {}. Using context-based summary.", e)
                 }
             }
         } else {
@@ -1109,7 +1020,7 @@ fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
         } else {
             let words: Vec<&str> = paragraph.split_whitespace().collect();
             let mut current_line = String::new();
-
+            
             for word in words {
                 if current_line.len() + word.len() + 1 > max_chars {
                     if !current_line.is_empty() {
@@ -1122,7 +1033,7 @@ fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
                 }
                 current_line.push_str(word);
             }
-
+            
             if !current_line.is_empty() {
                 lines.push(current_line);
             }
@@ -1139,96 +1050,111 @@ async fn generate_pdf_report(
 ) -> Result<Vec<u8>, String> {
     let default_query = String::from("General Report");
     let query = request.query.as_ref().unwrap_or(&default_query);
-
+    
     // Get the content first
-    let (search_results, llm_content) = get_report_content(query, rag_state, llm_state).await?;
-
+    let (search_results, llm_content) = get_report_content(
+        query,
+        rag_state,
+        llm_state
+    ).await?;
+    
     // Create PDF document
     let (doc, page1, layer1) = PdfDocument::new(
         &format!("{} Report", query),
         Mm(210.0), // A4 width
         Mm(297.0), // A4 height
-        "Layer 1",
+        "Layer 1"
     );
-
+    
     let current_layer = doc.get_page(page1).get_layer(layer1);
-
+    
     // Load fonts
-    let font = doc
-        .add_builtin_font(BuiltinFont::Helvetica)
-        .map_err(|e| e.to_string())?;
-    let font_bold = doc
-        .add_builtin_font(BuiltinFont::HelveticaBold)
-        .map_err(|e| e.to_string())?;
-
+    let font = doc.add_builtin_font(BuiltinFont::Helvetica).map_err(|e| e.to_string())?;
+    let font_bold = doc.add_builtin_font(BuiltinFont::HelveticaBold).map_err(|e| e.to_string())?;
+    
     // Start position
     let mut y_position = Mm(280.0);
-
+    
     // Title
     current_layer.use_text(
         &format!("{} Report", query),
         24.0,
         Mm(20.0),
         y_position,
-        &font_bold,
+        &font_bold
     );
     y_position -= Mm(10.0);
-
+    
     // Date
     current_layer.use_text(
         &format!("Generated: {}", chrono::Utc::now().format("%B %d, %Y")),
         10.0,
         Mm(20.0),
         y_position,
-        &font,
+        &font
     );
     y_position -= Mm(15.0);
-
+    
     // Executive Summary heading
-    current_layer.use_text("Executive Summary", 16.0, Mm(20.0), y_position, &font_bold);
+    current_layer.use_text(
+        "Executive Summary",
+        16.0,
+        Mm(20.0),
+        y_position,
+        &font_bold
+    );
     y_position -= Mm(8.0);
-
+    
     // Content (wrapped)
     let content_lines = wrap_text(&llm_content, 80);
-    for line in content_lines.iter().take(30) {
-        // Limit to prevent overflow
-        current_layer.use_text(line, 11.0, Mm(20.0), y_position, &font);
+    for line in content_lines.iter().take(30) { // Limit to prevent overflow
+        current_layer.use_text(
+            line,
+            11.0,
+            Mm(20.0),
+            y_position,
+            &font
+        );
         y_position -= Mm(5.0);
-
+        
         if y_position < Mm(20.0) {
             break; // Need new page (simplified for now)
         }
     }
-
+    
     // Sources section
     if !search_results.is_empty() && y_position > Mm(50.0) {
         y_position -= Mm(10.0);
-        current_layer.use_text("Sources", 14.0, Mm(20.0), y_position, &font_bold);
+        current_layer.use_text(
+            "Sources",
+            14.0,
+            Mm(20.0),
+            y_position,
+            &font_bold
+        );
         y_position -= Mm(8.0);
-
+        
         for (i, result) in search_results.iter().take(3).enumerate() {
-            let title = result
-                .metadata
-                .get("title")
+            let title = result.metadata.get("title")
                 .cloned()
                 .unwrap_or_else(|| format!("Source {}", i + 1));
-
+            
             current_layer.use_text(
                 &format!("• {} (Score: {:.2})", title, result.score),
                 10.0,
                 Mm(25.0),
                 y_position,
-                &font,
+                &font
             );
             y_position -= Mm(5.0);
         }
     }
-
+    
     // Save to bytes
     let mut pdf_bytes = Vec::new();
     doc.save(&mut BufWriter::new(&mut pdf_bytes))
         .map_err(|e| format!("Failed to save PDF: {}", e))?;
-
+    
     Ok(pdf_bytes)
 }
 
@@ -1240,90 +1166,85 @@ async fn generate_docx_content(
 ) -> Result<Vec<u8>, String> {
     let default_query = String::from("General Report");
     let query = request.query.as_ref().unwrap_or(&default_query);
-
+    
     // Get the content
-    let (search_results, llm_content) = get_report_content(query, rag_state, llm_state).await?;
-
+    let (search_results, llm_content) = get_report_content(
+        query,
+        rag_state,
+        llm_state
+    ).await?;
+    
     // Create DOCX document
     let mut docx = Docx::new();
-
+    
     // Add title
     docx = docx.add_paragraph(
-        Paragraph::new().add_run(
-            Run::new()
-                .add_text(&format!("{} Report", query))
-                .size(32)
-                .bold(),
-        ),
+        Paragraph::new()
+            .add_run(Run::new().add_text(&format!("{} Report", query)).size(32).bold())
     );
-
+    
     // Add metadata
     docx = docx.add_paragraph(
-        Paragraph::new().add_run(
-            Run::new()
-                .add_text(&format!(
-                    "Generated: {}",
-                    chrono::Utc::now().format("%B %d, %Y at %I:%M %p UTC")
-                ))
-                .size(20)
-                .italic(),
-        ),
+        Paragraph::new()
+            .add_run(Run::new().add_text(&format!(
+                "Generated: {}",
+                chrono::Utc::now().format("%B %d, %Y at %I:%M %p UTC")
+            )).size(20).italic())
     );
-
+    
     // Add executive summary
     docx = docx.add_paragraph(
-        Paragraph::new().add_run(Run::new().add_text("Executive Summary").size(28).bold()),
+        Paragraph::new()
+            .add_run(Run::new().add_text("Executive Summary").size(28).bold())
     );
-
-    docx = docx.add_paragraph(Paragraph::new().add_run(Run::new().add_text(&llm_content).size(22)));
-
+    
+    docx = docx.add_paragraph(
+        Paragraph::new()
+            .add_run(Run::new().add_text(&llm_content).size(22))
+    );
+    
     // Add sources
     if !search_results.is_empty() {
         docx = docx.add_paragraph(
-            Paragraph::new().add_run(Run::new().add_text("Sources").size(28).bold()),
+            Paragraph::new()
+                .add_run(Run::new().add_text("Sources").size(28).bold())
         );
-
+        
         for (i, result) in search_results.iter().enumerate() {
-            let title = result
-                .metadata
-                .get("title")
+            let title = result.metadata.get("title")
                 .cloned()
                 .unwrap_or_else(|| format!("Source {}", i + 1));
-
+            
             docx = docx.add_paragraph(
-                Paragraph::new().add_run(
-                    Run::new()
-                        .add_text(&format!(
-                            "{}. {} (Score: {:.2})",
-                            i + 1,
-                            title,
-                            result.score
-                        ))
-                        .size(20),
-                ),
+                Paragraph::new()
+                    .add_run(Run::new().add_text(&format!(
+                        "{}. {} (Score: {:.2})",
+                        i + 1,
+                        title,
+                        result.score
+                    )).size(20))
             );
-
+            
             let snippet = if result.text.len() > 200 {
                 format!("{}...", &result.text[..200])
             } else {
                 result.text.clone()
             };
-
+            
             docx = docx.add_paragraph(
                 Paragraph::new()
                     .add_run(Run::new().add_text(&snippet).size(18).italic())
-                    .indent(Some(400), None, None, None),
+                    .indent(Some(400), None, None, None)
             );
         }
     }
-
+    
     // Convert to bytes
     let mut docx_bytes = Vec::new();
     let mut cursor = std::io::Cursor::new(&mut docx_bytes);
-    docx.build()
-        .pack(&mut cursor)
+    docx.build().pack(&mut cursor)
         .map_err(|e| format!("Failed to generate DOCX: {}", e))?;
-
+    
     Ok(docx_bytes)
 }
 
@@ -1335,94 +1256,75 @@ async fn generate_spreadsheet_content(
 ) -> Result<Vec<u8>, String> {
     let default_query = String::from("General Report");
     let query = request.query.as_ref().unwrap_or(&default_query);
-
+    
     // Get the content
-    let (search_results, llm_content) = get_report_content(query, rag_state, llm_state).await?;
-
+    let (search_results, llm_content) = get_report_content(
+        query,
+        rag_state,
+        llm_state
+    ).await?;
+    
     // Create Excel workbook
     let mut workbook = Workbook::new();
     let worksheet = workbook.add_worksheet();
-
+    
     // Add headers
-    worksheet
-        .write_string(0, 0, "Report Information")
+    worksheet.write_string(0, 0, "Report Information")
         .map_err(|e| e.to_string())?;
-    worksheet
-        .write_string(1, 0, "Query")
+    worksheet.write_string(1, 0, "Query")
         .map_err(|e| e.to_string())?;
-    worksheet
-        .write_string(1, 1, query)
+    worksheet.write_string(1, 1, query)
         .map_err(|e| e.to_string())?;
-    worksheet
-        .write_string(2, 0, "Generated")
+    worksheet.write_string(2, 0, "Generated")
         .map_err(|e| e.to_string())?;
-    worksheet
-        .write_string(2, 1, &chrono::Utc::now().to_string())
+    worksheet.write_string(2, 1, &chrono::Utc::now().to_string())
         .map_err(|e| e.to_string())?;
-
+    
     // Add summary
-    worksheet
-        .write_string(4, 0, "Executive Summary")
+    worksheet.write_string(4, 0, "Executive Summary")
         .map_err(|e| e.to_string())?;
-    worksheet
-        .write_string(5, 0, &llm_content)
+    worksheet.write_string(5, 0, &llm_content)
         .map_err(|e| e.to_string())?;
-
+    
     // Add sources table
-    worksheet
-        .write_string(7, 0, "Sources")
+    worksheet.write_string(7, 0, "Sources")
         .map_err(|e| e.to_string())?;
-    worksheet
-        .write_string(8, 0, "Title")
+    worksheet.write_string(8, 0, "Title")
         .map_err(|e| e.to_string())?;
-    worksheet
-        .write_string(8, 1, "Score")
+    worksheet.write_string(8, 1, "Score")
         .map_err(|e| e.to_string())?;
-    worksheet
-        .write_string(8, 2, "Content Preview")
+    worksheet.write_string(8, 2, "Content Preview")
         .map_err(|e| e.to_string())?;
-
+    
     for (i, result) in search_results.iter().enumerate() {
         let row = 9 + i as u32;
-        let title = result
-            .metadata
-            .get("title")
+        let title = result.metadata.get("title")
             .cloned()
             .unwrap_or_else(|| result.id.to_string());
-
-        worksheet
-            .write_string(row, 0, &title)
+        
+        worksheet.write_string(row, 0, &title)
             .map_err(|e| e.to_string())?;
-        worksheet
-            .write_number(row, 1, result.score as f64)
+        worksheet.write_number(row, 1, result.score as f64)
             .map_err(|e| e.to_string())?;
-
+        
         let snippet = if result.text.len() > 100 {
             format!("{}...", &result.text[..100])
         } else {
             result.text.clone()
         };
-        worksheet
-            .write_string(row, 2, &snippet)
+        worksheet.write_string(row, 2, &snippet)
             .map_err(|e| e.to_string())?;
     }
-
+    
     // Auto-fit columns
-    worksheet
-        .set_column_width(0, 20)
-        .map_err(|e| e.to_string())?;
-    worksheet
-        .set_column_width(1, 10)
-        .map_err(|e| e.to_string())?;
-    worksheet
-        .set_column_width(2, 60)
-        .map_err(|e| e.to_string())?;
-
+    worksheet.set_column_width(0, 20).map_err(|e| e.to_string())?;
+    worksheet.set_column_width(1, 10).map_err(|e| e.to_string())?;
+    worksheet.set_column_width(2, 60).map_err(|e| e.to_string())?;
+    
     // Save to bytes
-    let xlsx_bytes = workbook
-        .save_to_buffer()
+    let xlsx_bytes = workbook.save_to_buffer()
         .map_err(|e| format!("Failed to generate Excel: {}", e))?;
-
+    
     Ok(xlsx_bytes)
 }
 
@@ -1434,47 +1336,41 @@ async fn generate_text_report(
 ) -> Result<String, String> {
     let default_query = String::from("General Report");
     let query = request.query.as_ref().unwrap_or(&default_query);
-
+    
     // Get the content
-    let (search_results, llm_content) = get_report_content(query, rag_state, llm_state).await?;
-
+    let (search_results, llm_content) = get_report_content(
+        query,
+        rag_state,
+        llm_state
+    ).await?;
+    
     // Format as plain text
     let mut text = String::new();
-
+    
     text.push_str(&"=".repeat(80));
     text.push_str(&format!("\n{} REPORT\n", query.to_uppercase()));
     text.push_str(&"=".repeat(80));
-    text.push_str(&format!(
-        "\n\nGenerated: {}\n",
-        chrono::Utc::now().format("%B %d, %Y at %I:%M %p UTC")
-    ));
+    text.push_str(&format!("\n\nGenerated: {}\n", chrono::Utc::now().format("%B %d, %Y at %I:%M %p UTC")));
     text.push_str(&format!("Query: {}\n\n", query));
-
+    
     text.push_str(&"-".repeat(80));
     text.push_str("\nEXECUTIVE SUMMARY\n");
     text.push_str(&"-".repeat(80));
     text.push_str(&format!("\n\n{}\n\n", llm_content));
-
+    
     if !search_results.is_empty() {
         text.push_str(&"-".repeat(80));
         text.push_str("\nSOURCES\n");
         text.push_str(&"-".repeat(80));
         text.push('\n');
-
+        
         for (i, result) in search_results.iter().enumerate() {
-            let title = result
-                .metadata
-                .get("title")
+            let title = result.metadata.get("title")
                 .cloned()
                 .unwrap_or_else(|| format!("Source {}", i + 1));
-
-            text.push_str(&format!(
-                "\n[{}] {} (Score: {:.2})\n",
-                i + 1,
-                title,
-                result.score
-            ));
-
+            
+            text.push_str(&format!("\n[{}] {} (Score: {:.2})\n", i + 1, title, result.score));
+            
             let snippet = if result.text.len() > 300 {
                 format!("{}...", &result.text[..300])
             } else {
@@ -1483,10 +1379,10 @@ async fn generate_text_report(
             text.push_str(&format!("    {}\n", snippet.replace('\n', "\n    ")));
         }
     }
-
+    
     text.push_str(&format!("\n{}\n", "=".repeat(80)));
     text.push_str("END OF REPORT\n");
-
+    
     Ok(text)
 }
 
@@ -1498,10 +1394,14 @@ async fn generate_json_report(
 ) -> Result<String, String> {
     let default_query = String::from("General Report");
     let query = request.query.as_ref().unwrap_or(&default_query);
-
+    
     // Get the content
-    let (search_results, llm_content) = get_report_content(query, rag_state, llm_state).await?;
-
+    let (search_results, llm_content) = get_report_content(
+        query,
+        rag_state,
+        llm_state
+    ).await?;
+    
     // Create JSON structure
     let report = serde_json::json!({
         "report": {
@@ -1533,8 +1433,9 @@ async fn generate_json_report(
             }
         }
     });
-
-    serde_json::to_string_pretty(&report).map_err(|e| format!("Failed to generate JSON: {}", e))
+    
+    serde_json::to_string_pretty(&report)
+        .map_err(|e| format!("Failed to generate JSON: {}", e))
 }
 
 /// Generate document with streaming preview
@@ -1553,58 +1454,46 @@ pub async fn generate_document_stream(
     tracing::info!("📡 Starting streaming generation - Session: {}", session_id);
 
     // Step 1: Emit initial stage
-    app.emit(
-        &format!("generation_chunk_{}", session_id),
+    app.emit(&format!("generation_chunk_{}", session_id),
         serde_json::json!({
             "type": "Stage",
             "stage": "search",
             "message": "Searching knowledge base...",
             "progress": 10
-        }),
-    )
-    .map_err(|e| e.to_string())?;
+        })
+    ).map_err(|e| e.to_string())?;
 
     // Step 2: Perform RAG search
     let search_results = {
         let rag_guard = rag_state.rag.read().await;
         let rag = &*rag_guard;
-        rag.search(&prompt, 10)
-            .await
-            .map_err(|e| format!("Search failed: {}", e))?
+        rag.search(&prompt, 10).await.map_err(|e| format!("Search failed: {}", e))?
     };
 
     // Step 3: Emit search complete
-    let sources: Vec<_> = search_results
-        .iter()
+    let sources: Vec<_> = search_results.iter()
         .take(5)
-        .map(|r| {
-            serde_json::json!({
-                "title": r.metadata.get("title")
-                    .or_else(|| r.metadata.get("file_path"))
-                    .cloned()
-                    .unwrap_or_else(|| "Unknown".to_string()),
-                "score": r.score,
-            })
-        })
+        .map(|r| serde_json::json!({
+            "title": r.metadata.get("title")
+                .or_else(|| r.metadata.get("file_path"))
+                .cloned()
+                .unwrap_or_else(|| "Unknown".to_string()),
+            "score": r.score,
+        }))
         .collect();
 
-    app.emit(
-        &format!("generation_chunk_{}", session_id),
+    app.emit(&format!("generation_chunk_{}", session_id),
         serde_json::json!({
             "type": "SearchComplete",
             "num_sources": search_results.len(),
             "sources": sources
-        }),
-    )
-    .map_err(|e| e.to_string())?;
+        })
+    ).map_err(|e| e.to_string())?;
 
     // Step 4: Extract context
-    let context: Vec<String> = search_results
-        .iter()
+    let context: Vec<String> = search_results.iter()
         .map(|r| {
-            let file_info = r
-                .metadata
-                .get("file_path")
+            let file_info = r.metadata.get("file_path")
                 .map(|p| format!("[Source: {}]", p))
                 .unwrap_or_default();
             format!("{}\n{}", file_info, r.text)
@@ -1632,14 +1521,13 @@ pub async fn generate_document_stream(
     // Spawn LLM generation task
     tokio::spawn(async move {
         // Emit generation stage
-        let _ = app_handle.emit(
-            &format!("generation_chunk_{}", session),
+        let _ = app_handle.emit(&format!("generation_chunk_{}", session),
             serde_json::json!({
                 "type": "Stage",
                 "stage": "generate",
                 "message": "AI is writing document...",
                 "progress": 50
-            }),
+            })
         );
 
         // Call LLM with context and grounding rules
@@ -1682,38 +1570,32 @@ pub async fn generate_document_stream(
             );
 
             // Generate with RAG
-            match manager
-                .generate_with_rag(&doc_prompt, context_for_llm.clone())
-                .await
-            {
+            match manager.generate_with_rag(&doc_prompt, context_for_llm.clone()).await {
                 Ok(content) => {
                     // Send content as batch
-                    let _ = app_handle.emit(
-                        &format!("generation_chunk_{}", session),
+                    let _ = app_handle.emit(&format!("generation_chunk_{}", session),
                         serde_json::json!({
                             "type": "ContentBatch",
                             "content": content.clone()
-                        }),
+                        })
                     );
 
                     // Complete
-                    let _ = app_handle.emit(
-                        &format!("generation_chunk_{}", session),
+                    let _ = app_handle.emit(&format!("generation_chunk_{}", session),
                         serde_json::json!({
                             "type": "Complete",
                             "markdown": content,
                             "format": format_clone
-                        }),
+                        })
                     );
                 }
                 Err(e) => {
                     tracing::warn!("LLM generation failed: {}", e);
-                    let _ = app_handle.emit(
-                        &format!("generation_chunk_{}", session),
+                    let _ = app_handle.emit(&format!("generation_chunk_{}", session),
                         serde_json::json!({
                             "type": "Error",
                             "message": format!("LLM generation failed: {}", e)
-                        }),
+                        })
                     );
                 }
             }
@@ -1726,21 +1608,19 @@ pub async fn generate_document_stream(
                 context_for_llm.join("\n\n---\n\n")
             );
 
-            let _ = app_handle.emit(
-                &format!("generation_chunk_{}", session),
+            let _ = app_handle.emit(&format!("generation_chunk_{}", session),
                 serde_json::json!({
                     "type": "ContentBatch",
                     "content": fallback_content.clone()
-                }),
+                })
             );
 
-            let _ = app_handle.emit(
-                &format!("generation_chunk_{}", session),
+            let _ = app_handle.emit(&format!("generation_chunk_{}", session),
                 serde_json::json!({
                     "type": "Complete",
                     "markdown": fallback_content,
                     "format": format_clone
-                }),
+                })
             );
         }
     });
@@ -1790,22 +1670,16 @@ pub async fn get_comparable_documents(
             }
         }
 
-        let doc_id = chunk
-            .metadata
-            .get("doc_id")
+        let doc_id = chunk.metadata.get("doc_id")
             .cloned()
             .unwrap_or_else(|| chunk.id.to_string());
 
         let entry = doc_map.entry(doc_id.clone()).or_insert_with(|| {
-            let title = chunk
-                .metadata
-                .get("title")
+            let title = chunk.metadata.get("title")
                 .or_else(|| chunk.metadata.get("file_name"))
                 .cloned()
                 .unwrap_or_else(|| {
-                    chunk
-                        .metadata
-                        .get("file_path")
+                    chunk.metadata.get("file_path")
                         .map(|p| {
                             p.split(&['/', '\\'][..])
                                 .last()

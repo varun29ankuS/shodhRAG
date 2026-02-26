@@ -33,8 +33,7 @@ impl MCPRegistry {
 
         let content = fs::read_to_string(&self.config_file).await?;
         let servers: Vec<MCPServerConfig> = serde_json::from_str(&content)?;
-        self.servers = servers
-            .into_iter()
+        self.servers = servers.into_iter()
             .map(|config| (config.name.clone(), config))
             .collect();
 

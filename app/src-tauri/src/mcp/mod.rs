@@ -3,7 +3,7 @@
 //! MCP provides a standardized protocol for integrating external tools and resources
 //! into the RAG system. Following the specification from Anthropic/ModelContextProtocol.
 
-use anyhow::{Context as AnyhowContext, Result};
+use anyhow::{Result, Context as AnyhowContext};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -11,10 +11,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-pub mod builtin_tools;
 pub mod client;
-pub mod registry;
 pub mod transport;
+pub mod registry;
+pub mod builtin_tools;
 
 /// Tool definition following MCP spec
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,8 +104,8 @@ pub struct MCPServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TransportType {
-    Stdio, // Most common - communicate via stdin/stdout
-    Http,  // HTTP/REST API
+    Stdio,   // Most common - communicate via stdin/stdout
+    Http,    // HTTP/REST API
     WebSocket,
 }
 
@@ -150,22 +150,24 @@ impl MCPManager {
         tracing::info!("🔌 Connecting to MCP server: {}", config.name);
 
         let client: Arc<dyn MCPClient> = match config.transport {
-            TransportType::Stdio => Arc::new(transport::StdioMCPClient::new(config.clone()).await?),
+            TransportType::Stdio => {
+                Arc::new(transport::StdioMCPClient::new(config.clone()).await?)
+            },
             TransportType::Http => {
                 anyhow::bail!("HTTP transport not yet implemented")
-            }
+            },
             TransportType::WebSocket => {
                 anyhow::bail!("WebSocket transport not yet implemented")
-            }
+            },
         };
 
-        // Discover tools — we're the sole owner so get_mut is safe
-        let mut client_owned = client;
-        let tools = Arc::get_mut(&mut client_owned)
-            .ok_or_else(|| anyhow::anyhow!("Failed to get mutable access to MCP client"))?
-            .discover_tools()
-            .await?;
-        let client = client_owned;
+        // Discover tools
+        let client_mut = Arc::clone(&client);
+        // SAFETY: We just created this client, no one else has access yet
+        let tools = unsafe {
+            let ptr = Arc::as_ptr(&client_mut) as *mut dyn MCPClient;
+            (*ptr).discover_tools().await?
+        };
 
         tracing::info!("  ✓ Discovered {} tools from {}", tools.len(), config.name);
 
@@ -173,7 +175,10 @@ impl MCPManager {
         let mut registry = self.tool_registry.write().await;
         for tool in tools {
             tracing::info!("    - {}: {}", tool.name, tool.description);
-            registry.insert(tool.name.clone(), (config.name.clone(), tool.clone()));
+            registry.insert(
+                tool.name.clone(),
+                (config.name.clone(), tool.clone())
+            );
         }
 
         // Store client
@@ -187,8 +192,7 @@ impl MCPManager {
     /// Disconnect from a server
     pub async fn disconnect_server(&self, name: &str) -> Result<()> {
         let mut clients = self.clients.write().await;
-        clients
-            .remove(name)
+        clients.remove(name)
             .ok_or_else(|| anyhow::anyhow!("Server not found: {}", name))?;
 
         // Remove tools from registry
@@ -202,8 +206,7 @@ impl MCPManager {
     /// List all available tools
     pub async fn list_tools(&self) -> Result<Vec<(String, String, ToolDefinition)>> {
         let registry = self.tool_registry.read().await;
-        Ok(registry
-            .iter()
+        Ok(registry.iter()
             .map(|(name, (server, def))| (name.clone(), server.clone(), def.clone()))
             .collect())
     }
@@ -211,13 +214,11 @@ impl MCPManager {
     /// Call a tool
     pub async fn call_tool(&self, tool_name: &str, params: Value) -> Result<ToolCallResult> {
         let registry = self.tool_registry.read().await;
-        let (server_name, _) = registry
-            .get(tool_name)
+        let (server_name, _) = registry.get(tool_name)
             .ok_or_else(|| anyhow::anyhow!("Tool not found: {}", tool_name))?;
 
         let clients = self.clients.read().await;
-        let client = clients
-            .get(server_name)
+        let client = clients.get(server_name)
             .ok_or_else(|| anyhow::anyhow!("Server not connected: {}", server_name))?;
 
         tracing::info!("🔧 Calling tool: {} (server: {})", tool_name, server_name);
@@ -237,11 +238,10 @@ impl MCPManager {
         let registry = self.tool_registry.read().await;
         let query_lower = query.to_lowercase();
 
-        Ok(registry
-            .iter()
+        Ok(registry.iter()
             .filter(|(name, (_, def))| {
-                name.to_lowercase().contains(&query_lower)
-                    || def.description.to_lowercase().contains(&query_lower)
+                name.to_lowercase().contains(&query_lower) ||
+                def.description.to_lowercase().contains(&query_lower)
             })
             .map(|(name, (_, def))| (name.clone(), def.clone()))
             .collect())

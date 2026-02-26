@@ -86,8 +86,8 @@ impl DocumentFormat {
             "pptx" | "ppt" | "odp" => Self::Presentation,
             "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "go" | "java" | "c" | "cpp" | "h"
             | "hpp" | "cs" | "rb" | "php" | "swift" | "kt" | "scala" | "r" | "sql" | "sh"
-            | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd" | "yaml" | "yml" | "toml" | "xml"
-            | "ini" | "cfg" | "conf" | "env" | "dockerfile" | "makefile" => Self::Code,
+            | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd" | "yaml" | "yml" | "toml"
+            | "xml" | "ini" | "cfg" | "conf" | "env" | "dockerfile" | "makefile" => Self::Code,
             _ => Self::TXT,
         }
     }
@@ -116,7 +116,9 @@ pub enum DocumentSection {
         caption: Option<String>,
     },
     /// Synthesized relationship text from form data + annotations.
-    Relationships { content: String },
+    Relationships {
+        content: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

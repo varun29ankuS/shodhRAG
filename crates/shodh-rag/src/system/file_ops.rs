@@ -1,11 +1,11 @@
 //! Cross-platform file operations
 //! Abstraction over std::fs with enhanced error handling and cross-platform path support
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Result, Context, anyhow};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::fs;
+use std::collections::HashMap;
 
 /// File system action (can be serialized from LLM JSON)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,10 +63,7 @@ pub struct FileSystemResult {
 }
 
 /// Create folder structure recursively
-pub fn create_folder_structure(
-    base: &Path,
-    structure: &FolderStructure,
-) -> Result<FileSystemResult> {
+pub fn create_folder_structure(base: &Path, structure: &FolderStructure) -> Result<FileSystemResult> {
     let mut created_paths = Vec::new();
 
     match structure {
@@ -107,19 +104,18 @@ pub fn create_folder_structure(
 pub fn create_file(path: &Path, content: &str, overwrite: bool) -> Result<FileSystemResult> {
     // Check if file exists
     if path.exists() && !overwrite {
-        return Err(anyhow!(
-            "File already exists: {:?}. Set overwrite=true to replace.",
-            path
-        ));
+        return Err(anyhow!("File already exists: {:?}. Set overwrite=true to replace.", path));
     }
 
     // Create parent directories if they don't exist
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).context("Failed to create parent directories")?;
+        fs::create_dir_all(parent)
+            .context("Failed to create parent directories")?;
     }
 
     // Write file
-    fs::write(path, content).context(format!("Failed to write file: {:?}", path))?;
+    fs::write(path, content)
+        .context(format!("Failed to write file: {:?}", path))?;
 
     Ok(FileSystemResult {
         success: true,
@@ -140,7 +136,8 @@ pub fn copy_path(source: &Path, destination: &Path) -> Result<FileSystemResult> 
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::copy(source, destination).context("Failed to copy file")?;
+        fs::copy(source, destination)
+            .context("Failed to copy file")?;
     } else {
         // Copy directory recursively
         copy_dir_all(source, destination)?;
@@ -184,7 +181,8 @@ pub fn move_path(source: &Path, destination: &Path) -> Result<FileSystemResult> 
         fs::create_dir_all(parent)?;
     }
 
-    fs::rename(source, destination).context("Failed to move/rename")?;
+    fs::rename(source, destination)
+        .context("Failed to move/rename")?;
 
     Ok(FileSystemResult {
         success: true,
@@ -201,10 +199,12 @@ pub fn delete_path(path: &Path, recursive: bool) -> Result<FileSystemResult> {
     }
 
     if path.is_file() {
-        fs::remove_file(path).context("Failed to delete file")?;
+        fs::remove_file(path)
+            .context("Failed to delete file")?;
     } else {
         if recursive {
-            fs::remove_dir_all(path).context("Failed to delete directory")?;
+            fs::remove_dir_all(path)
+                .context("Failed to delete directory")?;
         } else {
             fs::remove_dir(path)
                 .context("Failed to delete directory (not empty, use recursive=true)")?;
@@ -245,12 +245,7 @@ pub fn list_directory(path: &Path, recursive: bool) -> Result<FileSystemResult> 
             } else {
                 String::new()
             };
-            files.push(format!(
-                "[{}] {}{}",
-                file_type,
-                path.to_string_lossy(),
-                size
-            ));
+            files.push(format!("[{}] {}{}", file_type, path.to_string_lossy(), size));
         }
     }
 
@@ -277,12 +272,7 @@ fn list_dir_recursive(path: &Path, files: &mut Vec<String>) -> Result<()> {
         } else {
             String::new()
         };
-        files.push(format!(
-            "[{}] {}{}",
-            file_type,
-            entry_path.to_string_lossy(),
-            size
-        ));
+        files.push(format!("[{}] {}{}", file_type, entry_path.to_string_lossy(), size));
 
         if entry_path.is_dir() {
             list_dir_recursive(&entry_path, files)?;
@@ -301,7 +291,10 @@ mod tests {
     fn test_create_simple_folders() {
         let temp_dir = env::temp_dir().join("shodh_test_folders");
 
-        let structure = FolderStructure::Simple(vec!["folder1".to_string(), "folder2".to_string()]);
+        let structure = FolderStructure::Simple(vec![
+            "folder1".to_string(),
+            "folder2".to_string(),
+        ]);
 
         let result = create_folder_structure(&temp_dir, &structure).unwrap();
         assert!(result.success);

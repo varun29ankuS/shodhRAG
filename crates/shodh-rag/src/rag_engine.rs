@@ -1,10 +1,11 @@
 use anyhow::{Context, Result};
+use regex::Regex;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::LazyLock;
 use uuid::Uuid;
 
 use crate::config::RAGConfig;
-use crate::embeddings::download;
 use crate::embeddings::e5::{E5Config, E5Embeddings};
 use crate::embeddings::EmbeddingModel;
 use crate::processing::chunker::TextChunker;
@@ -16,6 +17,95 @@ use crate::storage::LanceStore;
 use crate::types::{
     ChunkRecord, Citation, ComprehensiveResult, DocumentFormat, MetadataFilter, SimpleSearchResult,
 };
+
+/// Normalize a file path for consistent storage and lookup across Windows/Unix.
+/// Converts backslashes to forward slashes and lowercases on Windows so that
+/// `delete_by_source` predicates always match regardless of how the path was
+/// originally formatted.
+fn normalize_source_path(path: &Path) -> String {
+    let s = path.display().to_string().replace('\\', "/");
+    if cfg!(windows) { s.to_lowercase() } else { s }
+}
+
+// Compiled-once regex patterns for structured field extraction at ingest time.
+// Extracting emails, phones, PAN, GSTIN, amounts, and dates from chunk text
+// at zero query-time cost — no LLM needed for field-level extraction.
+static RE_EMAIL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}").unwrap()
+});
+static RE_PHONE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:\+91[\s\-]?)?(?:\d[\s\-]?){10}").unwrap()
+});
+static RE_PAN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b[A-Z]{5}\d{4}[A-Z]\b").unwrap()
+});
+static RE_GSTIN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b\d{2}[A-Z]{5}\d{4}[A-Z]\d[Z][A-Z0-9]\b").unwrap()
+});
+static RE_AMOUNT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:Rs\.?|INR|₹)\s*[\d,]+(?:\.\d{1,2})?").unwrap()
+});
+static RE_DATE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4}\b").unwrap()
+});
+static RE_INVOICE_NO: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:invoice|inv|bill)[\s.#:_\-]*(?:no\.?|number)?[\s.#:_\-]*([A-Z0-9/\-]+)").unwrap()
+});
+
+/// Extract structured fields from chunk text using regex.
+/// Returns key-value pairs to merge into chunk metadata.
+/// This runs once at ingest time — zero cost at query time.
+fn extract_structured_fields(text: &str) -> HashMap<String, String> {
+    let mut fields = HashMap::new();
+
+    // Emails
+    let emails: Vec<String> = RE_EMAIL.find_iter(text).map(|m| m.as_str().to_string()).collect();
+    if !emails.is_empty() {
+        fields.insert("extracted_emails".to_string(), emails.join(", "));
+    }
+
+    // Phone numbers (basic cleanup: strip non-digit noise)
+    let phones: Vec<String> = RE_PHONE.find_iter(text)
+        .map(|m| m.as_str().chars().filter(|c| c.is_ascii_digit() || *c == '+').collect::<String>())
+        .filter(|p| p.len() >= 10)
+        .collect();
+    if !phones.is_empty() {
+        fields.insert("extracted_phones".to_string(), phones.join(", "));
+    }
+
+    // PAN numbers
+    let pans: Vec<String> = RE_PAN.find_iter(text).map(|m| m.as_str().to_string()).collect();
+    if !pans.is_empty() {
+        fields.insert("extracted_pan".to_string(), pans.join(", "));
+    }
+
+    // GSTIN
+    let gstins: Vec<String> = RE_GSTIN.find_iter(text).map(|m| m.as_str().to_string()).collect();
+    if !gstins.is_empty() {
+        fields.insert("extracted_gstin".to_string(), gstins.join(", "));
+    }
+
+    // Amounts
+    let amounts: Vec<String> = RE_AMOUNT.find_iter(text).map(|m| m.as_str().to_string()).collect();
+    if !amounts.is_empty() {
+        fields.insert("extracted_amounts".to_string(), amounts.join("; "));
+    }
+
+    // Dates
+    let dates: Vec<String> = RE_DATE.find_iter(text).map(|m| m.as_str().to_string()).collect();
+    if !dates.is_empty() {
+        fields.insert("extracted_dates".to_string(), dates.join(", "));
+    }
+
+    // Invoice numbers
+    if let Some(cap) = RE_INVOICE_NO.captures(text) {
+        if let Some(inv) = cap.get(1) {
+            fields.insert("extracted_invoice_no".to_string(), inv.as_str().to_string());
+        }
+    }
+
+    fields
+}
 
 pub struct RAGEngine {
     store: LanceStore,
@@ -39,24 +129,22 @@ impl RAGEngine {
         .await
         .context("Failed to initialize LanceDB store")?;
 
-        let text_search = TextSearch::new(config.data_dir.to_str().unwrap_or("./data"))
-            .context("Failed to initialize Tantivy search")?;
+        let text_search = TextSearch::new(
+            config.data_dir.to_str().unwrap_or("./data"),
+        )
+        .context("Failed to initialize Tantivy search")?;
 
-        // Auto-download E5 embedding model if not present
-        download::ensure_e5_model(&config.embedding.model_dir)
-            .await
-            .context("Failed to download E5 embedding model")?;
-
-        let embeddings: Box<dyn EmbeddingModel> = {
-            let e5_config =
-                E5Config::auto_detect(&config.embedding.model_dir).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "E5 model not found at {}. Auto-download may have failed.",
-                        config.embedding.model_dir.display()
-                    )
-                })?;
-            Box::new(E5Embeddings::new(e5_config).context("Failed to load E5 embeddings")?)
-        };
+        let embeddings: Box<dyn EmbeddingModel> =
+            if config.embedding.use_e5 {
+                let e5_config = E5Config::auto_detect(&config.embedding.model_dir)
+                    .ok_or_else(|| anyhow::anyhow!("E5 model not found at configured path"))?;
+                Box::new(E5Embeddings::new(e5_config).context("Failed to load E5 embeddings")?)
+            } else {
+                return Err(anyhow::anyhow!(
+                    "No embedding model available. Place E5 model in: {}",
+                    config.embedding.model_dir.display()
+                ));
+            };
 
         let chunker = TextChunker::new(
             config.chunking.chunk_size,
@@ -64,28 +152,16 @@ impl RAGEngine {
             config.chunking.min_chunk_size,
         );
 
-        // Auto-download and load cross-encoder reranker if enabled
+        // Try to load cross-encoder reranker if enabled and model exists
         let reranker = if config.features.enable_reranking || config.features.enable_cross_encoder {
-            if let Err(e) = download::ensure_reranker_model(&config.embedding.model_dir).await {
-                tracing::warn!(
-                    "Failed to download reranker model: {}, continuing without reranking",
-                    e
-                );
-            }
             let reranker_dir = config.embedding.model_dir.join("ms-marco-MiniLM-L6-v2");
             match CrossEncoderReranker::new(&reranker_dir) {
                 Ok(r) => {
-                    tracing::info!(
-                        "Cross-encoder reranker loaded from {}",
-                        reranker_dir.display()
-                    );
+                    tracing::info!("Cross-encoder reranker loaded from {}", reranker_dir.display());
                     Some(r)
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "Reranker not available ({}), continuing without reranking",
-                        e
-                    );
+                    tracing::warn!("Reranker not available ({}), continuing without reranking", e);
                     None
                 }
             }
@@ -93,7 +169,7 @@ impl RAGEngine {
             None
         };
 
-        Ok(Self {
+        let mut engine = Self {
             store,
             text_search,
             embeddings,
@@ -101,7 +177,24 @@ impl RAGEngine {
             parser: DocumentParser::new(),
             config,
             reranker,
-        })
+        };
+
+        // After schema migration the Tantivy index is empty but LanceDB still
+        // has all the chunks.  Rebuild the text index so searches work immediately.
+        if engine.text_search.is_empty() {
+            let lance_count = engine.store.count().await.unwrap_or(0);
+            if lance_count > 0 {
+                tracing::info!(
+                    lance_chunks = lance_count,
+                    "Tantivy index empty — rebuilding from LanceDB"
+                );
+                if let Err(e) = engine.rebuild_text_index().await {
+                    tracing::error!(error = %e, "Failed to rebuild Tantivy index from LanceDB");
+                }
+            }
+        }
+
+        Ok(engine)
     }
 
     /// Ingest a document from raw content
@@ -121,7 +214,10 @@ impl RAGEngine {
             .or_else(|| metadata.get("source"))
             .cloned()
             .unwrap_or_default();
-        let space_id = metadata.get("space_id").cloned().unwrap_or_default();
+        let space_id = metadata
+            .get("space_id")
+            .cloned()
+            .unwrap_or_default();
 
         let doc_id = Uuid::new_v4();
 
@@ -134,14 +230,13 @@ impl RAGEngine {
         }
 
         // Embed the contextualized text (with document context prefix) for better vector representation
-        let chunk_texts: Vec<&str> = chunks
-            .iter()
-            .map(|c| c.contextualized_text.as_str())
-            .collect();
+        let chunk_texts: Vec<&str> = chunks.iter().map(|c| c.contextualized_text.as_str()).collect();
         let embeddings = self.embeddings.embed_documents(&chunk_texts)?;
 
-        let citation_json = serde_json::to_string(&citation).unwrap_or_else(|_| "{}".to_string());
-        let metadata_json = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string());
+        let citation_json =
+            serde_json::to_string(&citation).unwrap_or_else(|_| "{}".to_string());
+        let metadata_json =
+            serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string());
         let now = chrono::Utc::now().timestamp();
 
         let mut chunk_records = Vec::with_capacity(chunks.len());
@@ -151,6 +246,15 @@ impl RAGEngine {
         for (i, (chunk, embedding)) in chunks.iter().zip(embeddings.into_iter()).enumerate() {
             let chunk_id = chunk.id;
             chunk_ids.push(chunk_id);
+
+            // Extract structured fields (emails, phones, etc.) from chunk text
+            let mut per_chunk_meta: HashMap<String, String> = metadata.clone();
+            let extracted = extract_structured_fields(&chunk.text);
+            for (k, v) in &extracted {
+                per_chunk_meta.insert(k.clone(), v.clone());
+            }
+            let per_chunk_meta_json = serde_json::to_string(&per_chunk_meta)
+                .unwrap_or_else(|_| metadata_json.clone());
 
             // Store the original text (without context prefix) for display
             chunk_records.push(ChunkRecord {
@@ -163,7 +267,7 @@ impl RAGEngine {
                 heading: chunk.heading.clone().unwrap_or_default(),
                 vector: embedding,
                 space_id: space_id.clone(),
-                metadata_json: metadata_json.clone(),
+                metadata_json: per_chunk_meta_json,
                 citation_json: citation_json.clone(),
                 created_at: now,
             });
@@ -205,7 +309,7 @@ impl RAGEngine {
         path: &Path,
         metadata: HashMap<String, String>,
     ) -> Result<Vec<Uuid>> {
-        let source = path.display().to_string();
+        let source = normalize_source_path(path);
 
         // Delete any existing chunks for this source path to prevent duplicates.
         // This makes re-indexing idempotent: the same file always produces a clean
@@ -239,27 +343,27 @@ impl RAGEngine {
                 .get("title")
                 .cloned()
                 .unwrap_or_else(|| parsed.title.clone());
-            let space_id = merged_metadata.get("space_id").cloned().unwrap_or_default();
+            let space_id = merged_metadata
+                .get("space_id")
+                .cloned()
+                .unwrap_or_default();
 
-            let chunks =
-                self.chunker
-                    .chunk_structured(&parsed.structured_sections, &title, &source);
+            let chunks = self.chunker.chunk_structured(
+                &parsed.structured_sections,
+                &title,
+                &source,
+            );
 
             if chunks.is_empty() {
                 return Ok(Vec::new());
             }
 
             let doc_id = Uuid::new_v4();
-            let chunk_texts: Vec<&str> = chunks
-                .iter()
-                .map(|c| c.contextualized_text.as_str())
-                .collect();
+            let chunk_texts: Vec<&str> = chunks.iter().map(|c| c.contextualized_text.as_str()).collect();
             let embeddings = self.embeddings.embed_documents(&chunk_texts)?;
 
-            let citation_json =
-                serde_json::to_string(&citation).unwrap_or_else(|_| "{}".to_string());
-            let metadata_json =
-                serde_json::to_string(&merged_metadata).unwrap_or_else(|_| "{}".to_string());
+            let citation_json = serde_json::to_string(&citation).unwrap_or_else(|_| "{}".to_string());
+            let metadata_json = serde_json::to_string(&merged_metadata).unwrap_or_else(|_| "{}".to_string());
             let now = chrono::Utc::now().timestamp();
 
             let mut chunk_records = Vec::with_capacity(chunks.len());
@@ -273,6 +377,11 @@ impl RAGEngine {
                 let mut per_chunk_meta = merged_metadata.clone();
                 if let Some(heading) = &chunk.heading {
                     per_chunk_meta.insert("chunk_type".to_string(), heading.clone());
+                }
+                // Extract structured fields (emails, phones, etc.) at ingest time
+                let extracted = extract_structured_fields(&chunk.text);
+                for (k, v) in &extracted {
+                    per_chunk_meta.insert(k.clone(), v.clone());
                 }
 
                 let per_chunk_meta_json = serde_json::to_string(&per_chunk_meta)
@@ -301,19 +410,14 @@ impl RAGEngine {
                 ));
             }
 
-            self.store
-                .upsert_chunks(chunk_records)
-                .await
+            self.store.upsert_chunks(chunk_records).await
                 .context("Failed to store structured chunks in LanceDB")?;
             self.text_search.index_chunks_batch(&fts_batch)?;
             self.text_search.commit()?;
 
             tracing::info!(
                 "Ingested structured document '{}' ({} chunks, {} sections) into space '{}'",
-                title,
-                chunk_ids.len(),
-                parsed.structured_sections.len(),
-                space_id,
+                title, chunk_ids.len(), parsed.structured_sections.len(), space_id,
             );
 
             return Ok(chunk_ids);
@@ -324,7 +428,11 @@ impl RAGEngine {
     }
 
     /// Search with hybrid vector + FTS fusion
-    pub async fn search(&self, query: &str, k: usize) -> Result<Vec<SimpleSearchResult>> {
+    pub async fn search(
+        &self,
+        query: &str,
+        k: usize,
+    ) -> Result<Vec<SimpleSearchResult>> {
         let results = self.search_comprehensive(query, k, None).await?;
 
         Ok(results
@@ -429,7 +537,11 @@ impl RAGEngine {
         // Vector search via LanceDB
         let vector_hits = self
             .store
-            .vector_search(&query_embedding, candidate_count, lance_filter.as_deref())
+            .vector_search(
+                &query_embedding,
+                candidate_count,
+                lance_filter.as_deref(),
+            )
             .await?;
 
         let vector_results: Vec<(String, f32)> = vector_hits
@@ -438,15 +550,24 @@ impl RAGEngine {
             .collect();
 
         // Full-text search via Tantivy — use SAME candidate count for balanced fusion
-        let fts_results =
-            self.text_search
-                .search_filtered(query, candidate_count, source_filter)?;
+        let fts_results = self.text_search.search_filtered(
+            query,
+            candidate_count,
+            source_filter,
+        )?;
 
+        // Log source diversity at each stage for diagnostics
+        let vector_sources: std::collections::HashSet<&str> = vector_hits
+            .iter()
+            .map(|h| h.source.as_str())
+            .collect();
         tracing::info!(
             query = query,
             candidate_count = candidate_count,
             vector_hits = vector_hits.len(),
+            vector_unique_sources = vector_sources.len(),
             fts_hits = fts_results.len(),
+            vector_sources = ?vector_sources,
             "Hybrid search candidates"
         );
 
@@ -533,6 +654,20 @@ impl RAGEngine {
             // Skip results where we can't find full data (shouldn't happen now)
         }
 
+        // Log source diversity of built results
+        {
+            let built_sources: std::collections::HashSet<&str> = results
+                .iter()
+                .filter_map(|r| r.metadata.get("source_file").map(|s| s.as_str()))
+                .collect();
+            tracing::info!(
+                built_results = results.len(),
+                unique_sources = built_sources.len(),
+                sources = ?built_sources,
+                "Results built from fused candidates"
+            );
+        }
+
         // Filter by minimum score threshold
         let threshold = self.config.search.min_score_threshold;
         let pre_filter_count = results.len();
@@ -558,7 +693,8 @@ impl RAGEngine {
 
                 match reranker.rerank(query, &candidates, candidates.len()) {
                     Ok(reranked) => {
-                        let rerank_scores: HashMap<String, f32> = reranked.into_iter().collect();
+                        let rerank_scores: HashMap<String, f32> =
+                            reranked.into_iter().collect();
 
                         // Update scores where reranking succeeded; keep original score
                         // for any candidates the cross-encoder couldn't tokenize.
@@ -568,9 +704,7 @@ impl RAGEngine {
                             }
                         }
                         results.sort_by(|a, b| {
-                            b.score
-                                .partial_cmp(&a.score)
-                                .unwrap_or(std::cmp::Ordering::Equal)
+                            b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
                         });
                     }
                     Err(e) => {
@@ -580,9 +714,25 @@ impl RAGEngine {
             }
         }
 
-        // MMR diversity: penalize repeated doc_id to spread results across documents
-        // Applied after reranking so diversity uses the final quality scores
-        Self::apply_mmr_diversity(&mut results, 0.7);
+        // MMR diversity: penalize repeated source files to spread results across documents.
+        // Each additional chunk from the same source gets score *= lambda^count.
+        // This naturally balances depth vs diversity without an artificial hard cap.
+        Self::apply_mmr_diversity(&mut results, 0.5);
+
+        // Log final diversity before truncation
+        {
+            let final_sources: std::collections::HashSet<&str> = results
+                .iter()
+                .filter_map(|r| r.metadata.get("source_file").map(|s| s.as_str()))
+                .collect();
+            tracing::info!(
+                post_mmr_results = results.len(),
+                unique_sources = final_sources.len(),
+                scores = ?results.iter().map(|r| format!("{:.3}", r.score)).collect::<Vec<_>>(),
+                sources = ?results.iter().filter_map(|r| r.metadata.get("source_file").map(|s| s.as_str())).collect::<Vec<_>>(),
+                "Post-MMR+cap diversity"
+            );
+        }
 
         // Final truncation to requested k
         results.truncate(k);
@@ -645,10 +795,43 @@ impl RAGEngine {
         }
     }
 
-    /// Delete all documents from a specific source/folder
+    /// Delete all chunks belonging to a specific document (by doc_id).
+    /// Removes from both LanceDB and Tantivy.
+    pub async fn delete_by_doc_id(&mut self, doc_id: &str) -> Result<usize> {
+        // Get all chunk IDs for this doc so we can remove from Tantivy
+        let predicate = format!("doc_id = '{}'", doc_id.replace('\'', "''"));
+        let chunks = self.store.list_chunks(Some(&predicate), 100_000).await?;
+
+        for chunk in &chunks {
+            let _ = self.text_search.delete_by_id(&chunk.id);
+        }
+        if !chunks.is_empty() {
+            self.text_search.commit()?;
+        }
+
+        let deleted = self.store.delete_by_doc_id(doc_id).await?;
+        tracing::info!(doc_id = %doc_id, deleted = deleted, "Deleted document by doc_id");
+        Ok(deleted)
+    }
+
+    /// Delete all documents from a specific source/folder.
+    /// The source path is normalized the same way as during indexing so that
+    /// Windows backslash / mixed-case paths always match.
     pub async fn delete_by_source(&mut self, source: &str) -> Result<usize> {
-        let deleted = self.store.delete_by_source(source).await?;
-        self.text_search.delete_by_source(source)?;
+        let normalized = normalize_source_path(Path::new(source));
+        let deleted = self.store.delete_by_source(&normalized).await?;
+        self.text_search.delete_by_source(&normalized)?;
+        self.text_search.commit()?;
+        Ok(deleted)
+    }
+
+    /// Delete all documents whose source starts with the given folder path.
+    /// Normalizes the prefix and uses starts_with matching so that a folder
+    /// path matches all files indexed under it.
+    pub async fn delete_by_source_prefix(&mut self, folder: &str) -> Result<usize> {
+        let normalized = normalize_source_path(Path::new(folder));
+        let deleted = self.store.delete_by_source_prefix(&normalized).await?;
+        self.text_search.delete_by_source_prefix(&normalized)?;
         self.text_search.commit()?;
         Ok(deleted)
     }
@@ -726,13 +909,17 @@ impl RAGEngine {
     ) -> Result<Vec<ComprehensiveResult>> {
         let predicate = filter.as_ref().and_then(|f| f.to_lance_predicate());
 
-        let hits = self.store.list_chunks(predicate.as_deref(), limit).await?;
+        let hits = self
+            .store
+            .list_chunks(predicate.as_deref(), limit)
+            .await?;
 
         let mut results = Vec::with_capacity(hits.len());
         for hit in hits {
             let metadata: HashMap<String, String> =
                 serde_json::from_str(&hit.metadata_json).unwrap_or_default();
-            let citation: Citation = serde_json::from_str(&hit.citation_json).unwrap_or_default();
+            let citation: Citation =
+                serde_json::from_str(&hit.citation_json).unwrap_or_default();
 
             let mut full_metadata = metadata;
             full_metadata.insert("doc_id".to_string(), hit.doc_id.clone());
@@ -753,6 +940,16 @@ impl RAGEngine {
         Ok(results)
     }
 
+    /// Raw LanceDB query — returns SearchHit objects without wrapping in ComprehensiveResult.
+    /// Useful for ID lookups during deletion.
+    pub async fn list_documents_raw(
+        &self,
+        predicate: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<crate::storage::SearchHit>> {
+        self.store.list_chunks(predicate, limit).await
+    }
+
     /// Access to the embedding model for external use
     pub fn embeddings(&self) -> &dyn EmbeddingModel {
         self.embeddings.as_ref()
@@ -765,11 +962,46 @@ impl RAGEngine {
 
     /// Trigger index creation if needed (after large ingestion)
     pub async fn optimize(&self) -> Result<()> {
+        // Compact LanceDB to remove tombstoned rows from previous deletions
+        self.store.compact().await?;
+        // Create vector index if enough rows exist
         self.store.create_index_if_needed().await
     }
 
+    /// Rebuild the Tantivy full-text index from LanceDB.
+    /// Used after schema migration wipes the old index, or to repair inconsistencies.
+    pub async fn rebuild_text_index(&mut self) -> Result<()> {
+        self.text_search.clear()?;
+
+        let all_chunks = self.store.list_chunks(None, 1_000_000).await?;
+        let total = all_chunks.len();
+
+        if total == 0 {
+            tracing::info!("No chunks in LanceDB — nothing to rebuild");
+            return Ok(());
+        }
+
+        let batch: Vec<(String, String, String, String)> = all_chunks
+            .into_iter()
+            .map(|hit| (hit.id, hit.text, hit.title, hit.source))
+            .collect();
+
+        self.text_search.index_chunks_batch(&batch)?;
+        self.text_search.commit()?;
+
+        let indexed = self.text_search.count().unwrap_or(0);
+        tracing::info!(
+            total_chunks = total,
+            indexed = indexed,
+            "Tantivy index rebuilt from LanceDB"
+        );
+        Ok(())
+    }
+
     /// Remove near-duplicate results using Jaccard similarity on word sets.
-    /// Chunks with overlapping windows often produce near-identical content.
+    /// Only deduplicates chunks from the SAME source file (overlapping windows).
+    /// Chunks from different files are never merged — even if they have similar
+    /// boilerplate (e.g. invoices with the same company header).
     fn deduplicate_results(results: &mut Vec<ComprehensiveResult>, threshold: f32) {
         use std::collections::HashSet;
         let word_sets: Vec<HashSet<&str>> = results
@@ -777,10 +1009,24 @@ impl RAGEngine {
             .map(|r| r.snippet.split_whitespace().collect::<HashSet<_>>())
             .collect();
 
+        let sources: Vec<String> = results
+            .iter()
+            .map(|r| {
+                r.metadata
+                    .get("source_file")
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect();
+
         let mut keep = Vec::new();
         for i in 0..results.len() {
             let mut is_dup = false;
             for &j in &keep {
+                // Only dedup within the same source file
+                if sources[i] != sources[j] {
+                    continue;
+                }
                 let intersection = word_sets[i].intersection(&word_sets[j]).count();
                 let union = word_sets[i].union(&word_sets[j]).count();
                 if union > 0 && (intersection as f32 / union as f32) > threshold {
@@ -803,20 +1049,25 @@ impl RAGEngine {
             }
         }
         // Restore original order by score (descending)
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     }
 
-    /// Maximal Marginal Relevance — penalize repeated documents to ensure diversity.
-    /// Each subsequent chunk from the same doc_id gets score *= lambda^count.
+    /// Hard cap on results per source file to guarantee diversity across documents.
+    /// After scoring and MMR, retain at most `max_per_source` chunks from any single file.
+    /// Maximal Marginal Relevance — diminishing returns per source file.
+    /// Maximal Marginal Relevance — diminishing returns per source file.
+    /// Each additional chunk from the same source gets score *= lambda^count.
+    /// This naturally balances depth (multiple chunks from one file) vs diversity
+    /// (spreading across files) without any hard cap.
     fn apply_mmr_diversity(results: &mut Vec<ComprehensiveResult>, lambda: f32) {
-        let mut doc_seen: HashMap<String, u32> = HashMap::new();
+        let mut source_seen: HashMap<String, u32> = HashMap::new();
         for result in results.iter_mut() {
-            let doc_id = result.metadata.get("doc_id").cloned().unwrap_or_default();
-            let count = doc_seen.entry(doc_id).or_insert(0);
+            let source = result
+                .metadata
+                .get("source_file")
+                .cloned()
+                .unwrap_or_default();
+            let count = source_seen.entry(source).or_insert(0);
             if *count > 0 {
                 result.score *= lambda.powi(*count as i32);
             }

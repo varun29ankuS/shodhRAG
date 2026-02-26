@@ -4,14 +4,16 @@
 //! feeds results back, and loops until the LLM produces a final text response.
 //! Works with any provider that supports `chat()` (OpenAI, Anthropic, Google, Ollama).
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use super::context::AgentContext;
+use crate::llm::{
+    ChatMessage, ChatResponse, ChatStreamEvent, LLMManager, ToolCall, ToolSchema,
+};
 use super::tools::{AgentTool, ToolRegistry};
-use crate::llm::{ChatMessage, ChatResponse, ChatStreamEvent, LLMManager, ToolCall, ToolSchema};
+use super::context::AgentContext;
 
 /// Configuration for the tool-calling loop.
 #[derive(Debug, Clone)]
@@ -88,7 +90,7 @@ pub async fn run_tool_loop(
                 "Tool loop hit max iterations, forcing text response"
             );
             // Ask LLM to respond without tools
-            let response = llm.chat(messages, &[]).await?;
+            let response = llm.chat(messages, &[], ).await?;
             let content = match response {
                 ChatResponse::Content(text) => text,
                 ChatResponse::ToolCalls(_) => {
@@ -117,10 +119,7 @@ pub async fn run_tool_loop(
 
         match response {
             ChatResponse::Content(text) => {
-                tracing::debug!(
-                    iteration = iterations,
-                    "Tool loop: LLM returned content, done"
-                );
+                tracing::debug!(iteration = iterations, "Tool loop: LLM returned content, done");
                 return Ok(ToolLoopResult {
                     content: text,
                     tool_invocations: invocations,
@@ -175,7 +174,11 @@ pub async fn run_tool_loop(
                     invocations.push(invocation);
 
                     // Append tool result message
-                    messages.push(ChatMessage::tool_result(&tc.id, &tc.name, &output));
+                    messages.push(ChatMessage::tool_result(
+                        &tc.id,
+                        &tc.name,
+                        &output,
+                    ));
                 }
             }
         }
@@ -222,7 +225,9 @@ pub async fn run_tool_loop_stream(
             match event {
                 ChatStreamEvent::ContentDelta(delta) => {
                     content_acc.push_str(&delta);
-                    let _ = event_tx.send(ToolLoopEvent::ContentDelta(delta)).await;
+                    let _ = event_tx
+                        .send(ToolLoopEvent::ContentDelta(delta))
+                        .await;
                 }
                 ChatStreamEvent::ToolCallComplete(tc) => {
                     let _ = event_tx
@@ -252,8 +257,13 @@ pub async fn run_tool_loop_stream(
 
         for tc in &tool_calls {
             let start = std::time::Instant::now();
-            let result =
-                execute_tool_call(tool_registry, tc, agent_context, config.tool_timeout_secs).await;
+            let result = execute_tool_call(
+                tool_registry,
+                tc,
+                agent_context,
+                config.tool_timeout_secs,
+            )
+            .await;
             let duration_ms = start.elapsed().as_millis() as u64;
 
             let (output, success) = match result {
@@ -263,7 +273,8 @@ pub async fn run_tool_loop_stream(
 
             let invocation = ToolInvocation {
                 tool_name: tc.name.clone(),
-                arguments: serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({})),
+                arguments: serde_json::from_str(&tc.arguments)
+                    .unwrap_or(serde_json::json!({})),
                 result: output.clone(),
                 success,
                 duration_ms,
@@ -313,14 +324,16 @@ async fn execute_tool_call(
 
     let future = tool.execute(input, agent_context.clone());
 
-    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), future).await {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        future,
+    )
+    .await
+    {
         Ok(result) => result,
         Err(_) => Ok(super::tools::ToolResult {
             success: false,
-            output: format!(
-                "Tool '{}' timed out after {}s",
-                tool_call.name, timeout_secs
-            ),
+            output: format!("Tool '{}' timed out after {}s", tool_call.name, timeout_secs),
             data: serde_json::json!({}),
             error: Some("timeout".to_string()),
         }),
@@ -328,9 +341,7 @@ async fn execute_tool_call(
 }
 
 /// Convert ToolDescriptions from the registry into ToolSchemas for the LLM.
-pub fn tool_descriptions_to_schemas(
-    descriptions: &[super::tools::ToolDescription],
-) -> Vec<ToolSchema> {
+pub fn tool_descriptions_to_schemas(descriptions: &[super::tools::ToolDescription]) -> Vec<ToolSchema> {
     descriptions
         .iter()
         .map(|d| ToolSchema {

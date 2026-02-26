@@ -1,13 +1,13 @@
 //! Thin Tauri wrappers for space management commands.
 //! Business logic lives in shodh_rag::space::SpaceManager.
 
-use crate::rag_commands::RagState;
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use shodh_rag::comprehensive_system::{Citation, DocumentFormat};
 use std::collections::HashMap;
 use tauri::State;
+use crate::rag_commands::RagState;
+use shodh_rag::comprehensive_system::{Citation, DocumentFormat};
 use uuid::Uuid;
+use chrono::Utc;
 
 /// Frontend-friendly Space type (camelCase, includes color).
 /// Maps to/from shodh_rag::space::Space.
@@ -49,8 +49,7 @@ pub async fn create_space(
     color: Option<String>,
 ) -> Result<Space, String> {
     let created_space = if let Ok(space_manager) = state.space_manager.lock() {
-        space_manager
-            .create_space(name.clone(), emoji.clone())
+        space_manager.create_space(name.clone(), emoji.clone())
             .map_err(|e| format!("Failed to create space in manager: {}", e))?
     } else {
         return Err("Failed to access space manager".to_string());
@@ -82,15 +81,12 @@ pub async fn create_space(
         page_numbers: None,
     };
 
-    rag_guard
-        .add_document(
-            &format!("Space: {} {}", space.emoji, space.name),
-            DocumentFormat::TXT,
-            metadata,
-            citation,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+    rag_guard.add_document(
+        &format!("Space: {} {}", space.emoji, space.name),
+        DocumentFormat::TXT,
+        metadata,
+        citation,
+    ).await.map_err(|e| e.to_string())?;
 
     Ok(space)
 }
@@ -107,8 +103,7 @@ pub async fn get_spaces(state: State<'_, RagState>) -> Result<Vec<Space>, String
 
     // Fallback: list from RAG
     let rag_guard = state.rag.read().await;
-    let results = rag_guard
-        .list_documents(None, 10000)
+    let results = rag_guard.list_documents(None, 10000)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -123,36 +118,22 @@ pub async fn get_spaces(state: State<'_, RagState>) -> Result<Vec<Space>, String
                         .find(|s| &s.id == space_id)
                         .map(|s| s.document_count)
                         .unwrap_or(0)
-                } else {
-                    0
-                }
-            } else {
-                0
-            }
-        } else {
-            0
-        };
+                } else { 0 }
+            } else { 0 }
+        } else { 0 };
 
         spaces.push(Space {
             id: metadata.get("space_id").unwrap_or(&String::new()).clone(),
             name: metadata.get("space_name").unwrap_or(&String::new()).clone(),
-            emoji: metadata
-                .get("space_emoji")
-                .unwrap_or(&String::new())
-                .clone(),
+            emoji: metadata.get("space_emoji").unwrap_or(&String::new()).clone(),
             color: metadata.get("space_color").cloned(),
             document_count: doc_count,
-            last_active: metadata
-                .get("last_active")
-                .unwrap_or(&String::new())
-                .clone(),
-            is_shared: metadata
-                .get("is_shared")
+            last_active: metadata.get("last_active").unwrap_or(&String::new()).clone(),
+            is_shared: metadata.get("is_shared")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(false),
             folder_path: metadata.get("folder_path").cloned(),
-            watching_changes: metadata
-                .get("watching_changes")
+            watching_changes: metadata.get("watching_changes")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(false),
         });
@@ -194,10 +175,8 @@ pub async fn add_document_to_space(
             page_numbers: None,
         };
 
-        rag_guard
-            .add_document(&content, DocumentFormat::TXT, metadata, citation)
-            .await
-            .map_err(|e| e.to_string())?;
+        rag_guard.add_document(&content, DocumentFormat::TXT, metadata, citation)
+            .await.map_err(|e| e.to_string())?;
     }
 
     Ok(doc_id)
@@ -216,20 +195,16 @@ pub async fn search_in_space(
         space_id: Some(space_id.clone()),
         ..Default::default()
     };
-    let filtered_results = rag_guard
-        .search_comprehensive(&query, max_results, Some(filter))
+    let filtered_results = rag_guard.search_comprehensive(&query, max_results, Some(filter))
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(filtered_results
-        .into_iter()
-        .map(|r| SearchResult {
-            id: r.id.to_string(),
-            score: r.score,
-            snippet: r.snippet,
-            metadata: r.metadata,
-        })
-        .collect())
+    Ok(filtered_results.into_iter().map(|r| SearchResult {
+        id: r.id.to_string(),
+        score: r.score,
+        snippet: r.snippet,
+        metadata: r.metadata,
+    }).collect())
 }
 
 #[tauri::command]
@@ -240,31 +215,25 @@ pub async fn search_global(
 ) -> Result<Vec<SearchResult>, String> {
     let rag_guard = state.rag.read().await;
 
-    let all_results = rag_guard
-        .search_comprehensive(&query, max_results * 2, None)
+    let all_results = rag_guard.search_comprehensive(&query, max_results * 2, None)
         .await
         .map_err(|e| e.to_string())?;
 
-    let results: Vec<_> = all_results
-        .into_iter()
+    let results: Vec<_> = all_results.into_iter()
         .filter(|r| {
-            r.metadata
-                .get("doc_type")
+            r.metadata.get("doc_type")
                 .map(|dt| dt == "document")
                 .unwrap_or(true)
         })
         .take(max_results)
         .collect();
 
-    Ok(results
-        .into_iter()
-        .map(|r| SearchResult {
-            id: r.id.to_string(),
-            score: r.score,
-            snippet: r.snippet,
-            metadata: r.metadata,
-        })
-        .collect())
+    Ok(results.into_iter().map(|r| SearchResult {
+        id: r.id.to_string(),
+        score: r.score,
+        snippet: r.snippet,
+        metadata: r.metadata,
+    }).collect())
 }
 
 #[tauri::command]
@@ -273,9 +242,38 @@ pub async fn remove_document(
     space_id: String,
     document_id: String,
 ) -> Result<(), String> {
+    // Remove from space manager metadata
     if let Ok(space_manager) = state.space_manager.lock() {
         let _ = space_manager.remove_document_from_space(&space_id, &document_id);
     }
+
+    // Also delete from the actual RAG index (LanceDB + Tantivy).
+    // The document_id might be a chunk UUID — resolve to doc_id and delete all chunks.
+    let mut rag_guard = state.rag.write().await;
+    let rag = &mut *rag_guard;
+
+    let doc_id = {
+        let predicate = format!("doc_id = '{}'", document_id.replace('\'', "''"));
+        let is_doc_id = rag.list_documents_raw(Some(&predicate), 1).await
+            .map(|c| !c.is_empty()).unwrap_or(false);
+        if is_doc_id {
+            document_id.clone()
+        } else {
+            let predicate = format!("id = '{}'", document_id.replace('\'', "''"));
+            match rag.list_documents_raw(Some(&predicate), 1).await {
+                Ok(hits) if !hits.is_empty() => hits[0].doc_id.clone(),
+                _ => {
+                    tracing::warn!(document_id = %document_id, "Document not found in RAG index for deletion");
+                    return Ok(());
+                }
+            }
+        }
+    };
+
+    if let Err(e) = rag.delete_by_doc_id(&doc_id).await {
+        tracing::error!(doc_id = %doc_id, error = %e, "Failed to delete document from RAG index");
+    }
+
     Ok(())
 }
 
@@ -318,56 +316,45 @@ pub async fn get_space_documents(
         space_id: Some(space_id.clone()),
         ..Default::default()
     };
-    let results = rag_guard
-        .list_documents(Some(filter), 10000)
+    let results = rag_guard.list_documents(Some(filter), 10000)
         .await
         .map_err(|e| format!("Failed to list documents: {}", e))?;
 
-    let final_results: Vec<_> = results
-        .into_iter()
+    let final_results: Vec<_> = results.into_iter()
         .filter(|r| {
-            let is_document = r
-                .metadata
-                .get("doc_type")
+            let is_document = r.metadata.get("doc_type")
                 .map(|t| t == "document")
                 .unwrap_or(true);
-            let is_not_metadata = !r
-                .metadata
-                .get("doc_type")
+            let is_not_metadata = !r.metadata.get("doc_type")
                 .map(|t| t == "space_metadata")
                 .unwrap_or(false);
             is_document && is_not_metadata
         })
         .collect();
 
-    Ok(final_results
-        .into_iter()
-        .map(|r| {
-            let title = r
-                .metadata
-                .get("title")
-                .or_else(|| r.metadata.get("filename"))
-                .or_else(|| r.metadata.get("file_name"))
-                .cloned()
-                .or_else(|| {
-                    r.metadata.get("file_path").map(|path| {
-                        std::path::Path::new(path)
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("Untitled")
-                            .to_string()
-                    })
+    Ok(final_results.into_iter().map(|r| {
+        let title = r.metadata.get("title")
+            .or_else(|| r.metadata.get("filename"))
+            .or_else(|| r.metadata.get("file_name"))
+            .cloned()
+            .or_else(|| {
+                r.metadata.get("file_path").map(|path| {
+                    std::path::Path::new(path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("Untitled")
+                        .to_string()
                 })
-                .unwrap_or_else(|| "Untitled".to_string());
+            })
+            .unwrap_or_else(|| "Untitled".to_string());
 
-            Document {
-                id: r.id.to_string(),
-                title,
-                content: r.snippet,
-                metadata: r.metadata,
-            }
-        })
-        .collect())
+        Document {
+            id: r.id.to_string(),
+            title,
+            content: r.snippet,
+            metadata: r.metadata,
+        }
+    }).collect())
 }
 
 #[derive(Debug, Serialize)]
@@ -392,19 +379,15 @@ pub async fn set_space_system_prompt(
     space_id: String,
     system_prompt: String,
 ) -> Result<(), String> {
-    let space_manager = state
-        .space_manager
-        .lock()
+    let space_manager = state.space_manager.lock()
         .map_err(|e| format!("Lock failed: {}", e))?;
 
     let prompt_value = system_prompt.trim().to_string();
     if prompt_value.is_empty() {
-        space_manager
-            .remove_space_metadata(&space_id, "system_prompt")
+        space_manager.remove_space_metadata(&space_id, "system_prompt")
             .map_err(|e| format!("Failed to clear system prompt: {}", e))?;
     } else {
-        space_manager
-            .set_space_metadata(&space_id, "system_prompt", &prompt_value)
+        space_manager.set_space_metadata(&space_id, "system_prompt", &prompt_value)
             .map_err(|e| format!("Failed to set system prompt: {}", e))?;
     }
 
@@ -416,13 +399,10 @@ pub async fn get_space_system_prompt(
     state: State<'_, RagState>,
     space_id: String,
 ) -> Result<String, String> {
-    let space_manager = state
-        .space_manager
-        .lock()
+    let space_manager = state.space_manager.lock()
         .map_err(|e| format!("Lock failed: {}", e))?;
 
-    let prompt = space_manager
-        .get_space_metadata(&space_id, "system_prompt")
+    let prompt = space_manager.get_space_metadata(&space_id, "system_prompt")
         .unwrap_or_default();
 
     Ok(prompt)

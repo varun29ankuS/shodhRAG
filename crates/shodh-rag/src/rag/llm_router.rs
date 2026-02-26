@@ -99,24 +99,12 @@ fn build_router_prompt(user_message: &str, context: &ConversationContext) -> Str
     }
 
     if !context.entities.is_empty() {
-        let entities: String = context
-            .entities
-            .iter()
-            .take(5)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
+        let entities: String = context.entities.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
         parts.push(format!("Entities mentioned: {}", entities));
     }
 
     if !context.files_discussed.is_empty() {
-        let files: String = context
-            .files_discussed
-            .iter()
-            .take(3)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
+        let files: String = context.files_discussed.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
         parts.push(format!("Files discussed: {}", files));
     }
 
@@ -150,22 +138,34 @@ fn parse_router_response(raw: &str) -> Result<RouterOutput> {
         return Ok(output);
     }
 
-    // Lenient parse: extract fields manually
-    let intent = if json_str.contains("\"tool_action\"") {
-        RouterIntent::ToolAction
-    } else if json_str.contains("\"search\"") && !json_str.contains("\"agent_creation\"") {
-        RouterIntent::Search
-    } else if json_str.contains("\"code_generation\"") {
-        RouterIntent::CodeGeneration
-    } else if json_str.contains("\"agent_creation\"") {
-        RouterIntent::AgentCreation
-    } else {
-        RouterIntent::General
+    // Lenient parse: extract fields manually.
+    // Only trust high-confidence intents from the "intent" field value.
+    // AgentCreation and ToolAction require exact field match to prevent
+    // small models from triggering dangerous actions from stray text.
+    let intent_field = extract_json_string(json_str, "intent")
+        .unwrap_or_default();
+
+    let intent = match intent_field.as_str() {
+        "search" => RouterIntent::Search,
+        "code_generation" => RouterIntent::CodeGeneration,
+        "agent_creation" => RouterIntent::AgentCreation,
+        "tool_action" => RouterIntent::ToolAction,
+        "general" => RouterIntent::General,
+        // If the intent field wasn't parseable, fall back conservatively
+        _ => {
+            if json_str.contains("\"search\"") {
+                RouterIntent::Search
+            } else {
+                RouterIntent::General
+            }
+        }
     };
 
-    let rewritten_query = extract_json_string(json_str, "rewritten_query").unwrap_or_default();
+    let rewritten_query = extract_json_string(json_str, "rewritten_query")
+        .unwrap_or_default();
 
-    let search_queries = extract_json_array(json_str, "search_queries").unwrap_or_default();
+    let search_queries = extract_json_array(json_str, "search_queries")
+        .unwrap_or_default();
 
     let reasoning = extract_json_string(json_str, "reasoning")
         .unwrap_or_else(|| "LLM router (partial parse)".to_string());
@@ -284,6 +284,48 @@ pub async fn route_with_llm(
         latency_ms,
     };
 
+    // Safety: if the router took too long (>30s), the model is too slow for
+    // structured classification. Override with a conservative General intent
+    // to prevent unreliable routing from triggering agent/tool actions.
+    if latency_ms > 30_000 {
+        tracing::warn!(
+            latency_ms = latency_ms,
+            original_intent = ?output.intent,
+            "LLM router too slow for reliable classification — falling back to rule-based"
+        );
+        return Err(anyhow::anyhow!("Router latency {}ms exceeds 30s threshold", latency_ms));
+    }
+
+    // Safety: AgentCreation and ToolAction are high-stakes intents that mutate state.
+    // Only trust them if the rewritten_query is non-empty and the model produced
+    // a reasonable response (not just echoing the system prompt).
+    if matches!(output.intent, RouterIntent::AgentCreation | RouterIntent::ToolAction) {
+        let query_lower = user_message.to_lowercase();
+        let has_action_signal = query_lower.contains("create")
+            || query_lower.contains("build")
+            || query_lower.contains("make")
+            || query_lower.contains("design")
+            || query_lower.contains("add")
+            || query_lower.contains("set")
+            || query_lower.contains("schedule")
+            || query_lower.contains("remind")
+            || query_lower.contains("delete")
+            || query_lower.contains("remove")
+            || query_lower.contains("update")
+            || query_lower.contains("agent")
+            || query_lower.contains("crew")
+            || query_lower.contains("task")
+            || query_lower.contains("todo");
+
+        if !has_action_signal {
+            tracing::info!(
+                original_intent = ?output.intent,
+                "Downgraded intent to General — no action keywords in user message"
+            );
+            output.intent = RouterIntent::General;
+        }
+    }
+
     // Ensure search_queries is populated for Search intent
     if output.intent == RouterIntent::Search && output.search_queries.is_empty() {
         output.search_queries.push(output.rewritten_query.clone());
@@ -369,8 +411,7 @@ mod tests {
     #[test]
     fn test_build_prompt_with_context() {
         let mut ctx = ConversationContext::default();
-        ctx.recent_messages
-            .push("user: who is anushree".to_string());
+        ctx.recent_messages.push("user: who is anushree".to_string());
         ctx.entities.push("Anushree Sharma".to_string());
 
         let prompt = build_router_prompt("what is her salary", &ctx);

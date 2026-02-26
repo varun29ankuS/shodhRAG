@@ -8,9 +8,9 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::rag_engine::RAGEngine;
 use super::context::AgentContext;
 use super::tools::{AgentTool, ToolInput, ToolResult};
-use crate::rag_engine::RAGEngine;
 
 /// Search documents in the knowledge base using hybrid retrieval.
 pub struct LiveRAGSearchTool {
@@ -25,12 +25,8 @@ impl LiveRAGSearchTool {
 
 #[async_trait]
 impl AgentTool for LiveRAGSearchTool {
-    fn id(&self) -> &str {
-        "search_documents"
-    }
-    fn name(&self) -> &str {
-        "Search Documents"
-    }
+    fn id(&self) -> &str { "search_documents" }
+    fn name(&self) -> &str { "Search Documents" }
 
     fn description(&self) -> &str {
         "Search the user's indexed documents using hybrid semantic + keyword search. \
@@ -124,12 +120,8 @@ impl ListSourcesTool {
 
 #[async_trait]
 impl AgentTool for ListSourcesTool {
-    fn id(&self) -> &str {
-        "list_sources"
-    }
-    fn name(&self) -> &str {
-        "List Sources"
-    }
+    fn id(&self) -> &str { "list_sources" }
+    fn name(&self) -> &str { "List Sources" }
 
     fn description(&self) -> &str {
         "List all indexed document sources in the knowledge base. \
@@ -149,10 +141,7 @@ impl AgentTool for ListSourcesTool {
         let rag = self.rag.read().await;
 
         let stats = rag.get_statistics().await.unwrap_or_default();
-        let total_chunks = stats
-            .get("total_chunks")
-            .cloned()
-            .unwrap_or_else(|| "0".to_string());
+        let total_chunks = stats.get("total_chunks").cloned().unwrap_or_else(|| "0".to_string());
         let doc_count = rag.count_documents().await.unwrap_or(0);
         let doc_info = rag.get_document_info().await.unwrap_or_default();
 
@@ -198,12 +187,8 @@ impl GetDocumentChunksTool {
 
 #[async_trait]
 impl AgentTool for GetDocumentChunksTool {
-    fn id(&self) -> &str {
-        "get_document_chunks"
-    }
-    fn name(&self) -> &str {
-        "Get Document Chunks"
-    }
+    fn id(&self) -> &str { "get_document_chunks" }
+    fn name(&self) -> &str { "Get Document Chunks" }
 
     fn description(&self) -> &str {
         "Retrieve all chunks from a specific document by its doc_id. \
@@ -234,15 +219,15 @@ impl AgentTool for GetDocumentChunksTool {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'doc_id' parameter"))?;
 
-        let max_chunks = input.parameters["max_chunks"].as_u64().unwrap_or(20) as usize;
+        let max_chunks = input.parameters["max_chunks"]
+            .as_u64()
+            .unwrap_or(20) as usize;
 
         let rag = self.rag.read().await;
 
         // Use search with the document title/source as query to find chunks from that document
         // This is a pragmatic approach since list_documents doesn't filter by doc_id directly
-        let results = rag
-            .search(&format!("doc_id:{}", doc_id), max_chunks)
-            .await?;
+        let results = rag.search(&format!("doc_id:{}", doc_id), max_chunks).await?;
 
         // Filter to only chunks from the requested document
         let results: Vec<_> = results
@@ -287,7 +272,10 @@ impl AgentTool for GetDocumentChunksTool {
 }
 
 /// Register all live RAG tools into a ToolRegistry.
-pub fn register_rag_tools(registry: &mut super::tools::ToolRegistry, rag: Arc<RwLock<RAGEngine>>) {
+pub fn register_rag_tools(
+    registry: &mut super::tools::ToolRegistry,
+    rag: Arc<RwLock<RAGEngine>>,
+) {
     registry.register(Arc::new(LiveRAGSearchTool::new(rag.clone())));
     registry.register(Arc::new(ListSourcesTool::new(rag.clone())));
     registry.register(Arc::new(GetDocumentChunksTool::new(rag)));

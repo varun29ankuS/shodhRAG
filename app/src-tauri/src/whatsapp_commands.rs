@@ -1,25 +1,18 @@
 //! Tauri commands for WhatsApp Bot
 
+use crate::whatsapp_bot::{WhatsAppBot, WhatsAppContact, WhatsAppMessage, BotResponse, ContactPreferences, ResponseStyle, BotStats};
 use crate::rag_commands::RagState;
 use crate::space_commands;
-use crate::space_manager::SpaceManager;
-use crate::whatsapp_bot::{
-    BotResponse, BotStats, ContactPreferences, ResponseStyle, WhatsAppBot, WhatsAppContact,
-    WhatsAppMessage,
-};
-use crate::whatsapp_http_server;
-use chrono::Utc;
-use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::State;
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State};
 use tokio::sync::RwLock;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use chrono::Utc;
 
 pub struct WhatsAppBotState {
     pub bot: Arc<WhatsAppBot>,
     pub bridge_process: std::sync::Mutex<Option<std::process::Child>>,
-    pub server_started: Arc<AtomicBool>,
 }
 
 impl Default for WhatsAppBotState {
@@ -27,53 +20,8 @@ impl Default for WhatsAppBotState {
         Self {
             bot: Arc::new(WhatsAppBot::new()),
             bridge_process: std::sync::Mutex::new(None),
-            server_started: Arc::new(AtomicBool::new(false)),
         }
     }
-}
-
-/// Start the WhatsApp HTTP server on first bot start (lazy initialization).
-/// Uses AtomicBool to ensure it only starts once.
-fn ensure_http_server(app: &AppHandle, bot_state: &WhatsAppBotState) {
-    if bot_state.server_started.swap(true, Ordering::SeqCst) {
-        return; // Already started
-    }
-
-    let rag_state = app.state::<RagState>();
-
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .unwrap_or_else(|_| std::path::PathBuf::from("."));
-
-    let bot_state_clone = WhatsAppBotState {
-        bot: bot_state.bot.clone(),
-        bridge_process: std::sync::Mutex::new(None),
-        server_started: bot_state.server_started.clone(),
-    };
-    let rag_clone = RagState {
-        rag: rag_state.rag.clone(),
-        notes: std::sync::Mutex::new(Vec::new()),
-        space_manager: std::sync::Mutex::new(SpaceManager::with_data_dir(app_data_dir)),
-        conversation_manager: rag_state.conversation_manager.clone(),
-        memory_system: rag_state.memory_system.clone(),
-        personal_assistant: rag_state.personal_assistant.clone(),
-        app_paths: rag_state.app_paths.clone(),
-        rag_initialized: rag_state.rag_initialized.clone(),
-        initialization_lock: rag_state.initialization_lock.clone(),
-        artifact_store: rag_state.artifact_store.clone(),
-        conversation_id: rag_state.conversation_id.clone(),
-        agent_system: rag_state.agent_system.clone(),
-        llm_manager: rag_state.llm_manager.clone(),
-    };
-
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = whatsapp_http_server::start_server(bot_state_clone, rag_clone).await {
-            tracing::error!("Failed to start WhatsApp HTTP server: {}", e);
-        }
-    });
-
-    tracing::info!("WhatsApp HTTP server started (lazy init on bot start)");
 }
 
 /// Initialize WhatsApp bot and start the bridge automatically.
@@ -81,7 +29,6 @@ fn ensure_http_server(app: &AppHandle, bot_state: &WhatsAppBotState) {
 /// Defaults to "baileys" if not specified.
 #[tauri::command]
 pub async fn whatsapp_initialize(
-    app: AppHandle,
     bot_state: State<'_, WhatsAppBotState>,
     bot_phone: String,
     engine: Option<String>,
@@ -106,10 +53,7 @@ pub async fn whatsapp_initialize(
 
     // Kill any existing bridge process first
     {
-        let mut proc_guard = bot_state
-            .bridge_process
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut proc_guard = bot_state.bridge_process.lock().unwrap();
         if let Some(mut child) = proc_guard.take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -117,31 +61,17 @@ pub async fn whatsapp_initialize(
     }
 
     let possible_dirs = vec![
-        std::env::current_dir()
-            .ok()
-            .and_then(|d| d.parent().map(|p| p.join("whatsapp-bridge"))),
-        std::env::current_dir()
-            .ok()
-            .map(|d| d.join("whatsapp-bridge")),
-        std::env::current_dir()
-            .ok()
-            .map(|d| d.join("../whatsapp-bridge")),
+        std::env::current_dir().ok().and_then(|d| d.parent().map(|p| p.join("whatsapp-bridge"))),
+        std::env::current_dir().ok().map(|d| d.join("whatsapp-bridge")),
+        std::env::current_dir().ok().map(|d| d.join("../whatsapp-bridge")),
     ];
 
-    let bridge_dir = possible_dirs
-        .into_iter()
+    let bridge_dir = possible_dirs.into_iter()
         .flatten()
         .find(|dir| dir.exists())
-        .ok_or_else(|| {
-            "WhatsApp bridge directory not found. Ensure whatsapp-bridge/ folder exists."
-                .to_string()
-        })?;
+        .ok_or_else(|| "WhatsApp bridge directory not found. Ensure whatsapp-bridge/ folder exists.".to_string())?;
 
-    tracing::info!(
-        "Starting WhatsApp bridge ({}) at: {:?}",
-        engine_label,
-        bridge_dir
-    );
+    tracing::info!("Starting WhatsApp bridge ({}) at: {:?}", engine_label, bridge_dir);
 
     // Install dependencies if needed
     if !bridge_dir.join("node_modules").exists() {
@@ -167,18 +97,12 @@ pub async fn whatsapp_initialize(
         match install_result {
             Ok(output) if output.status.success() => {
                 tracing::info!("Dependencies installed");
-            }
+            },
             Ok(output) => {
-                return Err(format!(
-                    "npm install failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                ));
-            }
+                return Err(format!("npm install failed: {}", String::from_utf8_lossy(&output.stderr)));
+            },
             Err(e) => {
-                return Err(format!(
-                    "Failed to run npm install: {} — ensure Node.js is in PATH",
-                    e
-                ));
+                return Err(format!("Failed to run npm install: {} — ensure Node.js is in PATH", e));
             }
         }
     }
@@ -206,22 +130,13 @@ pub async fn whatsapp_initialize(
 
     // Store process handle so we can kill it later
     {
-        let mut proc_guard = bot_state
-            .bridge_process
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut proc_guard = bot_state.bridge_process.lock().unwrap();
         *proc_guard = Some(child);
     }
 
     tracing::info!("WhatsApp bridge started ({})", engine_label);
 
-    // Start the HTTP server if not already running (lazy init)
-    ensure_http_server(&app, &bot_state);
-
-    Ok(format!(
-        "WhatsApp bot initialized with {} engine. Bridge starting...",
-        engine_label
-    ))
+    Ok(format!("WhatsApp bot initialized with {} engine. Bridge starting...", engine_label))
 }
 
 /// Add a contact to the bot
@@ -362,13 +277,18 @@ pub async fn whatsapp_process_message(
 
     // Perform RAG search to get context
     let search_results = if let Some(space_id) = &contact.assigned_space {
-        space_commands::search_in_space(rag_state.clone(), space_id.clone(), body.clone(), 5)
-            .await
-            .unwrap_or_default()
+        space_commands::search_in_space(
+            rag_state.clone(),
+            space_id.clone(),
+            body.clone(),
+            5
+        ).await.unwrap_or_default()
     } else {
-        space_commands::search_global(rag_state.clone(), body.clone(), 5)
-            .await
-            .unwrap_or_default()
+        space_commands::search_global(
+            rag_state.clone(),
+            body.clone(),
+            5
+        ).await.unwrap_or_default()
     };
 
     // Build a professional response with proper formatting and citations
@@ -425,8 +345,7 @@ pub async fn whatsapp_process_message(
         }
 
         // Calculate average confidence
-        let avg_confidence =
-            search_results.iter().map(|r| r.score).sum::<f32>() / search_results.len() as f32;
+        let avg_confidence = search_results.iter().map(|r| r.score).sum::<f32>() / search_results.len() as f32;
 
         (full_response, sources_list, avg_confidence)
     };
@@ -439,8 +358,7 @@ pub async fn whatsapp_process_message(
     };
 
     // Store response in conversation
-    bot.add_response(&conversation_id, bot_response.clone())
-        .await;
+    bot.add_response(&conversation_id, bot_response.clone()).await;
 
     Ok(bot_response)
 }
@@ -469,24 +387,20 @@ pub async fn whatsapp_set_active(
     active: bool,
 ) -> Result<String, String> {
     bot_state.bot.set_active(active).await;
-    Ok(format!(
-        "Bot is now {}",
-        if active { "active" } else { "inactive" }
-    ))
+    Ok(format!("Bot is now {}", if active { "active" } else { "inactive" }))
 }
 
 /// Stop the WhatsApp bridge process
 #[tauri::command]
-pub async fn whatsapp_stop(bot_state: State<'_, WhatsAppBotState>) -> Result<String, String> {
+pub async fn whatsapp_stop(
+    bot_state: State<'_, WhatsAppBotState>,
+) -> Result<String, String> {
     tracing::info!("Stopping WhatsApp bridge...");
 
     bot_state.bot.set_active(false).await;
 
     let child = {
-        let mut proc_guard = bot_state
-            .bridge_process
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut proc_guard = bot_state.bridge_process.lock().unwrap();
         proc_guard.take()
     };
 
@@ -494,9 +408,7 @@ pub async fn whatsapp_stop(bot_state: State<'_, WhatsAppBotState>) -> Result<Str
         let _ = child.kill();
         tokio::task::spawn_blocking(move || {
             let _ = child.wait();
-        })
-        .await
-        .ok();
+        }).await.ok();
         tracing::info!("WhatsApp bridge stopped");
         Ok("WhatsApp bridge stopped".to_string())
     } else {
@@ -545,6 +457,5 @@ pub async fn whatsapp_test_message(
         message,
         "test_chat".to_string(),
         false,
-    )
-    .await
+    ).await
 }

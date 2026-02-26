@@ -17,7 +17,7 @@ const discordConfig: BotConfig = {
   },
   storagePrefix: "discord_bot",
   statusEvent: "discord-bot-status",
-  tokenPlaceholder: "your-discord-bot-token-here",
+  tokenPlaceholder: "YOUR_DISCORD_BOT_TOKEN_HERE",
   setupSteps: [
     { title: "Developer Portal", description: "Go to Discord Developer Portal" },
     { title: "Create Application", description: "Click New Application and give it a name" },

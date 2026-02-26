@@ -1,20 +1,22 @@
 //! Tauri commands for RAG operations
 
-use crate::space_manager::SpaceManager;
-use chrono::{self, Local};
-use serde::{Deserialize, Serialize};
-use shodh_rag::agent::ConversationManager;
-use shodh_rag::comprehensive_system::{Citation, ComprehensiveRAG, DocumentFormat};
-use shodh_rag::memory::MemorySystem;
+use shodh_rag::comprehensive_system::{
+    ComprehensiveRAG, Citation, DocumentFormat
+};
 use shodh_rag::types::MetadataFilter;
-use std::collections::HashMap;
-use std::fs;
-use std::path::PathBuf;
-use std::sync::Arc;
+use shodh_rag::agent::ConversationManager;
+use shodh_rag::memory::MemorySystem;
+use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::fs;
 use tauri::State;
-use tokio::sync::Mutex as TokioMutex;
+use chrono::{self, Local};
+use crate::space_manager::SpaceManager;
 use tokio::sync::RwLock as TokioRwLock;
+use std::sync::Arc;
+use tokio::sync::Mutex as TokioMutex;
 
 // Windows-specific import to hide console windows
 #[cfg(target_os = "windows")]
@@ -34,8 +36,7 @@ pub struct RagState {
     pub space_manager: Mutex<SpaceManager>,
     pub conversation_manager: Arc<TokioRwLock<Option<ConversationManager>>>,
     pub memory_system: Arc<TokioRwLock<Option<Arc<TokioRwLock<MemorySystem>>>>>,
-    pub personal_assistant:
-        Arc<TokioRwLock<Option<Arc<TokioRwLock<shodh_rag::agent::PersonalAssistant>>>>>,
+    pub personal_assistant: Arc<TokioRwLock<Option<Arc<TokioRwLock<shodh_rag::agent::PersonalAssistant>>>>>,
     pub app_paths: AppPaths,
     pub rag_initialized: Arc<TokioRwLock<bool>>,
     pub initialization_lock: Arc<TokioMutex<()>>, // Mutex to prevent concurrent initialization
@@ -152,17 +153,12 @@ pub async fn initialize_rag(state: State<'_, RagState>) -> Result<String, String
     let _init_lock = state.initialization_lock.lock().await;
 
     tracing::info!("✓ Initialization lock acquired");
-    tracing::info!(
-        "Using persistent database path: {:?}",
-        state.app_paths.db_path
-    );
+    tracing::info!("Using persistent database path: {:?}", state.app_paths.db_path);
 
     // Double-check after acquiring lock (another thread might have initialized while we waited)
     let initialized = *state.rag_initialized.read().await;
     if initialized {
-        tracing::info!(
-            "RAG already initialized by another thread - checking PersonalAssistant status..."
-        );
+        tracing::info!("RAG already initialized by another thread - checking PersonalAssistant status...");
 
         // Check if PersonalAssistant is initialized
         let assistant_guard = state.personal_assistant.read().await;
@@ -220,17 +216,10 @@ pub async fn initialize_rag(state: State<'_, RagState>) -> Result<String, String
                     if agents_dir.exists() {
                         let agent_system = assistant.get_agent_system();
                         let system = agent_system.write().await;
-                        match system
-                            .load_agents_from_directory(agents_dir.to_str().unwrap())
-                            .await
-                        {
+                        match system.load_agents_from_directory(agents_dir.to_str().unwrap()).await {
                             Ok(loaded_ids) => {
-                                tracing::info!(
-                                    "✓ Loaded {} agents: {:?}",
-                                    loaded_ids.len(),
-                                    loaded_ids
-                                );
-                            }
+                                tracing::info!("✓ Loaded {} agents: {:?}", loaded_ids.len(), loaded_ids);
+                            },
                             Err(e) => {
                                 tracing::info!("⚠ Failed to load agents from directory: {}", e);
                                 tracing::info!("  Agents will need to be loaded manually");
@@ -252,12 +241,11 @@ pub async fn initialize_rag(state: State<'_, RagState>) -> Result<String, String
                     *state.agent_system.write().await = Some(agent_system_arc.clone());
                     tracing::info!("✓ AgentSystem synchronized to RagState (shared reference)");
 
-                    *state.personal_assistant.write().await =
-                        Some(Arc::new(TokioRwLock::new(assistant)));
+                    *state.personal_assistant.write().await = Some(Arc::new(TokioRwLock::new(assistant)));
                     tracing::info!("✓ PersonalAssistant stored in state");
                     tracing::info!("===== PERSONAL ASSISTANT READY =====\n");
                     break;
-                }
+                },
                 Err(e) => {
                     tracing::info!("✗ Failed to initialize PersonalAssistant: {}", e);
                     tracing::info!("   Error details: {:?}", e);
@@ -272,11 +260,7 @@ pub async fn initialize_rag(state: State<'_, RagState>) -> Result<String, String
 
             retry_count += 1;
             if retry_count >= max_retries {
-                tracing::info!(
-                    "✗ Memory system not initialized after {} retries ({} seconds)",
-                    max_retries,
-                    max_retries / 2
-                );
+                tracing::info!("✗ Memory system not initialized after {} retries ({} seconds)", max_retries, max_retries / 2);
                 tracing::info!("   PersonalAssistant will not be available");
                 tracing::info!("   This usually means:");
                 tracing::info!("   1. Memory System initialization is taking too long");
@@ -294,17 +278,12 @@ pub async fn initialize_rag(state: State<'_, RagState>) -> Result<String, String
 
     tracing::info!("RAG initialization completed successfully with persistent storage");
     tracing::info!("Database location: {:?}", state.app_paths.db_path);
-    Ok(format!(
-        "RAG initialized successfully with persistent storage at {:?}",
-        state.app_paths.db_path
-    ))
+    Ok(format!("RAG initialized successfully with persistent storage at {:?}", state.app_paths.db_path))
 }
 
 /// Check initialization status - Diagnostic command
 #[tauri::command]
-pub async fn check_initialization_status(
-    state: State<'_, RagState>,
-) -> Result<serde_json::Value, String> {
+pub async fn check_initialization_status(state: State<'_, RagState>) -> Result<serde_json::Value, String> {
     use serde_json::json;
 
     tracing::info!("\n===== INITIALIZATION STATUS CHECK =====");
@@ -329,10 +308,7 @@ pub async fn check_initialization_status(
     let conversation_guard = state.conversation_manager.read().await;
     let conversation_initialized = conversation_guard.is_some();
     drop(conversation_guard);
-    tracing::info!(
-        "ConversationManager Initialized: {}",
-        conversation_initialized
-    );
+    tracing::info!("ConversationManager Initialized: {}", conversation_initialized);
 
     tracing::info!("=====================================\n");
 
@@ -360,11 +336,7 @@ pub async fn search_documents(
     request: SearchRequest,
     state: State<'_, RagState>,
 ) -> Result<SearchResponse, String> {
-    tracing::info!(
-        "Search documents called with query: '{}', max_results: {}",
-        request.query,
-        request.max_results
-    );
+    tracing::info!("Search documents called with query: '{}', max_results: {}", request.query, request.max_results);
 
     let rag_guard = state.rag.read().await;
     let rag = &*rag_guard;
@@ -387,19 +359,19 @@ pub async fn search_documents(
             match key.as_str() {
                 "space_id" => {
                     metadata_filter.space_id = Some(value);
-                }
+                },
                 "source_type" => {
                     metadata_filter.source_type = Some(value);
-                }
+                },
                 "source_path" => {
                     metadata_filter.source_path = Some(value);
-                }
+                },
                 "date_from" => {
                     metadata_filter.date_from = value.parse::<i64>().ok();
-                }
+                },
                 "date_to" => {
                     metadata_filter.date_to = value.parse::<i64>().ok();
-                }
+                },
                 _ => {
                     custom_fields.insert(key, value);
                 }
@@ -417,28 +389,22 @@ pub async fn search_documents(
 
     // Perform comprehensive search
     tracing::info!("Performing local document search...");
-    let results = rag
-        .search_comprehensive(&request.query, request.max_results, filter)
+    let results = rag.search_comprehensive(&request.query, request.max_results, filter)
         .await
         .map_err(|e| {
             tracing::info!("Search failed with error: {}", e);
             format!("Search failed: {}", e)
         })?;
 
-    tracing::info!(
-        "Search completed successfully, found {} results",
-        results.len()
-    );
+    tracing::info!("Search completed successfully, found {} results", results.len());
 
     // Filter by space_id if provided (additional client-side filter)
     let filtered_results = if let Some(ref space) = request.space_id {
         tracing::info!("Filtering results by space_id: '{}'", space);
         let total = results.len();
-        let filtered: Vec<_> = results
-            .into_iter()
+        let filtered: Vec<_> = results.into_iter()
             .filter(|r| {
-                r.metadata
-                    .get("space_id")
+                r.metadata.get("space_id")
                     .map(|s| s == space)
                     .unwrap_or(false)
             })
@@ -457,42 +423,30 @@ pub async fn search_documents(
             tracing::info!("Converting result:");
             tracing::info!("  Citation title: '{}'", r.citation.title);
             tracing::info!("  Snippet length: {}", r.snippet.len());
-            tracing::info!(
-                "  Metadata keys: {:?}",
-                r.metadata.keys().collect::<Vec<_>>()
-            );
+            tracing::info!("  Metadata keys: {:?}", r.metadata.keys().collect::<Vec<_>>());
 
             // Extract source file from metadata
-            let source_file = r
-                .metadata
-                .get("file_path")
+            let source_file = r.metadata.get("file_path")
                 .or_else(|| r.metadata.get("source"))
                 .cloned()
                 .unwrap_or_else(|| r.citation.source.clone());
 
             // Extract page number
-            let page_number = r
-                .metadata
-                .get("page_number")
+            let page_number = r.metadata.get("page_number")
                 .or_else(|| r.metadata.get("page"))
                 .and_then(|p| p.parse::<u32>().ok());
 
             // Extract line range
-            let line_range = r
-                .metadata
-                .get("line_start")
+            let line_range = r.metadata.get("line_start")
                 .and_then(|start| start.parse::<u32>().ok())
                 .and_then(|start| {
-                    r.metadata
-                        .get("line_end")
+                    r.metadata.get("line_end")
                         .and_then(|end| end.parse::<u32>().ok())
                         .map(|end| (start, end))
                 });
 
             // Get surrounding context (200 chars before/after)
-            let full_text = r
-                .metadata
-                .get("full_text")
+            let full_text = r.metadata.get("full_text")
                 .or_else(|| r.metadata.get("content"))
                 .cloned()
                 .unwrap_or_else(|| r.snippet.clone());
@@ -519,10 +473,7 @@ pub async fn search_documents(
     tracing::info!("Returning {} results to frontend", frontend_results.len());
     if let Some(first) = frontend_results.first() {
         tracing::info!("First result citation title: '{}'", first.citation.title);
-        tracing::info!(
-            "First result snippet: '{}'",
-            &first.snippet[..first.snippet.len().min(50)]
-        );
+        tracing::info!("First result snippet: '{}'", &first.snippet[..first.snippet.len().min(50)]);
     }
 
     // Create decision metadata
@@ -531,9 +482,7 @@ pub async fn search_documents(
         should_retrieve: true,
         strategy: "comprehensive".to_string(),
         reasoning: "Local document search with optional metadata filtering".to_string(),
-        confidence: if frontend_results.is_empty() {
-            0.0
-        } else {
+        confidence: if frontend_results.is_empty() { 0.0 } else {
             frontend_results.iter().map(|r| r.score).sum::<f32>() / frontend_results.len() as f32
         },
     };
@@ -552,7 +501,7 @@ pub async fn add_document(
 ) -> Result<String, String> {
     let mut rag_guard = state.rag.write().await;
     let rag = &mut *rag_guard;
-
+    
     // Create citation
     let citation = Citation {
         title: document.title,
@@ -563,7 +512,7 @@ pub async fn add_document(
         doi: None,
         page_numbers: None,
     };
-
+    
     // Determine document format
     let format = match document.document_type.as_str() {
         "pdf" => DocumentFormat::PDF,
@@ -572,17 +521,14 @@ pub async fn add_document(
         "json" => DocumentFormat::JSON,
         _ => DocumentFormat::TXT,
     };
-
+    
     // Add document
     let ids = rag
         .add_document(&document.content, format, document.metadata, citation)
         .await
         .map_err(|e| format!("Failed to add document: {}", e))?;
-
-    Ok(format!(
-        "Document added successfully with {} chunks",
-        ids.len()
-    ))
+    
+    Ok(format!("Document added successfully with {} chunks", ids.len()))
 }
 
 /// Upload a file
@@ -614,38 +560,30 @@ pub async fn upload_file(
     // Ensure file_path is in metadata
     let mut enhanced_metadata = metadata.clone();
     enhanced_metadata.insert("file_path".to_string(), file_path.clone());
-    enhanced_metadata.insert(
-        "original_path".to_string(),
-        path.to_string_lossy().to_string(),
-    );
+    enhanced_metadata.insert("original_path".to_string(), path.to_string_lossy().to_string());
     enhanced_metadata.insert("doc_type".to_string(), "document".to_string());
 
     // Debug: Log the space_id to make sure it's being passed
     if let Some(space_id) = enhanced_metadata.get("space_id") {
         tracing::info!("Document will be added to space: '{}'", space_id);
     } else {
-        tracing::info!(
-            "Warning: No space_id in metadata, document won't be associated with any space!"
-        );
+        tracing::info!("Warning: No space_id in metadata, document won't be associated with any space!");
     }
 
     // Add document from file
     tracing::info!("Attempting to add document from file...");
     tracing::info!("Metadata being passed: {:?}", enhanced_metadata);
-    let ids = match rag
-        .add_document_from_file(path.as_path(), enhanced_metadata)
-        .await
-    {
+    let ids = match rag.add_document_from_file(path.as_path(), enhanced_metadata).await {
         Ok(ids) => {
             tracing::info!("Successfully processed file with {} chunks", ids.len());
             ids
-        }
+        },
         Err(e) => {
             tracing::info!("Error adding document: {}", e);
             return Err(format!("Failed to process file: {}", e));
         }
     };
-
+    
     // Update space document count if space_id is provided
     if let Some(space_id) = metadata.get("space_id") {
         if let Ok(space_manager) = state.space_manager.lock() {
@@ -664,10 +602,7 @@ pub async fn upload_file(
     }
 
     tracing::info!("Successfully processed file with {} chunks", ids.len());
-    Ok(format!(
-        "File uploaded successfully with {} chunks",
-        ids.len()
-    ))
+    Ok(format!("File uploaded successfully with {} chunks", ids.len()))
 }
 
 /// Get system statistics
@@ -676,30 +611,17 @@ pub async fn get_statistics(state: State<'_, RagState>) -> Result<HashMap<String
     let rag_guard = state.rag.read().await;
     let rag = &*rag_guard;
 
-    let stats = rag
-        .get_statistics()
+    let stats = rag.get_statistics()
         .await
         .map_err(|e| format!("Failed to get statistics: {}", e))?;
 
     let mut result = HashMap::new();
 
     // Copy all stats from the HashMap
-    let total_chunks = stats
-        .get("total_chunks")
-        .cloned()
-        .unwrap_or_else(|| "0".to_string());
-    let fts_indexed = stats
-        .get("fts_indexed")
-        .cloned()
-        .unwrap_or_else(|| "0".to_string());
-    let embedding_dimension = stats
-        .get("embedding_dimension")
-        .cloned()
-        .unwrap_or_else(|| "0".to_string());
-    let data_dir = stats
-        .get("data_dir")
-        .cloned()
-        .unwrap_or_else(|| "unknown".to_string());
+    let total_chunks = stats.get("total_chunks").cloned().unwrap_or_else(|| "0".to_string());
+    let fts_indexed = stats.get("fts_indexed").cloned().unwrap_or_else(|| "0".to_string());
+    let embedding_dimension = stats.get("embedding_dimension").cloned().unwrap_or_else(|| "0".to_string());
+    let data_dir = stats.get("data_dir").cloned().unwrap_or_else(|| "unknown".to_string());
 
     // Get actual document count (distinct doc_ids), not just chunk count
     let total_docs = rag.count_documents().await.unwrap_or(0);
@@ -746,14 +668,11 @@ pub async fn clear_all_data(state: State<'_, RagState>) -> Result<String, String
     tracing::info!("Stack trace would be helpful here to find caller");
     tracing::info!("This should ONLY be called when user explicitly deletes a space!");
     tracing::info!("================================================\n");
-
+    
     // Log a backtrace if possible
     if let Ok(bt) = std::env::var("RUST_BACKTRACE") {
         if bt == "1" || bt == "full" {
-            tracing::info!(
-                "Backtrace: {:?}",
-                std::backtrace::Backtrace::force_capture()
-            );
+            tracing::info!("Backtrace: {:?}", std::backtrace::Backtrace::force_capture());
         }
     }
 
@@ -774,8 +693,7 @@ pub async fn clear_all_data(state: State<'_, RagState>) -> Result<String, String
 
     // Clear all spaces from space manager
     if let Ok(space_manager) = state.space_manager.lock() {
-        space_manager
-            .clear_all_spaces()
+        space_manager.clear_all_spaces()
             .map_err(|e| format!("Failed to clear spaces: {}", e))?;
         tracing::info!("Cleared all spaces from space manager");
     }
@@ -787,29 +705,39 @@ pub async fn clear_all_data(state: State<'_, RagState>) -> Result<String, String
 #[tauri::command]
 pub async fn delete_folder_source(
     folder_path: String,
-    state: State<'_, RagState>,
+    state: State<'_, RagState>
 ) -> Result<String, String> {
     tracing::info!("\n=== Deleting source folder: {} ===", folder_path);
 
-    // Normalize the path for consistent matching (convert to lowercase and use forward slashes)
-    let normalized_path = std::path::Path::new(&folder_path)
-        .to_string_lossy()
-        .replace('\\', "/")
-        .to_lowercase();
-
-    tracing::info!("Normalized path: {}", normalized_path);
-
-    // Get RAG instance (write lock needed for delete)
     let mut rag_guard = state.rag.write().await;
     let rag = &mut *rag_guard;
 
-    tracing::info!("Deleting documents with source path: {}", normalized_path);
-
-    // Use delete_by_source which handles batch deletion
-    let deleted_count = rag
-        .delete_by_source(&normalized_path)
+    // Use prefix-based deletion — folder path matches all files stored under it.
+    // The RAG engine normalizes paths internally (lowercase, forward slashes on Windows)
+    // so this will match regardless of how the original path was formatted.
+    let deleted_count = rag.delete_by_source_prefix(&folder_path)
         .await
         .map_err(|e| format!("Failed to delete documents from folder: {}", e))?;
+
+    // If nothing matched with the normalized path, also try the original raw path
+    // to clean up documents indexed before the normalization fix.
+    let deleted_count = if deleted_count == 0 {
+        let raw = folder_path.clone();
+        let fallback = rag.delete_by_source(&raw)
+            .await
+            .map_err(|e| format!("Failed to delete: {}", e))?;
+        if fallback == 0 {
+            // Also try with backslashes replaced but preserving case
+            let with_fwd_slashes = raw.replace('\\', "/");
+            rag.delete_by_source(&with_fwd_slashes)
+                .await
+                .unwrap_or(0)
+        } else {
+            fallback
+        }
+    } else {
+        deleted_count
+    };
 
     tracing::info!("Deletion complete: {} documents deleted", deleted_count);
 
@@ -818,10 +746,7 @@ pub async fn delete_folder_source(
         return Ok(format!("No documents found for folder: {}", folder_path));
     }
 
-    Ok(format!(
-        "Successfully deleted {} documents from folder: {}",
-        deleted_count, folder_path
-    ))
+    Ok(format!("Successfully deleted {} documents from folder: {}", deleted_count, folder_path))
 }
 
 // Notes persistence file path
@@ -829,8 +754,7 @@ fn get_notes_file_path() -> Result<PathBuf, String> {
     // Use local kalki-v2 data directory
     let data_dir = std::path::PathBuf::from("./data");
     if !data_dir.exists() {
-        fs::create_dir_all(&data_dir)
-            .map_err(|e| format!("Failed to create data directory: {}", e))?;
+        fs::create_dir_all(&data_dir).map_err(|e| format!("Failed to create data directory: {}", e))?;
     }
     Ok(data_dir.join("notes.json"))
 }
@@ -854,7 +778,8 @@ fn save_notes_to_disk(notes: &[Note]) -> Result<(), String> {
     let notes_file = get_notes_file_path()?;
     let content = serde_json::to_string_pretty(notes)
         .map_err(|e| format!("Failed to serialize notes: {}", e))?;
-    fs::write(notes_file, content).map_err(|e| format!("Failed to write notes file: {}", e))?;
+    fs::write(notes_file, content)
+        .map_err(|e| format!("Failed to write notes file: {}", e))?;
     Ok(())
 }
 
@@ -867,7 +792,7 @@ pub async fn get_notes(state: State<'_, RagState>) -> Result<Vec<Note>, String> 
         return Ok(notes_guard.clone());
     }
     drop(notes_guard);
-
+    
     // Load from disk if memory is empty
     let notes = load_notes_from_disk()?;
     let mut notes_guard = state.notes.lock().map_err(|e| e.to_string())?;
@@ -892,10 +817,10 @@ pub async fn update_note(
     state: State<'_, RagState>,
 ) -> Result<String, String> {
     let mut notes_guard = state.notes.lock().map_err(|e| e.to_string())?;
-
+    
     if let Some(note) = notes_guard.iter_mut().find(|n| n.id == note_id) {
         let mut title_for_response = note.title.clone();
-
+        
         if let Some(title) = updates.title {
             note.title = title.clone();
             title_for_response = title;
@@ -910,13 +835,10 @@ pub async fn update_note(
             note.pinned = pinned;
         }
         note.updated_at = chrono::Utc::now().to_rfc3339();
-
+        
         // Save to disk with the updated notes
         save_notes_to_disk(&*notes_guard)?;
-        Ok(format!(
-            "Note '{}' updated successfully",
-            title_for_response
-        ))
+        Ok(format!("Note '{}' updated successfully", title_for_response))
     } else {
         Err("Note not found".to_string())
     }
@@ -926,7 +848,7 @@ pub async fn update_note(
 #[tauri::command]
 pub async fn delete_note(note_id: String, state: State<'_, RagState>) -> Result<String, String> {
     let mut notes_guard = state.notes.lock().map_err(|e| e.to_string())?;
-
+    
     if let Some(pos) = notes_guard.iter().position(|n| n.id == note_id) {
         let note = notes_guard.remove(pos);
         save_notes_to_disk(&notes_guard)?;
@@ -947,31 +869,31 @@ pub async fn add_note_to_rag(
     let mut rag_guard = state.rag.write().await;
     let rag = &mut *rag_guard;
 
-    let note_source = format!("note://{}", note_id);
-
     // Create metadata for the note
-    let mut metadata = HashMap::new();
-    metadata.insert("type".to_string(), "note".to_string());
-    metadata.insert("note_id".to_string(), note_id.clone());
-    metadata.insert("tags".to_string(), tags.join(", "));
-    metadata.insert("source".to_string(), note_source.clone());
-
-    // Create citation for the note
-    let citation = Citation {
-        title: format!("User Note: {}", note_id),
-        authors: vec!["User".to_string()],
-        source: note_source,
-        year: chrono::Utc::now().format("%Y").to_string(),
-        url: None,
-        doi: None,
-        page_numbers: None,
-    };
-
-    // Add to RAG system
-    let _ids = rag
-        .add_document(&content, DocumentFormat::TXT, metadata, citation)
-        .await
-        .map_err(|e| format!("Failed to add note to RAG: {}", e))?;
+        let mut metadata = HashMap::new();
+        metadata.insert("type".to_string(), "note".to_string());
+        metadata.insert("note_id".to_string(), note_id.clone());
+        metadata.insert("tags".to_string(), tags.join(", "));
+        metadata.insert("source".to_string(), "user_notes".to_string());
+        
+        // Create citation for the note
+        let citation = Citation {
+            title: format!("User Note: {}", note_id),
+            authors: vec!["User".to_string()],
+            source: "Personal Notes".to_string(),
+            year: chrono::Utc::now().format("%Y").to_string(),
+            url: None,
+            doi: None,
+            page_numbers: None,
+        };
+        
+        // Add to RAG system
+        let _ids = rag.add_document(
+            &content,
+            DocumentFormat::TXT,
+            metadata,
+            citation,
+        ).await.map_err(|e| format!("Failed to add note to RAG: {}", e))?;
 
     Ok("Note added to RAG system for searchability".to_string())
 }
@@ -980,22 +902,11 @@ pub async fn add_note_to_rag(
 #[tauri::command]
 pub async fn remove_note_from_rag(
     note_id: String,
-    state: State<'_, RagState>,
+    _state: State<'_, RagState>,
 ) -> Result<String, String> {
-    let mut rag_guard = state.rag.write().await;
-    let rag = &mut *rag_guard;
-
-    let source = format!("note://{}", note_id);
-    let deleted = rag
-        .delete_by_source(&source)
-        .await
-        .map_err(|e| format!("Failed to remove note from RAG: {}", e))?;
-
-    tracing::info!(note_id = %note_id, deleted = deleted, "Removed note from RAG index");
-    Ok(format!(
-        "Removed {} chunks for note {} from RAG",
-        deleted, note_id
-    ))
+    // Note: For full implementation, you'd need to track document IDs per note
+    // and remove them from the storage. For now, we'll just acknowledge the request.
+    Ok(format!("Note {} removal from RAG acknowledged", note_id))
 }
 
 /// Get list of documents in a space
@@ -1009,10 +920,10 @@ pub async fn list_space_documents(
 
     let rag_guard = state.rag.read().await;
     let rag = &*rag_guard;
-
+    
     // Get list of indexed documents
     let mut file_list = Vec::new();
-
+    
     // If folder_path is provided, list files from that folder
     if let Some(path) = folder_path {
         let path = std::path::Path::new(&path);
@@ -1044,17 +955,13 @@ pub async fn list_space_documents(
     if file_list.is_empty() {
         // Get document count from stats as a fallback
         if let Ok(stats) = rag.get_statistics().await {
-            let doc_count: usize = stats
-                .get("total_chunks")
+            let doc_count: usize = stats.get("total_chunks")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0);
 
             // Return generic list if we have documents but can't get names
             if doc_count > 0 {
-                tracing::info!(
-                    "Found {} documents in RAG system but couldn't retrieve names",
-                    doc_count
-                );
+                tracing::info!("Found {} documents in RAG system but couldn't retrieve names", doc_count);
             }
         }
     }
@@ -1065,11 +972,12 @@ pub async fn list_space_documents(
 /// Helper function to check if a file is supported
 fn is_supported_file(filename: &str) -> bool {
     let supported_extensions = vec![
-        "txt", "md", "pdf", "docx", "doc", "rtf", "py", "js", "rs", "java", "cpp", "c", "h",
-        "json", "xml", "yaml", "yml", "toml", "png", "jpg", "jpeg", "gif", "bmp", "svg", "webp",
-        "tiff", "tif",
+        "txt", "md", "pdf", "docx", "doc", "rtf",
+        "py", "js", "rs", "java", "cpp", "c", "h",
+        "json", "xml", "yaml", "yml", "toml",
+        "png", "jpg", "jpeg", "gif", "bmp", "svg", "webp", "tiff", "tif"
     ];
-
+    
     if let Some(ext) = filename.split('.').last() {
         supported_extensions.contains(&ext.to_lowercase().as_str())
     } else {
@@ -1092,9 +1000,9 @@ pub async fn link_folder(
     let rag = &mut *rag_guard;
 
     tracing::info!("RAG system is initialized");
-
+    
     let folder_path = PathBuf::from(&folder_path);
-
+    
     // Check if folder exists
     if !folder_path.exists() {
         return Err(format!("Folder does not exist: {}", folder_path.display()));
@@ -1102,26 +1010,23 @@ pub async fn link_folder(
 
     // Check if it's a directory
     if !folder_path.is_dir() {
-        return Err(format!(
-            "Path is not a directory: {}",
-            folder_path.display()
-        ));
+        return Err(format!("Path is not a directory: {}", folder_path.display()));
     }
-
+    
     tracing::info!("Folder validated: {}", folder_path.display());
-
+    
     // Get all files in the folder recursively
     let mut files_processed = 0;
     let mut total_chunks = 0;
-
+    
     fn collect_files(dir: &PathBuf) -> Result<Vec<PathBuf>, std::io::Error> {
         let mut files = Vec::new();
         let entries = fs::read_dir(dir)?;
-
+        
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
-
+            
             if path.is_dir() {
                 // Recursively collect files from subdirectories
                 let mut subfiles = collect_files(&path)?;
@@ -1131,8 +1036,7 @@ pub async fn link_folder(
                 if let Some(ext) = path.extension() {
                     let ext_str = ext.to_string_lossy().to_lowercase();
                     // Include code files and documentation
-                    if matches!(
-                        ext_str.as_str(),
+                    if matches!(ext_str.as_str(), 
                         // Documents
                         "txt" | "md" | "pdf" | "html" | "json" | "csv" | "docx" | "rst" | "tex" |
                         // Code files
@@ -1154,9 +1058,10 @@ pub async fn link_folder(
 
         Ok(files)
     }
-
-    let files = collect_files(&folder_path).map_err(|e| format!("Failed to scan folder: {}", e))?;
-
+    
+    let files = collect_files(&folder_path)
+        .map_err(|e| format!("Failed to scan folder: {}", e))?;
+    
     tracing::info!("Found {} files to process", files.len());
 
     let total_files = files.len();
@@ -1164,24 +1069,14 @@ pub async fn link_folder(
     // Process each file with detailed logging
     for (idx, file_path) in files.iter().enumerate() {
         let progress = ((idx + 1) as f32 / total_files as f32 * 100.0) as u32;
-        tracing::info!(
-            "Processing [{}/{}] ({}%): {}",
-            idx + 1,
-            total_files,
-            progress,
-            file_path.display()
-        );
+        tracing::info!("Processing [{}/{}] ({}%): {}", idx + 1, total_files, progress, file_path.display());
 
         match process_single_file(&file_path, &metadata, rag).await {
             Ok(chunk_count) => {
                 files_processed += 1;
                 total_chunks += chunk_count;
-                tracing::info!(
-                    "✓ Processed: {} ({} chunks)",
-                    file_path.display(),
-                    chunk_count
-                );
-            }
+                tracing::info!("✓ Processed: {} ({} chunks)", file_path.display(), chunk_count);
+            },
             Err(e) => {
                 tracing::info!("✗ Skipped: {} - Error: {}", file_path.display(), e);
                 // Continue with other files even if one fails
@@ -1190,12 +1085,7 @@ pub async fn link_folder(
 
         // Flush output every 10 files
         if idx % 10 == 0 {
-            tracing::info!(
-                "Progress: {}/{} files processed ({} chunks total)",
-                files_processed,
-                total_files,
-                total_chunks
-            );
+            tracing::info!("Progress: {}/{} files processed ({} chunks total)", files_processed, total_files, total_chunks);
         }
     }
 
@@ -1207,27 +1097,19 @@ pub async fn link_folder(
 
     // Update space document count if space_id is provided
     if let Some(space_id) = metadata.get("space_id") {
-        tracing::info!(
-            "Updating space {} with {} documents",
-            space_id,
-            files_processed
-        );
+        tracing::info!("Updating space {} with {} documents", space_id, files_processed);
         if let Ok(space_manager) = state.space_manager.lock() {
             // Note: space_manager tracks individual documents, but we're adding in bulk
             // The count will be updated when documents are queried
             tracing::info!("✓ Documents associated with space: {}", space_id);
         }
     } else {
-        tracing::info!(
-            "⚠️  No space_id in metadata - documents won't be associated with any space"
-        );
+        tracing::info!("⚠️  No space_id in metadata - documents won't be associated with any space");
     }
 
     Ok(format!(
         "Indexed {}/{} files with {} chunks ({}% success rate)",
-        files_processed,
-        total_files,
-        total_chunks,
+        files_processed, total_files, total_chunks,
         (files_processed as f32 / total_files as f32 * 100.0) as u32
     ))
 }
@@ -1254,19 +1136,12 @@ async fn process_single_file(
 
     // Add file-specific metadata
     let mut file_metadata = base_metadata.clone();
-    file_metadata.insert(
-        "file_path".to_string(),
-        file_path.to_string_lossy().to_string(),
-    );
-    file_metadata.insert(
-        "file_name".to_string(),
-        file_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string(),
-    );
-
+    file_metadata.insert("file_path".to_string(), file_path.to_string_lossy().to_string());
+    file_metadata.insert("file_name".to_string(), file_path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string());
+    
     if let Some(ext) = file_path.extension() {
         let ext_str = ext.to_string_lossy().to_string();
         file_metadata.insert("file_extension".to_string(), ext_str.clone());
@@ -1322,11 +1197,13 @@ async fn process_single_file(
 
 /// Get folder statistics
 #[tauri::command]
-pub async fn get_folder_stats(folder_path: String) -> Result<HashMap<String, String>, String> {
+pub async fn get_folder_stats(
+    folder_path: String,
+) -> Result<HashMap<String, String>, String> {
     tracing::info!("Getting folder stats for: {}", folder_path);
-
+    
     let folder_path = PathBuf::from(&folder_path);
-
+    
     if !folder_path.exists() {
         tracing::info!("Folder does not exist: {}", folder_path.display());
         return Err(format!("Folder does not exist: {}", folder_path.display()));
@@ -1334,21 +1211,18 @@ pub async fn get_folder_stats(folder_path: String) -> Result<HashMap<String, Str
 
     if !folder_path.is_dir() {
         tracing::info!("Path is not a directory: {}", folder_path.display());
-        return Err(format!(
-            "Path is not a directory: {}",
-            folder_path.display()
-        ));
+        return Err(format!("Path is not a directory: {}", folder_path.display()));
     }
-
+    
     fn count_files(dir: &PathBuf) -> Result<(usize, usize), std::io::Error> {
         let mut file_count = 0;
         let mut supported_count = 0;
         let entries = fs::read_dir(dir)?;
-
+        
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
-
+            
             if path.is_dir() {
                 let (sub_files, sub_supported) = count_files(&path)?;
                 file_count += sub_files;
@@ -1357,10 +1231,7 @@ pub async fn get_folder_stats(folder_path: String) -> Result<HashMap<String, Str
                 file_count += 1;
                 if let Some(ext) = path.extension() {
                     let ext_str = ext.to_string_lossy().to_lowercase();
-                    if matches!(
-                        ext_str.as_str(),
-                        "txt" | "md" | "pdf" | "html" | "json" | "csv" | "docx"
-                    ) {
+                    if matches!(ext_str.as_str(), "txt" | "md" | "pdf" | "html" | "json" | "csv" | "docx") {
                         supported_count += 1;
                     }
                 }
@@ -1369,17 +1240,14 @@ pub async fn get_folder_stats(folder_path: String) -> Result<HashMap<String, Str
 
         Ok((file_count, supported_count))
     }
-
-    let (total_files, supported_files) =
-        count_files(&folder_path).map_err(|e| format!("Failed to scan folder: {}", e))?;
-
+    
+    let (total_files, supported_files) = count_files(&folder_path)
+        .map_err(|e| format!("Failed to scan folder: {}", e))?;
+    
     let mut stats = HashMap::new();
     stats.insert("total_files".to_string(), total_files.to_string());
     stats.insert("supported_files".to_string(), supported_files.to_string());
-    stats.insert(
-        "folder_path".to_string(),
-        folder_path.to_string_lossy().to_string(),
-    );
+    stats.insert("folder_path".to_string(), folder_path.to_string_lossy().to_string());
 
     Ok(stats)
 }
@@ -1396,7 +1264,10 @@ pub async fn get_daily_brief(
     let now = Local::now();
 
     // Pull real statistics from the RAG engine
-    let stats: HashMap<String, String> = rag.get_statistics().await.unwrap_or_default();
+    let stats: HashMap<String, String> = rag
+        .get_statistics()
+        .await
+        .unwrap_or_default();
 
     let total_chunks: usize = stats
         .get("total_chunks")
@@ -1571,9 +1442,9 @@ pub async fn get_knowledge_map(
 #[tauri::command]
 pub async fn open_original_document(file_path: String) -> Result<String, String> {
     use std::process::Command;
-
+    
     tracing::info!("Opening original document: {}", file_path);
-
+    
     // Check if file exists
     let path = std::path::Path::new(&file_path);
     if !path.exists() {
@@ -1618,12 +1489,7 @@ pub async fn open_file_at_location(
 ) -> Result<String, String> {
     use std::process::Command;
 
-    tracing::info!(
-        "Opening file at location: {} (line: {:?}, page: {:?})",
-        file_path,
-        line_number,
-        page_number
-    );
+    tracing::info!("Opening file at location: {} (line: {:?}, page: {:?})", file_path, line_number, page_number);
 
     // Check if file exists
     let path = std::path::Path::new(&file_path);
@@ -1634,11 +1500,7 @@ pub async fn open_file_at_location(
     // Try to open with VS Code if available (supports line numbers)
     let vscode_result = try_open_with_vscode(&file_path, line_number);
     if vscode_result.is_ok() {
-        return Ok(format!(
-            "Opened in VS Code: {} at line {}",
-            file_path,
-            line_number.unwrap_or(1)
-        ));
+        return Ok(format!("Opened in VS Code: {} at line {}", file_path, line_number.unwrap_or(1)));
     }
 
     // Fallback to system default (doesn't support line numbers)
@@ -1670,10 +1532,7 @@ pub async fn open_file_at_location(
             .map_err(|e| format!("Failed to open file: {}", e))?;
     }
 
-    Ok(format!(
-        "Opened: {} (line numbers not supported with default app)",
-        file_path
-    ))
+    Ok(format!("Opened: {} (line numbers not supported with default app)", file_path))
 }
 
 /// Helper function to try opening file with VS Code at specific line
@@ -1709,10 +1568,7 @@ pub async fn read_original_file(
 ) -> Result<String, String> {
     use std::fs;
 
-    tracing::info!(
-        "Reading file (using parsed content if available): {}",
-        file_path
-    );
+    tracing::info!("Reading file (using parsed content if available): {}", file_path);
 
     // First, try to get parsed content from RAG index
     let rag_guard = state.rag.read().await;
@@ -1728,37 +1584,28 @@ pub async fn read_original_file(
         custom: None,
     };
 
-    let results = rag
-        .list_documents(Some(filter), 10000)
+    let results = rag.list_documents(Some(filter), 10000)
         .await
         .map_err(|e| format!("Failed to query index: {}", e))?;
 
     if !results.is_empty() {
-        tracing::info!(
-            "Found {} chunks in index, reconstructing document",
-            results.len()
-        );
+        tracing::info!("Found {} chunks in index, reconstructing document", results.len());
 
         // Reconstruct full document from chunks (sorted by chunk_index)
         let mut chunks: Vec<_> = results.into_iter().collect();
         chunks.sort_by_key(|r| {
-            r.metadata
-                .get("chunk_index")
+            r.metadata.get("chunk_index")
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(0)
         });
 
-        let full_text: String = chunks
-            .iter()
+        let full_text: String = chunks.iter()
             .map(|r| r.snippet.as_str())
             .collect::<Vec<_>>()
             .join("\n\n");
 
         if !full_text.is_empty() {
-            tracing::info!(
-                "Returning parsed content from index ({} chars)",
-                full_text.len()
-            );
+            tracing::info!("Returning parsed content from index ({} chars)", full_text.len());
             return Ok(full_text);
         }
     }
@@ -1782,7 +1629,9 @@ pub async fn read_original_file(
                     let content = String::from_utf8_lossy(&bytes).to_string();
                     Ok(content)
                 }
-                Err(read_err) => Err(format!("Failed to read file: {}", read_err)),
+                Err(read_err) => {
+                    Err(format!("Failed to read file: {}", read_err))
+                }
             }
         }
     }
@@ -1798,23 +1647,19 @@ pub async fn get_document_metadata(
 
     let rag_guard = state.rag.read().await;
     let rag = &*rag_guard;
-
+    
     // Search for the document to get its metadata
-    let search_results = rag
-        .search(&document_title, 1)
+    let search_results = rag.search(&document_title, 1)
         .await
         .map_err(|e| format!("Failed to search for document: {}", e))?;
-
+    
     if let Some(result) = search_results.first() {
         // Return the actual metadata
         Ok(result.metadata.clone())
     } else {
         // Document not found - return empty metadata
         let mut metadata = HashMap::new();
-        metadata.insert(
-            "error".to_string(),
-            "Document not found in index".to_string(),
-        );
+        metadata.insert("error".to_string(), "Document not found in index".to_string());
         Ok(metadata)
     }
 }
@@ -1832,18 +1677,9 @@ pub async fn add_test_documents(
 
     // Create test documents
     let test_docs = vec![
-        (
-            "Test Document 1",
-            "This is a test document to verify the system is working correctly.",
-        ),
-        (
-            "Test Document 2",
-            "Another test document with different content for testing.",
-        ),
-        (
-            "Test Document 3",
-            "Third test document to ensure multiple documents work.",
-        ),
+        ("Test Document 1", "This is a test document to verify the system is working correctly."),
+        ("Test Document 2", "Another test document with different content for testing."),
+        ("Test Document 3", "Third test document to ensure multiple documents work."),
     ];
 
     let mut total_chunks = 0;
@@ -1856,11 +1692,7 @@ pub async fn add_test_documents(
         metadata.insert("created_at".to_string(), chrono::Utc::now().to_rfc3339());
         metadata.insert("test_document".to_string(), "true".to_string());
 
-        tracing::info!(
-            "Adding test document: '{}' with metadata: {:?}",
-            title,
-            metadata
-        );
+        tracing::info!("Adding test document: '{}' with metadata: {:?}", title, metadata);
 
         let citation = Citation {
             title: title.to_string(),
@@ -1872,23 +1704,18 @@ pub async fn add_test_documents(
             page_numbers: None,
         };
 
-        let ids = rag
-            .add_document(content, DocumentFormat::TXT, metadata, citation)
-            .await
-            .map_err(|e| format!("Failed to add test document: {}", e))?;
+        let ids = rag.add_document(
+            content,
+            DocumentFormat::TXT,
+            metadata,
+            citation,
+        ).await.map_err(|e| format!("Failed to add test document: {}", e))?;
 
         total_chunks += ids.len();
-        tracing::info!(
-            "✓ Added test document '{}' with {} chunks",
-            title,
-            ids.len()
-        );
+        tracing::info!("✓ Added test document '{}' with {} chunks", title, ids.len());
     }
 
-    Ok(format!(
-        "Added 3 test documents with {} total chunks to space '{}'",
-        total_chunks, space_id
-    ))
+    Ok(format!("Added 3 test documents with {} total chunks to space '{}'", total_chunks, space_id))
 }
 
 /// Get all documents (for debugging and space listing)
@@ -1904,37 +1731,31 @@ pub async fn get_all_documents(
 
     // Try to get statistics first
     if let Ok(stats) = rag.get_statistics().await {
-        tracing::info!(
-            "Database statistics: total_chunks={}, fts_indexed={}",
-            stats.get("total_chunks").unwrap_or(&"0".to_string()),
-            stats.get("fts_indexed").unwrap_or(&"0".to_string())
-        );
+        tracing::info!("Database statistics: total_chunks={}, fts_indexed={}",
+                 stats.get("total_chunks").unwrap_or(&"0".to_string()),
+                 stats.get("fts_indexed").unwrap_or(&"0".to_string()));
     }
 
     // List all chunks by metadata (not search)
-    let comprehensive_results = rag
-        .list_documents(None, max_results)
+    let comprehensive_results = rag.list_documents(None, max_results)
         .await
         .unwrap_or_default();
 
     tracing::info!("Found {} results", comprehensive_results.len());
 
     // Convert to simple format
-    Ok(comprehensive_results
-        .into_iter()
-        .map(|r| {
-            let mut doc = HashMap::new();
-            doc.insert("id".to_string(), r.id.to_string());
-            doc.insert("score".to_string(), r.score.to_string());
-            doc.insert("text".to_string(), r.snippet.clone());
-            doc.insert("title".to_string(), r.citation.title.clone());
-            // Copy all metadata
-            for (key, value) in r.metadata {
-                doc.insert(format!("metadata_{}", key), value);
-            }
-            doc
-        })
-        .collect())
+    Ok(comprehensive_results.into_iter().map(|r| {
+        let mut doc = HashMap::new();
+        doc.insert("id".to_string(), r.id.to_string());
+        doc.insert("score".to_string(), r.score.to_string());
+        doc.insert("text".to_string(), r.snippet.clone());
+        doc.insert("title".to_string(), r.citation.title.clone());
+        // Copy all metadata
+        for (key, value) in r.metadata {
+            doc.insert(format!("metadata_{}", key), value);
+        }
+        doc
+    }).collect())
 }
 
 /// File information structure
@@ -1959,15 +1780,15 @@ pub async fn get_source_files(
 
     // Get statistics first
     if let Ok(stats) = rag.get_statistics().await {
-        tracing::info!(
-            "Database has total_chunks={}, fts_indexed={}",
-            stats.get("total_chunks").unwrap_or(&"0".to_string()),
-            stats.get("fts_indexed").unwrap_or(&"0".to_string())
-        );
+        tracing::info!("Database has total_chunks={}, fts_indexed={}",
+                 stats.get("total_chunks").unwrap_or(&"0".to_string()),
+                 stats.get("fts_indexed").unwrap_or(&"0".to_string()));
     }
 
     // List all chunks by metadata filter (not search — list)
-    let all_results = rag.list_documents(None, 100000).await.unwrap_or_default();
+    let all_results = rag.list_documents(None, 100000)
+        .await
+        .unwrap_or_default();
 
     tracing::info!("📊 Search returned {} results", all_results.len());
 
@@ -1978,11 +1799,7 @@ pub async fn get_source_files(
     for (idx, result) in all_results.iter().enumerate() {
         // Debug: Print first few documents metadata
         if idx < 3 {
-            tracing::info!(
-                "📄 Sample doc {} metadata keys: {:?}",
-                idx + 1,
-                result.metadata.keys().collect::<Vec<_>>()
-            );
+            tracing::info!("📄 Sample doc {} metadata keys: {:?}", idx + 1, result.metadata.keys().collect::<Vec<_>>());
             if let Some(space_id) = result.metadata.get("space_id") {
                 tracing::info!("   space_id: '{}'", space_id);
             }
@@ -1990,9 +1807,7 @@ pub async fn get_source_files(
 
         // Check if this document belongs to the requested source
         // Try multiple metadata field names
-        let doc_source_id = result
-            .metadata
-            .get("space_id")
+        let doc_source_id = result.metadata.get("space_id")
             .or_else(|| result.metadata.get("source_id"))
             .or_else(|| result.metadata.get("Space ID")); // Try capitalized version
 
@@ -2000,8 +1815,8 @@ pub async fn get_source_files(
             // Smart matching:
             // 1. Exact match (for new sources with unique IDs)
             // 2. Legacy match (for old sources indexed with 'default')
-            let is_match = doc_space_id == &source_id
-                || (doc_space_id == "default" && source_id.chars().all(|c| c.is_numeric()));
+            let is_match = doc_space_id == &source_id ||
+                           (doc_space_id == "default" && source_id.chars().all(|c| c.is_numeric()));
 
             if is_match {
                 matched_count += 1;
@@ -2009,28 +1824,26 @@ pub async fn get_source_files(
                     // Only add each unique file once
                     if !files_map.contains_key::<str>(file_path) {
                         // Extract file name from metadata or path
-                        let file_name = result
-                            .metadata
-                            .get("file_name")
+                        let file_name = result.metadata.get("file_name")
                             .or_else(|| result.metadata.get("title"))
                             .cloned()
                             .unwrap_or_else(|| {
-                                file_path
-                                    .split(&['/', '\\'][..])
+                                file_path.split(&['/', '\\'][..])
                                     .last()
                                     .unwrap_or("unknown")
                                     .to_string()
                             });
 
                         // Get file type/extension
-                        let file_type = result
-                            .metadata
-                            .get("file_extension")
+                        let file_type = result.metadata.get("file_extension")
                             .or_else(|| result.metadata.get("file_type"))
                             .cloned()
                             .unwrap_or_else(|| {
                                 // Extract extension from file path
-                                file_path.split('.').last().unwrap_or("txt").to_lowercase()
+                                file_path.split('.')
+                                    .last()
+                                    .unwrap_or("txt")
+                                    .to_lowercase()
                             });
 
                         // All documents in the index are considered successfully indexed
@@ -2038,15 +1851,12 @@ pub async fn get_source_files(
 
                         tracing::info!("✓ Found file: {} (type: {})", file_name, file_type);
 
-                        files_map.insert(
-                            file_path.clone(),
-                            FileInfo {
-                                name: file_name,
-                                file_path: file_path.clone(),
-                                file_type,
-                                status,
-                            },
-                        );
+                        files_map.insert(file_path.clone(), FileInfo {
+                            name: file_name,
+                            file_path: file_path.clone(),
+                            file_type,
+                            status,
+                        });
                     }
                 }
             }
@@ -2057,12 +1867,7 @@ pub async fn get_source_files(
     let mut files: Vec<FileInfo> = files_map.into_values().collect();
     files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 
-    tracing::info!(
-        "📊 Matched {} chunks, found {} unique files for source '{}'",
-        matched_count,
-        files.len(),
-        source_id
-    );
+    tracing::info!("📊 Matched {} chunks, found {} unique files for source '{}'", matched_count, files.len(), source_id);
     Ok(files)
 }
 
@@ -2076,59 +1881,55 @@ pub async fn get_document_full_text(
 
     let rag_guard = state.rag.read().await;
     let rag = &*rag_guard;
-
+    
     // Search for all chunks of this document
-    let search_results = rag
-        .search(&document_title, 50) // Get many results to find all chunks
+    let search_results = rag.search(&document_title, 50) // Get many results to find all chunks
         .await
         .map_err(|e| format!("Failed to search for document: {}", e))?;
-
+    
     // Filter results to only include chunks from this document
     let mut document_chunks: Vec<_> = search_results
         .into_iter()
         .filter(|r| {
             // Check if metadata contains the document title
-            r.metadata
-                .get("document_title")
+            r.metadata.get("document_title")
+                .map(|title| title == &document_title)
+                .unwrap_or(false) ||
+            r.metadata.get("title")
                 .map(|title| title == &document_title)
                 .unwrap_or(false)
-                || r.metadata
-                    .get("title")
-                    .map(|title| title == &document_title)
-                    .unwrap_or(false)
         })
         .collect();
-
+    
     // Sort by chunk index if available
     document_chunks.sort_by_key(|r| {
-        r.metadata
-            .get("chunk_index")
+        r.metadata.get("chunk_index")
             .and_then(|idx| idx.parse::<usize>().ok())
             .unwrap_or(0)
     });
-
+    
     // Check if this is a PDF with page images
     let has_page_images = document_chunks
         .first()
         .and_then(|chunk| chunk.metadata.get("has_visual_content"))
         .map(|v| v == "true")
         .unwrap_or(false);
-
+    
     if has_page_images {
         // Return JSON with page images for visual display
         let mut result = serde_json::json!({
             "type": "multimodal",
             "pages": []
         });
-
+        
         // Collect page images from metadata
         let mut pages = Vec::new();
         let mut current_page = 1;
-
+        
         while let Some(page_image) = document_chunks
             .first()
-            .and_then(|chunk| chunk.metadata.get(&format!("page_image_{}", current_page)))
-        {
+            .and_then(|chunk| chunk.metadata.get(&format!("page_image_{}", current_page))) {
+            
             pages.push(serde_json::json!({
                 "page_number": current_page,
                 "image": page_image,
@@ -2150,19 +1951,17 @@ pub async fn get_document_full_text(
                     .collect::<Vec<_>>()
                     .join("\n")
             }));
-
+            
             current_page += 1;
         }
 
         result["pages"] = serde_json::json!(pages);
-
+        
         // Also include visual elements if present
         if let Some(visual_elements) = document_chunks
             .first()
-            .and_then(|chunk| chunk.metadata.get("visual_elements"))
-        {
-            result["visual_elements"] =
-                serde_json::from_str(visual_elements).unwrap_or(serde_json::json!([]));
+            .and_then(|chunk| chunk.metadata.get("visual_elements")) {
+            result["visual_elements"] = serde_json::from_str(visual_elements).unwrap_or(serde_json::json!([]));
         }
 
         Ok(result.to_string())
@@ -2173,9 +1972,7 @@ pub async fn get_document_full_text(
                 .iter()
                 .map(|chunk| {
                     // Try to get full text from metadata, otherwise use snippet
-                    chunk
-                        .metadata
-                        .get("full_text")
+                    chunk.metadata.get("full_text")
                         .or_else(|| chunk.metadata.get("content"))
                         .or_else(|| chunk.metadata.get("text"))
                         .map(|s| s.as_str())
@@ -2191,18 +1988,19 @@ pub async fn get_document_full_text(
     }
 }
 
+
 // Helper function to detect code files
 fn is_code_file(path: &str) -> bool {
     let code_extensions = [
-        "rs", "py", "js", "ts", "tsx", "jsx", "java", "cpp", "c", "h", "hpp", "go", "rb", "php",
-        "cs", "swift", "kt", "scala", "r", "m", "mm", "vue", "svelte", "sol", "zig", "nim", "cr",
-        "ex", "exs", "erl", "hrl", "clj", "lisp", "scm", "rkt", "hs", "ml", "fs", "fsx", "erl",
-        "elm", "dart", "lua", "pl", "sh", "bash", "zsh", "fish", "yaml", "yml", "toml", "json",
-        "xml", "sql",
+        "rs", "py", "js", "ts", "tsx", "jsx", "java", "cpp", "c", "h",
+        "hpp", "go", "rb", "php", "cs", "swift", "kt", "scala", "r",
+        "m", "mm", "vue", "svelte", "sol", "zig", "nim", "cr", "ex",
+        "exs", "erl", "hrl", "clj", "lisp", "scm", "rkt", "hs", "ml",
+        "fs", "fsx", "erl", "elm", "dart", "lua", "pl", "sh", "bash",
+        "zsh", "fish", "yaml", "yml", "toml", "json", "xml", "sql"
     ];
 
-    path.split('.')
-        .last()
+    path.split('.').last()
         .map(|ext| code_extensions.contains(&ext.to_lowercase().as_str()))
         .unwrap_or(false)
 }
@@ -2253,32 +2051,20 @@ pub async fn jump_to_source(
 
         #[cfg(target_os = "macos")]
         {
-            if Command::new("code")
-                .arg("--goto")
-                .arg(&line_arg)
-                .spawn()
-                .is_ok()
-            {
+            if Command::new("code").arg("--goto").arg(&line_arg).spawn().is_ok() {
                 return Ok(format!("Opened in VS Code: {}", line_arg));
             }
         }
 
         #[cfg(target_os = "linux")]
         {
-            if Command::new("code")
-                .arg("--goto")
-                .arg(&line_arg)
-                .spawn()
-                .is_ok()
-            {
+            if Command::new("code").arg("--goto").arg(&line_arg).spawn().is_ok() {
                 return Ok(format!("Opened in VS Code: {}", line_arg));
             }
         }
 
         // Fallback: open with system default via Tauri opener plugin
-        app_handle
-            .opener()
-            .open_path(&file_path, None::<&str>)
+        app_handle.opener().open_path(&file_path, None::<&str>)
             .map_err(|e| format!("Failed to open file: {}", e))?;
 
         Ok(format!("Opened file: {} (line {})", file_path, line))
@@ -2289,10 +2075,7 @@ pub async fn jump_to_source(
             let page = page_number.unwrap_or(1);
 
             let adobe_params = if let Some(ref search) = search_text {
-                let encoded = search
-                    .chars()
-                    .take(80)
-                    .collect::<String>()
+                let encoded = search.chars().take(80).collect::<String>()
                     .replace(' ', "%20")
                     .replace('"', "%22");
                 format!("/A \"page={}&search={}\"", page, encoded)
@@ -2319,9 +2102,7 @@ pub async fn jump_to_source(
         }
 
         // Open with system default via Tauri opener plugin (reliable on all platforms)
-        app_handle
-            .opener()
-            .open_path(&file_path, None::<&str>)
+        app_handle.opener().open_path(&file_path, None::<&str>)
             .map_err(|e| format!("Failed to open file: {}", e))?;
 
         Ok(format!("Opened: {}", file_path))
@@ -2337,9 +2118,9 @@ pub async fn get_document_preview(
 ) -> Result<serde_json::Value, String> {
     tracing::info!("📄 Getting preview for: {}", file_path);
 
+    use std::path::Path;
     use std::fs;
     use std::io::{BufRead, BufReader};
-    use std::path::Path;
 
     // Check if file exists
     if !Path::new(&file_path).exists() {
@@ -2347,30 +2128,31 @@ pub async fn get_document_preview(
     }
 
     let path = Path::new(&file_path);
-    let file_name = path
-        .file_name()
+    let file_name = path.file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("Unknown")
         .to_string();
 
-    let extension = path
-        .extension()
+    let extension = path.extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
 
-    let metadata =
-        fs::metadata(&file_path).map_err(|e| format!("Failed to read file metadata: {}", e))?;
+    let metadata = fs::metadata(&file_path)
+        .map_err(|e| format!("Failed to read file metadata: {}", e))?;
 
     let file_size = format_file_size(metadata.len());
 
     // Extract excerpt based on file type
     let excerpt = if is_code_file(&file_path) || extension == "txt" || extension == "md" {
         // Extract text excerpt
-        let file = fs::File::open(&file_path).map_err(|e| format!("Failed to open file: {}", e))?;
+        let file = fs::File::open(&file_path)
+            .map_err(|e| format!("Failed to open file: {}", e))?;
 
         let reader = BufReader::new(file);
-        let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
+        let lines: Vec<String> = reader.lines()
+            .filter_map(|l| l.ok())
+            .collect();
 
         if let Some((start, end)) = line_range {
             let start_idx = (start.saturating_sub(1)) as usize;
@@ -2459,3 +2241,4 @@ fn dir_size_recursive(path: &std::path::Path) -> u64 {
     }
     size
 }
+

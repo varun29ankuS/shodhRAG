@@ -1,7 +1,7 @@
 //! Safe Rust wrappers for ONNX Runtime GenAI - Stubbed
 //! Not available in lightweight build.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 pub struct Model;
 pub struct Tokenizer;
@@ -26,11 +26,6 @@ impl Default for SearchOptions {
     }
 }
 
-pub fn generate_text(
-    _model: &Model,
-    _tokenizer: &Tokenizer,
-    _prompt: &str,
-    _options: &SearchOptions,
-) -> Result<String> {
+pub fn generate_text(_model: &Model, _tokenizer: &Tokenizer, _prompt: &str, _options: &SearchOptions) -> Result<String> {
     Err(anyhow!("ONNX Runtime GenAI not available in this build"))
 }

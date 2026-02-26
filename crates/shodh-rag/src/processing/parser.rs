@@ -64,15 +64,8 @@ impl DocumentParser {
         };
 
         if !structured_sections.is_empty() {
-            let field_count = structured_sections
-                .iter()
-                .filter(|s| matches!(s, DocumentSection::FormFields { .. }))
-                .count();
-            tracing::info!(
-                sections = structured_sections.len(),
-                form_field_groups = field_count,
-                "PDF structured extraction complete"
-            );
+            let field_count = structured_sections.iter().filter(|s| matches!(s, DocumentSection::FormFields { .. })).count();
+            tracing::info!(sections = structured_sections.len(), form_field_groups = field_count, "PDF structured extraction complete");
         }
 
         Ok(ParsedDocument {
@@ -89,9 +82,26 @@ impl DocumentParser {
             .with_context(|| format!("Failed to read PDF: {}", path.display()))?;
 
         // Layer 1: pdf_extract for fast text extraction
-        let text_result = pdf_extract::extract_text_from_mem(&bytes);
+        // Wrapped in catch_unwind because pdf_extract can panic on malformed
+        // font tables, CIDFont encodings, or unusual PDF structures.
+        let bytes_clone = bytes.clone();
+        let text_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pdf_extract::extract_text_from_mem(&bytes_clone)
+        }));
 
-        if let Ok(text) = text_result {
+        let text_ok = match text_result {
+            Ok(Ok(text)) => Some(text),
+            Ok(Err(e)) => {
+                tracing::debug!("pdf_extract failed on {}: {:?}", path.display(), e);
+                None
+            }
+            Err(_) => {
+                tracing::warn!("pdf_extract panicked on {}, falling through to lopdf/OCR", path.display());
+                None
+            }
+        };
+
+        if let Some(text) = text_ok {
             let cleaned = text
                 .lines()
                 .map(|line| line.trim())
@@ -183,17 +193,19 @@ impl DocumentParser {
             }
             scored_lines += 1;
 
-            // Count internal whitespace gaps of 3+ spaces — hallmark of column merge
+            // Count internal whitespace gaps of 5+ spaces — hallmark of column merge.
+            // Using 5 instead of 3 to avoid false positives on table-style PDFs
+            // (invoices, receipts) where moderate spacing is intentional alignment.
             let gap_count = line
                 .as_bytes()
-                .windows(3)
+                .windows(5)
                 .filter(|w| w.iter().all(|&b| b == b' '))
                 .count();
 
             // Also check for tab characters (another column separator artifact)
             let tab_count = line.chars().filter(|&c| c == '\t').count();
 
-            if gap_count >= 1 || tab_count >= 2 {
+            if gap_count >= 2 || tab_count >= 3 {
                 garbled_lines += 1;
             }
         }
@@ -260,9 +272,7 @@ impl DocumentParser {
 
         // If lopdf produced no page text but we have fallback content,
         // add it as a single text section
-        let has_text_sections = sections
-            .iter()
-            .any(|s| matches!(s, DocumentSection::Text { .. }));
+        let has_text_sections = sections.iter().any(|s| matches!(s, DocumentSection::Text { .. }));
         if !has_text_sections && !fallback_content.trim().is_empty() {
             sections.push(DocumentSection::Text {
                 content: fallback_content.to_string(),
@@ -326,10 +336,7 @@ impl DocumentParser {
 
         let sheet_names: Vec<String> = workbook.sheet_names().to_vec();
         if sheet_names.is_empty() {
-            return Err(anyhow::anyhow!(
-                "Spreadsheet has no sheets: {}",
-                path.display()
-            ));
+            return Err(anyhow::anyhow!("Spreadsheet has no sheets: {}", path.display()));
         }
 
         let mut all_text = String::new();
@@ -561,10 +568,7 @@ fn cell_to_string(cell: &Data) -> String {
             if f.fract() == 0.0 && f.abs() < i64::MAX as f64 {
                 (*f as i64).to_string()
             } else {
-                format!("{:.4}", f)
-                    .trim_end_matches('0')
-                    .trim_end_matches('.')
-                    .to_string()
+                format!("{:.4}", f).trim_end_matches('0').trim_end_matches('.').to_string()
             }
         }
         Data::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),

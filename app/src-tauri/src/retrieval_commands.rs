@@ -1,13 +1,13 @@
 //! Thin Tauri wrapper for retrieval decision commands.
 //! Business logic (corpus stats, query analysis) lives in shodh_rag.
 
-use crate::context_commands::ContextState;
-use crate::rag_commands::RagState;
 use serde::{Deserialize, Serialize};
-use shodh_rag::chat::build_corpus_stats;
-use shodh_rag::rag::{QueryAnalysis, QueryAnalyzer};
-use std::collections::HashMap;
 use tauri::State;
+use crate::rag_commands::RagState;
+use crate::context_commands::ContextState;
+use shodh_rag::rag::{QueryAnalyzer, QueryAnalysis};
+use shodh_rag::chat::build_corpus_stats;
+use std::collections::HashMap;
 
 // Frontend-friendly types (camelCase serialization)
 #[derive(Debug, Clone, Serialize, Deserialize)]

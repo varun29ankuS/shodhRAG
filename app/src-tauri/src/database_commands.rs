@@ -1,21 +1,22 @@
 //! Database management commands for clearing and resetting data
 
+use tauri::State;
 use crate::rag_commands::RagState;
 use std::fs;
-use std::io::Write;
 use std::path::Path;
-use tauri::State;
+use std::io::Write;
 
 /// Clear all data from the database and reset to fresh state
 #[tauri::command]
-pub async fn reset_database(state: State<'_, RagState>) -> Result<String, String> {
+pub async fn reset_database(
+    state: State<'_, RagState>,
+) -> Result<String, String> {
     tracing::info!("=== Resetting database ===");
 
     // Step 1: Clear all spaces from memory and disk
     {
         let space_manager = state.space_manager.lock().map_err(|e| e.to_string())?;
-        space_manager
-            .clear_all_spaces()
+        space_manager.clear_all_spaces()
             .map_err(|e| format!("Failed to clear spaces: {}", e))?;
     } // Drop space_manager lock before await
 
@@ -44,7 +45,9 @@ pub async fn reset_database(state: State<'_, RagState>) -> Result<String, String
 
 /// Clear all documents from the database but keep spaces
 #[tauri::command]
-pub async fn clear_all_documents(state: State<'_, RagState>) -> Result<String, String> {
+pub async fn clear_all_documents(
+    state: State<'_, RagState>,
+) -> Result<String, String> {
     tracing::info!("=== Clearing all documents ===");
 
     let mut rag_guard = state.rag.write().await;
@@ -59,8 +62,7 @@ pub async fn clear_all_documents(state: State<'_, RagState>) -> Result<String, S
 
     // Clear document associations from spaces
     let space_manager = state.space_manager.lock().map_err(|e| e.to_string())?;
-    let spaces = space_manager
-        .get_spaces()
+    let spaces = space_manager.get_spaces()
         .map_err(|e| format!("Failed to get spaces: {}", e))?;
 
     for mut space in spaces {
@@ -69,8 +71,7 @@ pub async fn clear_all_documents(state: State<'_, RagState>) -> Result<String, S
     }
 
     // Save the updated spaces
-    space_manager
-        .save_spaces()
+    space_manager.save_spaces()
         .map_err(|e| format!("Failed to save spaces: {}", e))?;
 
     Ok("All documents cleared from database".to_string())
@@ -88,8 +89,7 @@ pub async fn delete_space_permanently(
     let mut rag_guard = state.rag.write().await;
     let rag = &mut *rag_guard;
 
-    let deleted_count = rag
-        .delete_by_space_id(&space_id)
+    let deleted_count = rag.delete_by_space_id(&space_id)
         .await
         .map_err(|e| format!("Failed to delete documents: {}", e))?;
 
@@ -98,8 +98,7 @@ pub async fn delete_space_permanently(
 
     // Delete the space from SpaceManager and save to disk
     let space_manager = state.space_manager.lock().map_err(|e| e.to_string())?;
-    space_manager
-        .delete_space(&space_id)
+    space_manager.delete_space(&space_id)
         .map_err(|e| format!("Failed to delete space: {}", e))?;
 
     Ok(format!("Space {} permanently deleted", space_id))
@@ -107,17 +106,20 @@ pub async fn delete_space_permanently(
 
 /// Get database statistics
 #[tauri::command]
-pub async fn get_database_stats(state: State<'_, RagState>) -> Result<DatabaseStats, String> {
+pub async fn get_database_stats(
+    state: State<'_, RagState>,
+) -> Result<DatabaseStats, String> {
     let mut stats = DatabaseStats::default();
 
     // Get space count from state
     {
         let space_manager = state.space_manager.lock().map_err(|e| e.to_string())?;
-        let spaces = space_manager
-            .get_spaces()
+        let spaces = space_manager.get_spaces()
             .map_err(|e| format!("Failed to get spaces: {}", e))?;
         stats.total_spaces = spaces.len();
-        stats.total_documents_in_spaces = spaces.iter().map(|s| s.document_count).sum();
+        stats.total_documents_in_spaces = spaces.iter()
+            .map(|s| s.document_count)
+            .sum();
     } // Drop space_manager lock before await
 
     // Get database size from the actual data directory (not db_path which points elsewhere)
@@ -132,10 +134,7 @@ pub async fn get_database_stats(state: State<'_, RagState>) -> Result<DatabaseSt
 
     // Get stats from RAG engine
     let rag_stats = rag.get_statistics().await.unwrap_or_default();
-    let total_chunks: usize = rag_stats
-        .get("total_chunks")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+    let total_chunks: usize = rag_stats.get("total_chunks").and_then(|s| s.parse().ok()).unwrap_or(0);
     let total_docs = rag.count_documents().await.unwrap_or(0);
 
     stats.total_documents = total_docs;
@@ -146,22 +145,22 @@ pub async fn get_database_stats(state: State<'_, RagState>) -> Result<DatabaseSt
 
 /// Clean up orphaned documents (documents not associated with any space)
 #[tauri::command]
-pub async fn cleanup_orphaned_documents(state: State<'_, RagState>) -> Result<String, String> {
+pub async fn cleanup_orphaned_documents(
+    state: State<'_, RagState>,
+) -> Result<String, String> {
     tracing::info!("=== Cleaning up orphaned documents ===");
 
     let rag_guard = state.rag.read().await;
     let rag = &*rag_guard;
 
     // List all documents by metadata (not search)
-    let all_docs = rag
-        .list_documents(None, 100000)
+    let all_docs = rag.list_documents(None, 100000)
         .await
         .map_err(|e| e.to_string())?;
 
     // Get all valid space IDs
     let space_manager = state.space_manager.lock().map_err(|e| e.to_string())?;
-    let valid_space_ids: Vec<String> = space_manager
-        .get_spaces()
+    let valid_space_ids: Vec<String> = space_manager.get_spaces()
         .map_err(|e| format!("Failed to get spaces: {}", e))?
         .iter()
         .map(|s| s.id.clone())
@@ -174,10 +173,7 @@ pub async fn cleanup_orphaned_documents(state: State<'_, RagState>) -> Result<St
             if !valid_space_ids.contains(space_id) {
                 orphaned_count += 1;
                 // Note: Need delete_document method in ComprehensiveRAG
-                tracing::info!(
-                    "Found orphaned document with invalid space_id: {}",
-                    space_id
-                );
+                tracing::info!("Found orphaned document with invalid space_id: {}", space_id);
             }
         } else {
             orphaned_count += 1;
@@ -185,10 +181,7 @@ pub async fn cleanup_orphaned_documents(state: State<'_, RagState>) -> Result<St
         }
     }
 
-    Ok(format!(
-        "Found {} orphaned documents. Manual cleanup required for now.",
-        orphaned_count
-    ))
+    Ok(format!("Found {} orphaned documents. Manual cleanup required for now.", orphaned_count))
 }
 
 #[derive(serde::Serialize, Default)]
@@ -258,7 +251,8 @@ pub async fn read_backup_file(
         return Err(format!("Backup file not found: {}", backup_path));
     }
 
-    fs::read_to_string(path).map_err(|e| format!("Failed to read backup file: {}", e))
+    fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read backup file: {}", e))
 }
 
 /// Restore a space from backup data
@@ -269,8 +263,8 @@ pub async fn restore_space_from_backup(
 ) -> Result<String, String> {
     tracing::info!("=== Restoring space from backup ===");
 
-    let space: crate::space_manager::Space =
-        serde_json::from_value(space_data).map_err(|e| format!("Invalid space data: {}", e))?;
+    let space: crate::space_manager::Space = serde_json::from_value(space_data)
+        .map_err(|e| format!("Invalid space data: {}", e))?;
 
     let space_manager = state.space_manager.lock().map_err(|e| e.to_string())?;
 
@@ -285,8 +279,7 @@ pub async fn restore_space_from_backup(
     spaces.push(space.clone());
     drop(spaces); // Release lock
 
-    space_manager
-        .save_spaces()
+    space_manager.save_spaces()
         .map_err(|e| format!("Failed to save restored space: {}", e))?;
 
     Ok(format!("Space '{}' restored successfully", space.name))
@@ -294,7 +287,9 @@ pub async fn restore_space_from_backup(
 
 /// List all available backup files
 #[tauri::command]
-pub async fn list_backup_files(state: State<'_, RagState>) -> Result<Vec<BackupFileInfo>, String> {
+pub async fn list_backup_files(
+    state: State<'_, RagState>,
+) -> Result<Vec<BackupFileInfo>, String> {
     let backup_dir = state.app_paths.data_dir.join("backups");
 
     if !backup_dir.exists() {
@@ -306,16 +301,13 @@ pub async fn list_backup_files(state: State<'_, RagState>) -> Result<Vec<BackupF
     if let Ok(entries) = fs::read_dir(&backup_dir) {
         for entry in entries.flatten() {
             if let Ok(metadata) = entry.metadata() {
-                if metadata.is_file()
-                    && entry.path().extension().and_then(|s| s.to_str()) == Some("json")
-                {
+                if metadata.is_file() && entry.path().extension().and_then(|s| s.to_str()) == Some("json") {
                     if let Some(file_name) = entry.file_name().to_str() {
                         backups.push(BackupFileInfo {
                             file_name: file_name.to_string(),
                             file_path: entry.path().to_string_lossy().to_string(),
                             size_bytes: metadata.len(),
-                            created_at: metadata
-                                .modified()
+                            created_at: metadata.modified()
                                 .ok()
                                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                                 .map(|d| d.as_secs())
@@ -365,14 +357,45 @@ pub async fn update_space_metadata(
         space.metadata = metadata_map;
         drop(spaces); // Release lock
 
-        space_manager
-            .save_spaces()
+        space_manager.save_spaces()
             .map_err(|e| format!("Failed to save space metadata: {}", e))?;
 
         Ok("Metadata updated successfully".to_string())
     } else {
         Err(format!("Space not found: {}", space_id))
     }
+}
+
+/// List all distinct indexed source files from the vector store.
+/// Returns (doc_id, title, source_path) for each unique document.
+#[tauri::command]
+pub async fn list_indexed_sources(
+    state: State<'_, RagState>,
+) -> Result<Vec<IndexedSourceInfo>, String> {
+    let rag_guard = state.rag.read().await;
+    let docs = rag_guard
+        .get_document_info()
+        .await
+        .map_err(|e| format!("Failed to list sources: {}", e))?;
+
+    let sources: Vec<IndexedSourceInfo> = docs
+        .into_iter()
+        .map(|(doc_id, title, source)| IndexedSourceInfo {
+            doc_id,
+            title,
+            source,
+        })
+        .collect();
+
+    tracing::info!("Listed {} indexed sources", sources.len());
+    Ok(sources)
+}
+
+#[derive(serde::Serialize)]
+pub struct IndexedSourceInfo {
+    pub doc_id: String,
+    pub title: String,
+    pub source: String,
 }
 
 #[derive(serde::Serialize)]

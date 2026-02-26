@@ -71,8 +71,8 @@ impl RAGConfig {
     pub fn from_file(path: &Path) -> Result<Self, String> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read config file: {}", e))?;
-        let config: Self =
-            serde_json::from_str(&content).map_err(|e| format!("Failed to parse config: {}", e))?;
+        let config: Self = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse config: {}", e))?;
         config.validate()?;
         Ok(config)
     }
@@ -92,14 +92,15 @@ impl Default for RAGConfig {
             data_dir.join("models")
         };
 
-        // E5 model is auto-downloaded on first run, so default to enabled.
-        // Dimension 768 matches multilingual-e5-base.
+        let e5_available = model_dir.join("multilingual-e5-base").exists();
+        let dimension = if e5_available { 768 } else { 384 };
+
         Self {
             data_dir,
             embedding: EmbeddingConfig {
                 model_dir,
-                dimension: 768,
-                use_e5: true,
+                dimension,
+                use_e5: e5_available,
                 cache_size: 1000,
             },
             chunking: ChunkingConfig {
@@ -109,8 +110,8 @@ impl Default for RAGConfig {
             },
             search: SearchConfig {
                 default_k: 10,
-                candidate_multiplier: 3,
-                min_score_threshold: 0.1,
+                candidate_multiplier: 5,
+                min_score_threshold: 0.02,
                 hybrid_alpha: 0.7,
                 rrf_k: 60,
                 score_weight: 0.3,

@@ -1,11 +1,12 @@
 use crate::rag_commands::RagState;
 use serde::{Deserialize, Serialize};
 use shodh_rag::agent::{
-    AgentCapability, AgentConfig, AgentContext, AgentDefinition, ConversationTurn, ExecutionResult,
-    ToolConfig,
+    AgentCapability, AgentConfig, AgentDefinition, ToolConfig,
+    AgentContext, ConversationTurn,
+    ExecutionResult,
 };
-use std::collections::HashMap;
 use tauri::State;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {
@@ -57,7 +58,9 @@ pub struct AgentHealthEntry {
 }
 
 #[tauri::command]
-pub async fn get_agent_dashboard(rag_state: State<'_, RagState>) -> Result<AgentDashboard, String> {
+pub async fn get_agent_dashboard(
+    rag_state: State<'_, RagState>,
+) -> Result<AgentDashboard, String> {
     let agent_system_guard = rag_state.agent_system.read().await;
     let agent_system_arc = match agent_system_guard.as_ref() {
         Some(arc) => arc.clone(),
@@ -298,21 +301,13 @@ fn frontend_to_backend(def: &FrontendAgentDefinition) -> AgentDefinition {
             auto_use_rag: def.config.auto_use_rag,
             rag_top_k: def.config.rag_top_k,
         },
-        capabilities: def
-            .capabilities
-            .iter()
-            .map(|c| parse_capability(c))
-            .collect(),
-        tools: def
-            .tools
-            .iter()
-            .map(|t| ToolConfig {
-                tool_id: t.clone(),
-                enabled: true,
-                config: HashMap::new(),
-                description: None,
-            })
-            .collect(),
+        capabilities: def.capabilities.iter().map(|c| parse_capability(c)).collect(),
+        tools: def.tools.iter().map(|t| ToolConfig {
+            tool_id: t.clone(),
+            enabled: true,
+            config: HashMap::new(),
+            description: None,
+        }).collect(),
         enabled: def.enabled,
         metadata: def.metadata.clone(),
     }
@@ -335,11 +330,7 @@ fn backend_to_frontend(def: &AgentDefinition) -> FrontendAgentDefinition {
             auto_use_rag: def.config.auto_use_rag,
             rag_top_k: def.config.rag_top_k,
         },
-        capabilities: def
-            .capabilities
-            .iter()
-            .map(|c| capability_to_string(c))
-            .collect(),
+        capabilities: def.capabilities.iter().map(|c| capability_to_string(c)).collect(),
         tools: def.tools.iter().map(|t| t.tool_id.clone()).collect(),
         metadata: def.metadata.clone(),
     }
@@ -399,7 +390,10 @@ pub async fn update_agent(
 
 /// Delete an agent
 #[tauri::command]
-pub async fn delete_agent(agent_id: String, rag_state: State<'_, RagState>) -> Result<(), String> {
+pub async fn delete_agent(
+    agent_id: String,
+    rag_state: State<'_, RagState>,
+) -> Result<(), String> {
     let agent_system_guard = rag_state.agent_system.read().await;
     let agent_system_arc = agent_system_guard
         .as_ref()
@@ -498,11 +492,7 @@ pub async fn execute_agent(
         }
     }
 
-    tracing::info!(
-        "Executing agent {} with query: {}",
-        agent_id,
-        query.chars().take(50).collect::<String>()
-    );
+    tracing::info!("Executing agent {} with query: {}", agent_id, query.chars().take(50).collect::<String>());
 
     let system = agent_system_arc.read().await;
     let result = system
@@ -512,10 +502,7 @@ pub async fn execute_agent(
 
     tracing::info!(
         "Agent {} execution complete: success={}, time={}ms, tools={:?}",
-        agent_id,
-        result.success,
-        result.execution_time_ms,
-        result.tools_used
+        agent_id, result.success, result.execution_time_ms, result.tools_used
     );
 
     Ok(result)
@@ -553,16 +540,11 @@ pub struct FrontendCrewConfig {
     pub verbose: bool,
 }
 
-fn default_crew_timeout() -> u64 {
-    300
-}
+fn default_crew_timeout() -> u64 { 300 }
 
 impl Default for FrontendCrewConfig {
     fn default() -> Self {
-        Self {
-            timeout_seconds: 300,
-            verbose: false,
-        }
+        Self { timeout_seconds: 300, verbose: false }
     }
 }
 
@@ -589,14 +571,9 @@ fn frontend_crew_to_backend(fc: &FrontendCrewDefinition) -> shodh_rag::agent::Cr
     let process = match fc.process.as_str() {
         "hierarchical" => {
             let coord = fc.coordinator_id.clone().unwrap_or_else(|| {
-                fc.agents
-                    .first()
-                    .map(|a| a.agent_id.clone())
-                    .unwrap_or_default()
+                fc.agents.first().map(|a| a.agent_id.clone()).unwrap_or_default()
             });
-            shodh_rag::agent::CrewProcess::Hierarchical {
-                coordinator_id: coord,
-            }
+            shodh_rag::agent::CrewProcess::Hierarchical { coordinator_id: coord }
         }
         _ => shodh_rag::agent::CrewProcess::Sequential,
     };
@@ -605,16 +582,12 @@ fn frontend_crew_to_backend(fc: &FrontendCrewDefinition) -> shodh_rag::agent::Cr
         id: fc.id.clone().unwrap_or_default(),
         name: fc.name.clone(),
         description: fc.description.clone(),
-        agents: fc
-            .agents
-            .iter()
-            .map(|m| shodh_rag::agent::CrewMember {
-                agent_id: m.agent_id.clone(),
-                role: m.role.clone(),
-                goal: m.goal.clone(),
-                order: m.order,
-            })
-            .collect(),
+        agents: fc.agents.iter().map(|m| shodh_rag::agent::CrewMember {
+            agent_id: m.agent_id.clone(),
+            role: m.role.clone(),
+            goal: m.goal.clone(),
+            order: m.order,
+        }).collect(),
         process,
         config: shodh_rag::agent::CrewConfig {
             timeout_seconds: fc.config.timeout_seconds,
@@ -635,16 +608,12 @@ fn backend_crew_to_frontend(bc: &shodh_rag::agent::CrewDefinition) -> FrontendCr
         id: Some(bc.id.clone()),
         name: bc.name.clone(),
         description: bc.description.clone(),
-        agents: bc
-            .agents
-            .iter()
-            .map(|m| FrontendCrewMember {
-                agent_id: m.agent_id.clone(),
-                role: m.role.clone(),
-                goal: m.goal.clone(),
-                order: m.order,
-            })
-            .collect(),
+        agents: bc.agents.iter().map(|m| FrontendCrewMember {
+            agent_id: m.agent_id.clone(),
+            role: m.role.clone(),
+            goal: m.goal.clone(),
+            order: m.order,
+        }).collect(),
         process: process_str,
         coordinator_id,
         config: FrontendCrewConfig {
@@ -669,10 +638,7 @@ pub async fn create_crew(
 
     let backend_crew = frontend_crew_to_backend(&crew);
     let system = agent_system_arc.read().await;
-    let crew_id = system
-        .register_crew(backend_crew)
-        .await
-        .map_err(|e| e.to_string())?;
+    let crew_id = system.register_crew(backend_crew).await.map_err(|e| e.to_string())?;
 
     tracing::info!("Created crew: {} ({})", crew.name, crew_id);
     Ok(crew_id)
@@ -715,7 +681,10 @@ pub async fn list_crews(
 
 /// Delete a crew
 #[tauri::command]
-pub async fn delete_crew(crew_id: String, rag_state: State<'_, RagState>) -> Result<(), String> {
+pub async fn delete_crew(
+    crew_id: String,
+    rag_state: State<'_, RagState>,
+) -> Result<(), String> {
     let agent_system_guard = rag_state.agent_system.read().await;
     let agent_system_arc = agent_system_guard
         .as_ref()
@@ -724,10 +693,7 @@ pub async fn delete_crew(crew_id: String, rag_state: State<'_, RagState>) -> Res
     drop(agent_system_guard);
 
     let system = agent_system_arc.read().await;
-    system
-        .delete_crew(&crew_id)
-        .await
-        .map_err(|e| e.to_string())?;
+    system.delete_crew(&crew_id).await.map_err(|e| e.to_string())?;
     tracing::info!("Deleted crew: {}", crew_id);
     Ok(())
 }
@@ -748,11 +714,7 @@ pub async fn execute_crew(
         .clone();
     drop(agent_system_guard);
 
-    tracing::info!(
-        "Executing crew {} with task: {}",
-        crew_id,
-        task.chars().take(80).collect::<String>()
-    );
+    tracing::info!("Executing crew {} with task: {}", crew_id, task.chars().take(80).collect::<String>());
 
     let emitter = crate::chat_engine::TauriEventEmitter::new(app_handle);
     let emitter_ref: Option<&dyn shodh_rag::chat::EventEmitter> = Some(&emitter);
@@ -765,27 +727,20 @@ pub async fn execute_crew(
 
     tracing::info!(
         "Crew {} execution complete: success={}, time={}ms, agents={}",
-        crew_id,
-        result.success,
-        result.execution_time_ms,
-        result.agent_outputs.len()
+        crew_id, result.success, result.execution_time_ms, result.agent_outputs.len()
     );
 
     Ok(FrontendCrewExecutionResult {
         success: result.success,
         final_output: result.final_output,
-        agent_outputs: result
-            .agent_outputs
-            .iter()
-            .map(|o| FrontendCrewAgentOutput {
-                agent_id: o.agent_id.clone(),
-                agent_name: o.agent_name.clone(),
-                role: o.role.clone(),
-                output: o.output.clone(),
-                execution_time_ms: o.execution_time_ms,
-                tools_used: o.tools_used.clone(),
-            })
-            .collect(),
+        agent_outputs: result.agent_outputs.iter().map(|o| FrontendCrewAgentOutput {
+            agent_id: o.agent_id.clone(),
+            agent_name: o.agent_name.clone(),
+            role: o.role.clone(),
+            output: o.output.clone(),
+            execution_time_ms: o.execution_time_ms,
+            tools_used: o.tools_used.clone(),
+        }).collect(),
         execution_time_ms: result.execution_time_ms,
         error: result.error,
     })

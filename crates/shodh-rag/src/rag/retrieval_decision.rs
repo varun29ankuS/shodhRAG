@@ -3,15 +3,16 @@
 //! Sophisticated go/no-go decision making for document retrieval.
 //! Analyzes query intent, domain relevance, and selects optimal retrieval strategy.
 
-use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
-static ARITHMETIC_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"\d\s*[+\-*/]\s*\d").expect("arithmetic regex is valid"));
-static YEAR_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"\b(19|20)\d{2}\b").expect("year regex is valid"));
+static ARITHMETIC_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"\d\s*[+\-*/]\s*\d").expect("arithmetic regex is valid")
+});
+static YEAR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"\b(19|20)\d{2}\b").expect("year regex is valid")
+});
 
 // ============================================================================
 // Core Types
@@ -24,7 +25,7 @@ pub enum QueryIntent {
     MetaQuestion,
     Clarification,
     SimpleAcknowledgment,
-    FollowUpRequest, // "show me that in a chart", "do the same for X"
+    FollowUpRequest,  // "show me that in a chart", "do the same for X"
 
     // Simple retrieval
     FactualLookup,
@@ -63,13 +64,21 @@ pub enum RetrievalStrategy {
     },
 
     /// Multiple search stages
-    MultiStage { stages: Vec<SearchStage> },
+    MultiStage {
+        stages: Vec<SearchStage>,
+    },
 
     /// Web search only (current events, general knowledge not in corpus)
-    WebSearch { query: String, max_results: usize },
+    WebSearch {
+        query: String,
+        max_results: usize,
+    },
 
     /// Hybrid: Local documents + Web search
-    HybridSearch { local_k: usize, web_results: usize },
+    HybridSearch {
+        local_k: usize,
+        web_results: usize,
+    },
 
     /// No retrieval needed
     NoRetrieval {
@@ -87,10 +96,10 @@ pub struct SearchStage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelevanceScore {
-    pub corpus_coverage: f32, // 0.0 - 1.0: how many query terms exist in corpus
-    pub domain_match: f32,    // 0.0 - 1.0: how well query matches document domains
-    pub term_frequency: f32,  // 0.0 - 1.0: are query terms common or rare
-    pub overall_confidence: f32, // Combined score
+    pub corpus_coverage: f32,    // 0.0 - 1.0: how many query terms exist in corpus
+    pub domain_match: f32,        // 0.0 - 1.0: how well query matches document domains
+    pub term_frequency: f32,      // 0.0 - 1.0: are query terms common or rare
+    pub overall_confidence: f32,  // Combined score
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -196,9 +205,13 @@ impl QueryAnalyzer {
         let requirements = self.requirement_extractor.extract(query);
 
         // Step 4: Decide retrieval strategy
-        let decision =
-            self.strategy_selector
-                .decide(query, &intent, &relevance, &requirements, corpus_stats);
+        let decision = self.strategy_selector.decide(
+            query,
+            &intent,
+            &relevance,
+            &requirements,
+            corpus_stats,
+        );
 
         QueryAnalysis {
             intent,
@@ -330,18 +343,8 @@ impl IntentClassifier {
             return false;
         }
         let greetings = [
-            "hello",
-            "hi",
-            "hey",
-            "greetings",
-            "good morning",
-            "good afternoon",
-            "good evening",
-            "namaste",
-            "thanks",
-            "thank you",
-            "bye",
-            "goodbye",
+            "hello", "hi", "hey", "greetings", "good morning", "good afternoon",
+            "good evening", "namaste", "thanks", "thank you", "bye", "goodbye",
         ];
         greetings.iter().any(|g| query.contains(g))
     }
@@ -378,12 +381,7 @@ impl IntentClassifier {
         if word_count > 10 {
             return false;
         }
-        let patterns = [
-            "what do you mean",
-            "can you explain",
-            "i don't understand",
-            "clarify",
-        ];
+        let patterns = ["what do you mean", "can you explain", "i don't understand", "clarify"];
         patterns.iter().any(|p| query.contains(p))
     }
 
@@ -393,15 +391,8 @@ impl IntentClassifier {
         // The query must START with a transformation/display command
         // AND reference previous context with a pronoun/demonstrative.
         let starts_with_transform = [
-            "show me",
-            "display",
-            "visualize",
-            "format as",
-            "convert to",
-            "make it",
-            "do the same",
-            "repeat that",
-            "do it again",
+            "show me", "display", "visualize", "format as", "convert to",
+            "make it", "do the same", "repeat that", "do it again",
         ];
         let has_transform = starts_with_transform.iter().any(|p| query.starts_with(p));
 
@@ -422,42 +413,19 @@ impl IntentClassifier {
         // IMPORTANT: "generate a report FROM my documents" is NOT creative — it needs retrieval.
         // So we exclude queries that reference existing documents/data.
 
-        let doc_refs = [
-            "from my",
-            "from the",
-            "from document",
-            "from file",
-            "based on my",
-            "using my",
-        ];
+        let doc_refs = ["from my", "from the", "from document", "from file", "based on my", "using my"];
         let references_docs = doc_refs.iter().any(|r| query.contains(r));
         if references_docs {
             return false;
         }
 
         let patterns = [
-            "create fake",
-            "create a fake",
-            "make up",
-            "invent",
-            "imagine",
-            "pretend",
-            "fictional",
-            "fabricate",
-            "simulate",
-            "mock up",
-            "come up with",
-            "brainstorm",
-            "suggest some",
-            "give me ideas",
+            "create fake", "create a fake", "make up", "invent", "imagine",
+            "pretend", "fictional", "fabricate", "simulate", "mock up",
+            "come up with", "brainstorm", "suggest some", "give me ideas",
             // Visualization/diagram creation (pure generation, no doc lookup needed)
-            "make a flowchart",
-            "make a diagram",
-            "create a flowchart",
-            "create a diagram",
-            "draw a",
-            "make a chart",
-            "create a chart",
+            "make a flowchart", "make a diagram", "create a flowchart",
+            "create a diagram", "draw a", "make a chart", "create a chart",
             "make an infographic",
         ];
         if patterns.iter().any(|p| query.contains(p)) {
@@ -465,7 +433,9 @@ impl IntentClassifier {
         }
 
         // "write a"/"draft a"/"compose a" are creative only when NOT about existing content
-        let write_patterns = ["write a", "write an", "draft a", "draft an", "compose a"];
+        let write_patterns = [
+            "write a", "write an", "draft a", "draft an", "compose a",
+        ];
         if write_patterns.iter().any(|p| query.starts_with(p)) {
             // Creative if not referencing documents
             return !query.contains("about my") && !query.contains("summary of");
@@ -545,7 +515,14 @@ impl IntentClassifier {
 
     fn is_aggregation(&self, query: &str) -> bool {
         let patterns = [
-            "how many", "count", "total", "sum", "average", "mean", "list all", "show all",
+            "how many",
+            "count",
+            "total",
+            "sum",
+            "average",
+            "mean",
+            "list all",
+            "show all",
         ];
         patterns.iter().any(|p| query.contains(p))
     }
@@ -554,9 +531,7 @@ impl IntentClassifier {
         // Check for any 4-digit year pattern
         let has_year = YEAR_RE.is_match(query);
 
-        if has_year {
-            return true;
-        }
+        if has_year { return true; }
 
         let patterns = [
             "last year",
@@ -584,12 +559,10 @@ impl IntentClassifier {
     fn is_document_search(&self, query: &str) -> bool {
         let lower = query.to_lowercase();
         let patterns = [
-            "find", "search", "show me", "get me", "retrieve", "fetch", "locate", "look up",
-            "pull up", "bring up",
+            "find", "search", "show me", "get me", "retrieve", "fetch", "locate",
+            "look up", "pull up", "bring up",
         ];
-        patterns
-            .iter()
-            .any(|p| lower.starts_with(p) || lower.contains(&format!(" {} ", p)))
+        patterns.iter().any(|p| lower.starts_with(p) || lower.contains(&format!(" {} ", p)))
     }
 
     fn is_definition(&self, query: &str) -> bool {
@@ -738,8 +711,8 @@ impl DomainMatcher {
         // Simple keyword extraction - remove stop words
         let stop_words = [
             "the", "a", "an", "is", "are", "was", "were", "in", "on", "at", "to", "for", "of",
-            "and", "or", "but", "with", "from", "by", "as", "how", "what", "where", "when", "why",
-            "which", "who", "i", "you", "me", "my", "your",
+            "and", "or", "but", "with", "from", "by", "as", "how", "what", "where", "when",
+            "why", "which", "who", "i", "you", "me", "my", "your",
         ];
 
         query
@@ -846,55 +819,26 @@ impl RequirementExtractor {
     }
 
     fn extract_date_range(&self, query: &str) -> Option<DateRange> {
-        // Dynamic year detection via regex
-        if let Some(cap) = YEAR_RE.find(query) {
-            let year = cap.as_str();
-            return Some(DateRange {
-                field: "date".to_string(),
-                start: Some(format!("{}-01-01", year)),
-                end: Some(format!("{}-12-31", year)),
-            });
-        }
-
         let query_lower = query.to_lowercase();
 
-        // Relative date expressions
-        if query_lower.contains("this year") {
-            let year = chrono::Utc::now().format("%Y");
+        // Simple year detection
+        if query_lower.contains("2023") {
             return Some(DateRange {
                 field: "date".to_string(),
-                start: Some(format!("{}-01-01", year)),
-                end: Some(format!("{}-12-31", year)),
+                start: Some("2023-01-01".to_string()),
+                end: Some("2023-12-31".to_string()),
             });
         }
 
-        if query_lower.contains("last year") {
-            let year = chrono::Utc::now().year() - 1;
+        if query_lower.contains("2024") {
             return Some(DateRange {
                 field: "date".to_string(),
-                start: Some(format!("{}-01-01", year)),
-                end: Some(format!("{}-12-31", year)),
+                start: Some("2024-01-01".to_string()),
+                end: Some("2024-12-31".to_string()),
             });
         }
 
-        if query_lower.contains("last month") {
-            let now = chrono::Utc::now();
-            let last_month = if now.month() == 1 {
-                chrono::NaiveDate::from_ymd_opt(now.year() - 1, 12, 1).unwrap()
-            } else {
-                chrono::NaiveDate::from_ymd_opt(now.year(), now.month() - 1, 1).unwrap()
-            };
-            let end_of_last_month = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), 1)
-                .unwrap()
-                .pred_opt()
-                .unwrap();
-            return Some(DateRange {
-                field: "date".to_string(),
-                start: Some(last_month.format("%Y-%m-%d").to_string()),
-                end: Some(end_of_last_month.format("%Y-%m-%d").to_string()),
-            });
-        }
-
+        // Could expand to handle "last month", "this year", etc.
         None
     }
 
@@ -1010,35 +954,25 @@ impl StrategySelector {
                 self.no_retrieval("Meta question about assistant capabilities", true)
             }
 
-            QueryIntent::FollowUpRequest => self.no_retrieval(
-                "Follow-up request referencing previous context - no new documents needed",
-                true,
-            ),
+            QueryIntent::FollowUpRequest => {
+                self.no_retrieval("Follow-up request referencing previous context - no new documents needed", true)
+            }
 
             QueryIntent::Calculation => {
                 self.no_retrieval("Mathematical calculation - LLM can answer directly", true)
             }
 
-            QueryIntent::CreativeGeneration | QueryIntent::ExampleCreation => self.no_retrieval(
-                "Creative/generative query - LLM can create content directly without documents",
-                true,
-            ),
+            QueryIntent::CreativeGeneration | QueryIntent::ExampleCreation => {
+                self.no_retrieval("Creative/generative query - LLM can create content directly without documents", true)
+            }
 
             QueryIntent::GeneralKnowledge => {
                 // CRITICAL: Check if query terms exist in corpus vocabulary FIRST
                 // Don't rely solely on confidence score - if documents contain the terms, search locally
                 if relevance.corpus_coverage > 0.3 || stats.total_docs > 0 {
                     // Query terms found in corpus OR we have documents - search locally
-                    let k = if relevance.overall_confidence > 0.5 {
-                        5
-                    } else {
-                        10
-                    };
-                    self.simple_retrieval(
-                        k,
-                        relevance.overall_confidence.max(0.6),
-                        "General query - searching local documents first",
-                    )
+                    let k = if relevance.overall_confidence > 0.5 { 5 } else { 10 };
+                    self.simple_retrieval(k, relevance.overall_confidence.max(0.6), "General query - searching local documents first")
                 } else if relevance.overall_confidence < 0.2 && stats.total_docs == 0 {
                     // Empty corpus or very low relevance - try web search
                     RetrievalDecision {
@@ -1049,20 +983,12 @@ impl StrategySelector {
                         },
                         estimated_docs_needed: 10,
                         confidence: 0.85,
-                        reasoning:
-                            "No local documents or query terms not in vocabulary - searching web"
-                                .to_string(),
-                        fallback_plan: Some(
-                            "Will search local documents if web search fails".to_string(),
-                        ),
+                        reasoning: "No local documents or query terms not in vocabulary - searching web".to_string(),
+                        fallback_plan: Some("Will search local documents if web search fails".to_string()),
                     }
                 } else {
                     // Medium confidence - try local first
-                    self.simple_retrieval(
-                        10,
-                        relevance.overall_confidence.max(0.5),
-                        "General query - checking local documents",
-                    )
+                    self.simple_retrieval(10, relevance.overall_confidence.max(0.5), "General query - checking local documents")
                 }
             }
 
@@ -1070,16 +996,8 @@ impl StrategySelector {
                 // Check if query terms exist in local documents first
                 if relevance.corpus_coverage > 0.3 || stats.total_docs > 0 {
                     // Query terms found OR we have documents - search locally first
-                    let k = if relevance.overall_confidence > 0.7 {
-                        5
-                    } else {
-                        10
-                    };
-                    self.simple_retrieval(
-                        k,
-                        relevance.overall_confidence.max(0.6),
-                        "Factual lookup in local documents",
-                    )
+                    let k = if relevance.overall_confidence > 0.7 { 5 } else { 10 };
+                    self.simple_retrieval(k, relevance.overall_confidence.max(0.6), "Factual lookup in local documents")
                 } else if stats.total_docs == 0 {
                     // No local documents - use web search
                     RetrievalDecision {
@@ -1090,19 +1008,12 @@ impl StrategySelector {
                         },
                         estimated_docs_needed: 10,
                         confidence: 0.85,
-                        reasoning: "No local documents - searching web for factual information"
-                            .to_string(),
-                        fallback_plan: Some(
-                            "LLM can provide general knowledge if web search fails".to_string(),
-                        ),
+                        reasoning: "No local documents - searching web for factual information".to_string(),
+                        fallback_plan: Some("LLM can provide general knowledge if web search fails".to_string()),
                     }
                 } else {
                     // Have documents but low confidence - still search locally
-                    self.simple_retrieval(
-                        10,
-                        relevance.overall_confidence.max(0.5),
-                        "Factual lookup - checking local documents",
-                    )
+                    self.simple_retrieval(10, relevance.overall_confidence.max(0.5), "Factual lookup - checking local documents")
                 }
             }
 
@@ -1110,21 +1021,13 @@ impl StrategySelector {
                 // DocumentSearch should always try to search if we have any documents
                 if stats.total_docs > 0 {
                     // We have documents - search them
-                    let k = if relevance.overall_confidence > 0.6 {
-                        10
-                    } else {
-                        20
-                    };
-                    self.simple_retrieval(
-                        k,
-                        relevance.overall_confidence.max(0.6),
-                        "Searching indexed documents",
-                    )
+                    let k = if relevance.overall_confidence > 0.6 { 10 } else { 20 };
+                    self.simple_retrieval(k, relevance.overall_confidence.max(0.6), "Searching indexed documents")
                 } else {
                     // No documents to search
                     self.no_retrieval_with_fallback(
                         "No documents indexed in this space",
-                        "Please index documents before searching.",
+                        "Please index documents before searching."
                     )
                 }
             }
@@ -1133,7 +1036,7 @@ impl StrategySelector {
                 if relevance.overall_confidence < 0.4 {
                     self.no_retrieval_with_fallback(
                         "Filtered search but low corpus relevance",
-                        "Your documents may not have the required fields or data.",
+                        "Your documents may not have the required fields or data."
                     )
                 } else {
                     self.filtered_search(requirements, relevance.overall_confidence)
@@ -1144,7 +1047,7 @@ impl StrategySelector {
                 if stats.total_docs < 2 {
                     self.no_retrieval_with_fallback(
                         "Comparative analysis needs at least 2 documents",
-                        "Add more documents to enable comparisons.",
+                        "Add more documents to enable comparisons."
                     )
                 } else {
                     self.multi_stage_retrieval(query, relevance.overall_confidence)
@@ -1155,7 +1058,7 @@ impl StrategySelector {
                 if relevance.overall_confidence < 0.5 {
                     self.no_retrieval_with_fallback(
                         "Aggregation query but low corpus relevance",
-                        "Your documents may not contain the data needed for aggregation.",
+                        "Your documents may not contain the data needed for aggregation."
                     )
                 } else {
                     // Need to retrieve many docs for aggregation
@@ -1169,9 +1072,7 @@ impl StrategySelector {
                         estimated_docs_needed: k,
                         confidence: relevance.overall_confidence,
                         reasoning: "Aggregation requires retrieving multiple documents".to_string(),
-                        fallback_plan: Some(
-                            "Results will be aggregated across all matching documents".to_string(),
-                        ),
+                        fallback_plan: Some("Results will be aggregated across all matching documents".to_string()),
                     }
                 }
             }
@@ -1180,11 +1081,7 @@ impl StrategySelector {
                 if requirements.date_range.is_some() {
                     self.filtered_search(requirements, relevance.overall_confidence)
                 } else {
-                    self.simple_retrieval(
-                        15,
-                        relevance.overall_confidence,
-                        "Temporal query without explicit dates",
-                    )
+                    self.simple_retrieval(15, relevance.overall_confidence, "Temporal query without explicit dates")
                 }
             }
 
@@ -1212,9 +1109,7 @@ impl StrategySelector {
                         },
                         estimated_docs_needed: 10,
                         confidence: 0.9,
-                        reasoning:
-                            "Hybrid search: combining your documents with current web information"
-                                .to_string(),
+                        reasoning: "Hybrid search: combining your documents with current web information".to_string(),
                         fallback_plan: None,
                     }
                 } else {
@@ -1227,8 +1122,7 @@ impl StrategySelector {
                         },
                         estimated_docs_needed: 10,
                         confidence: 0.95,
-                        reasoning: "Web search needed for current/real-time information"
-                            .to_string(),
+                        reasoning: "Web search needed for current/real-time information".to_string(),
                         fallback_plan: None,
                     }
                 }
@@ -1275,26 +1169,18 @@ impl StrategySelector {
         }
     }
 
-    fn filtered_search(
-        &self,
-        requirements: &QueryRequirements,
-        confidence: f32,
-    ) -> RetrievalDecision {
+    fn filtered_search(&self, requirements: &QueryRequirements, confidence: f32) -> RetrievalDecision {
         let mut filters = Vec::new();
 
         if let Some(ref date_range) = requirements.date_range {
-            filters.push(format!(
-                "Date range: {} to {}",
+            filters.push(format!("Date range: {} to {}",
                 date_range.start.as_ref().unwrap_or(&"?".to_string()),
                 date_range.end.as_ref().unwrap_or(&"?".to_string())
             ));
         }
 
         for condition in &requirements.numeric_conditions {
-            filters.push(format!(
-                "{} {:?} {}",
-                condition.field, condition.operator, condition.value
-            ));
+            filters.push(format!("{} {:?} {}", condition.field, condition.operator, condition.value));
         }
 
         let initial_k = if filters.is_empty() { 20 } else { 50 };
@@ -1329,9 +1215,7 @@ impl StrategySelector {
 
         RetrievalDecision {
             should_retrieve: true,
-            strategy: RetrievalStrategy::MultiStage {
-                stages: stages.clone(),
-            },
+            strategy: RetrievalStrategy::MultiStage { stages: stages.clone() },
             estimated_docs_needed: 30,
             confidence,
             reasoning: format!("Multi-stage retrieval with {} stages", stages.len()),

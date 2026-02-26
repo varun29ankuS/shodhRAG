@@ -1,19 +1,17 @@
 //! Agent Executor - Runtime execution engine for agents
 
-use super::context::AgentContext;
 use super::definition::AgentDefinition;
-use super::tool_loop::{
-    run_tool_loop, tool_descriptions_to_schemas, ToolLoopConfig, ToolLoopResult,
-};
-use super::tools::{ToolInput, ToolRegistry, ToolResult};
+use super::tools::{ToolRegistry, ToolInput, ToolResult};
+use super::context::AgentContext;
+use super::tool_loop::{run_tool_loop, tool_descriptions_to_schemas, ToolLoopConfig, ToolLoopResult};
 use crate::llm::{ChatMessage, LLMManager};
-use anyhow::{Context as AnyhowContext, Result};
+use tokio::sync::RwLock;
+use anyhow::{Result, Context as AnyhowContext};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use tokio::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Result of agent execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,8 +153,7 @@ impl AgentExecutor {
         let mut metadata = std::collections::HashMap::new();
 
         // Validate definition
-        self.definition
-            .validate()
+        self.definition.validate()
             .context("Invalid agent definition")?;
 
         // Build execution plan
@@ -182,23 +179,20 @@ impl AgentExecutor {
                 PlannedStep::FinalSynthesis => "Finalizing answer...".to_string(),
             };
 
-            self.monitor
-                .update_progress(
-                    &self.execution_id,
-                    AgentProgress {
-                        current_step: step_num + 1,
-                        total_steps,
-                        step_type: step_type.clone(),
-                        message,
-                        percentage: ((step_num + 1) as f32 / total_steps as f32) * 100.0,
-                        elapsed_ms: start_time.elapsed().as_millis() as u64,
-                    },
-                )
-                .await;
+            self.monitor.update_progress(&self.execution_id, AgentProgress {
+                current_step: step_num + 1,
+                total_steps,
+                step_type: step_type.clone(),
+                message,
+                percentage: ((step_num + 1) as f32 / total_steps as f32) * 100.0,
+                elapsed_ms: start_time.elapsed().as_millis() as u64,
+            }).await;
 
-            let step_result = self
-                .execute_step(step_num + 1, step, &mut current_context)
-                .await;
+            let step_result = self.execute_step(
+                step_num + 1,
+                step,
+                &mut current_context,
+            ).await;
 
             match step_result {
                 Ok(execution_step) => {
@@ -280,8 +274,7 @@ impl AgentExecutor {
         let mut metadata = std::collections::HashMap::new();
 
         // Validate definition
-        self.definition
-            .validate()
+        self.definition.validate()
             .context("Invalid agent definition")?;
 
         // Build execution plan
@@ -291,16 +284,14 @@ impl AgentExecutor {
 
         // Send initial progress
         if let Some(ref tx) = progress_tx {
-            let _ = tx
-                .send(AgentProgress {
-                    current_step: 0,
-                    total_steps,
-                    step_type: StepType::Reasoning,
-                    message: format!("Starting agent '{}'...", self.definition.name),
-                    percentage: 0.0,
-                    elapsed_ms: 0,
-                })
-                .await;
+            let _ = tx.send(AgentProgress {
+                current_step: 0,
+                total_steps,
+                step_type: StepType::Reasoning,
+                message: format!("Starting agent '{}'...", self.definition.name),
+                percentage: 0.0,
+                elapsed_ms: 0,
+            }).await;
         }
 
         // Execute plan steps
@@ -335,21 +326,21 @@ impl AgentExecutor {
             };
 
             if let Some(ref tx) = progress_tx {
-                let _ = tx
-                    .send(AgentProgress {
-                        current_step: step_num + 1,
-                        total_steps,
-                        step_type: step_type.clone(),
-                        message,
-                        percentage: ((step_num + 1) as f32 / total_steps as f32) * 100.0,
-                        elapsed_ms: start_time.elapsed().as_millis() as u64,
-                    })
-                    .await;
+                let _ = tx.send(AgentProgress {
+                    current_step: step_num + 1,
+                    total_steps,
+                    step_type: step_type.clone(),
+                    message,
+                    percentage: ((step_num + 1) as f32 / total_steps as f32) * 100.0,
+                    elapsed_ms: start_time.elapsed().as_millis() as u64,
+                }).await;
             }
 
-            let step_result = self
-                .execute_step(step_num + 1, step, &mut current_context)
-                .await;
+            let step_result = self.execute_step(
+                step_num + 1,
+                step,
+                &mut current_context,
+            ).await;
 
             match step_result {
                 Ok(execution_step) => {
@@ -403,16 +394,14 @@ impl AgentExecutor {
 
         // Send completion progress
         if let Some(ref tx) = progress_tx {
-            let _ = tx
-                .send(AgentProgress {
-                    current_step: total_steps,
-                    total_steps,
-                    step_type: StepType::FinalSynthesis,
-                    message: "Completed!".to_string(),
-                    percentage: 100.0,
-                    elapsed_ms: start_time.elapsed().as_millis() as u64,
-                })
-                .await;
+            let _ = tx.send(AgentProgress {
+                current_step: total_steps,
+                total_steps,
+                step_type: StepType::FinalSynthesis,
+                message: "Completed!".to_string(),
+                percentage: 100.0,
+                elapsed_ms: start_time.elapsed().as_millis() as u64,
+            }).await;
         }
 
         // Synthesize final response
@@ -471,11 +460,7 @@ impl AgentExecutor {
 
         // Additional heuristic: if query is very short and contains "screenshot" or "image"
         let words: Vec<&str> = query_lower.split_whitespace().collect();
-        if words.len() <= 6
-            && (query_lower.contains("screenshot")
-                || query_lower.contains("image")
-                || query_lower.contains("picture"))
-        {
+        if words.len() <= 6 && (query_lower.contains("screenshot") || query_lower.contains("image") || query_lower.contains("picture")) {
             // Likely a simple visual query like "What's this screenshot about?"
             return true;
         }
@@ -494,11 +479,7 @@ impl AgentExecutor {
 
         // Step 2: RAG search if auto_use_rag is enabled
         // Skip RAG for visual queries that only need image analysis
-        if let Some(query) = context
-            .query
-            .as_ref()
-            .filter(|_| self.definition.config.auto_use_rag)
-        {
+        if let Some(query) = context.query.as_ref().filter(|_| self.definition.config.auto_use_rag) {
             let is_visual = Self::is_visual_query(query);
 
             if !is_visual {
@@ -542,8 +523,7 @@ impl AgentExecutor {
                 let output = format!(
                     "Analyzing query: '{}'. Available tools: [{}]",
                     context.query.as_ref().unwrap_or(&"<no query>".to_string()),
-                    self.definition
-                        .enabled_tools()
+                    self.definition.enabled_tools()
                         .iter()
                         .map(|t| t.tool_id.as_str())
                         .collect::<Vec<_>>()
@@ -564,9 +544,7 @@ impl AgentExecutor {
 
             PlannedStep::RAGSearch { query, top_k } => {
                 // RAG search step
-                let tool = self
-                    .tool_registry
-                    .get("rag_search")
+                let tool = self.tool_registry.get("rag_search")
                     .ok_or_else(|| anyhow::anyhow!("RAG search tool not found"))?;
 
                 let tool_input = ToolInput {
@@ -596,25 +574,18 @@ impl AgentExecutor {
                 })
             }
 
-            PlannedStep::LLMGeneration {
-                system_prompt,
-                temperature,
-            } => {
+            PlannedStep::LLMGeneration { system_prompt, temperature } => {
                 // Try to acquire the shared LLM manager
                 let llm_guard = if let Some(ref llm_ref) = self.llm_manager_ref {
                     let guard = llm_ref.read().await;
-                    if guard.is_some() {
-                        Some(guard)
-                    } else {
-                        None
-                    }
+                    if guard.is_some() { Some(guard) } else { None }
                 } else {
                     None
                 };
 
                 if let Some(ref llm_guard) = llm_guard {
                     let llm = llm_guard.as_ref().unwrap(); // Safe: checked above
-                                                           // Build chat messages with system prompt and user query
+                    // Build chat messages with system prompt and user query
                     let mut user_content = context.query.clone().unwrap_or_default();
 
                     // Inject RAG results if available
@@ -651,20 +622,10 @@ impl AgentExecutor {
                     ];
 
                     // Add conversation history
-                    for turn in context
-                        .conversation_history
-                        .iter()
-                        .rev()
-                        .take(6)
-                        .collect::<Vec<_>>()
-                        .into_iter()
-                        .rev()
-                    {
+                    for turn in context.conversation_history.iter().rev().take(6).collect::<Vec<_>>().into_iter().rev() {
                         match turn.role.as_str() {
-                            "user" => messages
-                                .insert(messages.len() - 1, ChatMessage::user(&turn.content)),
-                            "assistant" => messages
-                                .insert(messages.len() - 1, ChatMessage::assistant(&turn.content)),
+                            "user" => messages.insert(messages.len() - 1, ChatMessage::user(&turn.content)),
+                            "assistant" => messages.insert(messages.len() - 1, ChatMessage::assistant(&turn.content)),
                             _ => {}
                         }
                     }
@@ -688,13 +649,10 @@ impl AgentExecutor {
                         context,
                         &loop_config,
                         None,
-                    )
-                    .await
-                    .context("Tool loop failed during LLM generation")?;
+                    ).await.context("Tool loop failed during LLM generation")?;
 
                     // Record tool invocations in context
-                    let tools_used: Vec<String> = loop_result
-                        .tool_invocations
+                    let tools_used: Vec<String> = loop_result.tool_invocations
                         .iter()
                         .map(|inv| inv.tool_name.clone())
                         .collect();
@@ -719,11 +677,7 @@ impl AgentExecutor {
                         duration_ms: step_start.elapsed().as_millis() as u64,
                         input: user_content,
                         output: loop_result.content,
-                        tool_used: if tools_used.is_empty() {
-                            None
-                        } else {
-                            Some(tools_used.join(", "))
-                        },
+                        tool_used: if tools_used.is_empty() { None } else { Some(tools_used.join(", ")) },
                         success: true,
                     })
                 } else {
@@ -731,8 +685,8 @@ impl AgentExecutor {
                     let output = format!(
                         "Generated response with temperature {} using system prompt: '{}'",
                         temperature,
-                        if system_prompt.chars().count() > 50 {
-                            format!("{}...", system_prompt.chars().take(50).collect::<String>())
+                        if system_prompt.len() > 50 {
+                            format!("{}...", &system_prompt[..50])
                         } else {
                             system_prompt.clone()
                         }
@@ -785,15 +739,8 @@ impl AgentExecutor {
         }
 
         // Fallback: find the LLMGeneration step output
-        if let Some(llm_step) = steps
-            .iter()
-            .find(|s| s.step_type == StepType::LLMGeneration && s.success)
-        {
-            if !llm_step.output.is_empty()
-                && !llm_step
-                    .output
-                    .starts_with("Generated response with temperature")
-            {
+        if let Some(llm_step) = steps.iter().find(|s| s.step_type == StepType::LLMGeneration && s.success) {
+            if !llm_step.output.is_empty() && !llm_step.output.starts_with("Generated response with temperature") {
                 return Ok(llm_step.output.clone());
             }
         }
@@ -840,17 +787,9 @@ impl AgentExecutor {
 /// Planned step in execution
 #[derive(Debug, Clone)]
 enum PlannedStep {
-    Reasoning {
-        prompt: String,
-    },
-    RAGSearch {
-        query: String,
-        top_k: usize,
-    },
-    LLMGeneration {
-        system_prompt: String,
-        temperature: f32,
-    },
+    Reasoning { prompt: String },
+    RAGSearch { query: String, top_k: usize },
+    LLMGeneration { system_prompt: String, temperature: f32 },
     FinalSynthesis,
 }
 
@@ -865,7 +804,7 @@ fn current_timestamp() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::definition::{AgentConfig, AgentDefinition};
+    use crate::agent::definition::{AgentDefinition, AgentConfig};
 
     #[tokio::test]
     async fn test_executor_creation() {
@@ -892,50 +831,30 @@ mod tests {
     #[test]
     fn test_visual_query_detection() {
         // Visual queries - should return true
-        assert!(AgentExecutor::is_visual_query(
-            "what is in this screenshot?"
-        ));
+        assert!(AgentExecutor::is_visual_query("what is in this screenshot?"));
         assert!(AgentExecutor::is_visual_query("What does this image show?"));
         assert!(AgentExecutor::is_visual_query("Describe this picture"));
-        assert!(AgentExecutor::is_visual_query(
-            "what can you see in this image?"
-        ));
+        assert!(AgentExecutor::is_visual_query("what can you see in this image?"));
         assert!(AgentExecutor::is_visual_query("analyze this screenshot"));
         assert!(AgentExecutor::is_visual_query("tell me about this image"));
         assert!(AgentExecutor::is_visual_query("explain this screenshot"));
         assert!(AgentExecutor::is_visual_query("What am I looking at?"));
         assert!(AgentExecutor::is_visual_query("OCR this image"));
-        assert!(AgentExecutor::is_visual_query(
-            "extract text from this screenshot"
-        ));
+        assert!(AgentExecutor::is_visual_query("extract text from this screenshot"));
 
         // Short visual queries
         assert!(AgentExecutor::is_visual_query("What's this screenshot?"));
         assert!(AgentExecutor::is_visual_query("Describe this image"));
 
         // Non-visual queries - should return false
-        assert!(!AgentExecutor::is_visual_query(
-            "What are active magnetic bearings?"
-        ));
-        assert!(!AgentExecutor::is_visual_query(
-            "How do I implement a hash table in Rust?"
-        ));
-        assert!(!AgentExecutor::is_visual_query(
-            "Tell me about Python generators"
-        ));
-        assert!(!AgentExecutor::is_visual_query(
-            "Search for documents about machine learning"
-        ));
-        assert!(!AgentExecutor::is_visual_query(
-            "What is the capital of France?"
-        ));
-        assert!(!AgentExecutor::is_visual_query(
-            "How does the screenshot feature work in the codebase?"
-        ));
+        assert!(!AgentExecutor::is_visual_query("What are active magnetic bearings?"));
+        assert!(!AgentExecutor::is_visual_query("How do I implement a hash table in Rust?"));
+        assert!(!AgentExecutor::is_visual_query("Tell me about Python generators"));
+        assert!(!AgentExecutor::is_visual_query("Search for documents about machine learning"));
+        assert!(!AgentExecutor::is_visual_query("What is the capital of France?"));
+        assert!(!AgentExecutor::is_visual_query("How does the screenshot feature work in the codebase?"));
 
         // Edge cases - longer queries with "screenshot" but not visual
-        assert!(!AgentExecutor::is_visual_query(
-            "How do I take a screenshot programmatically in Rust using the winit library?"
-        ));
+        assert!(!AgentExecutor::is_visual_query("How do I take a screenshot programmatically in Rust using the winit library?"));
     }
 }

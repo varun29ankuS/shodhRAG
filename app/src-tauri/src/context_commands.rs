@@ -1,9 +1,9 @@
 //! Thin Tauri wrappers for context tracking commands.
 //! Business logic lives in shodh_rag::context.
 
-use crate::rag_commands::RagState;
 use serde::{Deserialize, Serialize};
 use tauri::State;
+use crate::rag_commands::RagState;
 
 /// Context state — session ID for this Tauri window.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,21 +25,15 @@ pub async fn track_user_message(
 ) -> Result<(), String> {
     let conv_mgr_guard = rag_state.conversation_manager.read().await;
     if let Some(ref conv_mgr) = *conv_mgr_guard {
-        let current = conv_mgr
-            .get_last_conversation()
-            .await
+        let current = conv_mgr.get_last_conversation().await
             .map_err(|e| format!("Failed to get conversation: {}", e))?;
 
         if current.is_none() {
-            conv_mgr
-                .start_conversation(format!("Session {}", state.session_id))
-                .await
+            conv_mgr.start_conversation(format!("Session {}", state.session_id)).await
                 .map_err(|e| format!("Failed to start conversation: {}", e))?;
         }
 
-        conv_mgr
-            .add_message(shodh_rag::agent::MessageRole::User, message)
-            .await
+        conv_mgr.add_message(shodh_rag::agent::MessageRole::User, message).await
             .map_err(|e| format!("Failed to add message: {}", e))?;
     }
     Ok(())
@@ -53,9 +47,7 @@ pub async fn track_assistant_message(
 ) -> Result<(), String> {
     let conv_mgr_guard = rag_state.conversation_manager.read().await;
     if let Some(ref conv_mgr) = *conv_mgr_guard {
-        conv_mgr
-            .add_message(shodh_rag::agent::MessageRole::Assistant, message)
-            .await
+        conv_mgr.add_message(shodh_rag::agent::MessageRole::Assistant, message).await
             .map_err(|e| format!("Failed to add message: {}", e))?;
     }
     Ok(())
@@ -101,7 +93,9 @@ pub async fn get_context_summary(
 }
 
 #[tauri::command]
-pub async fn build_llm_context(rag_state: State<'_, RagState>) -> Result<String, String> {
+pub async fn build_llm_context(
+    rag_state: State<'_, RagState>,
+) -> Result<String, String> {
     let conv_mgr_guard = rag_state.conversation_manager.read().await;
     let conv_mgr = conv_mgr_guard.as_ref();
 
@@ -118,9 +112,7 @@ pub async fn save_session_to_memory(
 ) -> Result<(), String> {
     let conv_mgr_guard = rag_state.conversation_manager.read().await;
     if let Some(ref conv_mgr) = *conv_mgr_guard {
-        conv_mgr
-            .end_conversation()
-            .await
+        conv_mgr.end_conversation().await
             .map_err(|e| format!("Failed to save conversation: {}", e))?;
     } else {
         return Err("Conversation manager not initialized".to_string());
@@ -135,11 +127,8 @@ pub async fn restore_session_from_memory(
 ) -> Result<String, String> {
     let conv_mgr_guard = rag_state.conversation_manager.read().await;
     if let Some(ref conv_mgr) = *conv_mgr_guard {
-        if let Some(context) = conv_mgr
-            .continue_last_conversation()
-            .await
-            .map_err(|e| format!("Failed to restore session: {}", e))?
-        {
+        if let Some(context) = conv_mgr.continue_last_conversation().await
+            .map_err(|e| format!("Failed to restore session: {}", e))? {
             Ok(format!(
                 "Restored session: {}\nLast topic: {}\nKey points: {}",
                 session_name,
@@ -168,7 +157,9 @@ pub async fn start_task(
 }
 
 #[tauri::command]
-pub async fn get_full_context(rag_state: State<'_, RagState>) -> Result<serde_json::Value, String> {
+pub async fn get_full_context(
+    rag_state: State<'_, RagState>,
+) -> Result<serde_json::Value, String> {
     let conv_mgr_guard = rag_state.conversation_manager.read().await;
     let conv_mgr = conv_mgr_guard.as_ref();
 
@@ -179,12 +170,12 @@ pub async fn get_full_context(rag_state: State<'_, RagState>) -> Result<serde_js
 }
 
 #[tauri::command]
-pub async fn clear_context(rag_state: State<'_, RagState>) -> Result<(), String> {
+pub async fn clear_context(
+    rag_state: State<'_, RagState>,
+) -> Result<(), String> {
     let conv_mgr_guard = rag_state.conversation_manager.read().await;
     if let Some(ref conv_mgr) = *conv_mgr_guard {
-        conv_mgr
-            .end_conversation()
-            .await
+        conv_mgr.end_conversation().await
             .map_err(|e| format!("Failed to end conversation: {}", e))?;
     }
     Ok(())
@@ -226,7 +217,9 @@ pub async fn track_filter(
 }
 
 #[tauri::command]
-pub async fn rebuild_memory_index(_rag_state: State<'_, RagState>) -> Result<String, String> {
+pub async fn rebuild_memory_index(
+    _rag_state: State<'_, RagState>,
+) -> Result<String, String> {
     Ok("Vector indexing feature available in backend but requires MemorySystem refactor to enable.".to_string())
 }
 

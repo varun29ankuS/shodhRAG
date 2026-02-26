@@ -1,15 +1,15 @@
 //! ONNX-based LLM implementation - Stubbed for lightweight build
 //! Use API providers instead.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use std::path::Path;
 
-use super::streaming::TokenStream;
 use super::{
-    DeviceType, GenerationConfig, LLMProvider, LocalModel, MemoryUsage, ProviderInfo,
-    QuantizationType,
+    LLMProvider, GenerationConfig, ProviderInfo, MemoryUsage,
+    LocalModel, DeviceType, QuantizationType,
 };
+use super::streaming::TokenStream;
 
 /// Unified tokenizer for ONNX models
 pub struct UnifiedTokenizer;
@@ -33,9 +33,7 @@ impl ONNXLLMProvider {
         _quantization: QuantizationType,
         _cache_dir: &Path,
     ) -> Result<Self> {
-        Err(anyhow!(
-            "ONNX LLM is not available in this build. Use an API provider instead."
-        ))
+        Err(anyhow!("ONNX LLM is not available in this build. Use an API provider instead."))
     }
 }
 
@@ -45,20 +43,11 @@ impl LLMProvider for ONNXLLMProvider {
         Err(anyhow!("ONNX LLM not available"))
     }
 
-    async fn generate_stream(
-        &self,
-        _prompt: &str,
-        _config: &GenerationConfig,
-    ) -> Result<TokenStream> {
+    async fn generate_stream(&self, _prompt: &str, _config: &GenerationConfig) -> Result<TokenStream> {
         Err(anyhow!("ONNX LLM not available"))
     }
 
-    async fn generate_with_context(
-        &self,
-        _query: &str,
-        _context: Vec<String>,
-        _config: &GenerationConfig,
-    ) -> Result<String> {
+    async fn generate_with_context(&self, _query: &str, _context: Vec<String>, _config: &GenerationConfig) -> Result<String> {
         Err(anyhow!("ONNX LLM not available"))
     }
 
@@ -73,15 +62,9 @@ impl LLMProvider for ONNXLLMProvider {
         }
     }
 
-    async fn is_ready(&self) -> bool {
-        false
-    }
+    async fn is_ready(&self) -> bool { false }
 
     fn memory_usage(&self) -> MemoryUsage {
-        MemoryUsage {
-            ram_mb: 0,
-            vram_mb: None,
-            model_size_mb: 0,
-        }
+        MemoryUsage { ram_mb: 0, vram_mb: None, model_size_mb: 0 }
     }
 }

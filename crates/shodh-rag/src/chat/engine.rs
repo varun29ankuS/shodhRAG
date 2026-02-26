@@ -23,9 +23,9 @@ use crate::rag_engine::RAGEngine;
 
 use super::{
     build_corpus_stats, estimate_tokens, extract_artifacts, force_bullet_format,
-    validate_citations, AssistantResponse, ChatContext, Citation, ConversationMessage,
-    EventEmitter, Intent, ResponseMetadata, SearchResult, UserMessage, CODE_GENERATION_PROMPT,
-    GENERAL_CHAT_PROMPT, RAG_SYSTEM_PROMPT,
+    validate_citations, AssistantResponse, ChatContext, Citation,
+    ConversationMessage, EventEmitter, Intent, ResponseMetadata, SearchResult, UserMessage,
+    CODE_GENERATION_PROMPT, GENERAL_CHAT_PROMPT, RAG_SYSTEM_PROMPT,
 };
 use crate::rag::structured_output::STRUCTURED_OUTPUT_INSTRUCTIONS;
 
@@ -126,14 +126,8 @@ impl ChatEngine {
         // 3. Route to handler
         let mut response = match intent {
             Intent::Search => {
-                self.handle_search(
-                    &message,
-                    &context,
-                    &relevant_memories,
-                    emitter,
-                    router_output,
-                )
-                .await?
+                self.handle_search(&message, &context, &relevant_memories, emitter, router_output)
+                    .await?
             }
             Intent::CodeGeneration => self.handle_code_generation(&message, &context).await?,
             Intent::AgentChat => self.handle_agent_chat(&message, &context, emitter).await?,
@@ -141,7 +135,9 @@ impl ChatEngine {
                 self.handle_agent_creation(&message, &context, emitter)
                     .await?
             }
-            Intent::ToolAction => self.handle_tool_action(&message, &context, emitter).await?,
+            Intent::ToolAction => {
+                self.handle_tool_action(&message, &context, emitter).await?
+            }
             Intent::General => self.handle_general_chat(&message, &context).await?,
         };
 
@@ -250,9 +246,7 @@ impl ChatEngine {
 
         tracing::debug!(
             "Fallback QueryAnalyzer: intent={:?}, should_retrieve={}, confidence={:.2}",
-            analysis.intent,
-            analysis.decision.should_retrieve,
-            analysis.decision.confidence
+            analysis.intent, analysis.decision.should_retrieve, analysis.decision.confidence
         );
 
         Ok((
@@ -264,59 +258,27 @@ impl ChatEngine {
     fn is_agent_creation(query_lower: &str) -> bool {
         // Exclude "run" / "execute" / "use" requests — those are agent execution, not creation
         let execution_patterns = [
-            "run it",
-            "run the agent",
-            "run agent",
-            "execute",
-            "use the agent",
-            "use it",
-            "use agent",
-            "start the agent",
-            "start agent",
+            "run it", "run the agent", "run agent", "execute", "use the agent",
+            "use it", "use agent", "start the agent", "start agent",
         ];
         if execution_patterns.iter().any(|p| query_lower.contains(p)) {
             return false;
         }
 
         let creation_patterns = [
-            "create an agent",
-            "create a agent",
-            "create agent",
-            "make an agent",
-            "make a agent",
-            "make agent",
-            "build an agent",
-            "build a agent",
-            "build agent",
-            "i need an agent",
-            "i need a agent",
-            "generate an agent",
-            "generate a agent",
-            "generate agent",
+            "create an agent", "create a agent", "create agent",
+            "make an agent", "make a agent", "make agent",
+            "build an agent", "build a agent", "build agent",
+            "i need an agent", "i need a agent",
+            "generate an agent", "generate a agent", "generate agent",
             "new agent",
-            "create a team",
-            "create a crew",
-            "build a team",
-            "build a crew",
-            "make a team",
-            "make a crew",
-            "assemble a team",
-            "assemble a crew",
+            "create a team", "create a crew", "build a team", "build a crew",
+            "make a team", "make a crew", "assemble a team", "assemble a crew",
         ];
         let purpose_keywords = [
-            "for analyzing",
-            "for reviewing",
-            "for summarizing",
-            "for coding",
-            "for research",
-            "for legal",
-            "for medical",
-            "for financial",
-            "that helps",
-            "that specializes",
-            "specialized in",
-            "to help",
-            "to handle",
+            "for analyzing", "for reviewing", "for summarizing", "for coding",
+            "for research", "for legal", "for medical", "for financial",
+            "that helps", "that specializes", "specialized in", "to help", "to handle",
         ];
 
         let has_creation = creation_patterns.iter().any(|p| query_lower.contains(p));
@@ -328,41 +290,15 @@ impl ChatEngine {
     /// calendar events, file operations, etc.)
     fn is_tool_action(query_lower: &str) -> bool {
         let action_patterns = [
-            "create a task",
-            "create task",
-            "add a task",
-            "add task",
-            "new task",
-            "make a task",
-            "add to my todo",
-            "add to todo",
-            "remind me",
-            "set a reminder",
-            "set reminder",
-            "create a reminder",
-            "schedule a meeting",
-            "schedule meeting",
-            "create an event",
-            "create event",
-            "add an event",
-            "add event",
-            "new event",
-            "delete task",
-            "remove task",
-            "delete event",
-            "remove event",
-            "mark as done",
-            "mark as complete",
-            "complete the task",
-            "update task",
-            "update the task",
-            "change the task",
-            "add a subtask",
-            "add subtask",
-            "list my tasks",
-            "show my tasks",
-            "what are my tasks",
-            "what's on my todo",
+            "create a task", "create task", "add a task", "add task",
+            "new task", "make a task", "add to my todo", "add to todo",
+            "remind me", "set a reminder", "set reminder", "create a reminder",
+            "schedule a meeting", "schedule meeting", "create an event", "create event",
+            "add an event", "add event", "new event", "delete task", "remove task",
+            "delete event", "remove event", "mark as done", "mark as complete",
+            "complete the task", "update task", "update the task", "change the task",
+            "add a subtask", "add subtask", "list my tasks", "show my tasks",
+            "what are my tasks", "what's on my todo",
         ];
         action_patterns.iter().any(|p| query_lower.contains(p))
     }
@@ -371,42 +307,16 @@ impl ChatEngine {
     /// or other creative content that the LLM should produce — NOT search for.
     fn is_content_generation(query_lower: &str) -> bool {
         let generation_verbs = [
-            "show",
-            "draw",
-            "create",
-            "make",
-            "generate",
-            "build",
-            "design",
-            "sketch",
-            "illustrate",
-            "render",
-            "produce",
+            "show", "draw", "create", "make", "generate", "build",
+            "design", "sketch", "illustrate", "render", "produce",
         ];
         let content_nouns = [
-            "flowchart",
-            "flow chart",
-            "diagram",
-            "visualization",
-            "architecture diagram",
-            "sequence diagram",
-            "class diagram",
-            "er diagram",
-            "entity relationship",
-            "mind map",
-            "mindmap",
-            "org chart",
-            "organization chart",
-            "pie chart",
-            "bar chart",
-            "gantt chart",
-            "timeline",
-            "infographic",
-            "wireframe",
-            "mermaid",
-            "graph",
-            "tree diagram",
-            "state diagram",
+            "flowchart", "flow chart", "diagram", "visualization",
+            "architecture diagram", "sequence diagram", "class diagram",
+            "er diagram", "entity relationship", "mind map", "mindmap",
+            "org chart", "organization chart", "pie chart", "bar chart",
+            "gantt chart", "timeline", "infographic", "wireframe",
+            "mermaid", "graph", "tree diagram", "state diagram",
         ];
 
         // "show me a flowchart" / "draw a diagram" / "create a visualization"
@@ -422,22 +332,9 @@ impl ChatEngine {
     fn is_code_generation(query_lower: &str) -> bool {
         let gen = ["generate", "create", "write", "implement", "build"];
         let code = [
-            "code",
-            "function",
-            "class",
-            "method",
-            "api",
-            "endpoint",
-            "component",
-            "module",
-            "script",
-            "program",
-            "algorithm",
-            "struct",
-            "interface",
-            "trait",
-            "type",
-            "enum",
+            "code", "function", "class", "method", "api", "endpoint",
+            "component", "module", "script", "program", "algorithm",
+            "struct", "interface", "trait", "type", "enum",
         ];
         gen.iter().any(|k| query_lower.contains(k)) && code.iter().any(|k| query_lower.contains(k))
     }
@@ -506,11 +403,39 @@ impl ChatEngine {
                 (primary, expanded, None)
             };
 
-        let max_results = context.max_results.unwrap_or(8);
+        // Broad queries need more results to cover the entire corpus.
+        // Detect patterns: explicit "all/every/list/each" + plural extraction patterns
+        // like "emails from invoices", "names and phones", "documents about X"
+        let content_lower = message.content.to_lowercase();
+        let has_explicit_broad = content_lower.contains("all ")
+            || content_lower.contains("every ")
+            || content_lower.contains("list ")
+            || content_lower.contains("each ")
+            || content_lower.contains("everyone")
+            || content_lower.contains("everything");
+        // Plural nouns requesting extraction from a collection (e.g. "emails from invoices")
+        let has_plural_extraction = (content_lower.contains("from ")
+            || content_lower.contains("in the ")
+            || content_lower.contains("across "))
+            && (content_lower.contains("emails")
+                || content_lower.contains("names")
+                || content_lower.contains("phones")
+                || content_lower.contains("numbers")
+                || content_lower.contains("addresses")
+                || content_lower.contains("ids")
+                || content_lower.contains("details")
+                || content_lower.contains("records"));
+        let is_broad_query = has_explicit_broad || has_plural_extraction;
+        let max_results = if is_broad_query {
+            context.max_results.unwrap_or(40)
+        } else {
+            context.max_results.unwrap_or(20)
+        };
         tracing::info!(
             primary_query = %primary_query,
             variant_count = expanded_queries.len(),
             max_results = max_results,
+            is_broad_query = is_broad_query,
             "ChatEngine: starting multi-variant search"
         );
 
@@ -547,8 +472,11 @@ impl ChatEngine {
                 let llm_guard = llm_arc.read().await;
                 if let Some(ref llm_manager) = *llm_guard {
                     let rerank_start = std::time::Instant::now();
-                    results =
-                        crate::reranking::llm_rerank(llm_manager, &message.content, results).await;
+                    results = crate::reranking::llm_rerank(
+                        llm_manager,
+                        &message.content,
+                        results,
+                    ).await;
                     let elapsed = rerank_start.elapsed().as_millis() as u64;
                     rerank_latency_ms = Some(elapsed);
                     tracing::info!(
@@ -560,7 +488,29 @@ impl ChatEngine {
             }
         }
 
-        tracing::info!(results_count = results.len(), "ChatEngine: search complete");
+        // Log per-result scores and sources for pipeline diagnostics
+        {
+            let search_sources: Vec<&str> = results
+                .iter()
+                .map(|r| {
+                    r.metadata
+                        .get("source_file")
+                        .map(|s| s.as_str())
+                        .unwrap_or("?")
+                })
+                .collect();
+            let search_scores: Vec<String> = results
+                .iter()
+                .map(|r| format!("{:.4}", r.score))
+                .collect();
+            tracing::info!(
+                results_count = results.len(),
+                unique_sources = search_sources.iter().collect::<std::collections::HashSet<_>>().len(),
+                scores = ?search_scores,
+                sources = ?search_sources,
+                "ChatEngine: search complete — pre-curation"
+            );
+        }
 
         // Convert to SearchResult
         let search_results: Vec<SearchResult> = results
@@ -597,6 +547,7 @@ impl ChatEngine {
                         year: c.year.clone(),
                         page_numbers: c.page_numbers.clone(),
                     }),
+                    metadata: r.metadata.clone(),
                 }
             })
             .collect();
@@ -631,21 +582,28 @@ impl ChatEngine {
             });
         }
 
-        let best_score = search_results
-            .iter()
-            .map(|r| r.score)
-            .fold(0.0f32, f32::max);
+        let best_score = search_results.iter().map(|r| r.score).fold(0.0f32, f32::max);
         let low_confidence = best_score < 0.2;
 
         // === Context Curation Pipeline ===
         // Goal: send only chunks that add genuine information value.
         // Three stages: relevance filter → content dedup → information gain cutoff.
+        //
+        // For broad queries ("list all emails from invoices"), skip aggressive
+        // curation — the user wants exhaustive coverage, not just the top hits.
+        // The hybrid search score gap (items in both vector+FTS score ~2x those
+        // in only one index) creates artificial cliffs that would cut valid results.
 
         let pre_filter_count = search_results.len();
 
-        // Stage 1: Relevance filter — drop chunks scoring below 30% of best result.
-        // A chunk at 0.25 when the best is 0.85 is noise, not signal.
-        let score_threshold = best_score * 0.30;
+        // Stage 1: Relevance filter — drop truly irrelevant chunks.
+        // Broad queries use a very low threshold (5% of best) since all matching
+        // documents from the target collection are relevant.
+        let score_threshold = if is_broad_query {
+            best_score * 0.05
+        } else {
+            best_score * 0.15
+        };
         let mut search_results: Vec<SearchResult> = search_results
             .into_iter()
             .filter(|r| r.score >= score_threshold)
@@ -656,18 +614,29 @@ impl ChatEngine {
         // highest-scored version when two chunks share >60% of their words.
         search_results = Self::deduplicate_by_content(search_results);
 
-        // Stage 3: Score-gap cutoff — if there's a sharp relevance drop between
-        // consecutive chunks (>40% relative drop), everything below that cliff
-        // is unlikely to help the LLM and just wastes tokens.
-        search_results = Self::cut_at_score_cliff(search_results);
+        // Stage 3: Score-gap cutoff — skip for broad queries where exhaustive
+        // coverage matters more than precision. For focused queries, detect
+        // genuine relevance cliffs to avoid wasting LLM context tokens.
+        if !is_broad_query {
+            search_results = Self::cut_at_score_cliff(search_results);
+        }
 
-        tracing::info!(
-            best_score = best_score,
-            score_threshold = score_threshold,
-            pre_filter = pre_filter_count,
-            post_curation = search_results.len(),
-            "Context curation complete"
-        );
+        {
+            let curation_sources: std::collections::HashSet<&str> = search_results
+                .iter()
+                .map(|r| r.source_file.as_str())
+                .collect();
+            tracing::info!(
+                best_score = best_score,
+                score_threshold = score_threshold,
+                is_broad_query = is_broad_query,
+                pre_filter = pre_filter_count,
+                post_curation = search_results.len(),
+                unique_sources = curation_sources.len(),
+                sources = ?curation_sources,
+                "Context curation complete"
+            );
+        }
 
         let num_sources = search_results.len();
 
@@ -697,7 +666,10 @@ impl ChatEngine {
                     ""
                 };
 
-                format!("[{}]{}{}\n{}", i + 1, citation_info, data_hint, r.text)
+                // Append extracted structured fields so the LLM sees them explicitly
+                let extracted_fields = Self::format_extracted_fields(&r.metadata);
+
+                format!("[{}]{}{}\n{}{}", i + 1, citation_info, data_hint, r.text, extracted_fields)
             })
             .collect::<Vec<_>>()
             .join("\n\n");
@@ -715,7 +687,7 @@ impl ChatEngine {
                 // Context window management
                 let context_window = Self::get_context_window_from_llm(llm_manager);
                 let system_prompt_budget = 2000;
-                let response_budget = 4096;
+                let response_budget = if is_broad_query { 8192 } else { 4096 };
                 let query_budget = estimate_tokens(&message.content) + 100;
                 let available = context_window
                     .saturating_sub(system_prompt_budget)
@@ -726,9 +698,34 @@ impl ChatEngine {
                 let history_budget = (available * 25) / 100;
                 let memory_budget = (available * 15) / 100;
 
+                let pre_truncate_tokens = estimate_tokens(&context_text);
                 let context_text = Self::truncate_context_to_budget(&context_text, context_budget);
+                let post_truncate_tokens = estimate_tokens(&context_text);
                 let history_text = Self::truncate_to_budget(&history_text, history_budget);
                 let memory_text = Self::truncate_to_budget(&memory_text, memory_budget);
+
+                tracing::info!(
+                    context_window = context_window,
+                    available = available,
+                    context_budget = context_budget,
+                    context_tokens_pre = pre_truncate_tokens,
+                    context_tokens_post = post_truncate_tokens,
+                    num_search_results = num_sources,
+                    "LLM context budget"
+                );
+
+                let broad_hint = if is_broad_query {
+                    format!(
+                        "\n\nEXHAUSTIVE EXTRACTION: The user is asking about ALL {} documents. \
+                        You MUST scan EVERY numbered chunk [1] through [{}] and extract the \
+                        requested information from EACH one. Do NOT skip any document. \
+                        Present results as a numbered list or table with one entry per document. \
+                        If a document does not contain the requested field, note it explicitly.\n",
+                        num_sources, num_sources
+                    )
+                } else {
+                    String::new()
+                };
 
                 let prompt = format!(
                     "{instructions}\n\n\
@@ -739,7 +736,8 @@ impl ChatEngine {
                     User Question: \"{question}\"\n\n\
                     IMPORTANT REMINDER: Answer using ONLY facts from the DOCUMENT CONTEXT above. \
                     Do NOT use conversation history, memory, or your own knowledge as sources of facts. \
-                    If information is not in the DOCUMENT CONTEXT, say you don't have it.\n\n\
+                    If information is not in the DOCUMENT CONTEXT, say you don't have it.\
+                    {broad_hint}\n\n\
                     Answer:",
                     instructions = context.custom_system_prompt.as_ref()
                         .map(|custom| format!("{}\n\n{}", custom, RAG_SYSTEM_PROMPT))
@@ -748,6 +746,7 @@ impl ChatEngine {
                     history = history_text,
                     memory = memory_text,
                     question = message.content,
+                    broad_hint = broad_hint,
                 );
 
                 let model_name = llm_manager
@@ -766,9 +765,7 @@ impl ChatEngine {
                     match tokio::time::timeout(
                         generation_timeout,
                         llm_manager.generate_stream(&prompt),
-                    )
-                    .await
-                    {
+                    ).await {
                         Ok(Ok(mut token_stream)) => {
                             let mut accumulated = String::new();
                             while let Some(token) = token_stream.next().await {
@@ -798,9 +795,10 @@ impl ChatEngine {
                         }
                     }
                 } else {
-                    match tokio::time::timeout(generation_timeout, llm_manager.generate(&prompt))
-                        .await
-                    {
+                    match tokio::time::timeout(
+                        generation_timeout,
+                        llm_manager.generate(&prompt),
+                    ).await {
                         Ok(result) => result,
                         Err(_) => {
                             tracing::warn!("LLM generation timed out after 90s");
@@ -845,10 +843,7 @@ impl ChatEngine {
         Ok(AssistantResponse {
             content,
             artifacts: Vec::new(),
-            citations: search_results
-                .iter()
-                .filter_map(|r| r.citation.clone())
-                .collect(),
+            citations: search_results.iter().filter_map(|r| r.citation.clone()).collect(),
             suggestions: vec![
                 "Tell me more".to_string(),
                 "Show related information".to_string(),
@@ -887,9 +882,7 @@ impl ChatEngine {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("LLM not initialized"))?;
 
-        let code_instructions = context
-            .custom_system_prompt
-            .as_ref()
+        let code_instructions = context.custom_system_prompt.as_ref()
             .map(|custom| format!("{}\n\n{}", custom, CODE_GENERATION_PROMPT))
             .unwrap_or_else(|| CODE_GENERATION_PROMPT.to_string());
         let prompt = format!(
@@ -1027,16 +1020,8 @@ impl ChatEngine {
 
         // Check if user wants a crew/team rather than a single agent
         let content_lower = message.content.to_lowercase();
-        let crew_keywords = [
-            "crew",
-            "team of agents",
-            "multiple agents",
-            "group of agents",
-            "assemble a team",
-            "build a team",
-            "create a team",
-            "make a team",
-        ];
+        let crew_keywords = ["crew", "team of agents", "multiple agents", "group of agents",
+            "assemble a team", "build a team", "create a team", "make a team"];
         if crew_keywords.iter().any(|kw| content_lower.contains(kw)) {
             return self.handle_crew_creation(message, _context, emitter).await;
         }
@@ -1052,11 +1037,7 @@ impl ChatEngine {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("LLM not initialized"))?;
 
-        emit(
-            "analyzing",
-            "Analyzing request and generating agent definition...",
-            30,
-        );
+        emit("analyzing", "Analyzing request and generating agent definition...", 30);
 
         let agent_gen_prompt = format!(
             r#"You are an AI agent designer. Create a detailed agent definition based on the user's request.
@@ -1140,9 +1121,9 @@ Return ONLY the JSON object, no markdown code blocks."#,
             std::fs::create_dir_all(&agents_dir)?;
         }
 
-        let agent_file = agents_dir.join(format!("{}.json", agent_def.name.to_lowercase()));
-        let json_content = serde_json::to_string_pretty(&agent_def)?;
-        std::fs::write(&agent_file, &json_content)?;
+        let agent_file = agents_dir.join(format!("{}.yaml", agent_def.name.to_lowercase()));
+        let yaml_content = serde_json::to_string_pretty(&agent_def)?;
+        std::fs::write(&agent_file, &yaml_content)?;
 
         emit(
             "complete",
@@ -1165,46 +1146,23 @@ Return ONLY the JSON object, no markdown code blocks."#,
 
         // Auto-execute the agent if the user's request implies they want a result
         // e.g. "create an agent to summarize this space" -> create + run
-        let task_keywords = [
-            "summarize",
-            "summary",
-            "analyze",
-            "review",
-            "extract",
-            "compare",
-            "find",
-            "search",
-            "list",
-            "describe",
-            "explain",
-            "give me",
-            "tell me",
-            "what",
-            "how",
-            "run",
-        ];
+        let task_keywords = ["summarize", "summary", "analyze", "review", "extract",
+            "compare", "find", "search", "list", "describe", "explain", "give me",
+            "tell me", "what", "how", "run"];
         let content_lower = message.content.to_lowercase();
         let should_auto_execute = task_keywords.iter().any(|kw| content_lower.contains(kw));
 
         if should_auto_execute {
-            emit(
-                "executing",
-                &format!("Running {} on your data...", agent_def.name),
-                85,
-            );
+            emit("executing", &format!("Running {} on your data...", agent_def.name), 85);
 
             // Build context for agent execution
             let agent_context = AgentContext {
                 query: Some(message.content.clone()),
                 user_info: None,
                 space_id: _context.space_id.clone(),
-                session_id: _context
-                    .conversation_id
-                    .clone()
+                session_id: _context.conversation_id.clone()
                     .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-                conversation_history: _context
-                    .conversation_history
-                    .clone()
+                conversation_history: _context.conversation_history.clone()
                     .unwrap_or_default()
                     .iter()
                     .map(|msg| ConversationTurn {
@@ -1218,10 +1176,7 @@ Return ONLY the JSON object, no markdown code blocks."#,
                 metadata: HashMap::new(),
             };
 
-            match agent_system
-                .execute_agent(&agent_def.id, agent_context)
-                .await
-            {
+            match agent_system.execute_agent(&agent_def.id, agent_context).await {
                 Ok(result) => {
                     emit("complete", "Agent execution complete!", 100);
 
@@ -1255,11 +1210,7 @@ Return ONLY the JSON object, no markdown code blocks."#,
             }
         }
 
-        emit(
-            "complete",
-            &format!("Agent '{}' created successfully!", agent_def.name),
-            100,
-        );
+        emit("complete", &format!("Agent '{}' created successfully!", agent_def.name), 100);
 
         let response_content = format!(
             "**Agent Created Successfully!**\n\n\
@@ -1320,31 +1271,20 @@ Return ONLY the JSON object, no markdown code blocks."#,
 
         // Immediately stream a visible token so the user doesn't stare at "Thinking..."
         if let Some(em) = emitter {
-            let initial =
-                "**Designing crew...** Analyzing your request and creating specialized agents.\n\n";
-            em.emit(
-                "chat_token",
-                serde_json::json!({
-                    "token": initial,
-                    "accumulated": initial,
-                }),
-            );
+            let initial = "**Designing crew...** Analyzing your request and creating specialized agents.\n\n";
+            em.emit("chat_token", serde_json::json!({
+                "token": initial,
+                "accumulated": initial,
+            }));
         }
 
-        let llm_guard_opt = self
-            .llm_manager
-            .as_ref()
+        let llm_guard_opt = self.llm_manager.as_ref()
             .ok_or_else(|| anyhow::anyhow!("LLM not configured"))?;
         let llm_guard = llm_guard_opt.read().await;
-        let llm_manager = llm_guard
-            .as_ref()
+        let llm_manager = llm_guard.as_ref()
             .ok_or_else(|| anyhow::anyhow!("LLM not initialized"))?;
 
-        emit(
-            "analyzing",
-            "AI is designing crew roles and workflow...",
-            30,
-        );
+        emit("analyzing", "AI is designing crew roles and workflow...", 30);
 
         // Ask LLM to design a crew
         let crew_gen_prompt = format!(
@@ -1397,21 +1337,17 @@ RULES:
                         "accumulated": "**Designing crew...** Analyzing your request and creating specialized agents.\n\nModel warming up, retrying...\n\n",
                     }));
                 }
-                llm_manager.generate(&crew_gen_prompt).await.map_err(|e2| {
-                    anyhow::anyhow!("Crew design generation failed after retry: {}", e2)
-                })?
+                llm_manager.generate(&crew_gen_prompt).await
+                    .map_err(|e2| anyhow::anyhow!("Crew design generation failed after retry: {}", e2))?
             }
             Err(e) => return Err(anyhow::anyhow!("Crew design generation failed: {}", e)),
         };
 
         emit("parsing", "Parsing crew definition...", 50);
 
-        let json_str = llm_response
-            .trim()
-            .trim_start_matches("```json")
-            .trim_start_matches("```")
-            .trim_end_matches("```")
-            .trim();
+        let json_str = llm_response.trim()
+            .trim_start_matches("```json").trim_start_matches("```")
+            .trim_end_matches("```").trim();
 
         let crew_json: serde_json::Value = serde_json::from_str(json_str)
             .map_err(|e| anyhow::anyhow!("Failed to parse crew JSON: {}", e))?;
@@ -1420,14 +1356,12 @@ RULES:
 
         // Get agent system
         let agent_system_guard = self.agent_system.read().await;
-        let agent_system_arc = agent_system_guard
-            .as_ref()
+        let agent_system_arc = agent_system_guard.as_ref()
             .ok_or_else(|| anyhow::anyhow!("Agent system not initialized"))?;
         let agent_system = agent_system_arc.write().await;
 
         // Create each agent and collect their IDs
-        let agents_json = crew_json["agents"]
-            .as_array()
+        let agents_json = crew_json["agents"].as_array()
             .ok_or_else(|| anyhow::anyhow!("No agents array in crew definition"))?;
 
         let mut crew_members = Vec::new();
@@ -1435,34 +1369,21 @@ RULES:
 
         for (idx, agent_json) in agents_json.iter().enumerate() {
             let agent_name = agent_json["name"].as_str().unwrap_or("Agent").to_string();
-            let agent_role = agent_json["role"]
-                .as_str()
-                .unwrap_or("specialist")
-                .to_string();
+            let agent_role = agent_json["role"].as_str().unwrap_or("specialist").to_string();
             let agent_goal = agent_json["goal"].as_str().unwrap_or("").to_string();
-            let agent_desc = agent_json["description"]
-                .as_str()
-                .unwrap_or(&agent_name)
-                .to_string();
-            let system_prompt = agent_json["system_prompt"]
-                .as_str()
-                .unwrap_or("You are a helpful AI assistant.")
-                .to_string();
+            let agent_desc = agent_json["description"].as_str().unwrap_or(&agent_name).to_string();
+            let system_prompt = agent_json["system_prompt"].as_str().unwrap_or("You are a helpful AI assistant.").to_string();
 
             let capabilities: Vec<crate::agent::AgentCapability> = agent_json["capabilities"]
                 .as_array()
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| match v.as_str()? {
-                            "RAGSearch" => Some(crate::agent::AgentCapability::RAGSearch),
-                            "CodeAnalysis" => Some(crate::agent::AgentCapability::CodeAnalysis),
-                            "DocumentGeneration" => {
-                                Some(crate::agent::AgentCapability::DocumentGeneration)
-                            }
-                            _ => None,
-                        })
-                        .collect()
-                })
+                .map(|arr| arr.iter().filter_map(|v| {
+                    match v.as_str()? {
+                        "RAGSearch" => Some(crate::agent::AgentCapability::RAGSearch),
+                        "CodeAnalysis" => Some(crate::agent::AgentCapability::CodeAnalysis),
+                        "DocumentGeneration" => Some(crate::agent::AgentCapability::DocumentGeneration),
+                        _ => None,
+                    }
+                }).collect())
                 .unwrap_or_else(|| vec![crate::agent::AgentCapability::RAGSearch]);
 
             let agent_def = AgentDefinition {
@@ -1485,9 +1406,7 @@ RULES:
                 metadata: HashMap::new(),
             };
 
-            let agent_id = agent_system
-                .register_agent(agent_def)
-                .await
+            let agent_id = agent_system.register_agent(agent_def).await
                 .map_err(|e| anyhow::anyhow!("Failed to register agent '{}': {}", agent_name, e))?;
 
             crew_members.push(crate::agent::CrewMember {
@@ -1507,13 +1426,8 @@ RULES:
         let process_str = crew_json["process"].as_str().unwrap_or("sequential");
 
         let process = if process_str == "hierarchical" {
-            let coord_id = crew_members
-                .first()
-                .map(|m| m.agent_id.clone())
-                .unwrap_or_default();
-            crate::agent::CrewProcess::Hierarchical {
-                coordinator_id: coord_id,
-            }
+            let coord_id = crew_members.first().map(|m| m.agent_id.clone()).unwrap_or_default();
+            crate::agent::CrewProcess::Hierarchical { coordinator_id: coord_id }
         } else {
             crate::agent::CrewProcess::Sequential
         };
@@ -1527,20 +1441,15 @@ RULES:
             config: crate::agent::CrewConfig::default(),
         };
 
-        let crew_id = agent_system
-            .register_crew(crew_def)
-            .await
+        let crew_id = agent_system.register_crew(crew_def).await
             .map_err(|e| anyhow::anyhow!("Failed to register crew: {}", e))?;
 
         emit("executing", &format!("Running crew '{}'...", crew_name), 85);
 
         // Stream the crew header so the user sees the team before agents execute
-        let agents_summary = created_agent_names
-            .iter()
-            .enumerate()
+        let agents_summary = created_agent_names.iter().enumerate()
             .map(|(i, name)| format!("{}. {}", i + 1, name))
-            .collect::<Vec<_>>()
-            .join("\n");
+            .collect::<Vec<_>>().join("\n");
 
         let header = format!(
             "**Crew '{}' — {} agents, sequential**\n\n**Team:**\n{}\n\n",
@@ -1549,29 +1458,17 @@ RULES:
             agents_summary,
         );
 
-        let initial_prefix =
-            "**Designing crew...** Analyzing your request and creating specialized agents.\n\n";
+        let initial_prefix = "**Designing crew...** Analyzing your request and creating specialized agents.\n\n";
         if let Some(em) = emitter {
             let accumulated = format!("{}{}", initial_prefix, header);
-            em.emit(
-                "chat_token",
-                serde_json::json!({
-                    "token": &header,
-                    "accumulated": &accumulated,
-                }),
-            );
+            em.emit("chat_token", serde_json::json!({
+                "token": &header,
+                "accumulated": &accumulated,
+            }));
         }
 
         // Auto-execute the crew — pass emitter so each agent streams progress
-        match agent_system
-            .execute_crew(
-                &crew_id,
-                &message.content,
-                context.space_id.as_deref(),
-                emitter,
-            )
-            .await
-        {
+        match agent_system.execute_crew(&crew_id, &message.content, context.space_id.as_deref(), emitter).await {
             Ok(result) => {
                 emit("complete", "Crew execution complete!", 100);
 
@@ -1579,29 +1476,21 @@ RULES:
                 let full_content = format!(
                     "{}{}\n\n*Completed in {}ms*",
                     header,
-                    result
-                        .agent_outputs
-                        .iter()
-                        .enumerate()
-                        .map(|(i, ao)| {
-                            format!(
-                                "---\n### Agent {}: {}\n*Role: {} | Goal: —*\n\n{}\n\n",
-                                i + 1,
-                                ao.agent_name,
-                                ao.role,
-                                ao.output,
-                            )
-                        })
-                        .collect::<String>(),
+                    result.agent_outputs.iter().enumerate().map(|(i, ao)| {
+                        format!(
+                            "---\n### Agent {}: {}\n*Role: {} | Goal: —*\n\n{}\n\n",
+                            i + 1,
+                            ao.agent_name,
+                            ao.role,
+                            ao.output,
+                        )
+                    }).collect::<String>(),
                     result.execution_time_ms,
                 );
 
                 // Emit chat_complete so frontend finalizes the streamed message
                 if let Some(em) = emitter {
-                    em.emit(
-                        "chat_complete",
-                        serde_json::json!({ "content": &full_content }),
-                    );
+                    em.emit("chat_complete", serde_json::json!({ "content": &full_content }));
                 }
 
                 return Ok(AssistantResponse {
@@ -1629,12 +1518,9 @@ RULES:
 
         emit("complete", &format!("Crew '{}' created!", crew_name), 100);
 
-        let agents_summary = created_agent_names
-            .iter()
-            .enumerate()
+        let agents_summary = created_agent_names.iter().enumerate()
             .map(|(i, name)| format!("{}. {}", i + 1, name))
-            .collect::<Vec<_>>()
-            .join("\n");
+            .collect::<Vec<_>>().join("\n");
 
         Ok(AssistantResponse {
             content: format!(
@@ -1676,8 +1562,7 @@ RULES:
 
         // Build tool schemas from the registry
         let tool_descriptions = self.tool_registry.get_tool_descriptions();
-        let tool_schemas =
-            crate::agent::tool_loop::tool_descriptions_to_schemas(&tool_descriptions);
+        let tool_schemas = crate::agent::tool_loop::tool_descriptions_to_schemas(&tool_descriptions);
 
         // Build the system prompt with tool-calling instructions
         let now = chrono::Utc::now();
@@ -1698,14 +1583,7 @@ RULES:
         let mut messages = vec![crate::llm::ChatMessage::system(&system_prompt)];
 
         if let Some(history) = &context.conversation_history {
-            for msg in history
-                .iter()
-                .rev()
-                .take(6)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-            {
+            for msg in history.iter().rev().take(6).collect::<Vec<_>>().into_iter().rev() {
                 match msg.role.as_str() {
                     "user" => messages.push(crate::llm::ChatMessage::user(&msg.content)),
                     "assistant" => messages.push(crate::llm::ChatMessage::assistant(&msg.content)),
@@ -1779,9 +1657,8 @@ RULES:
         }
 
         let bridge = emitter.map(|em| EmitterBridge { inner: em });
-        let bridge_ref: Option<&dyn crate::agent::tool_loop::ToolLoopEmitter> = bridge
-            .as_ref()
-            .map(|b| b as &dyn crate::agent::tool_loop::ToolLoopEmitter);
+        let bridge_ref: Option<&dyn crate::agent::tool_loop::ToolLoopEmitter> =
+            bridge.as_ref().map(|b| b as &dyn crate::agent::tool_loop::ToolLoopEmitter);
 
         let start_time = std::time::Instant::now();
         let result = crate::agent::tool_loop::run_tool_loop(
@@ -1859,9 +1736,7 @@ RULES:
             .saturating_sub(estimate_tokens(&message.content) + 100);
         let history_text = Self::truncate_to_budget(&history_text, available_for_history);
 
-        let general_instructions = context
-            .custom_system_prompt
-            .as_ref()
+        let general_instructions = context.custom_system_prompt.as_ref()
             .map(|custom| format!("{}\n\n{}", custom, GENERAL_CHAT_PROMPT))
             .unwrap_or_else(|| GENERAL_CHAT_PROMPT.to_string());
         let prompt = format!(
@@ -2103,11 +1978,7 @@ RULES:
                 while i < words.len() {
                     let word = words[i].trim_matches(|c: char| !c.is_alphanumeric());
                     if word.len() > 1
-                        && word
-                            .chars()
-                            .next()
-                            .map(|c| c.is_uppercase())
-                            .unwrap_or(false)
+                        && word.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
                         && !Self::is_common_sentence_starter(word)
                     {
                         // Try to capture multi-word names (e.g., "Anushree Sharma")
@@ -2116,11 +1987,7 @@ RULES:
                         while j < words.len() {
                             let next = words[j].trim_matches(|c: char| !c.is_alphanumeric());
                             if next.len() > 1
-                                && next
-                                    .chars()
-                                    .next()
-                                    .map(|c| c.is_uppercase())
-                                    .unwrap_or(false)
+                                && next.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
                                 && !Self::is_common_sentence_starter(next)
                             {
                                 name_parts.push(next.to_string());
@@ -2151,9 +2018,7 @@ RULES:
                 let mut seen = std::collections::HashSet::new();
                 for msg in h.iter() {
                     for word in msg.content.split_whitespace() {
-                        let clean = word.trim_matches(|c: char| {
-                            !c.is_alphanumeric() && c != '.' && c != '/' && c != '\\'
-                        });
+                        let clean = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '/' && c != '\\');
                         if clean.contains('.')
                             && clean.len() > 4
                             && !clean.starts_with("http")
@@ -2192,14 +2057,15 @@ RULES:
         // (terms the system has already discussed are likely relevant)
         let concepts_mentioned: Vec<String> = history
             .map(|h| {
-                let mut concept_counts: std::collections::HashMap<String, usize> =
-                    std::collections::HashMap::new();
+                let mut concept_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
                 for msg in h.iter().filter(|m| m.role == "assistant") {
                     for word in msg.content.split_whitespace() {
                         let clean = word
                             .trim_matches(|c: char| !c.is_alphanumeric())
                             .to_lowercase();
-                        if clean.len() > 4 && !Self::is_stop_word(&clean) {
+                        if clean.len() > 4
+                            && !Self::is_stop_word(&clean)
+                        {
                             *concept_counts.entry(clean).or_insert(0) += 1;
                         }
                     }
@@ -2223,163 +2089,32 @@ RULES:
     fn is_common_sentence_starter(word: &str) -> bool {
         matches!(
             word,
-            "The"
-                | "This"
-                | "That"
-                | "These"
-                | "Those"
-                | "What"
-                | "Where"
-                | "When"
-                | "How"
-                | "Why"
-                | "Who"
-                | "Which"
-                | "Can"
-                | "Could"
-                | "Would"
-                | "Should"
-                | "Will"
-                | "Do"
-                | "Does"
-                | "Did"
-                | "Is"
-                | "Are"
-                | "Was"
-                | "Were"
-                | "Have"
-                | "Has"
-                | "Had"
-                | "It"
-                | "If"
-                | "In"
-                | "On"
-                | "At"
-                | "To"
-                | "For"
-                | "But"
-                | "And"
-                | "Or"
-                | "Not"
-                | "Yes"
-                | "No"
-                | "Found"
-                | "Based"
-                | "According"
-                | "Here"
-                | "There"
-                | "Some"
-                | "Any"
-                | "All"
-                | "Each"
-                | "Every"
-                | "My"
-                | "Your"
-                | "His"
-                | "Her"
-                | "Its"
-                | "Our"
-                | "Their"
-                | "From"
-                | "With"
-                | "About"
-                | "After"
-                | "Before"
-                | "Between"
-                | "During"
-                | "Since"
-                | "Until"
-                | "Sure"
-                | "Thanks"
-                | "Thank"
-                | "Please"
-                | "Sorry"
-                | "Let"
-                | "Try"
-                | "Show"
-                | "Tell"
-                | "Give"
-                | "Also"
-                | "However"
-                | "Moreover"
-                | "Furthermore"
+            "The" | "This" | "That" | "These" | "Those" | "What" | "Where" | "When"
+            | "How" | "Why" | "Who" | "Which" | "Can" | "Could" | "Would" | "Should"
+            | "Will" | "Do" | "Does" | "Did" | "Is" | "Are" | "Was" | "Were" | "Have"
+            | "Has" | "Had" | "It" | "If" | "In" | "On" | "At" | "To" | "For" | "But"
+            | "And" | "Or" | "Not" | "Yes" | "No" | "Found" | "Based" | "According"
+            | "Here" | "There" | "Some" | "Any" | "All" | "Each" | "Every" | "My"
+            | "Your" | "His" | "Her" | "Its" | "Our" | "Their" | "From" | "With"
+            | "About" | "After" | "Before" | "Between" | "During" | "Since" | "Until"
+            | "Sure" | "Thanks" | "Thank" | "Please" | "Sorry" | "Let" | "Try"
+            | "Show" | "Tell" | "Give" | "Also" | "However" | "Moreover" | "Furthermore"
         )
     }
 
     fn is_stop_word(word: &str) -> bool {
         matches!(
             word,
-            "the"
-                | "this"
-                | "that"
-                | "these"
-                | "those"
-                | "what"
-                | "where"
-                | "when"
-                | "how"
-                | "why"
-                | "who"
-                | "which"
-                | "have"
-                | "has"
-                | "had"
-                | "been"
-                | "being"
-                | "will"
-                | "would"
-                | "could"
-                | "should"
-                | "about"
-                | "with"
-                | "from"
-                | "into"
-                | "through"
-                | "during"
-                | "before"
-                | "after"
-                | "above"
-                | "below"
-                | "between"
-                | "under"
-                | "again"
-                | "further"
-                | "then"
-                | "once"
-                | "here"
-                | "there"
-                | "some"
-                | "other"
-                | "more"
-                | "most"
-                | "very"
-                | "just"
-                | "also"
-                | "than"
-                | "each"
-                | "every"
-                | "both"
-                | "does"
-                | "doing"
-                | "their"
-                | "them"
-                | "they"
-                | "your"
-                | "yours"
-                | "information"
-                | "based"
-                | "found"
-                | "following"
-                | "according"
-                | "contains"
-                | "including"
-                | "provide"
-                | "provided"
-                | "shows"
-                | "shown"
-                | "document"
-                | "documents"
-                | "context"
+            "the" | "this" | "that" | "these" | "those" | "what" | "where"
+            | "when" | "how" | "why" | "who" | "which" | "have" | "has" | "had"
+            | "been" | "being" | "will" | "would" | "could" | "should" | "about"
+            | "with" | "from" | "into" | "through" | "during" | "before" | "after"
+            | "above" | "below" | "between" | "under" | "again" | "further" | "then"
+            | "once" | "here" | "there" | "some" | "other" | "more" | "most" | "very"
+            | "just" | "also" | "than" | "each" | "every" | "both" | "does" | "doing"
+            | "their" | "them" | "they" | "your" | "yours" | "information" | "based"
+            | "found" | "following" | "according" | "contains" | "including" | "provide"
+            | "provided" | "shows" | "shown" | "document" | "documents" | "context"
         )
     }
 
@@ -2421,7 +2156,7 @@ RULES:
     }
 
     fn get_context_window_from_llm(llm_manager: &LLMManager) -> usize {
-        llm_manager
+        let window = llm_manager
             .info()
             .and_then(|info| {
                 if info.context_window > 0 {
@@ -2430,7 +2165,9 @@ RULES:
                     None
                 }
             })
-            .unwrap_or(8192)
+            .unwrap_or(128_000); // Modern LLMs support at least 128K
+        tracing::debug!(context_window = window, "Resolved LLM context window");
+        window
     }
 
     fn truncate_context_to_budget(context_text: &str, max_tokens: usize) -> String {
@@ -2491,6 +2228,35 @@ RULES:
         result_lines.join("\n")
     }
 
+    /// Format extracted structured fields from chunk metadata into a readable suffix.
+    /// These fields were extracted at ingest time via regex — no LLM cost.
+    fn format_extracted_fields(metadata: &HashMap<String, String>) -> String {
+        let field_labels = [
+            ("extracted_emails", "Email(s)"),
+            ("extracted_phones", "Phone(s)"),
+            ("extracted_pan", "PAN"),
+            ("extracted_gstin", "GSTIN"),
+            ("extracted_invoice_no", "Invoice No"),
+            ("extracted_amounts", "Amount(s)"),
+            ("extracted_dates", "Date(s)"),
+        ];
+
+        let mut parts = Vec::new();
+        for (key, label) in &field_labels {
+            if let Some(val) = metadata.get(*key) {
+                if !val.is_empty() {
+                    parts.push(format!("{}: {}", label, val));
+                }
+            }
+        }
+
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!("\n[EXTRACTED FIELDS] {}", parts.join(" | "))
+        }
+    }
+
     /// Remove near-duplicate chunks by comparing word overlap.
     /// Two chunks sharing >60% of their words are considered duplicates;
     /// only the higher-scored one survives.
@@ -2505,12 +2271,7 @@ RULES:
             .map(|r| {
                 r.text
                     .split_whitespace()
-                    .map(|w| {
-                        w.to_lowercase()
-                            .chars()
-                            .filter(|c| c.is_alphanumeric())
-                            .collect::<String>()
-                    })
+                    .map(|w| w.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect::<String>())
                     .filter(|w| w.len() > 2)
                     .collect()
             })
@@ -2520,7 +2281,9 @@ RULES:
 
         // Results are already sorted by score (descending from reranker/merge).
         // Walk top-down: for each kept chunk, mark later chunks as duplicates
-        // if they share >60% word overlap.
+        // if they share >60% word overlap AND are from the same source file.
+        // Different source files are never deduped — invoices, reports, etc. from
+        // different documents may share boilerplate but contain unique data.
         for i in 0..results.len() {
             if !keep[i] {
                 continue;
@@ -2529,14 +2292,19 @@ RULES:
                 if !keep[j] {
                     continue;
                 }
+                // Only dedup within the same source file
+                if results[i].source_file != results[j].source_file {
+                    continue;
+                }
                 let overlap = Self::jaccard_similarity(&word_sets[i], &word_sets[j]);
                 if overlap > 0.60 {
                     keep[j] = false;
                     tracing::debug!(
                         kept_score = results[i].score,
                         dropped_score = results[j].score,
+                        source = %results[i].source_file,
                         overlap = format!("{:.0}%", overlap * 100.0),
-                        "Dedup: dropped near-duplicate chunk"
+                        "Dedup: dropped near-duplicate chunk from same source"
                     );
                 }
             }
@@ -2567,25 +2335,32 @@ RULES:
     }
 
     /// Cut off chunks after a sharp relevance drop.
-    /// If chunk[i+1].score < chunk[i].score * 0.6 (a 40%+ relative drop),
-    /// everything from i+1 onward is discarded — it's below the relevance cliff.
-    /// Always keeps at least the top 2 chunks so the LLM has something to compare.
+    /// Detects a "cliff" when a chunk's score drops below 5% of the best score
+    /// (absolute floor) OR when consecutive scores drop by more than 60%
+    /// (relative cliff). Always keeps at least the top 5 chunks.
     fn cut_at_score_cliff(results: Vec<SearchResult>) -> Vec<SearchResult> {
-        if results.len() <= 2 {
+        if results.len() <= 5 {
             return results;
         }
 
+        let best_score = results.first().map(|r| r.score).unwrap_or(1.0);
         let mut cut_at = results.len();
-        for i in 1..results.len() {
-            let prev = results[i - 1].score;
+        for i in 5..results.len() {
             let curr = results[i].score;
-            // 40% relative drop from previous chunk
-            if prev > 0.0 && curr < prev * 0.6 && i >= 2 {
+            let prev = results[i - 1].score;
+
+            // Absolute floor: truly irrelevant chunks
+            let below_floor = best_score > 0.0 && curr < best_score * 0.05;
+
+            // Relative cliff: sudden drop between consecutive results
+            let relative_cliff = prev > 0.0 && curr < prev * 0.4;
+
+            if below_floor || relative_cliff {
                 tracing::debug!(
                     position = i,
+                    best_score = best_score,
                     prev_score = prev,
                     curr_score = curr,
-                    drop_pct = format!("{:.0}%", (1.0 - curr / prev) * 100.0),
                     "Score cliff detected — trimming remaining chunks"
                 );
                 cut_at = i;
@@ -2645,11 +2420,7 @@ RULES:
             .filter_map(|id| best_by_id.remove(&id))
             .collect();
 
-        merged.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        merged.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         merged.truncate(limit);
         merged
     }

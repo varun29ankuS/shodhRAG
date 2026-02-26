@@ -12,10 +12,10 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::chat_engine::{ChatContext, MessagePlatform};
+use crate::whatsapp_commands::WhatsAppBotState;
 use crate::rag_commands::RagState;
 use crate::unified_chat_commands::unified_chat_internal;
-use crate::whatsapp_commands::WhatsAppBotState;
+use crate::chat_engine::{ChatContext, MessagePlatform};
 
 #[derive(Debug, Deserialize)]
 struct IncomingMessage {
@@ -43,11 +43,7 @@ async fn handle_whatsapp_message(
     AxumState(state): AxumState<AppState>,
     Json(payload): Json<IncomingMessage>,
 ) -> Result<Json<BridgeResponse>, (StatusCode, String)> {
-    tracing::info!(
-        "📨 Received WhatsApp message from {}: {}",
-        payload.from,
-        payload.body
-    );
+    tracing::info!("📨 Received WhatsApp message from {}: {}", payload.from, payload.body);
 
     // Get bot and RAG state
     let bot_state_guard = state.bot_state.read().await;
@@ -61,10 +57,7 @@ async fn handle_whatsapp_message(
 
     // Check if bot is active
     if !bot.is_bot_active().await {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Bot is not active".to_string(),
-        ));
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "Bot is not active".to_string()));
     }
 
     // Get or auto-create contact
@@ -125,32 +118,30 @@ async fn handle_whatsapp_message(
         Some(context),
         MessagePlatform::WhatsApp,
         None, // No app_handle for HTTP servers (no streaming)
-    )
-    .await;
+    ).await;
 
     let (response_text, sources, confidence) = match result {
         Ok(response) => {
             // Extract sources from citations (using title field as source name)
-            let sources: Vec<String> = response.citations.iter().map(|c| c.title.clone()).collect();
+            let sources: Vec<String> = response.citations.iter()
+                .map(|c| c.title.clone())
+                .collect();
 
             // Calculate average confidence from citations (using score field)
             let confidence = if response.citations.is_empty() {
-                0.8 // Default confidence for generated responses
+                0.8  // Default confidence for generated responses
             } else {
-                response.citations.iter().map(|c| c.score).sum::<f32>()
-                    / response.citations.len() as f32
+                response.citations.iter()
+                    .map(|c| c.score)
+                    .sum::<f32>() / response.citations.len() as f32
             };
 
             // Format response with metadata
             let mut message = response.content.clone();
 
             let meta = &response.metadata;
-            if let (Some(model), Some(input_tokens), Some(output_tokens), Some(duration_ms)) = (
-                &meta.model,
-                meta.input_tokens,
-                meta.output_tokens,
-                meta.duration_ms,
-            ) {
+            if let (Some(model), Some(input_tokens), Some(output_tokens), Some(duration_ms)) =
+                (&meta.model, meta.input_tokens, meta.output_tokens, meta.duration_ms) {
                 let duration_s = duration_ms as f64 / 1000.0;
                 let tok_per_s = output_tokens as f64 / duration_s;
 
@@ -161,14 +152,10 @@ async fn handle_whatsapp_message(
             }
 
             (message, sources, confidence)
-        }
+        },
         Err(e) => {
             tracing::info!("❌ Error from unified_chat: {}", e);
-            (
-                format!("Sorry, I encountered an error: {}", e),
-                Vec::new(),
-                0.0,
-            )
+            (format!("Sorry, I encountered an error: {}", e), Vec::new(), 0.0)
         }
     };
 

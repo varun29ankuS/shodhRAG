@@ -1,13 +1,13 @@
 //! Analytics and Metrics Collection System
 //! Tracks real usage data with persistent storage across restarts.
 
-use crate::rag_commands::RagState;
-use chrono::{DateTime, Duration, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::State;
+use chrono::{DateTime, Utc, Duration, Timelike};
+use crate::rag_commands::RagState;
 
 /// Persistent analytics record — saved to disk
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,14 +185,8 @@ pub async fn get_dashboard_data(
 
     let rag_guard = rag_state.rag.read().await;
     let stats = rag_guard.get_statistics().await.unwrap_or_default();
-    let total_chunks: u64 = stats
-        .get("total_chunks")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let total_documents: u64 = stats
-        .get("total_documents")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(total_chunks);
+    let total_chunks: u64 = stats.get("total_chunks").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let total_documents: u64 = stats.get("total_documents").and_then(|s| s.parse().ok()).unwrap_or(total_chunks);
 
     let uptime_secs = analytics.app_start.elapsed().as_secs_f64();
 
@@ -203,16 +197,13 @@ pub async fn get_dashboard_data(
     };
 
     // Compute avg response time from recent successful queries
-    let recent_successful: Vec<&QueryEvent> = data
-        .query_log
-        .iter()
+    let recent_successful: Vec<&QueryEvent> = data.query_log.iter()
         .rev()
         .filter(|q| q.success)
         .take(100)
         .collect();
     let avg_response_time_ms = if !recent_successful.is_empty() {
-        recent_successful.iter().map(|q| q.duration_ms).sum::<f64>()
-            / recent_successful.len() as f64
+        recent_successful.iter().map(|q| q.duration_ms).sum::<f64>() / recent_successful.len() as f64
     } else {
         0.0
     };
@@ -241,22 +232,12 @@ pub async fn get_dashboard_data(
     let performance_chart = build_performance_chart(&data.hourly_response_times, now);
 
     // Top queries from real aggregated data
-    let mut top_queries: Vec<QueryStat> = data
-        .query_counts
-        .iter()
+    let mut top_queries: Vec<QueryStat> = data.query_counts.iter()
         .map(|(query, agg)| QueryStat {
             query: query.clone(),
             count: agg.count,
-            avg_time_ms: if agg.count > 0 {
-                agg.total_time_ms / agg.count as f64
-            } else {
-                0.0
-            },
-            avg_results: if agg.count > 0 {
-                agg.total_results as f64 / agg.count as f64
-            } else {
-                0.0
-            },
+            avg_time_ms: if agg.count > 0 { agg.total_time_ms / agg.count as f64 } else { 0.0 },
+            avg_results: if agg.count > 0 { agg.total_results as f64 / agg.count as f64 } else { 0.0 },
             last_used: agg.last_used,
         })
         .collect();
@@ -301,10 +282,7 @@ pub async fn track_query(
 
         // Hourly buckets
         *data.hourly_queries.entry(hour_key.clone()).or_insert(0) += 1;
-        data.hourly_response_times
-            .entry(hour_key)
-            .or_default()
-            .push(duration_ms);
+        data.hourly_response_times.entry(hour_key).or_default().push(duration_ms);
 
         // Query aggregation
         let agg = data.query_counts.entry(query_lower).or_insert(QueryAgg {
@@ -319,13 +297,9 @@ pub async fn track_query(
         agg.last_used = now;
 
         // Prune old hourly data (keep 72h)
-        let cutoff = (now - Duration::hours(72))
-            .format("%Y-%m-%d-%H")
-            .to_string();
-        data.hourly_queries
-            .retain(|k, _| k.as_str() >= cutoff.as_str());
-        data.hourly_response_times
-            .retain(|k, _| k.as_str() >= cutoff.as_str());
+        let cutoff = (now - Duration::hours(72)).format("%Y-%m-%d-%H").to_string();
+        data.hourly_queries.retain(|k, _| k.as_str() >= cutoff.as_str());
+        data.hourly_response_times.retain(|k, _| k.as_str() >= cutoff.as_str());
     }
 
     analytics.save();
@@ -378,13 +352,7 @@ pub async fn get_performance_metrics(
     analytics: State<'_, AnalyticsState>,
 ) -> Result<serde_json::Value, String> {
     let data = analytics.data.lock().map_err(|e| e.to_string())?;
-    let recent: Vec<&QueryEvent> = data
-        .query_log
-        .iter()
-        .rev()
-        .filter(|q| q.success)
-        .take(50)
-        .collect();
+    let recent: Vec<&QueryEvent> = data.query_log.iter().rev().filter(|q| q.success).take(50).collect();
     let avg_ms = if !recent.is_empty() {
         recent.iter().map(|q| q.duration_ms).sum::<f64>() / recent.len() as f64
     } else {
@@ -413,11 +381,7 @@ pub async fn get_quality_metrics(
     let data = analytics.data.lock().map_err(|e| e.to_string())?;
     let recent: Vec<&QueryEvent> = data.query_log.iter().rev().take(100).collect();
     let with_results = recent.iter().filter(|q| q.result_count > 0).count();
-    let hit_rate = if !recent.is_empty() {
-        with_results as f64 / recent.len() as f64
-    } else {
-        1.0
-    };
+    let hit_rate = if !recent.is_empty() { with_results as f64 / recent.len() as f64 } else { 1.0 };
     Ok(serde_json::json!({
         "hit_rate": hit_rate,
         "total_queries": data.total_queries,
@@ -442,22 +406,15 @@ fn build_hourly_chart(hourly: &HashMap<String, u32>, now: DateTime<Utc>) -> Vec<
     points
 }
 
-fn build_performance_chart(
-    hourly_times: &HashMap<String, Vec<f64>>,
-    now: DateTime<Utc>,
-) -> Vec<TimeSeriesPoint> {
+fn build_performance_chart(hourly_times: &HashMap<String, Vec<f64>>, now: DateTime<Utc>) -> Vec<TimeSeriesPoint> {
     let mut points = Vec::with_capacity(24);
     for i in (0..24).rev() {
         let ts = now - Duration::hours(i);
         let key = format!("{}", ts.format("%Y-%m-%d-%H"));
-        let value = hourly_times
-            .get(&key)
+        let value = hourly_times.get(&key)
             .map(|times| {
-                if times.is_empty() {
-                    0.0
-                } else {
-                    times.iter().sum::<f64>() / times.len() as f64
-                }
+                if times.is_empty() { 0.0 }
+                else { times.iter().sum::<f64>() / times.len() as f64 }
             })
             .unwrap_or(0.0);
         points.push(TimeSeriesPoint {

@@ -6,18 +6,20 @@
 //! - System queries
 //! - Native integrations
 
-pub mod command_executor;
 pub mod file_ops;
+pub mod command_executor;
 pub mod os_integration;
 
 pub use file_ops::{
-    copy_path, create_file, create_folder_structure, delete_path, list_directory, move_path,
     FileSystemAction, FileSystemResult, FolderStructure,
+    create_folder_structure, create_file, copy_path, move_path, delete_path, list_directory
 };
 
 pub use command_executor::{
-    analyze_command_risk, execute_bash, execute_command, execute_powershell, CommandAction,
-    CommandResult, CommandRiskLevel,
+    CommandAction, CommandResult, CommandRiskLevel,
+    execute_command, execute_powershell, execute_bash, analyze_command_risk
 };
 
-pub use os_integration::{get_system_info, list_running_processes, open_in_file_manager};
+pub use os_integration::{
+    open_in_file_manager, get_system_info, list_running_processes
+};

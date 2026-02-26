@@ -1,69 +1,70 @@
-mod analytics_commands;
-mod chat_history;
-mod context_commands;
-mod database_commands;
-mod diagnostic_commands;
-mod discord_bot_commands;
-mod discord_http_server;
-mod doc_gen_commands;
-mod document_upload_commands;
-mod enhanced_rag_commands;
+mod rag_commands;
+mod window_commands;
 mod file_watcher;
-mod google_drive_commands;
-mod graph_commands;
-mod history_commands;
-mod image_upload_commands;
 mod llm_commands;
 mod llm_response;
-mod mcp;
-mod mcp_bridge;
-mod mcp_commands;
-mod query_rewriter;
-mod rag_commands;
-mod retrieval_commands;
-mod search_history;
-mod smart_templates;
 mod space_commands;
+mod enhanced_rag_commands;
 mod space_manager;
+mod search_history;
+mod chat_history;
+mod history_commands;
+mod graph_commands;
+mod doc_gen_commands;
+mod database_commands;
+mod diagnostic_commands;
+mod analytics_commands;
 mod storage_commands;
-mod system_commands;
-mod telegram_bot_commands;
-mod telegram_http_server;
+mod smart_templates;
 mod template_commands;
+mod query_rewriter;
+mod answer_validator;
+mod retrieval_commands;
+mod context_commands;
 mod whatsapp_bot;
 mod whatsapp_commands;
 mod whatsapp_http_server;
-mod window_commands;
+mod telegram_http_server;
+mod telegram_bot_commands;
+mod discord_http_server;
+mod discord_bot_commands;
+mod google_drive_commands;
+mod image_upload_commands;
+mod system_commands;
+mod mcp;
+mod mcp_commands;
+mod mcp_bridge;
+mod document_upload_commands;
 
 // Unified chat system modules
-mod agent_commands;
-mod artifact_store;
-mod calendar_commands;
 mod chat_engine;
-mod conversation_commands;
+mod artifact_store;
 mod unified_chat_commands;
+mod conversation_commands;
+mod agent_commands;
+mod calendar_commands;
 
 use tauri::Manager;
 
-use analytics_commands::AnalyticsState;
-use chat_history::ChatHistoryManager;
+use rag_commands::{RagState, AppPaths};
 use context_commands::ContextState;
-use discord_bot_commands::DiscordBotState;
-use enhanced_rag_commands::IndexingState;
-use google_drive_commands::GoogleDriveState;
-use llm_commands::{ApiKeys, LLMState};
-use mcp_commands::MCPState;
-use rag_commands::{AppPaths, RagState};
-use search_history::SearchHistoryManager;
-use shodh_rag::llm::{LLMConfig, ModelManager};
-use space_manager::SpaceManager;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use telegram_bot_commands::TelegramBotState;
-use template_commands::TemplateStore;
-use tokio::sync::RwLock as AsyncRwLock;
 use uuid::Uuid;
+use enhanced_rag_commands::IndexingState;
+use llm_commands::{LLMState, ApiKeys};
+use space_manager::SpaceManager;
+use search_history::SearchHistoryManager;
+use chat_history::ChatHistoryManager;
+use analytics_commands::AnalyticsState;
+use template_commands::TemplateStore;
 use whatsapp_commands::WhatsAppBotState;
+use telegram_bot_commands::TelegramBotState;
+use discord_bot_commands::DiscordBotState;
+use google_drive_commands::GoogleDriveState;
+use mcp_commands::MCPState;
+use std::sync::{Arc, Mutex};
+use tokio::sync::RwLock as AsyncRwLock;
+use shodh_rag::llm::{LLMConfig, ModelManager};
+use std::path::PathBuf;
 
 /// Resolve the models directory with multi-tier fallback for portability.
 ///
@@ -129,7 +130,7 @@ pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
         )
         .with_target(false)
         .init();
@@ -141,9 +142,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             // Get app data directory for persistent storage
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
+            let app_data_dir = app.path().app_data_dir()
                 .expect("Failed to get app data directory");
 
             // Create app data directory if it doesn't exist
@@ -157,10 +156,7 @@ pub fn run() {
             // Resolve model directory with multi-tier fallback for portability
             let model_dir = resolve_model_dir(&app_data_dir);
             tracing::info!("Model directory: {:?}", model_dir);
-            tracing::info!(
-                "E5 model exists: {}",
-                model_dir.join("multilingual-e5-base").exists()
-            );
+            tracing::info!("E5 model exists: {}", model_dir.join("multilingual-e5-base").exists());
 
             // Initialize SpaceManager with persistent storage
             let space_manager = SpaceManager::with_data_dir(app_data_dir.clone());
@@ -181,6 +177,7 @@ pub fn run() {
                 api_keys: Arc::new(Mutex::new(ApiKeys::default())),
                 custom_model_path: Arc::new(Mutex::new(None)),
                 custom_tokenizer_path: Arc::new(Mutex::new(None)),
+                model_dir: Arc::new(model_dir.clone()),
             });
 
             // Initialize RagState with explicit model path configuration
@@ -192,9 +189,8 @@ pub fn run() {
             }
             rag_config.data_dir = app_data_dir.clone();
             let default_rag = tauri::async_runtime::block_on(
-                shodh_rag::comprehensive_system::ComprehensiveRAG::new(rag_config),
-            )
-            .expect("Failed to create default RAG instance");
+                shodh_rag::comprehensive_system::ComprehensiveRAG::new(rag_config)
+            ).expect("Failed to create default RAG instance");
 
             app.manage(RagState {
                 rag: Arc::new(AsyncRwLock::new(default_rag)),
@@ -221,11 +217,9 @@ pub fn run() {
             app.manage(WhatsAppBotState::default());
             app.manage(TelegramBotState {
                 process: Mutex::new(None),
-                server_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
             app.manage(DiscordBotState {
                 process: Mutex::new(None),
-                server_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
             app.manage(Arc::new(GoogleDriveState::new()));
 
@@ -256,9 +250,7 @@ pub fn run() {
             app.manage(Arc::new(Mutex::new(chat_history_manager)));
 
             // Initialize conversation manager and memory system with app data directory
-            let app_dir = app
-                .path()
-                .app_data_dir()
+            let app_dir = app.path().app_data_dir()
                 .expect("Failed to get app data directory");
             let memory_store_path = app_dir.join("memory_store");
 
@@ -276,18 +268,16 @@ pub fn run() {
                         *memory_system_arc_state.write().await = Some(memory_system_shared.clone());
                         tracing::info!("Memory system initialized successfully");
 
-                        match shodh_rag::agent::ConversationManager::new_with_memory(
-                            memory_system_shared.clone(),
-                        ) {
+                        match shodh_rag::agent::ConversationManager::new_with_memory(memory_system_shared.clone()) {
                             Ok(manager) => {
                                 *conversation_manager_arc.write().await = Some(manager);
                                 tracing::info!("Conversation manager initialized successfully");
-                            }
+                            },
                             Err(e) => {
                                 tracing::error!("Failed to initialize conversation manager: {}", e);
                             }
                         }
-                    }
+                    },
                     Err(e) => {
                         tracing::error!("Failed to initialize memory system: {}", e);
                     }
@@ -304,9 +294,104 @@ pub fn run() {
                 });
             }
 
-            // Bot HTTP servers (WhatsApp, Telegram, Discord) are now started lazily
-            // when the user explicitly starts a bot via whatsapp_initialize / start_telegram_bot / start_discord_bot.
-            // This avoids binding ports 3456/3458/3459 unconditionally on app launch.
+            // Start WhatsApp HTTP server for receiving messages from the bridge
+            let whatsapp_bot_state = app.state::<WhatsAppBotState>();
+            let whatsapp_rag_state = app.state::<RagState>();
+            let bot_state_clone = WhatsAppBotState {
+                bot: whatsapp_bot_state.bot.clone(),
+                bridge_process: std::sync::Mutex::new(None),
+            };
+            let rag_state_clone = RagState {
+                rag: whatsapp_rag_state.rag.clone(),
+                notes: Mutex::new(Vec::new()),
+                space_manager: Mutex::new(SpaceManager::with_data_dir(app_data_dir.clone())),
+                conversation_manager: whatsapp_rag_state.conversation_manager.clone(),
+                memory_system: whatsapp_rag_state.memory_system.clone(),
+                personal_assistant: whatsapp_rag_state.personal_assistant.clone(),
+                app_paths: whatsapp_rag_state.app_paths.clone(),
+                rag_initialized: whatsapp_rag_state.rag_initialized.clone(),
+                initialization_lock: whatsapp_rag_state.initialization_lock.clone(),
+                artifact_store: whatsapp_rag_state.artifact_store.clone(),
+                conversation_id: whatsapp_rag_state.conversation_id.clone(),
+                agent_system: whatsapp_rag_state.agent_system.clone(),
+                llm_manager: whatsapp_rag_state.llm_manager.clone(),
+            };
+
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = whatsapp_http_server::start_server(bot_state_clone, rag_state_clone).await {
+                    tracing::error!("Failed to start WhatsApp HTTP server: {}", e);
+                }
+            });
+
+            // Start Telegram HTTP server for receiving messages from the bridge
+            let telegram_rag_state = app.state::<RagState>();
+            let telegram_llm_state = app.state::<LLMState>();
+            let telegram_rag_clone = RagState {
+                rag: telegram_rag_state.rag.clone(),
+                notes: Mutex::new(Vec::new()),
+                space_manager: Mutex::new(SpaceManager::with_data_dir(app_data_dir.clone())),
+                conversation_manager: telegram_rag_state.conversation_manager.clone(),
+                memory_system: telegram_rag_state.memory_system.clone(),
+                personal_assistant: telegram_rag_state.personal_assistant.clone(),
+                app_paths: telegram_rag_state.app_paths.clone(),
+                rag_initialized: telegram_rag_state.rag_initialized.clone(),
+                initialization_lock: telegram_rag_state.initialization_lock.clone(),
+                artifact_store: telegram_rag_state.artifact_store.clone(),
+                conversation_id: telegram_rag_state.conversation_id.clone(),
+                agent_system: telegram_rag_state.agent_system.clone(),
+                llm_manager: telegram_rag_state.llm_manager.clone(),
+            };
+            let telegram_llm_clone = LLMState {
+                manager: telegram_llm_state.manager.clone(),
+                model_manager: telegram_llm_state.model_manager.clone(),
+                config: telegram_llm_state.config.clone(),
+                api_keys: telegram_llm_state.api_keys.clone(),
+                custom_model_path: telegram_llm_state.custom_model_path.clone(),
+                custom_tokenizer_path: telegram_llm_state.custom_tokenizer_path.clone(),
+                model_dir: telegram_llm_state.model_dir.clone(),
+            };
+
+            let telegram_app_handle = app.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = telegram_http_server::start_server(telegram_rag_clone, telegram_llm_clone, Some(telegram_app_handle)).await {
+                    tracing::error!("Failed to start Telegram HTTP server: {}", e);
+                }
+            });
+
+            // Start Discord HTTP server for receiving messages from the bridge
+            let discord_rag_state = app.state::<RagState>();
+            let discord_llm_state = app.state::<LLMState>();
+            let discord_rag_clone = RagState {
+                rag: discord_rag_state.rag.clone(),
+                notes: Mutex::new(Vec::new()),
+                space_manager: Mutex::new(SpaceManager::with_data_dir(app_data_dir.clone())),
+                conversation_manager: discord_rag_state.conversation_manager.clone(),
+                memory_system: discord_rag_state.memory_system.clone(),
+                personal_assistant: discord_rag_state.personal_assistant.clone(),
+                app_paths: discord_rag_state.app_paths.clone(),
+                rag_initialized: discord_rag_state.rag_initialized.clone(),
+                initialization_lock: discord_rag_state.initialization_lock.clone(),
+                artifact_store: discord_rag_state.artifact_store.clone(),
+                conversation_id: discord_rag_state.conversation_id.clone(),
+                agent_system: discord_rag_state.agent_system.clone(),
+                llm_manager: discord_rag_state.llm_manager.clone(),
+            };
+            let discord_llm_clone = LLMState {
+                manager: discord_llm_state.manager.clone(),
+                model_manager: discord_llm_state.model_manager.clone(),
+                config: discord_llm_state.config.clone(),
+                api_keys: discord_llm_state.api_keys.clone(),
+                custom_model_path: discord_llm_state.custom_model_path.clone(),
+                custom_tokenizer_path: discord_llm_state.custom_tokenizer_path.clone(),
+                model_dir: discord_llm_state.model_dir.clone(),
+            };
+
+            let discord_app_handle = app.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = discord_http_server::start_server(discord_rag_clone, discord_llm_clone, Some(discord_app_handle)).await {
+                    tracing::error!("Failed to start Discord HTTP server: {}", e);
+                }
+            });
 
             // Initialize LLM manager on startup
             let llm_state = app.state::<LLMState>();
@@ -314,10 +399,7 @@ pub fn run() {
             let config_clone = llm_state.config.clone();
 
             tauri::async_runtime::spawn(async move {
-                let config = config_clone
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
+                let config = config_clone.lock().unwrap().clone();
 
                 let model_dir = if cfg!(debug_assertions) {
                     let exe_dir = std::env::current_exe()
@@ -333,8 +415,7 @@ pub fn run() {
                     exe_dir.join("models")
                 };
 
-                let mut llm_manager =
-                    shodh_rag::llm::LLMManager::new_with_cache_dir(config, model_dir);
+                let mut llm_manager = shodh_rag::llm::LLMManager::new_with_cache_dir(config, model_dir);
                 if let Err(e) = llm_manager.initialize().await {
                     tracing::error!("Failed to initialize LLM manager: {}", e);
                 } else {
@@ -463,6 +544,7 @@ pub fn run() {
             database_commands::clear_all_documents,
             database_commands::delete_space_permanently,
             database_commands::get_database_stats,
+            database_commands::list_indexed_sources,
             database_commands::cleanup_orphaned_documents,
             database_commands::save_backup_file,
             database_commands::read_backup_file,

@@ -49,7 +49,8 @@ impl LoPdfParser {
     }
 
     pub fn parse_bytes(bytes: &[u8]) -> Result<ParsedPdfDocument> {
-        let doc = Document::load_mem(bytes).context("lopdf: failed to load PDF from memory")?;
+        let doc = Document::load_mem(bytes)
+            .context("lopdf: failed to load PDF from memory")?;
         Self::extract_document(&doc)
     }
 
@@ -86,15 +87,11 @@ impl LoPdfParser {
         let mut title = None;
         let mut author = None;
 
-        // Resolve Info dict from the PDF trailer rather than assuming a fixed object ID.
-        let info_obj = doc
-            .trailer
-            .get(b"Info")
-            .ok()
-            .and_then(|info_ref| match info_ref {
-                Object::Reference(ref_id) => doc.get_object(*ref_id).ok(),
-                other => Some(other),
-            });
+        // Resolve Info dict from the trailer — never assume object (1,0)
+        let info_obj = doc.trailer.get(b"Info").ok().and_then(|obj| match obj {
+            Object::Reference(id) => doc.get_object(*id).ok(),
+            other => Some(other),
+        });
 
         if let Some(info) = info_obj {
             if let Ok(dict) = info.as_dict() {
@@ -326,9 +323,7 @@ impl LoPdfParser {
             dict.get(b"Parent").ok().and_then(|p| {
                 if let Object::Reference(pid) = p {
                     doc.get_object(*pid).ok().and_then(|pobj| {
-                        pobj.as_dict()
-                            .ok()
-                            .and_then(|pd| Self::get_dict_string(pd, b"V"))
+                        pobj.as_dict().ok().and_then(|pd| Self::get_dict_string(pd, b"V"))
                     })
                 } else {
                     None
@@ -366,19 +361,11 @@ impl LoPdfParser {
         dict.get(key).ok().and_then(|obj| match obj {
             Object::String(bytes, _) => {
                 let s = decode_pdf_string(bytes);
-                if s.is_empty() {
-                    None
-                } else {
-                    Some(s)
-                }
+                if s.is_empty() { None } else { Some(s) }
             }
             Object::Name(bytes) => {
                 let s = decode_pdf_string(bytes);
-                if s.is_empty() {
-                    None
-                } else {
-                    Some(s)
-                }
+                if s.is_empty() { None } else { Some(s) }
             }
             _ => None,
         })
@@ -545,9 +532,12 @@ impl ParsedPdfDocument {
         self.pages
             .iter()
             .flat_map(|p| {
-                p.annotations
-                    .iter()
-                    .map(|a| (a.field_name.clone().unwrap_or_default(), a.value.clone()))
+                p.annotations.iter().map(|a| {
+                    (
+                        a.field_name.clone().unwrap_or_default(),
+                        a.value.clone(),
+                    )
+                })
             })
             .collect()
     }

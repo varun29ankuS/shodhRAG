@@ -46,6 +46,7 @@ import KnowledgeGraph from './components/KnowledgeGraph';
 import AgentsPanel from './components/AgentsPanel';
 import CalendarTodoPanel from './components/CalendarTodoPanel';
 import SearchSettings, { useSearchConfig } from './components/SearchSettings';
+import DataManagement from './components/DataManagement';
 import { useActivityTracker } from './hooks/useActivityTracker';
 import { OnboardingFlow } from './components/OnboardingFlow';
 import { FeedbackDialog } from './components/FeedbackDialog';
@@ -4274,6 +4275,17 @@ function AppSplitView() {
                 config={searchConfig}
                 onUpdate={updateSearchConfig}
                 onReset={resetSearchConfig}
+              />
+            </div>
+            {/* Data Management Section */}
+            <div className="p-6 border-t" style={{ borderColor: colors.border }}>
+              <DataManagement
+                sources={sources}
+                onRemoveSource={removeSource}
+                onSourcesCleared={() => {
+                  setSources([]);
+                  localStorage.setItem('indexedSources', JSON.stringify([]));
+                }}
               />
             </div>
           </div>

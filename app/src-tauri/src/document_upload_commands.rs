@@ -1,20 +1,20 @@
 //! Simple document upload commands with progress tracking
 //! For drag-drop PDF/DOCX/XLSX into chat
 
-use crate::rag_commands::RagState;
 use serde::{Deserialize, Serialize};
-use shodh_rag::comprehensive_system::Citation;
+use std::path::Path;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
-use std::path::Path;
 use tauri::State;
+use crate::rag_commands::RagState;
+use shodh_rag::comprehensive_system::Citation;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UploadProgress {
-    pub stage: String, // "parsing", "chunking", "embedding", "indexing", "complete"
-    pub progress: f32, // 0.0 to 1.0
+    pub stage: String,          // "parsing", "chunking", "embedding", "indexing", "complete"
+    pub progress: f32,          // 0.0 to 1.0
     pub message: String,
     pub chunks_processed: usize,
     pub total_chunks: usize,
@@ -44,20 +44,18 @@ pub async fn upload_document_file(
     let path = Path::new(&file_path);
 
     // Get file metadata
-    let file_name = path
-        .file_name()
+    let file_name = path.file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("Unknown")
         .to_string();
 
-    let extension = path
-        .extension()
+    let extension = path.extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
 
     let file_size = std::fs::metadata(path)
-        .map(|m| m.len() as f64 / 1_048_576.0) // Convert to MB
+        .map(|m| m.len() as f64 / 1_048_576.0)  // Convert to MB
         .unwrap_or(0.0);
 
     // Determine file type
@@ -103,11 +101,7 @@ pub async fn upload_document_file(
         Ok(chunk_ids) => {
             let processing_time = start_time.elapsed().as_millis() as u64;
 
-            tracing::info!(
-                "✅ Indexed {} chunks in {}ms",
-                chunk_ids.len(),
-                processing_time
-            );
+            tracing::info!("✅ Indexed {} chunks in {}ms", chunk_ids.len(), processing_time);
 
             // Update space activity if provided
             if let Some(sid) = space_id {
@@ -148,25 +142,28 @@ pub async fn upload_document_file(
 
 /// Save dropped file bytes to a temp directory and return the file path
 #[tauri::command]
-pub fn save_temp_file(file_name: String, file_data: Vec<u8>) -> Result<String, String> {
+pub fn save_temp_file(
+    file_name: String,
+    file_data: Vec<u8>,
+) -> Result<String, String> {
     // Create temp directory for uploaded files
     let temp_dir = std::env::temp_dir().join("kalki_uploads");
-    fs::create_dir_all(&temp_dir).map_err(|e| format!("Failed to create temp directory: {}", e))?;
+    fs::create_dir_all(&temp_dir)
+        .map_err(|e| format!("Failed to create temp directory: {}", e))?;
 
     // Create unique file path
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S_%3f");
     let file_path = temp_dir.join(format!("{}_{}", timestamp, file_name));
 
     // Write file data
-    let mut file =
-        fs::File::create(&file_path).map_err(|e| format!("Failed to create temp file: {}", e))?;
+    let mut file = fs::File::create(&file_path)
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
 
     file.write_all(&file_data)
         .map_err(|e| format!("Failed to write file data: {}", e))?;
 
     // Return absolute path as string
-    file_path
-        .to_str()
+    file_path.to_str()
         .ok_or_else(|| "Failed to convert path to string".to_string())
         .map(|s| s.to_string())
 }

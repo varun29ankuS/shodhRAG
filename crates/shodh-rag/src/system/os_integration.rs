@@ -1,7 +1,7 @@
 //! OS-specific integrations with cross-platform abstraction
 //! Provides unified interface for Windows, macOS, and Linux features
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Result, anyhow, Context};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -64,9 +64,7 @@ pub fn open_in_file_manager(path: &Path) -> Result<()> {
         if Command::new("dolphin").arg(path).spawn().is_ok() {
             return Ok(());
         }
-        return Err(anyhow!(
-            "No file manager found (tried xdg-open, nautilus, dolphin)"
-        ));
+        return Err(anyhow!("No file manager found (tried xdg-open, nautilus, dolphin)"));
     }
 
     Ok(())
@@ -111,10 +109,7 @@ fn get_os_version() -> String {
     {
         use std::process::Command;
         Command::new("powershell")
-            .args([
-                "-Command",
-                "(Get-WmiObject -Class Win32_OperatingSystem).Caption",
-            ])
+            .args(["-Command", "(Get-WmiObject -Class Win32_OperatingSystem).Caption"])
             .output()
             .ok()
             .and_then(|output| String::from_utf8(output.stdout).ok())
@@ -144,11 +139,7 @@ fn get_os_version() -> String {
                 content
                     .lines()
                     .find(|line| line.starts_with("PRETTY_NAME="))
-                    .map(|line| {
-                        line.trim_start_matches("PRETTY_NAME=")
-                            .trim_matches('"')
-                            .to_string()
-                    })
+                    .map(|line| line.trim_start_matches("PRETTY_NAME=").trim_matches('"').to_string())
             })
             .unwrap_or_else(|| "Linux (unknown distribution)".to_string())
     }
@@ -165,10 +156,7 @@ fn get_total_memory_mb() -> u64 {
     {
         use std::process::Command;
         Command::new("powershell")
-            .args([
-                "-Command",
-                "(Get-WmiObject -Class Win32_ComputerSystem).TotalPhysicalMemory",
-            ])
+            .args(["-Command", "(Get-WmiObject -Class Win32_ComputerSystem).TotalPhysicalMemory"])
             .output()
             .ok()
             .and_then(|output| String::from_utf8(output.stdout).ok())
@@ -222,15 +210,13 @@ pub fn list_running_processes() -> Result<Vec<ProcessInfo>> {
     {
         use std::process::Command;
         let output = Command::new("powershell")
-            .args([
-                "-Command",
-                "Get-Process | Select-Object Id,Name,CPU,WorkingSet | ConvertTo-Json",
-            ])
+            .args(["-Command", "Get-Process | Select-Object Id,Name,CPU,WorkingSet | ConvertTo-Json"])
             .output()
             .context("Failed to list processes")?;
 
         let json_str = String::from_utf8_lossy(&output.stdout);
-        let processes: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_default();
+        let processes: Vec<serde_json::Value> = serde_json::from_str(&json_str)
+            .unwrap_or_default();
 
         Ok(processes
             .into_iter()

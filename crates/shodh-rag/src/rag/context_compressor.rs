@@ -30,12 +30,20 @@ pub fn compress_chunk(chunk: &str, query: &str, max_sentences: usize) -> String 
         return chunk.to_string();
     }
 
-    // Build query term set for scoring
+    // Build query term set for scoring.
+    // Preserve email addresses and URLs as intact terms (don't strip dots/@ from them).
     let query_terms: HashSet<String> = query
         .to_lowercase()
         .split_whitespace()
         .filter(|w| w.len() > 2)
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+        .map(|w| {
+            if w.contains('@') || w.contains("://") || w.contains(".com") || w.contains(".org") || w.contains(".net") || w.contains(".io") {
+                // Email or URL — keep as-is (only trim outer punctuation like commas/quotes)
+                w.trim_matches(|c: char| c == ',' || c == '"' || c == '\'' || c == '(' || c == ')').to_string()
+            } else {
+                w.trim_matches(|c: char| !c.is_alphanumeric()).to_string()
+            }
+        })
         .filter(|w| !w.is_empty())
         .collect();
 
@@ -61,7 +69,10 @@ pub fn compress_chunk(chunk: &str, query: &str, max_sentences: usize) -> String 
     selected_indices.sort();
 
     // Reconstruct compressed text
-    let compressed: Vec<&str> = selected_indices.iter().map(|&idx| sentences[idx]).collect();
+    let compressed: Vec<&str> = selected_indices
+        .iter()
+        .map(|&idx| sentences[idx])
+        .collect();
 
     compressed.join(" ")
 }
@@ -184,8 +195,26 @@ fn score_sentence(
         0.0
     };
 
+    // Structured data boost: always preserve lines containing emails, phone
+    // numbers, IDs, or other extractable facts — these are high-value for RAG
+    // regardless of keyword overlap with the query.
+    let structured_boost = if lower.contains('@')
+        || lower.contains(".com")
+        || lower.contains(".org")
+        || lower.contains(".net")
+        || lower.contains("http")
+        || lower.contains("phone")
+        || lower.contains("mobile")
+        || lower.contains("tel:")
+        || (lower.contains("email") && sentence.len() < 200)
+    {
+        0.35
+    } else {
+        0.0
+    };
+
     // Weighted combination
-    term_score * 0.6 + density * 0.15 + position_score + kv_boost
+    term_score * 0.6 + density * 0.15 + position_score + kv_boost + structured_boost
 }
 
 #[cfg(test)]

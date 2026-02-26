@@ -4,17 +4,17 @@
 //! pause/resume/cancel support. Progress is emitted via the EventEmitter trait
 //! so the caller (Tauri, HTTP server, CLI) can deliver updates to its UI.
 
-use chrono::Utc;
-use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use chrono::Utc;
 use walkdir::WalkDir;
+use futures::FutureExt;
 
-use crate::chat::EventEmitter;
 use crate::rag_engine::RAGEngine;
+use crate::chat::EventEmitter;
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -83,28 +83,28 @@ impl Default for IndexingState {
 
 impl IndexingState {
     pub fn pause(&self) {
-        *self.is_paused.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        *self.is_paused.lock().unwrap() = true;
     }
 
     pub fn resume(&self) {
-        *self.is_paused.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        *self.is_paused.lock().unwrap() = false;
     }
 
     pub fn cancel(&self) {
-        *self.should_cancel.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        *self.should_cancel.lock().unwrap() = true;
     }
 
     pub fn reset(&self) {
-        *self.should_cancel.lock().unwrap_or_else(|e| e.into_inner()) = false;
-        *self.is_paused.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        *self.should_cancel.lock().unwrap() = false;
+        *self.is_paused.lock().unwrap() = false;
     }
 
     pub fn is_cancelled(&self) -> bool {
-        *self.should_cancel.lock().unwrap_or_else(|e| e.into_inner())
+        *self.should_cancel.lock().unwrap()
     }
 
     pub fn is_paused(&self) -> bool {
-        *self.is_paused.lock().unwrap_or_else(|e| e.into_inner())
+        *self.is_paused.lock().unwrap()
     }
 }
 
@@ -139,8 +139,7 @@ pub fn preview_folder(folder_path: &str) -> Result<FolderPreview, String> {
 
             files.push(FileInfo {
                 path: file_path.to_string_lossy().to_string(),
-                name: file_path
-                    .file_name()
+                name: file_path.file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("unknown")
                     .to_string(),
@@ -196,8 +195,7 @@ pub async fn index_single_file(
         return Err(format!("Path is not a file: {}", file_path));
     }
 
-    let extension = path
-        .extension()
+    let extension = path.extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or("unknown")
         .to_lowercase();
@@ -209,8 +207,7 @@ pub async fn index_single_file(
     emit_progress(emitter, file_path, 0, 1, 0.0, "Reading file...");
     emit_progress(emitter, file_path, 0, 1, 50.0, "Indexing...");
 
-    let file_name = path
-        .file_name()
+    let file_name = path.file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("Unknown");
 
@@ -224,8 +221,7 @@ pub async fn index_single_file(
     metadata.insert("doc_type".to_string(), "document".to_string());
     metadata.insert("indexed_at".to_string(), Utc::now().to_rfc3339());
 
-    let ids = rag
-        .add_document_from_file(&path, metadata)
+    let ids = rag.add_document_from_file(&path, metadata)
         .await
         .map_err(|e| format!("Failed to index file: {}", e))?;
 
@@ -327,19 +323,10 @@ pub async fn index_folder(
         // Throttled progress update
         if last_progress_time.elapsed() > Duration::from_millis(100) {
             let elapsed = start_time.elapsed().as_secs_f32();
-            let speed = if elapsed > 0.0 {
-                files_processed as f32 / elapsed
-            } else {
-                0.0
-            };
-            let eta = if speed > 0.0 {
-                (total_files - files_processed) as f32 / speed
-            } else {
-                0.0
-            };
+            let speed = if elapsed > 0.0 { files_processed as f32 / elapsed } else { 0.0 };
+            let eta = if speed > 0.0 { (total_files - files_processed) as f32 / speed } else { 0.0 };
 
-            let current_file = file_path
-                .file_name()
+            let current_file = file_path.file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
 
@@ -357,8 +344,9 @@ pub async fn index_folder(
 
         // Process file with panic protection
         let process_result = {
-            let result =
-                std::panic::AssertUnwindSafe(process_file_with_options(file_path, space_id, rag));
+            let result = std::panic::AssertUnwindSafe(
+                process_file_with_options(file_path, space_id, rag)
+            );
             match result.catch_unwind().await {
                 Ok(r) => r,
                 Err(panic_info) => {
@@ -385,14 +373,7 @@ pub async fn index_folder(
         }
     }
 
-    emit_progress(
-        emitter,
-        "Completed",
-        files_processed,
-        total_files,
-        100.0,
-        "Indexing complete",
-    );
+    emit_progress(emitter, "Completed", files_processed, total_files, 100.0, "Indexing complete");
 
     Ok(IndexingResult {
         files_processed,
@@ -407,65 +388,14 @@ pub async fn index_folder(
 pub fn is_supported_file_type(extension: &str) -> bool {
     matches!(
         extension,
-        "txt"
-            | "md"
-            | "pdf"
-            | "html"
-            | "json"
-            | "csv"
-            | "docx"
-            | "xlsx"
-            | "pptx"
-            | "rst"
-            | "tex"
-            | "rs"
-            | "py"
-            | "js"
-            | "ts"
-            | "jsx"
-            | "tsx"
-            | "java"
-            | "cpp"
-            | "c"
-            | "h"
-            | "hpp"
-            | "cs"
-            | "go"
-            | "rb"
-            | "php"
-            | "swift"
-            | "kt"
-            | "scala"
-            | "r"
-            | "sh"
-            | "bash"
-            | "zsh"
-            | "ps1"
-            | "bat"
-            | "cmd"
-            | "css"
-            | "scss"
-            | "sass"
-            | "less"
-            | "vue"
-            | "svelte"
-            | "toml"
-            | "yaml"
-            | "yml"
-            | "ini"
-            | "conf"
-            | "config"
-            | "env"
-            | "xml"
-            | "sql"
-            | "graphql"
-            | "proto"
-            | "png"
-            | "jpg"
-            | "jpeg"
-            | "bmp"
-            | "tiff"
-            | "tif"
+        "txt" | "md" | "pdf" | "html" | "json" | "csv" | "docx" | "xlsx" | "pptx" | "rst" | "tex" |
+        "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "java" | "cpp" | "c" | "h" |
+        "hpp" | "cs" | "go" | "rb" | "php" | "swift" | "kt" | "scala" | "r" |
+        "sh" | "bash" | "zsh" | "ps1" | "bat" | "cmd" |
+        "css" | "scss" | "sass" | "less" | "vue" | "svelte" |
+        "toml" | "yaml" | "yml" | "ini" | "conf" | "config" | "env" |
+        "xml" | "sql" | "graphql" | "proto" |
+        "png" | "jpg" | "jpeg" | "bmp" | "tiff" | "tif"
     )
 }
 
@@ -480,19 +410,13 @@ async fn process_file_with_options(
 
     let mut metadata = HashMap::new();
     metadata.insert("space_id".to_string(), space_id.to_string());
-    metadata.insert(
-        "file_path".to_string(),
-        file_path.to_string_lossy().to_string(),
-    );
+    metadata.insert("file_path".to_string(), file_path.to_string_lossy().to_string());
     metadata.insert("doc_type".to_string(), "document".to_string());
-    metadata.insert(
-        "title".to_string(),
-        file_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Untitled")
-            .to_string(),
-    );
+    metadata.insert("title".to_string(), file_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Untitled")
+        .to_string());
 
     if let Some(extension) = file_path.extension() {
         let ext = extension.to_string_lossy().to_string();
@@ -500,15 +424,11 @@ async fn process_file_with_options(
         metadata.insert("file_extension".to_string(), ext.clone());
 
         if let Some(filename) = file_path.file_name() {
-            metadata.insert(
-                "filename".to_string(),
-                filename.to_string_lossy().to_string(),
-            );
+            metadata.insert("filename".to_string(), filename.to_string_lossy().to_string());
         }
     }
 
-    let ids = rag
-        .add_document_from_file(file_path, metadata)
+    let ids = rag.add_document_from_file(file_path, metadata)
         .await
         .map_err(|e| format!("Failed to process file: {}", e))?;
 
@@ -533,9 +453,6 @@ fn emit_progress(
             eta_seconds: 0.0,
             speed: 0.0,
         };
-        e.emit(
-            "indexing-progress",
-            serde_json::to_value(&progress).unwrap_or_default(),
-        );
+        e.emit("indexing-progress", serde_json::to_value(&progress).unwrap_or_default());
     }
 }

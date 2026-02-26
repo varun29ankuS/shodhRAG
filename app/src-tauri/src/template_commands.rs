@@ -1,10 +1,10 @@
 //! Tauri commands for Smart Templates
 
-use crate::rag_commands::RagState;
 use crate::smart_templates::{
-    DocumentTemplate, OutputFormat, TemplateExtractionRequest, TemplateExtractor,
+    DocumentTemplate, OutputFormat, TemplateExtractor, TemplateExtractionRequest,
     TemplateGenerationRequest,
 };
+use crate::rag_commands::RagState;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::State;

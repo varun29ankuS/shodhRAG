@@ -11,7 +11,9 @@ use shodh_rag::agent::{DynamicToolDef, ToolCallback, ToolResult};
 
 /// Discover all tools from connected MCP servers and return them as
 /// DynamicToolDefs ready for registration in the agent ToolRegistry.
-pub async fn mcp_tools_as_dynamic(mcp_manager: Arc<RwLock<MCPManager>>) -> Vec<DynamicToolDef> {
+pub async fn mcp_tools_as_dynamic(
+    mcp_manager: Arc<RwLock<MCPManager>>,
+) -> Vec<DynamicToolDef> {
     let manager = mcp_manager.read().await;
     let tools = match manager.list_tools().await {
         Ok(t) => t,

@@ -93,10 +93,7 @@ impl SentencePieceTokenizer {
     }
 
     pub fn encode(&self, text: &str, add_special_tokens: bool) -> Result<Vec<u32>> {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        text.hash(&mut hasher);
-        let cache_key = format!("{:x}", hasher.finish());
+        let cache_key = format!("{}:{}", text.len(), &text[..text.len().min(100)]);
         if let Some(cached) = self.cache.write().get(&cache_key) {
             return Ok(cached.clone());
         }

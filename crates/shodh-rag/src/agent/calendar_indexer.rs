@@ -10,9 +10,9 @@
 use anyhow::Result;
 use std::collections::HashMap;
 
-use super::calendar_tools::{CalendarEvent, TodoItem};
 use crate::rag_engine::RAGEngine;
 use crate::types::{Citation, DocumentFormat};
+use super::calendar_tools::{TodoItem, CalendarEvent};
 
 /// Compose rich searchable text for a task.
 ///
@@ -45,14 +45,10 @@ fn task_to_indexable_text(task: &TodoItem) -> String {
 
     // Subtasks
     if !task.subtasks.is_empty() {
-        let subtask_text: Vec<String> = task
-            .subtasks
-            .iter()
-            .map(|s| {
-                let check = if s.completed { "[x]" } else { "[ ]" };
-                format!("{} {}", check, s.title)
-            })
-            .collect();
+        let subtask_text: Vec<String> = task.subtasks.iter().map(|s| {
+            let check = if s.completed { "[x]" } else { "[ ]" };
+            format!("{} {}", check, s.title)
+        }).collect();
         parts.push(format!("Subtasks: {}", subtask_text.join("; ")));
     }
 
@@ -97,10 +93,7 @@ fn task_metadata(task: &TodoItem, space_id: &str) -> HashMap<String, String> {
     m.insert("status".to_string(), task.status.clone());
     m.insert("source".to_string(), format!("calendar://task/{}", task.id));
     m.insert("space_id".to_string(), space_id.to_string());
-    m.insert(
-        "file_path".to_string(),
-        format!("calendar://task/{}", task.id),
-    );
+    m.insert("file_path".to_string(), format!("calendar://task/{}", task.id));
     m.insert("indexed_at".to_string(), chrono::Utc::now().to_rfc3339());
 
     if let Some(ref project) = task.project {
@@ -126,15 +119,9 @@ fn event_metadata(event: &CalendarEvent, space_id: &str) -> HashMap<String, Stri
     m.insert("event_id".to_string(), event.id.clone());
     m.insert("title".to_string(), event.title.clone());
     m.insert("start_time".to_string(), event.start_time.clone());
-    m.insert(
-        "source".to_string(),
-        format!("calendar://event/{}", event.id),
-    );
+    m.insert("source".to_string(), format!("calendar://event/{}", event.id));
     m.insert("space_id".to_string(), space_id.to_string());
-    m.insert(
-        "file_path".to_string(),
-        format!("calendar://event/{}", event.id),
-    );
+    m.insert("file_path".to_string(), format!("calendar://event/{}", event.id));
     m.insert("indexed_at".to_string(), chrono::Utc::now().to_rfc3339());
 
     if let Some(ref end) = event.end_time {
@@ -171,8 +158,7 @@ pub async fn index_task(rag: &mut RAGEngine, task: &TodoItem, space_id: &str) ->
         page_numbers: None,
     };
 
-    rag.add_document(&content, DocumentFormat::TXT, metadata, citation)
-        .await?;
+    rag.add_document(&content, DocumentFormat::TXT, metadata, citation).await?;
 
     tracing::debug!(task_id = %task.id, title = %task.title, "Indexed task in RAG");
     Ok(())
@@ -206,8 +192,7 @@ pub async fn index_event(rag: &mut RAGEngine, event: &CalendarEvent, space_id: &
         page_numbers: None,
     };
 
-    rag.add_document(&content, DocumentFormat::TXT, metadata, citation)
-        .await?;
+    rag.add_document(&content, DocumentFormat::TXT, metadata, citation).await?;
 
     tracing::debug!(event_id = %event.id, title = %event.title, "Indexed event in RAG");
     Ok(())

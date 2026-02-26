@@ -80,15 +80,9 @@ pub struct CalendarEvent {
     pub created_at: String,
 }
 
-fn default_priority() -> String {
-    "medium".to_string()
-}
-fn default_status() -> String {
-    "pending".to_string()
-}
-fn default_source() -> String {
-    "agent".to_string()
-}
+fn default_priority() -> String { "medium".to_string() }
+fn default_status() -> String { "pending".to_string() }
+fn default_source() -> String { "agent".to_string() }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct CalendarDataFile {
@@ -155,9 +149,7 @@ impl CalendarStore {
             let rag = rag.clone();
             tokio::spawn(async move {
                 let mut engine = rag.write().await;
-                if let Err(e) =
-                    super::calendar_indexer::index_task(&mut engine, &task, "calendar").await
-                {
+                if let Err(e) = super::calendar_indexer::index_task(&mut engine, &task, "calendar").await {
                     tracing::warn!(task_id = %task.id, error = %e, "Failed to index task in RAG");
                 }
             });
@@ -170,9 +162,7 @@ impl CalendarStore {
             let rag = rag.clone();
             tokio::spawn(async move {
                 let mut engine = rag.write().await;
-                if let Err(e) =
-                    super::calendar_indexer::index_event(&mut engine, &event, "calendar").await
-                {
+                if let Err(e) = super::calendar_indexer::index_event(&mut engine, &event, "calendar").await {
                     tracing::warn!(event_id = %event.id, error = %e, "Failed to index event in RAG");
                 }
             });
@@ -186,42 +176,27 @@ impl CalendarStore {
         Ok(task)
     }
 
-    pub fn list_tasks(
-        &self,
-        status: Option<&str>,
-        from_date: Option<&str>,
-        to_date: Option<&str>,
-    ) -> Vec<&TodoItem> {
-        self.data
-            .tasks
-            .iter()
-            .filter(|t| {
-                if let Some(s) = status {
-                    if t.status != s {
-                        return false;
-                    }
+    pub fn list_tasks(&self, status: Option<&str>, from_date: Option<&str>, to_date: Option<&str>) -> Vec<&TodoItem> {
+        self.data.tasks.iter().filter(|t| {
+            if let Some(s) = status {
+                if t.status != s { return false; }
+            }
+            if let Some(from) = from_date {
+                if let Some(ref dd) = t.due_date {
+                    if dd.as_str() < from { return false; }
+                } else {
+                    return false;
                 }
-                if let Some(from) = from_date {
-                    if let Some(ref dd) = t.due_date {
-                        if dd.as_str() < from {
-                            return false;
-                        }
-                    } else {
-                        return false;
-                    }
+            }
+            if let Some(to) = to_date {
+                if let Some(ref dd) = t.due_date {
+                    if dd.as_str() > to { return false; }
+                } else {
+                    return false;
                 }
-                if let Some(to) = to_date {
-                    if let Some(ref dd) = t.due_date {
-                        if dd.as_str() > to {
-                            return false;
-                        }
-                    } else {
-                        return false;
-                    }
-                }
-                true
-            })
-            .collect()
+            }
+            true
+        }).collect()
     }
 
     pub fn add_event(&mut self, event: CalendarEvent) -> Result<CalendarEvent> {
@@ -256,12 +231,8 @@ impl CreateTaskTool {
 
 #[async_trait]
 impl AgentTool for CreateTaskTool {
-    fn id(&self) -> &str {
-        "create_task"
-    }
-    fn name(&self) -> &str {
-        "Create Task"
-    }
+    fn id(&self) -> &str { "create_task" }
+    fn name(&self) -> &str { "Create Task" }
 
     fn description(&self) -> &str {
         "Create a task or reminder for the user. Use when the user asks to remember something, \
@@ -310,40 +281,26 @@ impl AgentTool for CreateTaskTool {
             .ok_or_else(|| anyhow::anyhow!("Missing 'title' parameter"))?
             .to_string();
 
-        let description = input
-            .parameters
-            .get("description")
+        let description = input.parameters.get("description")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
 
-        let due_date = input
-            .parameters
-            .get("due_date")
+        let due_date = input.parameters.get("due_date")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let priority = input
-            .parameters
-            .get("priority")
+        let priority = input.parameters.get("priority")
             .and_then(|v| v.as_str())
             .unwrap_or("medium")
             .to_string();
 
-        let tags: Vec<String> = input
-            .parameters
-            .get("tags")
+        let tags: Vec<String> = input.parameters.get("tags")
             .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default();
 
-        let project = input
-            .parameters
-            .get("project")
+        let project = input.parameters.get("project")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
@@ -398,12 +355,8 @@ impl CreateEventTool {
 
 #[async_trait]
 impl AgentTool for CreateEventTool {
-    fn id(&self) -> &str {
-        "create_event"
-    }
-    fn name(&self) -> &str {
-        "Create Calendar Event"
-    }
+    fn id(&self) -> &str { "create_event" }
+    fn name(&self) -> &str { "Create Calendar Event" }
 
     fn description(&self) -> &str {
         "Create a calendar event. Use when the user mentions a meeting, appointment, \
@@ -450,21 +403,15 @@ impl AgentTool for CreateEventTool {
             .ok_or_else(|| anyhow::anyhow!("Missing 'start_time' parameter"))?
             .to_string();
 
-        let end_time = input
-            .parameters
-            .get("end_time")
+        let end_time = input.parameters.get("end_time")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let all_day = input
-            .parameters
-            .get("all_day")
+        let all_day = input.parameters.get("all_day")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let description = input
-            .parameters
-            .get("description")
+        let description = input.parameters.get("description")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
@@ -513,12 +460,8 @@ impl ListTasksTool {
 
 #[async_trait]
 impl AgentTool for ListTasksTool {
-    fn id(&self) -> &str {
-        "list_tasks"
-    }
-    fn name(&self) -> &str {
-        "List Tasks"
-    }
+    fn id(&self) -> &str { "list_tasks" }
+    fn name(&self) -> &str { "List Tasks" }
 
     fn description(&self) -> &str {
         "List the user's tasks, optionally filtered by status or date range. \
@@ -566,30 +509,17 @@ impl AgentTool for ListTasksTool {
         let mut output = format!("Found {} task(s):\n", tasks.len());
         for (i, t) in tasks.iter().enumerate() {
             let due = t.due_date.as_deref().unwrap_or("no due date");
-            let check = if t.status == "completed" {
-                "[x]"
-            } else {
-                "[ ]"
-            };
+            let check = if t.status == "completed" { "[x]" } else { "[ ]" };
             output.push_str(&format!(
                 "{}. {} **{}** — priority: {}, due: {}, status: {}\n",
-                i + 1,
-                check,
-                t.title,
-                t.priority,
-                due,
-                t.status
+                i + 1, check, t.title, t.priority, due, t.status
             ));
             if !t.description.is_empty() {
-                output.push_str(&format!(
-                    "   {}\n",
-                    t.description.lines().next().unwrap_or("")
-                ));
+                output.push_str(&format!("   {}\n", t.description.lines().next().unwrap_or("")));
             }
         }
 
-        let data: Vec<serde_json::Value> = tasks
-            .iter()
+        let data: Vec<serde_json::Value> = tasks.iter()
             .map(|t| serde_json::to_value(t).unwrap_or_default())
             .collect();
 

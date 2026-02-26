@@ -164,7 +164,10 @@ fn to_zero_indexed(indices: Vec<usize>) -> Vec<usize> {
 /// Indices in `order` that are out of bounds are skipped. Any results not
 /// mentioned in `order` are appended at the end in their original relative
 /// order (preserves the tail for results beyond MAX_RERANK_CANDIDATES).
-fn apply_ranking(mut results: Vec<SimpleSearchResult>, order: &[usize]) -> Vec<SimpleSearchResult> {
+fn apply_ranking(
+    mut results: Vec<SimpleSearchResult>,
+    order: &[usize],
+) -> Vec<SimpleSearchResult> {
     let mut reordered: Vec<SimpleSearchResult> = Vec::with_capacity(results.len());
     let mut used = HashSet::new();
 

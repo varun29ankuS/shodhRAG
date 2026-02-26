@@ -87,24 +87,12 @@ impl Default for AgentConfig {
     }
 }
 
-fn default_temperature() -> f32 {
-    0.7
-}
-fn default_max_tokens() -> usize {
-    2048
-}
-fn default_top_p() -> f32 {
-    0.9
-}
-fn default_max_tool_calls() -> usize {
-    10
-}
-fn default_timeout() -> u64 {
-    300
-} // 5 minutes
-fn default_rag_results() -> usize {
-    5
-}
+fn default_temperature() -> f32 { 0.7 }
+fn default_max_tokens() -> usize { 2048 }
+fn default_top_p() -> f32 { 0.9 }
+fn default_max_tool_calls() -> usize { 10 }
+fn default_timeout() -> u64 { 300 } // 5 minutes
+fn default_rag_results() -> usize { 5 }
 
 /// Capabilities an agent can have
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -158,9 +146,7 @@ pub struct ToolConfig {
     pub description: Option<String>,
 }
 
-fn default_true() -> bool {
-    true
-}
+fn default_true() -> bool { true }
 
 impl AgentDefinition {
     /// Create a new agent definition with minimal configuration
@@ -259,10 +245,16 @@ mod tests {
 
     #[test]
     fn test_agent_validation() {
-        let valid_agent = AgentDefinition::new("Valid".to_string(), "Valid prompt".to_string());
+        let valid_agent = AgentDefinition::new(
+            "Valid".to_string(),
+            "Valid prompt".to_string(),
+        );
         assert!(valid_agent.validate().is_ok());
 
-        let invalid_agent = AgentDefinition::new("".to_string(), "Valid prompt".to_string());
+        let invalid_agent = AgentDefinition::new(
+            "".to_string(),
+            "Valid prompt".to_string(),
+        );
         assert!(invalid_agent.validate().is_err());
     }
 }

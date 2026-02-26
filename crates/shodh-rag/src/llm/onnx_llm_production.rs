@@ -1,6 +1,6 @@
 //! Production ONNX LLM implementation - Stubbed for lightweight build
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 pub async fn generate_with_kv_cache_optimized(
     _session: &std::sync::Arc<parking_lot::Mutex<ort::session::Session>>,
@@ -8,7 +8,5 @@ pub async fn generate_with_kv_cache_optimized(
     _prompt: &str,
     _config: &super::GenerationConfig,
 ) -> Result<String> {
-    Err(anyhow!(
-        "ONNX LLM production mode not available in this build"
-    ))
+    Err(anyhow!("ONNX LLM production mode not available in this build"))
 }

@@ -271,9 +271,7 @@ impl TextChunker {
                         while chunk_start < lines.len() {
                             let mut char_count = 0;
                             let mut chunk_end = chunk_start;
-                            while chunk_end < lines.len()
-                                && char_count + lines[chunk_end].len() < self.chunk_size
-                            {
+                            while chunk_end < lines.len() && char_count + lines[chunk_end].len() < self.chunk_size {
                                 char_count += lines[chunk_end].len() + 1;
                                 chunk_end += 1;
                             }
@@ -283,10 +281,7 @@ impl TextChunker {
                             let chunk_text = lines[chunk_start..chunk_end].join("\n");
                             let context_prefix = format!(
                                 "Document: \"{}\". Source: {}. Form Data{} (part {}). ",
-                                doc_title,
-                                doc_source,
-                                page_label,
-                                results.len() + 1
+                                doc_title, doc_source, page_label, results.len() + 1
                             );
                             results.push(ContextualChunkResult {
                                 id: Uuid::new_v4(),
@@ -303,26 +298,14 @@ impl TextChunker {
                     }
                 }
 
-                DocumentSection::Table {
-                    headers,
-                    rows,
-                    page,
-                    caption,
-                } => {
+                DocumentSection::Table { headers, rows, page, caption } => {
                     if rows.is_empty() {
                         continue;
                     }
 
                     let cap = caption.as_deref().unwrap_or("Table");
                     let header_line = format!("| {} |", headers.join(" | "));
-                    let separator = format!(
-                        "| {} |",
-                        headers
-                            .iter()
-                            .map(|_| "---")
-                            .collect::<Vec<_>>()
-                            .join(" | ")
-                    );
+                    let separator = format!("| {} |", headers.iter().map(|_| "---").collect::<Vec<_>>().join(" | "));
 
                     // Build full table as markdown
                     let mut table_body = format!("{}\n{}\n", header_line, separator);
@@ -350,8 +333,7 @@ impl TextChunker {
                         global_index += 1;
                     } else {
                         // Large table — split by row groups, repeat headers in each chunk
-                        let row_lines: Vec<String> = rows
-                            .iter()
+                        let row_lines: Vec<String> = rows.iter()
                             .map(|row| format!("| {} |", row.join(" | ")))
                             .collect();
                         let header_block = format!("{}\n{}", header_line, separator);
@@ -362,20 +344,14 @@ impl TextChunker {
                         while row_start < row_lines.len() {
                             let mut char_count = header_len;
                             let mut row_end = row_start;
-                            while row_end < row_lines.len()
-                                && char_count + row_lines[row_end].len() + 1 < self.chunk_size
-                            {
+                            while row_end < row_lines.len() && char_count + row_lines[row_end].len() + 1 < self.chunk_size {
                                 char_count += row_lines[row_end].len() + 1;
                                 row_end += 1;
                             }
                             if row_end == row_start {
                                 row_end = row_start + 1;
                             }
-                            let chunk_text = format!(
-                                "{}\n{}",
-                                header_block,
-                                row_lines[row_start..row_end].join("\n")
-                            );
+                            let chunk_text = format!("{}\n{}", header_block, row_lines[row_start..row_end].join("\n"));
                             let ctx = format!(
                                 "Document: \"{}\". Source: {}. {} (Page {}, part {}). ",
                                 doc_title, doc_source, cap, page, part
@@ -430,11 +406,7 @@ impl TextChunker {
                     }
                 }
 
-                DocumentSection::Text {
-                    content,
-                    page,
-                    heading,
-                } => {
+                DocumentSection::Text { content, page, heading } => {
                     let content = content.trim();
                     if content.len() < self.min_chunk_size {
                         continue;

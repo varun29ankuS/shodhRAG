@@ -10,6 +10,10 @@ export interface ConversationMessage {
   timestamp: string;
   artifacts?: any[];
   searchResults?: any[];
+  /** Chat engine response metadata (camelCase `ResponseMetadata`). */
+  metadata?: Record<string, unknown>;
+  /** Run record observed while the answer streamed (see features/ask/types). */
+  run?: Record<string, unknown>;
 }
 
 export interface Conversation {
@@ -38,7 +42,9 @@ function autoTitle(firstMessage: string): string {
 export function useConversations() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // One debounce timer per conversation: a save for conversation A must not
+  // be cancelled by a save for conversation B scheduled within the window.
+  const saveTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const loadedRef = useRef(false);
   const pendingDeleteRef = useRef<Map<string, { timeout: ReturnType<typeof setTimeout>; conversation: Conversation }>>(new Map());
 
@@ -87,12 +93,15 @@ export function useConversations() {
 
   const activeConversation = conversations.find(c => c.id === activeConversationId) || null;
 
-  // Debounced save
+  // Debounced save, per conversation
   const scheduleSave = useCallback((conv: Conversation) => {
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
+    const timers = saveTimersRef.current;
+    const existing = timers.get(conv.id);
+    if (existing) clearTimeout(existing);
+    timers.set(conv.id, setTimeout(() => {
+      timers.delete(conv.id);
       invoke('save_conversation', { conversation: conv }).catch(console.error);
-    }, 500);
+    }, 500));
   }, []);
 
   const createConversation = useCallback((opts?: { spaceId?: string; spaceName?: string }): string => {
@@ -118,11 +127,16 @@ export function useConversations() {
     setActiveConversationId(id);
   }, []);
 
-  const updateActiveMessages = useCallback(
-    (updater: (prev: ConversationMessage[]) => ConversationMessage[]) => {
+  /**
+   * Update the messages of a specific conversation. Takes an explicit id so a
+   * response that completes after the user switched conversations is written
+   * to the conversation it belongs to.
+   */
+  const updateConversationMessages = useCallback(
+    (conversationId: string, updater: (prev: ConversationMessage[]) => ConversationMessage[]) => {
       setConversations(prev => {
         return prev.map(conv => {
-          if (conv.id !== activeConversationId) return conv;
+          if (conv.id !== conversationId) return conv;
           const newMessages = updater(conv.messages);
           const updated = {
             ...conv,
@@ -141,7 +155,15 @@ export function useConversations() {
         });
       });
     },
-    [activeConversationId, scheduleSave]
+    [scheduleSave]
+  );
+
+  const updateActiveMessages = useCallback(
+    (updater: (prev: ConversationMessage[]) => ConversationMessage[]) => {
+      if (!activeConversationId) return;
+      updateConversationMessages(activeConversationId, updater);
+    },
+    [activeConversationId, updateConversationMessages]
   );
 
   const appendMessage = useCallback(
@@ -267,6 +289,7 @@ export function useConversations() {
     activeConversation,
     createConversation,
     switchConversation,
+    updateConversationMessages,
     updateActiveMessages,
     appendMessage,
     renameConversation,

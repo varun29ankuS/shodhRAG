@@ -2158,24 +2158,15 @@ pub async fn get_document_preview(
             let start_idx = (start.saturating_sub(1)) as usize;
             let end_idx = (end as usize).min(lines.len());
 
-            if start_idx < lines.len() {
-                let excerpt = lines[start_idx..end_idx].join("\n");
-                if excerpt.len() > 300 {
-                    format!("{}...", &excerpt[..300])
-                } else {
-                    excerpt
-                }
+            if start_idx < end_idx {
+                truncate_excerpt(lines[start_idx..end_idx].join("\n"), 300)
             } else {
                 "Line range out of bounds".to_string()
             }
         } else {
             // Show first few lines
             let preview_lines = lines.iter().take(5).cloned().collect::<Vec<_>>().join("\n");
-            if preview_lines.len() > 300 {
-                format!("{}...", &preview_lines[..300])
-            } else {
-                preview_lines
-            }
+            truncate_excerpt(preview_lines, 300)
         }
     } else if extension == "pdf" {
         format!("PDF Document (Page {})", page_number.unwrap_or(1))
@@ -2195,6 +2186,15 @@ pub async fn get_document_preview(
         "file_size": file_size,
         "file_path": file_path,
     }))
+}
+
+/// Truncate to at most `max_chars` characters (never splitting a UTF-8
+/// sequence), appending "..." when anything was cut.
+fn truncate_excerpt(text: String, max_chars: usize) -> String {
+    match text.char_indices().nth(max_chars) {
+        Some((byte_idx, _)) => format!("{}...", &text[..byte_idx]),
+        None => text,
+    }
 }
 
 /// Format file size in human-readable format

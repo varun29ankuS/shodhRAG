@@ -218,27 +218,66 @@
   .card-premium {
     @apply bg-gradient-to-br from-card to-card border-2 border-border rounded-xl shadow-xl hover:shadow-2xl transition-all duration-300;
   }
+}
 
-  /* Citation Badge Styles - Shodh Design Language */
-  .citation-badge-container {
-    @apply inline-block relative mx-1;
+/*
+ * Ask view motion. Transform/opacity only; entrance durations come from the
+ * motion tokens (which collapse to 0ms under prefers-reduced-motion), and the
+ * looping indicators are switched off entirely for reduced motion.
+ */
+@layer utilities {
+  .ask-rise {
+    animation: ask-rise var(--dur-panel) var(--ease-standard) both;
   }
 
-  .citation-badge {
-    @apply inline-flex items-center gap-1.5 px-2.5 py-1
-           rounded-md text-xs font-medium
-           transition-all duration-200 cursor-pointer
-           border
-           hover:shadow-md
-           hover:scale-105;
-    /* Theme-aware colors applied via inline styles */
+  .ask-slide-in {
+    animation: ask-slide-in var(--dur-screen) var(--ease-standard) both;
   }
 
-  .citation-index {
-    @apply font-bold;
+  .ask-fade-in {
+    animation: ask-fade-in var(--dur-panel) var(--ease-standard) both;
   }
 
-  .citation-file {
-    @apply text-[10px] opacity-70 font-normal;
+  .ask-breathe {
+    animation: ask-breathe 1.2s ease-in-out infinite;
+  }
+
+  .ask-breathe-soft {
+    animation: ask-breathe-soft 1.6s ease-in-out infinite;
+  }
+}
+
+@keyframes ask-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes ask-slide-in {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes ask-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes ask-breathe {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+@keyframes ask-breathe-soft {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ask-rise,
+  .ask-slide-in,
+  .ask-fade-in,
+  .ask-breathe,
+  .ask-breathe-soft {
+    animation: none;
   }
 }

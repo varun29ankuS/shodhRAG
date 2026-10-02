@@ -150,6 +150,15 @@ pub async fn execute_crew(
 }
 
 /// Emit a helper for crew progress.
+/// First `max_chars` characters of `text` (never splitting a UTF-8 sequence),
+/// with "..." appended when it was truncated.
+fn preview_text(text: &str, max_chars: usize) -> String {
+    match text.char_indices().nth(max_chars) {
+        Some((byte_idx, _)) => format!("{}...", &text[..byte_idx]),
+        None => text.to_string(),
+    }
+}
+
 fn emit_event(emitter: Option<&dyn EventEmitter>, event: &str, data: serde_json::Value) {
     if let Some(em) = emitter {
         em.emit(event, data);
@@ -167,7 +176,6 @@ async fn execute_sequential(
 ) -> Result<CrewExecutionResult> {
     let mut agent_outputs: Vec<CrewAgentOutput> = Vec::new();
     let mut accumulated_context = String::new();
-    let mut accumulated_stream = String::new(); // what the user sees (streamed)
     let total_agents = crew.agents.len();
 
     // Sort agents by order
@@ -215,11 +223,7 @@ async fn execute_sequential(
             member.role,
             member.goal,
         );
-        accumulated_stream.push_str(&header);
-        emit_event(emitter, "chat_token", serde_json::json!({
-            "token": header,
-            "accumulated": accumulated_stream,
-        }));
+        emit_event(emitter, "chat_token", serde_json::json!({ "delta": header }));
 
         // Build context with role, goal, and previous outputs
         let mut ctx = AgentContext::with_query(task.to_string());
@@ -271,21 +275,14 @@ async fn execute_sequential(
         // Emit tool_call_complete so the bubble shows success + duration
         emit_event(emitter, "tool_call_complete", serde_json::json!({
             "tool_name": tool_label,
-            "result": if result.response.len() > 200 {
-                format!("{}...", &result.response[..200])
-            } else {
-                result.response.clone()
-            },
+            "result": preview_text(&result.response, 200),
             "success": result.success,
             "duration_ms": duration_ms,
         }));
 
         // Stream the agent's output
-        accumulated_stream.push_str(&result.response);
-        accumulated_stream.push_str("\n\n");
         emit_event(emitter, "chat_token", serde_json::json!({
-            "token": format!("{}\n\n", result.response),
-            "accumulated": accumulated_stream,
+            "delta": format!("{}\n\n", result.response),
         }));
 
         // Accumulate context for next agent
@@ -395,20 +392,13 @@ async fn execute_hierarchical(
     // Emit tool_call_complete
     emit_event(emitter, "tool_call_complete", serde_json::json!({
         "tool_name": format!("{} (coordinator)", coordinator_name),
-        "result": if result.response.len() > 200 {
-            format!("{}...", &result.response[..200])
-        } else {
-            result.response.clone()
-        },
+        "result": preview_text(&result.response, 200),
         "success": result.success,
         "duration_ms": duration_ms,
     }));
 
     // Stream the full output
-    emit_event(emitter, "chat_token", serde_json::json!({
-        "token": result.response.clone(),
-        "accumulated": result.response.clone(),
-    }));
+    emit_event(emitter, "chat_token", serde_json::json!({ "delta": &result.response }));
 
     let agent_outputs = vec![CrewAgentOutput {
         agent_id: coordinator_id.to_string(),

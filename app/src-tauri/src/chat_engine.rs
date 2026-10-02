@@ -12,20 +12,37 @@ pub use shodh_rag::chat::{
 pub use shodh_rag::chat::engine::ChatEngine;
 
 /// Tauri-specific EventEmitter that wraps AppHandle for streaming tokens.
+///
+/// Tauri events are broadcast app-wide, so concurrent or abandoned requests
+/// would otherwise be indistinguishable on the frontend. When a request id is
+/// set, it is attached as `requestId` to every object payload so listeners can
+/// ignore events that belong to a different (e.g. cancelled) request.
 pub struct TauriEventEmitter {
     app_handle: tauri::AppHandle,
+    request_id: Option<String>,
 }
 
 impl TauriEventEmitter {
     pub fn new(app_handle: tauri::AppHandle) -> Self {
-        Self { app_handle }
+        Self { app_handle, request_id: None }
+    }
+
+    pub fn with_request_id(app_handle: tauri::AppHandle, request_id: Option<String>) -> Self {
+        Self { app_handle, request_id }
     }
 }
 
 impl EventEmitter for TauriEventEmitter {
     fn emit(&self, event: &str, data: serde_json::Value) {
         use tauri::Emitter;
-        let _ = self.app_handle.emit(event, data);
+        let payload = match (&self.request_id, data) {
+            (Some(id), serde_json::Value::Object(mut map)) => {
+                map.insert("requestId".to_string(), serde_json::Value::String(id.clone()));
+                serde_json::Value::Object(map)
+            }
+            (_, other) => other,
+        };
+        let _ = self.app_handle.emit(event, payload);
     }
 }
 
@@ -44,7 +61,7 @@ impl shodh_rag::agent::tool_loop::ToolLoopEmitter for TauriToolEmitter {
     fn on_content_delta(&self, delta: &str) {
         use tauri::Emitter;
         let _ = self.app_handle.emit("chat_token", serde_json::json!({
-            "accumulated": delta,
+            "delta": delta,
         }));
     }
 

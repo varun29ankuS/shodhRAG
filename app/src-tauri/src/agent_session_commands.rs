@@ -14,11 +14,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use shodh_rag::harness::model::EnvValue;
 use shodh_rag::harness::profile::is_valid_slug;
 use shodh_rag::harness::tools::ToolRegistry;
 use shodh_rag::harness::{
     fetch_omp, resolve_binary_path, select_model, AgentEvent, AgentHarness, AgentProfile,
-    HarnessError, LaunchSpec, OmpLayout, OmpSession, SessionConfig, OMP_VERSION,
+    HarnessError, LaunchSpec, OmpLayout, OmpModel, OmpSession, SessionConfig, OMP_VERSION,
 };
 use shodh_rag::llm::{ApiProvider, LLMMode};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -120,6 +121,9 @@ struct SessionEntry {
     conversation_id: String,
     profile_id: String,
     instructions: Option<String>,
+    /// Model and credentials the session was started with (see
+    /// [`model_fingerprint`]); a change in settings restarts the session.
+    model_fingerprint: u64,
     session: Arc<OmpSession>,
     /// Earlier turns have been replayed (or there were none to replay).
     primed: AtomicBool,
@@ -207,6 +211,23 @@ impl AgentSessions {
             tracing::info!(target: "shodh::harness", sessions = entries.len(), "agent sessions shut down");
         }
     }
+}
+
+/// In-memory fingerprint of the model id and its credentials, so a session
+/// is reused only while the model settings are unchanged. Never persisted or
+/// logged.
+fn model_fingerprint(model: &OmpModel) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    model.model_arg.hash(&mut hasher);
+    for (name, value) in &model.env {
+        name.hash(&mut hasher);
+        match value {
+            EnvValue::Secret(secret) => secret.expose().hash(&mut hasher),
+            EnvValue::Plain(plain) => plain.hash(&mut hasher),
+        }
+    }
+    hasher.finish()
 }
 
 fn check_id(kind: &str, value: &str) -> CommandResult<()> {
@@ -363,6 +384,28 @@ pub async fn agent_start(
         .filter(|i| !i.is_empty())
         .map(|i| truncate(&i, MAX_INSTRUCTIONS_CHARS));
 
+    let mode = llm
+        .config
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .mode
+        .clone();
+    let mode = match (resolve_key(&llm, &mode).await, mode) {
+        (
+            Some(key),
+            LLMMode::External {
+                provider, model, ..
+            },
+        ) => LLMMode::External {
+            provider,
+            api_key: key,
+            model,
+        },
+        (_, mode) => mode,
+    };
+    let model = select_model(&mode, |_| None)?;
+    let fingerprint = model_fingerprint(&model);
+
     let lock = sessions.start_lock(&conversation_id);
     let _guard = lock.lock().await;
 
@@ -374,7 +417,8 @@ pub async fn agent_start(
         let reusable = sessions.sessions.get(&session_id).and_then(|e| {
             let fits = !e.session.is_closed()
                 && e.profile_id == profile_id
-                && e.instructions == instructions;
+                && e.instructions == instructions
+                && e.model_fingerprint == fingerprint;
             fits.then(|| e.value().clone())
         });
         if let Some(entry) = reusable {
@@ -400,26 +444,6 @@ pub async fn agent_start(
         .await?
         .clone();
 
-    let mode = llm
-        .config
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .mode
-        .clone();
-    let mode = match (resolve_key(&llm, &mode).await, mode) {
-        (
-            Some(key),
-            LLMMode::External {
-                provider, model, ..
-            },
-        ) => LLMMode::External {
-            provider,
-            api_key: key,
-            model,
-        },
-        (_, mode) => mode,
-    };
-    let model = select_model(&mode, |_| None)?;
     let prepared_ms = started.elapsed().as_millis();
 
     let app_data_dir = app_data_dir(&app)?;
@@ -466,6 +490,7 @@ pub async fn agent_start(
             conversation_id: conversation_id.clone(),
             profile_id,
             instructions,
+            model_fingerprint: fingerprint,
             session,
             primed: AtomicBool::new(false),
             last_used_ms: AtomicU64::new(now_ms()),

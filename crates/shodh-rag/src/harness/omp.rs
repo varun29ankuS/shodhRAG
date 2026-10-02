@@ -669,7 +669,8 @@ mod tests {
 
         let last_usage = run
             .iter()
-            .filter_map(|e| match e {
+            .rev()
+            .find_map(|e| match e {
                 AgentEvent::Usage {
                     input_tokens,
                     output_tokens,
@@ -679,7 +680,6 @@ mod tests {
                 } => Some((*input_tokens, *output_tokens, *cache_read_tokens, *cost_usd)),
                 _ => None,
             })
-            .last()
             .unwrap();
         assert_eq!(last_usage, (3700, 366, 3240, 0.0));
 

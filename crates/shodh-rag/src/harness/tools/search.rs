@@ -8,7 +8,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
-use super::{req_str, HostTool, ToolContext, ToolError, ToolOutput, UNTRUSTED_NOTICE};
+use super::{
+    req_str, HostTool, ToolContext, ToolError, ToolOutput, MAX_MODEL_OUTPUT_CHARS, UNTRUSTED_NOTICE,
+};
 use crate::harness::events::RiskTier;
 use crate::harness::protocol::ToolLoadMode;
 use crate::harness::truncate_chars;
@@ -22,6 +24,20 @@ const DEFAULT_K: usize = 8;
 const MAX_K: usize = 20;
 const MAX_SOURCES: usize = 20;
 const MAX_PASSAGE_CHARS: usize = 1_500;
+/// Shortest passage text kept when many passages share the output budget.
+const MIN_PASSAGE_CHARS: usize = 300;
+/// Characters reserved per passage for its JSON fields other than `text`.
+const PASSAGE_OVERHEAD_CHARS: usize = 400;
+
+/// Text budget per passage so that all `k` numbered passages reach the model
+/// whole: the registry caps tool output at [`MAX_MODEL_OUTPUT_CHARS`], and a
+/// passage cut off there would leave a citation number the model never saw.
+fn passage_budget(k: usize) -> usize {
+    let available = MAX_MODEL_OUTPUT_CHARS.saturating_sub(UNTRUSTED_NOTICE.len() + 200);
+    (available / k.max(1))
+        .saturating_sub(PASSAGE_OVERHEAD_CHARS)
+        .clamp(MIN_PASSAGE_CHARS, MAX_PASSAGE_CHARS)
+}
 
 pub struct SearchDocumentsTool {
     rag: Arc<RwLock<RAGEngine>>,
@@ -33,9 +49,11 @@ impl SearchDocumentsTool {
     }
 }
 
+/// One numbered passage. `n` is the citation number the model writes as
+/// `[n]`; numbers continue across every search of one answer.
 #[derive(Debug, Serialize)]
 struct Passage {
-    evidence: String,
+    n: u32,
     file: String,
     path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,7 +64,7 @@ struct Passage {
     text: String,
 }
 
-fn passage(index: usize, result: &ComprehensiveResult) -> Passage {
+fn passage(n: u32, result: &ComprehensiveResult, max_chars: usize) -> Passage {
     let path = if result.citation.source.is_empty() {
         result
             .metadata
@@ -64,7 +82,7 @@ fn passage(index: usize, result: &ComprehensiveResult) -> Passage {
         .map(str::to_string)
         .unwrap_or_else(|| result.citation.title.clone());
     Passage {
-        evidence: format!("E{}", index + 1),
+        n,
         file,
         path,
         page: page_numbers_from_metadata(&result.metadata),
@@ -74,7 +92,7 @@ fn passage(index: usize, result: &ComprehensiveResult) -> Passage {
             .map(|h| h.trim().to_string())
             .filter(|h| !h.is_empty()),
         score: result.score,
-        text: truncate_chars(result.snippet.trim(), MAX_PASSAGE_CHARS),
+        text: truncate_chars(result.snippet.trim(), max_chars),
     }
 }
 
@@ -117,7 +135,7 @@ impl HostTool for SearchDocumentsTool {
         ToolLoadMode::Essential
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let query = req_str(&args, "query", SEARCH_DOCUMENTS)?;
         let k = args
             .get("k")
@@ -173,26 +191,18 @@ impl HostTool for SearchDocumentsTool {
             });
         }
 
+        let count = u32::try_from(results.len()).unwrap_or(u32::MAX);
+        let first = ctx.reserve_passages(count);
+        let budget = passage_budget(results.len());
         let passages: Vec<Passage> = results
             .iter()
-            .enumerate()
-            .map(|(i, r)| passage(i, r))
+            .zip(first..)
+            .map(|(r, n)| passage(n, r, budget))
             .collect();
         let files: HashSet<&str> = passages.iter().map(|p| p.path.as_str()).collect();
         let body = serde_json::to_string(&passages)
             .map_err(|e| ToolError::Failed(format!("Could not encode results: {e}")))?;
-        let detail = json!({
-            "passages": passages
-                .iter()
-                .map(|p| json!({
-                    "evidence": p.evidence,
-                    "file": p.file,
-                    "path": p.path,
-                    "page": p.page,
-                    "score": p.score,
-                }))
-                .collect::<Vec<_>>()
-        });
+        let detail = json!({ "passages": passages });
         let noun = if passages.len() == 1 {
             "passage"
         } else {
@@ -200,7 +210,10 @@ impl HostTool for SearchDocumentsTool {
         };
         let file_noun = if files.len() == 1 { "file" } else { "files" };
         Ok(ToolOutput {
-            text_for_model: format!("{UNTRUSTED_NOTICE}\n{body}"),
+            text_for_model: format!(
+                "{UNTRUSTED_NOTICE}
+{body}"
+            ),
             summary_for_ui: format!("{} {noun} from {} {file_noun}", passages.len(), files.len()),
             detail: Some(detail),
         })
@@ -215,7 +228,7 @@ mod tests {
     use uuid::Uuid;
 
     #[test]
-    fn passages_carry_file_page_and_evidence_id() {
+    fn passages_carry_file_page_and_number() {
         let mut metadata = HashMap::new();
         metadata.insert("page_start".to_string(), "4".to_string());
         metadata.insert("page_end".to_string(), "4".to_string());
@@ -231,10 +244,24 @@ mod tests {
             snippet: "  Notice period is sixty days. ".into(),
             source_index: "hybrid".into(),
         };
-        let p = passage(2, &result);
-        assert_eq!(p.evidence, "E3");
+        let p = passage(3, &result, MAX_PASSAGE_CHARS);
+        assert_eq!(p.n, 3);
         assert_eq!(p.file, "acme_msa.pdf");
         assert_eq!(p.page.as_deref(), Some("4"));
         assert_eq!(p.text, "Notice period is sixty days.");
+    }
+
+    #[test]
+    fn every_numbered_passage_fits_the_model_output_cap() {
+        for k in 1..=MAX_K {
+            let budget = passage_budget(k);
+            assert!(budget <= MAX_PASSAGE_CHARS);
+            let worst = UNTRUSTED_NOTICE.len() + k * (budget + PASSAGE_OVERHEAD_CHARS);
+            assert!(
+                worst <= MAX_MODEL_OUTPUT_CHARS,
+                "k={k}: {worst} > {MAX_MODEL_OUTPUT_CHARS}"
+            );
+        }
+        assert_eq!(passage_budget(DEFAULT_K), MAX_PASSAGE_CHARS);
     }
 }

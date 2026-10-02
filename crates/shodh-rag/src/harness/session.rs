@@ -71,6 +71,8 @@ struct Inner {
     /// host_tool_call id → (step id, task)
     inflight: Mutex<HashMap<String, (String, AbortHandle)>>,
     calls_in_run: AtomicU32,
+    /// Citation numbers handed out in the active run (see `search_documents`).
+    passages_in_run: Arc<AtomicU32>,
     next_id: AtomicU64,
     closing: AtomicBool,
     closed: AtomicBool,
@@ -240,7 +242,8 @@ impl Inner {
             self.calls_in_run.fetch_add(1, Ordering::SeqCst) + 1
         };
         let ctx = ToolContext::new(run_id, call.tool_call_id.clone(), self.events.clone())
-            .with_host_call(call.id.clone(), self.outbound.clone());
+            .with_host_call(call.id.clone(), self.outbound.clone())
+            .with_passage_counter(Arc::clone(&self.passages_in_run));
         let host_id = call.id.clone();
         let step_id = call.tool_call_id.clone();
         let tool_call = ToolCall {
@@ -359,6 +362,7 @@ impl Inner {
             let started =
                 state.begin_run(&run_id, &self.session_id, &self.model, &prompt_id, now_ms());
             self.calls_in_run.store(0, Ordering::SeqCst);
+            self.passages_in_run.store(0, Ordering::SeqCst);
             self.emit(started);
         }
         tracing::info!(target: "shodh::audit", event = "question", session = %self.session_id, run_id = %run_id, profile = %self.profile.id, model = %self.model, chars = message.chars().count(), "agent prompt");
@@ -481,7 +485,9 @@ impl OmpSession {
             profile,
             registry,
         } = config;
+        let started = std::time::Instant::now();
         let process = sidecar::spawn(&launch).await?;
+        let spawn_ms = started.elapsed().as_millis();
 
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (out_tx, out_rx) = mpsc::unbounded_channel();
@@ -513,6 +519,7 @@ impl OmpSession {
             pending: Mutex::new(HashMap::new()),
             inflight: Mutex::new(HashMap::new()),
             calls_in_run: AtomicU32::new(0),
+            passages_in_run: Arc::new(AtomicU32::new(0)),
             next_id: AtomicU64::new(0),
             closing: AtomicBool::new(false),
             closed: AtomicBool::new(false),
@@ -532,11 +539,19 @@ impl OmpSession {
             session.shutdown_inner().await;
             return Err(e);
         }
+        tracing::info!(
+            target: "shodh::harness",
+            session = %session.inner.session_id,
+            spawn_ms,
+            total_ms = started.elapsed().as_millis(),
+            "omp session started"
+        );
         Ok((session, events_rx))
     }
 
     async fn initialise(&self, ready: oneshot::Receiver<()>) -> Result<(), HarnessError> {
         let inner = &self.inner;
+        let waited = std::time::Instant::now();
         match tokio::time::timeout(READY_TIMEOUT, ready).await {
             Ok(Ok(())) => {}
             Ok(Err(_)) => return Err(HarnessError::NotReady(inner.stderr_summary())),
@@ -548,31 +563,32 @@ impl OmpSession {
                 )))
             }
         }
-        inner
-            .command(OutboundFrame::SetEventFilter {
+        let ready_ms = waited.elapsed().as_millis();
+        let configured = std::time::Instant::now();
+        // The three setup commands are independent: send them back to back
+        // and await the responses together instead of one round trip each.
+        // Sub-agents are host-side (`delegate`, ADR 0001); omp's own sub-agent
+        // frames are not consumed, so they are not requested.
+        let (_, _, response) = tokio::try_join!(
+            inner.command(OutboundFrame::SetEventFilter {
                 id: inner.next_id("c"),
                 events: None,
                 message_updates: MessageUpdateMode::Delta,
-            })
-            .await?;
-        // Sub-agents are host-side (`delegate`, ADR 0001); omp's own sub-agent
-        // frames are not consumed, so they are not requested.
-        inner
-            .command(OutboundFrame::SetSubagentSubscription {
+            }),
+            inner.command(OutboundFrame::SetSubagentSubscription {
                 id: inner.next_id("c"),
                 level: SubagentLevel::Off,
-            })
-            .await?;
-        let tools = inner.registry.definitions(&inner.profile);
-        let response = inner
-            .command(OutboundFrame::SetHostTools {
+            }),
+            inner.command(OutboundFrame::SetHostTools {
                 id: inner.next_id("c"),
-                tools,
-            })
-            .await?;
+                tools: inner.registry.definitions(&inner.profile),
+            }),
+        )?;
         tracing::info!(
             target: "shodh::harness",
             session = %inner.session_id,
+            ready_ms,
+            setup_ms = configured.elapsed().as_millis(),
             tools = %response.data.map(|d| d.to_string()).unwrap_or_default(),
             "omp session ready"
         );

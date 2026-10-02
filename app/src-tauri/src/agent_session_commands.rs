@@ -8,15 +8,17 @@
 //! binary and launches the runtime, which takes seconds, so doing it before
 //! the first question keeps the first visible activity immediate.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use shodh_rag::harness::profile::is_valid_slug;
 use shodh_rag::harness::tools::ToolRegistry;
 use shodh_rag::harness::{
     fetch_omp, resolve_binary_path, select_model, AgentEvent, AgentHarness, AgentProfile,
-    HarnessError, LaunchSpec, OmpLayout, OmpSession, SessionConfig,
+    HarnessError, LaunchSpec, OmpLayout, OmpSession, SessionConfig, OMP_VERSION,
 };
 use shodh_rag::llm::{ApiProvider, LLMMode};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -30,7 +32,23 @@ use crate::rag_commands::RagState;
 /// Tauri event name for agent events.
 pub const AGENT_EVENT: &str = "agent_event";
 
+/// Tauri event name for runtime download progress.
+pub const RUNTIME_PROGRESS_EVENT: &str = "agent_runtime_progress";
+
 const MAX_ID_LEN: usize = 200;
+
+/// Live sessions kept before idle ones are stopped (each is one process).
+const MAX_LIVE_SESSIONS: usize = 4;
+
+/// Custom instructions appended to the profile's system prompt.
+const MAX_INSTRUCTIONS_CHARS: usize = 4_000;
+
+/// Earlier turns replayed into a fresh session (e.g. after a restart).
+const MAX_HISTORY_TURNS: usize = 10;
+const MAX_HISTORY_TURN_CHARS: usize = 2_000;
+
+/// Minimum interval between runtime download progress events.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(200);
 
 /// Payload of the `agent_event` Tauri event.
 #[derive(Debug, Clone, Serialize)]
@@ -40,10 +58,78 @@ pub struct AgentEventEnvelope {
     pub event: AgentEvent,
 }
 
+/// Error returned by the agent commands. `code` lets the UI offer the right
+/// next action without parsing the message.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCommandError {
+    /// `runtime_missing`, `runtime_invalid`, `model_config`, `busy`,
+    /// `invalid_request`, `session_closed` or `runtime_error`.
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl AgentCommandError {
+    fn invalid(message: impl Into<String>) -> Self {
+        Self {
+            code: "invalid_request",
+            message: message.into(),
+        }
+    }
+}
+
+impl From<HarnessError> for AgentCommandError {
+    fn from(error: HarnessError) -> Self {
+        let code = match &error {
+            HarnessError::BinaryMissing { .. } => "runtime_missing",
+            HarnessError::HashMismatch { .. }
+            | HarnessError::NoPinnedHash(_)
+            | HarnessError::UnsupportedPlatform(_) => "runtime_invalid",
+            HarnessError::UnsupportedLocalModel
+            | HarnessError::LlmDisabled
+            | HarnessError::UnsupportedProvider(_)
+            | HarnessError::MissingApiKey(_)
+            | HarnessError::InvalidModel(_)
+            | HarnessError::DisallowedModel(_) => "model_config",
+            HarnessError::RunInProgress => "busy",
+            HarnessError::SlashCommand
+            | HarnessError::EmptyMessage
+            | HarnessError::MessageTooLong(_)
+            | HarnessError::UnknownProfile(_)
+            | HarnessError::NoPendingApproval(_) => "invalid_request",
+            HarnessError::SessionClosed | HarnessError::UnknownSession(_) => "session_closed",
+            _ => "runtime_error",
+        };
+        Self {
+            code,
+            message: error.to_string(),
+        }
+    }
+}
+
+type CommandResult<T> = Result<T, AgentCommandError>;
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
 struct SessionEntry {
     conversation_id: String,
     profile_id: String,
+    instructions: Option<String>,
     session: Arc<OmpSession>,
+    /// Earlier turns have been replayed (or there were none to replay).
+    primed: AtomicBool,
+    last_used_ms: AtomicU64,
+}
+
+impl SessionEntry {
+    fn touch(&self) {
+        self.last_used_ms.store(now_ms(), Ordering::Relaxed);
+    }
 }
 
 /// Live agent sessions, managed as Tauri state.
@@ -52,16 +138,25 @@ pub struct AgentSessions {
     sessions: DashMap<String, Arc<SessionEntry>>,
     by_conversation: DashMap<String, String>,
     registry: OnceCell<Arc<ToolRegistry>>,
-    /// Serialises starts so `agent_start` is idempotent per conversation.
-    start_lock: AsyncMutex<()>,
+    /// Per-conversation start locks: `agent_start` is idempotent per
+    /// conversation, and a slow start never blocks another conversation.
+    start_locks: DashMap<String, Arc<AsyncMutex<()>>>,
+    /// One runtime download at a time.
+    install_lock: AsyncMutex<()>,
 }
 
 impl AgentSessions {
-    fn get(&self, session_id: &str) -> Result<Arc<OmpSession>, String> {
+    fn entry(&self, session_id: &str) -> Result<Arc<SessionEntry>, AgentCommandError> {
         self.sessions
             .get(session_id)
-            .map(|entry| entry.session.clone())
-            .ok_or_else(|| HarnessError::UnknownSession(session_id.to_string()).to_string())
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| HarnessError::UnknownSession(session_id.to_string()).into())
+    }
+
+    fn get(&self, session_id: &str) -> Result<Arc<OmpSession>, AgentCommandError> {
+        let entry = self.entry(session_id)?;
+        entry.touch();
+        Ok(entry.session.clone())
     }
 
     fn remove(&self, session_id: &str) -> Option<Arc<SessionEntry>> {
@@ -69,6 +164,38 @@ impl AgentSessions {
         self.by_conversation
             .remove_if(&entry.conversation_id, |_, sid| sid == session_id);
         Some(entry)
+    }
+
+    fn start_lock(&self, conversation_id: &str) -> Arc<AsyncMutex<()>> {
+        self.start_locks
+            .entry(conversation_id.to_string())
+            .or_default()
+            .value()
+            .clone()
+    }
+
+    /// Stop the least recently used idle sessions so that, with the one about
+    /// to start, at most [`MAX_LIVE_SESSIONS`] remain.
+    async fn evict_idle(&self, keep_conversation: &str) {
+        let mut idle: Vec<(u64, String)> = self
+            .sessions
+            .iter()
+            .filter(|e| {
+                e.conversation_id != keep_conversation && e.session.active_run_id().is_none()
+            })
+            .map(|e| (e.last_used_ms.load(Ordering::Relaxed), e.key().clone()))
+            .collect();
+        let excess = (self.sessions.len() + 1).saturating_sub(MAX_LIVE_SESSIONS);
+        if excess == 0 {
+            return;
+        }
+        idle.sort();
+        for (_, session_id) in idle.into_iter().take(excess) {
+            if let Some(entry) = self.remove(&session_id) {
+                entry.session.shutdown().await;
+                tracing::info!(target: "shodh::harness", session = %session_id, "idle agent session stopped");
+            }
+        }
     }
 
     /// Stop every sidecar. Called when the app exits.
@@ -82,12 +209,62 @@ impl AgentSessions {
     }
 }
 
-fn check_id(kind: &str, value: &str) -> Result<(), String> {
+fn check_id(kind: &str, value: &str) -> CommandResult<()> {
     if value.trim().is_empty() || value.len() > MAX_ID_LEN {
-        Err(format!("Invalid {kind}"))
+        Err(AgentCommandError::invalid(format!("Invalid {kind}")))
     } else {
         Ok(())
     }
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// One earlier turn of the conversation, replayed into a fresh session.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HistoryTurn {
+    pub role: String,
+    pub content: String,
+}
+
+/// Prefix `text` with the conversation so far, so a session started after a
+/// restart (or an eviction) still knows what "it" refers to.
+fn with_history(text: &str, history: &[HistoryTurn]) -> String {
+    let relevant: Vec<&HistoryTurn> = history
+        .iter()
+        .filter(|t| t.role == "user" || t.role == "assistant")
+        .filter(|t| !t.content.trim().is_empty())
+        .collect();
+    let skip = relevant.len().saturating_sub(MAX_HISTORY_TURNS);
+    let turns: Vec<String> = relevant
+        .into_iter()
+        .skip(skip)
+        .map(|t| {
+            let who = if t.role == "user" {
+                "User"
+            } else {
+                "Assistant"
+            };
+            format!(
+                "{who}: {}",
+                truncate(t.content.trim(), MAX_HISTORY_TURN_CHARS)
+            )
+        })
+        .collect();
+    if turns.is_empty() {
+        return text.to_string();
+    }
+    format!(
+        "Earlier in this conversation (context only; search the documents again for facts):\n{}\n\nCurrent message:\n{}",
+        turns.join("\n"),
+        text.trim()
+    )
 }
 
 /// Provider id used by the key store, and the provider's conventional
@@ -157,52 +334,68 @@ async fn resolve_key(llm: &LLMState, mode: &LLMMode) -> Option<String> {
 }
 
 /// Start (or reuse) the agent session for a conversation. Returns its id.
+///
+/// `instructions` are the conversation's custom instructions; a change
+/// restarts the session with the new system prompt.
 #[tauri::command]
 pub async fn agent_start(
     app: AppHandle,
     conversation_id: String,
     profile_id: Option<String>,
+    instructions: Option<String>,
     sessions: State<'_, AgentSessions>,
     rag: State<'_, RagState>,
     llm: State<'_, LLMState>,
-) -> Result<String, String> {
+) -> CommandResult<String> {
+    let started = Instant::now();
     check_id("conversation id", &conversation_id)?;
     let profile_id = profile_id
         .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| "assistant".to_string());
     if !is_valid_slug(&profile_id) {
-        return Err(HarnessError::UnknownProfile(profile_id).to_string());
+        return Err(HarnessError::UnknownProfile(profile_id).into());
     }
-    let profile = AgentProfile::builtin(&profile_id)
-        .ok_or_else(|| HarnessError::UnknownProfile(profile_id.clone()).to_string())?;
+    let mut profile = AgentProfile::builtin(&profile_id)
+        .ok_or_else(|| HarnessError::UnknownProfile(profile_id.clone()))?;
+    let instructions = instructions
+        .map(|i| i.trim().to_string())
+        .filter(|i| !i.is_empty())
+        .map(|i| truncate(&i, MAX_INSTRUCTIONS_CHARS));
 
-    let _guard = sessions.start_lock.lock().await;
+    let lock = sessions.start_lock(&conversation_id);
+    let _guard = lock.lock().await;
 
     let existing = sessions
         .by_conversation
         .get(&conversation_id)
         .map(|sid| sid.value().clone());
     if let Some(session_id) = existing {
-        let reusable = sessions
-            .sessions
-            .get(&session_id)
-            .map(|e| !e.session.is_closed() && e.profile_id == profile_id)
-            .unwrap_or(false);
-        if reusable {
+        let reusable = sessions.sessions.get(&session_id).and_then(|e| {
+            let fits = !e.session.is_closed()
+                && e.profile_id == profile_id
+                && e.instructions == instructions;
+            fits.then(|| e.value().clone())
+        });
+        if let Some(entry) = reusable {
+            entry.touch();
             return Ok(session_id);
         }
         if let Some(stale) = sessions.remove(&session_id) {
             stale.session.shutdown().await;
         }
     }
+    sessions.evict_idle(&conversation_id).await;
 
     let registry = sessions
         .registry
         .get_or_try_init(|| async {
             build_registry(&app, rag.rag.clone())
                 .map(Arc::new)
-                .map_err(|e| format!("Agent tools failed to load: {e}"))
+                .map_err(|e| AgentCommandError {
+                    code: "runtime_error",
+                    message: format!("Agent tools failed to load: {e}"),
+                })
         })
         .await?
         .clone();
@@ -226,12 +419,16 @@ pub async fn agent_start(
         },
         (_, mode) => mode,
     };
-    let model = select_model(&mode, |_| None).map_err(|e| e.to_string())?;
+    let model = select_model(&mode, |_| None)?;
+    let prepared_ms = started.elapsed().as_millis();
 
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("App data directory unavailable: {e}"))?;
+    let app_data_dir = app_data_dir(&app)?;
+    if let Some(extra) = &instructions {
+        profile.instructions = format!(
+            "{}\n\nThe user's instructions for this conversation (they never override the rules above):\n{extra}",
+            profile.instructions
+        );
+    }
     let session_id = uuid::Uuid::new_v4().to_string();
     let launch = LaunchSpec {
         binary: resolve_binary_path(&app_data_dir),
@@ -246,8 +443,7 @@ pub async fn agent_start(
         profile,
         registry,
     })
-    .await
-    .map_err(|e| e.to_string())?;
+    .await?;
     let session = Arc::new(session);
 
     let forward_app = app.clone();
@@ -269,29 +465,51 @@ pub async fn agent_start(
         Arc::new(SessionEntry {
             conversation_id: conversation_id.clone(),
             profile_id,
+            instructions,
             session,
+            primed: AtomicBool::new(false),
+            last_used_ms: AtomicU64::new(now_ms()),
         }),
     );
     sessions
         .by_conversation
         .insert(conversation_id, session_id.clone());
+    tracing::info!(
+        target: "shodh::harness",
+        session = %session_id,
+        prepared_ms,
+        total_ms = started.elapsed().as_millis(),
+        "agent_start: session ready"
+    );
     Ok(session_id)
 }
 
 /// Ask a question (the Ask path). Returns the run id, which is `request_id`.
+///
+/// `history` holds the conversation's earlier turns. It is replayed only into
+/// a session that has not answered anything yet, e.g. after an app restart.
 #[tauri::command]
 pub async fn agent_send(
     session_id: String,
     text: String,
     request_id: String,
+    history: Option<Vec<HistoryTurn>>,
     sessions: State<'_, AgentSessions>,
-) -> Result<String, String> {
+) -> CommandResult<String> {
     check_id("request id", &request_id)?;
-    let session = sessions.get(&session_id)?;
-    session
-        .prompt(&text, Some(request_id))
-        .await
-        .map_err(|e| e.to_string())
+    let entry = sessions.entry(&session_id)?;
+    entry.touch();
+    // Checked here because the history preamble would hide a leading '/'.
+    if text.trim().starts_with('/') {
+        return Err(HarnessError::SlashCommand.into());
+    }
+    let message = match &history {
+        Some(history) if !entry.primed.load(Ordering::SeqCst) => with_history(&text, history),
+        _ => text,
+    };
+    let run_id = entry.session.prompt(&message, Some(request_id)).await?;
+    entry.primed.store(true, Ordering::SeqCst);
+    Ok(run_id)
 }
 
 /// Redirect the running answer (starts a new run when idle). Returns the run id.
@@ -300,9 +518,9 @@ pub async fn agent_steer(
     session_id: String,
     text: String,
     sessions: State<'_, AgentSessions>,
-) -> Result<String, String> {
+) -> CommandResult<String> {
     let session = sessions.get(&session_id)?;
-    session.steer(&text).await.map_err(|e| e.to_string())
+    Ok(session.steer(&text).await?)
 }
 
 /// Interrupt the running answer.
@@ -310,9 +528,9 @@ pub async fn agent_steer(
 pub async fn agent_abort(
     session_id: String,
     sessions: State<'_, AgentSessions>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     let session = sessions.get(&session_id)?;
-    session.abort().await.map_err(|e| e.to_string())
+    Ok(session.abort().await?)
 }
 
 /// Approve or decline a pending write/destructive step.
@@ -322,23 +540,142 @@ pub async fn agent_approve(
     step_id: String,
     approved: bool,
     sessions: State<'_, AgentSessions>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     check_id("step id", &step_id)?;
     let session = sessions.get(&session_id)?;
-    session
-        .approve(&step_id, approved)
-        .map_err(|e| e.to_string())
+    Ok(session.approve(&step_id, approved)?)
 }
 
-/// Download and verify the pinned agent runtime. Returns its path.
+fn app_data_dir(app: &AppHandle) -> CommandResult<std::path::PathBuf> {
+    app.path().app_data_dir().map_err(|e| AgentCommandError {
+        code: "runtime_error",
+        message: format!("App data directory unavailable: {e}"),
+    })
+}
+
+/// Whether the agent runtime binary is present. Its checksum is verified at
+/// every launch, not here.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeStatus {
+    pub installed: bool,
+    pub path: String,
+    pub version: &'static str,
+}
+
 #[tauri::command]
-pub async fn agent_install_runtime(app: AppHandle) -> Result<String, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("App data directory unavailable: {e}"))?;
-    fetch_omp(&app_data_dir)
-        .await
-        .map(|path| path.display().to_string())
-        .map_err(|e| e.to_string())
+pub async fn agent_runtime_status(app: AppHandle) -> CommandResult<RuntimeStatus> {
+    let binary = resolve_binary_path(&app_data_dir(&app)?);
+    Ok(RuntimeStatus {
+        installed: binary.is_file(),
+        path: binary.display().to_string(),
+        version: OMP_VERSION,
+    })
+}
+
+/// Result of a verified runtime download.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeInstall {
+    pub path: String,
+    pub version: &'static str,
+    /// The SHA-256 the download matched.
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeProgress {
+    downloaded: u64,
+    total: Option<u64>,
+}
+
+/// Download and verify the pinned agent runtime. Emits
+/// `agent_runtime_progress` while downloading.
+#[tauri::command]
+pub async fn agent_install_runtime(
+    app: AppHandle,
+    sessions: State<'_, AgentSessions>,
+) -> CommandResult<RuntimeInstall> {
+    let _guard = sessions.install_lock.lock().await;
+    let dir = app_data_dir(&app)?;
+    let emitter = app.clone();
+    let last_emit: Mutex<Option<Instant>> = Mutex::new(None);
+    let progress = move |downloaded: u64, total: Option<u64>| {
+        let mut last = last_emit.lock().unwrap_or_else(|e| e.into_inner());
+        let done = total.is_some_and(|t| downloaded >= t);
+        if !done && last.is_some_and(|at| at.elapsed() < PROGRESS_INTERVAL) {
+            return;
+        }
+        *last = Some(Instant::now());
+        let payload = RuntimeProgress { downloaded, total };
+        if let Err(e) = emitter.emit(RUNTIME_PROGRESS_EVENT, payload) {
+            tracing::debug!(target: "shodh::harness", error = %e, "emitting runtime progress failed");
+        }
+    };
+    let installed = fetch_omp(&dir, &progress).await?;
+    Ok(RuntimeInstall {
+        path: installed.path.display().to_string(),
+        version: OMP_VERSION,
+        sha256: installed.sha256,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn turn(role: &str, content: &str) -> HistoryTurn {
+        HistoryTurn {
+            role: role.into(),
+            content: content.into(),
+        }
+    }
+
+    #[test]
+    fn history_is_replayed_before_the_message() {
+        assert_eq!(with_history("Hi", &[]), "Hi");
+        let text = with_history(
+            "And the second one?",
+            &[
+                turn("user", "What is the notice period?"),
+                turn("system", "indexed 3 files"),
+                turn("assistant", "60 days [1]."),
+            ],
+        );
+        assert!(text.contains("User: What is the notice period?\nAssistant: 60 days [1]."));
+        assert!(!text.contains("indexed 3 files"));
+        assert!(text.ends_with("Current message:\nAnd the second one?"));
+    }
+
+    #[test]
+    fn history_keeps_only_the_latest_turns() {
+        let history: Vec<HistoryTurn> = (0..25).map(|i| turn("user", &format!("q{i}"))).collect();
+        let text = with_history("now", &history);
+        assert!(!text.contains("q14\n"));
+        assert!(text.contains("User: q15\n"));
+        assert!(text.contains("User: q24\n"));
+    }
+
+    #[test]
+    fn errors_carry_a_code_for_the_ui() {
+        let missing = AgentCommandError::from(HarnessError::BinaryMissing {
+            path: "omp.exe".into(),
+            version: OMP_VERSION,
+        });
+        assert_eq!(missing.code, "runtime_missing");
+        assert_eq!(
+            AgentCommandError::from(HarnessError::LlmDisabled).code,
+            "model_config"
+        );
+        assert_eq!(
+            AgentCommandError::from(HarnessError::RunInProgress).code,
+            "busy"
+        );
+        let json = serde_json::to_value(&missing).unwrap();
+        assert_eq!(json["code"], "runtime_missing");
+        assert!(json["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("not installed")));
+    }
 }

@@ -23,6 +23,11 @@ pub struct ConversationMessage {
     /// Opaque to the backend; stored so the run summary survives reload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<serde_json::Value>,
+    /// Reduced agent transcript (steps, task list, usage, cited passages)
+    /// of an answer produced by an agent session. Opaque to the backend;
+    /// stored so the transcript survives reload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -383,7 +383,9 @@ pub struct SidecarProcess {
 
 /// Verify the binary, prepare the isolated layout and start omp.
 pub async fn spawn(spec: &LaunchSpec) -> Result<SidecarProcess, HarnessError> {
+    let started = std::time::Instant::now();
     verify_binary(&spec.binary).await?;
+    let verify_ms = started.elapsed().as_millis();
     spec.layout.prepare()?;
     let cwd = spec.layout.session_dir(&spec.session_id)?;
 
@@ -410,7 +412,7 @@ pub async fn spawn(spec: &LaunchSpec) -> Result<SidecarProcess, HarnessError> {
     }
 
     // Never log `command` itself: its Debug output includes the environment.
-    tracing::info!(target: "shodh::harness", "starting {}", spec.describe());
+    tracing::info!(target: "shodh::harness", verify_ms, "starting {}", spec.describe());
     let mut child = command
         .spawn()
         .map_err(|e| HarnessError::Spawn(format!("{}: {e}", spec.binary.display())))?;
@@ -445,10 +447,25 @@ pub fn hash_from_sums(sums: &str, asset: &str) -> Option<String> {
     })
 }
 
+/// A verified runtime installed by [`fetch_omp`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledRuntime {
+    pub path: PathBuf,
+    /// SHA-256 the download was verified against.
+    pub sha256: String,
+}
+
+/// Download progress: bytes received and, when the server reports it, the
+/// total size.
+pub type FetchProgress = dyn Fn(u64, Option<u64>) + Send + Sync;
+
 /// Download the pinned omp release for this platform into
 /// `<app_data>/bin`, verify its SHA-256 and move it into place atomically.
-/// Returns the installed path.
-pub async fn fetch_omp(app_data_dir: &Path) -> Result<PathBuf, HarnessError> {
+/// `progress` is called as bytes arrive.
+pub async fn fetch_omp(
+    app_data_dir: &Path,
+    progress: &FetchProgress,
+) -> Result<InstalledRuntime, HarnessError> {
     let asset = release_asset_name()?;
     let target = default_binary_path(app_data_dir);
     let dir = target
@@ -493,7 +510,8 @@ pub async fn fetch_omp(app_data_dir: &Path) -> Result<PathBuf, HarnessError> {
         .await
         .and_then(reqwest::Response::error_for_status)
         .map_err(|e| HarnessError::Download(format!("{url}: {e}")))?;
-    if response.content_length().unwrap_or(0) > MAX_DOWNLOAD_BYTES {
+    let total = response.content_length();
+    if total.unwrap_or(0) > MAX_DOWNLOAD_BYTES {
         return Err(HarnessError::Download(format!(
             "{url}: the file is larger than expected"
         )));
@@ -521,6 +539,7 @@ pub async fn fetch_omp(app_data_dir: &Path) -> Result<PathBuf, HarnessError> {
             }
             hasher.update(&chunk);
             file.write_all(&chunk).await?;
+            progress(written, total);
         }
         file.flush().await?;
         file.sync_all().await?;
@@ -555,7 +574,10 @@ pub async fn fetch_omp(app_data_dir: &Path) -> Result<PathBuf, HarnessError> {
     }
     result?;
     tracing::info!(target: "shodh::harness", "installed omp {OMP_VERSION} at {}", target.display());
-    Ok(target)
+    Ok(InstalledRuntime {
+        path: target,
+        sha256: expected,
+    })
 }
 
 #[cfg(test)]

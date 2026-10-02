@@ -18,6 +18,7 @@ pub mod search;
 pub mod sources;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -136,6 +137,7 @@ pub struct ToolContext {
     host_call_id: Option<String>,
     events: mpsc::UnboundedSender<AgentEvent>,
     outbound: Option<mpsc::UnboundedSender<OutboundFrame>>,
+    passages: Arc<AtomicU32>,
 }
 
 impl ToolContext {
@@ -150,7 +152,21 @@ impl ToolContext {
             host_call_id: None,
             events,
             outbound: None,
+            passages: Arc::new(AtomicU32::new(0)),
         }
+    }
+
+    /// Share the run's passage counter, so citation numbers continue across
+    /// every search of one answer.
+    pub fn with_passage_counter(mut self, counter: Arc<AtomicU32>) -> Self {
+        self.passages = counter;
+        self
+    }
+
+    /// Reserve `count` consecutive citation numbers for this run and return
+    /// the first (1-based). Concurrent searches get disjoint ranges.
+    pub fn reserve_passages(&self, count: u32) -> u32 {
+        self.passages.fetch_add(count, Ordering::SeqCst) + 1
     }
 
     /// Route progress updates to omp as `host_tool_update` frames.

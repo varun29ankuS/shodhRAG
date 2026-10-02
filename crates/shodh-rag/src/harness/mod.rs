@@ -21,7 +21,10 @@ pub use model::{select_model, OmpModel};
 pub use omp::{normalise, NormaliserState, StepMeta, StepOutcome};
 pub use profile::AgentProfile;
 pub use session::{OmpSession, SessionConfig};
-pub use sidecar::{fetch_omp, resolve_binary_path, LaunchSpec, OmpLayout, OMP_VERSION};
+pub use sidecar::{
+    fetch_omp, resolve_binary_path, FetchProgress, InstalledRuntime, LaunchSpec, OmpLayout,
+    OMP_VERSION,
+};
 
 /// One agent session as the app sees it. `OmpSession` is the production
 /// implementation; spec §7.1's in-process fallback would implement the same

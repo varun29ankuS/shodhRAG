@@ -567,6 +567,7 @@ pub fn run() {
             agent_session_commands::agent_abort,
             agent_session_commands::agent_approve,
             agent_session_commands::agent_install_runtime,
+            agent_session_commands::agent_runtime_status,
             unified_chat_commands::apply_artifact_to_file,
             unified_chat_commands::update_artifact,
             unified_chat_commands::get_artifact_history,

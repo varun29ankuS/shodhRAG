@@ -12,7 +12,7 @@ pub struct RewrittenQuery {
     pub rewritten_query: String,
     pub explanation: String,
     pub used_context: bool,
-    pub should_retrieve: bool, // Go/No-go decision
+    pub should_retrieve: bool,    // Go/No-go decision
     pub retrieval_reason: String, // Why retrieve or not
 }
 
@@ -66,12 +66,27 @@ impl QueryRewriter {
         // Single-word or two-word greetings/acknowledgments
         if word_count <= 2 {
             let exact_no_retrieve = [
-                "hello", "hi", "hey", "thanks", "thank you", "bye", "goodbye",
-                "ok", "okay", "yes", "no", "sure", "cool", "great",
+                "hello",
+                "hi",
+                "hey",
+                "thanks",
+                "thank you",
+                "bye",
+                "goodbye",
+                "ok",
+                "okay",
+                "yes",
+                "no",
+                "sure",
+                "cool",
+                "great",
             ];
             for pattern in &exact_no_retrieve {
                 if query_lower == *pattern || query_lower.starts_with(&format!("{} ", pattern)) {
-                    return (false, format!("Short greeting/acknowledgment — no documents needed"));
+                    return (
+                        false,
+                        format!("Short greeting/acknowledgment — no documents needed"),
+                    );
                 }
             }
         }
@@ -79,12 +94,18 @@ impl QueryRewriter {
         // Multi-word meta questions (only when the full query IS the meta question)
         if word_count <= 6 {
             let meta_patterns = [
-                "what is your name", "who are you", "how are you",
-                "what can you do", "what are you",
+                "what is your name",
+                "who are you",
+                "how are you",
+                "what can you do",
+                "what are you",
             ];
             for pattern in &meta_patterns {
                 if query_lower.starts_with(pattern) {
-                    return (false, format!("Meta question about assistant — no documents needed"));
+                    return (
+                        false,
+                        format!("Meta question about assistant — no documents needed"),
+                    );
                 }
             }
         }
@@ -121,7 +142,13 @@ impl QueryRewriter {
 
         for pattern in &retrieve_patterns {
             if query_lower.contains(pattern) {
-                return (true, format!("Query contains '{}' - likely needs document lookup", pattern));
+                return (
+                    true,
+                    format!(
+                        "Query contains '{}' - likely needs document lookup",
+                        pattern
+                    ),
+                );
             }
         }
 
@@ -131,7 +158,10 @@ impl QueryRewriter {
         }
 
         // Very short queries without obvious patterns - skip retrieval
-        (false, "Short query without clear retrieval intent".to_string())
+        (
+            false,
+            "Short query without clear retrieval intent".to_string(),
+        )
     }
 
     /// Rewrite query using conversation context
@@ -277,11 +307,7 @@ Rewritten Query:"#,
     /// - "what is her salary" (after discussing anushree) → "what is anushree salary"
     /// - "tell me more" (after salary question) → "tell me more about anushree salary"
     /// - "and the PAN?" (after discussing anushree) → "what is anushree PAN"
-    pub fn rewrite_rule_based(
-        &self,
-        query: &str,
-        context: &ConversationContext,
-    ) -> RewrittenQuery {
+    pub fn rewrite_rule_based(&self, query: &str, context: &ConversationContext) -> RewrittenQuery {
         let (should_retrieve, retrieval_reason) = self.should_retrieve_documents(query);
 
         let mut rewritten = query.to_string();
@@ -290,14 +316,21 @@ Rewritten Query:"#,
 
         // Detect bare search commands that need context expansion
         let bare_command_patterns = [
-            "search online", "google", "search web", "look up online",
-            "find online", "search internet", "web search", "search the web",
-            "check online", "look online",
+            "search online",
+            "google",
+            "search web",
+            "look up online",
+            "find online",
+            "search internet",
+            "web search",
+            "search the web",
+            "check online",
+            "look online",
         ];
 
-        let is_bare_command = bare_command_patterns.iter().any(|p| {
-            query_lower == *p || query_lower.starts_with(&format!("{} ", p))
-        });
+        let is_bare_command = bare_command_patterns
+            .iter()
+            .any(|p| query_lower == *p || query_lower.starts_with(&format!("{} ", p)));
 
         if is_bare_command {
             if let Some(last_query) = Self::find_last_user_query(&context.recent_messages) {
@@ -313,16 +346,21 @@ Rewritten Query:"#,
 
         // 1. Resolve gendered pronouns: her/his/their → entity name
         let gendered_pronouns = [
-            (" her ", " {entity} "), (" his ", " {entity} "),
-            (" their ", " {entity} "), (" she ", " {entity} "),
-            (" he ", " {entity} "), (" they ", " {entity} "),
-            ("her ", "{entity} "), ("his ", "{entity} "),
+            (" her ", " {entity} "),
+            (" his ", " {entity} "),
+            (" their ", " {entity} "),
+            (" she ", " {entity} "),
+            (" he ", " {entity} "),
+            (" they ", " {entity} "),
+            ("her ", "{entity} "),
+            ("his ", "{entity} "),
         ];
 
         if let Some(ref entity) = primary_entity {
             for (pronoun, replacement) in &gendered_pronouns {
                 let replacement = replacement.replace("{entity}", entity);
-                if let Some(new) = Self::case_insensitive_replace(&rewritten, pronoun, &replacement) {
+                if let Some(new) = Self::case_insensitive_replace(&rewritten, pronoun, &replacement)
+                {
                     rewritten = new;
                     changes.push(format!("Resolved pronoun to '{}'", entity));
                     break; // Only replace once per query
@@ -340,11 +378,10 @@ Rewritten Query:"#,
 
         if let Some(ref target) = replacement_target {
             for pronoun in &demonstratives {
-                let replacement = pronoun.replace(
-                    pronoun.trim_matches(|c: char| c == ' ' || c == '?'),
-                    target,
-                );
-                if let Some(new) = Self::case_insensitive_replace(&rewritten, pronoun, &replacement) {
+                let replacement =
+                    pronoun.replace(pronoun.trim_matches(|c: char| c == ' ' || c == '?'), target);
+                if let Some(new) = Self::case_insensitive_replace(&rewritten, pronoun, &replacement)
+                {
                     rewritten = new;
                     changes.push(format!("Resolved demonstrative to '{}'", target));
                     break;
@@ -370,7 +407,8 @@ Rewritten Query:"#,
                 ("explain", "explain {topic}"),
             ];
 
-            let topic_ref = primary_entity.as_deref()
+            let topic_ref = primary_entity
+                .as_deref()
                 .or(last_topic.as_deref())
                 .unwrap_or("");
 
@@ -394,15 +432,14 @@ Rewritten Query:"#,
         }
 
         // 4. Short queries (1-2 words) with no resolution yet: append entity/topic context
-        if word_count <= 2
-            && changes.is_empty()
-            && !query_lower.is_empty()
-        {
+        if word_count <= 2 && changes.is_empty() && !query_lower.is_empty() {
             if let Some(ref entity) = primary_entity {
                 rewritten = format!("{} {}", entity, query.trim());
                 changes.push(format!("Prepended entity '{}' to short query", entity));
             } else if !context.concepts_mentioned.is_empty() {
-                let top_concepts: Vec<&str> = context.concepts_mentioned.iter()
+                let top_concepts: Vec<&str> = context
+                    .concepts_mentioned
+                    .iter()
                     .take(3)
                     .map(|c| c.as_str())
                     .collect();
@@ -487,7 +524,10 @@ Rewritten Query:"#,
     fn find_last_topic(context: &ConversationContext) -> Option<String> {
         for msg in context.recent_messages.iter().rev() {
             // Only look at user messages
-            if let Some(content) = msg.strip_prefix("user: ").or_else(|| msg.strip_prefix("User: ")) {
+            if let Some(content) = msg
+                .strip_prefix("user: ")
+                .or_else(|| msg.strip_prefix("User: "))
+            {
                 let word_count = content.split_whitespace().count();
                 if word_count >= 3 {
                     // Extract key content words (skip question words)
@@ -497,10 +537,34 @@ Rewritten Query:"#,
                             let lower = w.to_lowercase();
                             !matches!(
                                 lower.as_str(),
-                                "what" | "is" | "are" | "the" | "a" | "an" | "of" | "in"
-                                | "for" | "to" | "and" | "or" | "can" | "you" | "me"
-                                | "tell" | "show" | "find" | "get" | "do" | "does" | "how"
-                                | "where" | "when" | "why" | "who" | "which" | "about"
+                                "what"
+                                    | "is"
+                                    | "are"
+                                    | "the"
+                                    | "a"
+                                    | "an"
+                                    | "of"
+                                    | "in"
+                                    | "for"
+                                    | "to"
+                                    | "and"
+                                    | "or"
+                                    | "can"
+                                    | "you"
+                                    | "me"
+                                    | "tell"
+                                    | "show"
+                                    | "find"
+                                    | "get"
+                                    | "do"
+                                    | "does"
+                                    | "how"
+                                    | "where"
+                                    | "when"
+                                    | "why"
+                                    | "who"
+                                    | "which"
+                                    | "about"
                             )
                         })
                         .take(5)
@@ -518,12 +582,21 @@ Rewritten Query:"#,
     /// Find the last substantive user query in conversation (for bare command expansion)
     fn find_last_user_query(messages: &[String]) -> Option<String> {
         let bare_commands = [
-            "search online", "google", "search web", "look up online",
-            "tell me more", "more details", "elaborate", "explain",
+            "search online",
+            "google",
+            "search web",
+            "look up online",
+            "tell me more",
+            "more details",
+            "elaborate",
+            "explain",
         ];
 
         for msg in messages.iter().rev() {
-            if let Some(content) = msg.strip_prefix("user: ").or_else(|| msg.strip_prefix("User: ")) {
+            if let Some(content) = msg
+                .strip_prefix("user: ")
+                .or_else(|| msg.strip_prefix("User: "))
+            {
                 let lower = content.trim().to_lowercase();
                 let is_command = bare_commands.iter().any(|c| lower.starts_with(c));
                 if !is_command && content.trim().len() > 3 {
@@ -554,12 +627,15 @@ Rewritten Query:"#,
     /// "what is the salary of anushree" → "salary anushree"
     fn extract_keywords_for_search(query: &str) -> String {
         let stop_words: std::collections::HashSet<&str> = [
-            "what", "is", "are", "was", "were", "the", "a", "an", "of", "in", "for", "to",
-            "and", "or", "can", "you", "me", "my", "tell", "show", "find", "get", "do",
-            "does", "how", "where", "when", "why", "who", "which", "about", "please",
-            "could", "would", "should", "there", "their", "from", "with", "that", "this",
-            "have", "has", "had", "be", "been", "being", "it", "its", "i",
-        ].iter().copied().collect();
+            "what", "is", "are", "was", "were", "the", "a", "an", "of", "in", "for", "to", "and",
+            "or", "can", "you", "me", "my", "tell", "show", "find", "get", "do", "does", "how",
+            "where", "when", "why", "who", "which", "about", "please", "could", "would", "should",
+            "there", "their", "from", "with", "that", "this", "have", "has", "had", "be", "been",
+            "being", "it", "its", "i",
+        ]
+        .iter()
+        .copied()
+        .collect();
 
         let keywords: Vec<&str> = query
             .split_whitespace()
@@ -626,12 +702,11 @@ mod tests {
     fn test_file_pronoun_replacement() {
         let rewriter = QueryRewriter::new();
         let mut context = ConversationContext::default();
-        context.files_discussed.push("query_rewriter.rs".to_string());
+        context
+            .files_discussed
+            .push("query_rewriter.rs".to_string());
 
-        let result = rewriter.rewrite_rule_based(
-            "How does it handle errors?",
-            &context,
-        );
+        let result = rewriter.rewrite_rule_based("How does it handle errors?", &context);
 
         assert!(result.used_context);
         assert!(result.rewritten_query.contains("query_rewriter.rs"));
@@ -642,10 +717,7 @@ mod tests {
         let rewriter = QueryRewriter::new();
         let context = ConversationContext::default();
 
-        let result = rewriter.rewrite_rule_based(
-            "What is vector search?",
-            &context,
-        );
+        let result = rewriter.rewrite_rule_based("What is vector search?", &context);
 
         assert!(!result.used_context);
         assert_eq!(result.original_query, result.rewritten_query);
@@ -657,10 +729,7 @@ mod tests {
         let mut context = ConversationContext::default();
         context.entities.push("Anushree Sharma".to_string());
 
-        let result = rewriter.rewrite_rule_based(
-            "what is her salary",
-            &context,
-        );
+        let result = rewriter.rewrite_rule_based("what is her salary", &context);
 
         assert!(result.used_context);
         assert!(result.rewritten_query.contains("Anushree Sharma"));
@@ -672,12 +741,11 @@ mod tests {
         let rewriter = QueryRewriter::new();
         let mut context = ConversationContext::default();
         context.entities.push("Anushree".to_string());
-        context.recent_messages.push("user: who is anushree".to_string());
+        context
+            .recent_messages
+            .push("user: who is anushree".to_string());
 
-        let result = rewriter.rewrite_rule_based(
-            "and the PAN?",
-            &context,
-        );
+        let result = rewriter.rewrite_rule_based("and the PAN?", &context);
 
         assert!(result.used_context);
         assert!(result.rewritten_query.to_lowercase().contains("anushree"));
@@ -689,12 +757,11 @@ mod tests {
         let rewriter = QueryRewriter::new();
         let mut context = ConversationContext::default();
         context.entities.push("Varun".to_string());
-        context.recent_messages.push("user: what is varun's salary".to_string());
+        context
+            .recent_messages
+            .push("user: what is varun's salary".to_string());
 
-        let result = rewriter.rewrite_rule_based(
-            "tell me more",
-            &context,
-        );
+        let result = rewriter.rewrite_rule_based("tell me more", &context);
 
         assert!(result.used_context);
         assert!(result.rewritten_query.to_lowercase().contains("varun"));
@@ -706,7 +773,11 @@ mod tests {
         let context = ConversationContext::default();
 
         let variants = rewriter.expand_query("what is the salary", &context);
-        assert!(variants.len() >= 2, "Expected at least 2 variants, got {}", variants.len());
+        assert!(
+            variants.len() >= 2,
+            "Expected at least 2 variants, got {}",
+            variants.len()
+        );
         // Should have original + keyword variant or synonym variant
     }
 
@@ -719,7 +790,11 @@ mod tests {
         let variants = rewriter.expand_query("what is the salary", &context);
         // Should have a variant with "Anushree" prepended
         let has_entity_variant = variants.iter().any(|v| v.contains("Anushree"));
-        assert!(has_entity_variant, "Expected entity variant in {:?}", variants);
+        assert!(
+            has_entity_variant,
+            "Expected entity variant in {:?}",
+            variants
+        );
     }
 
     #[test]

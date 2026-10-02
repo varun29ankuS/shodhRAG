@@ -1,18 +1,17 @@
 //! External API providers for LLM
 //! Supports OpenAI, Anthropic, and custom endpoints
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use futures_util::stream::StreamExt;
 use reqwest::Client;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::mpsc;
-use futures_util::stream::StreamExt;
 
 use super::{
-    LLMProvider, GenerationConfig,
-    ProviderInfo, MemoryUsage, TokenStream,
-    streaming::StreamingResponse,
+    streaming::StreamingResponse, GenerationConfig, LLMProvider, MemoryUsage, ProviderInfo,
+    TokenStream,
 };
 use crate::llm::ApiProvider;
 
@@ -31,9 +30,10 @@ impl ExternalProvider {
         endpoint: &str,
     ) -> Result<T> {
         let status = response.status();
-        let body = response.text().await.map_err(|e| {
-            anyhow!("Failed to read response body from {}: {}", endpoint, e)
-        })?;
+        let body = response
+            .text()
+            .await
+            .map_err(|e| anyhow!("Failed to read response body from {}: {}", endpoint, e))?;
         let trimmed = body.trim_start();
         if trimmed.starts_with('<') || trimmed.starts_with("<!") {
             let preview: String = trimmed.chars().take(200).collect();
@@ -44,7 +44,13 @@ impl ExternalProvider {
         }
         serde_json::from_str::<T>(&body).map_err(|e| {
             let preview: String = body.chars().take(300).collect();
-            anyhow!("Failed to parse JSON from {} (HTTP {}): {}. Body: {}", endpoint, status, e, preview)
+            anyhow!(
+                "Failed to parse JSON from {} (HTTP {}): {}. Body: {}",
+                endpoint,
+                status,
+                e,
+                preview
+            )
         })
     }
 
@@ -64,7 +70,7 @@ impl ExternalProvider {
             client,
         })
     }
-    
+
     fn get_endpoint(&self) -> String {
         match &self.provider {
             ApiProvider::OpenAI => "https://api.openai.com/v1/chat/completions".to_string(),
@@ -73,11 +79,16 @@ impl ExternalProvider {
             ApiProvider::Together => "https://api.together.xyz/v1/chat/completions".to_string(),
             ApiProvider::Grok => "https://api.x.ai/v1/chat/completions".to_string(),
             ApiProvider::Perplexity => "https://api.perplexity.ai/chat/completions".to_string(),
-            ApiProvider::Google => format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent", self.model),
+            ApiProvider::Google => format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+                self.model
+            ),
             ApiProvider::Replicate => "https://api.replicate.com/v1/predictions".to_string(),
             ApiProvider::Baseten => "https://inference.baseten.co/v1/chat/completions".to_string(),
             ApiProvider::Ollama => "http://localhost:11434/v1/chat/completions".to_string(),
-            ApiProvider::HuggingFace { .. } => "https://api-inference.huggingface.co/models".to_string(),
+            ApiProvider::HuggingFace { .. } => {
+                "https://api-inference.huggingface.co/models".to_string()
+            }
             ApiProvider::Custom { endpoint } => endpoint.clone(),
         }
     }
@@ -85,30 +96,21 @@ impl ExternalProvider {
 
 #[async_trait]
 impl LLMProvider for ExternalProvider {
-    async fn generate(
-        &self,
-        prompt: &str,
-        config: &GenerationConfig,
-    ) -> Result<String> {
+    async fn generate(&self, prompt: &str, config: &GenerationConfig) -> Result<String> {
         match &self.provider {
-            ApiProvider::OpenAI | ApiProvider::Together | ApiProvider::Grok | ApiProvider::Perplexity | ApiProvider::Baseten | ApiProvider::Ollama => {
-                self.openai_compatible_generate(prompt, config).await
-            }
-            ApiProvider::Anthropic => {
-                self.anthropic_generate(prompt, config).await
-            }
-            ApiProvider::Google => {
-                self.google_generate(prompt, config).await
-            }
-            ApiProvider::OpenRouter => {
-                self.openai_compatible_generate(prompt, config).await
-            }
+            ApiProvider::OpenAI
+            | ApiProvider::Together
+            | ApiProvider::Grok
+            | ApiProvider::Perplexity
+            | ApiProvider::Baseten
+            | ApiProvider::Ollama => self.openai_compatible_generate(prompt, config).await,
+            ApiProvider::Anthropic => self.anthropic_generate(prompt, config).await,
+            ApiProvider::Google => self.google_generate(prompt, config).await,
+            ApiProvider::OpenRouter => self.openai_compatible_generate(prompt, config).await,
             ApiProvider::HuggingFace { model_id } => {
                 self.huggingface_generate(prompt, config, model_id).await
             }
-            ApiProvider::Replicate => {
-                self.replicate_generate(prompt, config).await
-            }
+            ApiProvider::Replicate => self.replicate_generate(prompt, config).await,
             ApiProvider::Custom { .. } => {
                 // Assume OpenAI compatible by default
                 self.openai_compatible_generate(prompt, config).await
@@ -133,18 +135,30 @@ impl LLMProvider for ExternalProvider {
 
         tokio::spawn(async move {
             match provider {
-                ApiProvider::OpenAI | ApiProvider::Together | ApiProvider::Grok |
-                ApiProvider::Perplexity | ApiProvider::Baseten | ApiProvider::Ollama | ApiProvider::Custom { .. } => {
-                    stream_openai_compatible(client, endpoint, api_key, model, prompt, config, tx).await
+                ApiProvider::OpenAI
+                | ApiProvider::Together
+                | ApiProvider::Grok
+                | ApiProvider::Perplexity
+                | ApiProvider::Baseten
+                | ApiProvider::Ollama
+                | ApiProvider::Custom { .. } => {
+                    stream_openai_compatible(client, endpoint, api_key, model, prompt, config, tx)
+                        .await
                 }
                 ApiProvider::Anthropic => {
                     stream_anthropic(client, api_key, model, prompt, config, tx).await
                 }
                 ApiProvider::Google => {
-                    let _ = tx.send("Google streaming not yet implemented, use non-streaming mode".to_string()).await;
+                    let _ = tx
+                        .send(
+                            "Google streaming not yet implemented, use non-streaming mode"
+                                .to_string(),
+                        )
+                        .await;
                 }
                 ApiProvider::OpenRouter => {
-                    stream_openai_compatible(client, endpoint, api_key, model, prompt, config, tx).await
+                    stream_openai_compatible(client, endpoint, api_key, model, prompt, config, tx)
+                        .await
                 }
                 ApiProvider::HuggingFace { model_id } => {
                     stream_huggingface(client, api_key, model_id.clone(), prompt, config, tx).await
@@ -165,12 +179,13 @@ impl LLMProvider for ExternalProvider {
         config: &GenerationConfig,
     ) -> Result<String> {
         // Extract system context if present (first item should be system_context from build_system_context())
-        let (system_prompt, user_context) = if !context.is_empty() && context[0].contains("STRUCTURED OUTPUT FORMAT") {
-            // First context item is the system prompt with STRUCTURED_OUTPUT_INSTRUCTIONS
-            (Some(context[0].as_str()), &context[1..])
-        } else {
-            (None, context.as_slice())
-        };
+        let (system_prompt, user_context) =
+            if !context.is_empty() && context[0].contains("STRUCTURED OUTPUT FORMAT") {
+                // First context item is the system prompt with STRUCTURED_OUTPUT_INSTRUCTIONS
+                (Some(context[0].as_str()), &context[1..])
+            } else {
+                (None, context.as_slice())
+            };
 
         let prompt = super::format_rag_prompt(query, user_context, system_prompt);
         self.generate(&prompt, config).await
@@ -181,11 +196,11 @@ impl LLMProvider for ExternalProvider {
             name: format!("{:?}", self.provider),
             model: self.model.clone(),
             context_window: match &self.provider {
-                ApiProvider::OpenAI => 128000, // GPT-4 Turbo
-                ApiProvider::Anthropic => 200000, // Claude 3
+                ApiProvider::OpenAI => 128000,     // GPT-4 Turbo
+                ApiProvider::Anthropic => 200000,  // Claude 3
                 ApiProvider::OpenRouter => 200000, // Various models with different contexts
                 ApiProvider::Together => 32768,
-                ApiProvider::Grok => 131072,  // Grok supports 128k context
+                ApiProvider::Grok => 131072, // Grok supports 128k context
                 ApiProvider::Perplexity => 16384,
                 ApiProvider::Google => 1000000, // Gemini 2.5 Pro supports 1M context
                 ApiProvider::Replicate => 4096,
@@ -234,7 +249,8 @@ impl ExternalProvider {
             "stream": false
         });
 
-        let response = self.client
+        let response = self
+            .client
             .post(&endpoint)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&request)
@@ -242,9 +258,16 @@ impl ExternalProvider {
             .await
             .map_err(|e| {
                 if e.is_timeout() {
-                    anyhow!("Request to {} timed out — check network connectivity", endpoint)
+                    anyhow!(
+                        "Request to {} timed out — check network connectivity",
+                        endpoint
+                    )
                 } else if e.is_connect() {
-                    anyhow!("Failed to connect to {} — check network/firewall/proxy: {}", endpoint, e)
+                    anyhow!(
+                        "Failed to connect to {} — check network/firewall/proxy: {}",
+                        endpoint,
+                        e
+                    )
                 } else {
                     anyhow!("Request to {} failed: {}", endpoint, e)
                 }
@@ -257,17 +280,15 @@ impl ExternalProvider {
         }
 
         let result: OpenAIResponse = Self::parse_json_response(response, &endpoint).await?;
-        result.choices.first()
+        result
+            .choices
+            .first()
             .map(|c| c.message.content.clone())
             .ok_or_else(|| anyhow!("OpenAI returned empty choices array"))
     }
 
     /// Anthropic generation
-    async fn anthropic_generate(
-        &self,
-        prompt: &str,
-        config: &GenerationConfig,
-    ) -> Result<String> {
+    async fn anthropic_generate(&self, prompt: &str, config: &GenerationConfig) -> Result<String> {
         let request = json!({
             "model": self.model,
             "messages": [
@@ -277,33 +298,32 @@ impl ExternalProvider {
             "temperature": config.temperature,
             "top_p": config.top_p,
         });
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(self.get_endpoint())
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .json(&request)
             .send()
             .await?;
-        
+
         if !response.status().is_success() {
             let error = response.text().await?;
             return Err(anyhow!("Anthropic API error: {}", error));
         }
-        
+
         let endpoint = self.get_endpoint();
         let result: AnthropicResponse = Self::parse_json_response(response, &endpoint).await?;
-        result.content.first()
+        result
+            .content
+            .first()
             .map(|c| c.text.clone())
             .ok_or_else(|| anyhow!("Anthropic returned empty content array"))
     }
 
     /// Google Gemini API generation
-    async fn google_generate(
-        &self,
-        prompt: &str,
-        config: &GenerationConfig,
-    ) -> Result<String> {
+    async fn google_generate(&self, prompt: &str, config: &GenerationConfig) -> Result<String> {
         let request = json!({
             "contents": [{
                 "parts": [{"text": prompt}]
@@ -316,7 +336,8 @@ impl ExternalProvider {
             }
         });
 
-        let response = self.client
+        let response = self
+            .client
             .post(self.get_endpoint())
             .header("Content-Type", "application/json")
             .header("x-goog-api-key", &self.api_key)
@@ -348,7 +369,7 @@ impl ExternalProvider {
         model_id: &str,
     ) -> Result<String> {
         let endpoint = format!("https://api-inference.huggingface.co/models/{}", model_id);
-        
+
         let request = json!({
             "inputs": prompt,
             "parameters": {
@@ -360,31 +381,30 @@ impl ExternalProvider {
                 "return_full_text": false
             }
         });
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(&endpoint)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&request)
             .send()
             .await?;
-        
+
         if !response.status().is_success() {
             let error = response.text().await?;
             return Err(anyhow!("HuggingFace API error: {}", error));
         }
-        
-        let result: Vec<HuggingFaceResponse> = Self::parse_json_response(response, &endpoint).await?;
-        result.first()
+
+        let result: Vec<HuggingFaceResponse> =
+            Self::parse_json_response(response, &endpoint).await?;
+        result
+            .first()
             .map(|r| r.generated_text.clone())
             .ok_or_else(|| anyhow!("HuggingFace returned empty response array"))
     }
-    
+
     /// Replicate API generation
-    async fn replicate_generate(
-        &self,
-        prompt: &str,
-        config: &GenerationConfig,
-    ) -> Result<String> {
+    async fn replicate_generate(&self, prompt: &str, config: &GenerationConfig) -> Result<String> {
         let request = json!({
             "version": self.model,
             "input": {
@@ -395,37 +415,41 @@ impl ExternalProvider {
                 "repetition_penalty": config.repetition_penalty
             }
         });
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post("https://api.replicate.com/v1/predictions")
             .header("Authorization", format!("Token {}", self.api_key))
             .json(&request)
             .send()
             .await?;
-        
+
         if !response.status().is_success() {
             let error = response.text().await?;
             return Err(anyhow!("Replicate API error: {}", error));
         }
-        
-        let result: ReplicateResponse = Self::parse_json_response(response, "https://api.replicate.com/v1/predictions").await?;
-        
+
+        let result: ReplicateResponse =
+            Self::parse_json_response(response, "https://api.replicate.com/v1/predictions").await?;
+
         // Poll for completion
         let prediction_url = format!("https://api.replicate.com/v1/predictions/{}", result.id);
         let mut attempts = 0;
         const MAX_ATTEMPTS: u32 = 60; // 5 minutes with 5 second intervals
-        
+
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            
-            let status_response = self.client
+
+            let status_response = self
+                .client
                 .get(&prediction_url)
                 .header("Authorization", format!("Token {}", self.api_key))
                 .send()
                 .await?;
-            
-            let status: ReplicateStatusResponse = Self::parse_json_response(status_response, &prediction_url).await?;
-            
+
+            let status: ReplicateStatusResponse =
+                Self::parse_json_response(status_response, &prediction_url).await?;
+
             match status.status.as_str() {
                 "succeeded" => {
                     if let Some(output) = status.output {
@@ -672,7 +696,6 @@ async fn stream_anthropic(
     }
 }
 
-
 async fn stream_huggingface(
     client: Client,
     api_key: String,
@@ -783,7 +806,10 @@ async fn stream_replicate(
         }
     };
 
-    let prediction_url = format!("https://api.replicate.com/v1/predictions/{}/stream", result.id);
+    let prediction_url = format!(
+        "https://api.replicate.com/v1/predictions/{}/stream",
+        result.id
+    );
     let stream_response = match client
         .get(&prediction_url)
         .header("Authorization", format!("Token {}", api_key))

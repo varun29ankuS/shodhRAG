@@ -5,8 +5,8 @@ use windows::core::HSTRING;
 use windows::Data::Pdf::PdfDocument;
 use windows::Graphics::Imaging::{BitmapDecoder, BitmapPixelFormat, SoftwareBitmap};
 use windows::Media::Ocr::OcrEngine;
-use windows::Storage::Streams::InMemoryRandomAccessStream;
 use windows::Storage::StorageFile;
+use windows::Storage::Streams::InMemoryRandomAccessStream;
 
 /// OCR a scanned PDF by rendering each page and running Windows OCR.
 pub fn ocr_pdf(path: &Path) -> Result<String> {
@@ -34,11 +34,12 @@ pub fn ocr_pdf(path: &Path) -> Result<String> {
     let mut all_text = String::new();
 
     for i in 0..page_count {
-        let page = pdf.GetPage(i)
+        let page = pdf
+            .GetPage(i)
             .with_context(|| format!("Failed to get PDF page {}", i))?;
 
-        let stream = InMemoryRandomAccessStream::new()
-            .context("Failed to create in-memory stream")?;
+        let stream =
+            InMemoryRandomAccessStream::new().context("Failed to create in-memory stream")?;
 
         page.RenderToStreamAsync(&stream)
             .context("Failed to create render async op")?
@@ -67,7 +68,8 @@ pub fn ocr_pdf(path: &Path) -> Result<String> {
             .get()
             .with_context(|| format!("OCR failed on page {}", i))?;
 
-        let page_text = result.Text()
+        let page_text = result
+            .Text()
             .with_context(|| format!("Failed to get OCR text for page {}", i))?
             .to_string();
 
@@ -120,11 +122,8 @@ pub fn ocr_image(path: &Path) -> Result<String> {
         .get()
         .context("Failed to get software bitmap")?;
 
-    let converted = SoftwareBitmap::Convert(
-        &bitmap,
-        BitmapPixelFormat::Bgra8,
-    )
-    .context("Failed to convert bitmap format")?;
+    let converted = SoftwareBitmap::Convert(&bitmap, BitmapPixelFormat::Bgra8)
+        .context("Failed to convert bitmap format")?;
 
     let engine = OcrEngine::TryCreateFromUserProfileLanguages()
         .context("Windows OCR engine not available — install a language pack")?;

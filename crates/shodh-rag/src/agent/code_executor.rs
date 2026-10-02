@@ -3,11 +3,11 @@
 //! Allows agents to generate Python/TypeScript code instead of chaining tool calls.
 //! Provides sandboxed execution with timeout, memory limits, and tool access.
 
-use anyhow::{Result, Context as AnyhowContext, anyhow};
+use anyhow::{anyhow, Context as AnyhowContext, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-use std::collections::HashMap;
 use tokio::process::Command as AsyncCommand;
 
 /// Programming language for code generation
@@ -151,7 +151,11 @@ impl CodeExecutor {
     }
 
     /// Execute code in specified language
-    pub async fn execute_code(&self, code: &str, language: CodeLanguage) -> Result<CodeExecutionResult> {
+    pub async fn execute_code(
+        &self,
+        code: &str,
+        language: CodeLanguage,
+    ) -> Result<CodeExecutionResult> {
         let start_time = Instant::now();
 
         // Write code to temp file
@@ -177,10 +181,7 @@ impl CodeExecutor {
                 std::fs::write(&path, code)
                     .context("Failed to write TypeScript script to temp file")?;
 
-                let mut args = vec![
-                    "run".to_string(),
-                    "--no-prompt".to_string(),
-                ];
+                let mut args = vec!["run".to_string(), "--no-prompt".to_string()];
 
                 if self.config.allow_network {
                     args.push("--allow-net".to_string());
@@ -236,7 +237,8 @@ edition = "2021"
             }
             CodeLanguage::Java => {
                 // Extract class name from code
-                let class_name = extract_java_class_name(code).unwrap_or_else(|| "Main".to_string());
+                let class_name =
+                    extract_java_class_name(code).unwrap_or_else(|| "Main".to_string());
                 let path = temp_dir.join(format!("{}.java", class_name));
                 std::fs::write(&path, code)?;
 
@@ -361,9 +363,7 @@ edition = "2021"
         use tokio::time::timeout;
 
         let mut cmd = AsyncCommand::new(command);
-        cmd.args(args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
 
         // Set working directory if specified
         if let Some(ref wd) = self.config.working_dir {
@@ -473,27 +473,35 @@ pub fn validate_code_safety(code: &str, language: &CodeLanguage) -> Result<()> {
     // Dangerous patterns per language
     let dangerous_patterns = match language {
         CodeLanguage::Python => vec![
-            "import os", "import subprocess", "os.system", "eval(", "exec(",
-            "__import__", "compile(", "open(", "file(", "rm -rf",
+            "import os",
+            "import subprocess",
+            "os.system",
+            "eval(",
+            "exec(",
+            "__import__",
+            "compile(",
+            "open(",
+            "file(",
+            "rm -rf",
         ],
         CodeLanguage::Rust => vec![
-            "std::process::Command", "unsafe", "std::fs::remove", "std::ptr",
+            "std::process::Command",
+            "unsafe",
+            "std::fs::remove",
+            "std::ptr",
         ],
         CodeLanguage::Java => vec![
-            "Runtime.getRuntime", "ProcessBuilder", "System.exit", "Files.delete",
+            "Runtime.getRuntime",
+            "ProcessBuilder",
+            "System.exit",
+            "Files.delete",
         ],
-        CodeLanguage::CSharp => vec![
-            "Process.Start", "File.Delete", "Directory.Delete", "unsafe",
-        ],
-        CodeLanguage::Go => vec![
-            "os/exec", "os.Remove", "os.RemoveAll", "syscall",
-        ],
-        CodeLanguage::JavaScript | CodeLanguage::TypeScript => vec![
-            "child_process", "fs.unlink", "fs.rm", "eval(", "Function(",
-        ],
-        _ => vec![
-            "system(", "exec(", "eval(", "rm ", "del ", "format",
-        ],
+        CodeLanguage::CSharp => vec!["Process.Start", "File.Delete", "Directory.Delete", "unsafe"],
+        CodeLanguage::Go => vec!["os/exec", "os.Remove", "os.RemoveAll", "syscall"],
+        CodeLanguage::JavaScript | CodeLanguage::TypeScript => {
+            vec!["child_process", "fs.unlink", "fs.rm", "eval(", "Function("]
+        }
+        _ => vec!["system(", "exec(", "eval(", "rm ", "del ", "format"],
     };
 
     for pattern in &dangerous_patterns {

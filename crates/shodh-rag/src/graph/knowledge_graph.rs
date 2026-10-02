@@ -61,13 +61,7 @@ impl KnowledgeGraph {
         idx
     }
 
-    pub fn add_relationship(
-        &mut self,
-        from: &str,
-        to: &str,
-        relation_type: &str,
-        weight: f32,
-    ) {
+    pub fn add_relationship(&mut self, from: &str, to: &str, relation_type: &str, weight: f32) {
         let from_idx = if let Some(&idx) = self.name_to_node.get(from) {
             idx
         } else {

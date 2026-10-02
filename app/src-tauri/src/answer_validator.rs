@@ -2,9 +2,9 @@
 //!
 //! Thin wrapper around core library's CitationValidator for Tauri desktop app.
 
+use crate::rag_commands::SearchResult;
 use serde::{Deserialize, Serialize};
 use shodh_rag::rag::{CitationValidator, SourceDocument};
-use crate::rag_commands::SearchResult;
 
 // Re-export core library types with camelCase for frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,10 +39,7 @@ impl ValidationResult {
 }
 
 /// Validate citations in LLM answer against retrieved source documents
-pub fn validate_citations(
-    answer: &str,
-    source_chunks: &[SearchResult],
-) -> ValidationResult {
+pub fn validate_citations(answer: &str, source_chunks: &[SearchResult]) -> ValidationResult {
     // Convert SearchResult to SourceDocument format for core library
     let source_documents: Vec<SourceDocument> = source_chunks
         .iter()
@@ -61,12 +58,16 @@ pub fn validate_citations(
         confidence: result.confidence,
         total_citations: result.total_citations,
         valid_citations: result.valid_citations,
-        invalid_citations: result.invalid_citations.into_iter().map(|ic| InvalidCitation {
-            citation_text: ic.citation_text,
-            reason: ic.reason,
-            file_path: ic.file_path,
-            line_number: ic.line_number,
-        }).collect(),
+        invalid_citations: result
+            .invalid_citations
+            .into_iter()
+            .map(|ic| InvalidCitation {
+                citation_text: ic.citation_text,
+                reason: ic.reason,
+                file_path: ic.file_path,
+                line_number: ic.line_number,
+            })
+            .collect(),
         warnings: result.warnings,
     }
 }

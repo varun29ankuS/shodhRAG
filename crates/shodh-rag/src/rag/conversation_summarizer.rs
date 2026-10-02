@@ -46,7 +46,8 @@ pub fn compress_history(
 
         // Extract entities: capitalized words, file paths, numbers with units
         for word in content.split_whitespace() {
-            let clean = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '/' && c != '\\');
+            let clean = word
+                .trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '/' && c != '\\');
             if clean.is_empty() {
                 continue;
             }
@@ -93,22 +94,13 @@ pub fn compress_history(
     let mut summary_parts = Vec::new();
 
     if !topics.is_empty() {
-        summary_parts.push(format!(
-            "Previous questions: {}",
-            topics.join("; ")
-        ));
+        summary_parts.push(format!("Previous questions: {}", topics.join("; ")));
     }
     if !entities.is_empty() {
-        summary_parts.push(format!(
-            "Key entities: {}",
-            entities.join(", ")
-        ));
+        summary_parts.push(format!("Key entities: {}", entities.join(", ")));
     }
     if !files.is_empty() {
-        summary_parts.push(format!(
-            "Files discussed: {}",
-            files.join(", ")
-        ));
+        summary_parts.push(format!("Files discussed: {}", files.join(", ")));
     }
 
     let summary = if summary_parts.is_empty() {
@@ -132,7 +124,9 @@ pub fn format_compressed_history(history: &CompressedHistory) -> String {
         result.push_str(summary);
         result.push_str("\n\nRecent Messages:\n");
     } else if !history.recent_messages.is_empty() {
-        result.push_str("\nConversation History (for topic continuity ONLY — NOT a source of facts):\n");
+        result.push_str(
+            "\nConversation History (for topic continuity ONLY — NOT a source of facts):\n",
+        );
     }
 
     for (role, content) in &history.recent_messages {

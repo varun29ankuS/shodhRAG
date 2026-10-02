@@ -1,14 +1,12 @@
 //! Thin Tauri wrappers for indexing commands.
 //! Business logic (folder preview, batch indexing, file processing) lives in shodh_rag::indexing.
 
-use tauri::{AppHandle, State};
-use crate::rag_commands::RagState;
 use crate::chat_engine::TauriEventEmitter;
+use crate::rag_commands::RagState;
+use tauri::{AppHandle, State};
 
 // Re-export backend types so existing callers don't break
-pub use shodh_rag::indexing::{
-    FolderPreview, IndexingOptions, IndexingResult, IndexingState,
-};
+pub use shodh_rag::indexing::{FolderPreview, IndexingOptions, IndexingResult, IndexingState};
 
 #[tauri::command]
 pub async fn preview_folder(folder_path: String) -> Result<FolderPreview, String> {
@@ -34,7 +32,8 @@ pub async fn link_folder_enhanced(
         &mut *rag_guard,
         &indexing_state,
         Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
-    ).await
+    )
+    .await
 }
 
 #[tauri::command]
@@ -85,5 +84,6 @@ pub async fn index_single_file(
         &space_id,
         &mut *rag_guard,
         Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
-    ).await
+    )
+    .await
 }

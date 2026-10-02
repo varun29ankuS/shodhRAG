@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use arrow_array::{
-    Array, Float32Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray, UInt32Array,
-    FixedSizeListArray,
+    Array, FixedSizeListArray, Float32Array, Int64Array, RecordBatch, RecordBatchIterator,
+    StringArray, UInt32Array,
 };
 use arrow_schema::{DataType, Field, Schema};
 use lancedb::query::{ExecutableQuery, QueryBase};
@@ -108,7 +108,11 @@ impl LanceStore {
 
     /// Public compaction entry point — opens the table and runs compact+prune.
     pub async fn compact(&self) -> Result<()> {
-        let table = self.db.open_table(&self.table_name).execute().await
+        let table = self
+            .db
+            .open_table(&self.table_name)
+            .execute()
+            .await
             .context("Failed to open table for compaction")?;
         self.compact_table(&table).await;
         Ok(())
@@ -158,7 +162,10 @@ impl LanceStore {
         let created_ats: Vec<i64> = chunks.iter().map(|c| c.created_at).collect();
 
         // Build FixedSizeListArray for vectors
-        let flat_vectors: Vec<f32> = chunks.iter().flat_map(|c| c.vector.iter().copied()).collect();
+        let flat_vectors: Vec<f32> = chunks
+            .iter()
+            .flat_map(|c| c.vector.iter().copied())
+            .collect();
         let values = Float32Array::from(flat_vectors);
         let vector_field = Field::new("item", DataType::Float32, true);
         let vector_array = FixedSizeListArray::new(
@@ -250,7 +257,10 @@ impl LanceStore {
     pub async fn delete_by_source_prefix(&self, prefix: &str) -> Result<usize> {
         let table = self.db.open_table(&self.table_name).execute().await?;
         let count_before = table.count_rows(None).await.unwrap_or(0);
-        let escaped = prefix.replace('\'', "''").replace('%', "\\%").replace('_', "\\_");
+        let escaped = prefix
+            .replace('\'', "''")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
         let predicate = format!("source LIKE '{}%'", escaped);
         tracing::info!("delete_by_source_prefix predicate: {}", predicate);
         table.delete(&predicate).await?;
@@ -304,7 +314,10 @@ impl LanceStore {
         let mut doc_ids = std::collections::HashSet::new();
 
         for batch in &batches {
-            if let Some(col) = batch.column_by_name("doc_id").and_then(|c| c.as_any().downcast_ref::<StringArray>()) {
+            if let Some(col) = batch
+                .column_by_name("doc_id")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            {
                 for i in 0..col.len() {
                     let val = col.value(i);
                     if !val.is_empty() && val != "__seed__" {
@@ -322,7 +335,9 @@ impl LanceStore {
         let table = self.db.open_table(&self.table_name).execute().await?;
         let results = table
             .query()
-            .select(lancedb::query::Select::columns(&["doc_id", "title", "source"]))
+            .select(lancedb::query::Select::columns(&[
+                "doc_id", "title", "source",
+            ]))
             .execute()
             .await
             .context("Failed to query document info")?;
@@ -332,9 +347,15 @@ impl LanceStore {
         let mut docs = Vec::new();
 
         for batch in &batches {
-            let doc_ids = batch.column_by_name("doc_id").and_then(|c| c.as_any().downcast_ref::<StringArray>());
-            let titles = batch.column_by_name("title").and_then(|c| c.as_any().downcast_ref::<StringArray>());
-            let sources = batch.column_by_name("source").and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let doc_ids = batch
+                .column_by_name("doc_id")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let titles = batch
+                .column_by_name("title")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let sources = batch
+                .column_by_name("source")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
 
             if let (Some(doc_ids), Some(titles), Some(sources)) = (doc_ids, titles, sources) {
                 for i in 0..batch.num_rows() {
@@ -368,10 +389,7 @@ impl LanceStore {
         }
         query = query.limit(limit);
 
-        let results = query
-            .execute()
-            .await
-            .context("LanceDB list query failed")?;
+        let results = query.execute().await.context("LanceDB list query failed")?;
 
         let batches: Vec<RecordBatch> = futures::TryStreamExt::try_collect(results).await?;
         Ok(extract_hits_from_batches(&batches, 0.0))
@@ -481,19 +499,42 @@ pub struct SearchHit {
 fn extract_hits_from_batches(batches: &[RecordBatch], default_score: f32) -> Vec<SearchHit> {
     let mut hits = Vec::new();
     for batch in batches {
-        let ids = batch.column_by_name("id").and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let texts = batch.column_by_name("text").and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let titles = batch.column_by_name("title").and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let sources = batch.column_by_name("source").and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let headings = batch.column_by_name("heading").and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let doc_ids = batch.column_by_name("doc_id").and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let chunk_indices = batch.column_by_name("chunk_index").and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
-        let metadata_jsons = batch.column_by_name("metadata_json").and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let citation_jsons = batch.column_by_name("citation_json").and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let space_ids = batch.column_by_name("space_id").and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let distances = batch.column_by_name("_distance").and_then(|c| c.as_any().downcast_ref::<Float32Array>());
+        let ids = batch
+            .column_by_name("id")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let texts = batch
+            .column_by_name("text")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let titles = batch
+            .column_by_name("title")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let sources = batch
+            .column_by_name("source")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let headings = batch
+            .column_by_name("heading")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let doc_ids = batch
+            .column_by_name("doc_id")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let chunk_indices = batch
+            .column_by_name("chunk_index")
+            .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
+        let metadata_jsons = batch
+            .column_by_name("metadata_json")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let citation_jsons = batch
+            .column_by_name("citation_json")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let space_ids = batch
+            .column_by_name("space_id")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let distances = batch
+            .column_by_name("_distance")
+            .and_then(|c| c.as_any().downcast_ref::<Float32Array>());
 
-        let (Some(ids), Some(texts), Some(titles), Some(sources)) = (ids, texts, titles, sources) else {
+        let (Some(ids), Some(texts), Some(titles), Some(sources)) = (ids, texts, titles, sources)
+        else {
             continue;
         };
 
@@ -512,9 +553,15 @@ fn extract_hits_from_batches(batches: &[RecordBatch], default_score: f32) -> Vec
                 title: titles.value(i).to_string(),
                 source: sources.value(i).to_string(),
                 heading: headings.map(|h| h.value(i).to_string()).unwrap_or_default(),
-                space_id: space_ids.map(|s| s.value(i).to_string()).unwrap_or_default(),
-                metadata_json: metadata_jsons.map(|m| m.value(i).to_string()).unwrap_or_else(|| "{}".to_string()),
-                citation_json: citation_jsons.map(|c| c.value(i).to_string()).unwrap_or_else(|| "{}".to_string()),
+                space_id: space_ids
+                    .map(|s| s.value(i).to_string())
+                    .unwrap_or_default(),
+                metadata_json: metadata_jsons
+                    .map(|m| m.value(i).to_string())
+                    .unwrap_or_else(|| "{}".to_string()),
+                citation_json: citation_jsons
+                    .map(|c| c.value(i).to_string())
+                    .unwrap_or_else(|| "{}".to_string()),
                 score,
             });
         }

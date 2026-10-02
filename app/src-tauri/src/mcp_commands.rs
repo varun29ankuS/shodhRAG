@@ -42,7 +42,8 @@ pub async fn mcp_connect_server(
 
     // Get server config from registry
     let registry = state.registry.read().await;
-    let config = registry.get(&server_name)
+    let config = registry
+        .get(&server_name)
         .ok_or_else(|| format!("Server not found in registry: {}", server_name))?
         .clone();
     drop(registry);
@@ -56,7 +57,9 @@ pub async fn mcp_connect_server(
 
     // Connect
     let manager = state.manager.read().await;
-    manager.connect_server(config).await
+    manager
+        .connect_server(config)
+        .await
         .map_err(|e| format!("Failed to connect: {}", e))?;
 
     Ok(format!("Connected to {}", server_name))
@@ -71,7 +74,9 @@ pub async fn mcp_disconnect_server(
     tracing::info!("🔌 Disconnecting from MCP server: {}", server_name);
 
     let manager = state.manager.read().await;
-    manager.disconnect_server(&server_name).await
+    manager
+        .disconnect_server(&server_name)
+        .await
         .map_err(|e| format!("Failed to disconnect: {}", e))?;
 
     Ok(format!("Disconnected from {}", server_name))
@@ -79,20 +84,23 @@ pub async fn mcp_disconnect_server(
 
 /// List all available tools across all connected servers
 #[tauri::command]
-pub async fn mcp_list_tools(
-    state: State<'_, MCPState>,
-) -> Result<Vec<ToolInfo>, String> {
+pub async fn mcp_list_tools(state: State<'_, MCPState>) -> Result<Vec<ToolInfo>, String> {
     let manager = state.manager.read().await;
-    let tools = manager.list_tools().await
+    let tools = manager
+        .list_tools()
+        .await
         .map_err(|e| format!("Failed to list tools: {}", e))?;
 
-    Ok(tools.into_iter().map(|(name, server, def)| ToolInfo {
-        name,
-        description: def.description.clone(),
-        server,
-        category: def.category.clone(),
-        input_schema: def.input_schema.clone(),
-    }).collect())
+    Ok(tools
+        .into_iter()
+        .map(|(name, server, def)| ToolInfo {
+            name,
+            description: def.description.clone(),
+            server,
+            category: def.category.clone(),
+            input_schema: def.input_schema.clone(),
+        })
+        .collect())
 }
 
 /// Search for tools by query
@@ -102,25 +110,31 @@ pub async fn mcp_search_tools(
     state: State<'_, MCPState>,
 ) -> Result<Vec<ToolInfo>, String> {
     let manager = state.manager.read().await;
-    let tools = manager.search_tools(&query).await
+    let tools = manager
+        .search_tools(&query)
+        .await
         .map_err(|e| format!("Failed to search tools: {}", e))?;
 
     // Get server names for each tool
     let all_tools = manager.list_tools().await.map_err(|e| e.to_string())?;
-    let tool_to_server: std::collections::HashMap<_, _> = all_tools.into_iter()
+    let tool_to_server: std::collections::HashMap<_, _> = all_tools
+        .into_iter()
         .map(|(name, server, _)| (name, server))
         .collect();
 
-    Ok(tools.into_iter().map(|(name, def)| {
-        let server = tool_to_server.get(&name).cloned().unwrap_or_default();
-        ToolInfo {
-            name,
-            description: def.description.clone(),
-            server,
-            category: def.category.clone(),
-            input_schema: def.input_schema.clone(),
-        }
-    }).collect())
+    Ok(tools
+        .into_iter()
+        .map(|(name, def)| {
+            let server = tool_to_server.get(&name).cloned().unwrap_or_default();
+            ToolInfo {
+                name,
+                description: def.description.clone(),
+                server,
+                category: def.category.clone(),
+                input_schema: def.input_schema.clone(),
+            }
+        })
+        .collect())
 }
 
 /// Call a specific tool
@@ -130,10 +144,16 @@ pub async fn mcp_call_tool(
     params: Value,
     state: State<'_, MCPState>,
 ) -> Result<Value, String> {
-    tracing::info!("🔧 Calling MCP tool: {} with params: {:?}", tool_name, params);
+    tracing::info!(
+        "🔧 Calling MCP tool: {} with params: {:?}",
+        tool_name,
+        params
+    );
 
     let manager = state.manager.read().await;
-    let result = manager.call_tool(&tool_name, params).await
+    let result = manager
+        .call_tool(&tool_name, params)
+        .await
         .map_err(|e| format!("Tool call failed: {}", e))?;
 
     if result.success {
@@ -145,34 +165,39 @@ pub async fn mcp_call_tool(
 
 /// List all configured servers
 #[tauri::command]
-pub async fn mcp_list_servers(
-    state: State<'_, MCPState>,
-) -> Result<Vec<ServerInfo>, String> {
+pub async fn mcp_list_servers(state: State<'_, MCPState>) -> Result<Vec<ServerInfo>, String> {
     let registry = state.registry.read().await;
     let manager = state.manager.read().await;
 
-    let connected_servers = manager.list_servers().await
+    let connected_servers = manager
+        .list_servers()
+        .await
         .map_err(|e| format!("Failed to list servers: {}", e))?;
 
-    let all_tools = manager.list_tools().await
+    let all_tools = manager
+        .list_tools()
+        .await
         .map_err(|e| format!("Failed to list tools: {}", e))?;
 
     // Count tools per server
-    let tool_counts: std::collections::HashMap<String, usize> = all_tools.iter()
+    let tool_counts: std::collections::HashMap<String, usize> = all_tools
+        .iter()
         .map(|(_, server, _)| server.clone())
         .fold(std::collections::HashMap::new(), |mut acc, server| {
             *acc.entry(server).or_insert(0) += 1;
             acc
         });
 
-    Ok(registry.list().iter().map(|config| {
-        ServerInfo {
+    Ok(registry
+        .list()
+        .iter()
+        .map(|config| ServerInfo {
             name: config.name.clone(),
             command: format!("{} {}", config.command, config.args.join(" ")),
             connected: connected_servers.contains(&config.name),
             tool_count: tool_counts.get(&config.name).copied().unwrap_or(0),
-        }
-    }).collect())
+        })
+        .collect())
 }
 
 /// Add or update an MCP server configuration
@@ -183,7 +208,10 @@ pub async fn mcp_upsert_server(
 ) -> Result<String, String> {
     let mut registry = state.registry.write().await;
     registry.upsert(config.clone());
-    registry.save().await.map_err(|e| format!("Failed to save: {}", e))?;
+    registry
+        .save()
+        .await
+        .map_err(|e| format!("Failed to save: {}", e))?;
 
     Ok(format!("Server '{}' configuration saved", config.name))
 }
@@ -201,9 +229,13 @@ pub async fn mcp_remove_server(
 
     // Remove from registry
     let mut registry = state.registry.write().await;
-    registry.remove(&server_name)
+    registry
+        .remove(&server_name)
         .ok_or_else(|| format!("Server not found: {}", server_name))?;
-    registry.save().await.map_err(|e| format!("Failed to save: {}", e))?;
+    registry
+        .save()
+        .await
+        .map_err(|e| format!("Failed to save: {}", e))?;
 
     Ok(format!("Server '{}' removed", server_name))
 }
@@ -218,13 +250,17 @@ pub async fn mcp_update_server_env(
 ) -> Result<String, String> {
     let mut registry = state.registry.write().await;
 
-    let mut config = registry.get(&server_name)
+    let mut config = registry
+        .get(&server_name)
         .ok_or_else(|| format!("Server not found: {}", server_name))?
         .clone();
 
     config.env.insert(env_key.clone(), env_value);
     registry.upsert(config);
-    registry.save().await.map_err(|e| format!("Failed to save: {}", e))?;
+    registry
+        .save()
+        .await
+        .map_err(|e| format!("Failed to save: {}", e))?;
 
     Ok(format!("Updated {} for server '{}'", env_key, server_name))
 }

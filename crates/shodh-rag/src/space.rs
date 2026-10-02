@@ -3,13 +3,13 @@
 //! Provides CRUD operations for knowledge spaces with JSON-based persistence.
 //! No Tauri dependency — pure business logic.
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use uuid::Uuid;
-use chrono::Utc;
 
 /// Space structure representing a knowledge space
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,7 +51,8 @@ impl SpaceManager {
         let mut document_spaces = HashMap::new();
         for space in &spaces {
             for doc_id in &space.documents {
-                space_documents.entry(space.id.clone())
+                space_documents
+                    .entry(space.id.clone())
                     .or_insert_with(Vec::new)
                     .push(doc_id.clone());
                 document_spaces.insert(doc_id.clone(), space.id.clone());
@@ -102,7 +103,10 @@ impl SpaceManager {
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
             Ok(spaces)
         } else {
-            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Spaces file not found"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Spaces file not found",
+            ))
         }
     }
 
@@ -116,8 +120,7 @@ impl SpaceManager {
         let data = serde_json::to_string_pretty(&*spaces)
             .map_err(|e| format!("Failed to serialize spaces: {}", e))?;
 
-        fs::write(&spaces_file, data)
-            .map_err(|e| format!("Failed to write spaces file: {}", e))?;
+        fs::write(&spaces_file, data).map_err(|e| format!("Failed to write spaces file: {}", e))?;
 
         Ok(())
     }
@@ -153,7 +156,9 @@ impl SpaceManager {
     pub fn delete_space(&self, space_id: &str) -> Result<(), String> {
         let mut spaces = self.spaces.lock().map_err(|e| e.to_string())?;
 
-        let index = spaces.iter().position(|s| s.id == space_id)
+        let index = spaces
+            .iter()
+            .position(|s| s.id == space_id)
             .ok_or_else(|| "Space not found".to_string())?;
 
         spaces.remove(index);
@@ -215,7 +220,8 @@ impl SpaceManager {
     pub fn rename_space(&self, space_id: &str, new_name: String) -> Result<(), String> {
         let mut spaces = self.spaces.lock().map_err(|e| e.to_string())?;
 
-        let space = spaces.iter_mut()
+        let space = spaces
+            .iter_mut()
             .find(|s| s.id == space_id)
             .ok_or_else(|| "Space not found".to_string())?;
 
@@ -227,10 +233,15 @@ impl SpaceManager {
         Ok(())
     }
 
-    pub fn update_space_folder(&self, space_id: &str, folder_path: Option<String>) -> Result<(), String> {
+    pub fn update_space_folder(
+        &self,
+        space_id: &str,
+        folder_path: Option<String>,
+    ) -> Result<(), String> {
         let mut spaces = self.spaces.lock().map_err(|e| e.to_string())?;
 
-        let space = spaces.iter_mut()
+        let space = spaces
+            .iter_mut()
             .find(|s| s.id == space_id)
             .ok_or_else(|| "Space not found".to_string())?;
 
@@ -247,7 +258,8 @@ impl SpaceManager {
         let mut space_docs = self.space_documents.lock().map_err(|e| e.to_string())?;
         let mut doc_spaces = self.document_spaces.lock().map_err(|e| e.to_string())?;
 
-        let space = spaces.iter_mut()
+        let space = spaces
+            .iter_mut()
             .find(|s| s.id == space_id)
             .ok_or_else(|| "Space not found".to_string())?;
 
@@ -257,7 +269,8 @@ impl SpaceManager {
             space.last_active = Utc::now().to_rfc3339();
         }
 
-        space_docs.entry(space_id.to_string())
+        space_docs
+            .entry(space_id.to_string())
             .or_default()
             .push(document_id.clone());
 
@@ -271,12 +284,17 @@ impl SpaceManager {
         Ok(())
     }
 
-    pub fn remove_document_from_space(&self, space_id: &str, document_id: &str) -> Result<(), String> {
+    pub fn remove_document_from_space(
+        &self,
+        space_id: &str,
+        document_id: &str,
+    ) -> Result<(), String> {
         let mut spaces = self.spaces.lock().map_err(|e| e.to_string())?;
         let mut space_docs = self.space_documents.lock().map_err(|e| e.to_string())?;
         let mut doc_spaces = self.document_spaces.lock().map_err(|e| e.to_string())?;
 
-        let space = spaces.iter_mut()
+        let space = spaces
+            .iter_mut()
             .find(|s| s.id == space_id)
             .ok_or_else(|| "Space not found".to_string())?;
 
@@ -305,7 +323,8 @@ impl SpaceManager {
 
     pub fn get_space(&self, space_id: &str) -> Result<Space, String> {
         let spaces = self.spaces.lock().map_err(|e| e.to_string())?;
-        spaces.iter()
+        spaces
+            .iter()
             .find(|s| s.id == space_id)
             .cloned()
             .ok_or_else(|| "Space not found".to_string())
@@ -318,7 +337,9 @@ impl SpaceManager {
 
     pub fn set_space_metadata(&self, space_id: &str, key: &str, value: &str) -> Result<(), String> {
         let mut spaces = self.spaces.lock().map_err(|e| e.to_string())?;
-        let space = spaces.iter_mut().find(|s| s.id == space_id)
+        let space = spaces
+            .iter_mut()
+            .find(|s| s.id == space_id)
             .ok_or_else(|| format!("Space '{}' not found", space_id))?;
         space.metadata.insert(key.to_string(), value.to_string());
         drop(spaces);
@@ -327,7 +348,8 @@ impl SpaceManager {
 
     pub fn get_space_metadata(&self, space_id: &str, key: &str) -> Option<String> {
         let spaces = self.spaces.lock().ok()?;
-        spaces.iter()
+        spaces
+            .iter()
             .find(|s| s.id == space_id)
             .and_then(|s| s.metadata.get(key).cloned())
     }

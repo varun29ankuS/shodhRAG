@@ -9,11 +9,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 static CITATION_WITH_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"([a-zA-Z0-9_\-./\\]+\.[a-zA-Z]{1,5}):(\d+)").expect("citation with line regex is valid")
+    Regex::new(r"([a-zA-Z0-9_\-./\\]+\.[a-zA-Z]{1,5}):(\d+)")
+        .expect("citation with line regex is valid")
 });
 
 static CITATION_WITHOUT_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"([a-zA-Z0-9_\-./\\]+\.[a-zA-Z]{1,5})\b").expect("citation without line regex is valid")
+    Regex::new(r"([a-zA-Z0-9_\-./\\]+\.[a-zA-Z]{1,5})\b")
+        .expect("citation without line regex is valid")
 });
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,7 +125,10 @@ impl CitationValidator {
         }
 
         if self.debug {
-            tracing::debug!(count = citations.len(), "[CitationValidator] Extracted citations");
+            tracing::debug!(
+                count = citations.len(),
+                "[CitationValidator] Extracted citations"
+            );
             for cit in &citations {
                 tracing::debug!(citation = %cit.full_text, "  Citation found");
             }
@@ -141,7 +146,14 @@ impl CitationValidator {
 
         // Common false positives
         let false_positives = [
-            "e.g.", "i.e.", "etc.", "a.k.a.", "vs.", "localhost", "example.com", "test.txt",
+            "e.g.",
+            "i.e.",
+            "etc.",
+            "a.k.a.",
+            "vs.",
+            "localhost",
+            "example.com",
+            "test.txt",
         ];
 
         for fp in &false_positives {
@@ -154,11 +166,7 @@ impl CitationValidator {
     }
 
     /// Validate citations against source documents
-    pub fn validate(
-        &self,
-        answer: &str,
-        source_documents: &[SourceDocument],
-    ) -> ValidationResult {
+    pub fn validate(&self, answer: &str, source_documents: &[SourceDocument]) -> ValidationResult {
         let citations = self.extract_citations(answer);
 
         if citations.is_empty() {
@@ -198,14 +206,17 @@ impl CitationValidator {
             let normalized_path = citation.file_path.replace("\\", "/");
 
             // Check if file exists in source documents
-            let file_exists = available_files.iter().any(|f| {
-                f.ends_with(&normalized_path) || normalized_path.ends_with(f)
-            });
+            let file_exists = available_files
+                .iter()
+                .any(|f| f.ends_with(&normalized_path) || normalized_path.ends_with(f));
 
             if !file_exists {
                 invalid_citations.push(InvalidCitation {
                     citation_text: citation.full_text.clone(),
-                    reason: format!("File '{}' not found in source documents", citation.file_path),
+                    reason: format!(
+                        "File '{}' not found in source documents",
+                        citation.file_path
+                    ),
                     file_path: Some(citation.file_path.clone()),
                     line_number: citation.line_number,
                 });
@@ -276,7 +287,12 @@ impl CitationValidator {
         }
 
         if self.debug {
-            tracing::debug!(valid = valid_count, total = citations.len(), confidence_pct = format_args!("{:.2}", confidence * 100.0), "[CitationValidator] Validation complete");
+            tracing::debug!(
+                valid = valid_count,
+                total = citations.len(),
+                confidence_pct = format_args!("{:.2}", confidence * 100.0),
+                "[CitationValidator] Validation complete"
+            );
         }
 
         ValidationResult {
@@ -330,10 +346,7 @@ mod tests {
         let citations = validator.extract_citations(answer);
 
         assert_eq!(citations.len(), 1);
-        assert_eq!(
-            citations[0].file_path,
-            "src/rag/fast_attention_reranker.rs"
-        );
+        assert_eq!(citations[0].file_path, "src/rag/fast_attention_reranker.rs");
         assert_eq!(citations[0].line_number, Some(324));
     }
 

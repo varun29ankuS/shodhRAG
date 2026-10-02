@@ -3,30 +3,26 @@
 //! Extracts document structures and generates reusable templates from existing documents.
 //! Learns formatting, section patterns, and content organization.
 
+use crate::rag_engine::RAGEngine;
+use crate::types::ComprehensiveResult;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::LazyLock;
-use crate::types::ComprehensiveResult;
-use crate::rag_engine::RAGEngine;
 
 static NUMBERED_HEADING_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"^\d+\.\s+(.+)$").expect("numbered heading regex is valid")
 });
-static NUMBER_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"\b\d+\b").expect("number regex is valid")
-});
-static DATE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"\d{4}-\d{2}-\d{2}").expect("date regex is valid")
-});
+static NUMBER_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\b\d+\b").expect("number regex is valid"));
+static DATE_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\d{4}-\d{2}-\d{2}").expect("date regex is valid"));
 static NAME_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"\b[A-Z][a-z]+ [A-Z][a-z]+\b").expect("name regex is valid")
 });
-static MUSTACHE_VAR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"\{\{(\w+)\}\}").expect("mustache var regex is valid")
-});
-static BRACKET_VAR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"\[([A-Z_]+)\]").expect("bracket var regex is valid")
-});
+static MUSTACHE_VAR_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\{\{(\w+)\}\}").expect("mustache var regex is valid"));
+static BRACKET_VAR_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\[([A-Z_]+)\]").expect("bracket var regex is valid"));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentTemplate {
@@ -331,16 +327,16 @@ impl TemplateExtractor {
         placeholder = NUMBER_RE.replace_all(&placeholder, "[NUMBER]").to_string();
 
         if placeholder.len() > 500 {
-            format!("[{}]\n\nProvide content for this section.", section_name.to_uppercase())
+            format!(
+                "[{}]\n\nProvide content for this section.",
+                section_name.to_uppercase()
+            )
         } else {
             placeholder
         }
     }
 
-    fn create_default_sections(
-        &self,
-        _chunks: &[ComprehensiveResult],
-    ) -> Vec<TemplateSection> {
+    fn create_default_sections(&self, _chunks: &[ComprehensiveResult]) -> Vec<TemplateSection> {
         vec![
             TemplateSection {
                 name: "Introduction".to_string(),
@@ -364,8 +360,7 @@ impl TemplateExtractor {
                 name: "Conclusion".to_string(),
                 order: 2,
                 content_type: ContentType::Text,
-                placeholder: "[CONCLUSION]\n\nProvide a conclusion for the document."
-                    .to_string(),
+                placeholder: "[CONCLUSION]\n\nProvide a conclusion for the document.".to_string(),
                 is_required: false,
                 formatting_rules: vec![],
             },
@@ -375,7 +370,11 @@ impl TemplateExtractor {
     fn detect_formatting_patterns(&self, chunks: &[ComprehensiveResult]) -> Vec<String> {
         let mut patterns = Vec::new();
 
-        let combined = chunks.iter().map(|c| c.snippet.as_str()).collect::<Vec<_>>().join("\n");
+        let combined = chunks
+            .iter()
+            .map(|c| c.snippet.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         if combined.contains("**") || combined.contains("__") {
             patterns.push("Uses bold text for emphasis".to_string());
@@ -395,7 +394,11 @@ impl TemplateExtractor {
 
     fn extract_variables(&self, chunks: &[ComprehensiveResult]) -> Vec<TemplateVariable> {
         let mut variables = Vec::new();
-        let combined = chunks.iter().map(|c| c.snippet.as_str()).collect::<Vec<_>>().join("\n");
+        let combined = chunks
+            .iter()
+            .map(|c| c.snippet.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         for cap in MUSTACHE_VAR_RE.captures_iter(&combined) {
             if let Some(var_name) = cap.get(1) {
@@ -430,7 +433,11 @@ impl TemplateExtractor {
         chunks: &[ComprehensiveResult],
         doc_ids: &[String],
     ) -> TemplateMetadata {
-        let combined = chunks.iter().map(|c| c.snippet.as_str()).collect::<Vec<_>>().join("\n");
+        let combined = chunks
+            .iter()
+            .map(|c| c.snippet.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         let document_type = if combined.contains("Agreement") || combined.contains("Contract") {
             "Legal Document"
@@ -453,7 +460,11 @@ impl TemplateExtractor {
         }
     }
 
-    fn generate_example(&self, sections: &[TemplateSection], chunks: &[ComprehensiveResult]) -> String {
+    fn generate_example(
+        &self,
+        sections: &[TemplateSection],
+        chunks: &[ComprehensiveResult],
+    ) -> String {
         let mut example = String::new();
 
         for section in sections {

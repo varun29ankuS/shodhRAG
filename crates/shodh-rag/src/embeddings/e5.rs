@@ -70,9 +70,7 @@ pub struct E5Embeddings {
 
 impl E5Embeddings {
     pub fn new(config: E5Config) -> Result<Self> {
-        ort::init()
-            .with_name("e5_embeddings")
-            .commit();
+        ort::init().with_name("e5_embeddings").commit();
 
         if !config.model_path.exists() {
             return Err(anyhow!(
@@ -169,14 +167,10 @@ impl E5Embeddings {
         attention_mask: &[i64],
     ) -> Result<Vec<f32>> {
         // Check available output names and try "sentence_embedding" if present (already pooled)
-        let has_sentence_embedding = outputs
-            .iter()
-            .any(|(name, _)| name == "sentence_embedding");
+        let has_sentence_embedding = outputs.iter().any(|(name, _)| name == "sentence_embedding");
 
         if has_sentence_embedding {
-            if let Ok((shape, data)) =
-                outputs["sentence_embedding"].try_extract_tensor::<f32>()
-            {
+            if let Ok((shape, data)) = outputs["sentence_embedding"].try_extract_tensor::<f32>() {
                 if shape.len() == 2 {
                     let embedding: Vec<f32> = data.to_vec();
                     return self.normalize_vec(embedding);
@@ -308,10 +302,12 @@ impl E5Embeddings {
 
             // Extract per-sample embeddings from batch output
             // Check for sentence_embedding first (already pooled), then fall back to last_hidden_state
-            let has_sentence_embedding = outputs.iter().any(|(name, _)| name == "sentence_embedding");
+            let has_sentence_embedding =
+                outputs.iter().any(|(name, _)| name == "sentence_embedding");
 
             if has_sentence_embedding {
-                if let Ok((shape, data)) = outputs["sentence_embedding"].try_extract_tensor::<f32>() {
+                if let Ok((shape, data)) = outputs["sentence_embedding"].try_extract_tensor::<f32>()
+                {
                     let hidden_dim = shape[1] as usize;
                     for sample_idx in 0..batch_size {
                         let offset = sample_idx * hidden_dim;
@@ -319,7 +315,9 @@ impl E5Embeddings {
                         all_embeddings.push(self.normalize_vec(embedding)?);
                     }
                 }
-            } else if let Ok((shape, data)) = outputs["last_hidden_state"].try_extract_tensor::<f32>() {
+            } else if let Ok((shape, data)) =
+                outputs["last_hidden_state"].try_extract_tensor::<f32>()
+            {
                 let seq_len = shape[1] as usize;
                 let hidden_dim = shape[2] as usize;
 

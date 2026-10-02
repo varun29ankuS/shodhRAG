@@ -1,4 +1,4 @@
-use tauri::{Manager, WebviewWindow, WebviewUrl, LogicalSize, LogicalPosition};
+use tauri::{LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindow};
 
 #[tauri::command]
 pub async fn create_floating_widget(app: tauri::AppHandle) -> Result<(), String> {
@@ -10,36 +10,33 @@ pub async fn create_floating_widget(app: tauri::AppHandle) -> Result<(), String>
     }
 
     // Create the floating widget window using Tauri v2 API
-    let widget_window = tauri::WebviewWindowBuilder::new(
-        &app,
-        "widget",
-        WebviewUrl::App("widget.html".into())
-    )
-    .title("Vectora Widget")
-    .inner_size(80.0, 80.0)
-    .resizable(false)
-    .decorations(false)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .transparent(true)
-    .position(100.0, 100.0)
-    .build()
-    .map_err(|e| e.to_string())?;
+    let widget_window =
+        tauri::WebviewWindowBuilder::new(&app, "widget", WebviewUrl::App("widget.html".into()))
+            .title("Vectora Widget")
+            .inner_size(80.0, 80.0)
+            .resizable(false)
+            .decorations(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .transparent(true)
+            .position(100.0, 100.0)
+            .build()
+            .map_err(|e| e.to_string())?;
 
     // Position in top-right corner
     if let Ok(monitor) = widget_window.current_monitor() {
         if let Some(monitor) = monitor {
             let size = monitor.size();
             let scale = monitor.scale_factor();
-            let logical_size = LogicalSize::new(
-                size.width as f64 / scale,
-                size.height as f64 / scale
-            );
-            
-            widget_window.set_position(tauri::Position::Logical(LogicalPosition::new(
-                logical_size.width - 100.0,
-                20.0
-            ))).map_err(|e| e.to_string())?;
+            let logical_size =
+                LogicalSize::new(size.width as f64 / scale, size.height as f64 / scale);
+
+            widget_window
+                .set_position(tauri::Position::Logical(LogicalPosition::new(
+                    logical_size.width - 100.0,
+                    20.0,
+                )))
+                .map_err(|e| e.to_string())?;
         }
     }
 
@@ -50,12 +47,12 @@ pub async fn create_floating_widget(app: tauri::AppHandle) -> Result<(), String>
 pub async fn show_main_window(window: WebviewWindow) -> Result<(), String> {
     window.show().map_err(|e| e.to_string())?;
     window.set_focus().map_err(|e| e.to_string())?;
-    
+
     // Hide widget window if it exists
     if let Some(widget) = window.app_handle().get_webview_window("widget") {
         widget.hide().map_err(|e| e.to_string())?;
     }
-    
+
     Ok(())
 }
 

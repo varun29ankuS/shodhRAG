@@ -5,11 +5,11 @@ use std::sync::Arc;
 use tokio::sync::RwLock as AsyncRwLock;
 
 // Re-export backend types so existing callers don't break
+pub use shodh_rag::chat::engine::ChatEngine;
 pub use shodh_rag::chat::{
-    AssistantResponse, Artifact, ArtifactType, ChatContext, Citation, ConversationMessage,
+    Artifact, ArtifactType, AssistantResponse, ChatContext, Citation, ConversationMessage,
     EventEmitter, Intent, MessagePlatform, ResponseMetadata, SearchResult, UserMessage,
 };
-pub use shodh_rag::chat::engine::ChatEngine;
 
 /// Tauri-specific EventEmitter that wraps AppHandle for streaming tokens.
 pub struct TauriEventEmitter {
@@ -43,33 +43,45 @@ impl TauriToolEmitter {
 impl shodh_rag::agent::tool_loop::ToolLoopEmitter for TauriToolEmitter {
     fn on_content_delta(&self, delta: &str) {
         use tauri::Emitter;
-        let _ = self.app_handle.emit("chat_token", serde_json::json!({
-            "accumulated": delta,
-        }));
+        let _ = self.app_handle.emit(
+            "chat_token",
+            serde_json::json!({
+                "accumulated": delta,
+            }),
+        );
     }
 
     fn on_tool_start(&self, tool_name: &str, arguments: &str) {
         use tauri::Emitter;
-        let _ = self.app_handle.emit("tool_call_start", serde_json::json!({
-            "tool_name": tool_name,
-            "arguments": arguments,
-        }));
+        let _ = self.app_handle.emit(
+            "tool_call_start",
+            serde_json::json!({
+                "tool_name": tool_name,
+                "arguments": arguments,
+            }),
+        );
     }
 
     fn on_tool_complete(&self, invocation: &shodh_rag::agent::tool_loop::ToolInvocation) {
         use tauri::Emitter;
-        let _ = self.app_handle.emit("tool_call_complete", serde_json::json!({
-            "tool_name": invocation.tool_name,
-            "result": invocation.result,
-            "success": invocation.success,
-            "duration_ms": invocation.duration_ms,
-        }));
+        let _ = self.app_handle.emit(
+            "tool_call_complete",
+            serde_json::json!({
+                "tool_name": invocation.tool_name,
+                "result": invocation.result,
+                "success": invocation.success,
+                "duration_ms": invocation.duration_ms,
+            }),
+        );
     }
 
     fn on_thinking(&self, message: &str) {
         use tauri::Emitter;
-        let _ = self.app_handle.emit("agent_thinking", serde_json::json!({
-            "message": message,
-        }));
+        let _ = self.app_handle.emit(
+            "agent_thinking",
+            serde_json::json!({
+                "message": message,
+            }),
+        );
     }
 }

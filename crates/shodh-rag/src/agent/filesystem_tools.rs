@@ -6,16 +6,16 @@
 //! - Path sandboxing
 //! - Audit logging
 
-use super::tools::{AgentTool, ToolInput, ToolResult};
 use super::context::AgentContext;
-use anyhow::{Result, Context as AnyhowContext};
+use super::tools::{AgentTool, ToolInput, ToolResult};
+use anyhow::{Context as AnyhowContext, Result};
 use async_trait::async_trait;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use std::collections::HashMap;
-use chrono::Utc;
 
 // ============================================================================
 // Permission Management
@@ -106,10 +106,10 @@ impl PermissionManager {
                 PathBuf::from(&home_dir).join("Documents"),
                 PathBuf::from(&home_dir).join("Downloads"),
                 PathBuf::from(&home_dir).join("Desktop"),
-                PathBuf::from("./agent_workspace"),  // Project workspace (from app root)
-                PathBuf::from("../agent_workspace"),  // Project workspace (from subdirectory)
-                PathBuf::from(std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),  // Current working directory
-                PathBuf::from(std::env::temp_dir()),  // Temp directory
+                PathBuf::from("./agent_workspace"), // Project workspace (from app root)
+                PathBuf::from("../agent_workspace"), // Project workspace (from subdirectory)
+                PathBuf::from(std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))), // Current working directory
+                PathBuf::from(std::env::temp_dir()), // Temp directory
             ],
             blocked_paths: vec![
                 PathBuf::from("/etc"),
@@ -158,21 +158,18 @@ impl PermissionManager {
     }
 
     /// Check if permission is granted for this session
-    pub async fn has_session_permission(
-        &self,
-        agent_id: &str,
-        operation: &FilePermission,
-    ) -> bool {
+    pub async fn has_session_permission(&self, agent_id: &str, operation: &FilePermission) -> bool {
         let key = (agent_id.to_string(), operation.clone());
-        self.session_permissions.read().await.get(&key).copied().unwrap_or(false)
+        self.session_permissions
+            .read()
+            .await
+            .get(&key)
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Grant session permission
-    pub async fn grant_session_permission(
-        &self,
-        agent_id: &str,
-        operation: FilePermission,
-    ) {
+    pub async fn grant_session_permission(&self, agent_id: &str, operation: FilePermission) {
         let key = (agent_id.to_string(), operation);
         self.session_permissions.write().await.insert(key, true);
     }
@@ -192,7 +189,10 @@ impl PermissionManager {
         }
 
         // Check session permission
-        if self.has_session_permission(&request.agent_id, &request.operation).await {
+        if self
+            .has_session_permission(&request.agent_id, &request.operation)
+            .await
+        {
             return Ok(PermissionDecision {
                 allowed: true,
                 scope: PermissionScope::Session,
@@ -290,26 +290,33 @@ impl AgentTool for ReadFileTool {
         let path = PathBuf::from(path_str);
 
         // Extract user_id from context
-        let user_id = context.user_info.as_ref()
+        let user_id = context
+            .user_info
+            .as_ref()
             .map(|u| u.user_id.clone())
             .unwrap_or_else(|| "unknown".to_string());
 
         // Request permission
-        let permission = self.permission_manager.request_permission(PermissionRequest {
-            operation: FilePermission::ReadFile,
-            path: path.clone(),
-            reason: format!("Agent wants to read file: {}", path.display()),
-            agent_id: user_id.clone(),
-        }).await?;
+        let permission = self
+            .permission_manager
+            .request_permission(PermissionRequest {
+                operation: FilePermission::ReadFile,
+                path: path.clone(),
+                reason: format!("Agent wants to read file: {}", path.display()),
+                agent_id: user_id.clone(),
+            })
+            .await?;
 
         if !permission.allowed {
-            self.permission_manager.log_operation(
-                user_id,
-                FilePermission::ReadFile,
-                path,
-                false,
-                "Permission denied".to_string(),
-            ).await;
+            self.permission_manager
+                .log_operation(
+                    user_id,
+                    FilePermission::ReadFile,
+                    path,
+                    false,
+                    "Permission denied".to_string(),
+                )
+                .await;
 
             return Ok(ToolResult {
                 success: false,
@@ -322,13 +329,15 @@ impl AgentTool for ReadFileTool {
         // Read file
         match std::fs::read_to_string(&path) {
             Ok(content) => {
-                self.permission_manager.log_operation(
-                    user_id,
-                    FilePermission::ReadFile,
-                    path.clone(),
-                    true,
-                    format!("Read {} bytes", content.len()),
-                ).await;
+                self.permission_manager
+                    .log_operation(
+                        user_id,
+                        FilePermission::ReadFile,
+                        path.clone(),
+                        true,
+                        format!("Read {} bytes", content.len()),
+                    )
+                    .await;
 
                 Ok(ToolResult {
                     success: true,
@@ -342,13 +351,15 @@ impl AgentTool for ReadFileTool {
                 })
             }
             Err(e) => {
-                self.permission_manager.log_operation(
-                    user_id,
-                    FilePermission::ReadFile,
-                    path,
-                    true,
-                    format!("Failed: {}", e),
-                ).await;
+                self.permission_manager
+                    .log_operation(
+                        user_id,
+                        FilePermission::ReadFile,
+                        path,
+                        true,
+                        format!("Failed: {}", e),
+                    )
+                    .await;
 
                 Ok(ToolResult {
                     success: false,
@@ -415,26 +426,37 @@ impl AgentTool for WriteFileTool {
         let path = PathBuf::from(path_str);
 
         // Extract user_id from context
-        let user_id = context.user_info.as_ref()
+        let user_id = context
+            .user_info
+            .as_ref()
             .map(|u| u.user_id.clone())
             .unwrap_or_else(|| "unknown".to_string());
 
         // Request permission
-        let permission = self.permission_manager.request_permission(PermissionRequest {
-            operation: FilePermission::WriteFile,
-            path: path.clone(),
-            reason: format!("Agent wants to write {} bytes to: {}", content.len(), path.display()),
-            agent_id: user_id.clone(),
-        }).await?;
+        let permission = self
+            .permission_manager
+            .request_permission(PermissionRequest {
+                operation: FilePermission::WriteFile,
+                path: path.clone(),
+                reason: format!(
+                    "Agent wants to write {} bytes to: {}",
+                    content.len(),
+                    path.display()
+                ),
+                agent_id: user_id.clone(),
+            })
+            .await?;
 
         if !permission.allowed {
-            self.permission_manager.log_operation(
-                user_id,
-                FilePermission::WriteFile,
-                path,
-                false,
-                "Permission denied".to_string(),
-            ).await;
+            self.permission_manager
+                .log_operation(
+                    user_id,
+                    FilePermission::WriteFile,
+                    path,
+                    false,
+                    "Permission denied".to_string(),
+                )
+                .await;
 
             return Ok(ToolResult {
                 success: false,
@@ -454,13 +476,15 @@ impl AgentTool for WriteFileTool {
         // Write file
         match std::fs::write(&path, content) {
             Ok(_) => {
-                self.permission_manager.log_operation(
-                    user_id,
-                    FilePermission::WriteFile,
-                    path.clone(),
-                    true,
-                    format!("Wrote {} bytes", content.len()),
-                ).await;
+                self.permission_manager
+                    .log_operation(
+                        user_id,
+                        FilePermission::WriteFile,
+                        path.clone(),
+                        true,
+                        format!("Wrote {} bytes", content.len()),
+                    )
+                    .await;
 
                 Ok(ToolResult {
                     success: true,
@@ -473,13 +497,15 @@ impl AgentTool for WriteFileTool {
                 })
             }
             Err(e) => {
-                self.permission_manager.log_operation(
-                    user_id,
-                    FilePermission::WriteFile,
-                    path,
-                    true,
-                    format!("Failed: {}", e),
-                ).await;
+                self.permission_manager
+                    .log_operation(
+                        user_id,
+                        FilePermission::WriteFile,
+                        path,
+                        true,
+                        format!("Failed: {}", e),
+                    )
+                    .await;
 
                 Ok(ToolResult {
                     success: false,
@@ -538,26 +564,33 @@ impl AgentTool for ListDirectoryTool {
         let path = PathBuf::from(path_str);
 
         // Extract user_id from context
-        let user_id = context.user_info.as_ref()
+        let user_id = context
+            .user_info
+            .as_ref()
             .map(|u| u.user_id.clone())
             .unwrap_or_else(|| "unknown".to_string());
 
         // Request permission
-        let permission = self.permission_manager.request_permission(PermissionRequest {
-            operation: FilePermission::ListDirectory,
-            path: path.clone(),
-            reason: format!("Agent wants to list directory: {}", path.display()),
-            agent_id: user_id.clone(),
-        }).await?;
+        let permission = self
+            .permission_manager
+            .request_permission(PermissionRequest {
+                operation: FilePermission::ListDirectory,
+                path: path.clone(),
+                reason: format!("Agent wants to list directory: {}", path.display()),
+                agent_id: user_id.clone(),
+            })
+            .await?;
 
         if !permission.allowed {
-            self.permission_manager.log_operation(
-                user_id,
-                FilePermission::ListDirectory,
-                path,
-                false,
-                "Permission denied".to_string(),
-            ).await;
+            self.permission_manager
+                .log_operation(
+                    user_id,
+                    FilePermission::ListDirectory,
+                    path,
+                    false,
+                    "Permission denied".to_string(),
+                )
+                .await;
 
             return Ok(ToolResult {
                 success: false,
@@ -590,13 +623,15 @@ impl AgentTool for ListDirectoryTool {
                     }
                 }
 
-                self.permission_manager.log_operation(
-                    user_id,
-                    FilePermission::ListDirectory,
-                    path.clone(),
-                    true,
-                    format!("Found {} files, {} directories", files.len(), dirs.len()),
-                ).await;
+                self.permission_manager
+                    .log_operation(
+                        user_id,
+                        FilePermission::ListDirectory,
+                        path.clone(),
+                        true,
+                        format!("Found {} files, {} directories", files.len(), dirs.len()),
+                    )
+                    .await;
 
                 Ok(ToolResult {
                     success: true,
@@ -615,13 +650,15 @@ impl AgentTool for ListDirectoryTool {
                 })
             }
             Err(e) => {
-                self.permission_manager.log_operation(
-                    user_id,
-                    FilePermission::ListDirectory,
-                    path,
-                    true,
-                    format!("Failed: {}", e),
-                ).await;
+                self.permission_manager
+                    .log_operation(
+                        user_id,
+                        FilePermission::ListDirectory,
+                        path,
+                        true,
+                        format!("Failed: {}", e),
+                    )
+                    .await;
 
                 Ok(ToolResult {
                     success: false,

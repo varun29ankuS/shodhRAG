@@ -2,14 +2,14 @@
 //!
 //! Tracks execution history, performance metrics, and health status for all agents.
 
-use super::executor::{ExecutionResult, ExecutionStep};
 use super::context::AgentContext;
-use anyhow::{Result, Context as AnyhowContext};
+use super::executor::{ExecutionResult, ExecutionStep};
+use anyhow::{Context as AnyhowContext, Result};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use chrono::{DateTime, Utc, NaiveDate, Datelike};
 
 // ============================================================================
 // Core Types
@@ -179,9 +179,18 @@ impl AgentMetricsCollector {
             execution_time_ms: Some(result.execution_time_ms),
             steps_count: result.steps.len(),
             tools_used: result.tools_used.clone(),
-            input_tokens: result.metadata.get("input_tokens").and_then(|v| v.as_u64().map(|n| n as usize)),
-            output_tokens: result.metadata.get("output_tokens").and_then(|v| v.as_u64().map(|n| n as usize)),
-            total_tokens: result.metadata.get("total_tokens").and_then(|v| v.as_u64().map(|n| n as usize)),
+            input_tokens: result
+                .metadata
+                .get("input_tokens")
+                .and_then(|v| v.as_u64().map(|n| n as usize)),
+            output_tokens: result
+                .metadata
+                .get("output_tokens")
+                .and_then(|v| v.as_u64().map(|n| n as usize)),
+            total_tokens: result
+                .metadata
+                .get("total_tokens")
+                .and_then(|v| v.as_u64().map(|n| n as usize)),
             success: result.success,
             error_message: result.error.clone(),
             steps: Some(result.steps.clone()),
@@ -250,8 +259,8 @@ impl AgentMetricsCollector {
             metrics.max_execution_time_ms = metrics.max_execution_time_ms.max(exec_time);
 
             // Recalculate average
-            let total_time = (metrics.avg_execution_time_ms * (metrics.total_executions - 1) as u64)
-                + exec_time;
+            let total_time =
+                (metrics.avg_execution_time_ms * (metrics.total_executions - 1) as u64) + exec_time;
             metrics.avg_execution_time_ms = total_time / metrics.total_executions as u64;
         }
 
@@ -279,17 +288,18 @@ impl AgentMetricsCollector {
     async fn update_health(&self, agent_id: &str, success: bool) -> Result<()> {
         let mut health_cache = self.health_cache.write().await;
 
-        let health = health_cache
-            .entry(agent_id.to_string())
-            .or_insert_with(|| AgentHealthStatus {
-                agent_id: agent_id.to_string(),
-                status: HealthState::Healthy,
-                last_success_at: None,
-                last_failure_at: None,
-                consecutive_failures: 0,
-                health_score: 1.0,
-                checked_at: Utc::now(),
-            });
+        let health =
+            health_cache
+                .entry(agent_id.to_string())
+                .or_insert_with(|| AgentHealthStatus {
+                    agent_id: agent_id.to_string(),
+                    status: HealthState::Healthy,
+                    last_success_at: None,
+                    last_failure_at: None,
+                    consecutive_failures: 0,
+                    health_score: 1.0,
+                    checked_at: Utc::now(),
+                });
 
         let now = Utc::now();
 
@@ -415,10 +425,7 @@ impl AgentMetricsCollector {
         let now = Utc::now();
         let last_24h = now - chrono::Duration::hours(24);
 
-        let recent_24h: Vec<_> = recent
-            .iter()
-            .filter(|e| e.started_at >= last_24h)
-            .collect();
+        let recent_24h: Vec<_> = recent.iter().filter(|e| e.started_at >= last_24h).collect();
 
         let total_runs = recent_24h.len();
         let successful_runs = recent_24h.iter().filter(|e| e.success).count();

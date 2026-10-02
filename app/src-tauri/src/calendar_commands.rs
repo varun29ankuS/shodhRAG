@@ -127,16 +127,16 @@ fn write_calendar(app: &AppHandle, data: &CalendarDataFile) -> Result<(), String
 // Convert local structs to shodh_rag equivalents and call the indexer.
 // Best-effort: if RAG engine isn't ready, log and continue.
 
-fn to_rag_subtask(s: &SubTask) -> shodh_rag::agent::calendar_tools::SubTask {
-    shodh_rag::agent::calendar_tools::SubTask {
+fn to_rag_subtask(s: &SubTask) -> shodh_rag::agent::calendar::SubTask {
+    shodh_rag::agent::calendar::SubTask {
         id: s.id.clone(),
         title: s.title.clone(),
         completed: s.completed,
     }
 }
 
-fn to_rag_task(task: &TodoItem) -> shodh_rag::agent::calendar_tools::TodoItem {
-    shodh_rag::agent::calendar_tools::TodoItem {
+fn to_rag_task(task: &TodoItem) -> shodh_rag::agent::calendar::TodoItem {
+    shodh_rag::agent::calendar::TodoItem {
         id: task.id.clone(),
         title: task.title.clone(),
         description: task.description.clone(),
@@ -155,8 +155,8 @@ fn to_rag_task(task: &TodoItem) -> shodh_rag::agent::calendar_tools::TodoItem {
     }
 }
 
-fn to_rag_event(event: &CalendarEvent) -> shodh_rag::agent::calendar_tools::CalendarEvent {
-    shodh_rag::agent::calendar_tools::CalendarEvent {
+fn to_rag_event(event: &CalendarEvent) -> shodh_rag::agent::calendar::CalendarEvent {
+    shodh_rag::agent::calendar::CalendarEvent {
         id: event.id.clone(),
         title: event.title.clone(),
         description: event.description.clone(),

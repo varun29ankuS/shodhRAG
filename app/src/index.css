@@ -281,3 +281,129 @@
     animation: none;
   }
 }
+
+/*
+ * Source viewer (features/ask/viewer). Cited-passage highlights use a fill
+ * plus an outline so they never rely on colour alone.
+ */
+.source-mark {
+  background-color: color-mix(in srgb, var(--c-warning) 30%, transparent);
+  color: var(--c-text);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-warning) 70%, transparent);
+  scroll-margin: 96px;
+}
+
+.source-row-cited > :is(td, th) {
+  background-color: color-mix(in srgb, var(--c-warning) 22%, transparent);
+  color: var(--c-text);
+}
+
+.source-row-cited > :first-child {
+  box-shadow: inset 3px 0 0 var(--c-warning);
+}
+
+/* PDF pages: canvas, pdf.js text layer and highlight overlay stacked. */
+.pdf-page {
+  --scale-round-x: 1px;
+  --scale-round-y: 1px;
+  position: relative;
+  margin: 0 auto;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+.pdf-page > canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Minimal port of pdf.js's .textLayer rules (web/pdf_viewer.css). */
+.pdf-text-layer {
+  color-scheme: only light;
+  position: absolute;
+  text-align: initial;
+  inset: 0;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  letter-spacing: normal;
+  word-spacing: normal;
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  z-index: 1;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+
+.pdf-text-layer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+}
+
+.pdf-text-layer > :not(.markedContent),
+.pdf-text-layer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+.pdf-text-layer .markedContent {
+  display: contents;
+}
+
+.pdf-text-layer ::selection {
+  background: color-mix(in srgb, AccentColor, transparent 50%);
+  color: transparent;
+}
+
+.pdf-text-layer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
+}
+
+.pdf-text-layer[data-main-rotation="90"] {
+  transform: rotate(90deg) translateY(-100%);
+}
+
+.pdf-text-layer[data-main-rotation="180"] {
+  transform: rotate(180deg) translate(-100%, -100%);
+}
+
+.pdf-text-layer[data-main-rotation="270"] {
+  transform: rotate(270deg) translateX(-100%);
+}
+
+.pdf-highlight-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.pdf-highlight {
+  position: absolute;
+  background-color: rgba(255, 196, 0, 0.38);
+  mix-blend-mode: multiply;
+  outline: 2px solid #c94d1c;
+  outline-offset: 1px;
+  border-radius: 2px;
+  scroll-margin: 96px;
+}

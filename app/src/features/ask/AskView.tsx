@@ -4,9 +4,17 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { cn } from '../../lib/utils';
 import type { ViewTab } from '../../lib/viewTabs';
 import { EnhancedArtifactPanel } from '../../components/EnhancedArtifactPanel';
+import { useMediaQuery } from '../../hooks/useMediaQuery';
+import { AgentComposer } from '../agent/AgentComposer';
+import type { AgentComposerHandle } from '../agent/AgentComposer';
+import { passageHits } from '../agent/citations';
+import { PlanPanel } from '../agent/PlanPanel';
+import { pendingApproval, isLive } from '../agent/reducer';
+import type { TranscriptState } from '../agent/reducer';
+import { RuntimeCard } from '../agent/RuntimeCard';
+import { StatusLine } from '../agent/StatusLine';
+import { Transcript } from '../agent/Transcript';
 import { useChatSession } from './ChatSessionContext';
-import { Composer } from './Composer';
-import type { ComposerHandle } from './Composer';
 import { MessageContentRenderer } from './MessageContentRenderer';
 import { RunChip } from './RunChip';
 import { SourcePreview } from './SourcePreview';
@@ -21,6 +29,23 @@ const VISIBLE_SOURCE_CHIPS = 6;
 
 /** Distance from the bottom within which streaming output keeps the view pinned. */
 const STICK_TO_BOTTOM_PX = 160;
+
+/** Width from which the task list docks to the right of the conversation. */
+const WIDE_LAYOUT_QUERY = '(min-width: 1440px)';
+
+/** Citation targets of a message: its run's passages, or legacy search results. */
+export function messageHits(message: ChatMessage): SearchHit[] {
+  return message.transcript ? passageHits(message.transcript.passages) : toSearchHits(message.searchResults);
+}
+
+/** The latest agent transcript in a conversation. */
+export function latestTranscript(messages: readonly ChatMessage[]): TranscriptState | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const t = messages[i].transcript;
+    if (t) return t;
+  }
+  return null;
+}
 
 const STARTER_PROMPTS = [
   'Summarize the key points across my documents',
@@ -178,9 +203,14 @@ interface AssistantMessageProps {
   activeCitation: number | null;
   activeFile: string | null;
   canRetry: boolean;
+  /** Task list shown inline above the answer (narrow layouts). */
+  inlinePlan: boolean;
   onOpenSource: (messageId: string, hit: SearchHit, trigger: HTMLElement) => void;
   onOpenArtifact: (artifactId: string) => void;
   onRetry: (message: ChatMessage) => void;
+  onDecide: (stepId: string, approved: boolean) => void;
+  onRuntimeInstalled: () => void;
+  onOpenSettings: () => void;
 }
 
 function AssistantMessage({
@@ -188,13 +218,23 @@ function AssistantMessage({
   activeCitation,
   activeFile,
   canRetry,
+  inlinePlan,
   onOpenSource,
   onOpenArtifact,
   onRetry,
+  onDecide,
+  onRuntimeInstalled,
+  onOpenSettings,
 }: AssistantMessageProps) {
-  const hits = useMemo(() => toSearchHits(message.searchResults), [message.searchResults]);
+  const transcript = message.transcript;
+  const passages = transcript?.passages;
+  const searchResults = message.searchResults;
+  const hits = useMemo(
+    () => (passages ? passageHits(passages) : toSearchHits(searchResults)),
+    [passages, searchResults],
+  );
   const groups = useMemo(() => groupSources(hits, citedNumbers(message.content)), [hits, message.content]);
-  const running = message.run?.status === 'running';
+  const running = transcript ? isLive(transcript) : message.run?.status === 'running';
   // Depend on the id only: the message object changes on every streamed
   // frame, and a new callback would rebuild the markdown component map.
   const messageId = message.id;
@@ -205,37 +245,56 @@ function AssistantMessage({
 
   return (
     <article className="ask-rise group/msg flex flex-col gap-4" aria-busy={running}>
-      {message.run && <RunChip run={message.run} metadata={message.metadata} passageCount={hits.length} />}
-
-      {message.image && (
-        <img
-          src={message.image}
-          alt="Image you added"
-          className="max-w-full max-h-[400px] object-contain rounded-xl border border-shodh-border"
-        />
-      )}
-
-      {message.content.length > 0 && (
-        <div>
-          <MessageContentRenderer
-            content={message.content}
+      {transcript ? (
+        <>
+          {inlinePlan && transcript.plan && <PlanPanel items={transcript.plan} live={running} variant="inline" />}
+          <Transcript
+            transcript={transcript}
             hits={hits}
-            artifacts={running ? undefined : message.artifacts}
             activeCitation={activeCitation}
             onOpenCitation={handleOpen}
+            onDecide={onDecide}
+            onRuntimeInstalled={onRuntimeInstalled}
+            onOpenSettings={onOpenSettings}
+            artifacts={message.artifacts}
             onOpenArtifact={onOpenArtifact}
           />
-        </div>
-      )}
+        </>
+      ) : (
+        <>
+          {message.run && <RunChip run={message.run} metadata={message.metadata} passageCount={hits.length} />}
 
-      {message.run?.status === 'failed' && (
-        <p role="alert" className="text-[13.5px] leading-relaxed text-shodh-error">
-          {`The answer could not be completed: ${message.run.error ?? 'unknown error'}`}
-        </p>
-      )}
+          {message.image && (
+            <img
+              src={message.image}
+              alt="Image you added"
+              className="max-w-full max-h-[400px] object-contain rounded-xl border border-shodh-border"
+            />
+          )}
 
-      {message.run?.status === 'cancelled' && message.content.length === 0 && (
-        <p className="text-[13.5px] text-shodh-text-muted">You stopped this answer before any text arrived.</p>
+          {message.content.length > 0 && (
+            <div>
+              <MessageContentRenderer
+                content={message.content}
+                hits={hits}
+                artifacts={running ? undefined : message.artifacts}
+                activeCitation={activeCitation}
+                onOpenCitation={handleOpen}
+                onOpenArtifact={onOpenArtifact}
+              />
+            </div>
+          )}
+
+          {message.run?.status === 'failed' && (
+            <p role="alert" className="text-[13.5px] leading-relaxed text-shodh-error">
+              {`The answer could not be completed: ${message.run.error ?? 'unknown error'}`}
+            </p>
+          )}
+
+          {message.run?.status === 'cancelled' && message.content.length === 0 && (
+            <p className="text-[13.5px] text-shodh-text-muted">You stopped this answer before any text arrived.</p>
+          )}
+        </>
       )}
 
       {!running && <SourceChips groups={groups} activeFile={activeFile} onOpen={handleOpen} />}
@@ -243,20 +302,20 @@ function AssistantMessage({
       {!running && (
         <div className="flex items-center gap-0.5 opacity-60 group-hover/msg:opacity-100 focus-within:opacity-100 transition-opacity duration-micro">
           {message.content.length > 0 && <CopyAnswerButton text={message.content} />}
-          {message.run && (
-            <button
-              type="button"
-              onClick={() => onRetry(message)}
-              disabled={!canRetry}
-              aria-label="Retry: ask the same question again"
-              title="Retry"
-              className={cn(
-                'w-8 h-8 inline-flex items-center justify-center rounded-lg text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-micro',
-                FOCUS_RING,
-              )}
-            >
-              <RotateCcw className="w-[15px] h-[15px]" aria-hidden="true" />
-            </button>
+          {(message.run || transcript) && (
+          <button
+            type="button"
+            onClick={() => onRetry(message)}
+            disabled={!canRetry}
+            aria-label="Retry: ask the same question again"
+            title="Retry"
+            className={cn(
+              'w-8 h-8 inline-flex items-center justify-center rounded-lg text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-micro',
+              FOCUS_RING,
+            )}
+          >
+            <RotateCcw className="w-[15px] h-[15px]" aria-hidden="true" />
+          </button>
           )}
         </div>
       )}
@@ -280,13 +339,14 @@ function SystemNotice({ message }: { message: ChatMessage }) {
 export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggingFile = false, dropHandlers }: AskViewProps) {
   const { theme } = useTheme();
   const session = useChatSession();
-  const { messages, isStreaming, streamingConversationId, send, retry, cancel } = session;
+  const { messages, isStreaming, streamingConversationId, send, retry, cancel, steer, approve, runtimeInstalled, setRuntimeInstalled } = session;
+  const wide = useMediaQuery(WIDE_LAYOUT_QUERY);
 
   const [draft, setDraft] = useState('');
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
   const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
   const previewTriggerRef = useRef<HTMLElement | null>(null);
-  const composerRef = useRef<ComposerHandle>(null);
+  const composerRef = useRef<AgentComposerHandle>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const lastCountRef = useRef(0);
 
@@ -331,19 +391,24 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     }
   }, [messages]);
 
-  // Esc stops a streaming answer. The source preview handles Esc first (in
-  // the capture phase) and marks the event handled.
+  const latest = useMemo(() => latestTranscript(messages), [messages]);
+  const liveTranscript = isStreaming && latest && isLive(latest) ? latest : null;
+  const waitingStep = liveTranscript ? pendingApproval(liveTranscript) : null;
+  const waitingStepId = waitingStep?.id ?? null;
+
+  // Esc denies a pending approval, otherwise interrupts the running answer.
+  // The source preview handles Esc first (capture phase) and marks it handled.
   useEffect(() => {
     if (!isStreaming) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !e.defaultPrevented) {
-        e.preventDefault();
-        cancel();
-      }
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      e.preventDefault();
+      if (waitingStepId) approve(waitingStepId, false);
+      else cancel();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isStreaming, cancel]);
+  }, [isStreaming, cancel, approve, waitingStepId]);
 
   const submit = useCallback(() => {
     const text = draft.trim();
@@ -352,6 +417,21 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     void send(text, sendOptions);
     composerRef.current?.focus();
   }, [draft, isStreaming, busyElsewhere, send, sendOptions]);
+
+  const submitSteer = useCallback(() => {
+    const text = draft.trim();
+    if (!text || !isStreaming) return;
+    setDraft('');
+    steer(text);
+    composerRef.current?.focus();
+  }, [draft, isStreaming, steer]);
+
+  const approveWaiting = useCallback(() => {
+    if (waitingStepId) approve(waitingStepId, true);
+  }, [approve, waitingStepId]);
+
+  const markRuntimeInstalled = useCallback(() => setRuntimeInstalled(true), [setRuntimeInstalled]);
+  const openSettings = useCallback(() => onNavigate('settings'), [onNavigate]);
 
   const applyStarter = useCallback((prompt: string) => {
     setDraft(prompt);
@@ -377,7 +457,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
   const previewSiblings = useMemo(() => {
     if (!preview) return [];
     const message = messages.find(m => m.id === preview.messageId);
-    return toSearchHits(message?.searchResults).filter(h => h.sourceFile === preview.hit.sourceFile);
+    return message ? messageHits(message).filter(h => h.sourceFile === preview.hit.sourceFile) : [];
   }, [preview, messages]);
 
   const allArtifacts = useMemo(
@@ -385,14 +465,23 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     [messages],
   );
 
+  const runtimeCard = runtimeInstalled === false && (
+    <RuntimeCard reason="missing" onInstalled={markRuntimeInstalled} />
+  );
+
   const composer = (autoFocus: boolean) => (
-    <Composer
+    <AgentComposer
+      id="ask-composer"
       ref={composerRef}
       value={draft}
       onChange={setDraft}
       onSubmit={submit}
+      onSteer={submitSteer}
       onStop={cancel}
-      streaming={isStreaming}
+      onApprove={approveWaiting}
+      running={isStreaming}
+      canSteer={liveTranscript?.status === 'running'}
+      approvalPending={waitingStepId !== null}
       blockedReason={blockedReason}
       placeholder={messages.length === 0 ? 'Ask about your files…' : 'Ask a follow-up…'}
       modelLabel={modelLabel}
@@ -427,6 +516,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
             <h1 className="text-center text-[28px] font-semibold tracking-[-0.01em] text-shodh-text">
               Ask anything about your files
             </h1>
+            {runtimeCard}
             {composer(true)}
             {indexedCount === 0 ? (
               <div className="flex flex-col items-center gap-3 text-center">
@@ -500,9 +590,13 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
                 activeCitation={isPreviewed ? preview.hit.number : null}
                 activeFile={isPreviewed ? preview.hit.sourceFile : null}
                 canRetry={streamingConversationId === null}
+                inlinePlan={!wide}
                 onOpenSource={openSource}
                 onOpenArtifact={setOpenArtifactId}
                 onRetry={handleRetry}
+                onDecide={approve}
+                onRuntimeInstalled={markRuntimeInstalled}
+                onOpenSettings={openSettings}
               />
             );
           })}
@@ -510,13 +604,20 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
       </div>
 
       <div className="absolute left-0 right-0 bottom-0 px-7 pt-10 pb-[22px] bg-gradient-to-b from-transparent via-shodh-ground via-[38%] to-shodh-ground pointer-events-none">
-        <div className="max-w-[700px] mx-auto pointer-events-auto">
+        <div className="max-w-[700px] mx-auto pointer-events-auto flex flex-col gap-2">
+          {runtimeCard}
           {composer(true)}
-          <p className="mt-2 text-center text-[11.5px] text-shodh-text-faint" aria-live="polite">
-            {isStreaming ? 'Press Esc to stop the answer' : ' '}
-          </p>
+          <div className="min-h-[18px] px-2">
+            {latest && <StatusLine transcript={latest} fallbackModel={llmStatus.connected ? llmStatus.model : null} />}
+          </div>
         </div>
       </div>
+
+      {wide && latest?.plan && (
+        <aside className="absolute right-6 top-[18px] z-10" aria-label="Task list of the latest answer">
+          <PlanPanel items={latest.plan} live={isLive(latest)} variant="docked" />
+        </aside>
+      )}
 
       {preview && (
         <SourcePreview

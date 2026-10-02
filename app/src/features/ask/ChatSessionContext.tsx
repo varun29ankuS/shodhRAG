@@ -1,12 +1,22 @@
 import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-import type { UnlistenFn } from '@tauri-apps/api/event';
 import { useConversations } from '../../hooks/useConversations';
 import type { ConversationMessage } from '../../hooks/useConversations';
 import { useActivityTracker } from '../../hooks/useActivityTracker';
-import { extractArtifacts } from '../../utils/artifactExtractor';
-import { buildSearchStep, describeArguments } from './run';
+import { notify } from '../../lib/notify';
+import { normalizeViewTab } from '../../lib/viewTabs';
+import type { ViewTab } from '../../lib/viewTabs';
+import type { AgentEventEnvelope } from '../agent/events';
+import {
+  answerText,
+  fromPersisted,
+  initialTranscript,
+  isLive,
+  reduceAll,
+  toPersisted,
+} from '../agent/reducer';
+import type { TranscriptAction, TranscriptState } from '../agent/reducer';
+import { toAgentError, useAgentSession } from '../agent/useAgentSession';
+import type { HistoryTurn } from '../agent/useAgentSession';
 import type {
   ChatMessage,
   RawSearchResult,
@@ -17,25 +27,20 @@ import type {
   SendOptions,
 } from './types';
 
-/** Shape of `shodh_rag::chat::AssistantResponse` as returned by `unified_chat`. */
-interface AssistantResponsePayload {
-  content?: string;
-  artifacts?: any[];
-  suggestions?: string[];
-  search_results?: RawSearchResult[] | null;
-  metadata?: ResponseMetadata;
-}
-
-/** Request currently streaming. Mutated only outside React state updaters. */
-interface LiveRequest {
-  requestId: string;
+/**
+ * The answer being produced. Events are queued and folded into the
+ * transcript once per animation frame, so streaming never re-renders (and
+ * re-parses markdown) per token.
+ */
+interface LiveRun {
+  runId: string;
   conversationId: string;
-  startedAtMs: number;
+  sessionId: string | null;
   message: ChatMessage;
-  pendingDelta: string;
+  queue: TranscriptAction[];
   frame: number | null;
-  stepSeq: number;
   settled: boolean;
+  abortTimer: number | null;
 }
 
 interface ViewState {
@@ -44,9 +49,28 @@ interface ViewState {
   messages: ChatMessage[];
 }
 
+/** Earlier turns replayed into a fresh agent session. */
 const HISTORY_LIMIT = 10;
 
+/** How long an interrupt may take before the answer is closed locally. */
+const INTERRUPT_TIMEOUT_MS = 5_000;
+
 type ConversationsApi = ReturnType<typeof useConversations>;
+
+/** What the rest of the app needs to know about the running answer. */
+export interface LiveRunInfo {
+  conversationId: string;
+  messageId: string;
+  transcript: TranscriptState;
+}
+
+/** A `navigated` event: the agent opened another view. */
+export interface AgentNavigation {
+  view: ViewTab;
+  focus: string | null;
+  /** Increases with every navigation, so repeats are distinguishable. */
+  seq: number;
+}
 
 export interface ChatSessionValue {
   conversations: ConversationsApi['conversations'];
@@ -59,18 +83,29 @@ export interface ChatSessionValue {
   pinConversation: ConversationsApi['pinConversation'];
   updateConversationMeta: ConversationsApi['updateConversationMeta'];
 
-  /** Messages of the active conversation, including a live streaming answer. */
+  /** Messages of the active conversation, including a live answer. */
   messages: ChatMessage[];
-  /** True while a request for the active conversation is in flight. */
+  /** True while an answer for the active conversation is running. */
   isStreaming: boolean;
-  /** Conversation a request is in flight for, if any (only one at a time). */
+  /** Conversation an answer is running for, if any (one at a time). */
   streamingConversationId: string | null;
+  /** The running answer, for the activity tray and the dock. */
+  liveRun: LiveRunInfo | null;
+  /** Latest navigation requested by the agent. */
+  navigation: AgentNavigation | null;
+  /** Whether the agent runtime is installed (null until known). */
+  runtimeInstalled: boolean | null;
+  setRuntimeInstalled: (installed: boolean) => void;
 
   send: (text: string, options: SendOptions) => Promise<void>;
   /** Re-run the user prompt that produced `assistantMessageId`. */
   retry: (assistantMessageId: string, options: SendOptions) => void;
-  /** Stop listening to the in-flight request and mark its answer as stopped. */
+  /** Redirect the running answer. */
+  steer: (text: string) => void;
+  /** Interrupt the running answer. */
   cancel: () => void;
+  /** Answer a pending approval of the running answer. */
+  approve: (stepId: string, approved: boolean) => void;
   /** Append a non-chat message (e.g. OCR or upload notices) to the active conversation. */
   appendMessage: (message: ChatMessage) => void;
   updateMessage: (id: string, patch: Partial<ChatMessage>) => void;
@@ -94,20 +129,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === 'string') return error;
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return 'Unknown error';
-  }
-}
-
 function isRunStatus(value: unknown): value is RunStatus {
   return value === 'running' || value === 'done' || value === 'failed' || value === 'cancelled';
 }
 
+/** Legacy run record of answers produced before the agent harness. */
 function readRun(value: unknown): RunRecord | undefined {
   if (!isRecord(value) || !isRunStatus(value.status) || typeof value.startedAt !== 'string') return undefined;
   const steps = Array.isArray(value.steps) ? (value.steps.filter(isRecord) as unknown as RunStep[]) : [];
@@ -132,6 +158,7 @@ function fromStored(m: ConversationMessage): ChatMessage {
     searchResults: m.searchResults as RawSearchResult[] | undefined,
     metadata: isRecord(m.metadata) ? (m.metadata as ResponseMetadata) : undefined,
     run: readRun(m.run),
+    transcript: fromPersisted(m.transcript) ?? undefined,
   };
 }
 
@@ -149,11 +176,21 @@ function toStored(m: ChatMessage): ConversationMessage {
     const { activity: _activity, ...persistable } = m.run;
     stored.run = persistable as unknown as Record<string, unknown>;
   }
+  if (m.transcript) stored.transcript = toPersisted(m.transcript) as unknown as Record<string, unknown>;
   return stored;
 }
 
 function isPersistable(m: ChatMessage): boolean {
-  return m.run?.status !== 'running';
+  if (m.run?.status === 'running') return false;
+  return !(m.transcript && isLive(m.transcript));
+}
+
+function historyOf(messages: readonly ChatMessage[]): HistoryTurn[] {
+  return messages
+    .filter((m): m is ChatMessage & { role: 'user' | 'assistant' } => m.role === 'user' || m.role === 'assistant')
+    .filter(m => m.content.trim().length > 0 && isPersistable(m))
+    .slice(-HISTORY_LIMIT)
+    .map(m => ({ role: m.role, content: m.content }));
 }
 
 export function ChatSessionProvider({ children }: { children: React.ReactNode }) {
@@ -167,18 +204,21 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const { trackActivity } = useActivityTracker();
 
   const [view, setView] = useState<ViewState>({ conversationId: null, messages: [] });
-  const [streamingConversationId, setStreamingConversationId] = useState<string | null>(null);
+  const [liveRun, setLiveRun] = useState<LiveRunInfo | null>(null);
+  const [navigation, setNavigation] = useState<AgentNavigation | null>(null);
+  const [runtimeInstalled, setRuntimeInstalled] = useState<boolean | null>(null);
 
-  const liveRef = useRef<LiveRequest | null>(null);
+  const liveRef = useRef<LiveRun | null>(null);
   const viewRef = useRef(view);
   viewRef.current = view;
   const activeConversationRef = useRef(activeConversation);
   activeConversationRef.current = activeConversation;
   const dirtyRef = useRef(false);
   const loadedConvIdRef = useRef<string | null>(null);
+  const navSeqRef = useRef(0);
 
-  // Load messages when the active conversation changes. A request still
-  // streaming for that conversation is re-attached so its answer stays visible.
+  // Load messages when the active conversation changes. A running answer for
+  // that conversation is re-attached so it stays visible.
   // Layout effect: avoids painting one frame of the empty state on switch.
   useLayoutEffect(() => {
     if (!activeConversationId || activeConversationId === loadedConvIdRef.current) return;
@@ -227,244 +267,136 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     });
   }, [publish, updateConversationMessages]);
 
-  const updateLive = useCallback((mutate: (message: ChatMessage, live: LiveRequest) => ChatMessage) => {
-    const live = liveRef.current;
-    if (!live || live.settled) return;
-    live.message = mutate(live.message, live);
-    publish(live.conversationId, live.message, false);
-  }, [publish]);
-
-  const flushDelta = useCallback(() => {
-    const live = liveRef.current;
-    if (!live) return;
-    live.frame = null;
-    if (live.settled || !live.pendingDelta) return;
-    const delta = live.pendingDelta;
-    live.pendingDelta = '';
-    updateLive(m => ({
-      ...m,
-      content: m.content + delta,
-      run: m.run ? { ...m.run, activity: 'Writing the answer' } : m.run,
-    }));
-  }, [updateLive]);
-
-  const updateRun = useCallback((mutate: (run: RunRecord, live: LiveRequest) => RunRecord) => {
-    updateLive((m, live) => (m.run ? { ...m, run: mutate(m.run, live) } : m));
-  }, [updateLive]);
-
-  const startStep = useCallback((kind: RunStep['kind'], title: string, detail: string | undefined, activity: string) => {
-    updateRun((run, live) => {
-      live.stepSeq += 1;
-      const step: RunStep = { id: `step-${live.stepSeq}`, kind, title, detail, status: kind === 'thinking' ? 'done' : 'running' };
-      return { ...run, activity, steps: [...run.steps, step] };
-    });
-  }, [updateRun]);
-
-  const completeTool = useCallback((toolName: string, success: boolean, durationMs: number | undefined) => {
-    updateRun(run => {
-      const steps = [...run.steps];
-      for (let i = steps.length - 1; i >= 0; i--) {
-        if (steps[i].kind === 'tool' && steps[i].title === toolName && steps[i].status === 'running') {
-          steps[i] = { ...steps[i], status: success ? 'done' : 'failed', durationMs };
-          break;
-        }
-      }
-      return { ...run, steps, activity: 'Working' };
-    });
-  }, [updateRun]);
-
-  // Streaming listeners, registered once. Events carry `requestId`; anything
-  // not belonging to the live request (e.g. a cancelled one) is ignored.
-  const handlersRef = useRef({ flushDelta, startStep, completeTool, updateRun });
-  handlersRef.current = { flushDelta, startStep, completeTool, updateRun };
-
-  useEffect(() => {
-    let disposed = false;
-    const unlisteners: UnlistenFn[] = [];
-
-    const forLive = (payload: unknown): Record<string, unknown> | null => {
-      const live = liveRef.current;
-      if (!live || live.settled || !isRecord(payload)) return null;
-      return payload.requestId === live.requestId ? payload : null;
-    };
-
-    const register = (event: string, handler: (payload: Record<string, unknown>) => void) => {
-      listen<unknown>(event, e => {
-        const payload = forLive(e.payload);
-        if (payload) handler(payload);
-      })
-        .then(unlisten => {
-          if (disposed) unlisten();
-          else unlisteners.push(unlisten);
-        })
-        .catch(err => console.error(`Failed to listen for ${event}:`, err));
-    };
-
-    register('chat_token', p => {
-      const live = liveRef.current;
-      if (!live || typeof p.delta !== 'string' || p.delta.length === 0) return;
-      live.pendingDelta += p.delta;
-      if (live.frame === null) {
-        live.frame = requestAnimationFrame(() => handlersRef.current.flushDelta());
-      }
-    });
-
-    const onToolStart = (name: unknown, args: unknown) => {
-      if (typeof name !== 'string' || !name) return;
-      handlersRef.current.startStep('tool', name, describeArguments(args), `Running ${name}`);
-    };
-    const onToolComplete = (name: unknown, success: unknown, duration: unknown) => {
-      if (typeof name !== 'string' || !name) return;
-      handlersRef.current.completeTool(
-        name,
-        success !== false,
-        typeof duration === 'number' ? duration : undefined,
-      );
-    };
-    const onThinking = (message: unknown) => {
-      if (typeof message !== 'string' || !message.trim()) return;
-      const text = message.trim().replace(/\.{3}$|…$/, '');
-      const steps = liveRef.current?.message.run?.steps ?? [];
-      const last = steps[steps.length - 1];
-      if (last && last.kind === 'thinking' && last.title === text) {
-        handlersRef.current.updateRun(run => ({ ...run, activity: text }));
-      } else {
-        handlersRef.current.startStep('thinking', text, undefined, text);
-      }
-    };
-
-    register('tool_call_start', p => onToolStart(p.tool_name, p.arguments));
-    register('tool_call_complete', p => onToolComplete(p.tool_name, p.success, p.duration_ms));
-    register('tool_execution', p => {
-      if (p.stage === 'executing') onToolStart(p.tool, p.arguments);
-      else if (p.stage === 'completed') onToolComplete(p.tool, p.success, p.duration_ms);
-      else if (p.stage === 'thinking') onThinking(p.message);
-    });
-    register('agent_thinking', p => onThinking(p.message));
-    register('agent_creation_progress', p => {
-      if (typeof p.message !== 'string' || !p.message.trim()) return;
-      const text = p.message.trim().replace(/\.{3}$|…$/, '');
-      handlersRef.current.updateRun(run => ({ ...run, activity: text }));
-    });
-
-    return () => {
-      disposed = true;
-      unlisteners.forEach(unlisten => unlisten());
-      const live = liveRef.current;
-      if (live && live.frame !== null) {
-        cancelAnimationFrame(live.frame);
-        live.frame = null;
-      }
-    };
-  }, []);
-
-  /** Settle the live request: stop accepting events and free the slot. */
-  const settleLive = useCallback((live: LiveRequest) => {
-    live.settled = true;
+  /** Fold queued events into the live transcript; settle when the run ends. */
+  const flush = useCallback((live: LiveRun) => {
     if (live.frame !== null) {
       cancelAnimationFrame(live.frame);
       live.frame = null;
     }
+    if (live.settled || live.queue.length === 0) return;
+    const actions = live.queue;
+    live.queue = [];
+    const prior = live.message.transcript ?? initialTranscript(live.runId, Date.now());
+    const transcript = reduceAll(prior, actions);
+    if (transcript === prior) return;
+    const message: ChatMessage = { ...live.message, content: answerText(transcript), transcript };
+    live.message = message;
+    if (isLive(transcript)) {
+      publish(live.conversationId, message, false);
+      setLiveRun({ conversationId: live.conversationId, messageId: message.id, transcript });
+      return;
+    }
+    live.settled = true;
+    if (live.abortTimer !== null) {
+      window.clearTimeout(live.abortTimer);
+      live.abortTimer = null;
+    }
     if (liveRef.current === live) liveRef.current = null;
-    setStreamingConversationId(null);
+    setLiveRun(null);
+    commit(live.conversationId, message);
+  }, [commit, publish]);
+
+  const enqueue = useCallback((live: LiveRun, action: TranscriptAction, immediate = false) => {
+    if (live.settled) return;
+    live.queue.push(action);
+    if (immediate) {
+      flush(live);
+    } else if (live.frame === null) {
+      live.frame = requestAnimationFrame(() => {
+        live.frame = null;
+        flush(live);
+      });
+    }
+  }, [flush]);
+
+  const onEnvelope = useCallback((envelope: AgentEventEnvelope) => {
+    const live = liveRef.current;
+    if (!live || live.settled) return;
+    const { event } = envelope;
+    if (event.runId !== live.runId) return;
+    if (live.sessionId !== null && envelope.sessionId !== live.sessionId) return;
+    if (event.type === 'navigated') {
+      const tab = normalizeViewTab(event.view);
+      if (tab) {
+        navSeqRef.current += 1;
+        setNavigation({ view: tab, focus: event.focus, seq: navSeqRef.current });
+        window.dispatchEvent(new CustomEvent('switchTab', { detail: tab }));
+      }
+    }
+    // Lifecycle changes are applied at once; streamed content waits for the frame.
+    const immediate = event.type === 'run_started' || event.type === 'run_finished' || event.type === 'approval_requested';
+    enqueue(live, event, immediate);
+  }, [enqueue]);
+
+  const api = useAgentSession(onEnvelope);
+
+  // Release the frame callback on unmount.
+  useEffect(() => () => {
+    const live = liveRef.current;
+    if (live && live.frame !== null) cancelAnimationFrame(live.frame);
+    if (live && live.abortTimer !== null) window.clearTimeout(live.abortTimer);
   }, []);
 
-  const runRequest = useCallback(async (
-    conversationId: string,
-    prompt: string,
-    history: ChatMessage[],
-    options: SendOptions,
-  ) => {
-    const requestId = newId('req');
+  // Learn whether the runtime is installed.
+  useEffect(() => {
+    let cancelled = false;
+    api.runtimeStatus()
+      .then(status => { if (!cancelled) setRuntimeInstalled(status.installed); })
+      .catch(error => console.error('Agent runtime status:', toAgentError(error).message));
+    return () => { cancelled = true; };
+  }, [api]);
+
+  // Start the active conversation's agent session ahead of the first
+  // question: launching the runtime takes seconds, asking should not.
+  const instructions = activeConversation?.systemPrompt?.trim() || null;
+  useEffect(() => {
+    if (!activeConversationId || runtimeInstalled !== true) return;
+    api.start(activeConversationId, instructions).catch(error => {
+      const failure = toAgentError(error);
+      if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
+      // Other failures (no model configured, …) surface when the user asks.
+    });
+  }, [api, activeConversationId, instructions, runtimeInstalled]);
+
+  const runAgent = useCallback(async (conversationId: string, prompt: string, history: ChatMessage[]) => {
+    const runId = newId('run');
     const startedAtMs = Date.now();
+    const transcript = initialTranscript(runId, startedAtMs);
     const message: ChatMessage = {
       id: newId('msg'),
       role: 'assistant',
       content: '',
       timestamp: new Date(startedAtMs).toISOString(),
-      run: { status: 'running', startedAt: new Date(startedAtMs).toISOString(), steps: [], activity: 'Working' },
+      transcript,
     };
-    const live: LiveRequest = {
-      requestId,
+    const live: LiveRun = {
+      runId,
       conversationId,
-      startedAtMs,
+      sessionId: null,
       message,
-      pendingDelta: '',
+      queue: [],
       frame: null,
-      stepSeq: 0,
       settled: false,
+      abortTimer: null,
     };
     liveRef.current = live;
-    setStreamingConversationId(conversationId);
     publish(conversationId, message, false);
+    setLiveRun({ conversationId, messageId: message.id, transcript });
 
-    const conversationHistory = history
-      .filter(m => (m.role === 'user' || m.role === 'assistant') && m.content.trim().length > 0 && m.run?.status !== 'running')
-      .slice(-HISTORY_LIMIT)
-      .map(m => ({ role: m.role, content: m.content }));
-
-    const systemPrompt = activeConversationRef.current?.id === conversationId
-      ? activeConversationRef.current.systemPrompt ?? null
-      : null;
-
+    const conversation = activeConversationRef.current?.id === conversationId ? activeConversationRef.current : null;
+    const conversationInstructions = conversation?.systemPrompt?.trim() || null;
     try {
-      const response = await invoke<AssistantResponsePayload>('unified_chat', {
-        message: prompt,
-        context: {
-          agent_id: null,
-          conversation_history: conversationHistory,
-          space_id: options.spaceId,
-          conversation_id: null,
-          custom_system_prompt: systemPrompt,
-        },
-        requestId,
-      });
-      if (live.settled) return; // cancelled while waiting
-
-      const content = typeof response?.content === 'string' ? response.content : live.message.content;
-      const searchResults = Array.isArray(response?.search_results) ? response.search_results : [];
-      const metadata = isRecord(response?.metadata) ? response.metadata : undefined;
-      const artifacts = [
-        ...(Array.isArray(response?.artifacts) ? response.artifacts : []),
-        ...extractArtifacts(content),
-      ];
-      const searchStep = buildSearchStep(metadata, searchResults.length);
-      const priorRun = live.message.run;
-      const steps = (priorRun?.steps ?? []).map(s => (s.status === 'running' ? { ...s, status: 'done' as const } : s));
-      const finalMessage: ChatMessage = {
-        ...live.message,
-        content,
-        artifacts: artifacts.length > 0 ? artifacts : undefined,
-        searchResults: searchResults.length > 0 ? searchResults : undefined,
-        metadata,
-        run: {
-          status: 'done',
-          startedAt: priorRun?.startedAt ?? message.timestamp,
-          elapsedMs: Date.now() - startedAtMs,
-          steps: searchStep ? [searchStep, ...steps] : steps,
-        },
-      };
-      settleLive(live);
-      commit(conversationId, finalMessage);
-    } catch (error) {
+      const sessionId = await api.start(conversationId, conversationInstructions);
       if (live.settled) return;
-      const pending = live.pendingDelta;
-      const priorRun = live.message.run;
-      const finalMessage: ChatMessage = {
-        ...live.message,
-        content: live.message.content + pending,
-        run: {
-          status: 'failed',
-          startedAt: priorRun?.startedAt ?? message.timestamp,
-          elapsedMs: Date.now() - startedAtMs,
-          steps: (priorRun?.steps ?? []).map(s => (s.status === 'running' ? { ...s, status: 'stopped' as const } : s)),
-          error: errorMessage(error),
-        },
-      };
-      settleLive(live);
-      commit(conversationId, finalMessage);
+      live.sessionId = sessionId;
+      setRuntimeInstalled(true);
+      await api.send(sessionId, prompt, runId, historyOf(history));
+    } catch (error) {
+      const failure = toAgentError(error);
+      if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
+      enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);
     }
-  }, [commit, publish, settleLive]);
+  }, [api, enqueue, publish]);
 
   const send = useCallback(async (text: string, options: SendOptions) => {
     const prompt = text.trim();
@@ -486,8 +418,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     }
     void trackActivity({ activityType: 'search', data: `Chat: "${prompt}"`, project: 'shodh' });
 
-    await runRequest(conversationId, prompt, history, options);
-  }, [publish, runRequest, trackActivity, updateConversationMeta]);
+    await runAgent(conversationId, prompt, history);
+  }, [publish, runAgent, trackActivity, updateConversationMeta]);
 
   const retry = useCallback((assistantMessageId: string, options: SendOptions) => {
     const { conversationId, messages } = viewRef.current;
@@ -510,29 +442,75 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       setView(v => (v.conversationId === conversationId
         ? { ...v, messages: v.messages.filter(m => m.id !== assistantMessageId) }
         : v));
-      void runRequest(conversationId, prompt, messages.slice(0, userIndex), options);
+      void runAgent(conversationId, prompt, messages.slice(0, userIndex));
     } else {
       void send(prompt, options);
     }
-  }, [runRequest, send]);
+  }, [runAgent, send]);
+
+  const steer = useCallback((text: string) => {
+    const message = text.trim();
+    const live = liveRef.current;
+    if (!message || !live || live.settled || live.sessionId === null) return;
+    const sessionId = live.sessionId;
+    enqueue(live, { type: 'local_steer', id: newId('steer'), text: message }, true);
+    api.steer(sessionId, message)
+      .then(runId => {
+        if (runId === live.runId) return;
+        // The answer finished before the steer arrived; the backend started
+        // a new run for it. Show it as a new turn.
+        const conversationId = live.conversationId;
+        const adopted: LiveRun = {
+          runId,
+          conversationId,
+          sessionId,
+          message: {
+            id: newId('msg'),
+            role: 'assistant',
+            content: '',
+            timestamp: new Date().toISOString(),
+            transcript: { ...initialTranscript(runId, Date.now()), status: 'running', sessionId },
+          },
+          queue: [],
+          frame: null,
+          settled: false,
+          abortTimer: null,
+        };
+        if (liveRef.current && !liveRef.current.settled) return;
+        liveRef.current = adopted;
+        publish(conversationId, { id: newId('msg'), role: 'user', content: message, timestamp: new Date().toISOString() }, true);
+        publish(conversationId, adopted.message, false);
+      })
+      .catch(error => notify.error('Could not steer the answer', { description: toAgentError(error).message }));
+  }, [api, enqueue, publish]);
 
   const cancel = useCallback(() => {
     const live = liveRef.current;
     if (!live || live.settled) return;
-    const priorRun = live.message.run;
-    const finalMessage: ChatMessage = {
-      ...live.message,
-      content: live.message.content + live.pendingDelta,
-      run: {
-        status: 'cancelled',
-        startedAt: priorRun?.startedAt ?? live.message.timestamp,
-        elapsedMs: Date.now() - live.startedAtMs,
-        steps: (priorRun?.steps ?? []).map(s => (s.status === 'running' ? { ...s, status: 'stopped' as const } : s)),
-      },
-    };
-    settleLive(live);
-    commit(live.conversationId, finalMessage);
-  }, [commit, settleLive]);
+    if (live.sessionId === null) {
+      enqueue(live, { type: 'local_interrupted', atMs: Date.now() }, true);
+      return;
+    }
+    if (live.message.transcript?.interrupting) return;
+    enqueue(live, { type: 'local_interrupt_requested' }, true);
+    live.abortTimer = window.setTimeout(() => {
+      live.abortTimer = null;
+      enqueue(live, { type: 'local_interrupted', atMs: Date.now() }, true);
+    }, INTERRUPT_TIMEOUT_MS);
+    api.abort(live.sessionId).catch(error => {
+      const failure = toAgentError(error);
+      console.error('Interrupt failed:', failure.message);
+      enqueue(live, { type: 'local_interrupted', atMs: Date.now() }, true);
+    });
+  }, [api, enqueue]);
+
+  const approve = useCallback((stepId: string, approved: boolean) => {
+    const live = liveRef.current;
+    if (!live || live.settled || live.sessionId === null) return;
+    enqueue(live, { type: 'local_approval', stepId, approved }, true);
+    api.approve(live.sessionId, stepId, approved)
+      .catch(error => notify.error('The decision did not reach the agent', { description: toAgentError(error).message }));
+  }, [api, enqueue]);
 
   const appendMessage = useCallback((message: ChatMessage) => {
     const conversationId = viewRef.current.conversationId;
@@ -544,6 +522,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     dirtyRef.current = true;
     setView(v => ({ ...v, messages: v.messages.map(m => (m.id === id ? { ...m, ...patch } : m)) }));
   }, []);
+
+  const streamingConversationId = liveRun?.conversationId ?? null;
 
   const value = useMemo<ChatSessionValue>(() => ({
     conversations: conv.conversations,
@@ -558,12 +538,18 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     messages: view.conversationId === conv.activeConversationId ? view.messages : [],
     isStreaming: streamingConversationId !== null && streamingConversationId === conv.activeConversationId,
     streamingConversationId,
+    liveRun,
+    navigation,
+    runtimeInstalled,
+    setRuntimeInstalled,
     send,
     retry,
+    steer,
     cancel,
+    approve,
     appendMessage,
     updateMessage,
-  }), [conv, view, streamingConversationId, send, retry, cancel, appendMessage, updateMessage]);
+  }), [conv, view, streamingConversationId, liveRun, navigation, runtimeInstalled, send, retry, steer, cancel, approve, appendMessage, updateMessage]);
 
   return <ChatSessionContext.Provider value={value}>{children}</ChatSessionContext.Provider>;
 }

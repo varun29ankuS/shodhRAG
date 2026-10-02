@@ -9,6 +9,8 @@
  *   (`tool_call_*`, `tool_execution`, `agent_thinking`) and the final response.
  */
 
+import type { TranscriptState } from '../agent/reducer';
+
 export type ChatRole = 'user' | 'assistant' | 'system';
 
 export interface ResponseMetadata {
@@ -107,7 +109,10 @@ export interface ChatMessage {
   searchResults?: RawSearchResult[];
   artifacts?: any[];
   metadata?: ResponseMetadata;
+  /** Legacy (pre-agent) run record of older answers. */
   run?: RunRecord;
+  /** Agent transcript of the answer: steps, task list, usage, passages. */
+  transcript?: TranscriptState;
   /** Base64 image attached to OCR notices. Not persisted. */
   image?: string;
 }

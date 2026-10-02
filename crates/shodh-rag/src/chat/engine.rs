@@ -565,28 +565,10 @@ impl ChatEngine {
             rag.search(&primary_query, max_results).await?
         };
 
-        // Drop RAG read lock before acquiring LLM lock for reranking
+        // Release the RAG read lock before answer generation. Results are already
+        // reranked by the cross-encoder inside RAGEngine::search; a second LLM rerank
+        // pass added 4-5 s per question without a measured quality gain.
         drop(rag);
-
-        // LLM-based reranking: judge relevance to the original user question
-        let mut rerank_latency_ms = None;
-        if results.len() > 1 {
-            if let Some(llm_arc) = self.llm_manager.as_ref() {
-                let llm_guard = llm_arc.read().await;
-                if let Some(ref llm_manager) = *llm_guard {
-                    let rerank_start = std::time::Instant::now();
-                    results =
-                        crate::reranking::llm_rerank(llm_manager, &message.content, results).await;
-                    let elapsed = rerank_start.elapsed().as_millis() as u64;
-                    rerank_latency_ms = Some(elapsed);
-                    tracing::info!(
-                        duration_ms = elapsed,
-                        result_count = results.len(),
-                        "LLM reranking of merged results complete"
-                    );
-                }
-            }
-        }
 
         // Log per-result scores and sources for pipeline diagnostics
         {
@@ -667,7 +649,7 @@ impl ChatEngine {
             router_tokens: router_token_usage.map(|t| t.prompt_tokens + t.completion_tokens),
             router_latency_ms: router_token_usage.map(|t| t.latency_ms),
             search_queries_used: Some(expanded_queries.clone()),
-            rerank_latency_ms,
+            rerank_latency_ms: None,
         };
 
         // Grounding: refuse when no results found

@@ -10,19 +10,7 @@ use std::sync::Arc;
 use tauri::{Manager, State};
 use tokio::sync::RwLock as AsyncRwLock;
 
-/// Internal unified chat function - can be called by both Tauri commands and HTTP servers
-pub async fn unified_chat_internal(
-    rag_state: &RagState,
-    message: String,
-    context: Option<ChatContext>,
-    platform: MessagePlatform,
-    app_handle: Option<tauri::AppHandle>,
-) -> Result<AssistantResponse, String> {
-    unified_chat_internal_with_request(rag_state, message, context, platform, app_handle, None)
-        .await
-}
-
-/// Unified chat with an optional request id that is attached to every
+/// Core unified chat pipeline. `request_id`, when present, is attached to every
 /// streaming event emitted through `app_handle`.
 pub async fn unified_chat_internal_with_request(
     rag_state: &RagState,
@@ -33,7 +21,7 @@ pub async fn unified_chat_internal_with_request(
     request_id: Option<String>,
 ) -> Result<AssistantResponse, String> {
     tracing::info!(
-        "🔵 unified_chat_internal called from {:?}: {}",
+        "🔵 unified_chat called from {:?}: {}",
         platform,
         message.chars().take(50).collect::<String>()
     );

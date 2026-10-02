@@ -139,11 +139,11 @@ Local models:
 |---|---|
 | Your files, their text and their embeddings | Stay on this computer. Indexing makes no network calls. |
 | Questions, and the passages retrieved to answer them | Sent to the model provider you configure. With a local model, nothing leaves the machine. |
-| API keys | Currently held in app storage on this computer. Moving them to the OS keychain is in progress. |
+| API keys | Stored in the OS credential store (Windows Credential Manager, macOS Keychain, Secret Service on Linux). They are never kept in the app's web storage or shown back in the UI. Keys saved by older builds are moved there on first launch. A key set through an environment variable applies to that session only. |
 
 **Known gaps.** Each is tracked in the spec and will land as a reviewed PR.
 - **Unencrypted index:** Shodh does not encrypt the local index (LanceDB, Tantivy). Use OS full-disk encryption (BitLocker or FileVault).
-- **Legacy bot backends:** the WhatsApp, Telegram and Discord backends are being removed or locked down. Their UI is already gone. Do not enable them on machines that hold sensitive data.
+- **No messaging channels or Google Drive sync:** the old WhatsApp, Telegram and Discord bot backends and the Google Drive connector have been removed. They ran unauthenticated local HTTP servers. Messaging channels will return through a separate, authenticated gateway.
 - **Stopping an answer:** it stops the display only. The provider call finishes in the background until the agent harness adds real cancellation.
 
 ## Architecture

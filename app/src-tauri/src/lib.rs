@@ -1,16 +1,14 @@
 mod analytics_commands;
 mod answer_validator;
+mod api_key_store;
 mod chat_history;
 mod context_commands;
 mod database_commands;
 mod diagnostic_commands;
-mod discord_bot_commands;
-mod discord_http_server;
 mod doc_gen_commands;
 mod document_upload_commands;
 mod enhanced_rag_commands;
 mod file_watcher;
-mod google_drive_commands;
 mod graph_commands;
 mod history_commands;
 mod image_upload_commands;
@@ -30,12 +28,7 @@ mod space_commands;
 mod space_manager;
 mod storage_commands;
 mod system_commands;
-mod telegram_bot_commands;
-mod telegram_http_server;
 mod template_commands;
-mod whatsapp_bot;
-mod whatsapp_commands;
-mod whatsapp_http_server;
 mod window_commands;
 
 // Unified chat system modules
@@ -51,9 +44,7 @@ use tauri::Manager;
 use analytics_commands::AnalyticsState;
 use chat_history::ChatHistoryManager;
 use context_commands::ContextState;
-use discord_bot_commands::DiscordBotState;
 use enhanced_rag_commands::IndexingState;
-use google_drive_commands::GoogleDriveState;
 use llm_commands::{ApiKeys, LLMState};
 use mcp_commands::MCPState;
 use rag_commands::{AppPaths, RagState};
@@ -62,11 +53,9 @@ use shodh_rag::llm::{LLMConfig, ModelManager};
 use space_manager::SpaceManager;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use telegram_bot_commands::TelegramBotState;
 use template_commands::TemplateStore;
 use tokio::sync::RwLock as AsyncRwLock;
 use uuid::Uuid;
-use whatsapp_commands::WhatsAppBotState;
 
 /// Resolve the models directory with multi-tier fallback for portability.
 ///
@@ -187,10 +176,28 @@ pub fn run() {
                 model_dir: Arc::new(model_dir.clone()),
             });
 
-            // Opt-in: configure the model from SHODH_LLM_PROVIDER / SHODH_LLM_MODEL.
+            // Load provider API keys saved in the OS credential store, then
+            // apply the opt-in SHODH_LLM_PROVIDER / SHODH_LLM_MODEL environment
+            // configuration. Order matters: environment keys override stored ones.
             let llm_bootstrap_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let llm_state = llm_bootstrap_handle.state::<LLMState>();
+                match tokio::task::spawn_blocking(api_key_store::load_all).await {
+                    Ok(stored) => {
+                        let merged = llm_state
+                            .api_keys
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .merge_missing(stored);
+                        if merged > 0 {
+                            tracing::info!(
+                                "Loaded {} provider API key(s) from the OS credential store",
+                                merged
+                            );
+                        }
+                    }
+                    Err(e) => tracing::warn!("Loading stored API keys failed: {}", e),
+                }
                 match llm_bootstrap::configure_from_environment(&llm_state).await {
                     Ok(Some(description)) => {
                         tracing::info!("LLM configured from environment: {}", description)
@@ -235,14 +242,6 @@ pub fn run() {
             let analytics_path = app_data_dir.join("analytics.json");
             app.manage(AnalyticsState::load_or_default(&analytics_path));
             app.manage(TemplateStore::default());
-            app.manage(WhatsAppBotState::default());
-            app.manage(TelegramBotState {
-                process: Mutex::new(None),
-            });
-            app.manage(DiscordBotState {
-                process: Mutex::new(None),
-            });
-            app.manage(Arc::new(GoogleDriveState::new()));
 
             // Initialize MCP (Model Context Protocol) state
             let mcp_config_dir = app_data_dir.join("mcp");
@@ -319,126 +318,16 @@ pub fn run() {
                 });
             }
 
-            // Start WhatsApp HTTP server for receiving messages from the bridge
-            let whatsapp_bot_state = app.state::<WhatsAppBotState>();
-            let whatsapp_rag_state = app.state::<RagState>();
-            let bot_state_clone = WhatsAppBotState {
-                bot: whatsapp_bot_state.bot.clone(),
-                bridge_process: std::sync::Mutex::new(None),
-            };
-            let rag_state_clone = RagState {
-                rag: whatsapp_rag_state.rag.clone(),
-                notes: Mutex::new(Vec::new()),
-                space_manager: Mutex::new(SpaceManager::with_data_dir(app_data_dir.clone())),
-                conversation_manager: whatsapp_rag_state.conversation_manager.clone(),
-                memory_system: whatsapp_rag_state.memory_system.clone(),
-                personal_assistant: whatsapp_rag_state.personal_assistant.clone(),
-                app_paths: whatsapp_rag_state.app_paths.clone(),
-                rag_initialized: whatsapp_rag_state.rag_initialized.clone(),
-                initialization_lock: whatsapp_rag_state.initialization_lock.clone(),
-                artifact_store: whatsapp_rag_state.artifact_store.clone(),
-                conversation_id: whatsapp_rag_state.conversation_id.clone(),
-                agent_system: whatsapp_rag_state.agent_system.clone(),
-                llm_manager: whatsapp_rag_state.llm_manager.clone(),
-            };
-
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) =
-                    whatsapp_http_server::start_server(bot_state_clone, rag_state_clone).await
-                {
-                    tracing::error!("Failed to start WhatsApp HTTP server: {}", e);
-                }
-            });
-
-            // Start Telegram HTTP server for receiving messages from the bridge
-            let telegram_rag_state = app.state::<RagState>();
-            let telegram_llm_state = app.state::<LLMState>();
-            let telegram_rag_clone = RagState {
-                rag: telegram_rag_state.rag.clone(),
-                notes: Mutex::new(Vec::new()),
-                space_manager: Mutex::new(SpaceManager::with_data_dir(app_data_dir.clone())),
-                conversation_manager: telegram_rag_state.conversation_manager.clone(),
-                memory_system: telegram_rag_state.memory_system.clone(),
-                personal_assistant: telegram_rag_state.personal_assistant.clone(),
-                app_paths: telegram_rag_state.app_paths.clone(),
-                rag_initialized: telegram_rag_state.rag_initialized.clone(),
-                initialization_lock: telegram_rag_state.initialization_lock.clone(),
-                artifact_store: telegram_rag_state.artifact_store.clone(),
-                conversation_id: telegram_rag_state.conversation_id.clone(),
-                agent_system: telegram_rag_state.agent_system.clone(),
-                llm_manager: telegram_rag_state.llm_manager.clone(),
-            };
-            let telegram_llm_clone = LLMState {
-                manager: telegram_llm_state.manager.clone(),
-                model_manager: telegram_llm_state.model_manager.clone(),
-                config: telegram_llm_state.config.clone(),
-                api_keys: telegram_llm_state.api_keys.clone(),
-                custom_model_path: telegram_llm_state.custom_model_path.clone(),
-                custom_tokenizer_path: telegram_llm_state.custom_tokenizer_path.clone(),
-                model_dir: telegram_llm_state.model_dir.clone(),
-            };
-
-            let telegram_app_handle = app.app_handle().clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = telegram_http_server::start_server(
-                    telegram_rag_clone,
-                    telegram_llm_clone,
-                    Some(telegram_app_handle),
-                )
-                .await
-                {
-                    tracing::error!("Failed to start Telegram HTTP server: {}", e);
-                }
-            });
-
-            // Start Discord HTTP server for receiving messages from the bridge
-            let discord_rag_state = app.state::<RagState>();
-            let discord_llm_state = app.state::<LLMState>();
-            let discord_rag_clone = RagState {
-                rag: discord_rag_state.rag.clone(),
-                notes: Mutex::new(Vec::new()),
-                space_manager: Mutex::new(SpaceManager::with_data_dir(app_data_dir.clone())),
-                conversation_manager: discord_rag_state.conversation_manager.clone(),
-                memory_system: discord_rag_state.memory_system.clone(),
-                personal_assistant: discord_rag_state.personal_assistant.clone(),
-                app_paths: discord_rag_state.app_paths.clone(),
-                rag_initialized: discord_rag_state.rag_initialized.clone(),
-                initialization_lock: discord_rag_state.initialization_lock.clone(),
-                artifact_store: discord_rag_state.artifact_store.clone(),
-                conversation_id: discord_rag_state.conversation_id.clone(),
-                agent_system: discord_rag_state.agent_system.clone(),
-                llm_manager: discord_rag_state.llm_manager.clone(),
-            };
-            let discord_llm_clone = LLMState {
-                manager: discord_llm_state.manager.clone(),
-                model_manager: discord_llm_state.model_manager.clone(),
-                config: discord_llm_state.config.clone(),
-                api_keys: discord_llm_state.api_keys.clone(),
-                custom_model_path: discord_llm_state.custom_model_path.clone(),
-                custom_tokenizer_path: discord_llm_state.custom_tokenizer_path.clone(),
-                model_dir: discord_llm_state.model_dir.clone(),
-            };
-
-            let discord_app_handle = app.app_handle().clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = discord_http_server::start_server(
-                    discord_rag_clone,
-                    discord_llm_clone,
-                    Some(discord_app_handle),
-                )
-                .await
-                {
-                    tracing::error!("Failed to start Discord HTTP server: {}", e);
-                }
-            });
-
             // Initialize LLM manager on startup
             let llm_state = app.state::<LLMState>();
             let manager_clone = llm_state.manager.clone();
             let config_clone = llm_state.config.clone();
 
             tauri::async_runtime::spawn(async move {
-                let config = config_clone.lock().unwrap().clone();
+                let config = config_clone
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
 
                 let model_dir = if cfg!(debug_assertions) {
                     let exe_dir = std::env::current_exe()
@@ -535,6 +424,8 @@ pub fn run() {
             llm_commands::llm_generate_stream_with_rag,
             llm_commands::get_llm_info,
             llm_commands::set_api_key,
+            llm_commands::delete_api_key,
+            llm_commands::get_configured_providers,
             llm_commands::is_model_cached,
             llm_commands::download_model,
             llm_commands::get_model_cache_info,
@@ -638,37 +529,6 @@ pub fn run() {
             source_viewer_commands::read_source_text,
             source_viewer_commands::read_source_table,
             rag_commands::parse_llm_response,
-            // WhatsApp Bot commands
-            whatsapp_commands::whatsapp_initialize,
-            whatsapp_commands::whatsapp_add_contact,
-            whatsapp_commands::whatsapp_update_contact_preferences,
-            whatsapp_commands::whatsapp_assign_space,
-            whatsapp_commands::whatsapp_process_message,
-            whatsapp_commands::whatsapp_list_contacts,
-            whatsapp_commands::whatsapp_get_stats,
-            whatsapp_commands::whatsapp_set_active,
-            whatsapp_commands::whatsapp_stop,
-            whatsapp_commands::whatsapp_remove_contact,
-            whatsapp_commands::whatsapp_get_conversation,
-            whatsapp_commands::whatsapp_test_message,
-            // Telegram Bot commands
-            telegram_bot_commands::start_telegram_bot,
-            telegram_bot_commands::stop_telegram_bot,
-            telegram_bot_commands::check_telegram_bot_status,
-            // Discord Bot commands
-            discord_bot_commands::start_discord_bot,
-            discord_bot_commands::stop_discord_bot,
-            discord_bot_commands::check_discord_bot_status,
-            // Google Drive integration commands
-            google_drive_commands::init_google_drive_oauth,
-            google_drive_commands::exchange_google_drive_code,
-            google_drive_commands::list_google_drive_files,
-            google_drive_commands::download_google_drive_file,
-            google_drive_commands::configure_folder_sync,
-            google_drive_commands::sync_google_drive_folder,
-            google_drive_commands::get_google_drive_sync_status,
-            google_drive_commands::is_google_drive_authenticated,
-            google_drive_commands::disconnect_google_drive,
             // Image upload commands
             image_upload_commands::process_image_from_base64,
             image_upload_commands::process_image_from_file,

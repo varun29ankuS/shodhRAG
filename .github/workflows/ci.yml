@@ -60,3 +60,23 @@ jobs:
       - name: Compile tests
         run: cargo test --package shodh-rag --lib --no-run
         continue-on-error: true  # CRT linker mismatch (ort-sys vs esaxx-rs) — tracked for fix
+
+  frontend:
+    name: Frontend Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: app
+        run: npx tsc --noEmit

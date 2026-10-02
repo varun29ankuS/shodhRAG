@@ -31,7 +31,7 @@ export function PermissionDialog({ isOpen, request, onDecision, onClose }: Permi
         return {
           icon: FileText,
           title: 'Read File',
-          color: colors.info,
+          color: colors.accent,
           description: 'wants to read the contents of a file',
         };
       case 'write_file':
@@ -45,7 +45,7 @@ export function PermissionDialog({ isOpen, request, onDecision, onClose }: Permi
         return {
           icon: FolderOpen,
           title: 'List Directory',
-          color: colors.info,
+          color: colors.accent,
           description: 'wants to view the contents of a directory',
         };
       case 'delete_file':

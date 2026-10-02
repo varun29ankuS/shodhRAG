@@ -4,7 +4,6 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { motion, AnimatePresence } from "framer-motion";
-import { StructuredOutputRenderer } from "./components/StructuredOutput";
 import { CitationFootnotes } from "./components/CitationFootnotes";
 import { CitationBadge } from "./components/CitationBadge";
 import { ToolCallBubble } from "./components/ToolCallBubble";
@@ -22,28 +21,25 @@ import {
   Plus, RefreshCw, Check, X, AlertCircle, Loader2, Pencil,
   Send, Copy, Download, Save, ChevronDown, ChevronUp,
   Database, Cpu, HardDrive, Activity, FileCode, GitBranch,
-  BookOpen, TestTube, FileJson, Network, Layers, Package,
-  FileSpreadsheet, Presentation, FileDown, FilePlus, BarChart, Trash2, Clock,
-  Shield, SearchCheck, Briefcase, Heart, FileCheck, AlertTriangle, TrendingUp,
+  BookOpen, FileJson, Layers, Package,
+  FileSpreadsheet, Presentation, FilePlus, BarChart, Trash2, Clock,
   Braces, Coffee, Table, Brain, Zap, Globe, Image as ImageIcon
 } from 'lucide-react';
 
 // Import LLM Settings and core components
 import LLMSettings from './LLMSettings';
 import { ImageUpload } from './components/ImageUpload';
-import DocumentGenerator from './components/DocumentGenerator';
 import { ThemeToggle } from './components/ThemeToggle';
 import AppSidebar from './components/AppSidebar';
-import type { ViewTab } from './components/AppSidebar';
+import { isViewTab } from './lib/viewTabs';
+import type { ViewTab } from './lib/viewTabs';
 import { useTheme } from './contexts/ThemeContext';
 import { useSidebar } from './contexts/SidebarContext';
 import { useConversations } from './hooks/useConversations';
 import { useCommandPalette } from './hooks/useCommandPalette';
 import CommandPalette from './components/CommandPalette';
 import DocumentPreviewPanel from './components/DocumentPreviewPanel';
-import AnalyticsDashboard from './components/AnalyticsDashboard';
 import KnowledgeGraph from './components/KnowledgeGraph';
-import AgentsPanel from './components/AgentsPanel';
 import CalendarTodoPanel from './components/CalendarTodoPanel';
 import SearchSettings, { useSearchConfig } from './components/SearchSettings';
 import DataManagement from './components/DataManagement';
@@ -58,15 +54,14 @@ import { toast } from 'sonner';
 import { notify, setNotificationHandler } from './lib/notify';
 import { useNotifications } from './hooks/useNotifications';
 import NotificationCenter from './components/NotificationCenter';
-import { IntegrationsPanel } from './components/IntegrationsPanel';
 import { EnhancedArtifactPanel } from './components/EnhancedArtifactPanel';
 import { ArtifactPreviewCard } from './components/ArtifactPreviewCard';
 import { ChartArtifact } from './components/ChartArtifact';
 import { TableArtifact } from './components/TableArtifact';
 import { intelligentSearch, trackUserMessage, trackAssistantMessage } from './utils/intelligentRetrieval';
 import { sourceColor } from './utils/colors';
-import { parseResponseWithCitations } from './utils/citationParser';
 import { StreamingArtifactExtractor, stripChartContent, extractArtifacts } from './utils/artifactExtractor';
+import { getArtifactKind } from './utils/artifactKind';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -78,14 +73,6 @@ const DEBUG = false;
 const debugLog = (...args: any[]) => { if (DEBUG) console.log(...args); };
 
 // Types
-interface OutputFormat {
-  id: string;
-  name: string;
-  icon: any;
-  extension: string;
-  mimeType: string;
-}
-
 interface Source {
   id: string;
   name: string;
@@ -109,9 +96,7 @@ interface Message {
   timestamp: string;
   sources?: Array<{ file: string; score: number }>;
   searchResults?: any[]; // Full search results for citation parsing
-  generationType?: 'chat' | 'code' | 'docs' | 'test';
   image?: string; // Base64 image data for displaying images
-  platform?: string; // Platform where the message originated (telegram, discord, etc.)
   artifacts?: any[]; // Artifacts embedded in this message
   toolInvocations?: Array<{
     tool_name: string;
@@ -121,14 +106,6 @@ interface Message {
     duration_ms: number;
     status: 'pending' | 'running' | 'completed' | 'failed';
   }>;
-}
-
-interface GenerationTemplate {
-  id: string;
-  name: string;
-  icon: any;
-  prompt: string;
-  category: 'code' | 'docs' | 'analysis';
 }
 
 // Reusable copy button with copied state feedback
@@ -168,14 +145,6 @@ function MessageContentRenderer({ content, searchResults, artifacts, onFollowUpQ
   textColor: string;
 }) {
   const { theme, colors } = useTheme();
-  const [structuredOutputs, setStructuredOutputs] = useState<any[] | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  // Structured output parsing disabled — artifacts are extracted by the backend
-  // and rendered in the artifact panel. Using StructuredOutputRenderer here
-  // was bypassing ReactMarkdown and breaking citation rendering.
-  useEffect(() => {}, [content]);
-
   // Citation placeholder: safe ASCII markers that survive markdown parsing
   const CITE_OPEN = 'XCSHODH';
   const CITE_CLOSE = 'XESHODH';
@@ -270,15 +239,6 @@ function MessageContentRenderer({ content, searchResults, artifacts, onFollowUpQ
     return text;
   }, [content]);
 
-  if (loading) {
-    return <div className="text-sm" style={{ color: textColor }}>Rendering...</div>;
-  }
-
-  // If we have structured outputs, render them with citations
-  if (structuredOutputs && structuredOutputs.length > 0) {
-    return <StructuredOutputRenderer outputs={structuredOutputs} searchResults={searchResults} onFollowUpQuery={onFollowUpQuery} onOpenUrl={onOpenUrl} />;
-  }
-
   // Debug: log preprocessed content and searchResults availability
   if (DEBUG && preprocessed.includes('XCSHODH')) {
     console.log('🔍 CITATION DEBUG:', {
@@ -343,8 +303,8 @@ function MessageContentRenderer({ content, searchResults, artifacts, onFollowUpQ
     return React.Children.map(children, (child) => {
       if (typeof child === 'string') return renderWithCitations(child);
       if (typeof child === 'number') return child;
-      if (React.isValidElement(child) && child.props?.children) {
-        return React.cloneElement(child, {}, processChildren(child.props.children));
+      if (React.isValidElement<{ children?: React.ReactNode }>(child) && child.props.children) {
+        return React.cloneElement(child, undefined, processChildren(child.props.children));
       }
       return child;
     });
@@ -478,17 +438,11 @@ function MessageContentRenderer({ content, searchResults, artifacts, onFollowUpQ
   }), [theme, isDark, accent, colors, processChildren]);
 
   // Classify artifacts for inline rendering
-  const chartArtifacts = (artifacts || []).filter((a: any) => {
-    const t = typeof a.artifact_type === 'string' ? a.artifact_type.toLowerCase() : '';
-    return t === 'chart' || a.artifact_type?.Chart !== undefined;
-  });
-  const tableArtifacts = (artifacts || []).filter((a: any) => {
-    const t = typeof a.artifact_type === 'string' ? a.artifact_type.toLowerCase() : '';
-    return t === 'table' || a.artifact_type?.Table !== undefined;
-  });
+  const chartArtifacts = (artifacts || []).filter((a: any) => getArtifactKind(a.artifact_type) === 'chart');
+  const tableArtifacts = (artifacts || []).filter((a: any) => getArtifactKind(a.artifact_type) === 'table');
   const otherArtifacts = (artifacts || []).filter((a: any) => {
-    const t = typeof a.artifact_type === 'string' ? a.artifact_type.toLowerCase() : '';
-    return t !== 'chart' && t !== 'table' && !a.artifact_type?.Chart && !a.artifact_type?.Table;
+    const kind = getArtifactKind(a.artifact_type);
+    return kind !== 'chart' && kind !== 'table';
   });
 
   return (
@@ -596,10 +550,7 @@ function AppSplitView() {
   const [isLoading, setIsLoading] = useState(true);
   const [isFirstTime, setIsFirstTime] = useState(false);
   const [activeTab, setActiveTab] = useState<ViewTab>('chat');
-  const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
-  const [spaces, setSpaces] = useState<Array<{ id: string; name: string; }>>([]);
-  const [isTelegramBotActive, setIsTelegramBotActive] = useState(false);
   const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set());
   const [docsExpandedSources, setDocsExpandedSources] = useState<Set<string>>(new Set());
   const [sourceFiles, setSourceFiles] = useState<Record<string, any[]>>({});
@@ -842,19 +793,6 @@ function AppSplitView() {
   }>({ stage: 'idle', progress: 0 });
   const [pipelineActive, setPipelineActive] = useState(false);
 
-  // Generation State
-  const [generationMode, setGenerationMode] = useState<'document' | 'code'>('document');
-  const [generationType, setGenerationType] = useState<'report' | 'summary' | 'analysis' | 'code' | 'test' | 'custom'>('report');
-  const [outputFormat, setOutputFormat] = useState<'md' | 'docx' | 'xlsx' | 'pptx' | 'pdf' | 'txt' | 'html'>('md');
-  const [generationContext, setGenerationContext] = useState("");
-  const [generatedContent, setGeneratedContent] = useState<any>(null);
-  const [generatedPreview, setGeneratedPreview] = useState("");
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [generationProgress, setGenerationProgress] = useState(0);
-  const [selectedIndustry, setSelectedIndustry] = useState<'legal' | 'healthcare' | 'finance' | 'general'>('general');
-  const [streamingSessionId, setStreamingSessionId] = useState<string | null>(null);
-  const [generateInput, setGenerateInput] = useState("");
-
   // Stats
   const [stats, setStats] = useState({
     totalDocs: 0,
@@ -893,22 +831,6 @@ function AppSplitView() {
     window.open(url, '_blank');
   };
 
-
-  // Load spaces when integrations tab opens
-  useEffect(() => {
-    if (activeTab === 'integrations') {
-      const loadSpaces = async () => {
-        try {
-          const loadedSpaces = await invoke<any[]>('get_spaces');
-          setSpaces(loadedSpaces.map(s => ({ id: s.id, name: s.name })));
-        } catch (error) {
-          console.error('Failed to load spaces:', error);
-          setSpaces([]);
-        }
-      };
-      loadSpaces();
-    }
-  }, [activeTab]);
 
   // Enhanced file drop handler - supports images AND documents
   const handleImageDrop = async (e: React.DragEvent) => {
@@ -1053,7 +975,7 @@ function AppSplitView() {
           }
         } catch (error) {
           console.error('Failed to process selected image:', error);
-          notify.error('Image processing failed', `${error}`);
+          notify.error('Image processing failed', { description: String(error) });
         }
       }
     } catch (error) {
@@ -1351,29 +1273,6 @@ function AppSplitView() {
     };
   }, []);
 
-  // Check Telegram bot status on mount and listen for status changes
-  useEffect(() => {
-    const checkTelegramStatus = async () => {
-      try {
-        const status = await invoke<boolean>('check_telegram_bot_status');
-        setIsTelegramBotActive(status);
-      } catch (error) {
-        console.error('Failed to check Telegram status:', error);
-        setIsTelegramBotActive(false);
-      }
-    };
-
-    checkTelegramStatus();
-
-    // Listen for status changes from TelegramBotPanel
-    const handleStatusChange = (event: any) => {
-      setIsTelegramBotActive(event.detail.connected);
-    };
-
-    window.addEventListener('telegram-bot-status', handleStatusChange);
-    return () => window.removeEventListener('telegram-bot-status', handleStatusChange);
-  }, []);
-
   // Keyboard shortcut for Command Palette (Cmd+K / Ctrl+K)
   useEffect(() => {
     const handleKeyDown = (_e: KeyboardEvent) => {
@@ -1563,170 +1462,20 @@ function AppSplitView() {
     };
   }, []);
 
-  // Output formats
-  const outputFormats: OutputFormat[] = [
-    { id: 'md', name: 'Markdown', icon: FileText, extension: '.md', mimeType: 'text/markdown' },
-    { id: 'html', name: 'HTML', icon: FileText, extension: '.html', mimeType: 'text/html' },
-    { id: 'docx', name: 'Word', icon: FileText, extension: '.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
-    { id: 'xlsx', name: 'Excel', icon: FileSpreadsheet, extension: '.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
-    { id: 'pdf', name: 'PDF', icon: FileDown, extension: '.pdf', mimeType: 'application/pdf' },
-    { id: 'txt', name: 'Text', icon: FileText, extension: '.txt', mimeType: 'text/plain' },
-  ];
-
-  // Industry-specific document templates
-  const industryTemplates = {
-    legal: [
-      { id: 'legal-contract-review', name: 'Contract Review Summary', icon: FileCheck, prompt: 'Analyze and summarize key contract terms, obligations, liabilities, and potential risks. Include recommendations for negotiation points.', category: 'legal' },
-      { id: 'legal-compliance-report', name: 'Compliance Report', icon: Shield, prompt: 'Generate a comprehensive compliance assessment report covering regulatory requirements, gaps, and remediation steps.', category: 'legal' },
-      { id: 'legal-due-diligence', name: 'Due Diligence Report', icon: SearchCheck, prompt: 'Create a thorough due diligence report analyzing legal risks, obligations, and findings from document review.', category: 'legal' },
-      { id: 'legal-policy-summary', name: 'Policy Summary', icon: FileText, prompt: 'Summarize key policies, procedures, and governance documents with actionable insights.', category: 'legal' },
-      { id: 'legal-case-brief', name: 'Case Brief', icon: Briefcase, prompt: 'Generate a structured case brief with facts, issues, holdings, and analysis.', category: 'legal' },
-    ],
-    healthcare: [
-      { id: 'medical-patient-summary', name: 'Patient Summary', icon: Heart, prompt: 'Generate a comprehensive patient summary including medical history, diagnoses, treatments, and recommendations.', category: 'healthcare' },
-      { id: 'medical-clinical-report', name: 'Clinical Report', icon: Activity, prompt: 'Create a detailed clinical report with findings, assessments, and treatment plans.', category: 'healthcare' },
-      { id: 'medical-research-summary', name: 'Research Summary', icon: TestTube, prompt: 'Summarize medical research findings, methodologies, and clinical implications.', category: 'healthcare' },
-      { id: 'medical-compliance', name: 'HIPAA Compliance Report', icon: Shield, prompt: 'Generate healthcare compliance assessment covering HIPAA, data privacy, and regulatory requirements.', category: 'healthcare' },
-      { id: 'medical-discharge', name: 'Discharge Summary', icon: FileText, prompt: 'Create a comprehensive discharge summary with diagnoses, treatments, medications, and follow-up instructions.', category: 'healthcare' },
-    ],
-    finance: [
-      { id: 'financial-audit-report', name: 'Audit Report', icon: FileCheck, prompt: 'Generate a comprehensive audit report with findings, financial analysis, and compliance assessment.', category: 'finance' },
-      { id: 'financial-risk-assessment', name: 'Risk Assessment', icon: AlertTriangle, prompt: 'Create a detailed financial risk assessment analyzing potential risks, exposures, and mitigation strategies.', category: 'finance' },
-      { id: 'financial-investment-analysis', name: 'Investment Analysis', icon: TrendingUp, prompt: 'Analyze investment opportunities, financial metrics, risks, and recommendations.', category: 'finance' },
-      { id: 'financial-quarterly-report', name: 'Quarterly Report', icon: BarChart, prompt: 'Generate a quarterly financial report with performance metrics, trends, and executive summary.', category: 'finance' },
-      { id: 'financial-compliance', name: 'Regulatory Compliance', icon: Shield, prompt: 'Create compliance report covering financial regulations, AML, KYC, and regulatory requirements.', category: 'finance' },
-    ],
-    general: [
-      { id: 'executive-report', name: 'Executive Report', icon: BarChart, prompt: 'Generate an executive summary report with key insights, metrics, and strategic recommendations', category: 'docs' },
-      { id: 'technical-report', name: 'Technical Report', icon: BookOpen, prompt: 'Generate a detailed technical report with comprehensive analysis and findings', category: 'docs' },
-      { id: 'analysis-report', name: 'Analysis Report', icon: BarChart, prompt: 'Generate a comprehensive analysis report with data-driven findings', category: 'analysis' },
-      { id: 'summary', name: 'Summary Document', icon: FileText, prompt: 'Generate a concise summary of selected documents', category: 'docs' },
-      { id: 'spreadsheet', name: 'Data Export', icon: FileSpreadsheet, prompt: 'Generate spreadsheet with extracted data and tables', category: 'docs' },
-    ]
-  };
-
-  const documentTemplates = industryTemplates[selectedIndustry];
-
-  // Code templates
-  const codeTemplates: GenerationTemplate[] = [
-    { id: 'readme', name: 'README', icon: BookOpen, prompt: 'Generate a comprehensive README', category: 'code' },
-    { id: 'api-docs', name: 'API Docs', icon: Network, prompt: 'Generate API documentation', category: 'code' },
-    { id: 'unit-tests', name: 'Unit Tests', icon: TestTube, prompt: 'Generate unit tests', category: 'code' },
-    { id: 'types', name: 'TypeScript Types', icon: FileCode, prompt: 'Generate TypeScript type definitions', category: 'code' },
-    { id: 'component', name: 'React Component', icon: Layers, prompt: 'Generate a React component', category: 'code' },
-  ];
-
   // Initialize app once on mount
   useEffect(() => {
     initializeApp();
   }, []); // Empty dependency array - run only once on mount
-
-  // Setup Telegram and Discord event listeners (no dependencies - run once)
-  useEffect(() => {
-    let unlistenTelegramMsg: (() => void) | undefined;
-    let unlistenTelegramResp: (() => void) | undefined;
-    let unlistenDiscordMsg: (() => void) | undefined;
-    let unlistenDiscordResp: (() => void) | undefined;
-    let isMounted = true;
-
-    // Setup listeners with async
-    (async () => {
-      if (!isMounted) return;
-
-      // Listen for Telegram messages
-      unlistenTelegramMsg = await listen('telegram-message', (event: any) => {
-        const { username, message, timestamp } = event.payload;
-        const newMessage: Message = {
-          id: Date.now().toString(),
-          role: 'user',
-          content: `📱 Telegram (@${username}): ${message}`,
-          timestamp: new Date(timestamp).toISOString(),
-          platform: 'telegram',
-        };
-        setMessages(prev => [...prev, newMessage]);
-      });
-
-      if (!isMounted) {
-        unlistenTelegramMsg?.();
-        return;
-      }
-
-      unlistenTelegramResp = await listen('telegram-response', (event: any) => {
-        const { username, message, timestamp } = event.payload;
-        const newMessage: Message = {
-          id: Date.now().toString() + '_response',
-          role: 'assistant',
-          content: message,
-          timestamp: new Date(timestamp).toISOString(),
-          platform: 'telegram',
-        };
-        setMessages(prev => [...prev, newMessage]);
-      });
-
-      if (!isMounted) {
-        unlistenTelegramMsg?.();
-        unlistenTelegramResp?.();
-        return;
-      }
-
-      // Listen for Discord messages
-      unlistenDiscordMsg = await listen('discord-message', (event: any) => {
-        const { username, message, timestamp } = event.payload;
-        const newMessage: Message = {
-          id: Date.now().toString(),
-          role: 'user',
-          content: `💬 Discord (@${username}): ${message}`,
-          timestamp: new Date(timestamp).toISOString(),
-          platform: 'discord',
-        };
-        setMessages(prev => [...prev, newMessage]);
-      });
-
-      if (!isMounted) {
-        unlistenTelegramMsg?.();
-        unlistenTelegramResp?.();
-        unlistenDiscordMsg?.();
-        return;
-      }
-
-      unlistenDiscordResp = await listen('discord-response', (event: any) => {
-        const { username, message, timestamp } = event.payload;
-        const newMessage: Message = {
-          id: Date.now().toString() + '_response',
-          role: 'assistant',
-          content: message,
-          timestamp: new Date(timestamp).toISOString(),
-          platform: 'discord',
-        };
-        setMessages(prev => [...prev, newMessage]);
-      });
-
-      if (!isMounted) {
-        unlistenTelegramMsg?.();
-        unlistenTelegramResp?.();
-        unlistenDiscordMsg?.();
-        unlistenDiscordResp?.();
-      }
-    })();
-
-    return () => {
-      isMounted = false;
-      unlistenTelegramMsg?.();
-      unlistenTelegramResp?.();
-      unlistenDiscordMsg?.();
-      unlistenDiscordResp?.();
-    };
-  }, []); // Empty deps - only run once
 
   // Setup other event listeners
   useEffect(() => {
     let unlistenProg: (() => void) | null = null;
 
     // Listen for tab switching events from child components
-    const handleSwitchTab = (event: any) => {
-      const tab = event.detail;
-      if (tab) {
-        setActiveTab(tab as any);
+    const handleSwitchTab = (event: Event) => {
+      const tab = (event as CustomEvent<unknown>).detail;
+      if (isViewTab(tab)) {
+        setActiveTab(tab);
       }
     };
     window.addEventListener('switchTab', handleSwitchTab);
@@ -1950,10 +1699,10 @@ function AppSplitView() {
 
       await updateStats();
 
-      notify.success('Storage optimized', result);
+      notify.success('Storage optimized', { description: result });
     } catch (error) {
       console.error("Failed to optimize storage:", error);
-      notify.error('Storage optimization failed', `${error}`);
+      notify.error('Storage optimization failed', { description: String(error) });
     }
   };
 
@@ -2342,7 +2091,7 @@ function AppSplitView() {
       const response = await invoke('unified_chat', {
         message: userQuery,
         context: {
-          agent_id: activeAgentId || null,
+          agent_id: null,
           conversation_history: conversationHistory,
           space_id: currentSpaceId,
           conversation_id: null,
@@ -2631,172 +2380,6 @@ function AppSplitView() {
     return { Icon: FileText, color: '#9ca3af', badge: type.toUpperCase().slice(0, 4) };
   }, []);
 
-  const handleGenerate = async (template?: GenerationTemplate) => {
-    setIsGenerating(true);
-    setGenerationProgress(0);
-
-    try {
-      const prompt = template ? template.prompt : generationContext;
-
-      if (!prompt.trim()) {
-        notify.warning('Please enter a description of what you want to generate');
-        return;
-      }
-
-      // Simulate progress animation
-      const progressInterval = setInterval(() => {
-        setGenerationProgress(prev => Math.min(prev + 10, 90));
-      }, 300);
-
-      debugLog("🔧 Generating document:", { prompt, format: outputFormat, template: template?.id });
-
-      // Call backend with proper signature
-      const response = await invoke("generate_from_rag", {
-        prompt: prompt,
-        format: outputFormat,
-        includeReferences: true,
-        maxSourceDocs: 10,
-        template: template?.id || null
-      }) as any;
-
-      clearInterval(progressInterval);
-      setGenerationProgress(100);
-
-      debugLog("✅ Document generated:", response);
-      debugLog("📊 Sources used:", response.metadata?.sources?.length || 0);
-      debugLog("📄 Preview length:", response.preview?.length || 0);
-      debugLog("📦 Content base64 length:", response.content_base64?.length || 0);
-
-      // Store the generated document
-      setGeneratedContent(response);
-      setGenerationProgress(0);
-
-      // Track document generation activity for timeline
-      await trackActivity({
-        activityType: 'task_completed',
-        data: `Generated ${outputFormat.toUpperCase()} document: ${prompt.substring(0, 50)}...`,
-        project: 'shodh'
-      });
-
-      // Show preview or download based on format
-      if (outputFormat === 'md' || outputFormat === 'html' || outputFormat === 'txt') {
-        // Text-based formats - show preview
-        try {
-          // Use preview field if available (already decoded)
-          if (response.preview) {
-            setGeneratedPreview(response.preview);
-          } else if (response.content_base64) {
-            // Decode base64 content
-            const decoded = atob(response.content_base64);
-            setGeneratedPreview(decoded);
-          } else {
-            console.error("No content or preview available in response:", response);
-            notify.warning('Document generated but no content available for preview');
-          }
-        } catch (decodeError) {
-          console.error("Failed to decode document content:", decodeError);
-          debugLog("Response:", response);
-          notify.error('Document preview failed', 'Check console for details');
-        }
-      } else {
-        // Binary formats - offer download
-        await downloadGeneratedDocument(response);
-      }
-
-    } catch (error: any) {
-      console.error("❌ Generation failed:", error);
-      notify.error('Document generation failed', `${error.message || error}`);
-    } finally {
-      setIsGenerating(false);
-      setGenerationProgress(0);
-    }
-  };
-
-  // Download generated document (handles both text and binary formats)
-  const downloadGeneratedDocument = async (response: any) => {
-    try {
-      if (!response || !response.content_base64) {
-        notify.error('No document content to download');
-        return;
-      }
-
-      const format = outputFormats.find(f => f.id === response.format);
-      if (!format) return;
-
-      // Decode base64 content
-      const binaryString = atob(response.content_base64);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-
-      // Create blob
-      const blob = new Blob([bytes], { type: format.mimeType });
-      const url = URL.createObjectURL(blob);
-
-      // Download file
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = response.title || `document-${Date.now()}${format.extension}`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-
-      debugLog("✅ Document downloaded:", response.title);
-    } catch (error) {
-      console.error('Download failed:', error);
-      notify.error('Failed to download document');
-    }
-  };
-
-  const handleExport = async () => {
-    if (!generatedContent) return;
-
-    try {
-      await downloadGeneratedDocument(generatedContent);
-    } catch (error) {
-      console.error('Export failed:', error);
-    }
-  };
-
-  // Streaming generation handler
-  const handleGenerateStream = async () => {
-    if (!generateInput.trim()) {
-      notify.warning('Please enter a description of what you want to generate');
-      return;
-    }
-
-    setIsGenerating(true);
-    setStreamingSessionId(null);
-
-    try {
-      const sessionId = await invoke('generate_document_stream', {
-        prompt: generateInput,
-        format: outputFormat,
-      }) as string;
-
-      debugLog("🔥 Streaming session started:", sessionId);
-      setStreamingSessionId(sessionId);
-
-      // Track activity
-      try {
-        await invoke("track_activity", {
-          activityType: "document_generated",
-          data: `Streaming ${outputFormat.toUpperCase()} document: ${generateInput.substring(0, 50)}...`,
-          project: null
-        });
-      } catch (e) {
-        debugLog("Activity tracking skipped:", e);
-      }
-
-    } catch (error: any) {
-      console.error("❌ Streaming generation failed:", error);
-      notify.error('Document generation failed', `${error.message || error}`);
-      setIsGenerating(false);
-    }
-  };
-
   // Loading Screen with animations
   if (isLoading) {
     return (
@@ -2964,7 +2547,7 @@ function AppSplitView() {
         >
           <div className="flex items-center gap-3">
             <span className="text-xs font-semibold tracking-wide" style={{ color: colors.text }}>
-              {activeTab === 'chat' ? 'Chat' : activeTab === 'generate' ? 'Generate' : activeTab === 'integrations' ? 'Integrations' : activeTab === 'analytics' ? 'Analytics' : activeTab === 'calendar' ? 'Tasks' : activeTab === 'graph' ? 'Knowledge Graph' : activeTab === 'agents' ? 'AI Agents' : 'Documents'}
+              {activeTab === 'chat' ? 'Chat' : activeTab === 'calendar' ? 'Tasks' : activeTab === 'graph' ? 'Knowledge Graph' : 'Documents'}
             </span>
             {activeTab === 'chat' && activeConversation?.spaceName && (() => {
               const name = activeConversation.spaceName!;
@@ -3232,17 +2815,6 @@ function AppSplitView() {
             <div className="h-full flex relative">
               {/* Messages Section (full width — artifacts overlay as drawer) */}
               <div className="flex-1 flex flex-col">
-                {/* Telegram Status Bar */}
-                {isTelegramBotActive && (
-                  <div className="px-6 py-2 border-b" style={{ backgroundColor: colors.cardBg, borderColor: '#0088cc' }}>
-                    <div className="flex items-center gap-2 text-xs">
-                      <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-                      <span style={{ color: colors.text }}>
-                        Telegram Bot Active - Messages will appear here
-                      </span>
-                    </div>
-                  </div>
-                )}
                 <div
                 ref={chatScrollContainerRef}
                 className="flex-1 overflow-y-auto relative"
@@ -3639,7 +3211,7 @@ function AppSplitView() {
                                   }
                                 } catch (error) {
                                   console.error('❌ Failed to load document:', error);
-                                  notify.error('Failed to load document', `${error}`);
+                                  notify.error('Failed to load document', { description: String(error) });
                                 }
                               }}
                               onOpenArtifact={(artifactId) => {
@@ -3696,7 +3268,6 @@ function AppSplitView() {
                                         {searchPipeline.stage === 'neural' && 'Reranking results...'}
                                         {searchPipeline.stage === 'graph' && 'Graph analysis...'}
                                         {searchPipeline.stage === 'complete' && 'Complete'}
-                                        {searchPipeline.stage === 'idle' && 'Processing...'}
                                       </span>
                                       <span className="text-xs" style={{ color: colors.textMuted, fontFamily: 'monospace' }}>
                                         {searchPipeline.progress}%
@@ -4007,23 +3578,6 @@ function AppSplitView() {
             </div>
           )}
 
-          {/* Integrations Tab */}
-          {activeTab === 'integrations' && (
-            <IntegrationsPanel spaces={spaces} />
-          )}
-
-          {/* Generate Tab */}
-          {activeTab === 'generate' && (
-            <div className="h-full">
-              <DocumentGenerator />
-            </div>
-          )}
-
-          {/* Analytics Tab */}
-          {activeTab === 'analytics' && (
-            <AnalyticsDashboard />
-          )}
-
           {/* Calendar/Tasks Tab */}
           {activeTab === 'calendar' && (
             <CalendarTodoPanel />
@@ -4032,11 +3586,6 @@ function AppSplitView() {
           {/* Knowledge Graph Tab */}
           {activeTab === 'graph' && (
             <KnowledgeGraph />
-          )}
-
-          {/* Agents Tab */}
-          {activeTab === 'agents' && (
-            <AgentsPanel />
           )}
 
           {/* Documents Tab — shows indexed sources with file lists */}

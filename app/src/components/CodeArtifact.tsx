@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import type { Artifact } from './EnhancedArtifactPanel';
+import { getArtifactKind, getArtifactCodeLanguage } from '../utils/artifactKind';
 
 interface CodeArtifactProps {
   artifact: Artifact;
@@ -12,8 +13,8 @@ export function CodeArtifact({
   theme = 'light',
 }: CodeArtifactProps) {
   const getLanguage = (): string => {
-    if (artifact.artifact_type.Code) {
-      const lang = artifact.language || 'plaintext';
+    if (getArtifactKind(artifact.artifact_type) === 'code') {
+      const lang = getArtifactCodeLanguage(artifact) || 'plaintext';
       // Map common language names to Monaco language IDs
       const langMap: Record<string, string> = {
         'js': 'javascript',

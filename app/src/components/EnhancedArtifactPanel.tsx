@@ -25,19 +25,12 @@ import { PDFArtifact } from './PDFArtifact';
 import { TableArtifact } from './TableArtifact';
 import { ChartArtifact } from './ChartArtifact';
 import { useTheme } from '../contexts/ThemeContext';
+import { getArtifactKind, getArtifactCodeLanguage } from '../utils/artifactKind';
+import type { ArtifactKind, ArtifactTypeValue } from '../utils/artifactKind';
 
 export interface Artifact {
   id: string;
-  artifact_type: {
-    Code?: { language: string } | null;
-    Markdown?: null;
-    Mermaid?: { diagram_type: string } | null;
-    Chart?: null;
-    Table?: null;
-    SVG?: null;
-    HTML?: null;
-    PDF?: null;
-  };
+  artifact_type: ArtifactTypeValue;
   title: string;
   content: string;
   language?: string;
@@ -69,20 +62,7 @@ interface EnhancedArtifactPanelProps {
   selectedArtifactId?: string;
 }
 
-function getTypeKey(artifactType: any): string {
-  if (typeof artifactType === 'string') return artifactType.toLowerCase();
-  if (artifactType?.Code) return 'code';
-  if (artifactType?.Markdown) return 'markdown';
-  if (artifactType?.Mermaid) return 'mermaid';
-  if (artifactType?.Html) return 'html';
-  if (artifactType?.Svg) return 'svg';
-  if (artifactType?.PDF) return 'pdf';
-  if (artifactType?.Table) return 'table';
-  if (artifactType?.Chart) return 'chart';
-  return 'other';
-}
-
-function getGroupForType(typeKey: string): string {
+function getGroupForType(typeKey: ArtifactKind): string {
   switch (typeKey) {
     case 'chart': return 'charts';
     case 'table': return 'tables';
@@ -110,7 +90,7 @@ function groupArtifacts(artifacts: Artifact[]): ArtifactGroup[] {
   const grouped: Record<string, Artifact[]> = {};
 
   for (const artifact of artifacts) {
-    const typeKey = getTypeKey(artifact.artifact_type);
+    const typeKey = getArtifactKind(artifact.artifact_type);
     const groupKey = getGroupForType(typeKey);
     if (!grouped[groupKey]) grouped[groupKey] = [];
     grouped[groupKey].push(artifact);
@@ -127,36 +107,36 @@ function groupArtifacts(artifacts: Artifact[]): ArtifactGroup[] {
 }
 
 function getFileExtension(artifact: Artifact): string {
-  const t = artifact.artifact_type;
-  const s = typeof t === 'string' ? t.toLowerCase() : '';
-  if (s === 'code' || (t as any).Code) {
-    const lang = (t as any).Code?.language || 'txt';
-    const extensions: Record<string, string> = {
-      javascript: 'js', typescript: 'ts', python: 'py', rust: 'rs',
-      java: 'java', cpp: 'cpp', csharp: 'cs', html: 'html',
-      css: 'css', json: 'json', yaml: 'yaml', xml: 'xml', markdown: 'md',
-    };
-    return extensions[lang] || 'txt';
+  switch (getArtifactKind(artifact.artifact_type)) {
+    case 'code': {
+      const lang = (getArtifactCodeLanguage(artifact) || '').toLowerCase();
+      const extensions: Record<string, string> = {
+        javascript: 'js', typescript: 'ts', python: 'py', rust: 'rs',
+        java: 'java', cpp: 'cpp', csharp: 'cs', html: 'html',
+        css: 'css', json: 'json', yaml: 'yaml', xml: 'xml', markdown: 'md',
+      };
+      return extensions[lang] || 'txt';
+    }
+    case 'markdown': return 'md';
+    case 'mermaid': return 'mmd';
+    case 'svg': return 'svg';
+    case 'html': return 'html';
+    default: return 'txt';
   }
-  if (s === 'markdown' || (t as any).Markdown) return 'md';
-  if (s === 'mermaid' || (t as any).Mermaid) return 'mmd';
-  if (s === 'svg' || (t as any).SVG) return 'svg';
-  if (s === 'html' || (t as any).HTML) return 'html';
-  return 'txt';
 }
 
 function getTypeName(artifact: Artifact): string {
-  const t = artifact.artifact_type;
-  const s = typeof t === 'string' ? t.toLowerCase() : '';
-  if (s === 'code' || (t as any).Code) return 'Code';
-  if (s === 'table' || (t as any).Table) return 'Table';
-  if (s === 'chart' || (t as any).Chart) return 'Chart';
-  if (s === 'markdown' || (t as any).Markdown) return 'Markdown';
-  if (s === 'mermaid' || (t as any).Mermaid) return 'Diagram';
-  if (s === 'pdf' || (t as any).PDF) return 'PDF';
-  if (s === 'svg' || (t as any).SVG) return 'SVG';
-  if (s === 'html' || (t as any).HTML) return 'HTML';
-  return 'Text';
+  switch (getArtifactKind(artifact.artifact_type)) {
+    case 'code': return 'Code';
+    case 'table': return 'Table';
+    case 'chart': return 'Chart';
+    case 'markdown': return 'Markdown';
+    case 'mermaid': return 'Diagram';
+    case 'pdf': return 'PDF';
+    case 'svg': return 'SVG';
+    case 'html': return 'HTML';
+    default: return 'Text';
+  }
 }
 
 export function EnhancedArtifactPanel({
@@ -248,12 +228,7 @@ export function EnhancedArtifactPanel({
     );
   }
 
-  const isType = (typeName: string) => {
-    if (!selectedArtifact) return false;
-    const t = selectedArtifact.artifact_type;
-    const s = typeof t === 'string' ? t.toLowerCase() : '';
-    return s === typeName.toLowerCase() || (t as any)[typeName] !== undefined;
-  };
+  const selectedKind: ArtifactKind | null = selectedArtifact ? getArtifactKind(selectedArtifact.artifact_type) : null;
 
   return (
     <div
@@ -494,12 +469,12 @@ export function EnhancedArtifactPanel({
                     />
                   ) : (
                     <>
-                      {isType('Code') && <CodeArtifact artifact={selectedArtifact} theme={theme} />}
-                      {isType('Markdown') && <MarkdownArtifact artifact={selectedArtifact} />}
-                      {isType('Mermaid') && <MermaidArtifact artifact={selectedArtifact} />}
-                      {isType('PDF') && <PDFArtifact artifact={selectedArtifact} />}
-                      {isType('Table') && <TableArtifact artifact={selectedArtifact} theme={theme} />}
-                      {isType('Chart') && <ChartArtifact artifact={selectedArtifact} theme={theme} />}
+                      {selectedKind === 'code' && <CodeArtifact artifact={selectedArtifact} theme={theme} />}
+                      {selectedKind === 'markdown' && <MarkdownArtifact artifact={selectedArtifact} />}
+                      {selectedKind === 'mermaid' && <MermaidArtifact artifact={selectedArtifact} />}
+                      {selectedKind === 'pdf' && <PDFArtifact artifact={selectedArtifact} />}
+                      {selectedKind === 'table' && <TableArtifact artifact={selectedArtifact} theme={theme} />}
+                      {selectedKind === 'chart' && <ChartArtifact artifact={selectedArtifact} theme={theme} />}
                     </>
                   )}
                 </motion.div>

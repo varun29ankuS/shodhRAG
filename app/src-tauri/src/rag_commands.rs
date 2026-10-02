@@ -34,16 +34,9 @@ pub struct RagState {
     pub space_manager: Mutex<SpaceManager>,
     pub conversation_manager: Arc<TokioRwLock<Option<ConversationManager>>>,
     pub memory_system: Arc<TokioRwLock<Option<Arc<TokioRwLock<MemorySystem>>>>>,
-    pub personal_assistant:
-        Arc<TokioRwLock<Option<Arc<TokioRwLock<shodh_rag::agent::PersonalAssistant>>>>>,
     pub app_paths: AppPaths,
     pub rag_initialized: Arc<TokioRwLock<bool>>,
     pub initialization_lock: Arc<TokioMutex<()>>, // Mutex to prevent concurrent initialization
-
-    // Unified chat system
-    pub conversation_id: Arc<TokioRwLock<Option<String>>>,
-    pub agent_system: Arc<TokioRwLock<Option<Arc<TokioRwLock<shodh_rag::agent::AgentSystem>>>>>, // Changed to match PersonalAssistant's type
-    pub llm_manager: Arc<TokioRwLock<Option<shodh_rag::llm::LLMManager>>>,
 }
 
 /// Note structure for persistent memory
@@ -123,232 +116,44 @@ pub struct DocumentUpload {
     pub metadata: HashMap<String, String>,
 }
 
-/// Initialize the RAG system with persistent storage
+/// Mark the RAG system ready. The engine itself is created at startup
+/// (lib.rs); this only records that the frontend finished initialising.
 #[tauri::command]
 pub async fn initialize_rag(state: State<'_, RagState>) -> Result<String, String> {
-    tracing::info!("\n===== RAG INITIALIZATION CALLED =====");
-    tracing::info!("Timestamp: {}", chrono::Utc::now().to_rfc3339());
-
-    // Quick check before acquiring lock (optimization)
-    {
-        let initialized = *state.rag_initialized.read().await;
-        if initialized {
-            let assistant_guard = state.personal_assistant.read().await;
-            let has_assistant = assistant_guard.is_some();
-            drop(assistant_guard);
-
-            if has_assistant {
-                tracing::info!("✓ Already fully initialized - returning immediately");
-                return Ok("RAG and PersonalAssistant already initialized".to_string());
-            }
-        }
-    }
-
-    tracing::info!("Attempting to acquire initialization lock...");
-    tracing::info!("Lock address: {:p}", &*state.initialization_lock);
-
-    // Acquire initialization lock to prevent concurrent calls (blocks until available)
     let _init_lock = state.initialization_lock.lock().await;
-
-    tracing::info!("✓ Initialization lock acquired");
-    tracing::info!(
-        "Using persistent database path: {:?}",
-        state.app_paths.db_path
-    );
-
-    // Double-check after acquiring lock (another thread might have initialized while we waited)
-    let initialized = *state.rag_initialized.read().await;
-    if initialized {
-        tracing::info!(
-            "RAG already initialized by another thread - checking PersonalAssistant status..."
-        );
-
-        // Check if PersonalAssistant is initialized
-        let assistant_guard = state.personal_assistant.read().await;
-        let has_assistant = assistant_guard.is_some();
-        drop(assistant_guard);
-
-        if has_assistant {
-            tracing::info!("✓ PersonalAssistant is initialized and ready");
-            return Ok("RAG and PersonalAssistant already initialized".to_string());
-        } else {
-            tracing::info!("⚠ RAG initialized but PersonalAssistant is missing - will reinitialize PersonalAssistant only");
-            // Skip RAG initialization, go straight to PersonalAssistant
-            // Jump to PersonalAssistant initialization section
-        }
-    } else {
-        // Mark RAG as initialized (it was already created at startup in lib.rs)
-        tracing::info!("✓ RAG instance already exists from startup - marking as initialized");
-        *state.rag_initialized.write().await = true;
+    let mut initialized = state.rag_initialized.write().await;
+    if !*initialized {
+        *initialized = true;
+        tracing::info!(db = ?state.app_paths.db_path, "RAG ready");
     }
-
-    // Now initialize PersonalAssistant with the RAG reference
-    tracing::info!("\n===== PERSONAL ASSISTANT INITIALIZATION =====");
-    tracing::info!("Checking Memory System availability...");
-
-    // Wait up to 10 seconds for Memory System to initialize
-    let mut retry_count = 0;
-    let max_retries = 20; // 20 * 500ms = 10 seconds
-
-    loop {
-        tracing::info!("🔍 Retry attempt {}/{}", retry_count + 1, max_retries);
-        let memory_system_guard = state.memory_system.read().await;
-
-        if let Some(ref memory_arc) = *memory_system_guard {
-            tracing::info!("✓ Memory System is available!");
-
-            // Memory System is ready, clone the Arc before dropping the guard
-            let memory_arc_clone = memory_arc.clone();
-            drop(memory_system_guard); // Release lock before async operation
-
-            tracing::info!("Creating PersonalAssistant from agent framework...");
-
-            tracing::info!("Calling PersonalAssistant::new()...");
-            match shodh_rag::agent::PersonalAssistant::new(memory_arc_clone).await {
-                Ok(assistant) => {
-                    tracing::info!("✓ PersonalAssistant created successfully");
-
-                    // Load agents from YAML directory
-                    tracing::info!("Loading agents from backend YAML directory...");
-                    let agents_dir = std::env::current_dir()
-                        .map(|p| p.join("agents"))
-                        .unwrap_or_else(|_| std::path::PathBuf::from("agents"));
-
-                    tracing::info!("  Agents directory: {:?}", agents_dir);
-
-                    if agents_dir.exists() {
-                        let agent_system = assistant.get_agent_system();
-                        let system = agent_system.write().await;
-                        match system
-                            .load_agents_from_directory(agents_dir.to_str().unwrap())
-                            .await
-                        {
-                            Ok(loaded_ids) => {
-                                tracing::info!(
-                                    "✓ Loaded {} agents: {:?}",
-                                    loaded_ids.len(),
-                                    loaded_ids
-                                );
-                            }
-                            Err(e) => {
-                                tracing::info!("⚠ Failed to load agents from directory: {}", e);
-                                tracing::info!("  Agents will need to be loaded manually");
-                            }
-                        }
-                        drop(system);
-                    } else {
-                        tracing::info!("⚠ Agents directory not found at {:?}", agents_dir);
-                        tracing::info!("  Agents will need to be loaded manually");
-                    }
-
-                    // Get the agent_system from PersonalAssistant and sync it to RagState
-                    // Share the same Arc reference instead of cloning
-                    let agent_system_arc = assistant.get_agent_system();
-
-                    // Store the shared Arc reference in RagState
-                    // This synchronizes the agents between PersonalAssistant and unified chat
-                    // Both will point to the SAME AgentSystem instance (no duplication!)
-                    *state.agent_system.write().await = Some(agent_system_arc.clone());
-                    tracing::info!("✓ AgentSystem synchronized to RagState (shared reference)");
-
-                    *state.personal_assistant.write().await =
-                        Some(Arc::new(TokioRwLock::new(assistant)));
-                    tracing::info!("✓ PersonalAssistant stored in state");
-                    tracing::info!("===== PERSONAL ASSISTANT READY =====\n");
-                    break;
-                }
-                Err(e) => {
-                    tracing::info!("✗ Failed to initialize PersonalAssistant: {}", e);
-                    tracing::info!("   Error details: {:?}", e);
-                    tracing::info!("   Agent system will be unavailable");
-                    tracing::info!("===== PERSONAL ASSISTANT FAILED =====\n");
-                    break;
-                }
-            }
-        } else {
-            tracing::info!("⏳ Memory system not ready yet...");
-            drop(memory_system_guard); // Release lock before sleep
-
-            retry_count += 1;
-            if retry_count >= max_retries {
-                tracing::info!(
-                    "✗ Memory system not initialized after {} retries ({} seconds)",
-                    max_retries,
-                    max_retries / 2
-                );
-                tracing::info!("   PersonalAssistant will not be available");
-                tracing::info!("   This usually means:");
-                tracing::info!("   1. Memory System initialization is taking too long");
-                tracing::info!("   2. Memory System initialization failed (check earlier logs)");
-                tracing::info!("   3. There's a deadlock or async task issue");
-                tracing::info!("   You can reinitialize it later by calling initialize_rag again");
-                tracing::info!("===== PERSONAL ASSISTANT UNAVAILABLE =====\n");
-                break;
-            }
-
-            tracing::info!("   Waiting 500ms before retry...");
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        }
-    }
-
-    tracing::info!("RAG initialization completed successfully with persistent storage");
-    tracing::info!("Database location: {:?}", state.app_paths.db_path);
     Ok(format!(
-        "RAG initialized successfully with persistent storage at {:?}",
+        "RAG initialized with persistent storage at {:?}",
         state.app_paths.db_path
     ))
 }
 
-/// Check initialization status - Diagnostic command
+/// Initialisation status (diagnostics).
 #[tauri::command]
 pub async fn check_initialization_status(
     state: State<'_, RagState>,
 ) -> Result<serde_json::Value, String> {
     use serde_json::json;
 
-    tracing::info!("\n===== INITIALIZATION STATUS CHECK =====");
-
-    // Check RAG initialization
     let rag_initialized = *state.rag_initialized.read().await;
-    tracing::info!("RAG Initialized: {}", rag_initialized);
-
-    // Check Memory System
-    let memory_guard = state.memory_system.read().await;
-    let memory_initialized = memory_guard.is_some();
-    drop(memory_guard);
-    tracing::info!("Memory System Initialized: {}", memory_initialized);
-
-    // Check PersonalAssistant
-    let assistant_guard = state.personal_assistant.read().await;
-    let assistant_initialized = assistant_guard.is_some();
-    drop(assistant_guard);
-    tracing::info!("PersonalAssistant Initialized: {}", assistant_initialized);
-
-    // Check ConversationManager
-    let conversation_guard = state.conversation_manager.read().await;
-    let conversation_initialized = conversation_guard.is_some();
-    drop(conversation_guard);
-    tracing::info!(
-        "ConversationManager Initialized: {}",
-        conversation_initialized
-    );
-
-    tracing::info!("=====================================\n");
+    let memory_initialized = state.memory_system.read().await.is_some();
+    let conversation_initialized = state.conversation_manager.read().await.is_some();
 
     Ok(json!({
         "rag_initialized": rag_initialized,
         "memory_system_initialized": memory_initialized,
-        "personal_assistant_initialized": assistant_initialized,
         "conversation_manager_initialized": conversation_initialized,
-        "all_systems_ready": rag_initialized && memory_initialized && assistant_initialized,
-        "message": if rag_initialized && memory_initialized && assistant_initialized {
-            "All systems initialized and ready"
-        } else if !rag_initialized {
+        "all_systems_ready": rag_initialized && memory_initialized,
+        "message": if !rag_initialized {
             "RAG not initialized - call initialize_rag command"
         } else if !memory_initialized {
             "Memory System not initialized - this is a background task that should complete automatically"
         } else {
-            "PersonalAssistant not initialized - this means initialize_rag was called but PersonalAssistant initialization failed. Check console logs."
+            "All systems initialized and ready"
         }
     }))
 }

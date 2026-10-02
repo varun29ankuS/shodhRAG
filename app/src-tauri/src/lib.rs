@@ -15,7 +15,6 @@ mod llm_bootstrap;
 mod llm_commands;
 mod llm_response;
 mod mcp;
-mod mcp_bridge;
 mod mcp_commands;
 mod query_rewriter;
 mod rag_commands;
@@ -31,12 +30,11 @@ mod template_commands;
 mod window_commands;
 
 // Unified chat system modules
-mod agent_commands;
 mod agent_session_commands;
 mod agent_tools;
 mod calendar_commands;
-mod event_emitter;
 mod conversation_commands;
+mod event_emitter;
 
 use tauri::Manager;
 
@@ -225,15 +223,9 @@ pub fn run() {
                 space_manager: Mutex::new(space_manager),
                 conversation_manager: Arc::new(AsyncRwLock::new(None)),
                 memory_system: Arc::new(AsyncRwLock::new(None)),
-                personal_assistant: Arc::new(AsyncRwLock::new(None)),
                 app_paths,
                 rag_initialized: Arc::new(AsyncRwLock::new(false)),
                 initialization_lock: Arc::new(tokio::sync::Mutex::new(())),
-
-                // Unified chat system
-                conversation_id: Arc::new(AsyncRwLock::new(None)),
-                agent_system: Arc::new(AsyncRwLock::new(None)),
-                llm_manager: shared_llm_manager.clone(),
             });
 
             app.manage(IndexingState::default());
@@ -567,22 +559,6 @@ pub fn run() {
             conversation_commands::delete_conversation,
             conversation_commands::rename_conversation,
             conversation_commands::pin_conversation,
-            // Agent commands
-            agent_commands::get_agent_dashboard,
-            agent_commands::get_active_executions,
-            agent_commands::toggle_agent,
-            agent_commands::create_agent,
-            agent_commands::update_agent,
-            agent_commands::delete_agent,
-            agent_commands::get_agent,
-            agent_commands::list_agents,
-            agent_commands::execute_agent,
-            // Crew commands
-            agent_commands::create_crew,
-            agent_commands::get_crew,
-            agent_commands::list_crews,
-            agent_commands::delete_crew,
-            agent_commands::execute_crew,
             // Calendar/Todo commands
             calendar_commands::load_tasks,
             calendar_commands::create_task,

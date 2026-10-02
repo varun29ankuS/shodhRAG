@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { CitationFootnotes } from "./components/CitationFootnotes";
 import { CitationBadge } from "./components/CitationBadge";
 import { ToolCallBubble } from "./components/ToolCallBubble";
@@ -14,24 +14,22 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./com
 import { Badge } from "./components/ui/badge";
 import { Input } from "./components/ui/input";
 import { Progress } from "./components/ui/progress";
-// Tabs removed — navigation moved to AppSidebar
 import {
   Search, MessageSquare, Sparkles, Settings, Bot,
   FolderOpen, FileText, Code, Terminal, ChevronRight,
   Plus, RefreshCw, Check, X, AlertCircle, Loader2, Pencil,
   Send, Copy, Download, Save, ChevronDown, ChevronUp,
-  Database, Cpu, HardDrive, Activity, FileCode, GitBranch,
+  Database, Cpu, HardDrive, Activity, FileCode,
   BookOpen, FileJson, Layers, Package,
   FileSpreadsheet, Presentation, FilePlus, BarChart, Trash2, Clock,
   Braces, Coffee, Table, Brain, Zap, Globe, Image as ImageIcon
 } from 'lucide-react';
 
-// Import LLM Settings and core components
-import LLMSettings from './LLMSettings';
+// Core components
 import { ImageUpload } from './components/ImageUpload';
-import { ThemeToggle } from './components/ThemeToggle';
-import AppSidebar from './components/AppSidebar';
-import { isViewTab } from './lib/viewTabs';
+import Sidebar from './components/shell/Sidebar';
+import SettingsView from './components/shell/SettingsView';
+import { normalizeViewTab, VIEW_TAB_LABELS } from './lib/viewTabs';
 import type { ViewTab } from './lib/viewTabs';
 import { useTheme } from './contexts/ThemeContext';
 import { useSidebar } from './contexts/SidebarContext';
@@ -39,10 +37,8 @@ import { useConversations } from './hooks/useConversations';
 import { useCommandPalette } from './hooks/useCommandPalette';
 import CommandPalette from './components/CommandPalette';
 import DocumentPreviewPanel from './components/DocumentPreviewPanel';
-import KnowledgeGraph from './components/KnowledgeGraph';
 import CalendarTodoPanel from './components/CalendarTodoPanel';
-import SearchSettings, { useSearchConfig } from './components/SearchSettings';
-import DataManagement from './components/DataManagement';
+import { useSearchConfig } from './components/SearchSettings';
 import { useActivityTracker } from './hooks/useActivityTracker';
 import { OnboardingFlow } from './components/OnboardingFlow';
 import { FeedbackDialog } from './components/FeedbackDialog';
@@ -549,9 +545,9 @@ function AppSplitView() {
   // Core state
   const [isLoading, setIsLoading] = useState(true);
   const [isFirstTime, setIsFirstTime] = useState(false);
-  const [activeTab, setActiveTab] = useState<ViewTab>('chat');
+  const [activeTab, setActiveTab] = useState<ViewTab>('ask');
+  const prefersReducedMotion = useReducedMotion();
   const [sources, setSources] = useState<Source[]>([]);
-  const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set());
   const [docsExpandedSources, setDocsExpandedSources] = useState<Set<string>>(new Set());
   const [sourceFiles, setSourceFiles] = useState<Record<string, any[]>>({});
   const [currentlyIndexing, setCurrentlyIndexing] = useState<string | null>(null);
@@ -677,7 +673,38 @@ function AppSplitView() {
     model: 'Not configured',
     provider: 'none'
   });
-  const [showLLMSettings, setShowLLMSettings] = useState(false);
+
+  // Re-read the active LLM from the backend (after settings changes).
+  const refreshLlmStatus = useCallback(async () => {
+    try {
+      const info: any = await invoke("get_llm_info");
+      if (info) {
+        setLlmStatus({
+          connected: true,
+          model: info.model || 'Unknown',
+          provider: info.provider || 'Unknown'
+        });
+      }
+    } catch (e) {
+      debugLog("LLM status check:", e);
+      setLlmStatus({
+        connected: false,
+        model: 'Not configured',
+        provider: 'none'
+      });
+    }
+  }, []);
+
+  // Remember the last non-settings view so dismissing model settings returns there.
+  const lastContentTabRef = useRef<ViewTab>('ask');
+  useEffect(() => {
+    if (activeTab !== 'settings') lastContentTabRef.current = activeTab;
+  }, [activeTab]);
+
+  const closeModelSettings = useCallback(() => {
+    refreshLlmStatus();
+    setActiveTab(lastContentTabRef.current);
+  }, [refreshLlmStatus]);
 
   // Document preview
   const [previewFile, setPreviewFile] = useState<{ path: string; name: string; page?: number } | null>(null);
@@ -734,12 +761,13 @@ function AppSplitView() {
     setEditingInstructionText('');
   };
 
-  // Create new conversation with current source association
+  // Create new conversation with current source association and show it
   const handleNewConversation = () => {
     createConversation({
       spaceId: activeSpaceId || undefined,
       spaceName: activeSourceName || undefined,
     });
+    setActiveTab('ask');
   };
 
   // Generate follow-up suggestions from the AI response content
@@ -1473,8 +1501,8 @@ function AppSplitView() {
 
     // Listen for tab switching events from child components
     const handleSwitchTab = (event: Event) => {
-      const tab = (event as CustomEvent<unknown>).detail;
-      if (isViewTab(tab)) {
+      const tab = normalizeViewTab((event as CustomEvent<unknown>).detail);
+      if (tab) {
         setActiveTab(tab);
       }
     };
@@ -2269,44 +2297,7 @@ function AppSplitView() {
     }
   };
 
-  // Toggle source file list expansion
-  const toggleSourceExpansion = async (sourceId: string, e: React.MouseEvent) => {
-    e.stopPropagation(); // Prevent source selection toggle
-
-    const newExpanded = new Set(expandedSources);
-
-    if (newExpanded.has(sourceId)) {
-      newExpanded.delete(sourceId);
-    } else {
-      newExpanded.add(sourceId);
-
-      // Fetch files for this source if not already loaded
-      if (!sourceFiles[sourceId]) {
-        try {
-          debugLog('Fetching files for source:', sourceId);
-          const files = await invoke<any[]>('get_source_files', { sourceId });
-          debugLog('Received files:', files);
-          setSourceFiles(prev => ({ ...prev, [sourceId]: files || [] }));
-
-          // Update the source's fileCount
-          setSources(prevSources =>
-            prevSources.map(s =>
-              s.id === sourceId
-                ? { ...s, fileCount: files.length }
-                : s
-            )
-          );
-        } catch (error) {
-          console.error('Failed to fetch source files:', error);
-          setSourceFiles(prev => ({ ...prev, [sourceId]: [] }));
-        }
-      }
-    }
-
-    setExpandedSources(newExpanded);
-  };
-
-  // Toggle source expansion in Documents tab (independent from sidebar)
+  // Toggle source file list expansion in the Library view
   const toggleDocsSourceExpansion = async (sourceId: string, e: React.MouseEvent) => {
     e.stopPropagation();
 
@@ -2511,30 +2502,20 @@ function AppSplitView() {
       style={{ backgroundColor: colors.bg, color: colors.text }}
     >
       {/* Left Sidebar */}
-      <AppSidebar
+      <Sidebar
         activeView={activeTab}
-        onViewChange={setActiveTab}
+        onNavigate={setActiveTab}
         conversations={conversations}
         activeConversationId={activeConversationId}
-        onSelectConversation={(id: string) => { switchConversation(id); setActiveTab('chat'); }}
+        onOpenConversation={(id: string) => { switchConversation(id); setActiveTab('ask'); }}
         onNewConversation={handleNewConversation}
-        onDeleteConversation={deleteConversation}
         onRenameConversation={renameConversation}
         onPinConversation={pinConversation}
-        onReorderConversations={reorderConversations}
+        onDeleteConversation={deleteConversation}
         sources={sources}
-        onToggleSource={toggleSource}
-        onAddSource={() => handleAddSource()}
-        onRemoveSource={removeSource}
-        expandedSources={expandedSources}
-        sourceFiles={sourceFiles}
-        onToggleSourceExpansion={toggleSourceExpansion}
-        getFileIconInfo={getFileIconInfo}
         llmStatus={llmStatus}
-        onOpenLLMSettings={() => setShowLLMSettings(true)}
         onOpenCommandPalette={openPalette}
         onShowFeedback={() => setShowFeedback(true)}
-        stats={stats}
       />
 
 
@@ -2547,11 +2528,11 @@ function AppSplitView() {
         >
           <div className="flex items-center gap-3">
             <span className="text-xs font-semibold tracking-wide" style={{ color: colors.text }}>
-              {activeTab === 'chat' ? 'Chat' : activeTab === 'calendar' ? 'Tasks' : activeTab === 'graph' ? 'Knowledge Graph' : 'Documents'}
+              {VIEW_TAB_LABELS[activeTab]}
             </span>
-            {activeTab === 'chat' && activeConversation?.spaceName && (() => {
+            {activeTab === 'ask' && activeConversation?.spaceName && (() => {
               const name = activeConversation.spaceName!;
-              // FNV-1a hash — must match sourceColor() in AppSidebar / ConversationList
+              // FNV-1a hash — must match sourceColor() in utils/colors
               let hash = 2166136261;
               for (let i = 0; i < name.length; i++) {
                 hash ^= name.charCodeAt(i);
@@ -2594,7 +2575,7 @@ function AppSplitView() {
               onRemove={removeNotif}
               onClearAll={clearAllNotifs}
             />
-            {activeTab === 'chat' && messages.length > 0 && (
+            {activeTab === 'ask' && messages.length > 0 && (
               <>
                 <span
                   className="text-[10px] px-2 py-0.5 rounded-full font-medium"
@@ -2639,7 +2620,7 @@ function AppSplitView() {
                 </button>
               </>
             )}
-            {activeTab === 'chat' && activeConversationId && (
+            {activeTab === 'ask' && activeConversationId && (
               <div className="relative">
                 <button
                   onClick={() => {
@@ -2808,10 +2789,16 @@ function AppSplitView() {
           </div>
         </div>
 
-        {/* Content Area */}
-        <div className="flex-1 overflow-hidden">
-          {/* Chat Tab */}
-          {activeTab === 'chat' && (
+        {/* Content Area — screen enter transition keyed on the active view */}
+        <motion.div
+          key={activeTab}
+          className="flex-1 overflow-hidden"
+          initial={prefersReducedMotion ? false : { opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: prefersReducedMotion ? 0 : 0.2, ease: [0.2, 0.7, 0.2, 1] }}
+        >
+          {/* Ask Tab */}
+          {activeTab === 'ask' && (
             <div className="h-full flex relative">
               {/* Messages Section (full width — artifacts overlay as drawer) */}
               <div className="flex-1 flex flex-col">
@@ -3578,23 +3565,35 @@ function AppSplitView() {
             </div>
           )}
 
-          {/* Calendar/Tasks Tab */}
+          {/* Calendar Tab */}
           {activeTab === 'calendar' && (
             <CalendarTodoPanel />
           )}
 
-          {/* Knowledge Graph Tab */}
-          {activeTab === 'graph' && (
-            <KnowledgeGraph />
+          {/* Settings Tab */}
+          {activeTab === 'settings' && (
+            <SettingsView
+              onModelStatusChange={refreshLlmStatus}
+              onCloseModelSettings={closeModelSettings}
+              searchConfig={searchConfig}
+              onUpdateSearchConfig={updateSearchConfig}
+              onResetSearchConfig={resetSearchConfig}
+              sources={sources}
+              onRemoveSource={removeSource}
+              onSourcesCleared={() => {
+                setSources([]);
+                localStorage.setItem('indexedSources', JSON.stringify([]));
+              }}
+            />
           )}
 
-          {/* Documents Tab — shows indexed sources with file lists */}
-          {activeTab === 'documents' && (
+          {/* Library Tab — shows indexed sources with file lists */}
+          {activeTab === 'library' && (
             <div className="h-full overflow-y-auto p-6">
               <div className="max-w-4xl mx-auto">
                 <div className="flex items-center justify-between mb-6">
                   <div>
-                    <h1 className="text-lg font-bold" style={{ color: colors.text }}>Documents</h1>
+                    <h1 className="text-lg font-bold" style={{ color: colors.text }}>Library</h1>
                     <p className="text-xs mt-0.5" style={{ color: colors.textMuted }}>
                       {stats.totalDocs} documents indexed across {sources.length} sources
                     </p>
@@ -3648,6 +3647,30 @@ function AppSplitView() {
                             {source.indexedAt && (
                               <span>Indexed {new Date(source.indexedAt).toLocaleDateString()}</span>
                             )}
+                            <label
+                              className="flex items-center gap-1.5 px-2 py-1 rounded-md border cursor-pointer select-none focus-within:ring-2 focus-within:ring-ring"
+                              style={{ borderColor: colors.border, color: colors.textSecondary }}
+                              title="Include this source when answering in Ask"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={source.selected}
+                                onChange={() => toggleSource(source.id)}
+                                className="w-3.5 h-3.5 focus:outline-none"
+                                style={{ accentColor: colors.primary }}
+                              />
+                              Use in Ask
+                            </label>
+                            <button
+                              type="button"
+                              onClick={(e) => removeSource(source.id, e)}
+                              aria-label={`Remove source ${source.name}`}
+                              title="Remove source"
+                              className="w-7 h-7 rounded-md inline-flex items-center justify-center transition-colors hover:bg-shodh-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              style={{ color: colors.error }}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                            </button>
                           </div>
                         </div>
                         {source.path && (
@@ -3656,7 +3679,7 @@ function AppSplitView() {
                           </p>
                         )}
 
-                        {/* File list toggle (independent from sidebar) */}
+                        {/* File list toggle */}
                         {source.status === 'ready' && (
                           <div>
                             <button
@@ -3739,7 +3762,7 @@ function AppSplitView() {
             </div>
           )}
 
-        </div>
+        </motion.div>
       </div>
 
       {/* Document Preview Panel */}
@@ -3759,87 +3782,9 @@ function AppSplitView() {
         onNavigate={setActiveTab}
         onNewConversation={handleNewConversation}
         onToggleTheme={toggleTheme}
-        onOpenLLMSettings={() => { setShowLLMSettings(true); closePalette(); }}
         onAddSource={() => { handleAddSource(); closePalette(); }}
         sources={sources.map(s => ({ id: s.id, name: s.name, selected: s.selected }))}
       />
-
-      {/* LLM Settings Modal */}
-      {showLLMSettings && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
-          <div
-            className="bg-white dark:bg-gray-800 rounded-lg max-w-4xl w-full max-h-[90vh] overflow-auto"
-            style={{
-              '--surface': '#1f2937',
-              '--border': '#374151',
-              '--text': '#f3f4f6',
-              '--text-dim': '#9ca3af',
-              '--primary': '#f73129',
-              '--hover': '#374151',
-              '--success': '#10b981',
-              '--error': '#ef4444',
-            } as React.CSSProperties}
-          >
-            <LLMSettings
-              onClose={async () => {
-                setShowLLMSettings(false);
-                // Re-check LLM status after settings close
-                try {
-                  const info: any = await invoke("get_llm_info");
-                  if (info) {
-                    setLlmStatus({
-                      connected: true,
-                      model: info.model || 'Unknown',
-                      provider: info.provider || 'Unknown'
-                    });
-                  }
-                } catch (e) {
-                  debugLog("LLM check after settings:", e);
-                }
-              }}
-              onStatusChange={async () => {
-                // Re-check LLM status when it changes
-                try {
-                  const info: any = await invoke("get_llm_info");
-                  if (info) {
-                    setLlmStatus({
-                      connected: true,
-                      model: info.model || 'Unknown',
-                      provider: info.provider || 'Unknown'
-                    });
-                  }
-                } catch (e) {
-                  debugLog("LLM status change check:", e);
-                  setLlmStatus({
-                    connected: false,
-                    model: 'Not configured',
-                    provider: 'none'
-                  });
-                }
-              }}
-            />
-            {/* Search Settings Section */}
-            <div className="p-6 border-t" style={{ borderColor: colors.border }}>
-              <SearchSettings
-                config={searchConfig}
-                onUpdate={updateSearchConfig}
-                onReset={resetSearchConfig}
-              />
-            </div>
-            {/* Data Management Section */}
-            <div className="p-6 border-t" style={{ borderColor: colors.border }}>
-              <DataManagement
-                sources={sources}
-                onRemoveSource={removeSource}
-                onSourcesCleared={() => {
-                  setSources([]);
-                  localStorage.setItem('indexedSources', JSON.stringify([]));
-                }}
-              />
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Onboarding Flow */}
       <OnboardingFlow

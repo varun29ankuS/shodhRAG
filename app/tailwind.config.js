@@ -1,3 +1,9 @@
+/**
+ * Map a design token from src/index.css (`--c-<name>`) to a Tailwind colour
+ * that supports opacity modifiers.
+ */
+const token = (name) => `color-mix(in srgb, var(--c-${name}) calc(<alpha-value> * 100%), transparent)`;
+
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   darkMode: ["class"],
@@ -18,47 +24,70 @@ module.exports = {
     },
     extend: {
       colors: {
-        border: "hsl(var(--border))",
-        input: "hsl(var(--input))",
-        ring: "hsl(var(--ring))",
-        background: "hsl(var(--background))",
-        foreground: "hsl(var(--foreground))",
+        // Every semantic colour resolves to a --c-* token in src/index.css.
+        // color-mix keeps Tailwind opacity modifiers (bg-primary/90) working
+        // while the token itself stays a plain hex value.
+        border: token('border'),
+        input: token('border-strong'),
+        ring: token('accent-text'),
+        background: token('ground'),
+        foreground: token('text'),
         primary: {
-          DEFAULT: "hsl(var(--primary))",
-          foreground: "hsl(var(--primary-foreground))",
+          DEFAULT: token('accent'),
+          foreground: token('on-accent'),
         },
         secondary: {
-          DEFAULT: "hsl(var(--secondary))",
-          foreground: "hsl(var(--secondary-foreground))",
+          DEFAULT: token('raised-2'),
+          foreground: token('text'),
         },
         destructive: {
-          DEFAULT: "hsl(var(--destructive))",
-          foreground: "hsl(var(--destructive-foreground))",
+          DEFAULT: token('danger'),
+          foreground: token('on-danger'),
         },
         muted: {
-          DEFAULT: "hsl(var(--muted))",
-          foreground: "hsl(var(--muted-foreground))",
+          DEFAULT: token('raised'),
+          foreground: token('text-muted'),
         },
         accent: {
-          DEFAULT: "hsl(var(--accent))",
-          foreground: "hsl(var(--accent-foreground))",
+          DEFAULT: token('raised-2'),
+          foreground: token('text'),
         },
         popover: {
-          DEFAULT: "hsl(var(--popover))",
-          foreground: "hsl(var(--popover-foreground))",
+          DEFAULT: token('raised'),
+          foreground: token('text'),
         },
         card: {
-          DEFAULT: "hsl(var(--card))",
-          foreground: "hsl(var(--card-foreground))",
+          DEFAULT: token('surface-2'),
+          foreground: token('text'),
         },
-        // Shodh brand colors from logo
         shodh: {
-          red: "#f73129",
-          "red-dark": "#c51717",
-          "red-light": "#fe4436",
-          orange: "#fe5f39",
-          "orange-light": "#fd8c4a",
-          "orange-dark": "#df9f57",
+          ground: token('ground'),
+          sidebar: token('sidebar'),
+          surface: token('surface'),
+          'surface-2': token('surface-2'),
+          raised: token('raised'),
+          'raised-2': token('raised-2'),
+          pressed: token('pressed'),
+          'border-subtle': token('border-subtle'),
+          border: token('border'),
+          'border-strong': token('border-strong'),
+          text: token('text'),
+          'text-secondary': token('text-secondary'),
+          'text-tertiary': token('text-tertiary'),
+          'text-muted': token('text-muted'),
+          'text-faint': token('text-faint'),
+          accent: token('accent'),
+          'accent-hover': token('accent-hover'),
+          'accent-text': token('accent-text'),
+          'accent-soft': token('accent-soft'),
+          'on-accent': token('on-accent'),
+          success: token('success'),
+          'success-soft': token('success-soft'),
+          warning: token('warning'),
+          'warning-soft': token('warning-soft'),
+          info: token('info'),
+          violet: token('violet'),
+          error: token('error'),
         },
       },
       borderRadius: {
@@ -129,8 +158,16 @@ module.exports = {
         shimmer: "shimmer 2s infinite",
       },
       fontFamily: {
-        sans: ["Inter", "system-ui", "sans-serif"],
-        mono: ["JetBrains Mono", "monospace"],
+        sans: ['"Geist Variable"', "system-ui", "-apple-system", '"Segoe UI"', "sans-serif"],
+        mono: ['"Geist Mono Variable"', "ui-monospace", '"Cascadia Code"', "Consolas", "monospace"],
+      },
+      transitionDuration: {
+        micro: "var(--dur-micro)",
+        panel: "var(--dur-panel)",
+        screen: "var(--dur-screen)",
+      },
+      transitionTimingFunction: {
+        standard: "var(--ease-standard)",
       },
     },
   },

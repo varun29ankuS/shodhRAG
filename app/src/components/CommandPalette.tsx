@@ -3,10 +3,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { invoke } from '@tauri-apps/api/core';
 import {
   Search,
-  MessageSquare,
+  MessageCircle,
   FileText,
-  GitBranch,
-  CalendarCheck,
+  Folder,
+  CalendarDays,
   Moon,
   Sun,
   Plus,
@@ -16,7 +16,8 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
-import type { ViewTab } from './AppSidebar';
+import { VIEW_TAB_LABELS } from '../lib/viewTabs';
+import type { ViewTab } from '../lib/viewTabs';
 
 interface CommandPaletteProps {
   open: boolean;
@@ -24,7 +25,6 @@ interface CommandPaletteProps {
   onNavigate: (view: ViewTab) => void;
   onNewConversation: () => void;
   onToggleTheme: () => void;
-  onOpenLLMSettings: () => void;
   onAddSource: () => void;
   sources: { id: string; name: string; selected: boolean }[];
 }
@@ -45,7 +45,6 @@ export default function CommandPalette({
   onNavigate,
   onNewConversation,
   onToggleTheme,
-  onOpenLLMSettings,
   onAddSource,
   sources,
 }: CommandPaletteProps) {
@@ -81,7 +80,7 @@ export default function CommandPalette({
         icon: Clock,
         section: 'recent',
         action: () => {
-          onNavigate('chat');
+          onNavigate('ask');
           onClose();
         },
         keywords: q,
@@ -90,13 +89,13 @@ export default function CommandPalette({
 
     // Actions
     items.push({
-      id: 'new-chat',
-      label: 'New Chat',
+      id: 'new-conversation',
+      label: 'New conversation',
       description: 'Start a new conversation',
       icon: Plus,
       section: 'actions',
       action: () => { onNewConversation(); onClose(); },
-      keywords: 'new chat conversation create',
+      keywords: 'new chat conversation ask create',
     });
     items.push({
       id: 'toggle-theme',
@@ -113,7 +112,7 @@ export default function CommandPalette({
       description: 'Configure LLM provider and model',
       icon: Settings,
       section: 'actions',
-      action: () => { onOpenLLMSettings(); onClose(); },
+      action: () => { onNavigate('settings'); onClose(); },
       keywords: 'settings model llm ai configure provider',
     });
     items.push({
@@ -127,16 +126,16 @@ export default function CommandPalette({
     });
 
     // Navigate
-    const navItems: { id: ViewTab; label: string; icon: React.ElementType; keywords: string }[] = [
-      { id: 'chat', label: 'Chat', icon: MessageSquare, keywords: 'chat messages conversation' },
-      { id: 'documents', label: 'Documents', icon: FileText, keywords: 'documents files sources' },
-      { id: 'calendar', label: 'Tasks', icon: CalendarCheck, keywords: 'calendar tasks todo events schedule' },
-      { id: 'graph', label: 'Knowledge Graph', icon: GitBranch, keywords: 'graph knowledge relationships nodes entities' },
+    const navItems: { id: ViewTab; icon: React.ElementType; keywords: string }[] = [
+      { id: 'ask', icon: MessageCircle, keywords: 'ask chat messages conversation' },
+      { id: 'library', icon: Folder, keywords: 'library documents files sources' },
+      { id: 'calendar', icon: CalendarDays, keywords: 'calendar tasks todo events schedule' },
+      { id: 'settings', icon: Settings, keywords: 'settings preferences models search data' },
     ];
     navItems.forEach(nav => {
       items.push({
         id: `nav-${nav.id}`,
-        label: `Go to ${nav.label}`,
+        label: `Go to ${VIEW_TAB_LABELS[nav.id]}`,
         icon: nav.icon,
         section: 'navigate',
         action: () => { onNavigate(nav.id); onClose(); },
@@ -152,13 +151,13 @@ export default function CommandPalette({
         description: source.selected ? 'Active' : 'Inactive',
         icon: FileText,
         section: 'sources',
-        action: () => { onNavigate('chat'); onClose(); },
+        action: () => { onNavigate('ask'); onClose(); },
         keywords: `source ${source.name}`,
       });
     });
 
     return items;
-  }, [recentSearches, theme, sources, onNavigate, onNewConversation, onToggleTheme, onOpenLLMSettings, onAddSource, onClose]);
+  }, [recentSearches, theme, sources, onNavigate, onNewConversation, onToggleTheme, onAddSource, onClose]);
 
   const filtered = useMemo(() => {
     if (!query.trim()) return commands;
@@ -308,7 +307,7 @@ export default function CommandPalette({
                     >
                       <Icon
                         className="w-4 h-4 shrink-0"
-                        style={{ color: isSelected ? colors.primary : colors.textTertiary }}
+                        style={{ color: isSelected ? colors.accentText : colors.textTertiary }}
                       />
                       <div className="flex-1 min-w-0">
                         <span

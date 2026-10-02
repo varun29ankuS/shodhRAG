@@ -1,77 +1,145 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Design tokens — single source of truth for colour and motion.
+ *
+ * Every palette value is declared exactly once per theme as a 6-digit hex
+ * `--c-*` custom property. Consumers:
+ *   - Tailwind (tailwind.config.js) maps its semantic colours onto these
+ *     properties via color-mix(), so opacity modifiers (bg-primary/90) work.
+ *   - ThemeContext reads them back with getComputedStyle to build the legacy
+ *     `colors` object used by inline-styled panels.
+ *   - Legacy stylesheets (ErrorBoundary.css, LoadingStates.css, DailyBrief.css,
+ *     MapView.css) consume the aliases declared in the `:root` block below.
+ *
+ * Values must stay 6-digit hex: legacy code appends 2-digit alpha suffixes
+ * (e.g. `${colors.primary}14`).
+ *
+ * Dark is the default theme (ThemeContext defaults to 'dark'); `:root` carries
+ * the dark values so the first paint before React mounts is already correct.
+ */
 @layer base {
-  :root {
-    /* Light theme - High contrast, bold, premium */
-    --background: 210 17% 98%;
-    --foreground: 0 0% 0%;
+  :root,
+  [data-theme="dark"] {
+    color-scheme: dark;
 
-    --muted: 210 17% 95%;
-    --muted-foreground: 215 14% 34%;
+    /* Surfaces */
+    --c-ground: #0b0b0d;
+    --c-sidebar: #101012;
+    --c-surface: #121215;
+    --c-surface-2: #141417;
+    --c-raised: #1b1b1f;
+    --c-raised-2: #1d1d21;
+    --c-pressed: #26262b;
 
-    --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 0%;
+    /* Borders */
+    --c-border-subtle: #1f1f23;
+    --c-border: #222227;
+    --c-border-strong: #2a2a30;
+    --c-border-active: #3a3a42;
 
-    --card: 0 0% 100%;
-    --card-foreground: 0 0% 0%;
+    /* Text */
+    --c-text: #ececee;
+    --c-text-secondary: #c9c9cf;
+    --c-text-tertiary: #b4b4bc;
+    --c-text-muted: #9b9ba4;
+    --c-text-faint: #8d8d96;
 
-    --border: 214 32% 91%;
-    --input: 0 0% 100%;
+    /* Accent */
+    --c-accent: #c94d1c;
+    --c-accent-hover: #b4441a;
+    --c-accent-text: #f2905f;
+    --c-accent-soft: #17120f;
+    --c-on-accent: #ffffff;
 
-    /* Vibrant Shodh Orange */
-    --primary: 16 100% 60%;
-    --primary-foreground: 0 0% 100%;
-
-    /* Bold Blue */
-    --secondary: 221 83% 53%;
-    --secondary-foreground: 0 0% 100%;
-
-    /* Purple Accent */
-    --accent: 258 90% 66%;
-    --accent-foreground: 0 0% 100%;
-
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 0 0% 100%;
-
-    --ring: 16 100% 60%;
-
-    --radius: 0.75rem;
+    /* Status */
+    --c-success: #7fd6a0;
+    --c-success-soft: #1d2a22;
+    --c-warning: #e8a33a;
+    --c-warning-soft: #2a2114;
+    --c-info: #8fb7ff;
+    --c-violet: #b9a2ff;
+    --c-error: #f2877c;
+    --c-danger: #c53030;
+    --c-on-danger: #ffffff;
   }
 
-  [data-theme="dark"] {
-    /* Dark theme - Deep, rich, professional */
-    --background: 240 10% 4%;
-    --foreground: 0 0% 98%;
+  [data-theme="light"] {
+    color-scheme: light;
 
-    --muted: 240 4% 10%;
-    --muted-foreground: 240 5% 65%;
+    --c-ground: #fafaf9;
+    --c-sidebar: #f4f4f3;
+    --c-surface: #ffffff;
+    --c-surface-2: #ffffff;
+    --c-raised: #f4f4f3;
+    --c-raised-2: #ececea;
+    --c-pressed: #e2e2df;
 
-    --popover: 240 10% 6%;
-    --popover-foreground: 0 0% 98%;
+    --c-border-subtle: #ececea;
+    --c-border: #e6e6e3;
+    --c-border-strong: #d6d6d2;
+    --c-border-active: #a8a8a3;
 
-    --card: 240 10% 10%;
-    --card-foreground: 0 0% 98%;
+    --c-text: #18181b;
+    --c-text-secondary: #3f3f46;
+    --c-text-tertiary: #46464e;
+    --c-text-muted: #52525b;
+    --c-text-faint: #5f5f68;
 
-    --border: 240 6% 15%;
-    --input: 240 10% 10%;
+    --c-accent: #c94d1c;
+    --c-accent-hover: #b4441a;
+    --c-accent-text: #b4441a;
+    --c-accent-soft: #fbeee8;
+    --c-on-accent: #ffffff;
 
-    /* Shodh Orange vibrant in dark */
-    --primary: 16 100% 60%;
-    --primary-foreground: 0 0% 100%;
+    --c-success: #15803d;
+    --c-success-soft: #e8f5ec;
+    --c-warning: #a35f06;
+    --c-warning-soft: #fbf1e1;
+    --c-info: #1d4ed8;
+    --c-violet: #6d28d9;
+    --c-error: #b91c1c;
+    --c-danger: #c53030;
+    --c-on-danger: #ffffff;
+  }
 
-    --secondary: 217 91% 60%;
-    --secondary-foreground: 0 0% 100%;
+  /* Aliases consumed by legacy stylesheets, plus theme-independent tokens.
+     The aliases resolve through the active theme's --c-* values. */
+  :root {
+    --background: var(--c-ground);
+    --bg: var(--c-ground);
+    --bg-light: var(--c-raised);
+    --surface: var(--c-surface);
+    --surface-hover: var(--c-raised-2);
+    --border: var(--c-border);
+    --text: var(--c-text);
+    --text-dim: var(--c-text-muted);
+    --text-dimmer: var(--c-text-faint);
+    --accent: var(--c-accent);
+    --accent-hover: var(--c-accent-hover);
+    --accent-dim: color-mix(in srgb, var(--c-accent) 16%, transparent);
+    --accent-bg: color-mix(in srgb, var(--c-accent) 10%, transparent);
+    --success: var(--c-success);
+    --warning: var(--c-warning);
+    --error: var(--c-error);
 
-    --accent: 240 4% 16%;
-    --accent-foreground: 0 0% 98%;
+    --radius: 0.75rem;
 
-    --destructive: 0 63% 51%;
-    --destructive-foreground: 0 0% 100%;
+    /* Motion */
+    --dur-micro: 120ms;
+    --dur-panel: 200ms;
+    --dur-screen: 280ms;
+    --ease-standard: cubic-bezier(.2, .7, .2, 1);
+  }
 
-    --ring: 16 100% 60%;
+  @media (prefers-reduced-motion: reduce) {
+    :root {
+      --dur-micro: 0ms;
+      --dur-panel: 0ms;
+      --dur-screen: 0ms;
+    }
   }
 }
 
@@ -79,11 +147,9 @@
   * {
     @apply border-border;
   }
+
   body {
-    @apply bg-background text-foreground;
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
-    font-feature-settings: "cv11", "ss01";
-    font-variation-settings: "opsz" auto;
+    @apply bg-background text-foreground font-sans antialiased;
   }
 }
 
@@ -91,7 +157,7 @@
 @layer components {
   .scrollbar-thin {
     scrollbar-width: thin;
-    scrollbar-color: theme('colors.muted.DEFAULT') transparent;
+    scrollbar-color: var(--c-border-strong) transparent;
   }
 
   .scrollbar-thin::-webkit-scrollbar {
@@ -175,6 +241,4 @@
   .citation-file {
     @apply text-[10px] opacity-70 font-normal;
   }
-
-  /* Citation styles moved to inline ThemeContext styles in CitationBadge.tsx */
 }

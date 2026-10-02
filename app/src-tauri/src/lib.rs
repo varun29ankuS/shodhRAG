@@ -25,6 +25,7 @@ mod rag_commands;
 mod retrieval_commands;
 mod search_history;
 mod smart_templates;
+mod source_viewer_commands;
 mod space_commands;
 mod space_manager;
 mod storage_commands;
@@ -632,6 +633,10 @@ pub fn run() {
             context_commands::restore_session_from_memory,
             // Document commands (in rag_commands.rs)
             rag_commands::get_document_preview,
+            source_viewer_commands::get_source_file_info,
+            source_viewer_commands::read_source_bytes,
+            source_viewer_commands::read_source_text,
+            source_viewer_commands::read_source_table,
             rag_commands::parse_llm_response,
             // WhatsApp Bot commands
             whatsapp_commands::whatsapp_initialize,

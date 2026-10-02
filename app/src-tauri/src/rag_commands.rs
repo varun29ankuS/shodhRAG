@@ -41,7 +41,6 @@ pub struct RagState {
     pub initialization_lock: Arc<TokioMutex<()>>, // Mutex to prevent concurrent initialization
 
     // Unified chat system
-    pub artifact_store: Arc<TokioRwLock<crate::artifact_store::ArtifactStore>>,
     pub conversation_id: Arc<TokioRwLock<Option<String>>>,
     pub agent_system: Arc<TokioRwLock<Option<Arc<TokioRwLock<shodh_rag::agent::AgentSystem>>>>>, // Changed to match PersonalAssistant's type
     pub llm_manager: Arc<TokioRwLock<Option<shodh_rag::llm::LLMManager>>>,

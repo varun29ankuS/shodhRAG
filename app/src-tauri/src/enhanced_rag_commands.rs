@@ -1,7 +1,7 @@
 //! Thin Tauri wrappers for indexing commands.
 //! Business logic (folder preview, batch indexing, file processing) lives in shodh_rag::indexing.
 
-use crate::chat_engine::TauriEventEmitter;
+use crate::event_emitter::TauriEventEmitter;
 use crate::rag_commands::RagState;
 use tauri::{AppHandle, State};
 

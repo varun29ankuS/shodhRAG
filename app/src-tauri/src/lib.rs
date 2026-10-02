@@ -34,11 +34,9 @@ mod window_commands;
 mod agent_commands;
 mod agent_session_commands;
 mod agent_tools;
-mod artifact_store;
 mod calendar_commands;
-mod chat_engine;
+mod event_emitter;
 mod conversation_commands;
-mod unified_chat_commands;
 
 use tauri::Manager;
 
@@ -233,7 +231,6 @@ pub fn run() {
                 initialization_lock: Arc::new(tokio::sync::Mutex::new(())),
 
                 // Unified chat system
-                artifact_store: Arc::new(AsyncRwLock::new(artifact_store::ArtifactStore::new())),
                 conversation_id: Arc::new(AsyncRwLock::new(None)),
                 agent_system: Arc::new(AsyncRwLock::new(None)),
                 llm_manager: shared_llm_manager.clone(),
@@ -556,8 +553,6 @@ pub fn run() {
             // Document Upload commands
             document_upload_commands::upload_document_file,
             document_upload_commands::save_temp_file,
-            // Unified Chat System commands
-            unified_chat_commands::unified_chat,
             // Agent sessions (omp harness)
             agent_session_commands::agent_start,
             agent_session_commands::agent_send,
@@ -566,10 +561,6 @@ pub fn run() {
             agent_session_commands::agent_approve,
             agent_session_commands::agent_install_runtime,
             agent_session_commands::agent_runtime_status,
-            unified_chat_commands::apply_artifact_to_file,
-            unified_chat_commands::update_artifact,
-            unified_chat_commands::get_artifact_history,
-            unified_chat_commands::get_conversation_artifacts,
             // Conversation persistence commands
             conversation_commands::load_conversations,
             conversation_commands::save_conversation,

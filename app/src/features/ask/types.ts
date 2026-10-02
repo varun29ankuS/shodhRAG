@@ -1,12 +1,11 @@
 /**
  * Types for the Ask view and the chat session.
  *
- * Everything here mirrors data the backend actually produces:
- * - `ResponseMetadata` is `shodh_rag::chat::ResponseMetadata` (serde camelCase).
- * - `RawSearchResult` is `shodh_rag::chat::SearchResult` (serde camelCase) as it
- *   arrives over IPC or is read back from conversations.json.
- * - `RunRecord` is assembled on the frontend exclusively from streaming events
- *   (`tool_call_*`, `tool_execution`, `agent_thinking`) and the final response.
+ * - `TranscriptState` (features/agent/reducer) is the record of an answer
+ *   produced by an agent session, built from `agent_event`s.
+ * - `ResponseMetadata`, `RawSearchResult` and `RunRecord` describe answers
+ *   stored by the earlier chat pipeline; they are kept so existing
+ *   conversations still render.
  */
 
 import type { TranscriptState } from '../agent/reducer';

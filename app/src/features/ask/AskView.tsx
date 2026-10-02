@@ -339,7 +339,7 @@ function SystemNotice({ message }: { message: ChatMessage }) {
 export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggingFile = false, dropHandlers }: AskViewProps) {
   const { theme } = useTheme();
   const session = useChatSession();
-  const { messages, isStreaming, streamingConversationId, send, retry, cancel, steer, approve, runtimeInstalled, setRuntimeInstalled } = session;
+  const { messages, isStreaming, streamingConversationId, send, retry, cancel, steer, approve, runtimeInstalled, setRuntimeInstalled, updateMessage } = session;
   const wide = useMediaQuery(WIDE_LAYOUT_QUERY);
 
   const [draft, setDraft] = useState('');
@@ -429,6 +429,15 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
   const approveWaiting = useCallback(() => {
     if (waitingStepId) approve(waitingStepId, true);
   }, [approve, waitingStepId]);
+
+  // Edited artifacts are stored with the message that produced them.
+  const saveArtifact = useCallback((artifactId: string, content: string) => {
+    const owner = messages.find(m => Array.isArray(m.artifacts) && m.artifacts.some(a => a.id === artifactId));
+    if (!owner || !owner.artifacts) return;
+    updateMessage(owner.id, {
+      artifacts: owner.artifacts.map(a => (a.id === artifactId ? { ...a, content } : a)),
+    });
+  }, [messages, updateMessage]);
 
   const markRuntimeInstalled = useCallback(() => setRuntimeInstalled(true), [setRuntimeInstalled]);
   const openSettings = useCallback(() => onNavigate('settings'), [onNavigate]);
@@ -641,6 +650,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
               artifacts={allArtifacts}
               theme={theme}
               selectedArtifactId={openArtifactId}
+              onSave={saveArtifact}
               onClose={() => setOpenArtifactId(null)}
             />
           </div>

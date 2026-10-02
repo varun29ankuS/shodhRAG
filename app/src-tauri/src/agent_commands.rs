@@ -754,7 +754,7 @@ pub async fn execute_crew(
         task.chars().take(80).collect::<String>()
     );
 
-    let emitter = crate::chat_engine::TauriEventEmitter::new(app_handle);
+    let emitter = crate::event_emitter::TauriEventEmitter::new(app_handle);
     let emitter_ref: Option<&dyn shodh_rag::chat::EventEmitter> = Some(&emitter);
 
     let system = agent_system_arc.read().await;

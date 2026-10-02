@@ -29,7 +29,7 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::RwLock;
 
 use crate::calendar_commands::{insert_event, insert_task, NewEvent, NewTask};
-use crate::chat_engine::TauriEventEmitter;
+use crate::event_emitter::TauriEventEmitter;
 use crate::rag_commands::RagState;
 
 /// Build the registry with every v1 tool.

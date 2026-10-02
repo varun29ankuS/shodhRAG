@@ -18,9 +18,9 @@ use shodh_rag::harness::tools::documents::OpenDocumentTool;
 use shodh_rag::harness::tools::navigate::OpenViewTool;
 use shodh_rag::harness::tools::plan::UpdatePlanTool;
 use shodh_rag::harness::tools::search::SearchDocumentsTool;
-use shodh_rag::harness::tools::sources::{find_folder_source, ListSourcesTool};
+use shodh_rag::harness::tools::sources::{find_folder_source, ListSourcesTool, SourceSummary};
 use shodh_rag::harness::tools::{
-    HostTool, RegistryError, ToolContext, ToolError, ToolOutput, ToolRegistry,
+    ApprovalPreview, HostTool, RegistryError, ToolContext, ToolError, ToolOutput, ToolRegistry,
 };
 use shodh_rag::harness::RiskTier;
 use shodh_rag::indexing::{IndexingOptions, IndexingState};
@@ -138,11 +138,14 @@ impl HostTool for CreateTaskTool {
     fn tier(&self) -> RiskTier {
         RiskTier::Write
     }
-    fn preview(&self, args: &Value) -> Value {
-        json!({
-            "title": str_arg(args, "title"),
-            "due": str_arg(args, "due"),
-            "sourceRef": str_arg(args, "source_ref"),
+    async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
+        Ok(ApprovalPreview {
+            label: None,
+            details: json!({
+                "title": str_arg(args, "title"),
+                "due": str_arg(args, "due"),
+                "sourceRef": str_arg(args, "source_ref"),
+            }),
         })
     }
 
@@ -218,11 +221,14 @@ impl HostTool for CreateEventTool {
     fn tier(&self) -> RiskTier {
         RiskTier::Write
     }
-    fn preview(&self, args: &Value) -> Value {
-        json!({
-            "title": str_arg(args, "title"),
-            "start": str_arg(args, "start"),
-            "end": str_arg(args, "end"),
+    async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
+        Ok(ApprovalPreview {
+            label: None,
+            details: json!({
+                "title": str_arg(args, "title"),
+                "start": str_arg(args, "start"),
+                "end": str_arg(args, "end"),
+            }),
         })
     }
 
@@ -346,6 +352,28 @@ fn validate_folder(tool: &str, raw: &str) -> Result<PathBuf, ToolError> {
         .map_err(|e| ToolError::Unavailable(format!("Cannot open {raw}: {e}")))
 }
 
+/// Resolve the `source_id` argument to an indexed folder source.
+async fn resolve_source(
+    app: &AppHandle,
+    tool: &str,
+    args: &Value,
+) -> Result<SourceSummary, ToolError> {
+    let source_id =
+        str_arg(args, "source_id").ok_or_else(|| invalid(tool, "`source_id` is required"))?;
+    let rag = app.state::<RagState>().rag.clone();
+    let engine = rag.read().await;
+    find_folder_source(&engine, source_id).await
+}
+
+fn source_preview(source: &SourceSummary) -> Value {
+    json!({
+        "sourceId": source.source_id,
+        "folder": source.folder,
+        "files": source.files,
+        "chunks": source.chunks,
+    })
+}
+
 pub struct AddFolderTool {
     app: AppHandle,
 }
@@ -378,8 +406,15 @@ impl HostTool for AddFolderTool {
     fn tier(&self) -> RiskTier {
         RiskTier::Write
     }
-    fn preview(&self, args: &Value) -> Value {
-        json!({ "path": str_arg(args, "path") })
+    async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
+        let raw = str_arg(args, "path")
+            .ok_or_else(|| invalid(app_tools::ADD_FOLDER, "`path` is required"))?;
+        let folder = validate_folder(app_tools::ADD_FOLDER, raw)?;
+        let folder = folder.display().to_string();
+        Ok(ApprovalPreview {
+            label: Some(format!("Add {folder} to the index")),
+            details: json!({ "path": folder }),
+        })
     }
 
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
@@ -416,6 +451,17 @@ impl HostTool for ReindexSourceTool {
     fn label_template(&self) -> &'static str {
         "Re-indexing source {source_id}"
     }
+    async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
+        let source = resolve_source(&self.app, app_tools::REINDEX_SOURCE, args).await?;
+        let folder = source
+            .folder
+            .clone()
+            .unwrap_or_else(|| source.source_id.clone());
+        Ok(ApprovalPreview {
+            label: Some(format!("Re-index {folder}")),
+            details: source_preview(&source),
+        })
+    }
     fn description(&self) -> &'static str {
         "Re-index a folder source (id from list_sources) to pick up new and changed files. Needs \
          the user's approval. Runs in the background."
@@ -435,14 +481,8 @@ impl HostTool for ReindexSourceTool {
     }
 
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
-        let tool = app_tools::REINDEX_SOURCE;
-        let source_id =
-            str_arg(&args, "source_id").ok_or_else(|| invalid(tool, "`source_id` is required"))?;
-        let source = {
-            let rag = self.app.state::<RagState>().rag.clone();
-            let engine = rag.read().await;
-            find_folder_source(&engine, source_id).await?
-        };
+        let source = resolve_source(&self.app, app_tools::REINDEX_SOURCE, &args).await?;
+        let source_id = source.source_id.as_str();
         let folder = source.folder.ok_or_else(|| {
             ToolError::NotFound(format!("The folder of source {source_id} is unknown"))
         })?;
@@ -478,6 +518,20 @@ impl HostTool for RemoveSourceTool {
     fn label_template(&self) -> &'static str {
         "Removing source {source_id}"
     }
+    async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
+        let source = resolve_source(&self.app, app_tools::REMOVE_SOURCE, args).await?;
+        let folder = source
+            .folder
+            .clone()
+            .unwrap_or_else(|| source.source_id.clone());
+        Ok(ApprovalPreview {
+            label: Some(format!(
+                "Remove {folder} ({} files) from the index",
+                source.files
+            )),
+            details: source_preview(&source),
+        })
+    }
     fn description(&self) -> &'static str {
         "Remove a folder source (id from list_sources) from the index. Files on disk are not \
          touched. Always needs the user's approval."
@@ -497,14 +551,9 @@ impl HostTool for RemoveSourceTool {
     }
 
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
-        let tool = app_tools::REMOVE_SOURCE;
-        let source_id =
-            str_arg(&args, "source_id").ok_or_else(|| invalid(tool, "`source_id` is required"))?;
+        let source = resolve_source(&self.app, app_tools::REMOVE_SOURCE, &args).await?;
+        let source_id = source.source_id.as_str();
         let rag = self.app.state::<RagState>().rag.clone();
-        let source = {
-            let engine = rag.read().await;
-            find_folder_source(&engine, source_id).await?
-        };
         let deleted = {
             let mut engine = rag.write().await;
             engine

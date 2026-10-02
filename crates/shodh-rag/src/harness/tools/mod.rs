@@ -116,9 +116,14 @@ pub trait HostTool: Send + Sync {
     fn load_mode(&self) -> ToolLoadMode {
         ToolLoadMode::Discoverable
     }
-    /// What the approval prompt shows. Defaults to the arguments.
-    fn preview(&self, args: &Value) -> Value {
-        args.clone()
+    /// What the approval prompt shows. Runs after validation and before the
+    /// prompt; an error fails the call without asking the user (e.g. an
+    /// unknown id). Defaults to the arguments and the rendered label.
+    async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
+        Ok(ApprovalPreview {
+            label: None,
+            details: args.clone(),
+        })
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError>;
 }
@@ -178,6 +183,15 @@ impl ToolContext {
             }
         }
     }
+}
+
+/// Content of an approval prompt.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApprovalPreview {
+    /// Overrides the label rendered from the template, e.g. to name the
+    /// folder behind a source id.
+    pub label: Option<String>,
+    pub details: Value,
 }
 
 /// Final result of one dispatched call.
@@ -482,14 +496,17 @@ impl ToolRegistry {
             RiskTier::Destructive => true,
         };
         if needs_approval {
-            let label = render_label(tool.label_template(), &args);
+            let preview = tool.preview(&args).await?;
+            let label = preview
+                .label
+                .unwrap_or_else(|| render_label(tool.label_template(), &args));
             ctx.emit(AgentEvent::ApprovalRequested {
                 run_id: ctx.run_id.clone(),
                 step_id: ctx.step_id.clone(),
                 tool: name.to_string(),
                 label: label.clone(),
                 tier: tool.tier(),
-                preview: tool.preview(&args),
+                preview: preview.details,
             });
             match approvals.wait(&ctx.step_id).await {
                 ApprovalDecision::Approved => {}
@@ -589,6 +606,15 @@ mod tests {
         }
         fn tier(&self) -> RiskTier {
             self.tier
+        }
+        async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
+            if args["target"] == "missing" {
+                return Err(ToolError::NotFound("No such target".into()));
+            }
+            Ok(ApprovalPreview {
+                label: None,
+                details: args.clone(),
+            })
         }
         async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
             self.runs.fetch_add(1, Ordering::SeqCst);
@@ -808,6 +834,24 @@ mod tests {
         assert!(!outcome.ok);
         assert!(outcome.text_for_model.starts_with("User declined"));
         assert!(!short.is_pending("step-1"));
+    }
+
+    #[tokio::test]
+    async fn preview_errors_fail_before_the_user_is_asked() {
+        let (reg, runs) = registry(RiskTier::Destructive);
+        let (ctx, mut rx) = ctx();
+        let outcome = reg
+            .dispatch(
+                call("probe", json!({"target": "missing"})),
+                &profile(&["probe"]),
+                &ApprovalGate::default(),
+                &ctx,
+            )
+            .await;
+        assert!(!outcome.ok);
+        assert_eq!(outcome.text_for_model, "No such target");
+        assert!(rx.try_recv().is_err());
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

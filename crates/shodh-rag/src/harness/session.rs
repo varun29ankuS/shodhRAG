@@ -31,6 +31,7 @@ use super::protocol::{
     StreamingBehavior, SubagentLevel, ToolResultPayload,
 };
 use super::sidecar::{self, LaunchSpec};
+use super::tools::plan::UPDATE_PLAN;
 use super::tools::{ApprovalGate, ToolCall, ToolContext, ToolRegistry};
 use super::{truncate_chars, AgentHarness};
 
@@ -232,7 +233,12 @@ impl Inner {
             });
             return;
         };
-        let call_index = self.calls_in_run.fetch_add(1, Ordering::SeqCst) + 1;
+        // Task-list updates do not count against the per-answer budget.
+        let call_index = if call.tool_name == UPDATE_PLAN {
+            self.calls_in_run.load(Ordering::SeqCst)
+        } else {
+            self.calls_in_run.fetch_add(1, Ordering::SeqCst) + 1
+        };
         let ctx = ToolContext::new(run_id, call.tool_call_id.clone(), self.events.clone())
             .with_host_call(call.id.clone(), self.outbound.clone());
         let host_id = call.id.clone();

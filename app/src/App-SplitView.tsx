@@ -145,38 +145,9 @@ function AppSplitView() {
   const [showOnboarding, setShowOnboarding] = useState(!localStorage.getItem('onboarding_completed'));
   const [showFeedback, setShowFeedback] = useState(false);
 
-  // Search System Status
   // Ref to prevent double initialization (React Strict Mode protection)
   const initializationRef = useRef(false);
   const initializationPromiseRef = useRef<Promise<void> | null>(null);
-
-  const [searchSystemStatus] = useState({
-    bm25: {
-      enabled: true,
-      name: "BM25 Keyword Search",
-      description: "Fast keyword matching for exact terms"
-    },
-    diskann: {
-      enabled: true,
-      name: "DiskANN Vector Search",
-      description: "Semantic understanding using dense vectors"
-    },
-    vamana: {
-      enabled: true,
-      name: "Vamana Graph Search",
-      description: "Graph-based navigation for related concepts"
-    },
-    reranking: {
-      enabled: true,
-      name: "Neural Reranking",
-      description: "AI-powered relevance scoring with attention"
-    },
-    knowledgeGraph: {
-      enabled: true,
-      name: "Knowledge Graph",
-      description: "Entity relationships and concept mapping"
-    }
-  });
 
   // LLM State
   const [llmStatus, setLlmStatus] = useState<{

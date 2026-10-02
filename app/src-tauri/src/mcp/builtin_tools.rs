@@ -42,28 +42,6 @@ pub fn get_builtin_tools() -> Vec<ToolDefinition> {
             category: Some(ToolCategory::RagSystem),
         },
 
-        // Knowledge Graph Query
-        ToolDefinition {
-            name: "knowledge_graph_query".to_string(),
-            description: "Query the knowledge graph for entities, relationships, and context".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The knowledge graph query"
-                    },
-                    "max_items": {
-                        "type": "integer",
-                        "description": "Maximum number of items to return",
-                        "default": 10
-                    }
-                },
-                "required": ["query"]
-            }),
-            category: Some(ToolCategory::RagSystem),
-        },
-
         // Memory Retrieval
         ToolDefinition {
             name: "retrieve_memory".to_string(),

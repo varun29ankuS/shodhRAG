@@ -9,7 +9,6 @@ mod doc_gen_commands;
 mod document_upload_commands;
 mod enhanced_rag_commands;
 mod file_watcher;
-mod graph_commands;
 mod history_commands;
 mod image_upload_commands;
 mod llm_bootstrap;
@@ -463,7 +462,6 @@ pub fn run() {
             history_commands::export_chat_history,
             history_commands::search_with_history,
             // Graph commands
-            graph_commands::get_knowledge_graph,
             // Document generation commands
             doc_gen_commands::generate_document,
             doc_gen_commands::generate_from_rag,

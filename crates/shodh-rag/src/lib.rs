@@ -7,7 +7,6 @@ pub mod chat;
 pub mod config;
 pub mod context;
 pub mod embeddings;
-pub mod graph;
 pub mod harness;
 pub mod indexing;
 pub mod processing;

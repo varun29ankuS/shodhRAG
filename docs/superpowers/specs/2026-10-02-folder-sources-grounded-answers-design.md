@@ -514,11 +514,22 @@ Each step is idempotent and recorded in `schema_version` and audit.
 
 ### Navigation and agent visibility
 
-**Primary navigation:** **Ask**, **Library**, **Settings**.
+**Primary navigation:** **Ask**, **Library**, **Calendar**, **Tasks**, **Graph**, **Settings**.
 
-**Hidden until their sub-project ships for real:**
-- The Graph screen (sub-project 3).
-- The Integrations screen (sub-project 5).
+| Tab | Content | Ships |
+|---|---|---|
+| **Ask** | Conversations with the live run view | M1.5 shell → M6 live runs |
+| **Library** | Folders, sync state, "Couldn't read" list | M1.5 shell → M2 |
+| **Calendar** | Week, month and agenda views | M1.5, redesigned on the existing calendar store; chat control in sub-project 2 |
+| **Tasks** | Tasks; one data model shared with Calendar | Same as Calendar |
+| **Graph** | Real entities and relations; every node and edge links to its source page | Designed in M1.5; ships only with sub-project 3. No metadata or file-type graph is ever shown |
+| **Settings** | Models, agent profiles, Usage & Audit, privacy | M1.5 |
+
+**Removed from navigation:**
+- **Generate.** Document generation happens in chat. Generated documents render as editable artifacts with citations and export to DOCX, PDF or Markdown. Saving to disk is a `write`-tier action.
+- **Analytics.** Usage, cost and audit views move to Settings → Usage & Audit.
+- **Integrations.** Hidden until channels ship (sub-project 5).
+- **Agents.** See below.
 
 **Agents: no tab and no form.** There is no Agents tab and no "Create Agent" form.
 - **Creating profiles.** Profiles are created in conversation. The assistant proposes the profile inline: name, allowed tools, source scope and model. The user approves it with one click (section 7.3).
@@ -538,7 +549,7 @@ Each milestone is one or more PRs. Each ships independently with CI green, execu
 | # | Milestone | Ships |
 |---|---|---|
 | M1 | Eval harness and current-pipeline baseline | `shodh-eval`, CUAD subset, synthetic invoice corpus, private-folder YAML runner. Baseline metrics and idle search latency recorded for **today's** pipeline, with run-to-run noise measured |
-| M1.5 | UI foundation | Visual direction, approved via mockups. Steps: split `App-SplitView.tsx` (4,315 lines) into screens with a state store; design tokens and component library; lazy-load heavy libraries (Monaco, Mermaid, three.js, Recharts); Playwright harness with UX-budget baseline; frontend typecheck and lint in CI; Sentry made opt-in; navigation reduced to Ask / Library / Settings; Agents, Graph and Integrations tabs removed from navigation |
+| M1.5 | UI foundation | Visual direction, approved via mockups. Steps: split `App-SplitView.tsx` (4,315 lines) into screens with a state store; design tokens and component library; lazy-load heavy libraries (Monaco, Mermaid, three.js, Recharts); Playwright harness with UX-budget baseline; frontend typecheck and lint in CI; Sentry made opt-in; navigation set to Ask / Library / Calendar / Tasks / Graph (designed, shipped in sub-project 3) / Settings; Generate, Analytics, Agents and Integrations removed; mockups for First run, Ask, Library, Calendar, Tasks and Graph approved before implementation |
 | M2 | Store, inventory and sync | SQLite (SQLCipher plus keychain key), `sources`/`files`, reconciler, watcher, job queue, generations, failure panel, progress. Uses the current parser and chunker |
 | M3 | Parser bake-off, chunker, citations | docling.rs vs xberg ADR, `DocumentParser`, token-based structure-aware chunker, page and span citations, citation preview UI |
 | M4 | Records | `RecordExtractor` v1, records table, `query_records` with coverage reporting |

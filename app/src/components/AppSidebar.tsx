@@ -3,9 +3,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   MessageSquare,
   FileText,
-  Sparkles,
-  BarChart3,
-  Zap,
   GitBranch,
   Search,
   PanelLeftClose,
@@ -29,8 +26,9 @@ import { sourceColor } from '../utils/colors';
 import { ThemeToggle } from './ThemeToggle';
 import ConversationList from './ConversationList';
 import type { Conversation } from '../hooks/useConversations';
+import type { ViewTab } from '../lib/viewTabs';
 
-export type ViewTab = 'chat' | 'documents' | 'generate' | 'analytics' | 'calendar' | 'graph' | 'agents' | 'integrations';
+export type { ViewTab };
 
 interface SourceItem {
   id: string;
@@ -81,12 +79,8 @@ interface AppSidebarProps {
 const navItems: { id: ViewTab; label: string; icon: React.ElementType }[] = [
   { id: 'chat', label: 'Chat', icon: MessageSquare },
   { id: 'documents', label: 'Documents', icon: FileText },
-  { id: 'generate', label: 'Generate', icon: Sparkles },
-  { id: 'analytics', label: 'Analytics', icon: BarChart3 },
   { id: 'calendar', label: 'Tasks', icon: CalendarCheck },
   { id: 'graph', label: 'Graph', icon: GitBranch },
-  { id: 'agents', label: 'Agents', icon: Bot },
-  { id: 'integrations', label: 'Integrations', icon: Zap },
 ];
 
 

@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { toast } from 'sonner';
 import { notify } from '../lib/notify';
 
 export interface ConversationMessage {

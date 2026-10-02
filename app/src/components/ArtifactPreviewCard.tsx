@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from 'react';
 import mermaid from 'mermaid';
 import type { Artifact } from './EnhancedArtifactPanel';
 import { useTheme } from '../contexts/ThemeContext';
+import { getArtifactKind, getArtifactCodeLanguage } from '../utils/artifactKind';
 
 interface ArtifactPreviewCardProps {
   artifact: Artifact;
@@ -32,9 +33,8 @@ export function ArtifactPreviewCard({ artifact, onClick }: ArtifactPreviewCardPr
     });
   }, [theme]);
 
-  const isMermaid = typeof artifact.artifact_type === 'string'
-    ? artifact.artifact_type.toLowerCase() === 'mermaid'
-    : !!(artifact.artifact_type as any).Mermaid;
+  const kind = getArtifactKind(artifact.artifact_type);
+  const isMermaid = kind === 'mermaid';
 
   useEffect(() => {
     if (isMermaid && mermaidRef.current) {
@@ -69,33 +69,23 @@ export function ArtifactPreviewCard({ artifact, onClick }: ArtifactPreviewCardPr
   };
 
   const getIcon = () => {
-    const type = typeof artifact.artifact_type === 'string' ? artifact.artifact_type.toLowerCase() : '';
-    if (type === 'code' || (artifact.artifact_type as any).Code) return Code;
-    if (type === 'table' || (artifact.artifact_type as any).Table) return FileText;
-    if (type === 'chart' || (artifact.artifact_type as any).Chart) return FileText;
-    if (type === 'markdown' || (artifact.artifact_type as any).Markdown) return FileText;
-    if (type === 'mermaid' || (artifact.artifact_type as any).Mermaid) return ImageIcon;
+    if (kind === 'code') return Code;
+    if (kind === 'mermaid') return ImageIcon;
     return FileText;
   };
 
   const getTypeName = () => {
-    const type = typeof artifact.artifact_type === 'string' ? artifact.artifact_type.toLowerCase() : '';
-    if (type === 'code' || (artifact.artifact_type as any).Code) {
-      const lang = artifact.language || 'code';
-      return lang.toUpperCase();
+    switch (kind) {
+      case 'code': return (getArtifactCodeLanguage(artifact) || 'code').toUpperCase();
+      case 'table': return 'TABLE';
+      case 'chart': return 'CHART';
+      case 'markdown': return 'MARKDOWN';
+      case 'mermaid': return 'DIAGRAM';
+      case 'svg': return 'SVG';
+      case 'html': return 'HTML';
+      case 'pdf': return 'PDF';
+      default: return 'ARTIFACT';
     }
-    if (type === 'table' || (artifact.artifact_type as any).Table) return 'TABLE';
-    if (type === 'chart' || (artifact.artifact_type as any).Chart) return 'CHART';
-    if (type === 'markdown' || (artifact.artifact_type as any).Markdown) return 'MARKDOWN';
-    if (type === 'mermaid' || (artifact.artifact_type as any).Mermaid) return 'DIAGRAM';
-    if (type === 'svg' || (artifact.artifact_type as any).SVG) return 'SVG';
-    if (type === 'html' || (artifact.artifact_type as any).HTML) return 'HTML';
-    return 'ARTIFACT';
-  };
-
-  const isType = (typeName: string) => {
-    const type = typeof artifact.artifact_type === 'string' ? artifact.artifact_type.toLowerCase() : '';
-    return type === typeName.toLowerCase() || (artifact.artifact_type as any)[typeName];
   };
 
   const getPreview = () => {
@@ -117,7 +107,7 @@ export function ArtifactPreviewCard({ artifact, onClick }: ArtifactPreviewCardPr
       animate={{ opacity: 1, y: 0 }}
       whileHover={{ scale: 1.02, y: -2 }}
       onClick={onClick}
-      className={`my-3 rounded-lg overflow-auto cursor-pointer transition-shadow ${isType('Mermaid') ? 'min-h-[200px]' : 'max-h-[200px] min-h-[100px]'}`}
+      className={`my-3 rounded-lg overflow-auto cursor-pointer transition-shadow ${kind === 'mermaid' ? 'min-h-[200px]' : 'max-h-[200px] min-h-[100px]'}`}
       style={{
         backgroundColor: colors.cardBg,
         border: `1px solid ${colors.border}`,
@@ -152,13 +142,13 @@ export function ArtifactPreviewCard({ artifact, onClick }: ArtifactPreviewCardPr
 
       {/* Preview Content */}
       <div className="p-3">
-        {isType('Code') && (
+        {kind === 'code' && (
           <pre className="text-xs font-mono overflow-auto max-h-[300px] min-h-[150px]" style={{ color: colors.text }}>
             <code>{getPreview()}</code>
           </pre>
         )}
 
-        {isType('Mermaid') && (
+        {kind === 'mermaid' && (
           <div className="min-h-[200px] overflow-auto flex items-center justify-center">
             {mermaidError ? (
               <div
@@ -175,19 +165,19 @@ export function ArtifactPreviewCard({ artifact, onClick }: ArtifactPreviewCardPr
           </div>
         )}
 
-        {isType('Markdown') && (
+        {kind === 'markdown' && (
           <div className="text-xs line-clamp-8 min-h-[150px] max-h-[300px] overflow-auto" style={{ color: colors.textSecondary }}>
             {getPreview()}
           </div>
         )}
 
-        {isType('Table') && (
+        {kind === 'table' && (
           <pre className="text-xs font-mono overflow-auto max-h-[300px] min-h-[100px] whitespace-pre-wrap" style={{ color: colors.text }}>
             {getPreview()}
           </pre>
         )}
 
-        {isType('Chart') && (
+        {kind === 'chart' && (
           <div className="flex items-center justify-center min-h-[100px] text-sm" style={{ color: colors.textMuted }}>
             {(() => {
               try {
@@ -201,7 +191,7 @@ export function ArtifactPreviewCard({ artifact, onClick }: ArtifactPreviewCardPr
         )}
 
         {/* Fallback for unknown types */}
-        {!isType('Code') && !isType('Mermaid') && !isType('Markdown') && !isType('Table') && !isType('Chart') && (
+        {kind !== 'code' && kind !== 'mermaid' && kind !== 'markdown' && kind !== 'table' && kind !== 'chart' && (
           <pre className="text-xs font-mono overflow-auto max-h-[300px] min-h-[100px] whitespace-pre-wrap" style={{ color: colors.text }}>
             {getPreview()}
           </pre>

@@ -5,10 +5,8 @@ import {
   Search,
   MessageSquare,
   FileText,
-  Sparkles,
-  BarChart3,
-  Zap,
   GitBranch,
+  CalendarCheck,
   Moon,
   Sun,
   Plus,
@@ -132,10 +130,8 @@ export default function CommandPalette({
     const navItems: { id: ViewTab; label: string; icon: React.ElementType; keywords: string }[] = [
       { id: 'chat', label: 'Chat', icon: MessageSquare, keywords: 'chat messages conversation' },
       { id: 'documents', label: 'Documents', icon: FileText, keywords: 'documents files sources' },
-      { id: 'generate', label: 'Generate', icon: Sparkles, keywords: 'generate create document write' },
-      { id: 'analytics', label: 'Analytics', icon: BarChart3, keywords: 'analytics dashboard stats metrics' },
+      { id: 'calendar', label: 'Tasks', icon: CalendarCheck, keywords: 'calendar tasks todo events schedule' },
       { id: 'graph', label: 'Knowledge Graph', icon: GitBranch, keywords: 'graph knowledge relationships nodes entities' },
-      { id: 'integrations', label: 'Integrations', icon: Zap, keywords: 'integrations telegram whatsapp discord' },
     ];
     navItems.forEach(nav => {
       items.push({

@@ -575,7 +575,9 @@ function TaskRow({
               {task.title}
             </button>
             {task.source === 'agent' && (
-              <Bot className="w-3 h-3 shrink-0" style={{ color: colors.primary }} title="Created by AI" />
+              <span className="inline-flex shrink-0" title="Created by AI">
+                <Bot className="w-3 h-3" style={{ color: colors.primary }} aria-label="Created by AI" />
+              </span>
             )}
             {totalSubtasks > 0 && (
               <button

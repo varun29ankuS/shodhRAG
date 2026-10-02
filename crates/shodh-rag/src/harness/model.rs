@@ -60,7 +60,18 @@ pub struct OmpModel {
     pub is_local: bool,
     /// Variables for the child environment (credentials, endpoints).
     pub env: Vec<(String, EnvValue)>,
+    /// Data-handling warning the UI shows for every run with this model.
+    pub warning: Option<String>,
 }
+
+/// Opt-in for OpenRouter stealth models (`1` allows them).
+pub const ALLOW_STEALTH_ENV: &str = "SHODH_ALLOW_STEALTH_MODELS";
+
+/// Warning attached to runs that use a stealth model.
+pub const STEALTH_WARNING: &str =
+    "This model's provider may log prompts. Don't use with confidential files.";
+
+static STEALTH_WARNED: std::sync::Once = std::sync::Once::new();
 
 /// Default Ollama endpoint, matching the in-app Ollama provider.
 pub const OLLAMA_DEFAULT_HOST: &str = "http://127.0.0.1:11434";
@@ -152,10 +163,23 @@ fn is_stealth(model: &str) -> bool {
 /// Resolve the omp model for the configured LLM mode.
 ///
 /// `fallback_key` supplies a key from the app's key store when the mode
-/// itself carries none.
+/// itself carries none. Stealth models are refused unless
+/// `SHODH_ALLOW_STEALTH_MODELS=1`.
 pub fn select_model(
     mode: &LLMMode,
     fallback_key: impl Fn(&ApiProvider) -> Option<String>,
+) -> Result<OmpModel, HarnessError> {
+    let allow_stealth = std::env::var(ALLOW_STEALTH_ENV)
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false);
+    select_model_with(mode, fallback_key, allow_stealth)
+}
+
+/// [`select_model`] with the stealth opt-in passed explicitly.
+pub fn select_model_with(
+    mode: &LLMMode,
+    fallback_key: impl Fn(&ApiProvider) -> Option<String>,
+    allow_stealth: bool,
 ) -> Result<OmpModel, HarnessError> {
     let (provider, api_key, model) = match mode {
         LLMMode::Disabled => return Err(HarnessError::LlmDisabled),
@@ -168,9 +192,21 @@ pub fn select_model(
     };
     let mapping = mapping(provider)?;
     validate_model_id(model)?;
-    if is_stealth(model) {
-        return Err(HarnessError::DisallowedModel(model.to_string()));
-    }
+    let warning = if is_stealth(model) {
+        if !allow_stealth {
+            return Err(HarnessError::DisallowedModel(model.to_string()));
+        }
+        STEALTH_WARNED.call_once(|| {
+            tracing::warn!(
+                target: "shodh::harness",
+                model,
+                "stealth model enabled by {ALLOW_STEALTH_ENV}=1; its provider may log prompts"
+            );
+        });
+        Some(STEALTH_WARNING.to_string())
+    } else {
+        None
+    };
 
     let mut env = Vec::new();
     match mapping.key_var {
@@ -197,6 +233,7 @@ pub fn select_model(
         provider_label: mapping.label,
         is_local: mapping.key_var.is_none(),
         env,
+        warning,
     })
 }
 
@@ -294,9 +331,10 @@ mod tests {
             Err(HarnessError::UnsupportedProvider(_))
         ));
         assert!(matches!(
-            select_model(
+            select_model_with(
                 &external(ApiProvider::OpenRouter, "k", "stealth/space-bunny-alpha"),
-                |_| None
+                |_| None,
+                false
             ),
             Err(HarnessError::DisallowedModel(_))
         ));
@@ -311,6 +349,23 @@ mod tests {
             select_model(&external(ApiProvider::OpenAI, "k", "gpt 5"), |_| None),
             Err(HarnessError::InvalidModel(_))
         ));
+    }
+
+    #[test]
+    fn stealth_models_need_the_opt_in_and_carry_a_warning() {
+        let stealth = external(ApiProvider::OpenRouter, "k", "stealth/space-bunny-alpha");
+        let refused = select_model_with(&stealth, |_| None, false).unwrap_err();
+        assert!(refused.to_string().contains(ALLOW_STEALTH_ENV));
+        let allowed = select_model_with(&stealth, |_| None, true).unwrap();
+        assert_eq!(allowed.model_arg, "openrouter/stealth/space-bunny-alpha");
+        assert_eq!(allowed.warning.as_deref(), Some(STEALTH_WARNING));
+        let normal = select_model_with(
+            &external(ApiProvider::OpenRouter, "k", "anthropic/claude-haiku-4.5"),
+            |_| None,
+            true,
+        )
+        .unwrap();
+        assert_eq!(normal.warning, None);
     }
 
     #[test]

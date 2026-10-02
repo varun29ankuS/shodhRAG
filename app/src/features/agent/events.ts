@@ -25,6 +25,8 @@ export interface RunStartedEvent {
   sessionId: string;
   model: string;
   atMs: number;
+  /** Data-handling warning for the selected model, shown for the whole run. */
+  warning: string | null;
 }
 
 export interface TextDeltaEvent {

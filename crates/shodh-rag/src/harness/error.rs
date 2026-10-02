@@ -42,7 +42,7 @@ pub enum HarnessError {
     #[error("The model id {0:?} is not valid.")]
     InvalidModel(String),
 
-    #[error("The model {0} is not allowed: stealth models may log prompts for training, so they are never used with your documents.")]
+    #[error("The model {0} is not allowed: stealth models may log prompts for training. Choose another model, or set SHODH_ALLOW_STEALTH_MODELS=1 to accept that risk.")]
     DisallowedModel(String),
 
     #[error("Unknown agent profile {0:?}.")]

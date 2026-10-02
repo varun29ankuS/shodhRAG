@@ -500,7 +500,11 @@ impl OmpSession {
         let inner = Arc::new(Inner {
             session_id: launch.session_id.clone(),
             model: launch.model.model_arg.clone(),
-            state: Mutex::new(NormaliserState::new(registry.catalog())),
+            state: Mutex::new({
+                let mut state = NormaliserState::new(registry.catalog());
+                state.set_model_warning(launch.model.warning.clone());
+                state
+            }),
             profile,
             registry,
             approvals: ApprovalGate::default(),

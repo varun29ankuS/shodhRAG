@@ -79,6 +79,8 @@ pub struct NormaliserState {
     steps: HashMap<String, OpenStep>,
     /// host_tool_call id → toolCallId.
     host_calls: HashMap<String, String>,
+    /// Attached to every `RunStarted`.
+    model_warning: Option<String>,
 }
 
 impl NormaliserState {
@@ -87,6 +89,11 @@ impl NormaliserState {
             catalog,
             ..Self::default()
         }
+    }
+
+    /// Set the warning carried by every `RunStarted` (see `OmpModel::warning`).
+    pub fn set_model_warning(&mut self, warning: Option<String>) {
+        self.model_warning = warning;
     }
 
     /// Start a run for a freshly sent prompt and return its `RunStarted`.
@@ -115,6 +122,7 @@ impl NormaliserState {
             session_id: session_id.to_string(),
             model: model.to_string(),
             at_ms: now_ms,
+            warning: self.model_warning.clone(),
         }
     }
 
@@ -682,7 +690,10 @@ mod tests {
             }
             other => panic!("last event is {other:?}"),
         }
-        assert!(matches!(run[0], AgentEvent::RunStarted { .. }));
+        assert!(matches!(
+            run[0],
+            AgentEvent::RunStarted { warning: None, .. }
+        ));
     }
 
     #[test]
@@ -747,6 +758,18 @@ mod tests {
             .filter(|e| matches!(e, AgentEvent::RunFinished { .. }))
             .count();
         assert_eq!(run_finished, 3);
+    }
+
+    #[test]
+    fn model_warning_rides_on_run_started() {
+        let mut state = NormaliserState::new(catalog());
+        state.set_model_warning(Some("logs prompts".into()));
+        match state.begin_run("r", "s", "m", "p", 0) {
+            AgentEvent::RunStarted { warning, .. } => {
+                assert_eq!(warning.as_deref(), Some("logs prompts"))
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

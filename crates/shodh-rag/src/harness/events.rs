@@ -60,6 +60,9 @@ pub enum AgentEvent {
         session_id: String,
         model: String,
         at_ms: u64,
+        /// Shown to the user for the whole run, e.g. a data-handling warning
+        /// about the selected model.
+        warning: Option<String>,
     },
     TextDelta {
         run_id: String,
@@ -161,9 +164,10 @@ mod tests {
                     session_id: "s".into(),
                     model: "anthropic/claude".into(),
                     at_ms: 1,
+                    warning: Some("careful".into()),
                 },
                 "run_started",
-                vec!["runId", "sessionId", "model", "atMs"],
+                vec!["runId", "sessionId", "model", "atMs", "warning"],
             ),
             (
                 AgentEvent::TextDelta {

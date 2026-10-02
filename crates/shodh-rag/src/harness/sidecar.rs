@@ -572,6 +572,7 @@ mod tests {
                 "ANTHROPIC_API_KEY".into(),
                 EnvValue::Secret(Secret::new("sk-ant-secret")),
             )],
+            warning: None,
         }
     }
 

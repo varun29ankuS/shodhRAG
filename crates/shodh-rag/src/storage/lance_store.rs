@@ -330,6 +330,56 @@ impl LanceStore {
         Ok(doc_ids.len())
     }
 
+    /// One row per indexed document: its source path, space and chunk count.
+    /// Reads only the `doc_id`, `source` and `space_id` columns.
+    pub async fn document_sources(&self) -> Result<Vec<DocumentSourceRow>> {
+        let table = self.db.open_table(&self.table_name).execute().await?;
+        let results = table
+            .query()
+            .select(lancedb::query::Select::columns(&[
+                "doc_id", "source", "space_id",
+            ]))
+            .execute()
+            .await
+            .context("Failed to query document sources")?;
+
+        let batches: Vec<RecordBatch> = futures::TryStreamExt::try_collect(results).await?;
+        let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut rows: Vec<DocumentSourceRow> = Vec::new();
+
+        for batch in &batches {
+            let column = |name: &str| {
+                batch
+                    .column_by_name(name)
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            };
+            if let (Some(doc_ids), Some(sources), Some(spaces)) =
+                (column("doc_id"), column("source"), column("space_id"))
+            {
+                for i in 0..batch.num_rows() {
+                    let doc_id = doc_ids.value(i);
+                    if doc_id.is_empty() || doc_id == "__seed__" {
+                        continue;
+                    }
+                    match index.get(doc_id) {
+                        Some(&at) => rows[at].chunks += 1,
+                        None => {
+                            index.insert(doc_id.to_string(), rows.len());
+                            rows.push(DocumentSourceRow {
+                                doc_id: doc_id.to_string(),
+                                source: sources.value(i).to_string(),
+                                space_id: spaces.value(i).to_string(),
+                                chunks: 1,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(rows)
+    }
+
     /// Get distinct document metadata: (doc_id, title, source, file_extension) for corpus stats.
     pub async fn get_document_info(&self) -> Result<Vec<(String, String, String)>> {
         let table = self.db.open_table(&self.table_name).execute().await?;
@@ -476,6 +526,16 @@ impl LanceStore {
 
         Ok(all_hits)
     }
+}
+
+/// One indexed document as listed by [`LanceStore::document_sources`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentSourceRow {
+    pub doc_id: String,
+    /// Normalised file path (or a `calendar://` / `note://` pseudo-source).
+    pub source: String,
+    pub space_id: String,
+    pub chunks: usize,
 }
 
 #[derive(Debug, Clone)]

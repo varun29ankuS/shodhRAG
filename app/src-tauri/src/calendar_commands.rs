@@ -235,6 +235,52 @@ pub async fn load_tasks(app: AppHandle) -> Result<Vec<TodoItem>, String> {
     Ok(data.tasks)
 }
 
+/// Fields for a new task. Shared by the `create_task` command and the
+/// agent's `create_task` tool.
+#[derive(Debug, Clone, Default)]
+pub struct NewTask {
+    pub title: String,
+    pub description: Option<String>,
+    pub due_date: Option<String>,
+    pub priority: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub project: Option<String>,
+    pub source: Option<String>,
+    pub source_ref: Option<String>,
+    pub reminder: Option<String>,
+}
+
+/// Persist a new task and index it for search.
+pub fn insert_task(app: &AppHandle, new: NewTask) -> Result<TodoItem, String> {
+    let now = Utc::now().to_rfc3339();
+    let task = TodoItem {
+        id: Uuid::new_v4().to_string(),
+        title: new.title,
+        description: new.description.unwrap_or_default(),
+        due_date: new.due_date,
+        priority: new.priority.unwrap_or_else(|| "medium".to_string()),
+        status: "pending".to_string(),
+        tags: new.tags.unwrap_or_default(),
+        subtasks: Vec::new(),
+        project: new.project,
+        source: new.source.unwrap_or_else(|| "user".to_string()),
+        source_ref: new.source_ref,
+        created_at: now.clone(),
+        updated_at: now,
+        completed_at: None,
+        reminder: new.reminder,
+    };
+
+    let mut data = read_calendar(app)?;
+    data.tasks.push(task.clone());
+    write_calendar(app, &data)?;
+
+    spawn_index_task(app, &task);
+
+    tracing::info!(task_id = %task.id, title = %task.title, "Created task");
+    Ok(task)
+}
+
 #[tauri::command]
 pub async fn create_task(
     app: AppHandle,
@@ -248,33 +294,20 @@ pub async fn create_task(
     source_ref: Option<String>,
     reminder: Option<String>,
 ) -> Result<TodoItem, String> {
-    let now = Utc::now().to_rfc3339();
-    let task = TodoItem {
-        id: Uuid::new_v4().to_string(),
-        title,
-        description: description.unwrap_or_default(),
-        due_date,
-        priority: priority.unwrap_or_else(|| "medium".to_string()),
-        status: "pending".to_string(),
-        tags: tags.unwrap_or_default(),
-        subtasks: Vec::new(),
-        project,
-        source: source.unwrap_or_else(|| "user".to_string()),
-        source_ref,
-        created_at: now.clone(),
-        updated_at: now,
-        completed_at: None,
-        reminder,
-    };
-
-    let mut data = read_calendar(&app)?;
-    data.tasks.push(task.clone());
-    write_calendar(&app, &data)?;
-
-    spawn_index_task(&app, &task);
-
-    tracing::info!(task_id = %task.id, title = %task.title, "Created task");
-    Ok(task)
+    insert_task(
+        &app,
+        NewTask {
+            title,
+            description,
+            due_date,
+            priority,
+            tags,
+            project,
+            source,
+            source_ref,
+            reminder,
+        },
+    )
 }
 
 #[tauri::command]
@@ -446,6 +479,45 @@ pub async fn load_events(app: AppHandle) -> Result<Vec<CalendarEvent>, String> {
     Ok(data.events)
 }
 
+/// Fields for a new calendar event. Shared by the `create_event` command
+/// and the agent's `create_event` tool.
+#[derive(Debug, Clone, Default)]
+pub struct NewEvent {
+    pub title: String,
+    pub start_time: String,
+    pub end_time: Option<String>,
+    pub all_day: Option<bool>,
+    pub description: Option<String>,
+    pub color: Option<String>,
+    pub source: Option<String>,
+    pub source_ref: Option<String>,
+}
+
+/// Persist a new event and index it for search.
+pub fn insert_event(app: &AppHandle, new: NewEvent) -> Result<CalendarEvent, String> {
+    let event = CalendarEvent {
+        id: Uuid::new_v4().to_string(),
+        title: new.title,
+        description: new.description.unwrap_or_default(),
+        start_time: new.start_time,
+        end_time: new.end_time,
+        all_day: new.all_day.unwrap_or(false),
+        color: new.color,
+        source: new.source.unwrap_or_else(|| "user".to_string()),
+        source_ref: new.source_ref,
+        created_at: Utc::now().to_rfc3339(),
+    };
+
+    let mut data = read_calendar(app)?;
+    data.events.push(event.clone());
+    write_calendar(app, &data)?;
+
+    spawn_index_event(app, &event);
+
+    tracing::info!(event_id = %event.id, title = %event.title, "Created event");
+    Ok(event)
+}
+
 #[tauri::command]
 pub async fn create_event(
     app: AppHandle,
@@ -458,27 +530,19 @@ pub async fn create_event(
     source: Option<String>,
     source_ref: Option<String>,
 ) -> Result<CalendarEvent, String> {
-    let event = CalendarEvent {
-        id: Uuid::new_v4().to_string(),
-        title,
-        description: description.unwrap_or_default(),
-        start_time,
-        end_time,
-        all_day: all_day.unwrap_or(false),
-        color,
-        source: source.unwrap_or_else(|| "user".to_string()),
-        source_ref,
-        created_at: Utc::now().to_rfc3339(),
-    };
-
-    let mut data = read_calendar(&app)?;
-    data.events.push(event.clone());
-    write_calendar(&app, &data)?;
-
-    spawn_index_event(&app, &event);
-
-    tracing::info!(event_id = %event.id, title = %event.title, "Created event");
-    Ok(event)
+    insert_event(
+        &app,
+        NewEvent {
+            title,
+            start_time,
+            end_time,
+            all_day,
+            description,
+            color,
+            source,
+            source_ref,
+        },
+    )
 }
 
 #[tauri::command]

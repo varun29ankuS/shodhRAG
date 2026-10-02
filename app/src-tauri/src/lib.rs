@@ -39,6 +39,7 @@ mod window_commands;
 
 // Unified chat system modules
 mod agent_commands;
+mod agent_tools;
 mod artifact_store;
 mod calendar_commands;
 mod chat_engine;

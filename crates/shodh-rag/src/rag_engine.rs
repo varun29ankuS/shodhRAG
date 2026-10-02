@@ -32,7 +32,7 @@ struct PreparedDocument {
 /// Converts backslashes to forward slashes and lowercases on Windows so that
 /// `delete_by_source` predicates always match regardless of how the path was
 /// originally formatted.
-fn normalize_source_path(path: &Path) -> String {
+pub fn normalize_source_path(path: &Path) -> String {
     let s = path.display().to_string().replace('\\', "/");
     if cfg!(windows) {
         s.to_lowercase()
@@ -938,6 +938,52 @@ impl RAGEngine {
     /// Get document metadata for corpus stats: (doc_id, title, source)
     pub async fn get_document_info(&self) -> Result<Vec<(String, String, String)>> {
         self.store.get_document_info().await
+    }
+
+    /// One row per indexed document with its source path, space and chunk count.
+    pub async fn document_sources(&self) -> Result<Vec<crate::storage::DocumentSourceRow>> {
+        self.store.document_sources().await
+    }
+
+    /// Stored source paths that `path` refers to.
+    ///
+    /// A full path is normalised like the indexer normalises it and must match
+    /// a stored source exactly. A bare file name (no directory separator)
+    /// matches every indexed file with that name, so callers can detect
+    /// ambiguity. Returns an empty list when nothing is indexed under `path`.
+    pub async fn find_indexed_sources(&self, path: &str) -> Result<Vec<String>> {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Ok(Vec::new());
+        }
+        let normalized = normalize_source_path(Path::new(trimmed));
+        let predicate = format!("source = '{}'", normalized.replace('\'', "''"));
+        let exact = self.store.list_chunks(Some(&predicate), 1).await?;
+        if let Some(hit) = exact.into_iter().next() {
+            return Ok(vec![hit.source]);
+        }
+        if normalized.contains('/') {
+            return Ok(Vec::new());
+        }
+        let wanted = normalized.to_lowercase();
+        let mut matches: Vec<String> = self
+            .store
+            .document_sources()
+            .await?
+            .into_iter()
+            .map(|row| row.source)
+            .filter(|source| {
+                !source.contains("://")
+                    && source
+                        .rsplit('/')
+                        .next()
+                        .map(|name| name.to_lowercase() == wanted)
+                        .unwrap_or(false)
+            })
+            .collect();
+        matches.sort();
+        matches.dedup();
+        Ok(matches)
     }
 
     /// List all chunks matching an optional filter predicate (no vector search).

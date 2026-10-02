@@ -7,10 +7,13 @@
 
 pub mod events;
 pub mod omp;
+pub mod profile;
 pub mod protocol;
+pub mod tools;
 
 pub use events::{AgentEvent, PlanItem, PlanStatus, RiskTier, RunStatus};
 pub use omp::{normalise, NormaliserState, StepMeta, StepOutcome};
+pub use profile::AgentProfile;
 
 /// Truncate to at most `max` characters, appending an ellipsis when cut.
 pub(crate) fn truncate_chars(text: &str, max: usize) -> String {

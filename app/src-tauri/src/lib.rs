@@ -39,6 +39,7 @@ mod window_commands;
 
 // Unified chat system modules
 mod agent_commands;
+mod agent_session_commands;
 mod agent_tools;
 mod artifact_store;
 mod calendar_commands;
@@ -232,6 +233,7 @@ pub fn run() {
             });
 
             app.manage(IndexingState::default());
+            app.manage(agent_session_commands::AgentSessions::default());
             let analytics_path = app_data_dir.join("analytics.json");
             app.manage(AnalyticsState::load_or_default(&analytics_path));
             app.manage(TemplateStore::default());
@@ -693,6 +695,13 @@ pub fn run() {
             document_upload_commands::save_temp_file,
             // Unified Chat System commands
             unified_chat_commands::unified_chat,
+            // Agent sessions (omp harness)
+            agent_session_commands::agent_start,
+            agent_session_commands::agent_send,
+            agent_session_commands::agent_steer,
+            agent_session_commands::agent_abort,
+            agent_session_commands::agent_approve,
+            agent_session_commands::agent_install_runtime,
             unified_chat_commands::apply_artifact_to_file,
             unified_chat_commands::update_artifact,
             unified_chat_commands::get_artifact_history,
@@ -732,6 +741,13 @@ pub fn run() {
             calendar_commands::update_event,
             calendar_commands::delete_event,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Stop every omp sidecar before the process exits.
+                let sessions = app_handle.state::<agent_session_commands::AgentSessions>();
+                tauri::async_runtime::block_on(sessions.shutdown_all());
+            }
+        });
 }

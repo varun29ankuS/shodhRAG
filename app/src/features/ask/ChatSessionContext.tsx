@@ -53,6 +53,10 @@ interface ViewState {
 /** Earlier turns replayed into a fresh agent session. */
 const HISTORY_LIMIT = 10;
 
+/** Settle time before prewarming a conversation's session, so clicking
+ * through conversations does not start a runtime for each one. */
+const PREWARM_DELAY_MS = 400;
+
 /** How long an interrupt may take before the answer is closed locally. */
 const INTERRUPT_TIMEOUT_MS = 5_000;
 
@@ -359,11 +363,14 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const instructions = activeConversation?.systemPrompt?.trim() || null;
   useEffect(() => {
     if (!activeConversationId || runtimeInstalled !== true) return;
-    api.start(activeConversationId, instructions).catch(error => {
-      const failure = toAgentError(error);
-      if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
-      // Other failures (no model configured, …) surface when the user asks.
-    });
+    const timer = window.setTimeout(() => {
+      api.start(activeConversationId, instructions).catch(error => {
+        const failure = toAgentError(error);
+        if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
+        // Other failures (no model configured, …) surface when the user asks.
+      });
+    }, PREWARM_DELAY_MS);
+    return () => window.clearTimeout(timer);
   }, [api, activeConversationId, instructions, runtimeInstalled]);
 
   const runAgent = useCallback(async (conversationId: string, prompt: string, history: ChatMessage[]) => {

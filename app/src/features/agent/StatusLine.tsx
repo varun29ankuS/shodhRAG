@@ -39,7 +39,7 @@ export function StatusLine({ transcript, fallbackModel, compact = false }: Statu
   const step = currentStep(transcript);
 
   let hint: string | null = null;
-  if (approval) hint = 'Enter to approve · Esc to deny';
+  if (approval) hint = approval.tier === 'write' ? 'Enter to approve · Esc to deny' : 'Esc to deny';
   else if (transcript.interrupting) hint = 'Interrupting…';
   else if (live) hint = 'Esc to interrupt';
 

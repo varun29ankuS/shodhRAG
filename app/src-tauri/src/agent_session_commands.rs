@@ -8,7 +8,7 @@
 //! binary and launches the runtime, which takes seconds, so doing it before
 //! the first question keeps the first visible activity immediate.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -147,6 +147,24 @@ pub struct AgentSessions {
     start_locks: DashMap<String, Arc<AsyncMutex<()>>>,
     /// One runtime download at a time.
     install_lock: AsyncMutex<()>,
+    /// Sessions being launched right now (counted against the cap).
+    starting: AtomicUsize,
+}
+
+/// Counts a launch in progress for as long as it is alive.
+struct StartingGuard<'a>(&'a AtomicUsize);
+
+impl<'a> StartingGuard<'a> {
+    fn new(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(counter)
+    }
+}
+
+impl Drop for StartingGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl AgentSessions {
@@ -178,8 +196,8 @@ impl AgentSessions {
             .clone()
     }
 
-    /// Stop the least recently used idle sessions so that, with the one about
-    /// to start, at most [`MAX_LIVE_SESSIONS`] remain.
+    /// Stop the least recently used idle sessions so that, with the ones
+    /// being launched, at most [`MAX_LIVE_SESSIONS`] remain.
     async fn evict_idle(&self, keep_conversation: &str) {
         let mut idle: Vec<(u64, String)> = self
             .sessions
@@ -189,7 +207,8 @@ impl AgentSessions {
             })
             .map(|e| (e.last_used_ms.load(Ordering::Relaxed), e.key().clone()))
             .collect();
-        let excess = (self.sessions.len() + 1).saturating_sub(MAX_LIVE_SESSIONS);
+        let live = self.sessions.len() + self.starting.load(Ordering::SeqCst);
+        let excess = live.saturating_sub(MAX_LIVE_SESSIONS);
         if excess == 0 {
             return;
         }
@@ -429,6 +448,7 @@ pub async fn agent_start(
             stale.session.shutdown().await;
         }
     }
+    let _starting = StartingGuard::new(&sessions.starting);
     sessions.evict_idle(&conversation_id).await;
 
     let registry = sessions

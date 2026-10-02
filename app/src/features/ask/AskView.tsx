@@ -488,7 +488,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
       onSubmit={submit}
       onSteer={submitSteer}
       onStop={cancel}
-      onApprove={approveWaiting}
+      onApprove={waitingStep?.tier === 'write' ? approveWaiting : undefined}
       running={isStreaming}
       canSteer={liveTranscript?.status === 'running'}
       approvalPending={waitingStepId !== null}

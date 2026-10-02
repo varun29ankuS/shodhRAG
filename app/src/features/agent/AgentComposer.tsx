@@ -24,7 +24,10 @@ interface AgentComposerProps {
   onSteer: () => void;
   /** Interrupt the running answer. */
   onStop: () => void;
-  /** Approve the pending step (Enter with an empty input). */
+  /**
+   * Approve the pending step with Enter on an empty input. Leave unset for
+   * destructive steps, which must be approved on the prompt itself.
+   */
   onApprove?: () => void;
   /** An answer is running in this conversation. */
   running: boolean;
@@ -115,7 +118,9 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
 
   const effectivePlaceholder = running
     ? approvalPending
-      ? 'Enter to approve · Esc to deny · or type to steer…'
+      ? onApprove
+        ? 'Enter to approve · Esc to deny · or type to steer…'
+        : 'Approve or deny above · Esc to deny…'
       : 'Steer the agent…'
     : placeholder;
 

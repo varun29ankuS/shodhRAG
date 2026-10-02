@@ -50,20 +50,23 @@ interface ApprovalPromptProps {
 }
 
 /**
- * Inline approval for a write or destructive step. Approve with Enter (the
- * Approve button takes focus unless the user is typing), deny with Esc
- * (handled by the hosting view, so it never also interrupts the run).
+ * Inline approval for a write or destructive step. Deny with Esc (handled by
+ * the hosting view, so it never also interrupts the run). For a write step
+ * the Approve button takes focus (Enter approves) unless the user is typing;
+ * a destructive step focuses Deny, so approving it is always deliberate.
  */
 export function ApprovalPrompt({ approval, onDecide, compact = false }: ApprovalPromptProps) {
   const approveRef = useRef<HTMLButtonElement>(null);
+  const denyRef = useRef<HTMLButtonElement>(null);
   const pending = approval.decision === 'pending';
   const destructive = approval.tier === 'destructive';
   const rows = previewRows(approval.preview);
 
   useEffect(() => {
     if (!pending) return;
-    if (!isTextEntry(document.activeElement)) approveRef.current?.focus({ preventScroll: true });
-  }, [pending]);
+    if (isTextEntry(document.activeElement)) return;
+    (destructive ? denyRef : approveRef).current?.focus({ preventScroll: true });
+  }, [pending, destructive]);
 
   if (!pending) {
     return (
@@ -119,9 +122,10 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
           )}
         >
           Approve
-          <kbd className="font-mono text-[10.5px] opacity-80">Enter</kbd>
+          {!destructive && <kbd className="font-mono text-[10.5px] opacity-80">Enter</kbd>}
         </button>
         <button
+          ref={denyRef}
           type="button"
           onClick={() => onDecide(false)}
           className={cn(

@@ -275,7 +275,7 @@ export function ConversationDock({ activeTab, onExpand, onModeChange }: Conversa
           onSubmit={submit}
           onSteer={submitSteer}
           onStop={cancel}
-          onApprove={() => waiting && approve(waiting.id, true)}
+          onApprove={waiting?.tier === 'write' ? () => approve(waiting.id, true) : undefined}
           running={isStreaming}
           canSteer={transcript?.status === 'running'}
           approvalPending={waiting !== null}

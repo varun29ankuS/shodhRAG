@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useTheme } from './contexts/ThemeContext';
 import { notify } from './lib/notify';
+import { migrateLegacyApiKeys } from './lib/apiKeyMigration';
 import {
   Brain, Cloud, Power, Settings, CheckCircle, AlertCircle,
   FileCode, X, FolderOpen, RefreshCw, Zap, Play, FlaskConical,
@@ -40,6 +41,10 @@ interface LLMSettingsProps {
 }
 
 type Provider = 'openai' | 'anthropic' | 'openrouter' | 'kimi' | 'grok' | 'perplexity' | 'google' | 'baseten';
+
+const EMPTY_KEY_DRAFTS: Record<Provider, string> = {
+  openai: '', anthropic: '', openrouter: '', kimi: '', grok: '', perplexity: '', google: '', baseten: '',
+};
 
 const PROVIDERS: { id: Provider; label: string; defaultModel: string; keyPlaceholder: string; helpUrl: string; models: { value: string; label: string }[] }[] = [
   {
@@ -116,9 +121,10 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
   const [llmMode, setLlmMode] = useState<'local' | 'external' | 'disabled'>('disabled');
   const [inferenceBackend, setInferenceBackend] = useState<'onnx' | 'llamacpp'>('llamacpp');
   const [selectedProvider, setSelectedProvider] = useState<Provider>('openai');
-  const [apiKeys, setApiKeys] = useState<Record<Provider, string>>({
-    openai: '', anthropic: '', openrouter: '', kimi: '', grok: '', perplexity: '', google: '', baseten: '',
-  });
+  // Keys typed in this session that are not saved yet. Saved keys live only in
+  // the OS credential store (backend); the UI only learns which providers have one.
+  const [keyDrafts, setKeyDrafts] = useState<Record<Provider, string>>(EMPTY_KEY_DRAFTS);
+  const [configuredProviders, setConfiguredProviders] = useState<Provider[]>([]);
   const [externalModel, setExternalModel] = useState(
     () => PROVIDERS.find(p => p.id === 'openai')?.defaultModel ?? ''
   );
@@ -134,6 +140,8 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
   const [expandedSections, setExpandedSections] = useState({ local: true, api: true, params: false, status: true });
 
   const providerConfig = PROVIDERS.find(p => p.id === selectedProvider)!;
+  const draftKey = keyDrafts[selectedProvider].trim();
+  const keySaved = configuredProviders.includes(selectedProvider);
   const isModelReady = inferenceBackend === 'llamacpp' ? !!customModelPath : !!(customModelPath && customTokenizerPath);
 
   useEffect(() => {
@@ -144,14 +152,21 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
     return () => { unlisten.then(fn => fn()); };
   }, []);
 
+  const refreshConfiguredProviders = async () => {
+    const providers = await invoke<string[]>('get_configured_providers');
+    setConfiguredProviders(
+      providers.filter((p): p is Provider => PROVIDERS.some(known => known.id === p))
+    );
+  };
+
   const loadSettings = async () => {
     try {
       const info = await invoke<LLMInfo>('get_llm_info');
       setLlmInfo(info);
       const customPath = await invoke<string | null>('get_custom_model_path');
       setCustomModelPath(customPath);
-      const savedKeys = localStorage.getItem('llm_api_keys');
-      if (savedKeys) setApiKeys(JSON.parse(savedKeys));
+      await migrateLegacyApiKeys();
+      await refreshConfiguredProviders();
     } catch (error) {
       console.error('Failed to load LLM settings:', error);
     }
@@ -219,15 +234,15 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
     setIsLoading(true);
     try {
       if (mode === 'external') {
-        const apiKey = apiKeys[selectedProvider];
-        if (!apiKey || apiKey.trim().length === 0) {
+        if (draftKey) {
+          await saveApiKey(selectedProvider, draftKey);
+        } else if (!keySaved) {
           notify.warning(`Enter your ${providerConfig.label} API key first`, {
             description: `Get one at ${providerConfig.helpUrl}`,
           });
           setIsLoading(false);
           return;
         }
-        await invoke('set_api_key', { provider: selectedProvider, apiKey: apiKey.trim() });
         await invoke('switch_llm_mode', { mode: 'external', model: externalModel, provider: selectedProvider });
       } else {
         await invoke('switch_llm_mode', { mode: 'disabled' });
@@ -244,9 +259,35 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
   };
 
   const handleApiKeyChange = (provider: Provider, key: string) => {
-    const newKeys = { ...apiKeys, [provider]: key };
-    setApiKeys(newKeys);
-    localStorage.setItem('llm_api_keys', JSON.stringify(newKeys));
+    setKeyDrafts(prev => ({ ...prev, [provider]: key }));
+  };
+
+  /** Store a key in the OS credential store and drop it from component state. */
+  const saveApiKey = async (provider: Provider, key: string) => {
+    await invoke('set_api_key', { provider, apiKey: key });
+    setKeyDrafts(prev => ({ ...prev, [provider]: '' }));
+    await refreshConfiguredProviders();
+  };
+
+  const handleSaveApiKey = async () => {
+    if (!draftKey) return;
+    try {
+      await saveApiKey(selectedProvider, draftKey);
+      notify.success(`${providerConfig.label} API key saved to the system keychain`);
+    } catch (error) {
+      notify.error(`Failed to save API key: ${error}`);
+    }
+  };
+
+  const handleRemoveApiKey = async () => {
+    try {
+      await invoke('delete_api_key', { provider: selectedProvider });
+      setKeyDrafts(prev => ({ ...prev, [selectedProvider]: '' }));
+      await refreshConfiguredProviders();
+      notify.success(`${providerConfig.label} API key removed`);
+    } catch (error) {
+      notify.error(`Failed to remove API key: ${error}`);
+    }
   };
 
   const handleConfigUpdate = async () => {
@@ -656,9 +697,13 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
                     <label style={{ color: colors.text, fontWeight: 600, fontSize: '12px' }}>API Key</label>
-                    {apiKeys[selectedProvider]?.trim() ? (
+                    {keySaved ? (
                       <span style={{ display: 'flex', alignItems: 'center', gap: '3px', color: colors.success, fontSize: '11px', fontWeight: 500 }}>
-                        <CheckCircle size={12} /> Configured
+                        <CheckCircle size={12} /> Key saved
+                      </span>
+                    ) : draftKey ? (
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '3px', color: colors.textMuted, fontSize: '11px', fontWeight: 500 }}>
+                        <AlertCircle size={12} /> Not saved yet
                       </span>
                     ) : (
                       <span style={{ display: 'flex', alignItems: 'center', gap: '3px', color: colors.error, fontSize: '11px', fontWeight: 500 }}>
@@ -666,26 +711,66 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
                       </span>
                     )}
                   </div>
-                  <input
-                    type="password"
-                    value={apiKeys[selectedProvider]}
-                    onChange={e => handleApiKeyChange(selectedProvider, e.target.value)}
-                    placeholder={providerConfig.keyPlaceholder}
-                    style={{
-                      width: '100%',
-                      padding: '9px 10px',
-                      borderRadius: '6px',
-                      border: `1px solid ${apiKeys[selectedProvider]?.trim() ? colors.success : colors.border}`,
-                      background: colors.inputBg,
-                      color: colors.text,
-                      fontSize: '13px',
-                      fontFamily: 'monospace',
-                      outline: 'none',
-                      boxSizing: 'border-box',
-                    }}
-                  />
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <input
+                      type="password"
+                      value={keyDrafts[selectedProvider]}
+                      onChange={e => handleApiKeyChange(selectedProvider, e.target.value)}
+                      placeholder={keySaved ? 'Saved in system keychain (type to replace)' : providerConfig.keyPlaceholder}
+                      autoComplete="off"
+                      spellCheck={false}
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        padding: '9px 10px',
+                        borderRadius: '6px',
+                        border: `1px solid ${keySaved || draftKey ? colors.success : colors.border}`,
+                        background: colors.inputBg,
+                        color: colors.text,
+                        fontSize: '13px',
+                        fontFamily: 'monospace',
+                        outline: 'none',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={handleSaveApiKey}
+                      disabled={!draftKey}
+                      style={{
+                        padding: '6px 12px',
+                        borderRadius: '6px',
+                        border: `1px solid ${colors.border}`,
+                        background: colors.bgSecondary,
+                        color: draftKey ? colors.text : colors.textMuted,
+                        fontSize: '12px',
+                        fontWeight: 500,
+                        cursor: draftKey ? 'pointer' : 'not-allowed',
+                      }}
+                    >
+                      Save
+                    </button>
+                    {keySaved && (
+                      <button
+                        type="button"
+                        onClick={handleRemoveApiKey}
+                        style={{
+                          padding: '6px 12px',
+                          borderRadius: '6px',
+                          border: `1px solid ${colors.border}`,
+                          background: colors.bgSecondary,
+                          color: colors.error,
+                          fontSize: '12px',
+                          fontWeight: 500,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
                   <small style={{ color: colors.textMuted, fontSize: '11px', display: 'block', marginTop: '4px' }}>
-                    Get your API key from {providerConfig.helpUrl}
+                    Get your API key from {providerConfig.helpUrl}. Saved keys go to the system keychain, not app storage.
                   </small>
                 </div>
 

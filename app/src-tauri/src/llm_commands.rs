@@ -1,6 +1,6 @@
 //! Tauri commands for LLM integration
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use shodh_rag::llm::{
     ApiProvider, DeviceType, LLMConfig, LLMManager, LLMMode, LocalModel, ModelManager,
     QuantizationType,
@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, State};
 use tokio::sync::RwLock as AsyncRwLock;
+
+use crate::api_key_store;
 
 /// LLM state managed by Tauri
 pub struct LLMState {
@@ -21,8 +23,10 @@ pub struct LLMState {
     pub model_dir: Arc<PathBuf>,
 }
 
-/// API keys storage (should be encrypted in production)
-#[derive(Default, Clone, Serialize, Deserialize)]
+/// In-memory provider API keys. Persisted copies live only in the OS
+/// credential store (see `api_key_store`); values are never serialized to the
+/// frontend.
+#[derive(Default, Clone)]
 pub struct ApiKeys {
     pub openai: Option<String>,
     pub anthropic: Option<String>,
@@ -32,6 +36,72 @@ pub struct ApiKeys {
     pub perplexity: Option<String>,
     pub google: Option<String>,
     pub baseten: Option<String>,
+}
+
+impl ApiKeys {
+    /// Mutable slot for a provider id, or `None` for an unknown provider.
+    fn slot_mut(&mut self, provider: &str) -> Option<&mut Option<String>> {
+        match provider {
+            "openai" => Some(&mut self.openai),
+            "anthropic" => Some(&mut self.anthropic),
+            "openrouter" => Some(&mut self.openrouter),
+            "kimi" => Some(&mut self.kimi),
+            "grok" => Some(&mut self.grok),
+            "perplexity" => Some(&mut self.perplexity),
+            "google" => Some(&mut self.google),
+            "baseten" => Some(&mut self.baseten),
+            _ => None,
+        }
+    }
+
+    fn is_configured(&self, provider: &str) -> bool {
+        let value = match provider {
+            "openai" => &self.openai,
+            "anthropic" => &self.anthropic,
+            "openrouter" => &self.openrouter,
+            "kimi" => &self.kimi,
+            "grok" => &self.grok,
+            "perplexity" => &self.perplexity,
+            "google" => &self.google,
+            "baseten" => &self.baseten,
+            _ => return false,
+        };
+        value.as_deref().is_some_and(|k| !k.trim().is_empty())
+    }
+
+    /// Provider ids that currently have a non-empty key.
+    pub fn configured_providers(&self) -> Vec<String> {
+        api_key_store::KEY_PROVIDERS
+            .iter()
+            .filter(|p| self.is_configured(p))
+            .map(|p| (*p).to_string())
+            .collect()
+    }
+
+    /// Fill providers that have no key yet with keys loaded from the OS
+    /// credential store. Keys already in memory (set by the user or the
+    /// environment in this session) are newer and are kept.
+    pub fn merge_missing(&mut self, stored: Vec<(&'static str, String)>) -> usize {
+        let mut merged = 0;
+        for (provider, key) in stored {
+            if let Some(slot) = self.slot_mut(provider) {
+                if slot.as_deref().is_none_or(|k| k.trim().is_empty()) {
+                    *slot = Some(key);
+                    merged += 1;
+                }
+            }
+        }
+        merged
+    }
+}
+
+impl std::fmt::Debug for ApiKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiKeys")
+            .field("configured", &self.configured_providers())
+            .field("values", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// Browse and select model file (supports both ONNX and GGUF)
@@ -123,7 +193,10 @@ pub fn set_custom_model_path(
     match extension {
         Some("onnx") => {
             // Store the custom path
-            *state.custom_model_path.lock().unwrap() = Some(path.clone());
+            *state
+                .custom_model_path
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(path.clone());
 
             // Check for associated .data file (ONNX specific)
             let data_file = path.with_extension("onnx.data");
@@ -141,7 +214,10 @@ pub fn set_custom_model_path(
         }
         Some("gguf") => {
             // Store the custom path
-            *state.custom_model_path.lock().unwrap() = Some(path.clone());
+            *state
+                .custom_model_path
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(path.clone());
 
             Ok(format!(
                 "✅ GGUF model path set successfully\n📁 Path: {}\n🚀 Backend: llama.cpp (tokenizer built-in)",
@@ -166,7 +242,10 @@ pub fn set_custom_tokenizer_path(
     }
 
     // Store the custom tokenizer path
-    *state.custom_tokenizer_path.lock().unwrap() = Some(path);
+    *state
+        .custom_tokenizer_path
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(path);
 
     Ok(format!(
         "Tokenizer path set successfully: {}",
@@ -177,12 +256,24 @@ pub fn set_custom_tokenizer_path(
 /// Initialize LLM with custom path if set
 #[tauri::command]
 pub async fn initialize_llm_with_custom_path(state: State<'_, LLMState>) -> Result<String, String> {
-    let custom_model_path = state.custom_model_path.lock().unwrap().clone();
-    let custom_tokenizer_path = state.custom_tokenizer_path.lock().unwrap().clone();
+    let custom_model_path = state
+        .custom_model_path
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let custom_tokenizer_path = state
+        .custom_tokenizer_path
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
 
     if let Some(model_path) = custom_model_path {
         // Create config with custom model
-        let mut config = state.config.lock().unwrap().clone();
+        let mut config = state
+            .config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         config.mode = LLMMode::Local {
             model: LocalModel::Custom {
                 name: "custom".to_string(),
@@ -197,7 +288,7 @@ pub async fn initialize_llm_with_custom_path(state: State<'_, LLMState>) -> Resu
         };
 
         // Update stored config
-        *state.config.lock().unwrap() = config.clone();
+        *state.config.lock().unwrap_or_else(|e| e.into_inner()) = config.clone();
 
         // Pass both model and tokenizer paths
         // Create a custom manager that knows about both paths
@@ -225,7 +316,11 @@ pub async fn initialize_llm_with_custom_path(state: State<'_, LLMState>) -> Resu
 /// Initialize LLM manager
 #[tauri::command]
 pub async fn initialize_llm(state: State<'_, LLMState>, mode: String) -> Result<String, String> {
-    let config = state.config.lock().unwrap().clone();
+    let config = state
+        .config
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
 
     // Parse mode string to LLMMode
     let llm_mode = parse_llm_mode(&mode)?;
@@ -235,7 +330,7 @@ pub async fn initialize_llm(state: State<'_, LLMState>, mode: String) -> Result<
     new_config.mode = llm_mode;
 
     // Update stored config
-    *state.config.lock().unwrap() = new_config.clone();
+    *state.config.lock().unwrap_or_else(|e| e.into_inner()) = new_config.clone();
 
     // Create and initialize manager
     let model_dir = state.model_dir.as_ref().clone();
@@ -258,7 +353,11 @@ pub async fn switch_llm_mode(
 ) -> Result<String, String> {
     // Check if user wants to use custom model
     if mode == "custom" {
-        let custom_path = state.custom_model_path.lock().unwrap().clone();
+        let custom_path = state
+            .custom_model_path
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         if custom_path.is_none() {
             return Err("Please select a model file first using the Browse button".to_string());
         }
@@ -319,7 +418,7 @@ pub async fn switch_llm_mode(
         };
 
         // Get API key (handle Kimi specially since it uses OpenAI-compatible API but separate key)
-        let api_keys = state.api_keys.lock().unwrap();
+        let api_keys = state.api_keys.lock().unwrap_or_else(|e| e.into_inner());
         let api_key_opt = if provider.as_deref() == Some("kimi") {
             api_keys.kimi.clone()
         } else {
@@ -378,9 +477,13 @@ pub async fn switch_llm_mode(
     };
 
     // Update config
-    let mut config = state.config.lock().unwrap().clone();
+    let mut config = state
+        .config
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     config.mode = llm_mode.clone();
-    *state.config.lock().unwrap() = config.clone();
+    *state.config.lock().unwrap_or_else(|e| e.into_inner()) = config.clone();
 
     // Switch mode or create new manager
     let model_dir = state.model_dir.as_ref().clone();
@@ -904,7 +1007,11 @@ pub async fn get_llm_info(state: State<'_, LLMState>) -> Result<LLMInfo, String>
 
     tracing::info!("Provider info: {:?}", info);
     let memory = manager.memory_usage();
-    let config = state.config.lock().unwrap().clone();
+    let config = state
+        .config
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     tracing::info!("Config mode: {:?}", config.mode);
 
     Ok(LLMInfo {
@@ -922,30 +1029,65 @@ pub async fn get_llm_info(state: State<'_, LLMState>) -> Result<LLMInfo, String>
     })
 }
 
-/// Set API key
+/// Store a provider API key in the OS credential store and make it available
+/// to this session. The key is never echoed back to the frontend.
 #[tauri::command]
-pub fn set_api_key(
+pub async fn set_api_key(
     state: State<'_, LLMState>,
     provider: String,
     api_key: String,
 ) -> Result<(), String> {
-    let mut api_keys = state.api_keys.lock().unwrap();
-
-    match provider.as_str() {
-        "openai" => api_keys.openai = Some(api_key),
-        "anthropic" => api_keys.anthropic = Some(api_key),
-        "openrouter" => api_keys.openrouter = Some(api_key),
-        "kimi" => api_keys.kimi = Some(api_key),
-        "grok" => api_keys.grok = Some(api_key),
-        "perplexity" => api_keys.perplexity = Some(api_key),
-        "google" => api_keys.google = Some(api_key),
-        "baseten" => api_keys.baseten = Some(api_key),
-        _ => return Err("Unknown provider".to_string()),
+    if !api_key_store::is_known_provider(&provider) {
+        return Err(format!("Unknown provider: {provider}"));
+    }
+    let api_key = api_key.trim().to_string();
+    if api_key.is_empty() {
+        return Err("API key is empty".to_string());
     }
 
-    // TODO: Save to secure storage
+    // Persist first: if the credential store rejects the key, the session must
+    // not silently hold a key that will be gone after restart.
+    let to_store = api_key.clone();
+    let store_provider = provider.clone();
+    tokio::task::spawn_blocking(move || api_key_store::store(&store_provider, &to_store))
+        .await
+        .map_err(|e| format!("Credential store task failed: {e}"))??;
 
+    let mut api_keys = state.api_keys.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(slot) = api_keys.slot_mut(&provider) {
+        *slot = Some(api_key);
+    }
     Ok(())
+}
+
+/// Remove a provider API key from the OS credential store and this session.
+#[tauri::command]
+pub async fn delete_api_key(state: State<'_, LLMState>, provider: String) -> Result<(), String> {
+    if !api_key_store::is_known_provider(&provider) {
+        return Err(format!("Unknown provider: {provider}"));
+    }
+
+    let store_provider = provider.clone();
+    tokio::task::spawn_blocking(move || api_key_store::remove(&store_provider))
+        .await
+        .map_err(|e| format!("Credential store task failed: {e}"))??;
+
+    let mut api_keys = state.api_keys.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(slot) = api_keys.slot_mut(&provider) {
+        *slot = None;
+    }
+    Ok(())
+}
+
+/// Provider ids that have an API key available in this session. Never returns
+/// key values.
+#[tauri::command]
+pub fn get_configured_providers(state: State<'_, LLMState>) -> Vec<String> {
+    state
+        .api_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .configured_providers()
 }
 
 /// Check if model is cached
@@ -953,7 +1095,11 @@ pub fn set_api_key(
 pub async fn is_model_cached(state: State<'_, LLMState>, model: String) -> Result<bool, String> {
     // For custom models, check if path is set
     if model == "custom" {
-        let has_custom = state.custom_model_path.lock().unwrap().is_some();
+        let has_custom = state
+            .custom_model_path
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some();
         return Ok(has_custom);
     }
 
@@ -1071,7 +1217,7 @@ pub fn update_llm_config(
     top_p: Option<f32>,
     top_k: Option<usize>,
 ) -> Result<(), String> {
-    let mut config = state.config.lock().unwrap();
+    let mut config = state.config.lock().unwrap_or_else(|e| e.into_inner());
 
     if let Some(temp) = temperature {
         config.temperature = temp;
@@ -1092,7 +1238,11 @@ pub fn update_llm_config(
 /// Get current custom model path
 #[tauri::command]
 pub fn get_custom_model_path(state: State<'_, LLMState>) -> Result<Option<String>, String> {
-    let path = state.custom_model_path.lock().unwrap().clone();
+    let path = state
+        .custom_model_path
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     Ok(path.map(|p| p.to_string_lossy().to_string()))
 }
 
@@ -1144,4 +1294,42 @@ pub struct ModelDownloadProgress {
 pub struct CacheInfo {
     cached_models: Vec<String>,
     total_size_mb: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ApiKeys;
+
+    #[test]
+    fn merge_missing_keeps_session_keys_and_fills_gaps() {
+        let mut keys = ApiKeys {
+            openai: Some("session-key".to_string()),
+            anthropic: Some("   ".to_string()),
+            ..ApiKeys::default()
+        };
+        let merged = keys.merge_missing(vec![
+            ("openai", "stored-openai".to_string()),
+            ("anthropic", "stored-anthropic".to_string()),
+            ("google", "stored-google".to_string()),
+        ]);
+        assert_eq!(merged, 2);
+        assert_eq!(keys.openai.as_deref(), Some("session-key"));
+        assert_eq!(keys.anthropic.as_deref(), Some("stored-anthropic"));
+        assert_eq!(keys.google.as_deref(), Some("stored-google"));
+        assert_eq!(
+            keys.configured_providers(),
+            vec!["openai", "anthropic", "google"]
+        );
+    }
+
+    #[test]
+    fn debug_output_never_contains_key_values() {
+        let keys = ApiKeys {
+            openrouter: Some("sk-or-secret-value".to_string()),
+            ..ApiKeys::default()
+        };
+        let rendered = format!("{keys:?}");
+        assert!(!rendered.contains("sk-or-secret-value"));
+        assert!(rendered.contains("openrouter"));
+    }
 }

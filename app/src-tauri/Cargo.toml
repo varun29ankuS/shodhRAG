@@ -18,7 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
-tauri = { version = "2.0", features = ["protocol-asset"] }
+tauri = { version = "2.0", features = [] }
 tauri-plugin-opener = "2.2"
 tauri-plugin-fs = "2.0"
 tauri-plugin-dialog = "2.0"
@@ -53,11 +53,9 @@ shodh-rag = { path = "../../crates/shodh-rag" }
 notify = { version = "6.1", features = ["serde"] }
 walkdir = "2.4"
 
-# HTTP server for WhatsApp bridge and metrics
-axum = "0.7"
-tower = "0.4"
-tower-http = { version = "0.5", features = ["cors"] }
-
+# OS credential store for provider API keys (Windows Credential Manager,
+# macOS Keychain, Secret Service on Linux)
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 
 # MCP Protocol (Model Context Protocol) for tool integrations
 async-trait = "0.1"
@@ -75,11 +73,5 @@ windows = { version = "0.58", features = [
     "Globalization",
 ] }
 image = "0.25"
-
-# Google Drive integration
-reqwest = { version = "0.11", features = ["json", "multipart"] }
-oauth2 = "4.4"
-url = "2.5"
-urlencoding = "2.1"
 
 

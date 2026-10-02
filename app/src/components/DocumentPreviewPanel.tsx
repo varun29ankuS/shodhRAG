@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { readTextFile } from '@tauri-apps/plugin-fs';
+import { readFile, readTextFile } from '@tauri-apps/plugin-fs';
 import {
   X,
   ExternalLink,
@@ -66,8 +66,12 @@ export default function DocumentPreviewPanel({ file, onClose }: DocumentPreviewP
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
+  // PDFs are read through the fs plugin and shown from a blob: URL; the CSP
+  // only allows blob: frames, and file:// URLs never load in the webview.
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
 
   useEffect(() => {
+    setPdfUrl(null);
     if (!file) {
       setContent(null);
       setError(null);
@@ -76,11 +80,29 @@ export default function DocumentPreviewPanel({ file, onClose }: DocumentPreviewP
 
     const ext = getFileExtension(file.path);
 
-    // PDF: no text loading needed (use iframe)
+    // PDF: load bytes and display from a blob: URL in an iframe
     if (ext === 'pdf') {
       setContent(null);
       setError(null);
-      return;
+      setLoading(true);
+      let cancelled = false;
+      let objectUrl: string | null = null;
+      readFile(file.path)
+        .then(bytes => {
+          if (cancelled) return;
+          objectUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+          setPdfUrl(file.page ? `${objectUrl}#page=${file.page}` : objectUrl);
+          setLoading(false);
+        })
+        .catch(err => {
+          if (cancelled) return;
+          setError(`Failed to read file: ${err}`);
+          setLoading(false);
+        });
+      return () => {
+        cancelled = true;
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+      };
     }
 
     // Binary formats: can't preview inline
@@ -218,9 +240,9 @@ export default function DocumentPreviewPanel({ file, onClose }: DocumentPreviewP
             </div>
           )}
 
-          {isPdf && (
+          {isPdf && pdfUrl && (
             <iframe
-              src={`file://${file.path}${file.page ? `#page=${file.page}` : ''}`}
+              src={pdfUrl}
               className="w-full h-full border-none"
               title={file.name}
             />

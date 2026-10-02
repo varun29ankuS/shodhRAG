@@ -628,11 +628,19 @@ impl ChatEngine {
                             .to_string()
                     });
 
+                // Page comes from the chunk's citation; fall back to the page keys
+                // recorded in chunk metadata at ingest time.
+                let page_number = r
+                    .citation
+                    .as_ref()
+                    .and_then(|c| c.page_numbers.clone())
+                    .or_else(|| crate::rag_engine::page_numbers_from_metadata(&r.metadata));
+
                 SearchResult {
                     text: r.text.clone(),
                     score: r.score,
                     source_file,
-                    page_number: r.citation.as_ref().and_then(|c| c.page_numbers.clone()),
+                    page_number: page_number.clone(),
                     line_range: None,
                     snippet: snippet_text.clone(),
                     citation: r.citation.as_ref().map(|c| Citation {
@@ -643,7 +651,7 @@ impl ChatEngine {
                         authors: c.authors.clone(),
                         source: r.source.clone(),
                         year: c.year.clone(),
-                        page_numbers: c.page_numbers.clone(),
+                        page_numbers: page_number.clone(),
                     }),
                     metadata: r.metadata.clone(),
                 }

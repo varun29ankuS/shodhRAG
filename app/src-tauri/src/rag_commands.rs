@@ -1127,22 +1127,7 @@ pub async fn link_folder(
                 // Check if the file has a supported extension
                 if let Some(ext) = path.extension() {
                     let ext_str = ext.to_string_lossy().to_lowercase();
-                    // Include code files and documentation
-                    if matches!(
-                        ext_str.as_str(),
-                        // Documents
-                        "txt" | "md" | "pdf" | "html" | "json" | "csv" | "docx" | "rst" | "tex" |
-                        // Code files
-                        "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "java" | "cpp" | "c" | "h" | 
-                        "hpp" | "cs" | "go" | "rb" | "php" | "swift" | "kt" | "scala" | "r" |
-                        "sh" | "bash" | "zsh" | "ps1" | "bat" | "cmd" |
-                        // Web files
-                        "css" | "scss" | "sass" | "less" | "vue" | "svelte" |
-                        // Config files
-                        "toml" | "yaml" | "yml" | "ini" | "conf" | "config" | "env" |
-                        // Data files
-                        "xml" | "sql" | "graphql" | "proto"
-                    ) {
+                    if shodh_rag::indexing::is_supported_file_type(&ext_str) {
                         files.push(path);
                     }
                 }
@@ -1354,10 +1339,7 @@ pub async fn get_folder_stats(folder_path: String) -> Result<HashMap<String, Str
                 file_count += 1;
                 if let Some(ext) = path.extension() {
                     let ext_str = ext.to_string_lossy().to_lowercase();
-                    if matches!(
-                        ext_str.as_str(),
-                        "txt" | "md" | "pdf" | "html" | "json" | "csv" | "docx"
-                    ) {
+                    if shodh_rag::indexing::is_supported_file_type(&ext_str) {
                         supported_count += 1;
                     }
                 }

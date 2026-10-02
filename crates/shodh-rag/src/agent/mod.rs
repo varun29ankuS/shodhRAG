@@ -431,6 +431,7 @@ mod tests {
             config: AgentConfig::default(),
             capabilities: vec![],
             tools: vec![],
+            enabled: true,
             metadata: HashMap::new(),
         };
 

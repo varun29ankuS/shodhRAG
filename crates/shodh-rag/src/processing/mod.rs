@@ -1,6 +1,7 @@
 pub mod chunker;
 pub mod lopdf_parser;
 pub mod parser;
+pub mod tabular;
 
 #[cfg(windows)]
 pub mod windows_ocr;

@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
-use calamine::{open_workbook_auto, Data, Reader};
 use std::collections::HashMap;
 use std::path::Path;
 
+use super::tabular;
 use crate::types::{DocumentFormat, DocumentSection};
 
 #[derive(Debug, Clone)]
@@ -37,17 +37,6 @@ impl DocumentParser {
             .unwrap_or("untitled")
             .to_string();
 
-        let content = match extension.as_str() {
-            "pdf" => self.parse_pdf(path)?,
-            "docx" => self.parse_docx(path)?,
-            "xlsx" | "xls" | "ods" | "xlsm" | "xlsb" => self.parse_spreadsheet(path)?,
-            "pptx" => self.parse_pptx(path)?,
-            "html" | "htm" => self.parse_html(path)?,
-            "png" | "jpg" | "jpeg" | "bmp" | "tiff" | "tif" => self.parse_image(path)?,
-            _ => std::fs::read_to_string(path)
-                .with_context(|| format!("Failed to read text file: {}", path.display()))?,
-        };
-
         let mut metadata = HashMap::new();
         metadata.insert("file_path".to_string(), path.display().to_string());
         metadata.insert("file_extension".to_string(), extension.clone());
@@ -56,11 +45,36 @@ impl DocumentParser {
             metadata.insert("file_size".to_string(), meta.len().to_string());
         }
 
+        // Tabular formats produce typed tables first; their flat text is derived
+        // from the same tables so the file is read exactly once.
+        let tables = if tabular::is_spreadsheet_extension(&extension) {
+            Some(tabular::read_spreadsheet(path)?)
+        } else if tabular::is_delimited_extension(&extension) {
+            Some(vec![tabular::read_delimited_file(path, &extension)?])
+        } else {
+            None
+        };
+
+        let content = match &tables {
+            Some(tables) => tabular::tables_to_text(tables),
+            None => match extension.as_str() {
+                "pdf" => self.parse_pdf(path)?,
+                "docx" => self.parse_docx(path)?,
+                "pptx" => self.parse_pptx(path)?,
+                "html" | "htm" => self.parse_html(path)?,
+                "png" | "jpg" | "jpeg" | "bmp" | "tiff" | "tif" => self.parse_image(path)?,
+                _ => tabular::read_text_file(path)?,
+            },
+        };
+
         // Extract structured sections for formats with tabular/form data
-        let structured_sections = match format {
-            DocumentFormat::PDF => self.extract_pdf_structure(path, &content),
-            DocumentFormat::Spreadsheet => self.extract_spreadsheet_structure(path, &mut metadata),
-            _ => Vec::new(),
+        let structured_sections = match tables {
+            Some(tables) => {
+                record_table_metadata(&tables, &mut metadata);
+                tabular::tables_to_sections(tables)
+            }
+            None if format == DocumentFormat::PDF => self.extract_pdf_structure(path, &content),
+            None => Vec::new(),
         };
 
         if !structured_sections.is_empty() {
@@ -68,10 +82,16 @@ impl DocumentParser {
                 .iter()
                 .filter(|s| matches!(s, DocumentSection::FormFields { .. }))
                 .count();
+            let table_count = structured_sections
+                .iter()
+                .filter(|s| matches!(s, DocumentSection::Table { .. }))
+                .count();
             tracing::info!(
                 sections = structured_sections.len(),
                 form_field_groups = field_count,
-                "PDF structured extraction complete"
+                tables = table_count,
+                "Structured extraction complete: {}",
+                path.display()
             );
         }
 
@@ -281,14 +301,16 @@ impl DocumentParser {
         }
 
         // If lopdf produced no page text but we have fallback content,
-        // add it as a single text section
+        // add it as a single text section. The fallback is whole-document text
+        // with no page boundaries, so it is recorded as unpaged (page 0)
+        // rather than misattributing everything to page 1.
         let has_text_sections = sections
             .iter()
             .any(|s| matches!(s, DocumentSection::Text { .. }));
         if !has_text_sections && !fallback_content.trim().is_empty() {
             sections.push(DocumentSection::Text {
                 content: fallback_content.to_string(),
-                page: 1,
+                page: 0,
                 heading: None,
             });
         }
@@ -339,156 +361,6 @@ impl DocumentParser {
                 path.display()
             ))
         }
-    }
-
-    /// Parse Excel/ODS spreadsheet into flat text (one row per line, pipe-separated).
-    fn parse_spreadsheet(&self, path: &Path) -> Result<String> {
-        let mut workbook = open_workbook_auto(path)
-            .with_context(|| format!("Failed to open spreadsheet: {}", path.display()))?;
-
-        let sheet_names: Vec<String> = workbook.sheet_names().to_vec();
-        if sheet_names.is_empty() {
-            return Err(anyhow::anyhow!(
-                "Spreadsheet has no sheets: {}",
-                path.display()
-            ));
-        }
-
-        let mut all_text = String::new();
-
-        for sheet_name in &sheet_names {
-            let range = match workbook.worksheet_range(sheet_name) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-
-            if range.is_empty() {
-                continue;
-            }
-
-            if sheet_names.len() > 1 {
-                all_text.push_str(&format!("\n--- Sheet: {} ---\n", sheet_name));
-            }
-
-            for row in range.rows() {
-                let cells: Vec<String> = row.iter().map(cell_to_string).collect();
-                // Skip fully empty rows
-                if cells.iter().all(|c| c.is_empty()) {
-                    continue;
-                }
-                all_text.push_str(&cells.join(" | "));
-                all_text.push('\n');
-            }
-        }
-
-        if all_text.trim().is_empty() {
-            return Err(anyhow::anyhow!(
-                "Spreadsheet contains no data: {}",
-                path.display()
-            ));
-        }
-
-        Ok(all_text)
-    }
-
-    /// Extract per-sheet `DocumentSection::Table` sections from a spreadsheet.
-    /// First non-empty row of each sheet is treated as headers; remaining rows are data.
-    /// Also populates metadata with sheet count and total row count.
-    fn extract_spreadsheet_structure(
-        &self,
-        path: &Path,
-        metadata: &mut HashMap<String, String>,
-    ) -> Vec<DocumentSection> {
-        let mut workbook = match open_workbook_auto(path) {
-            Ok(wb) => wb,
-            Err(e) => {
-                tracing::warn!("Spreadsheet re-open failed for structure extraction: {}", e);
-                return Vec::new();
-            }
-        };
-
-        let sheet_names: Vec<String> = workbook.sheet_names().to_vec();
-        metadata.insert("sheet_count".to_string(), sheet_names.len().to_string());
-
-        let mut sections = Vec::new();
-        let mut total_rows: usize = 0;
-
-        for (sheet_idx, sheet_name) in sheet_names.iter().enumerate() {
-            let range = match workbook.worksheet_range(sheet_name) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-
-            if range.is_empty() {
-                continue;
-            }
-
-            let all_rows: Vec<Vec<String>> = range
-                .rows()
-                .map(|row| row.iter().map(cell_to_string).collect())
-                .filter(|row: &Vec<String>| !row.iter().all(|c| c.is_empty()))
-                .collect();
-
-            if all_rows.is_empty() {
-                continue;
-            }
-
-            // First row = headers, rest = data
-            let headers = all_rows[0].clone();
-            let data_rows: Vec<Vec<String>> = all_rows.into_iter().skip(1).collect();
-            total_rows += data_rows.len();
-
-            // Detect numeric columns for downstream chart generation
-            let numeric_cols: Vec<usize> = (0..headers.len())
-                .filter(|&col_idx| {
-                    let numeric_count = data_rows
-                        .iter()
-                        .filter(|row| {
-                            row.get(col_idx)
-                                .map(|v| !v.is_empty() && v.parse::<f64>().is_ok())
-                                .unwrap_or(false)
-                        })
-                        .count();
-                    // Column is numeric if >50% of non-empty values parse as numbers
-                    numeric_count > 0 && numeric_count * 2 >= data_rows.len()
-                })
-                .collect();
-
-            if !numeric_cols.is_empty() {
-                let numeric_headers: Vec<&str> = numeric_cols
-                    .iter()
-                    .filter_map(|&i| headers.get(i).map(|h| h.as_str()))
-                    .collect();
-                metadata.insert(
-                    format!("sheet_{}_numeric_columns", sheet_idx),
-                    numeric_headers.join(","),
-                );
-            }
-
-            let caption = if sheet_names.len() > 1 {
-                Some(sheet_name.clone())
-            } else {
-                None
-            };
-
-            sections.push(DocumentSection::Table {
-                headers,
-                rows: data_rows,
-                page: sheet_idx + 1,
-                caption,
-            });
-        }
-
-        metadata.insert("total_data_rows".to_string(), total_rows.to_string());
-        if !sections.is_empty() {
-            tracing::info!(
-                sheets = sections.len(),
-                total_rows = total_rows,
-                "Spreadsheet structured extraction complete"
-            );
-        }
-
-        sections
     }
 
     /// Parse PPTX by extracting text from each slide's XML.
@@ -550,7 +422,7 @@ impl DocumentParser {
 
     /// Parse HTML by stripping tags and extracting visible text.
     fn parse_html(&self, path: &Path) -> Result<String> {
-        let raw = std::fs::read_to_string(path)
+        let raw = tabular::read_text_file(path)
             .with_context(|| format!("Failed to read HTML: {}", path.display()))?;
 
         Ok(strip_html_tags(&raw))
@@ -572,28 +444,21 @@ impl DocumentParser {
     }
 }
 
-/// Convert a calamine cell to a clean string representation.
-fn cell_to_string(cell: &Data) -> String {
-    match cell {
-        Data::Empty => String::new(),
-        Data::String(s) => s.clone(),
-        Data::Int(i) => i.to_string(),
-        Data::Float(f) => {
-            // Use integer display when the float is a whole number (e.g. 1500.0 → "1500")
-            if f.fract() == 0.0 && f.abs() < i64::MAX as f64 {
-                (*f as i64).to_string()
-            } else {
-                format!("{:.4}", f)
-                    .trim_end_matches('0')
-                    .trim_end_matches('.')
-                    .to_string()
-            }
+/// Record per-table statistics (sheet count, row count, numeric columns) in
+/// document metadata. Numeric column hints are consumed by chart generation.
+fn record_table_metadata(
+    tables: &[tabular::ExtractedTable],
+    metadata: &mut HashMap<String, String>,
+) {
+    metadata.insert("sheet_count".to_string(), tables.len().to_string());
+    let total_rows: usize = tables.iter().map(|t| t.rows.len()).sum();
+    metadata.insert("total_data_rows".to_string(), total_rows.to_string());
+    for (idx, table) in tables.iter().enumerate() {
+        metadata.insert(format!("sheet_{}_name", idx), table.name.clone());
+        let numeric = tabular::numeric_columns(table);
+        if !numeric.is_empty() {
+            metadata.insert(format!("sheet_{}_numeric_columns", idx), numeric.join(","));
         }
-        Data::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
-        Data::Error(e) => format!("#ERR:{:?}", e),
-        Data::DateTime(dt) => dt.to_string(),
-        Data::DateTimeIso(s) => s.clone(),
-        Data::DurationIso(s) => s.clone(),
     }
 }
 

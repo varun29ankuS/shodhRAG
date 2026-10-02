@@ -580,7 +580,7 @@ A conversation continues regardless of the active tab.
 - **Creating profiles.** Profiles are created in conversation. The assistant proposes the profile inline: name, allowed tools, source scope and model. The user approves it with one click (section 7.3).
 - **Agent activity is shown live inside the conversation's run view**, built from omp RPC events and host-tool events:
   - every tool step, with its inputs and a result summary;
-  - every spawned sub-agent, either omp's own `task` sub-agents or shodh `delegate` calls, shown as its own lane with its name, task, steps, token cost and outcome, merging back into the parent answer;
+  - every spawned sub-agent, created through the host-side `delegate` tool (omp's own `task` tool is disabled; see ADR 0001), shown as its own lane with its name, task, steps, token cost and outcome, merging back into the parent answer;
   - citations highlighting as the sentences that use them stream in.
 - **Historical runs** are reviewable from the conversation and from the audit log.
 

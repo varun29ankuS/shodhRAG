@@ -512,6 +512,27 @@ Each step is idempotent and recorded in `schema_version` and audit.
 - Every milestone ships the UI for its feature, with Playwright coverage. For example, M2 ships the sources panel, the "Couldn't read" panel and live progress. M3 ships citation click-through to the highlighted page.
 - `@sentry/react` crash reporting is opt-in, off by default, and disabled in Local-only mode.
 
+### Conversation dock
+
+A conversation continues regardless of the active tab.
+
+**Navigation by the model**
+- The model opens another tab with a navigation tool, for example `open_view(calendar, focus=task_id)`. This is a `read`-tier tool.
+- When it does, the app switches tab and the active conversation collapses into a floating dock at the bottom right (380×470), which keeps streaming.
+
+**Dock states**
+- **Open:** messages, live step line, inline approvals, and a reply box.
+- **Minimized:** a pill showing the agent, a working indicator and an unread count.
+- **Expand:** returns to Ask at the same scroll position.
+
+**Persistence and accessibility**
+- Dock state persists per window.
+- The dock never covers primary actions of the screen beneath it. Each screen reserves a bottom-right safe area.
+- The dock is reachable with `Ctrl+J`, and focus is trapped while it is open.
+
+**Motion**
+- Collapse and expand are a shared-element transition from the Ask column to the dock, scaled from the bottom-right origin (280 ms).
+
 ### Motion
 
 **Tokens**

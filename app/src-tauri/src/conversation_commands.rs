@@ -15,6 +15,14 @@ pub struct ConversationMessage {
     pub artifacts: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub search_results: Option<Vec<serde_json::Value>>,
+    /// Response metadata reported by the chat engine (model, tokens, timings,
+    /// search queries). Opaque to the backend; stored for the Ask view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+    /// Run record (status, wall time, steps observed from streaming events).
+    /// Opaque to the backend; stored so the run summary survives reload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

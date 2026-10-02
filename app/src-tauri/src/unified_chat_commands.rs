@@ -18,6 +18,20 @@ pub async fn unified_chat_internal(
     platform: MessagePlatform,
     app_handle: Option<tauri::AppHandle>,
 ) -> Result<AssistantResponse, String> {
+    unified_chat_internal_with_request(rag_state, message, context, platform, app_handle, None)
+        .await
+}
+
+/// Unified chat with an optional request id that is attached to every
+/// streaming event emitted through `app_handle`.
+pub async fn unified_chat_internal_with_request(
+    rag_state: &RagState,
+    message: String,
+    context: Option<ChatContext>,
+    platform: MessagePlatform,
+    app_handle: Option<tauri::AppHandle>,
+    request_id: Option<String>,
+) -> Result<AssistantResponse, String> {
     tracing::info!(
         "🔵 unified_chat_internal called from {:?}: {}",
         platform,
@@ -108,7 +122,8 @@ pub async fn unified_chat_internal(
     };
 
     // Process message with optional streaming support via EventEmitter trait
-    let emitter = app_handle.map(|h| crate::chat_engine::TauriEventEmitter::new(h));
+    let emitter =
+        app_handle.map(|h| crate::chat_engine::TauriEventEmitter::with_request_id(h, request_id));
     let emitter_ref: Option<&dyn shodh_rag::chat::EventEmitter> = emitter
         .as_ref()
         .map(|e| e as &dyn shodh_rag::chat::EventEmitter);
@@ -136,20 +151,26 @@ pub async fn unified_chat_internal(
     Ok(response)
 }
 
-/// Unified chat command - single entry point for all chat functionality
+/// Unified chat command - single entry point for all chat functionality.
+///
+/// `request_id` (JS: `requestId`) is echoed as `requestId` on every streaming
+/// event emitted for this request, so the frontend can ignore events from a
+/// request it has already cancelled.
 #[tauri::command]
 pub async fn unified_chat(
     app_handle: tauri::AppHandle,
     state: State<'_, RagState>,
     message: String,
     context: Option<ChatContext>,
+    request_id: Option<String>,
 ) -> Result<AssistantResponse, String> {
-    unified_chat_internal(
+    unified_chat_internal_with_request(
         &state,
         message,
         context,
         MessagePlatform::Desktop,
         Some(app_handle),
+        request_id,
     )
     .await
 }

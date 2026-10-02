@@ -14,6 +14,7 @@ mod google_drive_commands;
 mod graph_commands;
 mod history_commands;
 mod image_upload_commands;
+mod llm_bootstrap;
 mod llm_commands;
 mod llm_response;
 mod mcp;
@@ -183,6 +184,19 @@ pub fn run() {
                 custom_model_path: Arc::new(Mutex::new(None)),
                 custom_tokenizer_path: Arc::new(Mutex::new(None)),
                 model_dir: Arc::new(model_dir.clone()),
+            });
+
+            // Opt-in: configure the model from SHODH_LLM_PROVIDER / SHODH_LLM_MODEL.
+            let llm_bootstrap_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let llm_state = llm_bootstrap_handle.state::<LLMState>();
+                match llm_bootstrap::configure_from_environment(&llm_state).await {
+                    Ok(Some(description)) => {
+                        tracing::info!("LLM configured from environment: {}", description)
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!("LLM environment configuration failed: {}", e),
+                }
             });
 
             // Initialize RagState with explicit model path configuration

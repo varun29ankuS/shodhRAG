@@ -1,3 +1,7 @@
+import "@fontsource-variable/geist";
+import "@fontsource-variable/geist-mono";
+import "./index.css";
+
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App-SplitView";
@@ -9,8 +13,6 @@ import { PermissionProvider } from "./contexts/PermissionContext";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { Toaster } from "sonner";
 import { initErrorReporting } from "./lib/errorReporting";
-
-import "./index.css";
 
 initErrorReporting();
 

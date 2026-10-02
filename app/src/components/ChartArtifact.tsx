@@ -20,7 +20,7 @@ const DEFAULT_COLORS = [
   '#a855f7', '#84cc16', '#e879f9', '#22d3ee', '#fb923c',
 ];
 
-const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif';
+const FONT = '"Geist Variable", system-ui, -apple-system, "Segoe UI", sans-serif';
 
 export function ChartArtifact({ artifact, theme }: ChartArtifactProps) {
   const isDark = theme === 'dark';

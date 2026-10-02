@@ -35,6 +35,8 @@ interface ModelProgress {
 interface LLMSettingsProps {
   onClose: () => void;
   onStatusChange?: () => void;
+  /** Render inline inside a page (no modal overlay, header or close button). */
+  embedded?: boolean;
 }
 
 type Provider = 'openai' | 'anthropic' | 'openrouter' | 'kimi' | 'grok' | 'perplexity' | 'google' | 'baseten';
@@ -58,15 +60,13 @@ const PROVIDERS: { id: Provider; label: string; defaultModel: string; keyPlaceho
     ],
   },
   {
-    id: 'openrouter', label: 'OpenRouter', defaultModel: 'deepseek/deepseek-chat', keyPlaceholder: 'sk-or-...', helpUrl: 'openrouter.ai/keys',
+    id: 'openrouter', label: 'OpenRouter', defaultModel: 'anthropic/claude-haiku-4.5', keyPlaceholder: 'sk-or-...', helpUrl: 'openrouter.ai/keys',
     models: [
+      { value: 'anthropic/claude-haiku-4.5', label: 'Claude Haiku 4.5' },
+      { value: 'openai/gpt-5-mini', label: 'GPT-5 mini' },
+      { value: 'qwen/qwen3-30b-a3b-instruct-2507', label: 'Qwen3 30B A3B Instruct' },
       { value: 'deepseek/deepseek-chat', label: 'DeepSeek Chat' },
-      { value: 'deepseek/deepseek-coder', label: 'DeepSeek Coder' },
-      { value: 'mistralai/mistral-7b-instruct', label: 'Mistral 7B' },
-      { value: 'meta-llama/llama-3.2-3b-instruct', label: 'Llama 3.2 3B' },
-      { value: 'google/gemini-2.0-flash-exp:free', label: 'Gemini 2.0 Flash (Free)' },
-      { value: 'google/gemini-2.0-flash-thinking-exp:free', label: 'Gemini 2.0 Flash Thinking (Free)' },
-      { value: 'gryphe/mythomax-l2-13b:free', label: 'MythoMax 13B (Free)' },
+      { value: 'stealth/space-bunny-alpha', label: 'Space Bunny Alpha (stealth: prompts may be logged by the provider)' },
     ],
   },
   {
@@ -111,7 +111,7 @@ const PROVIDERS: { id: Provider; label: string; defaultModel: string; keyPlaceho
   },
 ];
 
-export default function LLMSettings({ onClose, onStatusChange }: LLMSettingsProps) {
+export default function LLMSettings({ onClose, onStatusChange, embedded = false }: LLMSettingsProps) {
   const { colors } = useTheme();
   const [llmMode, setLlmMode] = useState<'local' | 'external' | 'disabled'>('disabled');
   const [inferenceBackend, setInferenceBackend] = useState<'onnx' | 'llamacpp'>('llamacpp');
@@ -119,7 +119,9 @@ export default function LLMSettings({ onClose, onStatusChange }: LLMSettingsProp
   const [apiKeys, setApiKeys] = useState<Record<Provider, string>>({
     openai: '', anthropic: '', openrouter: '', kimi: '', grok: '', perplexity: '', google: '', baseten: '',
   });
-  const [externalModel, setExternalModel] = useState('grok-2-1212');
+  const [externalModel, setExternalModel] = useState(
+    () => PROVIDERS.find(p => p.id === 'openai')?.defaultModel ?? ''
+  );
   const [llmInfo, setLlmInfo] = useState<LLMInfo | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<ModelProgress | null>(null);
@@ -337,7 +339,7 @@ export default function LLMSettings({ onClose, onStatusChange }: LLMSettingsProp
   };
 
   return (
-    <div style={{
+    <div style={embedded ? undefined : {
       position: 'fixed',
       top: 0, left: 0, right: 0, bottom: 0,
       background: 'rgba(0, 0, 0, 0.6)',
@@ -348,7 +350,7 @@ export default function LLMSettings({ onClose, onStatusChange }: LLMSettingsProp
       zIndex: 10000,
       animation: 'fadeIn 0.2s ease',
     }}>
-      <div style={{
+      <div style={embedded ? undefined : {
         background: colors.bg,
         border: `1px solid ${colors.border}`,
         borderRadius: '12px',
@@ -358,8 +360,8 @@ export default function LLMSettings({ onClose, onStatusChange }: LLMSettingsProp
         overflowY: 'auto',
         boxShadow: '0 16px 48px rgba(0,0,0,0.25)',
       }}>
-        {/* Header */}
-        <div style={{
+        {/* Header (modal mode only) */}
+        {!embedded && <div style={{
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
@@ -388,7 +390,7 @@ export default function LLMSettings({ onClose, onStatusChange }: LLMSettingsProp
           >
             <X size={18} />
           </button>
-        </div>
+        </div>}
 
         {/* Mode Selection */}
         <div style={sectionStyle}>
@@ -689,16 +691,25 @@ export default function LLMSettings({ onClose, onStatusChange }: LLMSettingsProp
 
                 {/* Model select */}
                 <div>
-                  <label style={{ color: colors.text, fontWeight: 600, fontSize: '12px', display: 'block', marginBottom: '6px' }}>Model</label>
-                  <select
+                  <label htmlFor="external-model-id" style={{ color: colors.text, fontWeight: 600, fontSize: '12px', display: 'block', marginBottom: '6px' }}>Model</label>
+                  <input
+                    id="external-model-id"
+                    list={`models-${providerConfig.id}`}
                     value={externalModel}
-                    onChange={e => setExternalModel(e.target.value)}
-                    style={selectStyle}
-                  >
+                    onChange={e => setExternalModel(e.target.value.trim())}
+                    placeholder={providerConfig.defaultModel}
+                    spellCheck={false}
+                    autoComplete="off"
+                    style={{ ...selectStyle, fontFamily: 'monospace' }}
+                  />
+                  <datalist id={`models-${providerConfig.id}`}>
                     {providerConfig.models.map(m => (
                       <option key={m.value} value={m.value}>{m.label}</option>
                     ))}
-                  </select>
+                  </datalist>
+                  <small style={{ color: colors.textMuted, fontSize: '11px', display: 'block', marginTop: '4px' }}>
+                    Pick a suggestion or type any model ID the provider supports.
+                  </small>
                 </div>
               </div>
             </div>

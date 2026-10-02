@@ -1,155 +1,158 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
 type Theme = 'light' | 'dark';
+
+export type ThemeColors = {
+  // Backgrounds
+  bg: string;
+  bgSecondary: string;
+  bgTertiary: string;
+  bgHover: string;
+  bgActive: string;
+
+  // Text
+  text: string;
+  textSecondary: string;
+  textTertiary: string;
+  textMuted: string;
+
+  // Borders
+  border: string;
+  borderHover: string;
+  borderActive: string;
+
+  // Brand
+  /** Accent fill (buttons, active indicators). Pair with `primaryText`. */
+  primary: string;
+  primaryHover: string;
+  primaryText: string;
+  /** Accent colour for text/icons on the page background (AA contrast). */
+  accentText: string;
+
+  secondary: string;
+  accent: string;
+  info: string;
+  success: string;
+  warning: string;
+  error: string;
+
+  // Component specific
+  cardBg: string;
+  cardBorder: string;
+  inputBg: string;
+  buttonBg: string;
+  buttonText: string;
+  buttonHover: string;
+};
 
 interface ThemeContextType {
   theme: Theme;
   toggleTheme: () => void;
-  colors: {
-    // Backgrounds
-    bg: string;
-    bgSecondary: string;
-    bgTertiary: string;
-    bgHover: string;
-    bgActive: string;
-
-    // Text
-    text: string;
-    textSecondary: string;
-    textTertiary: string;
-    textMuted: string;
-
-    // Borders
-    border: string;
-    borderHover: string;
-    borderActive: string;
-
-    // Brand colors (same in both themes)
-    primary: string;
-    primaryHover: string;
-    primaryText: string;
-
-    secondary: string;
-    accent: string;
-    success: string;
-    warning: string;
-    error: string;
-
-    // Component specific
-    cardBg: string;
-    cardBorder: string;
-    inputBg: string;
-    buttonBg: string;
-    buttonText: string;
-    buttonHover: string;
-  };
+  colors: ThemeColors;
 }
 
-const lightColors = {
-  bg: '#fafafa',
-  bgSecondary: '#ffffff',
-  bgTertiary: '#f0f0f2',
-  bgHover: '#e8e8ec',
-  bgActive: '#dcdce0',
+/**
+ * Legacy `colors` keys → design tokens declared in src/index.css (`--c-<token>`).
+ * index.css is the single source of truth; this table only names which token
+ * each legacy key reads.
+ */
+const TOKEN_FOR_KEY: Record<keyof ThemeColors, string> = {
+  bg: 'ground',
+  bgSecondary: 'surface',
+  bgTertiary: 'raised',
+  bgHover: 'raised-2',
+  bgActive: 'pressed',
 
-  text: '#111113',
-  textSecondary: '#1c1c1f',
-  textTertiary: '#60606b',
-  textMuted: '#8e8e99',
+  text: 'text',
+  textSecondary: 'text-secondary',
+  textTertiary: 'text-muted',
+  textMuted: 'text-faint',
 
-  border: '#e0e0e5',
-  borderHover: '#c8c8d0',
-  borderActive: '#a0a0ab',
+  border: 'border',
+  borderHover: 'border-strong',
+  borderActive: 'border-active',
 
-  primary: '#c94d1f',
-  primaryHover: '#b5441b',
-  primaryText: '#ffffff',
+  primary: 'accent',
+  primaryHover: 'accent-hover',
+  primaryText: 'on-accent',
+  accentText: 'accent-text',
 
-  secondary: '#2563eb',
-  accent: '#7c3aed',
-  success: '#059669',
-  warning: '#d97706',
-  error: '#dc2626',
+  secondary: 'info',
+  accent: 'violet',
+  info: 'info',
+  success: 'success',
+  warning: 'warning',
+  error: 'error',
 
-  cardBg: '#ffffff',
-  cardBorder: '#e0e0e5',
-  inputBg: '#ffffff',
-  buttonBg: '#f0f0f2',
-  buttonText: '#111113',
-  buttonHover: '#e8e8ec',
+  cardBg: 'surface-2',
+  cardBorder: 'border',
+  inputBg: 'surface',
+  buttonBg: 'raised',
+  buttonText: 'text',
+  buttonHover: 'raised-2',
 };
 
-const darkColors = {
-  bg: '#0c0c0d',
-  bgSecondary: '#141415',
-  bgTertiary: '#1c1c1e',
-  bgHover: '#232326',
-  bgActive: '#2c2c30',
+const HEX6 = /^#[0-9a-fA-F]{6}$/;
 
-  text: '#f0f0f2',
-  textSecondary: '#d4d4d8',
-  textTertiary: '#8b8b95',
-  textMuted: '#5c5c66',
+/**
+ * Activate `theme` on the document root and read the resolved palette back
+ * from the CSS custom properties. Values must be 6-digit hex because legacy
+ * panels append alpha suffixes (`${colors.primary}14`).
+ */
+function applyThemeAndReadColors(theme: Theme): ThemeColors {
+  const root = document.documentElement;
+  root.setAttribute('data-theme', theme);
+  root.classList.toggle('dark', theme === 'dark');
 
-  border: '#1e1e22',
-  borderHover: '#2a2a2f',
-  borderActive: '#3a3a40',
+  const computed = getComputedStyle(root);
+  const colors = {} as ThemeColors;
+  for (const key of Object.keys(TOKEN_FOR_KEY) as (keyof ThemeColors)[]) {
+    const prop = `--c-${TOKEN_FOR_KEY[key]}`;
+    const value = computed.getPropertyValue(prop).trim();
+    if (!HEX6.test(value)) {
+      throw new Error(
+        `Design token ${prop} resolved to "${value}" for theme "${theme}". ` +
+        'Tokens are defined in src/index.css and must be 6-digit hex.'
+      );
+    }
+    colors[key] = value;
+  }
+  return colors;
+}
 
-  primary: '#e8602a',
-  primaryHover: '#f07040',
-  primaryText: '#ffffff',
-
-  secondary: '#3b82f6',
-  accent: '#a78bfa',
-  success: '#10b981',
-  warning: '#f59e0b',
-  error: '#ef4444',
-
-  cardBg: '#141415',
-  cardBorder: '#1e1e22',
-  inputBg: '#141415',
-  buttonBg: '#1c1c1e',
-  buttonText: '#f0f0f2',
-  buttonHover: '#232326',
-};
+function readStoredTheme(): Theme {
+  try {
+    const stored = localStorage.getItem('theme');
+    return stored === 'light' || stored === 'dark' ? stored : 'dark';
+  } catch {
+    return 'dark';
+  }
+}
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [theme, setTheme] = useState<Theme>(() => {
-    const stored = localStorage.getItem('theme') as Theme;
-    return stored || 'dark';
-  });
+  const [theme, setTheme] = useState<Theme>(readStoredTheme);
+
+  // Applying the attribute and reading the palette happen together so the
+  // colours handed to children always match the active stylesheet.
+  const colors = useMemo(() => applyThemeAndReadColors(theme), [theme]);
 
   useEffect(() => {
-    localStorage.setItem('theme', theme);
-    document.documentElement.setAttribute('data-theme', theme);
-
-    // Add/remove 'dark' class for Tailwind dark mode
-    if (theme === 'dark') {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
+    try {
+      localStorage.setItem('theme', theme);
+    } catch {
+      // Storage unavailable (private mode / quota); theme still applies for this session.
     }
-
-    // Apply theme colors to CSS variables
-    const colors = theme === 'light' ? lightColors : darkColors;
-    Object.entries(colors).forEach(([key, value]) => {
-      document.documentElement.style.setProperty(`--color-${key}`, value);
-    });
   }, [theme]);
 
-  const toggleTheme = () => {
-    setTheme(prev => prev === 'light' ? 'dark' : 'light');
-  };
+  const toggleTheme = useCallback(() => {
+    setTheme(prev => (prev === 'light' ? 'dark' : 'light'));
+  }, []);
 
-  const colors = theme === 'light' ? lightColors : darkColors;
+  const value = useMemo(() => ({ theme, toggleTheme, colors }), [theme, toggleTheme, colors]);
 
-  return (
-    <ThemeContext.Provider value={{ theme, toggleTheme, colors }}>
-      {children}
-    </ThemeContext.Provider>
-  );
+  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 };
 
 export const useTheme = () => {

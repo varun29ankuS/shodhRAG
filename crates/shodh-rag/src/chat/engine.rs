@@ -882,13 +882,7 @@ impl ChatEngine {
                             while let Some(token) = token_stream.next().await {
                                 accumulated.push_str(&token);
                                 if let Some(em) = emitter {
-                                    em.emit(
-                                        "chat_token",
-                                        serde_json::json!({
-                                            "token": token,
-                                            "accumulated": &accumulated,
-                                        }),
-                                    );
+                                    em.emit("chat_token", serde_json::json!({ "delta": &token }));
                                 }
                             }
                             if let Some(em) = emitter {
@@ -1430,13 +1424,7 @@ Return ONLY the JSON object, no markdown code blocks."#,
         if let Some(em) = emitter {
             let initial =
                 "**Designing crew...** Analyzing your request and creating specialized agents.\n\n";
-            em.emit(
-                "chat_token",
-                serde_json::json!({
-                    "token": initial,
-                    "accumulated": initial,
-                }),
-            );
+            em.emit("chat_token", serde_json::json!({ "delta": initial }));
         }
 
         let llm_guard_opt = self
@@ -1500,10 +1488,10 @@ RULES:
             Err(e) if e.to_string().contains("timed out") || e.to_string().contains("timeout") => {
                 tracing::warn!("Crew design LLM call timed out, retrying...");
                 if let Some(em) = emitter {
-                    em.emit("chat_token", serde_json::json!({
-                        "token": "Model warming up, retrying...\n\n",
-                        "accumulated": "**Designing crew...** Analyzing your request and creating specialized agents.\n\nModel warming up, retrying...\n\n",
-                    }));
+                    em.emit(
+                        "chat_token",
+                        serde_json::json!({ "delta": "Model warming up, retrying...\n\n" }),
+                    );
                 }
                 llm_manager.generate(&crew_gen_prompt).await.map_err(|e2| {
                     anyhow::anyhow!("Crew design generation failed after retry: {}", e2)
@@ -1657,17 +1645,8 @@ RULES:
             agents_summary,
         );
 
-        let initial_prefix =
-            "**Designing crew...** Analyzing your request and creating specialized agents.\n\n";
         if let Some(em) = emitter {
-            let accumulated = format!("{}{}", initial_prefix, header);
-            em.emit(
-                "chat_token",
-                serde_json::json!({
-                    "token": &header,
-                    "accumulated": &accumulated,
-                }),
-            );
+            em.emit("chat_token", serde_json::json!({ "delta": &header }));
         }
 
         // Auto-execute the crew — pass emitter so each agent streams progress
@@ -1851,10 +1830,8 @@ RULES:
 
         impl<'a> crate::agent::tool_loop::ToolLoopEmitter for EmitterBridge<'a> {
             fn on_content_delta(&self, delta: &str) {
-                self.inner.emit(
-                    "chat_token",
-                    serde_json::json!({ "token": delta, "accumulated": "" }),
-                );
+                self.inner
+                    .emit("chat_token", serde_json::json!({ "delta": delta }));
             }
             fn on_tool_start(&self, tool_name: &str, arguments: &str) {
                 self.inner.emit(

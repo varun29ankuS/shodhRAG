@@ -699,7 +699,7 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
                     <label style={{ color: colors.text, fontWeight: 600, fontSize: '12px' }}>API Key</label>
                     {keySaved ? (
                       <span style={{ display: 'flex', alignItems: 'center', gap: '3px', color: colors.success, fontSize: '11px', fontWeight: 500 }}>
-                        <CheckCircle size={12} /> Key saved
+                        <CheckCircle size={12} /> Key configured
                       </span>
                     ) : draftKey ? (
                       <span style={{ display: 'flex', alignItems: 'center', gap: '3px', color: colors.textMuted, fontSize: '11px', fontWeight: 500 }}>
@@ -716,7 +716,7 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
                       type="password"
                       value={keyDrafts[selectedProvider]}
                       onChange={e => handleApiKeyChange(selectedProvider, e.target.value)}
-                      placeholder={keySaved ? 'Saved in system keychain (type to replace)' : providerConfig.keyPlaceholder}
+                      placeholder={keySaved ? 'Key configured (type to replace)' : providerConfig.keyPlaceholder}
                       autoComplete="off"
                       spellCheck={false}
                       style={{

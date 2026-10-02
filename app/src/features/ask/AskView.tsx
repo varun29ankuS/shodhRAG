@@ -474,7 +474,8 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     [messages],
   );
 
-  const runtimeCard = runtimeInstalled === false && (
+  // The latest answer shows its own install card when it failed for this reason.
+  const runtimeCard = runtimeInstalled === false && latest?.errorCode !== 'runtime_missing' && (
     <RuntimeCard reason="missing" onInstalled={markRuntimeInstalled} />
   );
 

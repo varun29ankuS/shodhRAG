@@ -144,25 +144,18 @@ impl CitationValidator {
             return true;
         }
 
-        // Common false positives
-        let false_positives = [
-            "e.g.",
-            "i.e.",
-            "etc.",
-            "a.k.a.",
-            "vs.",
-            "localhost",
-            "example.com",
-            "test.txt",
-        ];
+        let lower = path.to_lowercase();
 
-        for fp in &false_positives {
-            if path.to_lowercase().contains(fp) {
-                return true;
-            }
+        // Latin abbreviations. The citation regex ends at a word boundary, so "e.g."
+        // is captured as "e.g" -- compare as a whole token with trailing dots stripped.
+        const ABBREVIATIONS: [&str; 5] = ["e.g", "i.e", "etc", "a.k.a", "vs"];
+        if ABBREVIATIONS.contains(&lower.trim_end_matches('.')) {
+            return true;
         }
 
-        false
+        // Placeholder hosts / filenames that are never real sources
+        const PLACEHOLDERS: [&str; 3] = ["localhost", "example.com", "test.txt"];
+        PLACEHOLDERS.iter().any(|fp| lower.contains(fp))
     }
 
     /// Validate citations against source documents
@@ -358,6 +351,16 @@ mod tests {
 
         // Should not extract version numbers or "e.g."
         assert_eq!(citations.len(), 0);
+    }
+
+    #[test]
+    fn test_abbreviations_filtered_but_real_files_kept() {
+        let validator = CitationValidator::new();
+        let answer = "Use a parser, i.e. one like parser.rs, a.k.a. the tokenizer";
+        let citations = validator.extract_citations(answer);
+
+        let paths: Vec<&str> = citations.iter().map(|c| c.file_path.as_str()).collect();
+        assert_eq!(paths, vec!["parser.rs"]);
     }
 
     #[test]

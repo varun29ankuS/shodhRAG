@@ -227,3 +227,114 @@ impl CrossEncoderReranker {
         Ok(all_scored)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MODELS_ENV: &str = "SHODH_TEST_MODELS_DIR";
+
+    /// Resolve `$SHODH_TEST_MODELS_DIR/<sub>`. These tests are `#[ignore]`d by default
+    /// because the models are not checked in; when run explicitly (`--ignored`) a
+    /// missing variable or missing file is a hard failure, never a silent skip.
+    fn model_dir(sub: &str) -> PathBuf {
+        let root = std::env::var_os(MODELS_ENV).unwrap_or_else(|| {
+            panic!("{MODELS_ENV} must point at the models directory to run this test")
+        });
+        let dir = PathBuf::from(root).join(sub);
+        let tokenizer = dir.join("tokenizer.json");
+        assert!(
+            tokenizer.is_file(),
+            "expected tokenizer at {}",
+            tokenizer.display()
+        );
+        dir
+    }
+
+    /// MiniLM WordPiece tokenizer.json must load with the minimal `tokenizers`
+    /// feature set (no `esaxx_fast`, no `progressbar`) and produce BERT pair framing.
+    #[test]
+    #[ignore = "requires SHODH_TEST_MODELS_DIR containing ms-marco-MiniLM-L6-v2/"]
+    fn minilm_wordpiece_tokenizer_loads_and_frames_pairs() {
+        let dir = model_dir("ms-marco-MiniLM-L6-v2");
+        let tok = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json"))
+            .expect("load MiniLM tokenizer.json");
+        let cls = tok.token_to_id("[CLS]").expect("[CLS] in vocab");
+        let sep = tok.token_to_id("[SEP]").expect("[SEP] in vocab");
+
+        let enc = tok
+            .encode(
+                ("what is rust", "Rust is a systems programming language"),
+                true,
+            )
+            .expect("encode pair");
+        let ids = enc.get_ids();
+        assert_eq!(ids.first(), Some(&cls));
+        assert_eq!(ids.last(), Some(&sep));
+        assert_eq!(ids.iter().filter(|&&id| id == sep).count(), 2);
+        assert!(enc.get_type_ids().contains(&0));
+        assert!(enc.get_type_ids().contains(&1));
+        assert!(enc.get_attention_mask().iter().all(|&m| m == 1));
+    }
+
+    /// E5 (XLM-R SentencePiece Unigram) tokenizer.json must also load and encode
+    /// through `tokenizers` without the C++ esaxx backend, and agree on framing
+    /// with the in-crate SentencePiece tokenizer used for embeddings.
+    #[test]
+    #[ignore = "requires SHODH_TEST_MODELS_DIR containing multilingual-e5-base/"]
+    fn e5_unigram_tokenizer_loads_and_frames_sequences() {
+        let dir = model_dir("multilingual-e5-base");
+        let tok = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json"))
+            .expect("load E5 tokenizer.json");
+        let bos = tok.token_to_id("<s>").expect("<s> in vocab");
+        let eos = tok.token_to_id("</s>").expect("</s> in vocab");
+
+        let enc = tok
+            .encode("query: नमस्ते दुनिया, hello world", true)
+            .expect("encode");
+        let ids = enc.get_ids();
+        assert!(ids.len() > 2, "expected content tokens, got {ids:?}");
+        assert_eq!(ids.first(), Some(&bos));
+        assert_eq!(ids.last(), Some(&eos));
+
+        let native = crate::embeddings::tokenizer::SentencePieceTokenizer::from_model_dir(&dir)
+            .expect("load in-crate SentencePiece tokenizer");
+        let native_ids = native
+            .encode("query: hello world", true)
+            .expect("native encode");
+        assert_eq!(native_ids.first(), Some(&bos));
+        assert_eq!(native_ids.last(), Some(&eos));
+    }
+
+    /// End-to-end: tokenizer + ONNX session. A relevant passage must outscore an
+    /// unrelated one for the same query.
+    #[test]
+    #[ignore = "requires SHODH_TEST_MODELS_DIR containing ms-marco-MiniLM-L6-v2/ with an ONNX model"]
+    fn cross_encoder_ranks_relevant_passage_higher() {
+        let dir = model_dir("ms-marco-MiniLM-L6-v2");
+        let reranker = CrossEncoderReranker::new(&dir).expect("load reranker");
+        let query = "how do vaccines train the immune system";
+        let relevant = "Vaccines expose the immune system to an antigen so it learns to produce antibodies against the pathogen.";
+        let unrelated = "The Eiffel Tower was completed in 1889 for the World's Fair in Paris.";
+
+        let s_rel = reranker.score(query, relevant).expect("score relevant");
+        let s_unrel = reranker.score(query, unrelated).expect("score unrelated");
+        assert!(
+            s_rel > s_unrel,
+            "relevant {s_rel} should outscore unrelated {s_unrel}"
+        );
+
+        let ranked = reranker
+            .rerank_batch(
+                query,
+                &[
+                    ("unrelated".to_string(), unrelated.to_string()),
+                    ("relevant".to_string(), relevant.to_string()),
+                ],
+                2,
+            )
+            .expect("batch rerank");
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].0, "relevant");
+    }
+}

@@ -5,294 +5,228 @@
 <h1 align="center">Shodh</h1>
 
 <p align="center">
-  <strong>Local-first AI assistant with RAG, agents, and tool calling — built entirely in Rust.</strong>
+  <strong>Private document intelligence for teams: ask questions across your folders and get answers cited to the exact page.</strong>
 </p>
 
 <p align="center">
-  <a href="#features">Features</a> &middot;
+  <a href="#what-works-today">What works today</a> &middot;
+  <a href="#in-progress">In progress</a> &middot;
   <a href="#quickstart">Quickstart</a> &middot;
+  <a href="#data-and-privacy">Data &amp; privacy</a> &middot;
   <a href="#architecture">Architecture</a> &middot;
-  <a href="#llm-providers">LLM Providers</a> &middot;
   <a href="#contributing">Contributing</a>
 </p>
 
 <p align="center">
   <a href="https://github.com/varun29ankuS/shodhRAG/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" /></a>
-  <img src="https://img.shields.io/badge/rust-1.75%2B-orange.svg" alt="Rust" />
-  <img src="https://img.shields.io/badge/tauri-2.0-24C8D8.svg" alt="Tauri" />
+  <img src="https://img.shields.io/badge/tauri-2-24C8D8.svg" alt="Tauri" />
   <img src="https://img.shields.io/badge/react-19-61DAFB.svg" alt="React" />
+  <img src="https://img.shields.io/badge/status-pre--release-orange.svg" alt="Status: pre-release" />
 </p>
 
 ---
 
-**Shodh** (Sanskrit: शोध — "research") is an open-source, local-first AI assistant that runs entirely on your machine. It combines a production-grade RAG engine (LanceDB + Tantivy), a multi-agent framework with tool calling, and a polished desktop UI — all wrapped in a single Tauri binary. No cloud required. Your data never leaves your device.
+**Shodh** (Sanskrit: शोध, "research") is a desktop app that reads the folders you point it at and answers questions about them. Each answer cites the file and page it came from.
 
-<p align="center">
-  <img src="docs/screenshots/chat.png" alt="Shodh — Main Interface" width="800" />
-</p>
+- **Processing:** your documents are parsed, indexed and embedded on your computer.
+- **Answers:** these come from the language model you choose. That can be a model running locally, or a cloud provider using your own API key.
 
-<p align="center">
-  <img src="docs/screenshots/splash.png" alt="Splash Screen" width="390" />
-  &nbsp;&nbsp;
-  <img src="docs/screenshots/onboarding.png" alt="Onboarding" width="390" />
-</p>
+> **Status: pre-release.** The core ask-your-files loop works. The enterprise-grade pieces are being built in the open and tracked in the [design spec](docs/superpowers/specs/2026-10-02-folder-sources-grounded-answers-design.md): the agent harness, folder sync, the knowledge graph, evaluation, and server mode. This README describes only what works today. Everything else is listed under [In progress](#in-progress).
 
-## Why Shodh?
+## What works today
 
-Most RAG tools are either cloud-locked SaaS products or Python scripts held together with duct tape. Shodh is different:
+**Ask your files**
+- Answers stream in with numbered citations.
+- Click a citation to see the source passage. PDF citations carry page numbers.
+- A run summary shows what actually happened: elapsed time, search queries issued, passages retrieved, and tools called.
+- Conversations are saved locally, including their citations and run details.
 
-- **Truly local.** Your documents, embeddings, and conversations stay on your machine. Plug in a local LLM (Ollama, Phi, Mistral) and go fully offline.
-- **Fast.** The core engine is pure Rust — vector search, full-text indexing, document parsing, embedding, and reranking all run natively. No Python runtime. No Docker.
-- **Complete.** Not a library you wire up yourself. It's a full desktop app with chat, document management, agent builder, calendar, knowledge graph, analytics, and bot integrations — ready to use out of the box.
-- **Extensible.** Swap LLM providers with a click. Add tools via MCP protocol. Build multi-agent crews. Connect Discord, Telegram, or Google Drive.
+**Documents**
+- **Text documents:** PDF (text layer; scanned pages via Windows OCR), Word (`.docx`), PowerPoint (`.pptx`), Markdown, HTML, plain text and source code.
+- **Spreadsheets:** `.xlsx`, `.xls`, `.xlsm`, `.xlsb`, `.ods`, plus CSV and TSV.
+  - Sheets are indexed row by row, and every chunk repeats the header row. That way any single row can be retrieved on its own.
+  - CSV encodings (UTF-8, UTF-16, Windows-1252) are detected automatically.
+- **Failures:** if a file can't be indexed, the reason is recorded and logged instead of the file being skipped silently. Showing these in the Library is in progress.
 
-## Features
+**Retrieval**
+- **Hybrid search:** dense vectors (multilingual E5, ONNX, on device) and BM25 keyword search (Tantivy), fused with reciprocal rank fusion.
+- **Reranking:** a cross-encoder reorders the results.
+- **Query rewriting:** an LLM rewrites and decomposes multi-part questions.
 
-### RAG Engine
-- **Hybrid search** — vector similarity (LanceDB) + full-text (Tantivy), merged with reciprocal rank fusion
-- **20+ file formats** — PDF, DOCX, XLSX, PPTX, Markdown, HTML, CSV, JSON, and 15+ programming languages
-- **Windows OCR** — automatic text extraction from scanned documents and images
-- **Semantic chunking** — configurable chunk size, overlap, and minimum thresholds
-- **Cross-encoder reranking** — ms-marco-MiniLM for relevance scoring
-- **Citation tracking** — every response links back to source documents with page/chunk references
-- **Multi-space** — organize documents into separate knowledge bases
+**Models**
+- **Cloud:** OpenRouter, Anthropic, OpenAI, Google Gemini, xAI and Perplexity, using your own API key.
+- **Local:** Ollama, or GGUF models run in-process through llama.cpp.
+- **Pre-configuration:** set the model with environment variables, so IT can lock in the approved provider on managed machines. See [Configuration](#configuration).
 
-### Agent System
-- **ReAct tool loop** — agents reason, pick tools, execute them, observe results, and iterate
-- **Built-in tools** — RAG search, file operations, calendar management, code analysis
-- **MCP protocol** — plug in any Model Context Protocol server for additional tools
-- **Crew orchestration** — chain multiple agents in sequential or hierarchical workflows
-- **Agent builder UI** — create and configure agents visually, no code needed
+**Calendar and tasks**
+- Events and tasks share one Calendar view.
+- Calendar items are indexed, so you can ask about them.
 
-### Chat Interface
-- **Streaming responses** — real-time token output from any provider
-- **Artifact rendering** — code blocks with syntax highlighting, Mermaid diagrams, tables, charts
-- **Tool call visualization** — see exactly what tools agents use and why
-- **Citation footnotes** — click to jump to source documents
-- **Command palette** — Cmd+K for quick actions
+## In progress
 
-### LLM Providers
+Each item below has a section in the [design spec](docs/superpowers/specs/2026-10-02-folder-sources-grounded-answers-design.md) and lands through reviewed PRs.
 
-Use any combination of local and cloud models:
-
-| Provider | Models | Local? |
-|----------|--------|--------|
-| **Ollama** | Llama, Mistral, Phi, Qwen, Gemma, CodeLlama, ... | Yes |
-| **ONNX Runtime** | Phi-3 Mini, Phi-4, Mistral 7B, Orca 2, Qwen2, Gemma 2B | Yes |
-| **OpenAI** | GPT-4o, GPT-4 Turbo, GPT-4o Mini | No |
-| **Anthropic** | Claude 3 Opus, Sonnet, Haiku | No |
-| **Google Gemini** | 2.5 Pro, 2.0 Flash, 1.5 Pro | No |
-| **OpenRouter** | 200+ models (DeepSeek, Llama, Gemini, etc.) | No |
-| **Grok (xAI)** | Grok 2, Grok 2 Vision | No |
-| **Perplexity** | Sonar (with live web search) | No |
-
-Switch providers at runtime — no restart needed.
-
-### Integrations
-- **Google Drive** — OAuth2 sync, auto-index documents from selected folders
-- **Discord bot** — serve your knowledge base to an entire server
-- **Telegram bot** — personal assistant via chat commands
-- **WhatsApp bridge** — message-based access to your knowledge base
-
-### More
-- **Calendar & tasks** — create events, manage todos, agents can schedule on your behalf
-- **Document generation** — export responses as PDF, Word, Excel, or CSV
-- **Knowledge graph** — interactive 3D force-directed visualization of document relationships
-- **Analytics dashboard** — query metrics, token usage, agent performance charts
-- **Dark/light theme** — system-aware with manual toggle
+| Area | What it brings |
+|---|---|
+| **Evaluation harness** | Measured retrieval and answer quality: CUAD contracts and synthetic invoices in CI, and your own folders locally. Numbers will be published here. |
+| **Folder sync** | Folders stay in sync automatically. Changes made while the app was closed are caught on the next start, and renames are cheap. |
+| **Document parsing** | Layout-aware parsing (tables, reading order, OCR), and chunks sized by tokens and aligned to the document's structure. |
+| **Document viewer** | Clicking a citation opens the real document at the cited page with the passage highlighted. |
+| **Records and totals** | Typed records (invoices, spreadsheet rows). Totals and counts are computed in code and report how many records they covered. |
+| **Agent harness** | Agents in conversation, run by [oh-my-pi](https://github.com/can1357/oh-my-pi) over RPC. Shodh's tools are permission-checked in Rust. Sub-agents appear as live lanes. See [ADR 0001](docs/adr/0001-agent-harness-omp.md). |
+| **Citation verification** | Each cited sentence is checked against its source. Unsupported claims are flagged. |
+| **Knowledge graph** | Entities and relations extracted locally (rules plus GLiNER2), each with page-level provenance. Used for multi-hop retrieval. |
+| **Security and governance** | Secrets in the OS keychain, an encrypted local database, a tamper-evident audit log, and a Local-only mode. |
+| **Server mode** | The same core running headless, with SSO and per-document permissions enforced inside every query. |
 
 ## Quickstart
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs/) 1.75+
-- [Node.js](https://nodejs.org/) 18+ and npm
+- [Rust](https://rustup.rs/) (stable) and [Node.js](https://nodejs.org/) 22 or later.
 - Platform build tools:
-  - **Windows:** [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+  - **Windows:** [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) and `protoc` (`choco install protoc`).
   - **macOS:** `xcode-select --install`
-  - **Linux:** `sudo apt install build-essential libssl-dev libwebkit2gtk-4.1-dev`
+  - **Linux:** `sudo apt install build-essential libssl-dev libwebkit2gtk-4.1-dev protobuf-compiler`
+- Embedding and reranker models in `models/` at the repository root:
+  - `models/multilingual-e5-base/`: `model_O4.onnx` and `tokenizer.json` from [intfloat/multilingual-e5-base](https://huggingface.co/intfloat/multilingual-e5-base/tree/main/onnx)
+  - `models/ms-marco-MiniLM-L6-v2/`: `model_O4.onnx` and `tokenizer.json` from [cross-encoder/ms-marco-MiniLM-L-6-v2](https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2)
 
-### Build & Run
+### Run in development
 
 ```bash
 git clone https://github.com/varun29ankuS/shodhRAG.git
 cd shodhRAG/app
-npm install
-npm run tauri dev
+npm ci
+
+# Terminal 1: frontend dev server
+npx vite --port 5173 --strictPort
+
+# Terminal 2: desktop app (reuses the dev server above)
+npx tauri dev --config '{"build":{"beforeDevCommand":""}}'
 ```
 
-That's it. The app opens with an onboarding flow to configure your first LLM provider.
+On Windows PowerShell, pass the config as `--config "{\"build\":{\"beforeDevCommand\":\"\"}}"`.
 
-### Production Build
+The first build compiles the Rust workspace and takes several minutes. Later builds are incremental.
+
+### Production build
 
 ```bash
+cd app
 npm run tauri build
 ```
 
-Outputs a platform-native installer in `app/src-tauri/target/release/bundle/`.
+## Configuration
 
-### Using the RAG Library Standalone
+### Choosing a model
 
-The core engine is a regular Rust crate — use it in your own projects:
+Choose a model in **Settings → Models**, or pre-configure it with environment variables. The environment variables are ignored unless `SHODH_LLM_PROVIDER` is set.
+
+| Variable | Values |
+|---|---|
+| `SHODH_LLM_PROVIDER` | `openrouter`, `anthropic`, `openai`, `google`, `grok`, `ollama` |
+| `SHODH_LLM_MODEL` | Provider model ID (optional), e.g. `anthropic/claude-haiku-4.5` |
+| API key | The provider's usual variable: `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY` |
+
+Local models:
+- **Ollama:** run `ollama pull <model>`, then set `SHODH_LLM_PROVIDER=ollama`.
+- **GGUF:** select the file in **Settings → Models → Local**.
+
+## Data and privacy
+
+| Data | Where it goes |
+|---|---|
+| Your files, their text and their embeddings | Stay on this computer. Indexing makes no network calls. |
+| Questions, and the passages retrieved to answer them | Sent to the model provider you configure. With a local model, nothing leaves the machine. |
+| API keys | Currently held in app storage on this computer. Moving them to the OS keychain is in progress. |
+
+**Known gaps.** Each is tracked in the spec and will land as a reviewed PR.
+- **Unencrypted index:** Shodh does not encrypt the local index (LanceDB, Tantivy). Use OS full-disk encryption (BitLocker or FileVault).
+- **Legacy bot backends:** the WhatsApp, Telegram and Discord backends are being removed or locked down. Their UI is already gone. Do not enable them on machines that hold sensitive data.
+- **Stopping an answer:** it stops the display only. The provider call finishes in the background until the agent harness adds real cancellation.
+
+## Architecture
+
+```
+shodhRAG/
+├── crates/shodh-rag/        # Core library: ingestion, chunking, embeddings, hybrid search,
+│   └── src/                 # reranking, chat engine, LLM providers
+│       ├── processing/      # Parsers (PDF, Office, spreadsheets, CSV/TSV) and chunker
+│       ├── search/          # Tantivy BM25 and fusion
+│       ├── storage/         # LanceDB store
+│       ├── embeddings/      # E5 via ONNX Runtime
+│       ├── reranking/       # Cross-encoder reranker
+│       ├── chat/            # Chat engine and streaming events
+│       └── llm/             # Local (llama.cpp, ONNX) and HTTP providers
+├── app/
+│   ├── src/                 # React 19 + TypeScript frontend
+│   │   ├── components/shell # Sidebar, Settings
+│   │   └── features/ask     # Ask view, run chip, source preview, composer
+│   └── src-tauri/           # Tauri commands (indexing, chat, LLM, calendar)
+└── docs/
+    ├── superpowers/specs/   # Design specs
+    ├── superpowers/plans/   # Implementation plans
+    └── adr/                 # Architecture decision records
+```
+
+**How a question is answered today:**
+1. The question is rewritten if needed.
+2. Hybrid search (vectors and BM25) finds candidate passages.
+3. The candidates are reranked.
+4. The top passages go to the model as context.
+5. The answer streams back with `[n]` citations mapped to those passages.
+
+### Using the core library
 
 ```toml
-# Cargo.toml
 [dependencies]
 shodh-rag = { path = "crates/shodh-rag" }
 ```
 
 ```rust
-use shodh_rag::rag_engine::{RAGEngine, RAGConfig};
+use std::collections::HashMap;
+use std::path::Path;
+use shodh_rag::{RAGConfig, RAGEngine};
 
-let config = RAGConfig::new("./my_data");
+let mut config = RAGConfig::default();
+config.data_dir = "./shodh-data".into();
+config.embedding.model_dir = "./models".into();
+config.embedding.use_e5 = true;
+config.embedding.dimension = 768;
+
 let mut engine = RAGEngine::new(config).await?;
-
-// Ingest a document
-engine.add_document("content here", DocumentFormat::TXT, metadata, citation).await?;
-
-// Search
-let results = engine.hybrid_search("your query", 10).await?;
+engine.add_document_from_file(Path::new("contract.pdf"), HashMap::new()).await?;
+let results = engine.search("When does the agreement renew?", 10).await?;
 ```
 
-## Architecture
-
-```
-shodh/
-├── crates/shodh-rag/        # Core RAG engine (pure Rust library)
-│   └── src/
-│       ├── rag_engine.rs     # Pipeline orchestration
-│       ├── storage/          # LanceDB vector store
-│       ├── search/           # Hybrid search (vector + full-text)
-│       ├── embeddings/       # E5 multilingual (ONNX)
-│       ├── reranking/        # Cross-encoder scoring
-│       ├── processing/       # Document parsing + OCR
-│       ├── llm/              # Multi-provider LLM manager
-│       ├── agent/            # Agent framework + tool loop
-│       ├── chat/             # Conversation engine + intent routing
-│       ├── graph/            # Knowledge graph (petgraph)
-│       └── memory/           # Conversation memory
-│
-├── app/
-│   ├── src/                  # React 19 + TypeScript frontend
-│   │   ├── components/       # 50+ UI components
-│   │   ├── contexts/         # Theme, sidebar, permissions
-│   │   ├── hooks/            # Custom React hooks
-│   │   └── services/         # Tauri IPC wrappers
-│   │
-│   └── src-tauri/            # Tauri desktop shell (Rust)
-│       └── src/
-│           ├── rag_commands.rs
-│           ├── agent_commands.rs
-│           ├── llm_commands.rs
-│           ├── calendar_commands.rs
-│           ├── mcp/              # MCP protocol server
-│           └── [40+ command modules]
-│
-├── Cargo.toml                # Workspace root
-└── LICENSE                   # Apache 2.0
-```
-
-### Data Flow
-
-```
-User query
-  → Intent router (deterministic + LLM-based classification)
-    → Search: hybrid retrieval → rerank → context assembly → LLM generation
-    → Tool action: ReAct loop (LLM → tool call → execute → observe → repeat)
-    → Agent chat: agent-specific prompt + tools + memory
-    → General: direct LLM completion with conversation history
-  → Streaming response with citations
-```
-
-### RAG Pipeline
-
-```
-Document  →  Parse (PDF/DOCX/code/...)  →  Chunk (semantic splitting)
-          →  Embed (E5 multilingual, 768d)  →  Store (LanceDB + Tantivy)
-
-Query  →  Embed  →  Vector search (ANN)  ─┐
-                 →  Full-text search ──────┤
-                                           └→  RRF merge  →  Rerank  →  LLM
-```
-
-## Tech Stack
+## Tech stack
 
 | Layer | Technology |
-|-------|-----------|
-| Desktop shell | Tauri 2.0 |
-| Frontend | React 19, TypeScript 5.8, Vite 6, Tailwind CSS |
-| Backend | Rust (pure, no Python) |
-| Vector DB | LanceDB 0.26 + Apache Arrow |
-| Full-text search | Tantivy 0.22 |
-| Embeddings | E5 multilingual base (ONNX Runtime) |
-| Reranking | ms-marco-MiniLM cross-encoder |
-| Knowledge graph | petgraph |
-| LLM inference | ONNX Runtime, llama.cpp (GGUF), HTTP APIs |
-| Charts | Recharts, Mermaid |
-| Graph viz | react-force-graph-3d |
-| Code editor | Monaco Editor |
-| Animations | Framer Motion |
-
-## Configuration
-
-### LLM Setup
-
-Open Settings in the app sidebar to configure your LLM provider. For cloud providers, enter your API key. For local models:
-
-**Ollama (recommended for local):**
-```bash
-# Install Ollama: https://ollama.ai
-ollama pull llama3.2
-# Shodh auto-detects Ollama at localhost:11434
-```
-
-**ONNX local models:**
-Place model files in your app data directory:
-- Windows: `%APPDATA%\shodh\models\`
-- macOS: `~/Library/Application Support/shodh/models/`
-- Linux: `~/.config/shodh/models/`
-
-### Embedding Model
-
-Shodh uses [E5 multilingual base](https://huggingface.co/intfloat/multilingual-e5-base) for embeddings. On first run, the model is loaded from the `models/` directory. Download the ONNX variant from HuggingFace and place it in the models directory.
+|---|---|
+| Desktop shell | Tauri 2 |
+| Frontend | React 19, TypeScript 5.8, Vite 6, Tailwind CSS, Geist (bundled) |
+| Core | Rust |
+| Vector store | LanceDB + Apache Arrow |
+| Keyword search | Tantivy |
+| Embeddings and reranking | multilingual E5 and an ms-marco MiniLM cross-encoder, via ONNX Runtime |
+| Local LLM inference | llama.cpp (GGUF) |
 
 ## Contributing
 
-Contributions are welcome. Please follow these guidelines:
+1. **Branch and PR:** create a feature branch from `master`, open a PR, and merge only when CI is green.
+2. **Production code only:** no TODOs, mocks, stubs or placeholders.
+3. **Fix root causes:** never weaken a check to make CI pass.
+4. **Keep PRs focused**, and explain *why* in commit messages.
 
-1. **Fork and branch** — create a feature branch from `master`
-2. **No placeholders** — production-grade code only. No TODOs, mocks, or stubs.
-3. **Test your changes** — `cargo test --workspace`
-4. **Keep PRs focused** — one feature or fix per PR
-5. **Describe the why** — commit messages should explain intent, not just what changed
+Run these before opening a PR:
 
 ```bash
-# Run tests
-cargo test --workspace
-
-# Check formatting
-cargo fmt --check
-
-# Lint
+cargo fmt --all --check
 cargo clippy --workspace
+(cd app && npx tsc --noEmit)
 ```
-
-### Project Priorities
-
-- Performance and correctness over features
-- Local-first always — cloud should be optional
-- Minimal dependencies — every crate addition needs justification
-- Cross-platform — Windows, macOS, and Linux must all work
-
-## Roadmap
-
-- [ ] Voice mode — local TTS/STT via Sherpa-ONNX (Hindi + English)
-- [ ] Semantic calendar indexing — tasks discoverable via RAG search
-- [ ] Slack and Teams integrations
-- [ ] Web interface (alongside desktop)
-- [ ] Plugin system for custom tools
-- [ ] Improved GPU acceleration for embeddings
 
 ## License
 
-[Apache License 2.0](LICENSE) — Copyright 2025 Shodh
+[Apache License 2.0](LICENSE). Copyright 2025 Shodh.

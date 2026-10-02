@@ -1,19 +1,17 @@
 //! Structured output parsing for LLM responses
 //! Enables LLM to generate tables, charts, forms, and system actions that backend can parse and validate
 
-use serde::{Deserialize, Serialize};
-use anyhow::{Result, Context};
-use crate::system::file_ops::{FileSystemAction, FileSystemResult};
 use crate::system::command_executor::{CommandAction, CommandResult};
+use crate::system::file_ops::{FileSystemAction, FileSystemResult};
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 
 /// Structured output types that LLM can generate
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum StructuredOutput {
     /// Plain text content
-    Text {
-        content: String
-    },
+    Text { content: String },
 
     /// Table with headers and rows
     Table {
@@ -51,9 +49,7 @@ pub enum StructuredOutput {
 
     /// System action (file operations, commands)
     #[serde(rename = "system_action")]
-    SystemAction {
-        action: SystemActionType,
-    },
+    SystemAction { action: SystemActionType },
 }
 
 /// System action types (file ops or commands)
@@ -82,15 +78,15 @@ pub enum ChartType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DiagramType {
-    Flowchart,   // Process flows, architecture diagrams
-    Sequence,    // API interactions, system communications
-    Class,       // OOP structure, code architecture
+    Flowchart, // Process flows, architecture diagrams
+    Sequence,  // API interactions, system communications
+    Class,     // OOP structure, code architecture
     #[serde(rename = "er")]
-    ER,          // Entity-Relationship, database schemas
-    State,       // State machines, workflow states
-    Gantt,       // Project timelines, schedules
-    Git,         // Version control flows, branching
-    Journey,     // User journeys, experience flows
+    ER, // Entity-Relationship, database schemas
+    State,     // State machines, workflow states
+    Gantt,     // Project timelines, schedules
+    Git,       // Version control flows, branching
+    Journey,   // User journeys, experience flows
 }
 
 /// Chart data structure
@@ -514,7 +510,7 @@ pub fn parse_llm_response(response: &str) -> Vec<StructuredOutput> {
             // Flush accumulated text first
             if !current_text.trim().is_empty() {
                 outputs.push(StructuredOutput::Text {
-                    content: current_text.trim().to_string()
+                    content: current_text.trim().to_string(),
                 });
                 current_text.clear();
             }
@@ -542,7 +538,9 @@ pub fn parse_llm_response(response: &str) -> Vec<StructuredOutput> {
                 let mermaid = content.trim().to_string();
                 // Try to extract title from first line if it's a comment
                 let title = if mermaid.starts_with("%%") {
-                    mermaid.lines().next()
+                    mermaid
+                        .lines()
+                        .next()
                         .map(|l| l.trim_start_matches("%%").trim().to_string())
                         .unwrap_or_else(|| default_diagram_title(&diagram_type))
                 } else {
@@ -569,7 +567,8 @@ pub fn parse_llm_response(response: &str) -> Vec<StructuredOutput> {
                     outputs.push(StructuredOutput::SystemAction {
                         action: SystemActionType::FileSystem(file_action),
                     });
-                } else if let Ok(cmd_action) = serde_json::from_str::<CommandAction>(content.trim()) {
+                } else if let Ok(cmd_action) = serde_json::from_str::<CommandAction>(content.trim())
+                {
                     outputs.push(StructuredOutput::SystemAction {
                         action: SystemActionType::Command(cmd_action),
                     });
@@ -581,14 +580,14 @@ pub fn parse_llm_response(response: &str) -> Vec<StructuredOutput> {
     // Add remaining text
     if !current_text.trim().is_empty() {
         outputs.push(StructuredOutput::Text {
-            content: current_text.trim().to_string()
+            content: current_text.trim().to_string(),
         });
     }
 
     // If no structured outputs found, return the whole response as text
     if outputs.is_empty() {
         outputs.push(StructuredOutput::Text {
-            content: response.to_string()
+            content: response.to_string(),
         });
     }
 
@@ -630,7 +629,7 @@ fn parse_malformed_charts(outputs: Vec<StructuredOutput>) -> Vec<StructuredOutpu
                         // Flush accumulated text
                         if !text_parts.is_empty() {
                             new_outputs.push(StructuredOutput::Text {
-                                content: text_parts.join("\n\n")
+                                content: text_parts.join("\n\n"),
                             });
                             text_parts.clear();
                         }
@@ -661,7 +660,7 @@ fn parse_malformed_charts(outputs: Vec<StructuredOutput>) -> Vec<StructuredOutpu
 
             if !text_parts.is_empty() {
                 new_outputs.push(StructuredOutput::Text {
-                    content: text_parts.join("")
+                    content: text_parts.join(""),
                 });
             }
         } else {
@@ -728,7 +727,8 @@ struct FormSpec {
 
 /// Parse markdown table into headers and rows
 fn parse_markdown_table(markdown: &str) -> Option<(Vec<String>, Vec<Vec<String>>)> {
-    let lines: Vec<&str> = markdown.lines()
+    let lines: Vec<&str> = markdown
+        .lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty() && l.starts_with('|'))
         .collect();
@@ -827,7 +827,8 @@ fn default_diagram_title(diagram_type: &DiagramType) -> String {
         DiagramType::Gantt => "Gantt Chart",
         DiagramType::Git => "Git Graph",
         DiagramType::Journey => "User Journey",
-    }.to_string()
+    }
+    .to_string()
 }
 
 #[cfg(test)]
@@ -899,7 +900,9 @@ That's all."#;
         assert!(outputs.len() >= 2);
 
         match &outputs[1] {
-            StructuredOutput::Chart { chart_type, title, .. } => {
+            StructuredOutput::Chart {
+                chart_type, title, ..
+            } => {
                 assert!(matches!(chart_type, ChartType::Bar));
                 assert_eq!(title, "Monthly Sales");
             }

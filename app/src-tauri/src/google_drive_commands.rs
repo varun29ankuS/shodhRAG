@@ -3,14 +3,14 @@
 //! Provides OAuth2 authentication and file sync from Google Drive to Shodh spaces.
 //! Allows lawyers to automatically index case files stored in Google Drive.
 
+use crate::rag_commands::RagState;
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use parking_lot::RwLock;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use parking_lot::RwLock;
-use anyhow::{Result, Context};
-use tauri::{State, Manager, Emitter};
-use reqwest::Client;
-use chrono::{DateTime, Utc};
-use crate::rag_commands::RagState;
+use tauri::{Emitter, Manager, State};
 
 /// Google Drive OAuth2 configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,7 +45,7 @@ pub struct DriveFile {
 pub struct FolderSyncConfig {
     pub folder_id: String,
     pub folder_name: String,
-    pub space_id: String,  // Target Shodh space
+    pub space_id: String, // Target Shodh space
     pub auto_sync: bool,
     pub sync_subdirectories: bool,
 }
@@ -110,8 +110,7 @@ impl GoogleDriveState {
         if needs_refresh {
             let refresh_token = {
                 let tokens = self.tokens.read();
-                tokens.as_ref()
-                    .and_then(|t| t.refresh_token.clone())
+                tokens.as_ref().and_then(|t| t.refresh_token.clone())
             };
             let config = self.config.read().clone();
 
@@ -132,14 +131,17 @@ impl GoogleDriveState {
                         ("grant_type", "refresh_token"),
                     ];
 
-                    let resp = self.http_client
+                    let resp = self
+                        .http_client
                         .post("https://oauth2.googleapis.com/token")
                         .form(&params)
                         .send()
                         .await
                         .map_err(|e| format!("Token refresh request failed: {}", e))?;
 
-                    let data: RefreshResponse = resp.json().await
+                    let data: RefreshResponse = resp
+                        .json()
+                        .await
                         .map_err(|e| format!("Token refresh parse failed: {}", e))?;
 
                     let new_token = data.access_token.clone();
@@ -205,7 +207,7 @@ pub async fn init_google_drive_oauth(
 /// One-shot HTTP server that captures the OAuth redirect and emits a Tauri event.
 /// Shuts down immediately after receiving one request.
 async fn run_oauth_callback_server(app_handle: tauri::AppHandle) -> Result<(), String> {
-    use axum::{Router, routing::get, extract::Query, response::Html};
+    use axum::{extract::Query, response::Html, routing::get, Router};
     use std::collections::HashMap;
 
     let handle = app_handle.clone();
@@ -234,7 +236,8 @@ async fn run_oauth_callback_server(app_handle: tauri::AppHandle) -> Result<(), S
         }
     ));
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+        .await
         .map_err(|e| format!("Failed to bind :3000 for OAuth callback: {}", e))?;
 
     // Serve exactly one request then shut down
@@ -257,7 +260,9 @@ pub async fn exchange_google_drive_code(
 ) -> Result<GoogleDriveTokens, String> {
     tracing::info!("🔄 Exchanging authorization code for access token...");
 
-    let config = state.config.read()
+    let config = state
+        .config
+        .read()
         .as_ref()
         .ok_or("OAuth not initialized")?
         .clone();
@@ -271,7 +276,8 @@ pub async fn exchange_google_drive_code(
         ("grant_type", "authorization_code"),
     ];
 
-    let response = state.http_client
+    let response = state
+        .http_client
         .post("https://oauth2.googleapis.com/token")
         .form(&params)
         .send()
@@ -324,7 +330,8 @@ pub async fn list_google_drive_files(
         urlencoding::encode(&query)
     );
 
-    let response = state.http_client
+    let response = state
+        .http_client
         .get(&url)
         .bearer_auth(&access_token)
         .send()
@@ -352,7 +359,8 @@ pub async fn list_google_drive_files(
         .await
         .map_err(|e| format!("Failed to parse file list: {}", e))?;
 
-    let files: Vec<DriveFile> = file_list.files
+    let files: Vec<DriveFile> = file_list
+        .files
         .into_iter()
         .map(|f| DriveFile {
             id: f.id,
@@ -385,7 +393,8 @@ pub async fn download_google_drive_file(
         file_id
     );
 
-    let response = state.http_client
+    let response = state
+        .http_client
         .get(&url)
         .bearer_auth(&access_token)
         .send()
@@ -397,8 +406,7 @@ pub async fn download_google_drive_file(
         .await
         .map_err(|e| format!("Failed to read file bytes: {}", e))?;
 
-    std::fs::write(&save_path, bytes)
-        .map_err(|e| format!("Failed to save file: {}", e))?;
+    std::fs::write(&save_path, bytes).map_err(|e| format!("Failed to save file: {}", e))?;
 
     tracing::info!("File downloaded: {}", save_path);
     Ok(save_path)
@@ -410,7 +418,11 @@ pub async fn configure_folder_sync(
     config: FolderSyncConfig,
     state: State<'_, Arc<GoogleDriveState>>,
 ) -> Result<(), String> {
-    tracing::info!("⚙️ Configuring folder sync: {} -> space {}", config.folder_name, config.space_id);
+    tracing::info!(
+        "⚙️ Configuring folder sync: {} -> space {}",
+        config.folder_name,
+        config.space_id
+    );
 
     let mut sync_configs = state.sync_configs.write();
 
@@ -433,7 +445,11 @@ pub async fn sync_google_drive_folder(
     rag_state: State<'_, RagState>,
     app: tauri::AppHandle,
 ) -> Result<SyncStatus, String> {
-    tracing::info!("🔄 Starting folder sync: {} -> space {}", folder_id, space_id);
+    tracing::info!(
+        "🔄 Starting folder sync: {} -> space {}",
+        folder_id,
+        space_id
+    );
 
     // Update sync status
     {
@@ -456,14 +472,15 @@ pub async fn sync_google_drive_folder(
         })?;
 
     // Filter for supported file types (PDF, DOCX, XLSX, TXT)
-    let supported_files: Vec<_> = files.into_iter()
+    let supported_files: Vec<_> = files
+        .into_iter()
         .filter(|f| !f.is_folder)
         .filter(|f| {
-            f.mime_type.contains("pdf") ||
-            f.mime_type.contains("document") ||
-            f.mime_type.contains("spreadsheet") ||
-            f.mime_type.contains("text") ||
-            f.mime_type.contains("plain")
+            f.mime_type.contains("pdf")
+                || f.mime_type.contains("document")
+                || f.mime_type.contains("spreadsheet")
+                || f.mime_type.contains("text")
+                || f.mime_type.contains("plain")
         })
         .collect();
 
@@ -475,7 +492,8 @@ pub async fn sync_google_drive_folder(
     tracing::info!("📦 Found {} supported files to sync", supported_files.len());
 
     // Get app data directory for temporary downloads
-    let app_data_dir = app.path()
+    let app_data_dir = app
+        .path()
         .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
 
@@ -513,8 +531,10 @@ pub async fn sync_google_drive_folder(
         match download_google_drive_file(
             file.id.clone(),
             save_path.to_string_lossy().to_string(),
-            drive_state.clone()
-        ).await {
+            drive_state.clone(),
+        )
+        .await
+        {
             Ok(downloaded_path) => {
                 tracing::info!("✅ Downloaded to: {}", downloaded_path);
 
@@ -533,8 +553,10 @@ pub async fn sync_google_drive_folder(
                 match crate::rag_commands::upload_file(
                     downloaded_path.clone(),
                     metadata,
-                    rag_state.clone()
-                ).await {
+                    rag_state.clone(),
+                )
+                .await
+                {
                     Ok(result) => {
                         tracing::info!("✅ Indexed: {} - {}", file_name, result);
                         synced += 1;
@@ -570,7 +592,8 @@ pub async fn sync_google_drive_folder(
     }
 
     let final_status = drive_state.sync_status.read().clone();
-    tracing::info!("✅ Sync complete: {}/{} files synced, {} failed",
+    tracing::info!(
+        "✅ Sync complete: {}/{} files synced, {} failed",
         final_status.synced_files,
         final_status.total_files,
         final_status.failed_files

@@ -99,12 +99,24 @@ fn build_router_prompt(user_message: &str, context: &ConversationContext) -> Str
     }
 
     if !context.entities.is_empty() {
-        let entities: String = context.entities.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+        let entities: String = context
+            .entities
+            .iter()
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
         parts.push(format!("Entities mentioned: {}", entities));
     }
 
     if !context.files_discussed.is_empty() {
-        let files: String = context.files_discussed.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+        let files: String = context
+            .files_discussed
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
         parts.push(format!("Files discussed: {}", files));
     }
 
@@ -142,8 +154,7 @@ fn parse_router_response(raw: &str) -> Result<RouterOutput> {
     // Only trust high-confidence intents from the "intent" field value.
     // AgentCreation and ToolAction require exact field match to prevent
     // small models from triggering dangerous actions from stray text.
-    let intent_field = extract_json_string(json_str, "intent")
-        .unwrap_or_default();
+    let intent_field = extract_json_string(json_str, "intent").unwrap_or_default();
 
     let intent = match intent_field.as_str() {
         "search" => RouterIntent::Search,
@@ -161,11 +172,9 @@ fn parse_router_response(raw: &str) -> Result<RouterOutput> {
         }
     };
 
-    let rewritten_query = extract_json_string(json_str, "rewritten_query")
-        .unwrap_or_default();
+    let rewritten_query = extract_json_string(json_str, "rewritten_query").unwrap_or_default();
 
-    let search_queries = extract_json_array(json_str, "search_queries")
-        .unwrap_or_default();
+    let search_queries = extract_json_array(json_str, "search_queries").unwrap_or_default();
 
     let reasoning = extract_json_string(json_str, "reasoning")
         .unwrap_or_else(|| "LLM router (partial parse)".to_string());
@@ -293,13 +302,19 @@ pub async fn route_with_llm(
             original_intent = ?output.intent,
             "LLM router too slow for reliable classification — falling back to rule-based"
         );
-        return Err(anyhow::anyhow!("Router latency {}ms exceeds 30s threshold", latency_ms));
+        return Err(anyhow::anyhow!(
+            "Router latency {}ms exceeds 30s threshold",
+            latency_ms
+        ));
     }
 
     // Safety: AgentCreation and ToolAction are high-stakes intents that mutate state.
     // Only trust them if the rewritten_query is non-empty and the model produced
     // a reasonable response (not just echoing the system prompt).
-    if matches!(output.intent, RouterIntent::AgentCreation | RouterIntent::ToolAction) {
+    if matches!(
+        output.intent,
+        RouterIntent::AgentCreation | RouterIntent::ToolAction
+    ) {
         let query_lower = user_message.to_lowercase();
         let has_action_signal = query_lower.contains("create")
             || query_lower.contains("build")
@@ -411,7 +426,8 @@ mod tests {
     #[test]
     fn test_build_prompt_with_context() {
         let mut ctx = ConversationContext::default();
-        ctx.recent_messages.push("user: who is anushree".to_string());
+        ctx.recent_messages
+            .push("user: who is anushree".to_string());
         ctx.entities.push("Anushree Sharma".to_string());
 
         let prompt = build_router_prompt("what is her salary", &ctx);

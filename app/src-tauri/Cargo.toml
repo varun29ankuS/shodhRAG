@@ -1,5 +1,3 @@
-[workspace]
-
 [package]
 name = "shodh-rag-app"
 version = "0.1.0"
@@ -49,7 +47,7 @@ rust_xlsxwriter = "0.60"  # For Excel files
 csv = "1.3"       # For CSV files
 
 # Include our RAG system
-shodh-rag = { path = "../../shodh-rag" }
+shodh-rag = { path = "../../crates/shodh-rag" }
 
 # File watching
 notify = { version = "6.1", features = ["serde"] }

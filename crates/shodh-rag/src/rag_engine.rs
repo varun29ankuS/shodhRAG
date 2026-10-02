@@ -24,32 +24,30 @@ use crate::types::{
 /// originally formatted.
 fn normalize_source_path(path: &Path) -> String {
     let s = path.display().to_string().replace('\\', "/");
-    if cfg!(windows) { s.to_lowercase() } else { s }
+    if cfg!(windows) {
+        s.to_lowercase()
+    } else {
+        s
+    }
 }
 
 // Compiled-once regex patterns for structured field extraction at ingest time.
 // Extracting emails, phones, PAN, GSTIN, amounts, and dates from chunk text
 // at zero query-time cost — no LLM needed for field-level extraction.
-static RE_EMAIL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}").unwrap()
-});
-static RE_PHONE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:\+91[\s\-]?)?(?:\d[\s\-]?){10}").unwrap()
-});
-static RE_PAN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b[A-Z]{5}\d{4}[A-Z]\b").unwrap()
-});
-static RE_GSTIN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b\d{2}[A-Z]{5}\d{4}[A-Z]\d[Z][A-Z0-9]\b").unwrap()
-});
-static RE_AMOUNT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:Rs\.?|INR|₹)\s*[\d,]+(?:\.\d{1,2})?").unwrap()
-});
-static RE_DATE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4}\b").unwrap()
-});
+static RE_EMAIL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}").unwrap());
+static RE_PHONE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:\+91[\s\-]?)?(?:\d[\s\-]?){10}").unwrap());
+static RE_PAN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[A-Z]{5}\d{4}[A-Z]\b").unwrap());
+static RE_GSTIN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b\d{2}[A-Z]{5}\d{4}[A-Z]\d[Z][A-Z0-9]\b").unwrap());
+static RE_AMOUNT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:Rs\.?|INR|₹)\s*[\d,]+(?:\.\d{1,2})?").unwrap());
+static RE_DATE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4}\b").unwrap());
 static RE_INVOICE_NO: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:invoice|inv|bill)[\s.#:_\-]*(?:no\.?|number)?[\s.#:_\-]*([A-Z0-9/\-]+)").unwrap()
+    Regex::new(r"(?i)(?:invoice|inv|bill)[\s.#:_\-]*(?:no\.?|number)?[\s.#:_\-]*([A-Z0-9/\-]+)")
+        .unwrap()
 });
 
 /// Extract structured fields from chunk text using regex.
@@ -59,14 +57,23 @@ fn extract_structured_fields(text: &str) -> HashMap<String, String> {
     let mut fields = HashMap::new();
 
     // Emails
-    let emails: Vec<String> = RE_EMAIL.find_iter(text).map(|m| m.as_str().to_string()).collect();
+    let emails: Vec<String> = RE_EMAIL
+        .find_iter(text)
+        .map(|m| m.as_str().to_string())
+        .collect();
     if !emails.is_empty() {
         fields.insert("extracted_emails".to_string(), emails.join(", "));
     }
 
     // Phone numbers (basic cleanup: strip non-digit noise)
-    let phones: Vec<String> = RE_PHONE.find_iter(text)
-        .map(|m| m.as_str().chars().filter(|c| c.is_ascii_digit() || *c == '+').collect::<String>())
+    let phones: Vec<String> = RE_PHONE
+        .find_iter(text)
+        .map(|m| {
+            m.as_str()
+                .chars()
+                .filter(|c| c.is_ascii_digit() || *c == '+')
+                .collect::<String>()
+        })
         .filter(|p| p.len() >= 10)
         .collect();
     if !phones.is_empty() {
@@ -74,25 +81,37 @@ fn extract_structured_fields(text: &str) -> HashMap<String, String> {
     }
 
     // PAN numbers
-    let pans: Vec<String> = RE_PAN.find_iter(text).map(|m| m.as_str().to_string()).collect();
+    let pans: Vec<String> = RE_PAN
+        .find_iter(text)
+        .map(|m| m.as_str().to_string())
+        .collect();
     if !pans.is_empty() {
         fields.insert("extracted_pan".to_string(), pans.join(", "));
     }
 
     // GSTIN
-    let gstins: Vec<String> = RE_GSTIN.find_iter(text).map(|m| m.as_str().to_string()).collect();
+    let gstins: Vec<String> = RE_GSTIN
+        .find_iter(text)
+        .map(|m| m.as_str().to_string())
+        .collect();
     if !gstins.is_empty() {
         fields.insert("extracted_gstin".to_string(), gstins.join(", "));
     }
 
     // Amounts
-    let amounts: Vec<String> = RE_AMOUNT.find_iter(text).map(|m| m.as_str().to_string()).collect();
+    let amounts: Vec<String> = RE_AMOUNT
+        .find_iter(text)
+        .map(|m| m.as_str().to_string())
+        .collect();
     if !amounts.is_empty() {
         fields.insert("extracted_amounts".to_string(), amounts.join("; "));
     }
 
     // Dates
-    let dates: Vec<String> = RE_DATE.find_iter(text).map(|m| m.as_str().to_string()).collect();
+    let dates: Vec<String> = RE_DATE
+        .find_iter(text)
+        .map(|m| m.as_str().to_string())
+        .collect();
     if !dates.is_empty() {
         fields.insert("extracted_dates".to_string(), dates.join(", "));
     }
@@ -129,22 +148,19 @@ impl RAGEngine {
         .await
         .context("Failed to initialize LanceDB store")?;
 
-        let text_search = TextSearch::new(
-            config.data_dir.to_str().unwrap_or("./data"),
-        )
-        .context("Failed to initialize Tantivy search")?;
+        let text_search = TextSearch::new(config.data_dir.to_str().unwrap_or("./data"))
+            .context("Failed to initialize Tantivy search")?;
 
-        let embeddings: Box<dyn EmbeddingModel> =
-            if config.embedding.use_e5 {
-                let e5_config = E5Config::auto_detect(&config.embedding.model_dir)
-                    .ok_or_else(|| anyhow::anyhow!("E5 model not found at configured path"))?;
-                Box::new(E5Embeddings::new(e5_config).context("Failed to load E5 embeddings")?)
-            } else {
-                return Err(anyhow::anyhow!(
-                    "No embedding model available. Place E5 model in: {}",
-                    config.embedding.model_dir.display()
-                ));
-            };
+        let embeddings: Box<dyn EmbeddingModel> = if config.embedding.use_e5 {
+            let e5_config = E5Config::auto_detect(&config.embedding.model_dir)
+                .ok_or_else(|| anyhow::anyhow!("E5 model not found at configured path"))?;
+            Box::new(E5Embeddings::new(e5_config).context("Failed to load E5 embeddings")?)
+        } else {
+            return Err(anyhow::anyhow!(
+                "No embedding model available. Place E5 model in: {}",
+                config.embedding.model_dir.display()
+            ));
+        };
 
         let chunker = TextChunker::new(
             config.chunking.chunk_size,
@@ -157,11 +173,17 @@ impl RAGEngine {
             let reranker_dir = config.embedding.model_dir.join("ms-marco-MiniLM-L6-v2");
             match CrossEncoderReranker::new(&reranker_dir) {
                 Ok(r) => {
-                    tracing::info!("Cross-encoder reranker loaded from {}", reranker_dir.display());
+                    tracing::info!(
+                        "Cross-encoder reranker loaded from {}",
+                        reranker_dir.display()
+                    );
                     Some(r)
                 }
                 Err(e) => {
-                    tracing::warn!("Reranker not available ({}), continuing without reranking", e);
+                    tracing::warn!(
+                        "Reranker not available ({}), continuing without reranking",
+                        e
+                    );
                     None
                 }
             }
@@ -214,10 +236,7 @@ impl RAGEngine {
             .or_else(|| metadata.get("source"))
             .cloned()
             .unwrap_or_default();
-        let space_id = metadata
-            .get("space_id")
-            .cloned()
-            .unwrap_or_default();
+        let space_id = metadata.get("space_id").cloned().unwrap_or_default();
 
         let doc_id = Uuid::new_v4();
 
@@ -230,13 +249,14 @@ impl RAGEngine {
         }
 
         // Embed the contextualized text (with document context prefix) for better vector representation
-        let chunk_texts: Vec<&str> = chunks.iter().map(|c| c.contextualized_text.as_str()).collect();
+        let chunk_texts: Vec<&str> = chunks
+            .iter()
+            .map(|c| c.contextualized_text.as_str())
+            .collect();
         let embeddings = self.embeddings.embed_documents(&chunk_texts)?;
 
-        let citation_json =
-            serde_json::to_string(&citation).unwrap_or_else(|_| "{}".to_string());
-        let metadata_json =
-            serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string());
+        let citation_json = serde_json::to_string(&citation).unwrap_or_else(|_| "{}".to_string());
+        let metadata_json = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string());
         let now = chrono::Utc::now().timestamp();
 
         let mut chunk_records = Vec::with_capacity(chunks.len());
@@ -253,8 +273,8 @@ impl RAGEngine {
             for (k, v) in &extracted {
                 per_chunk_meta.insert(k.clone(), v.clone());
             }
-            let per_chunk_meta_json = serde_json::to_string(&per_chunk_meta)
-                .unwrap_or_else(|_| metadata_json.clone());
+            let per_chunk_meta_json =
+                serde_json::to_string(&per_chunk_meta).unwrap_or_else(|_| metadata_json.clone());
 
             // Store the original text (without context prefix) for display
             chunk_records.push(ChunkRecord {
@@ -343,27 +363,27 @@ impl RAGEngine {
                 .get("title")
                 .cloned()
                 .unwrap_or_else(|| parsed.title.clone());
-            let space_id = merged_metadata
-                .get("space_id")
-                .cloned()
-                .unwrap_or_default();
+            let space_id = merged_metadata.get("space_id").cloned().unwrap_or_default();
 
-            let chunks = self.chunker.chunk_structured(
-                &parsed.structured_sections,
-                &title,
-                &source,
-            );
+            let chunks =
+                self.chunker
+                    .chunk_structured(&parsed.structured_sections, &title, &source);
 
             if chunks.is_empty() {
                 return Ok(Vec::new());
             }
 
             let doc_id = Uuid::new_v4();
-            let chunk_texts: Vec<&str> = chunks.iter().map(|c| c.contextualized_text.as_str()).collect();
+            let chunk_texts: Vec<&str> = chunks
+                .iter()
+                .map(|c| c.contextualized_text.as_str())
+                .collect();
             let embeddings = self.embeddings.embed_documents(&chunk_texts)?;
 
-            let citation_json = serde_json::to_string(&citation).unwrap_or_else(|_| "{}".to_string());
-            let metadata_json = serde_json::to_string(&merged_metadata).unwrap_or_else(|_| "{}".to_string());
+            let citation_json =
+                serde_json::to_string(&citation).unwrap_or_else(|_| "{}".to_string());
+            let metadata_json =
+                serde_json::to_string(&merged_metadata).unwrap_or_else(|_| "{}".to_string());
             let now = chrono::Utc::now().timestamp();
 
             let mut chunk_records = Vec::with_capacity(chunks.len());
@@ -410,14 +430,19 @@ impl RAGEngine {
                 ));
             }
 
-            self.store.upsert_chunks(chunk_records).await
+            self.store
+                .upsert_chunks(chunk_records)
+                .await
                 .context("Failed to store structured chunks in LanceDB")?;
             self.text_search.index_chunks_batch(&fts_batch)?;
             self.text_search.commit()?;
 
             tracing::info!(
                 "Ingested structured document '{}' ({} chunks, {} sections) into space '{}'",
-                title, chunk_ids.len(), parsed.structured_sections.len(), space_id,
+                title,
+                chunk_ids.len(),
+                parsed.structured_sections.len(),
+                space_id,
             );
 
             return Ok(chunk_ids);
@@ -428,11 +453,7 @@ impl RAGEngine {
     }
 
     /// Search with hybrid vector + FTS fusion
-    pub async fn search(
-        &self,
-        query: &str,
-        k: usize,
-    ) -> Result<Vec<SimpleSearchResult>> {
+    pub async fn search(&self, query: &str, k: usize) -> Result<Vec<SimpleSearchResult>> {
         let results = self.search_comprehensive(query, k, None).await?;
 
         Ok(results
@@ -537,11 +558,7 @@ impl RAGEngine {
         // Vector search via LanceDB
         let vector_hits = self
             .store
-            .vector_search(
-                &query_embedding,
-                candidate_count,
-                lance_filter.as_deref(),
-            )
+            .vector_search(&query_embedding, candidate_count, lance_filter.as_deref())
             .await?;
 
         let vector_results: Vec<(String, f32)> = vector_hits
@@ -550,17 +567,13 @@ impl RAGEngine {
             .collect();
 
         // Full-text search via Tantivy — use SAME candidate count for balanced fusion
-        let fts_results = self.text_search.search_filtered(
-            query,
-            candidate_count,
-            source_filter,
-        )?;
+        let fts_results =
+            self.text_search
+                .search_filtered(query, candidate_count, source_filter)?;
 
         // Log source diversity at each stage for diagnostics
-        let vector_sources: std::collections::HashSet<&str> = vector_hits
-            .iter()
-            .map(|h| h.source.as_str())
-            .collect();
+        let vector_sources: std::collections::HashSet<&str> =
+            vector_hits.iter().map(|h| h.source.as_str()).collect();
         tracing::info!(
             query = query,
             candidate_count = candidate_count,
@@ -693,8 +706,7 @@ impl RAGEngine {
 
                 match reranker.rerank(query, &candidates, candidates.len()) {
                     Ok(reranked) => {
-                        let rerank_scores: HashMap<String, f32> =
-                            reranked.into_iter().collect();
+                        let rerank_scores: HashMap<String, f32> = reranked.into_iter().collect();
 
                         // Update scores where reranking succeeded; keep original score
                         // for any candidates the cross-encoder couldn't tokenize.
@@ -704,7 +716,9 @@ impl RAGEngine {
                             }
                         }
                         results.sort_by(|a, b| {
-                            b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
+                            b.score
+                                .partial_cmp(&a.score)
+                                .unwrap_or(std::cmp::Ordering::Equal)
                         });
                     }
                     Err(e) => {
@@ -909,17 +923,13 @@ impl RAGEngine {
     ) -> Result<Vec<ComprehensiveResult>> {
         let predicate = filter.as_ref().and_then(|f| f.to_lance_predicate());
 
-        let hits = self
-            .store
-            .list_chunks(predicate.as_deref(), limit)
-            .await?;
+        let hits = self.store.list_chunks(predicate.as_deref(), limit).await?;
 
         let mut results = Vec::with_capacity(hits.len());
         for hit in hits {
             let metadata: HashMap<String, String> =
                 serde_json::from_str(&hit.metadata_json).unwrap_or_default();
-            let citation: Citation =
-                serde_json::from_str(&hit.citation_json).unwrap_or_default();
+            let citation: Citation = serde_json::from_str(&hit.citation_json).unwrap_or_default();
 
             let mut full_metadata = metadata;
             full_metadata.insert("doc_id".to_string(), hit.doc_id.clone());
@@ -1011,12 +1021,7 @@ impl RAGEngine {
 
         let sources: Vec<String> = results
             .iter()
-            .map(|r| {
-                r.metadata
-                    .get("source_file")
-                    .cloned()
-                    .unwrap_or_default()
-            })
+            .map(|r| r.metadata.get("source_file").cloned().unwrap_or_default())
             .collect();
 
         let mut keep = Vec::new();
@@ -1049,7 +1054,11 @@ impl RAGEngine {
             }
         }
         // Restore original order by score (descending)
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 
     /// Hard cap on results per source file to guarantee diversity across documents.

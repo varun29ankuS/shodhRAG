@@ -1,40 +1,39 @@
 //! LLM Module - Hybrid local/external language model support
 //! Supports both local models (via Candle) and external APIs
 
-use anyhow::{Result, anyhow};
-use serde::{Serialize, Deserialize};
-use std::path::PathBuf;
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use tokio::sync::mpsc;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::path::PathBuf;
+use tokio::sync::mpsc;
 
 // Hybrid LLM implementation - llama.cpp for CPU, ONNX Runtime GenAI for GPU
-pub mod llamacpp_provider;      // llama.cpp provider (CPU with KV caching)
-pub mod genai_provider;         // ONNX Runtime GenAI provider (GPU optimized)
+pub mod bpe_tokenizer;
+pub mod download_tokenizers;
+pub mod external;
+pub mod genai_provider; // ONNX Runtime GenAI provider (GPU optimized)
+pub mod gqa_cache;
+pub mod hf_tokenizer;
+pub mod llamacpp_provider; // llama.cpp provider (CPU with KV caching)
+pub mod local;
+pub mod model_config;
+pub mod model_manager;
 pub mod onnx_llm;
 pub mod onnx_llm_production;
-pub mod onnxruntime_genai_sys;  // Low-level FFI bindings
-pub mod onnxruntime_genai;      // Safe Rust wrappers
-pub mod local;
-pub mod external;
+pub mod onnxruntime_genai; // Safe Rust wrappers
+pub mod onnxruntime_genai_sys; // Low-level FFI bindings
 pub mod simple_external;
 pub mod streaming;
-pub mod model_manager;
-pub mod model_config;
-pub mod bpe_tokenizer;
-pub mod hf_tokenizer;
-pub mod download_tokenizers;
 pub mod tokenizer_loader;
-pub mod gqa_cache;
 
-pub use llamacpp_provider::LlamaCppProvider;
-pub use genai_provider::GenAIProvider;
-pub use local::LocalModelProvider;
 pub use external::ExternalProvider;
+pub use genai_provider::GenAIProvider;
+pub use llamacpp_provider::LlamaCppProvider;
+pub use local::LocalModelProvider;
+pub use model_manager::{ModelDownloader, ModelManager};
 pub use simple_external::SimpleExternalProvider;
 pub use streaming::{StreamingResponse, TokenStream};
-pub use model_manager::{ModelManager, ModelDownloader};
-
 
 /// LLM operation mode
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,17 +57,14 @@ pub enum LLMMode {
 /// Supported local models
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LocalModel {
-    Phi3Mini,       // Microsoft Phi-3 3.8B
-    Phi4,           // Microsoft Phi-4 14B - Latest model
-    Mistral7B,      // Mistral 7B Instruct
-    Orca2_7B,       // Microsoft Orca 2 7B
-    Qwen2_5B,       // Alibaba Qwen2 0.5B
-    Gemma2B,        // Google Gemma 2B
-    Sarvam1,        // Sarvam AI Sarvam-1 2B (Indic multilingual)
-    Custom {
-        name: String,
-        filename: String,
-    }, // Custom model
+    Phi3Mini,                                  // Microsoft Phi-3 3.8B
+    Phi4,                                      // Microsoft Phi-4 14B - Latest model
+    Mistral7B,                                 // Mistral 7B Instruct
+    Orca2_7B,                                  // Microsoft Orca 2 7B
+    Qwen2_5B,                                  // Alibaba Qwen2 0.5B
+    Gemma2B,                                   // Google Gemma 2B
+    Sarvam1,                                   // Sarvam AI Sarvam-1 2B (Indic multilingual)
+    Custom { name: String, filename: String }, // Custom model
 }
 
 impl LocalModel {
@@ -120,18 +116,18 @@ pub enum ApiProvider {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DeviceType {
     Cpu,
-    Cuda(usize),  // GPU index
-    Metal,        // Apple Silicon
+    Cuda(usize), // GPU index
+    Metal,       // Apple Silicon
 }
 
 /// Quantization type for model compression
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum QuantizationType {
-    F32,      // Full precision
-    F16,      // Half precision
-    Q8,       // 8-bit quantization
-    Q4,       // 4-bit quantization
-    Q4_K_M,   // 4-bit with k-means
+    F32,    // Full precision
+    F16,    // Half precision
+    Q8,     // 8-bit quantization
+    Q4,     // 4-bit quantization
+    Q4_K_M, // 4-bit with k-means
 }
 
 /// LLM configuration
@@ -168,18 +164,11 @@ impl Default for LLMConfig {
 #[async_trait]
 pub trait LLMProvider: Send + Sync {
     /// Generate a completion
-    async fn generate(
-        &self,
-        prompt: &str,
-        config: &GenerationConfig,
-    ) -> Result<String>;
+    async fn generate(&self, prompt: &str, config: &GenerationConfig) -> Result<String>;
 
     /// Generate with streaming
-    async fn generate_stream(
-        &self,
-        prompt: &str,
-        config: &GenerationConfig,
-    ) -> Result<TokenStream>;
+    async fn generate_stream(&self, prompt: &str, config: &GenerationConfig)
+        -> Result<TokenStream>;
 
     /// Generate with RAG context
     async fn generate_with_context(
@@ -199,7 +188,8 @@ pub trait LLMProvider: Send + Sync {
         config: &GenerationConfig,
     ) -> Result<ChatResponse> {
         // Default: flatten messages to a single prompt and call generate()
-        let prompt = messages.iter()
+        let prompt = messages
+            .iter()
             .filter_map(|m| m.content.as_ref().map(|c| format!("{:?}: {}", m.role, c)))
             .collect::<Vec<_>>()
             .join("\n");
@@ -216,7 +206,8 @@ pub trait LLMProvider: Send + Sync {
         tools: &[ToolSchema],
         config: &GenerationConfig,
     ) -> Result<tokio::sync::mpsc::Receiver<ChatStreamEvent>> {
-        let prompt = messages.iter()
+        let prompt = messages
+            .iter()
             .filter_map(|m| m.content.as_ref().map(|c| format!("{:?}: {}", m.role, c)))
             .collect::<Vec<_>>()
             .join("\n");
@@ -289,19 +280,53 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::System, content: Some(content.into()), tool_calls: None, tool_call_id: None, name: None }
+        Self {
+            role: ChatRole::System,
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }
     }
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::User, content: Some(content.into()), tool_calls: None, tool_call_id: None, name: None }
+        Self {
+            role: ChatRole::User,
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::Assistant, content: Some(content.into()), tool_calls: None, tool_call_id: None, name: None }
+        Self {
+            role: ChatRole::Assistant,
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }
     }
     pub fn assistant_tool_calls(tool_calls: Vec<ToolCall>) -> Self {
-        Self { role: ChatRole::Assistant, content: None, tool_calls: Some(tool_calls), tool_call_id: None, name: None }
+        Self {
+            role: ChatRole::Assistant,
+            content: None,
+            tool_calls: Some(tool_calls),
+            tool_call_id: None,
+            name: None,
+        }
     }
-    pub fn tool_result(tool_call_id: impl Into<String>, name: impl Into<String>, content: impl Into<String>) -> Self {
-        Self { role: ChatRole::Tool, content: Some(content.into()), tool_calls: None, tool_call_id: Some(tool_call_id.into()), name: Some(name.into()) }
+    pub fn tool_result(
+        tool_call_id: impl Into<String>,
+        name: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        Self {
+            role: ChatRole::Tool,
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.into()),
+            name: Some(name.into()),
+        }
     }
 }
 
@@ -499,7 +524,7 @@ impl LLMManager {
             model_cache_dir: PathBuf::from("./models"),
         }
     }
-    
+
     /// Create new LLM manager with custom cache directory
     pub fn new_with_cache_dir(config: LLMConfig, cache_dir: PathBuf) -> Self {
         Self {
@@ -508,14 +533,18 @@ impl LLMManager {
             model_cache_dir: cache_dir,
         }
     }
-    
+
     /// Create new LLM manager with custom model and tokenizer paths
-    pub fn new_with_paths(config: LLMConfig, model_path: PathBuf, tokenizer_path: Option<PathBuf>) -> Self {
+    pub fn new_with_paths(
+        config: LLMConfig,
+        model_path: PathBuf,
+        tokenizer_path: Option<PathBuf>,
+    ) -> Self {
         // Store tokenizer path in environment variable for ONNX provider to pick up
         if let Some(tokenizer) = tokenizer_path {
             std::env::set_var("ROSHERA_TOKENIZER_PATH", tokenizer);
         }
-        
+
         Self {
             config,
             provider: None,
@@ -526,7 +555,11 @@ impl LLMManager {
     /// Initialize the LLM provider with hybrid backend selection
     pub async fn initialize(&mut self) -> Result<()> {
         match &self.config.mode {
-            LLMMode::Local { model, device, quantization } => {
+            LLMMode::Local {
+                model,
+                device,
+                quantization,
+            } => {
                 // HYBRID BACKEND SELECTION
                 // llama.cpp for CPU (has KV caching) + ONNX Runtime GenAI for GPU
 
@@ -536,7 +569,9 @@ impl LLMManager {
                         false
                     }
                     DeviceType::Cuda(_) => {
-                        tracing::info!("Device explicitly set to CUDA GPU, using ONNX Runtime GenAI");
+                        tracing::info!(
+                            "Device explicitly set to CUDA GPU, using ONNX Runtime GenAI"
+                        );
                         true
                     }
                     DeviceType::Metal => {
@@ -569,13 +604,14 @@ impl LLMManager {
                 self.provider = Some(provider);
                 Ok(())
             }
-            LLMMode::External { provider, api_key, model } => {
+            LLMMode::External {
+                provider,
+                api_key,
+                model,
+            } => {
                 // Create simple external provider for better reliability
-                let provider = SimpleExternalProvider::new(
-                    provider.clone(),
-                    api_key.clone(),
-                    model.clone(),
-                )?;
+                let provider =
+                    SimpleExternalProvider::new(provider.clone(), api_key.clone(), model.clone())?;
 
                 self.provider = Some(Box::new(provider));
                 Ok(())
@@ -608,7 +644,7 @@ impl LLMManager {
                 config.max_tokens = config.max_tokens.max(8192);
                 provider.generate(prompt, &config).await
             }
-            None => Err(anyhow!("LLM is disabled or not initialized"))
+            None => Err(anyhow!("LLM is disabled or not initialized")),
         }
     }
 
@@ -620,7 +656,7 @@ impl LLMManager {
                 config.max_tokens = max_tokens;
                 provider.generate(prompt, &config).await
             }
-            None => Err(anyhow!("LLM is disabled or not initialized"))
+            None => Err(anyhow!("LLM is disabled or not initialized")),
         }
     }
 
@@ -633,19 +669,23 @@ impl LLMManager {
                 config.max_tokens = config.max_tokens.max(8192);
                 provider.generate_stream(prompt, &config).await
             }
-            None => Err(anyhow!("LLM is disabled or not initialized"))
+            None => Err(anyhow!("LLM is disabled or not initialized")),
         }
     }
 
     /// Generate with streaming and custom max_tokens
-    pub async fn generate_stream_custom(&self, prompt: &str, max_tokens: usize) -> Result<TokenStream> {
+    pub async fn generate_stream_custom(
+        &self,
+        prompt: &str,
+        max_tokens: usize,
+    ) -> Result<TokenStream> {
         match &self.provider {
             Some(provider) => {
                 let mut config = GenerationConfig::from(&self.config);
                 config.max_tokens = max_tokens;
                 provider.generate_stream(prompt, &config).await
             }
-            None => Err(anyhow!("LLM is disabled or not initialized"))
+            None => Err(anyhow!("LLM is disabled or not initialized")),
         }
     }
 
@@ -660,7 +700,9 @@ impl LLMManager {
                 let mut config = GenerationConfig::from(&self.config);
                 // RAG responses need more tokens for citations and structured output
                 config.max_tokens = config.max_tokens.max(8192);
-                provider.generate_with_context(query, search_results, &config).await
+                provider
+                    .generate_with_context(query, search_results, &config)
+                    .await
             }
             None => {
                 // Fallback to simple concatenation if LLM is disabled
@@ -683,8 +725,10 @@ impl LLMManager {
         match &self.provider {
             Some(provider) => {
                 let mut config = GenerationConfig::from(&self.config);
-                config.max_tokens = max_tokens;  // Override with custom token limit
-                provider.generate_with_context(query, search_results, &config).await
+                config.max_tokens = max_tokens; // Override with custom token limit
+                provider
+                    .generate_with_context(query, search_results, &config)
+                    .await
             }
             None => {
                 // Fallback to simple concatenation if LLM is disabled
@@ -731,7 +775,8 @@ impl LLMManager {
 
     /// Check if the current provider supports function/tool calling.
     pub fn supports_tools(&self) -> bool {
-        self.provider.as_ref()
+        self.provider
+            .as_ref()
             .map(|p| p.info().supports_functions)
             .unwrap_or(false)
     }
@@ -839,7 +884,9 @@ pub fn format_rag_prompt(query: &str, context: &[String], system_prompt: Option<
     let formatted_context = if context.is_empty() {
         "No specific context documents available.".to_string()
     } else {
-        context.iter().enumerate()
+        context
+            .iter()
+            .enumerate()
             .map(|(i, doc)| format!("[Document {}]\n{}", i + 1, doc))
             .collect::<Vec<_>>()
             .join("\n\n")

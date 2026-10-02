@@ -37,9 +37,16 @@ pub fn compress_chunk(chunk: &str, query: &str, max_sentences: usize) -> String 
         .split_whitespace()
         .filter(|w| w.len() > 2)
         .map(|w| {
-            if w.contains('@') || w.contains("://") || w.contains(".com") || w.contains(".org") || w.contains(".net") || w.contains(".io") {
+            if w.contains('@')
+                || w.contains("://")
+                || w.contains(".com")
+                || w.contains(".org")
+                || w.contains(".net")
+                || w.contains(".io")
+            {
                 // Email or URL — keep as-is (only trim outer punctuation like commas/quotes)
-                w.trim_matches(|c: char| c == ',' || c == '"' || c == '\'' || c == '(' || c == ')').to_string()
+                w.trim_matches(|c: char| c == ',' || c == '"' || c == '\'' || c == '(' || c == ')')
+                    .to_string()
             } else {
                 w.trim_matches(|c: char| !c.is_alphanumeric()).to_string()
             }
@@ -69,10 +76,7 @@ pub fn compress_chunk(chunk: &str, query: &str, max_sentences: usize) -> String 
     selected_indices.sort();
 
     // Reconstruct compressed text
-    let compressed: Vec<&str> = selected_indices
-        .iter()
-        .map(|&idx| sentences[idx])
-        .collect();
+    let compressed: Vec<&str> = selected_indices.iter().map(|&idx| sentences[idx]).collect();
 
     compressed.join(" ")
 }

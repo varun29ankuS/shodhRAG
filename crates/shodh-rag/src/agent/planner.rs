@@ -1,10 +1,10 @@
 //! Advanced Planning Layer - Parallel execution, dependency resolution, cost optimization
 
 use super::autonomous::*;
-use anyhow::{Result, Context as AnyhowContext};
+use anyhow::{Context as AnyhowContext, Result};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
-use chrono::{DateTime, Utc};
 
 /// Enhanced task plan with parallel execution support
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,7 +78,7 @@ pub struct PlanningResult {
 /// Analysis of the planning process
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanningAnalysis {
-    pub complexity_score: f64, // 0.0-1.0
+    pub complexity_score: f64,       // 0.0-1.0
     pub parallelization_factor: f64, // How much speedup from parallelization
     pub estimated_serial_duration_seconds: u64,
     pub estimated_parallel_duration_seconds: u64,
@@ -111,7 +111,10 @@ impl AdvancedPlanner {
         // Build dependency graph
         let execution_graph = self.build_execution_graph(&base_steps)?;
         tracing::info!(nodes = execution_graph.nodes.len(), "Built execution graph");
-        tracing::info!(parallel_groups = execution_graph.parallel_groups.len(), "Identified parallel groups");
+        tracing::info!(
+            parallel_groups = execution_graph.parallel_groups.len(),
+            "Identified parallel groups"
+        );
 
         // Calculate costs and duration
         let (estimated_cost, cost_breakdown) = self.calculate_total_cost(&execution_graph);
@@ -165,7 +168,8 @@ impl AdvancedPlanner {
             in_degree.insert(step.id.clone(), step.dependencies.len());
         }
 
-        let mut queue: VecDeque<String> = steps.iter()
+        let mut queue: VecDeque<String> = steps
+            .iter()
             .filter(|s| s.dependencies.is_empty())
             .map(|s| s.id.clone())
             .collect();
@@ -232,7 +236,8 @@ impl AdvancedPlanner {
 
         // Group nodes by level
         for node in nodes {
-            level_groups.entry(node.level)
+            level_groups
+                .entry(node.level)
                 .or_insert_with(Vec::new)
                 .push(node.id.clone());
         }
@@ -266,7 +271,11 @@ impl AdvancedPlanner {
 
     /// Calculate serial duration (if executed sequentially)
     fn calculate_serial_duration(&self, graph: &ExecutionGraph) -> u64 {
-        graph.nodes.iter().map(|n| n.estimated_duration_seconds).sum()
+        graph
+            .nodes
+            .iter()
+            .map(|n| n.estimated_duration_seconds)
+            .sum()
     }
 
     /// Calculate parallel duration (with parallel execution)
@@ -310,7 +319,11 @@ impl AdvancedPlanner {
     }
 
     /// Generate alternative plans
-    fn generate_alternatives(&self, task: &Task, steps: &[PlanStep]) -> Result<Vec<AlternativePlan>> {
+    fn generate_alternatives(
+        &self,
+        task: &Task,
+        steps: &[PlanStep],
+    ) -> Result<Vec<AlternativePlan>> {
         let mut alternatives = Vec::new();
 
         // Alternative 1: Cost-optimized plan (use cheaper tools/methods)
@@ -335,7 +348,7 @@ impl AdvancedPlanner {
         Ok(AlternativePlan {
             id: uuid::Uuid::new_v4().to_string(),
             description: "Cost-optimized plan using cheaper tools and methods".to_string(),
-            steps: steps.to_vec(), // In real impl, replace expensive tools
+            steps: steps.to_vec(),   // In real impl, replace expensive tools
             estimated_cost_usd: 0.5, // Placeholder
             use_case: "When cost is the primary concern".to_string(),
         })
@@ -355,7 +368,7 @@ impl AdvancedPlanner {
         Ok(AlternativePlan {
             id: uuid::Uuid::new_v4().to_string(),
             description: "Safe plan with minimal risks and human oversight".to_string(),
-            steps: steps.to_vec(), // In real impl, add approval steps
+            steps: steps.to_vec(),   // In real impl, add approval steps
             estimated_cost_usd: 1.0, // Placeholder
             use_case: "When safety is paramount".to_string(),
         })
@@ -399,7 +412,7 @@ impl RiskAssessor {
     fn assess_step(&self, action: &StepAction) -> f64 {
         // Returns risk score 0.0-1.0
         match action {
-            StepAction::RagSearch { .. } => 0.1, // Low risk
+            StepAction::RagSearch { .. } => 0.1,     // Low risk
             StepAction::CodeExecution { .. } => 0.7, // High risk (arbitrary code)
             StepAction::ToolCall { tool_name, .. } => {
                 if tool_name.contains("delete") || tool_name.contains("remove") {
@@ -410,7 +423,7 @@ impl RiskAssessor {
                     0.2 // Low risk (read operations)
                 }
             }
-            StepAction::LlmQuery { .. } => 0.2, // Low risk
+            StepAction::LlmQuery { .. } => 0.2,      // Low risk
             StepAction::HumanApproval { .. } => 0.0, // No risk (human oversight)
         }
     }

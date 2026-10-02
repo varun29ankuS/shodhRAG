@@ -1,8 +1,6 @@
 # Rust
 /target/
 **/target/
-Cargo.lock
-!app/src-tauri/Cargo.lock
 
 # Node
 node_modules/

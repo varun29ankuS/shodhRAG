@@ -1,11 +1,11 @@
 //! Workflow Engine - Reusable workflow templates with conditional logic
 
 use super::autonomous::*;
-use anyhow::{Result, Context as AnyhowContext};
+use anyhow::{Context as AnyhowContext, Result};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use chrono::{DateTime, Utc};
 
 /// Workflow template (reusable recipe)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,11 +171,14 @@ impl WorkflowEngine {
     /// Search templates
     pub fn search_templates(&self, query: &str) -> Vec<&WorkflowTemplate> {
         let query_lower = query.to_lowercase();
-        self.templates.values()
+        self.templates
+            .values()
             .filter(|t| {
                 t.name.to_lowercase().contains(&query_lower)
                     || t.description.to_lowercase().contains(&query_lower)
-                    || t.tags.iter().any(|tag| tag.to_lowercase().contains(&query_lower))
+                    || t.tags
+                        .iter()
+                        .any(|tag| tag.to_lowercase().contains(&query_lower))
             })
             .collect()
     }
@@ -186,7 +189,9 @@ impl WorkflowEngine {
         template_id: &str,
         parameters: HashMap<String, Value>,
     ) -> Result<String> {
-        let template = self.templates.get(template_id)
+        let template = self
+            .templates
+            .get(template_id)
             .ok_or_else(|| anyhow::anyhow!("Template not found: {}", template_id))?;
 
         // Validate parameters
@@ -217,7 +222,9 @@ impl WorkflowEngine {
     ) -> Result<WorkflowResult> {
         // Extract data we need before mutable borrow
         let (template_id, parameters) = {
-            let instance = self.instances.get_mut(instance_id)
+            let instance = self
+                .instances
+                .get_mut(instance_id)
                 .ok_or_else(|| anyhow::anyhow!("Instance not found: {}", instance_id))?;
 
             instance.status = WorkflowStatus::Running;
@@ -226,7 +233,9 @@ impl WorkflowEngine {
             (instance.template_id.clone(), instance.parameters.clone())
         };
 
-        let template = self.templates.get(&template_id)
+        let template = self
+            .templates
+            .get(&template_id)
             .ok_or_else(|| anyhow::anyhow!("Template not found"))?;
 
         tracing::info!(name = %template.name, "Executing workflow");
@@ -237,7 +246,10 @@ impl WorkflowEngine {
 
         // Execute workflow steps
         for step in &template.steps {
-            match self.execute_workflow_step(step, &parameters, executor, &mut artifacts).await {
+            match self
+                .execute_workflow_step(step, &parameters, executor, &mut artifacts)
+                .await
+            {
                 Ok(count) => steps_executed += count,
                 Err(e) => {
                     let result = WorkflowResult {
@@ -266,18 +278,23 @@ impl WorkflowEngine {
         for (idx, artifact) in artifacts.iter().enumerate() {
             output_map.insert(
                 format!("step_{}", idx),
-                Value::String(artifact.name.clone())
+                Value::String(artifact.name.clone()),
             );
             output_map.insert(
                 format!("step_{}_type", idx),
-                Value::String(format!("{:?}", artifact.artifact_type))
+                Value::String(format!("{:?}", artifact.artifact_type)),
             );
             if !artifact.metadata.is_empty() {
                 output_map.insert(
                     format!("step_{}_metadata", idx),
-                    Value::Object(artifact.metadata.clone().into_iter().map(|(k, v)| {
-                        (k, Value::String(v))
-                    }).collect())
+                    Value::Object(
+                        artifact
+                            .metadata
+                            .clone()
+                            .into_iter()
+                            .map(|(k, v)| (k, Value::String(v)))
+                            .collect(),
+                    ),
                 );
             }
         }
@@ -298,7 +315,11 @@ impl WorkflowEngine {
             instance.result = Some(result.clone());
         }
 
-        tracing::info!(steps_executed = steps_executed, duration_seconds = result.execution_time_seconds, "Workflow completed");
+        tracing::info!(
+            steps_executed = steps_executed,
+            duration_seconds = result.execution_time_seconds,
+            "Workflow completed"
+        );
 
         Ok(result)
     }
@@ -320,34 +341,57 @@ impl WorkflowEngine {
                 Ok(1)
             }
 
-            WorkflowStep::Condition { id, name, condition, if_true, if_false } => {
+            WorkflowStep::Condition {
+                id,
+                name,
+                condition,
+                if_true,
+                if_false,
+            } => {
                 tracing::debug!(step_name = %name, "Evaluating condition");
                 let condition_result = self.evaluate_condition(condition, params)?;
 
                 if condition_result {
                     Box::pin(self.execute_workflow_step(if_true, params, executor, artifacts)).await
                 } else if let Some(else_branch) = if_false {
-                    Box::pin(self.execute_workflow_step(else_branch, params, executor, artifacts)).await
+                    Box::pin(self.execute_workflow_step(else_branch, params, executor, artifacts))
+                        .await
                 } else {
                     Ok(0)
                 }
             }
 
-            WorkflowStep::Loop { id, name, items, body } => {
+            WorkflowStep::Loop {
+                id,
+                name,
+                items,
+                body,
+            } => {
                 tracing::debug!(step_name = %name, "Executing loop");
                 let items_value = self.resolve_variable(items, params)?;
 
-                let items_array = items_value.as_array()
+                let items_array = items_value
+                    .as_array()
                     .ok_or_else(|| anyhow::anyhow!("Loop items must be an array"))?;
 
                 let mut total_steps = 0;
                 for (i, item) in items_array.iter().enumerate() {
-                    tracing::debug!(iteration = i + 1, total = items_array.len(), "Loop iteration");
+                    tracing::debug!(
+                        iteration = i + 1,
+                        total = items_array.len(),
+                        "Loop iteration"
+                    );
                     let mut loop_params = params.clone();
                     loop_params.insert("item".to_string(), item.clone());
                     loop_params.insert("index".to_string(), Value::from(i));
 
-                    total_steps += Box::pin(self.execute_workflow_step(body, &loop_params, executor, artifacts)).await?;
+                    total_steps += Box::pin(self.execute_workflow_step(
+                        body,
+                        &loop_params,
+                        executor,
+                        artifacts,
+                    ))
+                    .await?;
                 }
 
                 Ok(total_steps)
@@ -370,7 +414,8 @@ impl WorkflowEngine {
                             // Since we can't easily clone `self`, we execute the step directly
                             // This is a simplified version - in production you'd want better isolation
                             1 // Placeholder - each parallel step counts as 1
-                        }).await;
+                        })
+                        .await;
 
                         (local_artifacts, steps_executed)
                     });
@@ -394,7 +439,9 @@ impl WorkflowEngine {
                 // Fallback: Execute sequentially if parallel execution setup is complex
                 // This ensures functionality while parallel infrastructure is being improved
                 for step in steps {
-                    total_steps += Box::pin(self.execute_workflow_step(step, params, executor, artifacts)).await?;
+                    total_steps +=
+                        Box::pin(self.execute_workflow_step(step, params, executor, artifacts))
+                            .await?;
                 }
 
                 Ok(total_steps)
@@ -404,7 +451,9 @@ impl WorkflowEngine {
                 tracing::debug!(step_name = %name, "Executing sequence");
                 let mut total_steps = 0;
                 for step in steps {
-                    total_steps += Box::pin(self.execute_workflow_step(step, params, executor, artifacts)).await?;
+                    total_steps +=
+                        Box::pin(self.execute_workflow_step(step, params, executor, artifacts))
+                            .await?;
                 }
                 Ok(total_steps)
             }
@@ -412,7 +461,11 @@ impl WorkflowEngine {
     }
 
     /// Resolve action with parameter substitution
-    fn resolve_action(&self, action: &StepAction, params: &HashMap<String, Value>) -> Result<StepAction> {
+    fn resolve_action(
+        &self,
+        action: &StepAction,
+        params: &HashMap<String, Value>,
+    ) -> Result<StepAction> {
         // Simple parameter substitution (e.g., {{param_name}})
         match action {
             StepAction::RagSearch { query, filters } => {
@@ -468,7 +521,8 @@ impl WorkflowEngine {
 
     /// Resolve variable from parameters
     fn resolve_variable(&self, name: &str, params: &HashMap<String, Value>) -> Result<Value> {
-        params.get(name)
+        params
+            .get(name)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Variable not found: {}", name))
     }
@@ -494,7 +548,9 @@ impl WorkflowEngine {
 
     /// Cancel workflow instance
     pub fn cancel_instance(&mut self, instance_id: &str) -> Result<()> {
-        let instance = self.instances.get_mut(instance_id)
+        let instance = self
+            .instances
+            .get_mut(instance_id)
             .ok_or_else(|| anyhow::anyhow!("Instance not found"))?;
 
         if instance.status == WorkflowStatus::Running {

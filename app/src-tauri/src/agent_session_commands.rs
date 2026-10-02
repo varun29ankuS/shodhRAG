@@ -18,11 +18,12 @@ use shodh_rag::harness::{
     fetch_omp, resolve_binary_path, select_model, AgentEvent, AgentHarness, AgentProfile,
     HarnessError, LaunchSpec, OmpLayout, OmpSession, SessionConfig,
 };
-use shodh_rag::llm::ApiProvider;
+use shodh_rag::llm::{ApiProvider, LLMMode};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, OnceCell};
 
 use crate::agent_tools::build_registry;
+use crate::api_key_store;
 use crate::llm_commands::LLMState;
 use crate::rag_commands::RagState;
 
@@ -89,19 +90,69 @@ fn check_id(kind: &str, value: &str) -> Result<(), String> {
     }
 }
 
-fn fallback_key(llm: &LLMState, provider: &ApiProvider) -> Option<String> {
-    let keys = llm
-        .api_keys
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
+/// Provider id used by the key store, and the provider's conventional
+/// environment variables.
+fn key_source(provider: &ApiProvider) -> Option<(&'static str, &'static [&'static str])> {
     match provider {
-        ApiProvider::OpenAI => keys.openai,
-        ApiProvider::Anthropic => keys.anthropic,
-        ApiProvider::OpenRouter => keys.openrouter,
-        ApiProvider::Google => keys.google,
-        ApiProvider::Grok => keys.grok,
+        ApiProvider::OpenAI => Some(("openai", &["OPENAI_API_KEY"])),
+        ApiProvider::Anthropic => Some(("anthropic", &["ANTHROPIC_API_KEY"])),
+        ApiProvider::OpenRouter => Some(("openrouter", &["OPENROUTER_API_KEY"])),
+        ApiProvider::Google => Some(("google", &["GEMINI_API_KEY", "GOOGLE_API_KEY"])),
+        ApiProvider::Grok => Some(("grok", &["XAI_API_KEY"])),
         _ => None,
+    }
+}
+
+fn non_empty(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Resolve the provider key: environment first, then the configured mode,
+/// then the in-memory keys (loaded from the OS credential store at startup),
+/// then the credential store itself (startup loading may not have finished).
+async fn resolve_key(llm: &LLMState, mode: &LLMMode) -> Option<String> {
+    let LLMMode::External {
+        provider, api_key, ..
+    } = mode
+    else {
+        return None;
+    };
+    let (store_id, env_vars) = key_source(provider)?;
+    if let Some(key) = env_vars
+        .iter()
+        .find_map(|var| non_empty(std::env::var(var).ok()))
+    {
+        return Some(key);
+    }
+    if let Some(key) = non_empty(Some(api_key.clone())) {
+        return Some(key);
+    }
+    let in_memory = {
+        let keys = llm.api_keys.lock().unwrap_or_else(|e| e.into_inner());
+        match provider {
+            ApiProvider::OpenAI => keys.openai.clone(),
+            ApiProvider::Anthropic => keys.anthropic.clone(),
+            ApiProvider::OpenRouter => keys.openrouter.clone(),
+            ApiProvider::Google => keys.google.clone(),
+            ApiProvider::Grok => keys.grok.clone(),
+            _ => None,
+        }
+    };
+    if let Some(key) = non_empty(in_memory) {
+        return Some(key);
+    }
+    match tokio::task::spawn_blocking(move || api_key_store::load(store_id)).await {
+        Ok(Ok(key)) => non_empty(key),
+        Ok(Err(e)) => {
+            tracing::warn!(target: "shodh::harness", "{e}");
+            None
+        }
+        Err(e) => {
+            tracing::warn!(target: "shodh::harness", error = %e, "credential store lookup failed");
+            None
+        }
     }
 }
 
@@ -162,8 +213,20 @@ pub async fn agent_start(
         .unwrap_or_else(|e| e.into_inner())
         .mode
         .clone();
-    let model =
-        select_model(&mode, |provider| fallback_key(&llm, provider)).map_err(|e| e.to_string())?;
+    let mode = match (resolve_key(&llm, &mode).await, mode) {
+        (
+            Some(key),
+            LLMMode::External {
+                provider, model, ..
+            },
+        ) => LLMMode::External {
+            provider,
+            api_key: key,
+            model,
+        },
+        (_, mode) => mode,
+    };
+    let model = select_model(&mode, |_| None).map_err(|e| e.to_string())?;
 
     let app_data_dir = app
         .path()

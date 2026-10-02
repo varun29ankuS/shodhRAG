@@ -38,6 +38,7 @@ import { EmptyState } from './components/EmptyState';
 import { UpdateNotification } from './components/UpdateNotification';
 import { toast } from 'sonner';
 import { notify, setNotificationHandler } from './lib/notify';
+import { migrateLegacyApiKeys } from './lib/apiKeyMigration';
 import { useNotifications } from './hooks/useNotifications';
 import NotificationCenter from './components/NotificationCenter';
 import { intelligentSearch, trackUserMessage, trackAssistantMessage } from './utils/intelligentRetrieval';
@@ -105,6 +106,11 @@ function AppSplitView() {
     setNotificationHandler(addNotification);
     return () => setNotificationHandler(null);
   }, [addNotification]);
+
+  // Move API keys saved by older builds out of localStorage into the OS keychain.
+  useEffect(() => {
+    void migrateLegacyApiKeys();
+  }, []);
 
   // Command palette
   const { open: cmdPaletteOpen, openPalette, closePalette } = useCommandPalette();

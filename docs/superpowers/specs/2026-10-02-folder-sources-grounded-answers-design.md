@@ -57,6 +57,48 @@ These findings motivate the design. All were confirmed in source.
 | 4 | Server mode, SSO, per-document ACL sync, connectors | 1 |
 | 5 | Channels (WhatsApp/email/etc., Hermes gateway evaluated here) | 2, 4 |
 
+### 3a. Roadmap update (2026-10-02)
+
+**Re-sequencing (approved).** The agent workbench (omp harness, transcript UI, app-control tools, activity tray; plan `docs/superpowers/plans/2026-10-02-agent-workbench.md`) runs before M1/M2. The legacy pipeline is preserved at tag `legacy-pipeline-2026-10-02` for baselines. Containment (sub-project 0) runs alongside it now.
+
+**Additions.** Each item lands as its own spec/plan cycle, and each quality item is gated on the M1 evaluation showing a gain.
+
+| Area | Addition | Placement |
+|---|---|---|
+| Retrieval quality | Modern multilingual embeddings (BGE-M3 / Qwen3-Embedding class) and a multilingual cross-encoder reranker (bge-reranker-v2-m3 class), chosen by measured gain | Right after M1 |
+| Retrieval quality | Contextual retrieval: at index time an LLM writes a short context line for each chunk, as optional throttled background work | After M1 |
+| Retrieval quality | Natural-language metadata filters (dates, document types, parties) compiled to store filters | After M1 |
+| Retrieval quality | Document version resolution: detect superseded drafts and prefer the latest version unless asked otherwise | After M2 (needs the inventory) |
+| Retrieval quality | Indic OCR and multilingual quality | With M3 |
+| Retrieval quality | Visual page retrieval (ColPali-style) for scanned and chart-heavy corpora | Only if evaluation on real corpora shows a gap |
+| Agent | Cross-session memory backed by shodh-memory | After the workbench |
+| Agent | Reusable workflows/skills (saved procedures with report output) | After the workbench |
+| Agent | Scheduled agents (e.g. weekly renewal digest) | After the workbench |
+| Agent | Shodh as an MCP server, so external agents can query the library under the same authz | After the workbench |
+| Enterprise | PII/confidential redaction before cloud calls (GLiNER2-PII class models) | With M7 |
+| Enterprise | On-prem/private LLM endpoints (vLLM, Azure OpenAI in the customer's tenant) | With M7 |
+| Enterprise | Signed installer, auto-update, managed deployment (MSI + GPO/MDM) | Before the first corporate pilot |
+| Enterprise | Feedback loop (ratings and corrections feed the private eval set) | With M1 private-folder evals |
+
+**Knowledge graph design revision (graph extraction spike).**
+
+Measured on 5 synthetic documents with 70 gold mentions and 35 relations:
+- GLiNER2 entity F1 was 0.77 at best.
+- Relation F1 was 0.26–0.34.
+- Extraction ran at 1.5–3 s per chunk on CPU, using about 2.2 GB RAM.
+
+The graph therefore uses:
+- **Deterministic extractors** for GSTIN, PAN, invoice numbers, dates and amounts.
+- **GLiNER2** only for organization, person and contract names.
+- **Rule-based alias and defined-term resolution.**
+- **Edges from three sources:**
+  - document structure (invoice header, bill-to, parties clause, signature block);
+  - weighted co-occurrence, used for personalized-PageRank retrieval;
+  - optional grounded LLM extraction, where the LLM may only link entities that already have IDs.
+- **Background, throttled, per-folder opt-in extraction.**
+
+The graph ships only if multi-hop evaluation shows a gain.
+
 Sub-project 0 is a hard prerequisite, for two reasons:
 - **Dependency conflict.** docling.rs and the GLiNER2 Rust runtimes require `ort ^2.0.0-rc.13`, while shodh currently resolves rc.11. `ort-sys` declares `links = "onnxruntime"`, so only one version can be linked.
 - **Unverifiable CI.** CI must execute tests before any change in this spec can be verified.

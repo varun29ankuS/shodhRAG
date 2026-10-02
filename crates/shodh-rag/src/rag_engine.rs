@@ -930,6 +930,34 @@ impl RAGEngine {
         Ok(stats)
     }
 
+    /// Whether at least one indexed chunk was produced from `path`.
+    ///
+    /// The path is compared after the same normalization applied at ingest
+    /// time (forward slashes; lower-cased on Windows), and also verbatim for
+    /// documents added through `add_document` with a caller-supplied
+    /// `file_path`. Used to gate file access: only files the user indexed may
+    /// be read back for display.
+    pub async fn is_indexed_source(&self, path: &Path) -> Result<bool> {
+        let normalized = normalize_source_path(path);
+        let verbatim = path.display().to_string();
+        let mut candidates = vec![normalized];
+        if !candidates.contains(&verbatim) {
+            candidates.push(verbatim);
+        }
+        for candidate in candidates {
+            let predicate = format!("source = '{}'", candidate.replace('\'', "''"));
+            if !self
+                .store
+                .list_chunks(Some(&predicate), 1)
+                .await?
+                .is_empty()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Count distinct documents in the index
     pub async fn count_documents(&self) -> Result<usize> {
         self.store.count_documents().await

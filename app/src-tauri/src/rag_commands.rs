@@ -2171,7 +2171,7 @@ pub async fn get_document_full_text(
 }
 
 // Helper function to detect code files
-fn is_code_file(path: &str) -> bool {
+pub(crate) fn is_code_file(path: &str) -> bool {
     let code_extensions = [
         "rs", "py", "js", "ts", "tsx", "jsx", "java", "cpp", "c", "h", "hpp", "go", "rb", "php",
         "cs", "swift", "kt", "scala", "r", "m", "mm", "vue", "svelte", "sol", "zig", "nim", "cr",

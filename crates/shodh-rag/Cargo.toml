@@ -58,6 +58,10 @@ chardetng = "0.1"
 
 # Agent harness: host-tool argument validation
 jsonschema = { version = "0.46", default-features = false }
+# Agent harness: omp sidecar (JSONL framing, pinned-binary verification)
+tokio-util = { version = "0.7", features = ["codec"] }
+sha2 = "0.10"
+hex = "0.4"
 
 # Utilities
 regex = "1"

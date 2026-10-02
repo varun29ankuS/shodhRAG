@@ -512,6 +512,25 @@ Each step is idempotent and recorded in `schema_version` and audit.
 - Every milestone ships the UI for its feature, with Playwright coverage. For example, M2 ships the sources panel, the "Couldn't read" panel and live progress. M3 ships citation click-through to the highlighted page.
 - `@sentry/react` crash reporting is opt-in, off by default, and disabled in Local-only mode.
 
+### Navigation and agent visibility
+
+**Primary navigation:** **Ask**, **Library**, **Settings**.
+
+**Hidden until their sub-project ships for real:**
+- The Graph screen (sub-project 3).
+- The Integrations screen (sub-project 5).
+
+**Agents: no tab and no form.** There is no Agents tab and no "Create Agent" form.
+- **Creating profiles.** Profiles are created in conversation. The assistant proposes the profile inline: name, allowed tools, source scope and model. The user approves it with one click (section 7.3).
+- **Agent activity is shown live inside the conversation's run view**, built from omp RPC events and host-tool events:
+  - every tool step, with its inputs and a result summary;
+  - every spawned sub-agent, either omp's own `task` sub-agents or shodh `delegate` calls, shown as its own lane with its name, task, steps, token cost and outcome, merging back into the parent answer;
+  - citations highlighting as the sentences that use them stream in.
+- **Historical runs** are reviewable from the conversation and from the audit log.
+
+**Removals:**
+- `AgentsPanel.tsx`, the crew-creation UI and the agent metrics dashboard are removed in M6, together with the legacy agent executor they front.
+
 ## 11. Milestones
 
 Each milestone is one or more PRs. Each ships independently with CI green, executing its tests. Order matters: the baseline has to be measured before anything is replaced.
@@ -519,7 +538,7 @@ Each milestone is one or more PRs. Each ships independently with CI green, execu
 | # | Milestone | Ships |
 |---|---|---|
 | M1 | Eval harness and current-pipeline baseline | `shodh-eval`, CUAD subset, synthetic invoice corpus, private-folder YAML runner. Baseline metrics and idle search latency recorded for **today's** pipeline, with run-to-run noise measured |
-| M1.5 | UI foundation | Visual direction, approved via mockups. Steps: split `App-SplitView.tsx` (4,315 lines) into screens with a state store; design tokens and component library; lazy-load heavy libraries (Monaco, Mermaid, three.js, Recharts); Playwright harness with UX-budget baseline; frontend typecheck and lint in CI; Sentry made opt-in |
+| M1.5 | UI foundation | Visual direction, approved via mockups. Steps: split `App-SplitView.tsx` (4,315 lines) into screens with a state store; design tokens and component library; lazy-load heavy libraries (Monaco, Mermaid, three.js, Recharts); Playwright harness with UX-budget baseline; frontend typecheck and lint in CI; Sentry made opt-in; navigation reduced to Ask / Library / Settings; Agents, Graph and Integrations tabs removed from navigation |
 | M2 | Store, inventory and sync | SQLite (SQLCipher plus keychain key), `sources`/`files`, reconciler, watcher, job queue, generations, failure panel, progress. Uses the current parser and chunker |
 | M3 | Parser bake-off, chunker, citations | docling.rs vs xberg ADR, `DocumentParser`, token-based structure-aware chunker, page and span citations, citation preview UI |
 | M4 | Records | `RecordExtractor` v1, records table, `query_records` with coverage reporting |

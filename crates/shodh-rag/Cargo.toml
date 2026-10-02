@@ -51,7 +51,15 @@ sysinfo = "0.30"
 pdf-extract = "0.7"
 lopdf = "0.32"
 zip = "2"
-calamine = "0.24"
+calamine = { version = "0.24", features = ["dates"] }
+csv = "1"
+encoding_rs = "0.8"
+chardetng = "0.1"
+
+# Utilities
+regex = "1"
+walkdir = "2"
+dirs = "5"
 
 # Windows OCR (Windows.Media.Ocr + Windows.Data.Pdf)
 [target.'cfg(windows)'.dependencies]
@@ -64,8 +72,3 @@ windows = { version = "0.58", features = [
     "Foundation",
     "Globalization",
 ] }
-
-# Utilities
-regex = "1"
-walkdir = "2"
-dirs = "5"

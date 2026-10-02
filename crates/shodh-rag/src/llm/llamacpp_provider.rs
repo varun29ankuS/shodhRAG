@@ -4,7 +4,7 @@
 //! Streaming is handled via `spawn_blocking` + mpsc channels since
 //! llama.cpp is synchronous and CPU-bound.
 
-use anyhow::{Result, Context as AnyhowContext, anyhow};
+use anyhow::{anyhow, Context as AnyhowContext, Result};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,11 +18,11 @@ use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
 
+use super::streaming::TokenStream;
 use super::{
     DeviceType, GenerationConfig, LLMProvider, LocalModel, MemoryUsage, ProviderInfo,
     QuantizationType,
 };
-use super::streaming::TokenStream;
 
 /// Information about the loaded model for metadata/info reporting.
 struct ModelInfo {
@@ -65,8 +65,14 @@ impl LlamaCppProvider {
         let model_params = LlamaModelParams::default();
 
         // Load the model
-        let model = LlamaModel::load_from_file(&backend, &gguf_path, &model_params)
-            .map_err(|e| anyhow!("Failed to load GGUF model from {}: {:?}", gguf_path.display(), e))?;
+        let model =
+            LlamaModel::load_from_file(&backend, &gguf_path, &model_params).map_err(|e| {
+                anyhow!(
+                    "Failed to load GGUF model from {}: {:?}",
+                    gguf_path.display(),
+                    e
+                )
+            })?;
 
         let info = ModelInfo {
             name: Self::model_display_name(&model_variant),
@@ -90,12 +96,7 @@ impl LlamaCppProvider {
     /// Resolve GGUF file path from LocalModel variant and cache directory.
     fn resolve_model_path(model: &LocalModel, cache_dir: &Path) -> Result<PathBuf> {
         // If cache_dir itself is a GGUF file, use it directly
-        if cache_dir.is_file()
-            && cache_dir
-                .extension()
-                .map(|e| e == "gguf")
-                .unwrap_or(false)
-        {
+        if cache_dir.is_file() && cache_dir.extension().map(|e| e == "gguf").unwrap_or(false) {
             return Ok(cache_dir.to_path_buf());
         }
 
@@ -167,7 +168,7 @@ impl LlamaCppProvider {
 
     fn model_context_window(model: &LocalModel) -> usize {
         match model {
-            LocalModel::Phi3Mini => 131072,  // 128K context
+            LocalModel::Phi3Mini => 131072, // 128K context
             LocalModel::Phi4 => 16384,
             LocalModel::Mistral7B => 8192,
             LocalModel::Orca2_7B => 4096,
@@ -237,8 +238,14 @@ impl LlamaCppProvider {
                     .map_err(|_| anyhow!("Failed to add token to batch"))?;
             }
 
-            ctx.decode(&mut batch)
-                .map_err(|e| anyhow!("Prompt decode chunk {}-{} failed: {:?}", processed, chunk_end, e))?;
+            ctx.decode(&mut batch).map_err(|e| {
+                anyhow!(
+                    "Prompt decode chunk {}-{} failed: {:?}",
+                    processed,
+                    chunk_end,
+                    e
+                )
+            })?;
 
             processed = chunk_end;
         }
@@ -334,9 +341,16 @@ impl LlamaCppProvider {
 
             // Detect repetition: if the last 200 chars repeat a pattern 3+ times, stop
             if n_decoded > 100 && n_decoded % 50 == 0 {
-                let tail = if output.len() > 300 { &output[output.len()-300..] } else { &output };
+                let tail = if output.len() > 300 {
+                    &output[output.len() - 300..]
+                } else {
+                    &output
+                };
                 if has_repetition(tail) {
-                    tracing::warn!(tokens = n_decoded, "Repetition detected, stopping generation");
+                    tracing::warn!(
+                        tokens = n_decoded,
+                        "Repetition detected, stopping generation"
+                    );
                     break;
                 }
             }

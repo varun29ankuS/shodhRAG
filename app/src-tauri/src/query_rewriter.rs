@@ -3,12 +3,12 @@
 //! Thin wrapper around core library's QueryRewriter for Tauri desktop app.
 //! Handles conversation context extraction and LLM integration.
 
-use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use crate::llm_commands::LLMState;
 use crate::rag_commands::RagState;
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use shodh_rag::rag::{ConversationContext, QueryRewriter};
 use tauri::State;
-use shodh_rag::rag::{QueryRewriter, ConversationContext};
 
 // Re-export core library types with camelCase for frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,7 +170,7 @@ pub async fn search_with_query_rewriting(
     }
 
     // Step 3: Analyze query to determine search strategy (web vs local)
-    use shodh_rag::rag::retrieval_decision::{QueryAnalyzer, RetrievalStrategy, CorpusStats};
+    use shodh_rag::rag::retrieval_decision::{CorpusStats, QueryAnalyzer, RetrievalStrategy};
 
     let search_query = if rewritten.used_context {
         &rewritten.rewritten_query
@@ -204,7 +204,12 @@ pub async fn search_with_query_rewriting(
         if let Some(ref sid) = space_id {
             results
                 .into_iter()
-                .filter(|r| r.metadata.get("space_id").map(|s| s == sid).unwrap_or(false))
+                .filter(|r| {
+                    r.metadata
+                        .get("space_id")
+                        .map(|s| s == sid)
+                        .unwrap_or(false)
+                })
                 .collect()
         } else {
             results
@@ -216,7 +221,10 @@ pub async fn search_with_query_rewriting(
     // Re-rank results to boost documents with query terms in actual content vs metadata
     boost_content_over_metadata(&mut filtered_results, search_query);
 
-    tracing::info!("Found {} results after content boosting", filtered_results.len());
+    tracing::info!(
+        "Found {} results after content boosting",
+        filtered_results.len()
+    );
 
     // Convert to frontend format
     let search_results: Vec<crate::rag_commands::SearchResult> = filtered_results
@@ -308,23 +316,30 @@ fn boost_content_over_metadata(
         .collect();
 
     // Calculate boost scores for each result
-    let mut scored_results: Vec<(f32, shodh_rag::comprehensive_system::ComprehensiveResult)> = Vec::new();
+    let mut scored_results: Vec<(f32, shodh_rag::comprehensive_system::ComprehensiveResult)> =
+        Vec::new();
 
     for (idx, result) in results.drain(..).enumerate() {
         let mut boost_score = result.score; // Start with original score
 
         // Check if query terms appear in actual content (snippet)
         let snippet_lower = result.snippet.to_lowercase();
-        let content_matches: usize = query_terms.iter()
+        let content_matches: usize = query_terms
+            .iter()
             .filter(|term| snippet_lower.contains(term.as_str()))
             .count();
 
         // Check if query terms appear only in file_path metadata
-        let file_path = result.metadata.get("file_path")
+        let file_path = result
+            .metadata
+            .get("file_path")
             .map(|s| s.to_lowercase())
             .unwrap_or_default();
-        let path_only_matches: usize = query_terms.iter()
-            .filter(|term| !snippet_lower.contains(term.as_str()) && file_path.contains(term.as_str()))
+        let path_only_matches: usize = query_terms
+            .iter()
+            .filter(|term| {
+                !snippet_lower.contains(term.as_str()) && file_path.contains(term.as_str())
+            })
             .count();
 
         // Boost calculation:
@@ -337,18 +352,30 @@ fn boost_content_over_metadata(
 
         // Debug logging for first few results or results with content matches
         if idx < 3 || content_matches > 0 {
-            let file_name = result.metadata.get("file_name")
+            let file_name = result
+                .metadata
+                .get("file_name")
                 .map(|s| s.as_str())
-                .or_else(|| result.metadata.get("file_path").and_then(|p| {
-                    std::path::Path::new(p).file_name()
-                        .and_then(|n| n.to_str())
-                }))
+                .or_else(|| {
+                    result
+                        .metadata
+                        .get("file_path")
+                        .and_then(|p| std::path::Path::new(p).file_name().and_then(|n| n.to_str()))
+                })
                 .unwrap_or("unknown");
 
             tracing::info!("  File: {}", file_name);
             tracing::info!("    Original score: {:.3}", result.score);
-            tracing::info!("    Content matches: {} (boost: +{:.3})", content_matches, content_boost);
-            tracing::info!("    Path-only matches: {} (boost: +{:.3})", path_only_matches, path_boost);
+            tracing::info!(
+                "    Content matches: {} (boost: +{:.3})",
+                content_matches,
+                content_boost
+            );
+            tracing::info!(
+                "    Path-only matches: {} (boost: +{:.3})",
+                path_only_matches,
+                path_boost
+            );
             tracing::info!("    Final score: {:.3}", boost_score);
         }
 
@@ -359,7 +386,10 @@ fn boost_content_over_metadata(
     scored_results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     // Extract results back
-    *results = scored_results.into_iter().map(|(_, result)| result).collect();
+    *results = scored_results
+        .into_iter()
+        .map(|(_, result)| result)
+        .collect();
 
     tracing::info!("=== Content Boosting Complete ===\n");
 }

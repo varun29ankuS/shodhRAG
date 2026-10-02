@@ -73,7 +73,9 @@ pub struct ToolRegistry {
 impl ToolRegistry {
     /// Create a new tool registry with permission manager
     pub fn new() -> Self {
-        use super::filesystem_tools::{PermissionManager, ReadFileTool, WriteFileTool, ListDirectoryTool};
+        use super::filesystem_tools::{
+            ListDirectoryTool, PermissionManager, ReadFileTool, WriteFileTool,
+        };
         use std::sync::Arc as StdArc;
 
         let rag_engine_ref = new_shared_rag_engine();
@@ -89,7 +91,9 @@ impl ToolRegistry {
         let permission_manager = StdArc::new(PermissionManager::new());
 
         // Register built-in tools
-        registry.register(Arc::new(RAGSearchTool { rag_engine: rag_engine_ref }));
+        registry.register(Arc::new(RAGSearchTool {
+            rag_engine: rag_engine_ref,
+        }));
         registry.register(Arc::new(CodeAnalysisTool));
         registry.register(Arc::new(DocumentGenerationTool));
 
@@ -115,7 +119,10 @@ impl ToolRegistry {
     }
 
     /// Inject the RAG engine into the calendar store so mutations trigger semantic indexing.
-    pub async fn set_calendar_rag_engine(&self, engine: Arc<AsyncRwLock<crate::rag_engine::RAGEngine>>) {
+    pub async fn set_calendar_rag_engine(
+        &self,
+        engine: Arc<AsyncRwLock<crate::rag_engine::RAGEngine>>,
+    ) {
         self.calendar_store.write().await.set_rag_engine(engine);
     }
 
@@ -217,9 +224,7 @@ impl AgentTool for RAGSearchTool {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing query parameter"))?;
 
-        let top_k = input.parameters["top_k"]
-            .as_i64()
-            .unwrap_or(5) as usize;
+        let top_k = input.parameters["top_k"].as_i64().unwrap_or(5) as usize;
 
         // Use the live RAG engine to perform real document search
         let engine_guard = self.rag_engine.read().await;
@@ -264,7 +269,13 @@ impl AgentTool for RAGSearchTool {
                         let header = if heading.is_empty() {
                             format!("[{}] {} (score: {:.3})", i + 1, r.title, r.score)
                         } else {
-                            format!("[{}] {} > {} (score: {:.3})", i + 1, r.title, heading, r.score)
+                            format!(
+                                "[{}] {} > {} (score: {:.3})",
+                                i + 1,
+                                r.title,
+                                heading,
+                                r.score
+                            )
                         };
                         format!("{}\n{}\n", header, r.text)
                     })
@@ -445,13 +456,20 @@ impl AgentTool for DocumentGenerationTool {
                 success: false,
                 output: format!("Unsupported format: {}", format),
                 data: serde_json::json!({ "error": "Invalid format" }),
-                error: Some(format!("Format must be one of: {}", valid_formats.join(", "))),
+                error: Some(format!(
+                    "Format must be one of: {}",
+                    valid_formats.join(", ")
+                )),
             });
         }
 
         Ok(ToolResult {
             success: true,
-            output: format!("Document generation request created: {} format with {} characters", format, content.len()),
+            output: format!(
+                "Document generation request created: {} format with {} characters",
+                format,
+                content.len()
+            ),
             data: serde_json::json!({
                 "format": format,
                 "output_path": output_path,
@@ -481,7 +499,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_rag_search_tool_without_engine() {
-        let tool = RAGSearchTool { rag_engine: new_shared_rag_engine() };
+        let tool = RAGSearchTool {
+            rag_engine: new_shared_rag_engine(),
+        };
         let input = ToolInput {
             tool_id: "rag_search".to_string(),
             parameters: serde_json::json!({

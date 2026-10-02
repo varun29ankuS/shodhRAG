@@ -1,12 +1,12 @@
 //! Storage management commands for proper document lifecycle
 //! Ensures consistency between spaces and documents
 
-use tauri::State;
 use crate::rag_commands::RagState;
 use crate::space_manager::SpaceManager;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use tauri::State;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,10 +41,12 @@ pub async fn get_storage_stats(
     let rag_guard = state.rag.read().await;
     let rag = &*rag_guard;
     let stats = rag.get_statistics().await.unwrap_or_default();
-    let total_chunks: usize = stats.get("total_chunks").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let total_chunks: usize = stats
+        .get("total_chunks")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
 
-    let spaces = space_manager.get_spaces()
-        .map_err(|e| e.to_string())?;
+    let spaces = space_manager.get_spaces().map_err(|e| e.to_string())?;
 
     let total_docs = rag.count_documents().await.unwrap_or(0);
 
@@ -82,35 +84,42 @@ pub async fn get_space_documents_detailed(
         space_id: Some(space_id.clone()),
         ..Default::default()
     };
-    let documents = rag.list_documents(Some(filter), 10000)
+    let documents = rag
+        .list_documents(Some(filter), 10000)
         .await
         .map_err(|e| e.to_string())?;
 
     // Get space name
     let spaces = space_manager.get_spaces().map_err(|e| e.to_string())?;
-    let space_name = spaces.iter()
+    let space_name = spaces
+        .iter()
         .find(|s| s.id == space_id)
         .map(|s| s.name.clone())
         .unwrap_or_else(|| "Unknown".to_string());
 
-    let detailed_docs: Vec<DetailedDocument> = documents.into_iter()
-        .map(|doc| {
-            DetailedDocument {
-                id: doc.id.to_string(),
-                title: doc.metadata.get("title")
-                    .or_else(|| doc.metadata.get("file_name"))
-                    .unwrap_or(&"Untitled".to_string())
-                    .clone(),
-                space_id: space_id.clone(),
-                space_name: space_name.clone(),
-                size_kb: doc.snippet.len() as f64 / 1024.0,
-                chunks: doc.metadata.get("chunk_count")
-                    .and_then(|c| c.parse::<usize>().ok())
-                    .unwrap_or(1),
-                added_at: doc.metadata.get("indexed_at")
-                    .unwrap_or(&chrono::Utc::now().to_rfc3339())
-                    .clone(),
-            }
+    let detailed_docs: Vec<DetailedDocument> = documents
+        .into_iter()
+        .map(|doc| DetailedDocument {
+            id: doc.id.to_string(),
+            title: doc
+                .metadata
+                .get("title")
+                .or_else(|| doc.metadata.get("file_name"))
+                .unwrap_or(&"Untitled".to_string())
+                .clone(),
+            space_id: space_id.clone(),
+            space_name: space_name.clone(),
+            size_kb: doc.snippet.len() as f64 / 1024.0,
+            chunks: doc
+                .metadata
+                .get("chunk_count")
+                .and_then(|c| c.parse::<usize>().ok())
+                .unwrap_or(1),
+            added_at: doc
+                .metadata
+                .get("indexed_at")
+                .unwrap_or(&chrono::Utc::now().to_rfc3339())
+                .clone(),
         })
         .collect();
 
@@ -138,8 +147,11 @@ pub async fn delete_documents_batch(
             // First try treating it as a doc_id directly.
             let doc_id = {
                 let predicate = format!("doc_id = '{}'", id.replace('\'', "''"));
-                let is_doc_id = rag.list_documents_raw(Some(&predicate), 1).await
-                    .map(|c| !c.is_empty()).unwrap_or(false);
+                let is_doc_id = rag
+                    .list_documents_raw(Some(&predicate), 1)
+                    .await
+                    .map(|c| !c.is_empty())
+                    .unwrap_or(false);
                 if is_doc_id {
                     id.clone()
                 } else {
@@ -187,7 +199,8 @@ pub async fn clear_space_documents(
     let mut rag_guard = state.rag.write().await;
     let rag = &mut *rag_guard;
 
-    let deleted = rag.delete_by_space_id(&space_id)
+    let deleted = rag
+        .delete_by_space_id(&space_id)
         .await
         .map_err(|e| format!("Failed to delete documents: {}", e))?;
 
@@ -200,7 +213,8 @@ pub async fn clear_space_documents(
     }
 
     // Save spaces
-    space_manager.save_spaces()
+    space_manager
+        .save_spaces()
         .map_err(|e| format!("Failed to save spaces: {}", e))?;
 
     Ok(deleted)
@@ -208,9 +222,7 @@ pub async fn clear_space_documents(
 
 /// Optimize storage by triggering index creation if needed
 #[tauri::command]
-pub async fn optimize_storage(
-    state: State<'_, RagState>,
-) -> Result<String, String> {
+pub async fn optimize_storage(state: State<'_, RagState>) -> Result<String, String> {
     tracing::info!("Optimizing storage...");
 
     let rag_guard = state.rag.read().await;
@@ -229,9 +241,7 @@ pub async fn optimize_storage(
 
 /// Create a backup of the current database
 #[tauri::command]
-pub async fn create_backup(
-    state: State<'_, RagState>,
-) -> Result<String, String> {
+pub async fn create_backup(state: State<'_, RagState>) -> Result<String, String> {
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
     let backup_name = format!("backup_{}", timestamp);
 
@@ -247,8 +257,7 @@ pub async fn create_backup(
     let dest = backup_dir.join(&backup_name);
 
     if source.exists() {
-        copy_dir_all(source, &dest)
-            .map_err(|e| format!("Failed to create backup: {}", e))?;
+        copy_dir_all(source, &dest).map_err(|e| format!("Failed to create backup: {}", e))?;
     }
 
     // Also backup spaces.json
@@ -264,9 +273,7 @@ pub async fn create_backup(
 
 /// Restore from a backup
 #[tauri::command]
-pub async fn restore_backup(
-    backup_name: String,
-) -> Result<String, String> {
+pub async fn restore_backup(backup_name: String) -> Result<String, String> {
     let backup_path = Path::new("./backups").join(&backup_name);
 
     if !backup_path.exists() {
@@ -282,13 +289,11 @@ pub async fn restore_backup(
 
     // Remove current data
     if dest.exists() {
-        fs::remove_dir_all(dest)
-            .map_err(|e| format!("Failed to remove current data: {}", e))?;
+        fs::remove_dir_all(dest).map_err(|e| format!("Failed to remove current data: {}", e))?;
     }
 
     // Copy backup
-    copy_dir_all(source, dest)
-        .map_err(|e| format!("Failed to restore backup: {}", e))?;
+    copy_dir_all(source, dest).map_err(|e| format!("Failed to restore backup: {}", e))?;
 
     // Restore spaces.json
     let spaces_backup = backup_path.join("spaces.json");
@@ -341,15 +346,19 @@ async fn update_space_counts(
     let rag = &*rag_guard;
 
     // List all chunks to count per space (not search)
-    let all_results = rag.list_documents(None, 100000)
-        .await
-        .unwrap_or_default();
+    let all_results = rag.list_documents(None, 100000).await.unwrap_or_default();
 
     let mut spaces = space_manager.spaces.lock().map_err(|e| e.to_string())?;
 
     for space in spaces.iter_mut() {
-        let count = all_results.iter()
-            .filter(|r| r.metadata.get("space_id").map(|s| s == &space.id).unwrap_or(false))
+        let count = all_results
+            .iter()
+            .filter(|r| {
+                r.metadata
+                    .get("space_id")
+                    .map(|s| s == &space.id)
+                    .unwrap_or(false)
+            })
             .count();
         space.document_count = count;
     }

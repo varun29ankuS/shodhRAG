@@ -1,6 +1,6 @@
 //! Auto-start Telegram bot bridge
 
-use std::process::{Command, Child};
+use std::process::{Child, Command};
 use std::sync::Mutex;
 use tauri::State;
 
@@ -40,9 +40,15 @@ pub async fn start_telegram_bot(
 
     // Get the bridge directory - try multiple possible locations
     let possible_dirs = vec![
-        std::env::current_dir().ok().map(|d| d.join("telegram-bridge")),
-        std::env::current_dir().ok().map(|d| d.join("..").join("telegram-bridge")),
-        std::env::current_dir().ok().map(|d| d.join("..").join("..").join("telegram-bridge")),
+        std::env::current_dir()
+            .ok()
+            .map(|d| d.join("telegram-bridge")),
+        std::env::current_dir()
+            .ok()
+            .map(|d| d.join("..").join("telegram-bridge")),
+        std::env::current_dir()
+            .ok()
+            .map(|d| d.join("..").join("..").join("telegram-bridge")),
         Some(std::path::PathBuf::from("./telegram-bridge")),
         Some(std::path::PathBuf::from("../telegram-bridge")),
         Some(std::path::PathBuf::from("../../telegram-bridge")),
@@ -54,7 +60,10 @@ pub async fn start_telegram_bot(
         .find(|dir| dir.exists())
         .ok_or_else(|| {
             let current = std::env::current_dir().unwrap_or_default();
-            format!("telegram-bridge directory not found. Current dir: {:?}", current)
+            format!(
+                "telegram-bridge directory not found. Current dir: {:?}",
+                current
+            )
         })?;
 
     tracing::info!("📂 Using bridge directory: {:?}", bridge_dir);
@@ -123,9 +132,7 @@ pub async fn start_telegram_bot(
 }
 
 #[tauri::command]
-pub async fn stop_telegram_bot(
-    state: State<'_, TelegramBotState>,
-) -> Result<(), String> {
+pub async fn stop_telegram_bot(state: State<'_, TelegramBotState>) -> Result<(), String> {
     tracing::info!("Stopping Telegram bot...");
 
     let child = {
@@ -138,7 +145,9 @@ pub async fn stop_telegram_bot(
         // Wait for process to exit without blocking the async runtime
         tokio::task::spawn_blocking(move || {
             let _ = child.wait();
-        }).await.ok();
+        })
+        .await
+        .ok();
         tracing::info!("Telegram bot stopped");
     } else {
         tracing::info!("No Telegram bot process was running");
@@ -155,9 +164,7 @@ pub async fn stop_telegram_bot(
 }
 
 #[tauri::command]
-pub async fn check_telegram_bot_status(
-    state: State<'_, TelegramBotState>,
-) -> Result<bool, String> {
+pub async fn check_telegram_bot_status(state: State<'_, TelegramBotState>) -> Result<bool, String> {
     let process_guard = state.process.lock().unwrap();
     Ok(process_guard.is_some())
 }

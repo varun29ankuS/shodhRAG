@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::config::RAGConfig;
 use crate::embeddings::e5::{E5Config, E5Embeddings};
 use crate::embeddings::EmbeddingModel;
-use crate::processing::chunker::TextChunker;
+use crate::processing::chunker::{ContextualChunkResult, TextChunker};
 use crate::processing::parser::DocumentParser;
 use crate::reranking::CrossEncoderReranker;
 use crate::search::hybrid::{score_aware_rrf, HybridSource};
@@ -18,55 +18,97 @@ use crate::types::{
     ChunkRecord, Citation, ComprehensiveResult, DocumentFormat, MetadataFilter, SimpleSearchResult,
 };
 
+/// One document's chunks, embedded and converted to storage records but not
+/// yet written. Lets ingestion finish all fallible work before touching the index.
+struct PreparedDocument {
+    title: String,
+    space_id: String,
+    records: Vec<ChunkRecord>,
+    fts_batch: Vec<(String, String, String, String)>,
+    chunk_ids: Vec<Uuid>,
+}
+
 /// Normalize a file path for consistent storage and lookup across Windows/Unix.
 /// Converts backslashes to forward slashes and lowercases on Windows so that
 /// `delete_by_source` predicates always match regardless of how the path was
 /// originally formatted.
 fn normalize_source_path(path: &Path) -> String {
     let s = path.display().to_string().replace('\\', "/");
-    if cfg!(windows) { s.to_lowercase() } else { s }
+    if cfg!(windows) {
+        s.to_lowercase()
+    } else {
+        s
+    }
 }
 
 // Compiled-once regex patterns for structured field extraction at ingest time.
 // Extracting emails, phones, PAN, GSTIN, amounts, and dates from chunk text
 // at zero query-time cost — no LLM needed for field-level extraction.
-static RE_EMAIL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}").unwrap()
-});
-static RE_PHONE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:\+91[\s\-]?)?(?:\d[\s\-]?){10}").unwrap()
-});
-static RE_PAN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b[A-Z]{5}\d{4}[A-Z]\b").unwrap()
-});
-static RE_GSTIN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b\d{2}[A-Z]{5}\d{4}[A-Z]\d[Z][A-Z0-9]\b").unwrap()
-});
-static RE_AMOUNT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:Rs\.?|INR|₹)\s*[\d,]+(?:\.\d{1,2})?").unwrap()
-});
-static RE_DATE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4}\b").unwrap()
-});
+static RE_EMAIL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}").unwrap());
+static RE_PHONE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:\+91[\s\-]?)?(?:\d[\s\-]?){10}").unwrap());
+static RE_PAN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[A-Z]{5}\d{4}[A-Z]\b").unwrap());
+static RE_GSTIN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b\d{2}[A-Z]{5}\d{4}[A-Z]\d[Z][A-Z0-9]\b").unwrap());
+static RE_AMOUNT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:Rs\.?|INR|₹)\s*[\d,]+(?:\.\d{1,2})?").unwrap());
+static RE_DATE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4}\b").unwrap());
 static RE_INVOICE_NO: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:invoice|inv|bill)[\s.#:_\-]*(?:no\.?|number)?[\s.#:_\-]*([A-Z0-9/\-]+)").unwrap()
+    Regex::new(r"(?i)(?:invoice|inv|bill)[\s.#:_\-]*(?:no\.?|number)?[\s.#:_\-]*([A-Z0-9/\-]+)")
+        .unwrap()
 });
 
 /// Extract structured fields from chunk text using regex.
 /// Returns key-value pairs to merge into chunk metadata.
 /// This runs once at ingest time — zero cost at query time.
+/// Record a chunk's source page in its metadata. Paged chunks get `page`,
+/// `page_start` and `page_end` (a chunk is produced from exactly one page, so
+/// start and end are equal; the range keys let consumers treat merged/expanded
+/// results uniformly). Unpaged chunks get no page keys.
+fn insert_page_metadata(meta: &mut HashMap<String, String>, page: Option<usize>) {
+    if let Some(page) = page {
+        let page = page.to_string();
+        meta.insert("page".to_string(), page.clone());
+        meta.insert("page_start".to_string(), page.clone());
+        meta.insert("page_end".to_string(), page);
+    }
+}
+
+/// Human-readable page label (`"3"` or `"3-5"`) from chunk metadata written by
+/// [`insert_page_metadata`]. Returns `None` for unpaged chunks.
+pub fn page_numbers_from_metadata(meta: &HashMap<String, String>) -> Option<String> {
+    let non_empty = |key: &str| meta.get(key).map(|v| v.trim()).filter(|v| !v.is_empty());
+    match (non_empty("page_start"), non_empty("page_end")) {
+        (Some(start), Some(end)) if start != end => Some(format!("{}-{}", start, end)),
+        (Some(start), _) => Some(start.to_string()),
+        (None, Some(end)) => Some(end.to_string()),
+        (None, None) => non_empty("page").map(str::to_string),
+    }
+}
+
 fn extract_structured_fields(text: &str) -> HashMap<String, String> {
     let mut fields = HashMap::new();
 
     // Emails
-    let emails: Vec<String> = RE_EMAIL.find_iter(text).map(|m| m.as_str().to_string()).collect();
+    let emails: Vec<String> = RE_EMAIL
+        .find_iter(text)
+        .map(|m| m.as_str().to_string())
+        .collect();
     if !emails.is_empty() {
         fields.insert("extracted_emails".to_string(), emails.join(", "));
     }
 
     // Phone numbers (basic cleanup: strip non-digit noise)
-    let phones: Vec<String> = RE_PHONE.find_iter(text)
-        .map(|m| m.as_str().chars().filter(|c| c.is_ascii_digit() || *c == '+').collect::<String>())
+    let phones: Vec<String> = RE_PHONE
+        .find_iter(text)
+        .map(|m| {
+            m.as_str()
+                .chars()
+                .filter(|c| c.is_ascii_digit() || *c == '+')
+                .collect::<String>()
+        })
         .filter(|p| p.len() >= 10)
         .collect();
     if !phones.is_empty() {
@@ -74,25 +116,37 @@ fn extract_structured_fields(text: &str) -> HashMap<String, String> {
     }
 
     // PAN numbers
-    let pans: Vec<String> = RE_PAN.find_iter(text).map(|m| m.as_str().to_string()).collect();
+    let pans: Vec<String> = RE_PAN
+        .find_iter(text)
+        .map(|m| m.as_str().to_string())
+        .collect();
     if !pans.is_empty() {
         fields.insert("extracted_pan".to_string(), pans.join(", "));
     }
 
     // GSTIN
-    let gstins: Vec<String> = RE_GSTIN.find_iter(text).map(|m| m.as_str().to_string()).collect();
+    let gstins: Vec<String> = RE_GSTIN
+        .find_iter(text)
+        .map(|m| m.as_str().to_string())
+        .collect();
     if !gstins.is_empty() {
         fields.insert("extracted_gstin".to_string(), gstins.join(", "));
     }
 
     // Amounts
-    let amounts: Vec<String> = RE_AMOUNT.find_iter(text).map(|m| m.as_str().to_string()).collect();
+    let amounts: Vec<String> = RE_AMOUNT
+        .find_iter(text)
+        .map(|m| m.as_str().to_string())
+        .collect();
     if !amounts.is_empty() {
         fields.insert("extracted_amounts".to_string(), amounts.join("; "));
     }
 
     // Dates
-    let dates: Vec<String> = RE_DATE.find_iter(text).map(|m| m.as_str().to_string()).collect();
+    let dates: Vec<String> = RE_DATE
+        .find_iter(text)
+        .map(|m| m.as_str().to_string())
+        .collect();
     if !dates.is_empty() {
         fields.insert("extracted_dates".to_string(), dates.join(", "));
     }
@@ -129,22 +183,19 @@ impl RAGEngine {
         .await
         .context("Failed to initialize LanceDB store")?;
 
-        let text_search = TextSearch::new(
-            config.data_dir.to_str().unwrap_or("./data"),
-        )
-        .context("Failed to initialize Tantivy search")?;
+        let text_search = TextSearch::new(config.data_dir.to_str().unwrap_or("./data"))
+            .context("Failed to initialize Tantivy search")?;
 
-        let embeddings: Box<dyn EmbeddingModel> =
-            if config.embedding.use_e5 {
-                let e5_config = E5Config::auto_detect(&config.embedding.model_dir)
-                    .ok_or_else(|| anyhow::anyhow!("E5 model not found at configured path"))?;
-                Box::new(E5Embeddings::new(e5_config).context("Failed to load E5 embeddings")?)
-            } else {
-                return Err(anyhow::anyhow!(
-                    "No embedding model available. Place E5 model in: {}",
-                    config.embedding.model_dir.display()
-                ));
-            };
+        let embeddings: Box<dyn EmbeddingModel> = if config.embedding.use_e5 {
+            let e5_config = E5Config::auto_detect(&config.embedding.model_dir)
+                .ok_or_else(|| anyhow::anyhow!("E5 model not found at configured path"))?;
+            Box::new(E5Embeddings::new(e5_config).context("Failed to load E5 embeddings")?)
+        } else {
+            return Err(anyhow::anyhow!(
+                "No embedding model available. Place E5 model in: {}",
+                config.embedding.model_dir.display()
+            ));
+        };
 
         let chunker = TextChunker::new(
             config.chunking.chunk_size,
@@ -157,11 +208,17 @@ impl RAGEngine {
             let reranker_dir = config.embedding.model_dir.join("ms-marco-MiniLM-L6-v2");
             match CrossEncoderReranker::new(&reranker_dir) {
                 Ok(r) => {
-                    tracing::info!("Cross-encoder reranker loaded from {}", reranker_dir.display());
+                    tracing::info!(
+                        "Cross-encoder reranker loaded from {}",
+                        reranker_dir.display()
+                    );
                     Some(r)
                 }
                 Err(e) => {
-                    tracing::warn!("Reranker not available ({}), continuing without reranking", e);
+                    tracing::warn!(
+                        "Reranker not available ({}), continuing without reranking",
+                        e
+                    );
                     None
                 }
             }
@@ -201,7 +258,7 @@ impl RAGEngine {
     pub async fn add_document(
         &mut self,
         content: &str,
-        format: DocumentFormat,
+        _format: DocumentFormat,
         metadata: HashMap<String, String>,
         citation: Citation,
     ) -> Result<Vec<Uuid>> {
@@ -214,50 +271,146 @@ impl RAGEngine {
             .or_else(|| metadata.get("source"))
             .cloned()
             .unwrap_or_default();
-        let space_id = metadata
-            .get("space_id")
-            .cloned()
-            .unwrap_or_default();
-
-        let doc_id = Uuid::new_v4();
 
         // Contextual chunking: prepend document-level context to each chunk
         // before embedding for better retrieval (Anthropic's contextual retrieval approach)
         let chunks = self.chunker.chunk_with_context(content, &title, &source);
+        let prepared = self.prepare_chunks(chunks, title, source, &metadata, &citation)?;
+        self.store_prepared(prepared).await
+    }
 
+    /// Ingest a document from a file path.
+    ///
+    /// The file is parsed, chunked and embedded *before* any previously indexed
+    /// chunks for the same source are removed, so a file that fails to parse or
+    /// embed leaves its existing index entries intact. Once the replacement is
+    /// ready, old chunks are deleted and the new ones inserted, which keeps
+    /// re-indexing idempotent (no duplicate copies of the same file).
+    pub async fn add_document_from_file(
+        &mut self,
+        path: &Path,
+        metadata: HashMap<String, String>,
+    ) -> Result<Vec<Uuid>> {
+        let source = normalize_source_path(path);
+
+        let parsed = self.parser.parse_file(path)?;
+
+        let mut merged_metadata = parsed.metadata;
+        for (k, v) in metadata {
+            merged_metadata.insert(k, v);
+        }
+        // Ensure file_path in metadata matches the canonical source used for
+        // deletion below. This prevents mismatches if the caller passes a
+        // differently-formatted path string.
+        merged_metadata.insert("file_path".to_string(), source.clone());
+
+        let citation = Citation {
+            title: parsed.title.clone(),
+            source: source.clone(),
+            ..Citation::default()
+        };
+        let title = merged_metadata
+            .get("title")
+            .cloned()
+            .unwrap_or_else(|| parsed.title.clone());
+
+        // Use structure-aware chunking for documents with structured data (PDF forms,
+        // spreadsheet tables, relationships). Keeps related data together as atomic units
+        // instead of scattering them across naive sliding-window chunks.
+        let chunks = if parsed.structured_sections.is_empty() {
+            self.chunker
+                .chunk_with_context(&parsed.content, &title, &source)
+        } else {
+            self.chunker
+                .chunk_structured(&parsed.structured_sections, &title, &source)
+        };
+        let prepared =
+            self.prepare_chunks(chunks, title, source.clone(), &merged_metadata, &citation)?;
+
+        // Replacement is fully prepared — now drop the previous version of this file.
+        self.remove_source_chunks(&source).await?;
+
+        self.store_prepared(prepared).await
+    }
+
+    /// Remove every stored chunk for `source` from both LanceDB and Tantivy.
+    async fn remove_source_chunks(&mut self, source: &str) -> Result<()> {
+        if let Err(e) = self.store.delete_by_source(source).await {
+            tracing::warn!(
+                source = source,
+                error = %e,
+                "Failed to delete previous chunks from LanceDB before re-indexing"
+            );
+        }
+        self.text_search.delete_by_source(source)?;
+        self.text_search.commit()?;
+        Ok(())
+    }
+
+    /// Embed chunks and build the storage records for one document without
+    /// touching the stores. Fails (with nothing written) if embedding fails.
+    fn prepare_chunks(
+        &self,
+        chunks: Vec<ContextualChunkResult>,
+        title: String,
+        source: String,
+        metadata: &HashMap<String, String>,
+        citation: &Citation,
+    ) -> Result<PreparedDocument> {
+        let space_id = metadata.get("space_id").cloned().unwrap_or_default();
         if chunks.is_empty() {
-            return Ok(Vec::new());
+            return Ok(PreparedDocument {
+                title,
+                space_id,
+                records: Vec::new(),
+                fts_batch: Vec::new(),
+                chunk_ids: Vec::new(),
+            });
         }
 
-        // Embed the contextualized text (with document context prefix) for better vector representation
-        let chunk_texts: Vec<&str> = chunks.iter().map(|c| c.contextualized_text.as_str()).collect();
+        // Embed the contextualized text (with document context prefix) for better
+        // vector representation
+        let chunk_texts: Vec<&str> = chunks
+            .iter()
+            .map(|c| c.contextualized_text.as_str())
+            .collect();
         let embeddings = self.embeddings.embed_documents(&chunk_texts)?;
 
-        let citation_json =
-            serde_json::to_string(&citation).unwrap_or_else(|_| "{}".to_string());
-        let metadata_json =
-            serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string());
+        let doc_id = Uuid::new_v4();
+        let metadata_json = serde_json::to_string(metadata).unwrap_or_else(|_| "{}".to_string());
         let now = chrono::Utc::now().timestamp();
 
-        let mut chunk_records = Vec::with_capacity(chunks.len());
+        let mut records = Vec::with_capacity(chunks.len());
         let mut fts_batch = Vec::with_capacity(chunks.len());
         let mut chunk_ids = Vec::with_capacity(chunks.len());
 
-        for (i, (chunk, embedding)) in chunks.iter().zip(embeddings.into_iter()).enumerate() {
+        for (i, (chunk, embedding)) in chunks.iter().zip(embeddings).enumerate() {
             let chunk_id = chunk.id;
             chunk_ids.push(chunk_id);
 
-            // Extract structured fields (emails, phones, etc.) from chunk text
-            let mut per_chunk_meta: HashMap<String, String> = metadata.clone();
-            let extracted = extract_structured_fields(&chunk.text);
-            for (k, v) in &extracted {
-                per_chunk_meta.insert(k.clone(), v.clone());
+            let mut per_chunk_meta = metadata.clone();
+            if let Some(heading) = &chunk.heading {
+                per_chunk_meta.insert("chunk_type".to_string(), heading.clone());
+                per_chunk_meta.insert("heading".to_string(), heading.clone());
             }
-            let per_chunk_meta_json = serde_json::to_string(&per_chunk_meta)
-                .unwrap_or_else(|_| metadata_json.clone());
+            insert_page_metadata(&mut per_chunk_meta, chunk.page);
+            // Extract structured fields (emails, phones, etc.) at ingest time
+            for (k, v) in extract_structured_fields(&chunk.text) {
+                per_chunk_meta.insert(k, v);
+            }
+            let per_chunk_meta_json =
+                serde_json::to_string(&per_chunk_meta).unwrap_or_else(|_| metadata_json.clone());
+
+            // Citation is stored per chunk so its page survives into search results.
+            let chunk_citation = Citation {
+                page_numbers: chunk.page.map(|p| p.to_string()),
+                ..citation.clone()
+            };
+            let citation_json =
+                serde_json::to_string(&chunk_citation).unwrap_or_else(|_| "{}".to_string());
 
             // Store the original text (without context prefix) for display
-            chunk_records.push(ChunkRecord {
+            records.push(ChunkRecord {
                 id: chunk_id.to_string(),
                 doc_id: doc_id.to_string(),
                 chunk_index: i as u32,
@@ -268,7 +421,7 @@ impl RAGEngine {
                 vector: embedding,
                 space_id: space_id.clone(),
                 metadata_json: per_chunk_meta_json,
-                citation_json: citation_json.clone(),
+                citation_json,
                 created_at: now,
             });
 
@@ -281,158 +434,40 @@ impl RAGEngine {
             ));
         }
 
-        // Insert into LanceDB
+        Ok(PreparedDocument {
+            title,
+            space_id,
+            records,
+            fts_batch,
+            chunk_ids,
+        })
+    }
+
+    /// Write prepared records to LanceDB and Tantivy.
+    async fn store_prepared(&mut self, prepared: PreparedDocument) -> Result<Vec<Uuid>> {
+        if prepared.chunk_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
         self.store
-            .upsert_chunks(chunk_records)
+            .upsert_chunks(prepared.records)
             .await
             .context("Failed to store chunks in LanceDB")?;
-
-        // Index in Tantivy
-        self.text_search.index_chunks_batch(&fts_batch)?;
+        self.text_search.index_chunks_batch(&prepared.fts_batch)?;
         self.text_search.commit()?;
 
         tracing::info!(
             "Ingested document '{}' ({} chunks) into space '{}'",
-            title,
-            chunk_ids.len(),
-            space_id,
+            prepared.title,
+            prepared.chunk_ids.len(),
+            prepared.space_id,
         );
 
-        Ok(chunk_ids)
-    }
-
-    /// Ingest a document from a file path.
-    /// Automatically removes any previously indexed chunks for the same file
-    /// before inserting, preventing duplicates on re-indexing.
-    pub async fn add_document_from_file(
-        &mut self,
-        path: &Path,
-        metadata: HashMap<String, String>,
-    ) -> Result<Vec<Uuid>> {
-        let source = normalize_source_path(path);
-
-        // Delete any existing chunks for this source path to prevent duplicates.
-        // This makes re-indexing idempotent: the same file always produces a clean
-        // replacement rather than accumulating stale copies.
-        self.store.delete_by_source(&source).await.ok();
-        self.text_search.delete_by_source(&source)?;
-        self.text_search.commit()?;
-
-        let parsed = self.parser.parse_file(path)?;
-
-        let mut merged_metadata = parsed.metadata;
-        for (k, v) in metadata {
-            merged_metadata.insert(k, v);
-        }
-        // Ensure file_path in metadata matches the canonical source used for
-        // deletion above. This prevents mismatches if the caller passes a
-        // differently-formatted path string.
-        merged_metadata.insert("file_path".to_string(), source.clone());
-
-        let citation = Citation {
-            title: parsed.title.clone(),
-            source: source.clone(),
-            ..Citation::default()
-        };
-
-        // Use structure-aware chunking for documents with structured data (PDF forms,
-        // spreadsheet tables, relationships). Keeps related data together as atomic units
-        // instead of scattering them across naive sliding-window chunks.
-        if !parsed.structured_sections.is_empty() {
-            let title = merged_metadata
-                .get("title")
-                .cloned()
-                .unwrap_or_else(|| parsed.title.clone());
-            let space_id = merged_metadata
-                .get("space_id")
-                .cloned()
-                .unwrap_or_default();
-
-            let chunks = self.chunker.chunk_structured(
-                &parsed.structured_sections,
-                &title,
-                &source,
-            );
-
-            if chunks.is_empty() {
-                return Ok(Vec::new());
-            }
-
-            let doc_id = Uuid::new_v4();
-            let chunk_texts: Vec<&str> = chunks.iter().map(|c| c.contextualized_text.as_str()).collect();
-            let embeddings = self.embeddings.embed_documents(&chunk_texts)?;
-
-            let citation_json = serde_json::to_string(&citation).unwrap_or_else(|_| "{}".to_string());
-            let metadata_json = serde_json::to_string(&merged_metadata).unwrap_or_else(|_| "{}".to_string());
-            let now = chrono::Utc::now().timestamp();
-
-            let mut chunk_records = Vec::with_capacity(chunks.len());
-            let mut fts_batch = Vec::with_capacity(chunks.len());
-            let mut chunk_ids = Vec::with_capacity(chunks.len());
-
-            for (i, (chunk, embedding)) in chunks.iter().zip(embeddings.into_iter()).enumerate() {
-                let chunk_id = chunk.id;
-                chunk_ids.push(chunk_id);
-
-                let mut per_chunk_meta = merged_metadata.clone();
-                if let Some(heading) = &chunk.heading {
-                    per_chunk_meta.insert("chunk_type".to_string(), heading.clone());
-                }
-                // Extract structured fields (emails, phones, etc.) at ingest time
-                let extracted = extract_structured_fields(&chunk.text);
-                for (k, v) in &extracted {
-                    per_chunk_meta.insert(k.clone(), v.clone());
-                }
-
-                let per_chunk_meta_json = serde_json::to_string(&per_chunk_meta)
-                    .unwrap_or_else(|_| metadata_json.clone());
-
-                chunk_records.push(ChunkRecord {
-                    id: chunk_id.to_string(),
-                    doc_id: doc_id.to_string(),
-                    chunk_index: i as u32,
-                    text: chunk.text.clone(),
-                    title: title.clone(),
-                    source: source.clone(),
-                    heading: chunk.heading.clone().unwrap_or_default(),
-                    vector: embedding,
-                    space_id: space_id.clone(),
-                    metadata_json: per_chunk_meta_json,
-                    citation_json: citation_json.clone(),
-                    created_at: now,
-                });
-
-                fts_batch.push((
-                    chunk_id.to_string(),
-                    chunk.contextualized_text.clone(),
-                    title.clone(),
-                    source.clone(),
-                ));
-            }
-
-            self.store.upsert_chunks(chunk_records).await
-                .context("Failed to store structured chunks in LanceDB")?;
-            self.text_search.index_chunks_batch(&fts_batch)?;
-            self.text_search.commit()?;
-
-            tracing::info!(
-                "Ingested structured document '{}' ({} chunks, {} sections) into space '{}'",
-                title, chunk_ids.len(), parsed.structured_sections.len(), space_id,
-            );
-
-            return Ok(chunk_ids);
-        }
-
-        self.add_document(&parsed.content, parsed.format, merged_metadata, citation)
-            .await
+        Ok(prepared.chunk_ids)
     }
 
     /// Search with hybrid vector + FTS fusion
-    pub async fn search(
-        &self,
-        query: &str,
-        k: usize,
-    ) -> Result<Vec<SimpleSearchResult>> {
+    pub async fn search(&self, query: &str, k: usize) -> Result<Vec<SimpleSearchResult>> {
         let results = self.search_comprehensive(query, k, None).await?;
 
         Ok(results
@@ -451,6 +486,11 @@ impl RAGEngine {
 
                 let title = r.citation.title.clone();
                 let source = r.citation.source.clone();
+                let heading = r
+                    .metadata
+                    .get("heading")
+                    .filter(|h| !h.trim().is_empty())
+                    .cloned();
                 SimpleSearchResult {
                     id: r.id,
                     score: r.score,
@@ -458,7 +498,7 @@ impl RAGEngine {
                     metadata: r.metadata,
                     title,
                     source,
-                    heading: None,
+                    heading,
                     citation: Some(r.citation),
                     doc_id,
                     chunk_id,
@@ -537,11 +577,7 @@ impl RAGEngine {
         // Vector search via LanceDB
         let vector_hits = self
             .store
-            .vector_search(
-                &query_embedding,
-                candidate_count,
-                lance_filter.as_deref(),
-            )
+            .vector_search(&query_embedding, candidate_count, lance_filter.as_deref())
             .await?;
 
         let vector_results: Vec<(String, f32)> = vector_hits
@@ -550,17 +586,13 @@ impl RAGEngine {
             .collect();
 
         // Full-text search via Tantivy — use SAME candidate count for balanced fusion
-        let fts_results = self.text_search.search_filtered(
-            query,
-            candidate_count,
-            source_filter,
-        )?;
+        let fts_results =
+            self.text_search
+                .search_filtered(query, candidate_count, source_filter)?;
 
         // Log source diversity at each stage for diagnostics
-        let vector_sources: std::collections::HashSet<&str> = vector_hits
-            .iter()
-            .map(|h| h.source.as_str())
-            .collect();
+        let vector_sources: std::collections::HashSet<&str> =
+            vector_hits.iter().map(|h| h.source.as_str()).collect();
         tracing::info!(
             query = query,
             candidate_count = candidate_count,
@@ -633,7 +665,7 @@ impl RAGEngine {
             if let Some(hit) = hit {
                 let metadata: HashMap<String, String> =
                     serde_json::from_str(&hit.metadata_json).unwrap_or_default();
-                let citation: Citation =
+                let mut citation: Citation =
                     serde_json::from_str(&hit.citation_json).unwrap_or_default();
 
                 let mut full_metadata = metadata;
@@ -641,6 +673,14 @@ impl RAGEngine {
                 full_metadata.insert("chunk_index".to_string(), hit.chunk_index.to_string());
                 full_metadata.insert("source_file".to_string(), hit.source.clone());
                 full_metadata.insert("space_id".to_string(), hit.space_id.clone());
+                if !hit.heading.trim().is_empty() {
+                    full_metadata
+                        .entry("heading".to_string())
+                        .or_insert_with(|| hit.heading.clone());
+                }
+                if citation.page_numbers.is_none() {
+                    citation.page_numbers = page_numbers_from_metadata(&full_metadata);
+                }
 
                 results.push(ComprehensiveResult {
                     id: Uuid::parse_str(&hit.id).unwrap_or_default(),
@@ -693,8 +733,7 @@ impl RAGEngine {
 
                 match reranker.rerank(query, &candidates, candidates.len()) {
                     Ok(reranked) => {
-                        let rerank_scores: HashMap<String, f32> =
-                            reranked.into_iter().collect();
+                        let rerank_scores: HashMap<String, f32> = reranked.into_iter().collect();
 
                         // Update scores where reranking succeeded; keep original score
                         // for any candidates the cross-encoder couldn't tokenize.
@@ -704,7 +743,9 @@ impl RAGEngine {
                             }
                         }
                         results.sort_by(|a, b| {
-                            b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
+                            b.score
+                                .partial_cmp(&a.score)
+                                .unwrap_or(std::cmp::Ordering::Equal)
                         });
                     }
                     Err(e) => {
@@ -909,17 +950,13 @@ impl RAGEngine {
     ) -> Result<Vec<ComprehensiveResult>> {
         let predicate = filter.as_ref().and_then(|f| f.to_lance_predicate());
 
-        let hits = self
-            .store
-            .list_chunks(predicate.as_deref(), limit)
-            .await?;
+        let hits = self.store.list_chunks(predicate.as_deref(), limit).await?;
 
         let mut results = Vec::with_capacity(hits.len());
         for hit in hits {
             let metadata: HashMap<String, String> =
                 serde_json::from_str(&hit.metadata_json).unwrap_or_default();
-            let citation: Citation =
-                serde_json::from_str(&hit.citation_json).unwrap_or_default();
+            let citation: Citation = serde_json::from_str(&hit.citation_json).unwrap_or_default();
 
             let mut full_metadata = metadata;
             full_metadata.insert("doc_id".to_string(), hit.doc_id.clone());
@@ -1011,12 +1048,7 @@ impl RAGEngine {
 
         let sources: Vec<String> = results
             .iter()
-            .map(|r| {
-                r.metadata
-                    .get("source_file")
-                    .cloned()
-                    .unwrap_or_default()
-            })
+            .map(|r| r.metadata.get("source_file").cloned().unwrap_or_default())
             .collect();
 
         let mut keep = Vec::new();
@@ -1049,7 +1081,11 @@ impl RAGEngine {
             }
         }
         // Restore original order by score (descending)
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 
     /// Hard cap on results per source file to guarantee diversity across documents.
@@ -1078,5 +1114,44 @@ impl RAGEngine {
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+    }
+}
+
+#[cfg(test)]
+mod page_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn paged_chunk_metadata_round_trips_to_page_label() {
+        let mut meta = HashMap::new();
+        insert_page_metadata(&mut meta, Some(7));
+        assert_eq!(meta.get("page").map(String::as_str), Some("7"));
+        assert_eq!(meta.get("page_start").map(String::as_str), Some("7"));
+        assert_eq!(meta.get("page_end").map(String::as_str), Some("7"));
+        assert_eq!(page_numbers_from_metadata(&meta).as_deref(), Some("7"));
+    }
+
+    #[test]
+    fn unpaged_chunk_has_no_page_label() {
+        let mut meta = HashMap::new();
+        insert_page_metadata(&mut meta, None);
+        assert!(meta.is_empty());
+        assert_eq!(page_numbers_from_metadata(&meta), None);
+    }
+
+    #[test]
+    fn page_range_and_legacy_page_key() {
+        let mut meta = HashMap::new();
+        meta.insert("page_start".to_string(), "3".to_string());
+        meta.insert("page_end".to_string(), "5".to_string());
+        assert_eq!(page_numbers_from_metadata(&meta).as_deref(), Some("3-5"));
+
+        let mut legacy = HashMap::new();
+        legacy.insert("page".to_string(), "12".to_string());
+        assert_eq!(page_numbers_from_metadata(&legacy).as_deref(), Some("12"));
+
+        let mut blank = HashMap::new();
+        blank.insert("page".to_string(), "  ".to_string());
+        assert_eq!(page_numbers_from_metadata(&blank), None);
     }
 }

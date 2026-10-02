@@ -4,17 +4,17 @@
 //! pause/resume/cancel support. Progress is emitted via the EventEmitter trait
 //! so the caller (Tauri, HTTP server, CLI) can deliver updates to its UI.
 
+use chrono::Utc;
+use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use chrono::Utc;
 use walkdir::WalkDir;
-use futures::FutureExt;
 
-use crate::rag_engine::RAGEngine;
 use crate::chat::EventEmitter;
+use crate::rag_engine::RAGEngine;
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -57,12 +57,35 @@ pub struct IndexingOptions {
     pub file_types: Vec<String>,
 }
 
+/// A file that could not be indexed, with the reason it failed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileFailure {
+    pub file: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexingResult {
     pub files_processed: usize,
     pub total_chunks: usize,
+    /// Paths of files that failed. Kept for compatibility; see `failures` for reasons.
     pub failed_files: Vec<String>,
+    /// Per-file failure reasons, in the same order as `failed_files`.
+    #[serde(default)]
+    pub failures: Vec<FileFailure>,
     pub duration: u64,
+}
+
+impl IndexingResult {
+    fn empty(duration: u64) -> Self {
+        Self {
+            files_processed: 0,
+            total_chunks: 0,
+            failed_files: Vec::new(),
+            failures: Vec::new(),
+            duration,
+        }
+    }
 }
 
 /// Shared state for pause/cancel signalling across async boundaries.
@@ -83,28 +106,28 @@ impl Default for IndexingState {
 
 impl IndexingState {
     pub fn pause(&self) {
-        *self.is_paused.lock().unwrap() = true;
+        *self.is_paused.lock().unwrap_or_else(|e| e.into_inner()) = true;
     }
 
     pub fn resume(&self) {
-        *self.is_paused.lock().unwrap() = false;
+        *self.is_paused.lock().unwrap_or_else(|e| e.into_inner()) = false;
     }
 
     pub fn cancel(&self) {
-        *self.should_cancel.lock().unwrap() = true;
+        *self.should_cancel.lock().unwrap_or_else(|e| e.into_inner()) = true;
     }
 
     pub fn reset(&self) {
-        *self.should_cancel.lock().unwrap() = false;
-        *self.is_paused.lock().unwrap() = false;
+        *self.should_cancel.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        *self.is_paused.lock().unwrap_or_else(|e| e.into_inner()) = false;
     }
 
     pub fn is_cancelled(&self) -> bool {
-        *self.should_cancel.lock().unwrap()
+        *self.should_cancel.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn is_paused(&self) -> bool {
-        *self.is_paused.lock().unwrap()
+        *self.is_paused.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -139,7 +162,8 @@ pub fn preview_folder(folder_path: &str) -> Result<FolderPreview, String> {
 
             files.push(FileInfo {
                 path: file_path.to_string_lossy().to_string(),
-                name: file_path.file_name()
+                name: file_path
+                    .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("unknown")
                     .to_string(),
@@ -195,7 +219,8 @@ pub async fn index_single_file(
         return Err(format!("Path is not a file: {}", file_path));
     }
 
-    let extension = path.extension()
+    let extension = path
+        .extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or("unknown")
         .to_lowercase();
@@ -207,7 +232,8 @@ pub async fn index_single_file(
     emit_progress(emitter, file_path, 0, 1, 0.0, "Reading file...");
     emit_progress(emitter, file_path, 0, 1, 50.0, "Indexing...");
 
-    let file_name = path.file_name()
+    let file_name = path
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("Unknown");
 
@@ -221,9 +247,10 @@ pub async fn index_single_file(
     metadata.insert("doc_type".to_string(), "document".to_string());
     metadata.insert("indexed_at".to_string(), Utc::now().to_rfc3339());
 
-    let ids = rag.add_document_from_file(&path, metadata)
+    let ids = rag
+        .add_document_from_file(&path, metadata)
         .await
-        .map_err(|e| format!("Failed to index file: {}", e))?;
+        .map_err(|e| format!("Failed to index file: {:#}", e))?;
 
     let chunks_created = ids.len();
 
@@ -234,7 +261,8 @@ pub async fn index_single_file(
     Ok(IndexingResult {
         files_processed: 1,
         total_chunks: chunks_created,
-        failed_files: vec![],
+        failed_files: Vec::new(),
+        failures: Vec::new(),
         duration,
     })
 }
@@ -277,34 +305,28 @@ pub async fn index_folder(
             .unwrap_or("unknown")
             .to_lowercase();
 
-        if options.file_types.contains(&extension) && is_supported_file_type(&extension) {
+        if is_selected_file_type(options, &extension) {
             files_to_process.push(file_path.to_path_buf());
         }
 
         if indexing_state.is_cancelled() {
-            return Ok(IndexingResult {
-                files_processed: 0,
-                total_chunks: 0,
-                failed_files: vec![],
-                duration: start_time.elapsed().as_millis() as u64,
-            });
+            return Ok(IndexingResult::empty(
+                start_time.elapsed().as_millis() as u64
+            ));
         }
     }
 
     let total_files = files_to_process.len();
 
     if total_files == 0 {
-        return Ok(IndexingResult {
-            files_processed: 0,
-            total_chunks: 0,
-            failed_files: vec![],
-            duration: start_time.elapsed().as_millis() as u64,
-        });
+        return Ok(IndexingResult::empty(
+            start_time.elapsed().as_millis() as u64
+        ));
     }
 
     let mut files_processed = 0;
     let mut total_chunks = 0;
-    let mut failed_files = Vec::new();
+    let mut failures: Vec<FileFailure> = Vec::new();
     let mut last_progress_time = Instant::now();
 
     for (index, file_path) in files_to_process.iter().enumerate() {
@@ -323,10 +345,19 @@ pub async fn index_folder(
         // Throttled progress update
         if last_progress_time.elapsed() > Duration::from_millis(100) {
             let elapsed = start_time.elapsed().as_secs_f32();
-            let speed = if elapsed > 0.0 { files_processed as f32 / elapsed } else { 0.0 };
-            let eta = if speed > 0.0 { (total_files - files_processed) as f32 / speed } else { 0.0 };
+            let speed = if elapsed > 0.0 {
+                files_processed as f32 / elapsed
+            } else {
+                0.0
+            };
+            let eta = if speed > 0.0 {
+                (total_files - files_processed) as f32 / speed
+            } else {
+                0.0
+            };
 
-            let current_file = file_path.file_name()
+            let current_file = file_path
+                .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
 
@@ -344,9 +375,8 @@ pub async fn index_folder(
 
         // Process file with panic protection
         let process_result = {
-            let result = std::panic::AssertUnwindSafe(
-                process_file_with_options(file_path, space_id, rag)
-            );
+            let result =
+                std::panic::AssertUnwindSafe(process_file_with_options(file_path, space_id, rag));
             match result.catch_unwind().await {
                 Ok(r) => r,
                 Err(panic_info) => {
@@ -367,36 +397,72 @@ pub async fn index_folder(
                 files_processed += 1;
                 total_chunks += chunks;
             }
-            Err(_e) => {
-                failed_files.push(file_path.to_string_lossy().to_string());
+            Err(reason) => {
+                let file = file_path.to_string_lossy().to_string();
+                tracing::warn!(file = %file, reason = %reason, "Failed to index file");
+                failures.push(FileFailure { file, reason });
             }
         }
     }
 
-    emit_progress(emitter, "Completed", files_processed, total_files, 100.0, "Indexing complete");
+    emit_progress(
+        emitter,
+        "Completed",
+        files_processed,
+        total_files,
+        100.0,
+        "Indexing complete",
+    );
+
+    if !failures.is_empty() {
+        tracing::warn!(
+            failed = failures.len(),
+            processed = files_processed,
+            total = total_files,
+            "Folder indexing finished with failures"
+        );
+    }
 
     Ok(IndexingResult {
         files_processed,
         total_chunks,
-        failed_files,
+        failed_files: failures.iter().map(|f| f.file.clone()).collect(),
+        failures,
         duration: start_time.elapsed().as_millis() as u64,
     })
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
+/// Every file extension (lowercase, without the dot) the ingest pipeline can
+/// index. Shared with the app so allow-lists are never duplicated.
+pub const SUPPORTED_FILE_EXTENSIONS: &[&str] = &[
+    // Documents
+    "txt", "md", "pdf", "html", "json", "docx", "pptx", "rst", "tex", // Tabular
+    "csv", "tsv", "xlsx", "xls", "xlsm", "xlsb", "ods", // Code
+    "rs", "py", "js", "ts", "jsx", "tsx", "java", "cpp", "c", "h", "hpp", "cs", "go", "rb", "php",
+    "swift", "kt", "scala", "r", "sh", "bash", "zsh", "ps1", "bat", "cmd", // Web
+    "css", "scss", "sass", "less", "vue", "svelte", // Config / data
+    "toml", "yaml", "yml", "ini", "conf", "config", "env", "xml", "sql", "graphql", "proto",
+    // Images (OCR)
+    "png", "jpg", "jpeg", "bmp", "tiff", "tif",
+];
+
+/// Whether `extension` (lowercase, without the dot) can be indexed.
 pub fn is_supported_file_type(extension: &str) -> bool {
-    matches!(
-        extension,
-        "txt" | "md" | "pdf" | "html" | "json" | "csv" | "docx" | "xlsx" | "pptx" | "rst" | "tex" |
-        "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "java" | "cpp" | "c" | "h" |
-        "hpp" | "cs" | "go" | "rb" | "php" | "swift" | "kt" | "scala" | "r" |
-        "sh" | "bash" | "zsh" | "ps1" | "bat" | "cmd" |
-        "css" | "scss" | "sass" | "less" | "vue" | "svelte" |
-        "toml" | "yaml" | "yml" | "ini" | "conf" | "config" | "env" |
-        "xml" | "sql" | "graphql" | "proto" |
-        "png" | "jpg" | "jpeg" | "bmp" | "tiff" | "tif"
-    )
+    SUPPORTED_FILE_EXTENSIONS.contains(&extension)
+}
+
+/// Whether a file with `extension` should be indexed under `options`.
+/// `options.file_types` is an optional restriction: an empty list means
+/// "every supported type"; a non-empty list narrows the supported set.
+fn is_selected_file_type(options: &IndexingOptions, extension: &str) -> bool {
+    is_supported_file_type(extension)
+        && (options.file_types.is_empty()
+            || options
+                .file_types
+                .iter()
+                .any(|t| t.trim_start_matches('.').eq_ignore_ascii_case(extension)))
 }
 
 async fn process_file_with_options(
@@ -410,13 +476,19 @@ async fn process_file_with_options(
 
     let mut metadata = HashMap::new();
     metadata.insert("space_id".to_string(), space_id.to_string());
-    metadata.insert("file_path".to_string(), file_path.to_string_lossy().to_string());
+    metadata.insert(
+        "file_path".to_string(),
+        file_path.to_string_lossy().to_string(),
+    );
     metadata.insert("doc_type".to_string(), "document".to_string());
-    metadata.insert("title".to_string(), file_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("Untitled")
-        .to_string());
+    metadata.insert(
+        "title".to_string(),
+        file_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Untitled")
+            .to_string(),
+    );
 
     if let Some(extension) = file_path.extension() {
         let ext = extension.to_string_lossy().to_string();
@@ -424,13 +496,17 @@ async fn process_file_with_options(
         metadata.insert("file_extension".to_string(), ext.clone());
 
         if let Some(filename) = file_path.file_name() {
-            metadata.insert("filename".to_string(), filename.to_string_lossy().to_string());
+            metadata.insert(
+                "filename".to_string(),
+                filename.to_string_lossy().to_string(),
+            );
         }
     }
 
-    let ids = rag.add_document_from_file(file_path, metadata)
+    let ids = rag
+        .add_document_from_file(file_path, metadata)
         .await
-        .map_err(|e| format!("Failed to process file: {}", e))?;
+        .map_err(|e| format!("Failed to process file: {:#}", e))?;
 
     Ok(ids.len())
 }
@@ -453,6 +529,85 @@ fn emit_progress(
             eta_seconds: 0.0,
             speed: 0.0,
         };
-        e.emit("indexing-progress", serde_json::to_value(&progress).unwrap_or_default());
+        e.emit(
+            "indexing-progress",
+            serde_json::to_value(&progress).unwrap_or_default(),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spreadsheet_and_delimited_extensions_are_supported() {
+        for ext in ["xlsx", "xls", "xlsm", "xlsb", "ods", "csv", "tsv"] {
+            assert!(is_supported_file_type(ext), "{} should be supported", ext);
+        }
+        assert!(!is_supported_file_type("exe"));
+    }
+
+    fn options(file_types: &[&str]) -> IndexingOptions {
+        IndexingOptions {
+            skip_indexed: false,
+            watch_changes: false,
+            process_subdirs: true,
+            priority: "normal".to_string(),
+            file_types: file_types.iter().map(|t| t.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn file_types_is_an_optional_restriction() {
+        let all = options(&[]);
+        assert!(is_selected_file_type(&all, "ods"));
+        assert!(is_selected_file_type(&all, "tsv"));
+        assert!(!is_selected_file_type(&all, "exe"));
+
+        let narrowed = options(&["PDF", ".csv", "exe"]);
+        assert!(is_selected_file_type(&narrowed, "pdf"));
+        assert!(is_selected_file_type(&narrowed, "csv"));
+        assert!(!is_selected_file_type(&narrowed, "xlsx"));
+        // Requesting an unsupported type never makes it indexable.
+        assert!(!is_selected_file_type(&narrowed, "exe"));
+    }
+
+    #[test]
+    fn indexing_result_failures_serialize_and_default_when_absent() {
+        let result = IndexingResult {
+            files_processed: 1,
+            total_chunks: 4,
+            failed_files: vec!["a.xlsx".to_string()],
+            failures: vec![FileFailure {
+                file: "a.xlsx".to_string(),
+                reason: "Failed to process file: failed to open spreadsheet a.xlsx".to_string(),
+            }],
+            duration: 10,
+        };
+        let json = serde_json::to_value(&result).expect("serializable");
+        assert_eq!(json["failures"][0]["file"], "a.xlsx");
+        assert!(json["failures"][0]["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("failed to open spreadsheet")));
+
+        let legacy: IndexingResult = serde_json::from_str(
+            r#"{"files_processed":0,"total_chunks":0,"failed_files":[],"duration":0}"#,
+        )
+        .expect("legacy payload deserializes");
+        assert!(legacy.failures.is_empty());
+    }
+
+    #[test]
+    fn poisoned_state_lock_does_not_panic() {
+        let state = IndexingState::default();
+        let flag = Arc::clone(&state.should_cancel);
+        let _ = std::thread::spawn(move || {
+            let _guard = flag.lock().unwrap_or_else(|e| e.into_inner());
+            panic!("poison the lock");
+        })
+        .join();
+        state.cancel();
+        assert!(state.is_cancelled());
     }
 }

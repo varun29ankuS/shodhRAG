@@ -72,11 +72,7 @@ impl CrossEncoderReranker {
             .iter()
             .map(|&m| m as i64)
             .collect();
-        let type_ids: Vec<i64> = encoding
-            .get_type_ids()
-            .iter()
-            .map(|&t| t as i64)
-            .collect();
+        let type_ids: Vec<i64> = encoding.get_type_ids().iter().map(|&t| t as i64).collect();
 
         let len = ids.len().min(self.max_length);
         let ids = &ids[..len];

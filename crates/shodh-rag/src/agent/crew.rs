@@ -7,7 +7,7 @@
 //! - **Hierarchical**: A coordinator agent delegates to specialists using the
 //!   existing AgentDelegateTool pattern from `orchestrator.rs`.
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -206,14 +206,18 @@ async fn execute_sequential(
         let tool_label = format!("{} ({})", agent_name, member.role);
 
         // Emit tool_call_start so the frontend shows a spinner bubble
-        emit_event(emitter, "tool_call_start", serde_json::json!({
-            "tool_name": tool_label,
-            "arguments": serde_json::json!({
-                "role": member.role,
-                "goal": member.goal,
-                "step": format!("{}/{}", idx + 1, total_agents),
-            }).to_string(),
-        }));
+        emit_event(
+            emitter,
+            "tool_call_start",
+            serde_json::json!({
+                "tool_name": tool_label,
+                "arguments": serde_json::json!({
+                    "role": member.role,
+                    "goal": member.goal,
+                    "step": format!("{}/{}", idx + 1, total_agents),
+                }).to_string(),
+            }),
+        );
 
         // Stream a section header so the user sees progress immediately
         let header = format!(
@@ -223,7 +227,11 @@ async fn execute_sequential(
             member.role,
             member.goal,
         );
-        emit_event(emitter, "chat_token", serde_json::json!({ "delta": header }));
+        emit_event(
+            emitter,
+            "chat_token",
+            serde_json::json!({ "delta": header }),
+        );
 
         // Build context with role, goal, and previous outputs
         let mut ctx = AgentContext::with_query(task.to_string());
@@ -273,17 +281,25 @@ async fn execute_sequential(
         };
 
         // Emit tool_call_complete so the bubble shows success + duration
-        emit_event(emitter, "tool_call_complete", serde_json::json!({
-            "tool_name": tool_label,
-            "result": preview_text(&result.response, 200),
-            "success": result.success,
-            "duration_ms": duration_ms,
-        }));
+        emit_event(
+            emitter,
+            "tool_call_complete",
+            serde_json::json!({
+                "tool_name": tool_label,
+                "result": preview_text(&result.response, 200),
+                "success": result.success,
+                "duration_ms": duration_ms,
+            }),
+        );
 
         // Stream the agent's output
-        emit_event(emitter, "chat_token", serde_json::json!({
-            "delta": format!("{}\n\n", result.response),
-        }));
+        emit_event(
+            emitter,
+            "chat_token",
+            serde_json::json!({
+                "delta": format!("{}\n\n", result.response),
+            }),
+        );
 
         // Accumulate context for next agent
         accumulated_context.push_str(&format!(
@@ -354,12 +370,16 @@ async fn execute_hierarchical(
         .unwrap_or_else(|_| "Coordinator".to_string());
 
     // Emit tool_call_start for coordinator
-    emit_event(emitter, "tool_call_start", serde_json::json!({
-        "tool_name": format!("{} (coordinator)", coordinator_name),
-        "arguments": serde_json::json!({
-            "specialists": specialist_names,
-        }).to_string(),
-    }));
+    emit_event(
+        emitter,
+        "tool_call_start",
+        serde_json::json!({
+            "tool_name": format!("{} (coordinator)", coordinator_name),
+            "arguments": serde_json::json!({
+                "specialists": specialist_names,
+            }).to_string(),
+        }),
+    );
 
     // Build context for coordinator
     let mut ctx = AgentContext::with_query(task.to_string());
@@ -390,15 +410,23 @@ async fn execute_hierarchical(
     let duration_ms = coord_start.elapsed().as_millis() as u64;
 
     // Emit tool_call_complete
-    emit_event(emitter, "tool_call_complete", serde_json::json!({
-        "tool_name": format!("{} (coordinator)", coordinator_name),
-        "result": preview_text(&result.response, 200),
-        "success": result.success,
-        "duration_ms": duration_ms,
-    }));
+    emit_event(
+        emitter,
+        "tool_call_complete",
+        serde_json::json!({
+            "tool_name": format!("{} (coordinator)", coordinator_name),
+            "result": preview_text(&result.response, 200),
+            "success": result.success,
+            "duration_ms": duration_ms,
+        }),
+    );
 
     // Stream the full output
-    emit_event(emitter, "chat_token", serde_json::json!({ "delta": &result.response }));
+    emit_event(
+        emitter,
+        "chat_token",
+        serde_json::json!({ "delta": &result.response }),
+    );
 
     let agent_outputs = vec![CrewAgentOutput {
         agent_id: coordinator_id.to_string(),

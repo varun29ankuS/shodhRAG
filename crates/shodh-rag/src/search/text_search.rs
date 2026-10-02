@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
-use tantivy::schema::{self, Schema, STORED, STRING, TEXT, Value as TantivyValue};
+use tantivy::schema::{self, Schema, Value as TantivyValue, STORED, STRING, TEXT};
 use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument};
 
 pub struct TextSearch {
@@ -18,7 +18,13 @@ pub struct TextSearch {
 impl TextSearch {
     /// Build the canonical schema. `id` must be STRING (indexed, not tokenized)
     /// so that `delete_term` and `TermQuery` lookups work correctly.
-    fn build_schema() -> (Schema, schema::Field, schema::Field, schema::Field, schema::Field) {
+    fn build_schema() -> (
+        Schema,
+        schema::Field,
+        schema::Field,
+        schema::Field,
+        schema::Field,
+    ) {
         let mut sb = Schema::builder();
         let id_field = sb.add_text_field("id", STRING | STORED);
         let text_field = sb.add_text_field("text", TEXT | STORED);
@@ -107,10 +113,7 @@ impl TextSearch {
         Ok(())
     }
 
-    pub fn index_chunks_batch(
-        &self,
-        chunks: &[(String, String, String, String)],
-    ) -> Result<()> {
+    pub fn index_chunks_batch(&self, chunks: &[(String, String, String, String)]) -> Result<()> {
         let writer = self.writer.lock();
         for (id, text, title, source) in chunks {
             writer.add_document(doc!(
@@ -192,7 +195,8 @@ impl TextSearch {
     pub fn get_text_by_id(&self, id: &str) -> Result<Option<String>> {
         let searcher = self.reader.searcher();
         let term = tantivy::Term::from_field_text(self.id_field, id);
-        let term_query = tantivy::query::TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
+        let term_query =
+            tantivy::query::TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
         let top_docs = searcher.search(&term_query, &TopDocs::with_limit(1))?;
         if let Some((_score, addr)) = top_docs.first() {
             if let Ok(doc) = searcher.doc::<TantivyDocument>(*addr) {
@@ -245,7 +249,8 @@ impl TextSearch {
                             if matches {
                                 if let Some(id_val) = doc.get_first(self.id_field) {
                                     if let Some(id_text) = id_val.as_str() {
-                                        let term = tantivy::Term::from_field_text(self.id_field, id_text);
+                                        let term =
+                                            tantivy::Term::from_field_text(self.id_field, id_text);
                                         writer.delete_term(term);
                                         deleted_count += 1;
                                     }
@@ -260,7 +265,9 @@ impl TextSearch {
         // Commit deletions and reload reader immediately so subsequent
         // searches never return the deleted documents.
         if deleted_count > 0 {
-            writer.commit().context("Tantivy commit after delete failed")?;
+            writer
+                .commit()
+                .context("Tantivy commit after delete failed")?;
             self.reader.reload()?;
             tracing::info!(
                 source = %source,

@@ -1,10 +1,10 @@
 //! Artifact Store - Manages versioning and persistence of artifacts
 
 use crate::chat_engine::{Artifact, ArtifactType};
+use anyhow::Result;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use chrono::{DateTime, Utc};
-use anyhow::Result;
 
 /// Artifact with version history
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,11 +40,7 @@ impl ArtifactStore {
     }
 
     /// Add new artifact
-    pub fn add_artifact(
-        &mut self,
-        conversation_id: &str,
-        artifact: Artifact,
-    ) -> String {
+    pub fn add_artifact(&mut self, conversation_id: &str, artifact: Artifact) -> String {
         let artifact_id = artifact.id.clone();
 
         // Add to conversation
@@ -76,12 +72,10 @@ impl ArtifactStore {
     }
 
     /// Update artifact content (creates new version)
-    pub fn update_artifact(
-        &mut self,
-        artifact_id: &str,
-        new_content: String,
-    ) -> Result<()> {
-        let artifact_with_history = self.artifacts.get_mut(artifact_id)
+    pub fn update_artifact(&mut self, artifact_id: &str, new_content: String) -> Result<()> {
+        let artifact_with_history = self
+            .artifacts
+            .get_mut(artifact_id)
             .ok_or_else(|| anyhow::anyhow!("Artifact not found: {}", artifact_id))?;
 
         // Calculate diff (clone old content to avoid borrow issues)
@@ -120,9 +114,15 @@ impl ArtifactStore {
 
         // Handle length differences
         if old_lines.len() > new_lines.len() {
-            diff.push_str(&format!("Removed {} lines\n", old_lines.len() - new_lines.len()));
+            diff.push_str(&format!(
+                "Removed {} lines\n",
+                old_lines.len() - new_lines.len()
+            ));
         } else if new_lines.len() > old_lines.len() {
-            diff.push_str(&format!("Added {} lines\n", new_lines.len() - old_lines.len()));
+            diff.push_str(&format!(
+                "Added {} lines\n",
+                new_lines.len() - old_lines.len()
+            ));
         }
 
         diff
@@ -130,23 +130,16 @@ impl ArtifactStore {
 
     /// Get artifact history
     pub fn get_history(&self, artifact_id: &str) -> Option<Vec<&ArtifactVersion>> {
-        self.artifacts.get(artifact_id).map(|a| {
-            a.history.iter().collect()
-        })
+        self.artifacts
+            .get(artifact_id)
+            .map(|a| a.history.iter().collect())
     }
 
     /// Get all artifacts for a conversation
-    pub fn get_conversation_artifacts(
-        &self,
-        conversation_id: &str,
-    ) -> Vec<&Artifact> {
+    pub fn get_conversation_artifacts(&self, conversation_id: &str) -> Vec<&Artifact> {
         self.artifacts_by_conversation
             .get(conversation_id)
-            .map(|ids| {
-                ids.iter()
-                    .filter_map(|id| self.get_artifact(id))
-                    .collect()
-            })
+            .map(|ids| ids.iter().filter_map(|id| self.get_artifact(id)).collect())
             .unwrap_or_default()
     }
 
@@ -166,9 +159,15 @@ impl ArtifactStore {
 
         // Handle length differences
         if old_lines.len() > new_lines.len() {
-            diff.push_str(&format!("Removed {} lines\n", old_lines.len() - new_lines.len()));
+            diff.push_str(&format!(
+                "Removed {} lines\n",
+                old_lines.len() - new_lines.len()
+            ));
         } else if new_lines.len() > old_lines.len() {
-            diff.push_str(&format!("Added {} lines\n", new_lines.len() - old_lines.len()));
+            diff.push_str(&format!(
+                "Added {} lines\n",
+                new_lines.len() - old_lines.len()
+            ));
         }
 
         diff

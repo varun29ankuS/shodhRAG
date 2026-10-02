@@ -1026,7 +1026,7 @@ function AppSplitView() {
               watch_changes: false,
               process_subdirs: true,
               priority: 'normal',
-              file_types: ['txt', 'md', 'pdf', 'rs', 'js', 'ts', 'py', 'java', 'cpp', 'c', 'html', 'json', 'docx']
+              file_types: ['txt', 'md', 'pdf', 'rs', 'js', 'ts', 'py', 'java', 'cpp', 'c', 'html', 'json', 'docx', 'xlsx', 'xls', 'xlsm', 'xlsb', 'ods', 'csv', 'tsv']
             }
           });
           debugLog('Enhanced indexing succeeded:', result);

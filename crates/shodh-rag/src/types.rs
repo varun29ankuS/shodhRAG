@@ -81,7 +81,7 @@ impl DocumentFormat {
             "html" | "htm" => Self::HTML,
             "json" => Self::JSON,
             "pdf" => Self::PDF,
-            "csv" => Self::CSV,
+            "csv" | "tsv" => Self::CSV,
             "xlsx" | "xls" | "ods" | "xlsm" | "xlsb" => Self::Spreadsheet,
             "pptx" | "ppt" | "odp" => Self::Presentation,
             "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "go" | "java" | "c" | "cpp" | "h"

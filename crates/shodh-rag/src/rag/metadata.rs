@@ -391,7 +391,7 @@ mod tests {
         };
 
         let mut metadata = DocumentMetadata {
-            doc_id: "doc1".to_string(),
+            doc_id: Uuid::new_v4(),
             chunk_id: 0,
             timestamp: 1234567890,
             department: Some("Engineering".to_string()),
@@ -401,6 +401,7 @@ mod tests {
             tags: vec!["technical".to_string()],
             author: Some("john@company.com".to_string()),
             compliance: ComplianceFlags::default(),
+            custom_fields: std::collections::HashMap::new(),
         };
 
         assert!(user.can_access(&metadata));
@@ -431,7 +432,7 @@ mod tests {
         };
 
         let metadata = DocumentMetadata {
-            doc_id: "doc1".to_string(),
+            doc_id: Uuid::new_v4(),
             chunk_id: 0,
             timestamp: 1500000000,
             department: Some("HR".to_string()),
@@ -441,6 +442,7 @@ mod tests {
             tags: vec!["policy".to_string(), "approved".to_string()],
             author: None,
             compliance: ComplianceFlags::default(),
+            custom_fields: std::collections::HashMap::new(),
         };
 
         assert!(filter.matches(&metadata));

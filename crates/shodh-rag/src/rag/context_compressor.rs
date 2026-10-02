@@ -7,9 +7,31 @@
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
-static SENTENCE_SPLIT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"(?<=[.!?])\s+(?=[A-Z\d])").expect("sentence split regex is valid")
+/// Matches a sentence boundary: terminal punctuation, the whitespace run that
+/// follows it (capture group 1), and the uppercase letter or digit that starts
+/// the next sentence. The `regex` crate has no look-around, so the split point
+/// is taken from the capture group instead of a zero-width assertion.
+const SENTENCE_BOUNDARY_PATTERN: &str = r"[.!?](\s+)[A-Z0-9]";
+
+static SENTENCE_BOUNDARY_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(SENTENCE_BOUNDARY_PATTERN).expect("sentence boundary regex is valid")
 });
+
+/// Split `text` at whitespace that follows `.`/`!`/`?` and precedes an
+/// uppercase ASCII letter or digit. Punctuation stays with the preceding
+/// sentence; the separating whitespace is dropped.
+fn split_at_sentence_boundaries(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    for caps in SENTENCE_BOUNDARY_RE.captures_iter(text) {
+        if let Some(gap) = caps.get(1) {
+            parts.push(&text[start..gap.start()]);
+            start = gap.end();
+        }
+    }
+    parts.push(&text[start..]);
+    parts
+}
 
 /// Compress a chunk by extracting only the most query-relevant sentences.
 ///
@@ -126,8 +148,8 @@ fn split_sentences(text: &str) -> Vec<&str> {
     }
 
     // Standard sentence splitting
-    let parts: Vec<&str> = SENTENCE_SPLIT_RE
-        .split(text)
+    let parts: Vec<&str> = split_at_sentence_boundaries(text)
+        .into_iter()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .collect();
@@ -224,6 +246,29 @@ fn score_sentence(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sentence_boundary_regex_compiles() {
+        assert!(regex::Regex::new(SENTENCE_BOUNDARY_PATTERN).is_ok());
+        LazyLock::force(&SENTENCE_BOUNDARY_RE);
+    }
+
+    #[test]
+    fn splits_only_before_uppercase_or_digit() {
+        assert_eq!(
+            split_at_sentence_boundaries("One. Two!  3 items? yes. Four"),
+            vec!["One.", "Two!", "3 items? yes.", "Four"]
+        );
+        assert_eq!(
+            split_at_sentence_boundaries("e.g. lower case"),
+            vec!["e.g. lower case"]
+        );
+        assert_eq!(
+            split_at_sentence_boundaries("A. B. C."),
+            vec!["A.", "B.", "C."]
+        );
+        assert_eq!(split_at_sentence_boundaries(""), vec![""]);
+    }
 
     #[test]
     fn test_short_chunk_unchanged() {

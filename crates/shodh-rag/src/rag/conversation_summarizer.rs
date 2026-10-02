@@ -66,7 +66,18 @@ pub fn compress_history(
                 let ext = clean.rsplit('.').next().unwrap_or("");
                 if matches!(
                     ext,
-                    "pdf" | "docx" | "xlsx" | "csv" | "txt" | "json" | "xml"
+                    "pdf"
+                        | "docx"
+                        | "xlsx"
+                        | "xls"
+                        | "xlsm"
+                        | "xlsb"
+                        | "ods"
+                        | "csv"
+                        | "tsv"
+                        | "txt"
+                        | "json"
+                        | "xml"
                 ) && !files.contains(&clean.to_string())
                 {
                     files.push(clean.to_string());

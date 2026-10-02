@@ -492,6 +492,26 @@ On first launch of the new version:
 
 Each step is idempotent and recorded in `schema_version` and audit.
 
+## 10a. UX quality bar
+
+"Smooth" is defined by measurable budgets. Playwright tests against the built Tauri app measure each budget.
+- The baseline is recorded in the UI foundation milestone (M1.5).
+- After that, a regression beyond measured noise fails CI, under the same rule as the eval gates.
+
+| Moment | Budget |
+|---|---|
+| Cold start to interactive | < 1.5 s |
+| Input (keypress/click) to visible response | < 100 ms (p95) |
+| Question to first visible activity (tool step or token) | < 150 ms |
+| Question to first answer token, cloud model | < 1 s (p50) |
+| Scrolling a long conversation or a 10,000-file source list | 60 fps (virtualized lists) |
+| During indexing | UI and chat never block; progress visible from every screen |
+| Errors | Always state what happened and the next action; no blank screens, no spinners without a timeout |
+
+**Rules:**
+- Every milestone ships the UI for its feature, with Playwright coverage. For example, M2 ships the sources panel, the "Couldn't read" panel and live progress. M3 ships citation click-through to the highlighted page.
+- `@sentry/react` crash reporting is opt-in, off by default, and disabled in Local-only mode.
+
 ## 11. Milestones
 
 Each milestone is one or more PRs. Each ships independently with CI green, executing its tests. Order matters: the baseline has to be measured before anything is replaced.
@@ -499,6 +519,7 @@ Each milestone is one or more PRs. Each ships independently with CI green, execu
 | # | Milestone | Ships |
 |---|---|---|
 | M1 | Eval harness and current-pipeline baseline | `shodh-eval`, CUAD subset, synthetic invoice corpus, private-folder YAML runner. Baseline metrics and idle search latency recorded for **today's** pipeline, with run-to-run noise measured |
+| M1.5 | UI foundation | Visual direction, approved via mockups. Steps: split `App-SplitView.tsx` (4,315 lines) into screens with a state store; design tokens and component library; lazy-load heavy libraries (Monaco, Mermaid, three.js, Recharts); Playwright harness with UX-budget baseline; frontend typecheck and lint in CI; Sentry made opt-in |
 | M2 | Store, inventory and sync | SQLite (SQLCipher plus keychain key), `sources`/`files`, reconciler, watcher, job queue, generations, failure panel, progress. Uses the current parser and chunker |
 | M3 | Parser bake-off, chunker, citations | docling.rs vs xberg ADR, `DocumentParser`, token-based structure-aware chunker, page and span citations, citation preview UI |
 | M4 | Records | `RecordExtractor` v1, records table, `query_records` with coverage reporting |

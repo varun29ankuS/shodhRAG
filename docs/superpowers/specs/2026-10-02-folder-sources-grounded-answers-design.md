@@ -275,6 +275,39 @@ trait AgentHarness {
   - The omp process may contact only the configured LLM endpoint. A CI test runs it behind a recording proxy and fails on any other destination, including install-ID reporting.
   - If omp cannot meet this, shodh ships a patched pinned build or switches the harness implementation to upstream pi.
 
+**Acceptance gate: omp spike (milestone M5, before any harness integration code)**
+
+The capabilities above come from omp's documentation and have not yet been exercised. A scripted spike drives the pinned `omp --mode rpc --no-ui` with one host tool against the local model endpoint. omp is adopted only if all of the following pass:
+
+1. **No built-in tools.** A documented flag or config combination disables every omp built-in tool. The tool list reported by the session contains only host tools.
+2. **Host tool round-trip.** `set_host_tools` registers a tool. A host tool round-trip completes with a local model through `tools.format: auto`, and with one cloud model using native tool calling.
+3. **Cancellation.** `abort` stops generation, and `host_tool_cancel` is delivered for an in-flight host tool.
+4. **Usage.** Usage events, with input and output tokens, arrive in `--no-ui` mode.
+5. **Isolation.** The discovery-isolation test passes, and the egress test passes.
+
+If omp fails, the fallback is evaluated in this order:
+1. Upstream pi in RPC mode, with shodh tools served to it as an MCP server over stdio.
+2. An in-process Rust tool loop behind the same `AgentHarness` trait.
+
+The spike result and the decision are recorded in an ADR.
+
+**Local model endpoint**
+
+omp makes LLM calls over HTTP. shodh's local model runs in-process (`llama-cpp-2`), so shodh exposes it as an OpenAI-compatible chat endpoint for harness sessions:
+
+- **Network exposure**
+  - Bound to `127.0.0.1` on an ephemeral port.
+  - No CORS headers are set. Any request carrying an `Origin` header is rejected.
+- **Authentication:** requests must carry a random per-session bearer token, which is passed only to the omp child process and rotated each session.
+- **Concurrency:** requests are serialized onto the single loaded model, with a bounded queue.
+- **Allowed endpoints:** in Local-only mode, this endpoint and any admin-configured local OpenAI-compatible servers (Ollama, vLLM, LM Studio on loopback or LAN) are the only permitted LLM endpoints. The egress test treats exactly these as allowed destinations.
+- **Truncation bug fix (in scope):** the existing llama.cpp provider truncates over-length prompts from the front (`llm/llamacpp_provider.rs:209-216`), which can drop the system prompt and tool definitions. The fix:
+  - Over-length prompts trim the oldest conversation turns and then the lowest-ranked evidence.
+  - They never trim the system prompt or tool schemas.
+  - When the prompt still does not fit, the request fails with a typed `ContextOverflow` error.
+
+  `DirectHarness` and the loopback endpoint share this provider.
+
 **`DirectHarness`**
 - Single-shot answer from the retrieved evidence, using the existing in-process LLM providers, with no tools.
 - **Used when:**
@@ -459,7 +492,22 @@ On first launch of the new version:
 
 Each step is idempotent and recorded in `schema_version` and audit.
 
-## 11. Definition of done
+## 11. Milestones
+
+Each milestone is one or more PRs. Each ships independently with CI green, executing its tests. Order matters: the baseline has to be measured before anything is replaced.
+
+| # | Milestone | Ships |
+|---|---|---|
+| M1 | Eval harness and current-pipeline baseline | `shodh-eval`, CUAD subset, synthetic invoice corpus, private-folder YAML runner. Baseline metrics and idle search latency recorded for **today's** pipeline, with run-to-run noise measured |
+| M2 | Store, inventory and sync | SQLite (SQLCipher plus keychain key), `sources`/`files`, reconciler, watcher, job queue, generations, failure panel, progress. Uses the current parser and chunker |
+| M3 | Parser bake-off, chunker, citations | docling.rs vs xberg ADR, `DocumentParser`, token-based structure-aware chunker, page and span citations, citation preview UI |
+| M4 | Records | `RecordExtractor` v1, records table, `query_records` with coverage reporting |
+| M5 | Harness gate | omp spike against the acceptance gate (section 7.1). ADR with the decision. Loopback local model endpoint. llama.cpp truncation fix |
+| M6 | Harness integration and profiles | `AgentHarness`, `OmpHarness` (or the gated fallback), `DirectHarness`, tool registry with schema validation and risk tiers, agent profiles, budgets, cancel, streaming tool steps, citation verifier |
+| M7 | Authz, audit, conversations | `Principal`, source-level ACL filters in all stores, hash-chained audit with verify and export, conversations in SQLite, health page |
+| M8 | Migration and deletion | First-launch migrations; removal of all code listed in section 4; final eval run compared against the M1 baseline |
+
+## 12. Definition of done
 
 1. **Sync at scale.** A folder of about 10,000 mixed documents:
    - indexes completely
@@ -473,7 +521,7 @@ Each step is idempotent and recorded in `schema_version` and audit.
 6. **Cleanup.** The code listed in section 4 "Removed by this sub-project" is deleted. New modules contain no TODOs, `unwrap` or `expect`.
 7. **Real CI.** CI executes all of the above. No `continue-on-error` on test or lint jobs.
 
-## 12. Risks
+## 13. Risks
 
 | Risk | Mitigation |
 |---|---|
@@ -485,7 +533,7 @@ Each step is idempotent and recorded in `schema_version` and audit.
 | LanceDB/Tantivy unencrypted at rest | Require and check OS full-disk encryption; no false product claims |
 | Sidecar-per-conversation limits server-mode scale | Acceptable for department scale; harness interface allows replacement before sub-project 4 if needed |
 
-## 13. Open items for sub-project 0 (prerequisites, not this spec)
+## 14. Open items for sub-project 0 (prerequisites, not this spec)
 
 - **Containment:**
   - WhatsApp bot auto-authorizes every sender (`whatsapp_commands.rs:239-248`).

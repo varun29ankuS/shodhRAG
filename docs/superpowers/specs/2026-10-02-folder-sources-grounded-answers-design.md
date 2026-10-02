@@ -514,14 +514,13 @@ Each step is idempotent and recorded in `schema_version` and audit.
 
 ### Navigation and agent visibility
 
-**Primary navigation:** **Ask**, **Library**, **Calendar**, **Tasks**, **Graph**, **Settings**.
+**Primary navigation:** **Ask**, **Library**, **Calendar**, **Graph**, **Settings**.
 
 | Tab | Content | Ships |
 |---|---|---|
 | **Ask** | Conversations with the live run view | M1.5 shell → M6 live runs |
 | **Library** | Folders, sync state, "Couldn't read" list | M1.5 shell → M2 |
-| **Calendar** | Week, month and agenda views | M1.5, redesigned on the existing calendar store; chat control in sub-project 2 |
-| **Tasks** | Tasks; one data model shared with Calendar | Same as Calendar |
+| **Calendar** | Events and tasks in one view.<br>• **Calendar:** day, week, month and agenda views. Tasks appear on their due date and can be dragged into a time slot to time-block them.<br>• **Task list:** docked alongside, with Today / Upcoming / Someday / Done and quick add.<br>• **Provenance:** items created from a conversation link back to that conversation and to the cited documents. | M1.5, redesigned on the existing calendar store; chat control in sub-project 2 |
 | **Graph** | Real entities and relations; every node and edge links to its source page | Designed in M1.5; ships only with sub-project 3. No metadata or file-type graph is ever shown |
 | **Settings** | Models, agent profiles, Usage & Audit, privacy | M1.5 |
 
@@ -549,7 +548,7 @@ Each milestone is one or more PRs. Each ships independently with CI green, execu
 | # | Milestone | Ships |
 |---|---|---|
 | M1 | Eval harness and current-pipeline baseline | `shodh-eval`, CUAD subset, synthetic invoice corpus, private-folder YAML runner. Baseline metrics and idle search latency recorded for **today's** pipeline, with run-to-run noise measured |
-| M1.5 | UI foundation | Visual direction, approved via mockups. Steps: split `App-SplitView.tsx` (4,315 lines) into screens with a state store; design tokens and component library; lazy-load heavy libraries (Monaco, Mermaid, three.js, Recharts); Playwright harness with UX-budget baseline; frontend typecheck and lint in CI; Sentry made opt-in; navigation set to Ask / Library / Calendar / Tasks / Graph (designed, shipped in sub-project 3) / Settings; Generate, Analytics, Agents and Integrations removed; mockups for First run, Ask, Library, Calendar, Tasks and Graph approved before implementation |
+| M1.5 | UI foundation | Visual direction, approved via mockups. Steps: split `App-SplitView.tsx` (4,315 lines) into screens with a state store; design tokens and component library; lazy-load heavy libraries (Monaco, Mermaid, three.js, Recharts); Playwright harness with UX-budget baseline; frontend typecheck and lint in CI; Sentry made opt-in; navigation set to Ask / Library / Calendar (events + tasks unified) / Graph (designed, shipped in sub-project 3) / Settings; Generate, Analytics, Agents and Integrations removed; mockups for First run, Ask, Library, Calendar and Graph approved before implementation |
 | M2 | Store, inventory and sync | SQLite (SQLCipher plus keychain key), `sources`/`files`, reconciler, watcher, job queue, generations, failure panel, progress. Uses the current parser and chunker |
 | M3 | Parser bake-off, chunker, citations | docling.rs vs xberg ADR, `DocumentParser`, token-based structure-aware chunker, page and span citations, citation preview UI |
 | M4 | Records | `RecordExtractor` v1, records table, `query_records` with coverage reporting |

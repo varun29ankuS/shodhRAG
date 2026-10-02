@@ -512,6 +512,31 @@ Each step is idempotent and recorded in `schema_version` and audit.
 - Every milestone ships the UI for its feature, with Playwright coverage. For example, M2 ships the sources panel, the "Couldn't read" panel and live progress. M3 ships citation click-through to the highlighted page.
 - `@sentry/react` crash reporting is opt-in, off by default, and disabled in Local-only mode.
 
+### Motion
+
+**Tokens**
+- Durations: 120 ms for micro state changes, 200 ms for panels and lists, 280 ms for screen changes.
+- Easing: standard and decelerate curves.
+- Spring physics are used only for drag and reorder.
+
+**Continuity**
+- Tab changes use the View Transitions API (WebView2) with shared elements:
+  - a citation morphs into the document preview;
+  - a dragged task lands in its calendar slot;
+  - a new conversation grows from the input.
+
+**Live runs**
+- Tool steps and sub-agent lanes enter with a slide and fade.
+- Streamed text reveals per phrase, not per character.
+- A citation pulses once when its sentence lands.
+
+**Rules, enforced by tests**
+- Only `transform` and `opacity` are animated.
+- Cumulative layout shift is 0 during transitions.
+- No main-thread task exceeds 50 ms during an animation, measured from Playwright performance traces.
+- Modals and steppers have fixed geometry, so content changes never resize the container.
+- `prefers-reduced-motion` disables all non-essential motion.
+
 ### Navigation and agent visibility
 
 **Primary navigation:** **Ask**, **Library**, **Calendar**, **Graph**, **Settings**.

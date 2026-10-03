@@ -304,9 +304,13 @@ export function threadHistory(main: readonly HistoryTurnLike[], thread: readonly
   return [...lead, ...own];
 }
 
-/** "3 replies about Revenue by quarter". */
+/** "3 replies about Revenue by quarter" ("1 question about …" before the first answer). */
 export function repliesLabel(thread: Pick<FocusThread, 'turns' | 'anchor'>): string {
   const answers = thread.turns.filter(t => t.role === 'assistant').length;
+  if (answers === 0) {
+    const questions = thread.turns.filter(t => t.role === 'user').length;
+    return `${questions} ${questions === 1 ? 'question' : 'questions'} about ${thread.anchor.target.label}`;
+  }
   return `${answers} ${answers === 1 ? 'reply' : 'replies'} about ${thread.anchor.target.label}`;
 }
 

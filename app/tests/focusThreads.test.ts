@@ -58,6 +58,7 @@ test('add, append and list threads', () => {
   assert.equal(threadsForMessage(list, 'm1')[0].turns.length, 2);
   assert.equal(threadsForMessage(list, 'm1')[0].updatedAt, '2026-10-03T10:02:00.000Z');
   assert.equal(repliesLabel(threadsForMessage(list, 'm1')[0]), '1 reply about Flow');
+  assert.equal(repliesLabel(a), '1 question about Flow');
   assert.deepEqual(removeThread(list, 'a').map(t => t.id), ['b']);
 });
 

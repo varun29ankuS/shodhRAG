@@ -182,7 +182,9 @@ export function FocusOverlay({ open, thread, onClose }: FocusOverlayProps) {
     const trigger = open.trigger;
     if (trigger && trigger.isConnected) {
       e.preventDefault();
-      trigger.focus();
+      // No scroll: the opener was on screen, and after "Add to main
+      // conversation" the view must stay on the new answer.
+      trigger.focus({ preventScroll: true });
     }
   };
 

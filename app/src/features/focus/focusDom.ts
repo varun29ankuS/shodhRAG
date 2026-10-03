@@ -13,7 +13,17 @@ export function isInFocusOverlay(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest(FOCUS_OVERLAY_SELECTOR) !== null;
 }
 
-/** Rows of an HTML table as cell text (header row first). */
+/**
+ * Rows of an HTML table as cell text (header row first). Controls inside
+ * cells (citation pills) are left out, so "$4.5M" with pill 2 does not
+ * read as "$4.5M2".
+ */
 export function tableRows(table: HTMLTableElement): string[][] {
-  return Array.from(table.rows).map(row => Array.from(row.cells).map(cell => (cell.textContent ?? '').trim()));
+  return Array.from(table.rows).map(row =>
+    Array.from(row.cells).map(cell => {
+      const copy = cell.cloneNode(true) as HTMLElement;
+      copy.querySelectorAll('button').forEach(el => el.remove());
+      return (copy.textContent ?? '').replace(/\s+/g, ' ').trim();
+    }),
+  );
 }

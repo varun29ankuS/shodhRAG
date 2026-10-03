@@ -372,9 +372,8 @@ function AssistantMessage({
   );
 
   // Visuals in a finished answer can open the focus pop-out, anchored here.
-  if (!conversationId || running) return article;
   return (
-    <FocusAnchorProvider conversationId={conversationId} messageId={messageId}>
+    <FocusAnchorProvider conversationId={conversationId} messageId={messageId} enabled={!running}>
       {article}
     </FocusAnchorProvider>
   );
@@ -416,7 +415,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
 
   const busyElsewhere = (streamingConversationId !== null && !isStreaming) || sideRun !== null;
   const blockedReason = sideRun
-    ? `Answering your side question about “${sideRun.label}”. You can send once it finishes.`
+    ? `Answering your side question about “${sideRun.label}”. You can send once it finishes; to stop it, reopen that discussion and press Esc.`
     : busyElsewhere
       ? 'An answer is still being written in another conversation. You can send once it finishes.'
       : null;

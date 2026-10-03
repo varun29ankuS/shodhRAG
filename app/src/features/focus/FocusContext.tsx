@@ -112,8 +112,20 @@ export interface FocusAnchorValue {
 
 const FocusAnchorContext = createContext<FocusAnchorValue | null>(null);
 
-export function FocusAnchorProvider({ conversationId, messageId, children }: FocusAnchorValue & { children: React.ReactNode }) {
-  const value = useMemo(() => ({ conversationId, messageId }), [conversationId, messageId]);
+/**
+ * Anchors visuals to an answer. Always rendered (toggle `enabled`), so an
+ * answer that finishes streaming keeps its subtree instead of remounting.
+ */
+export function FocusAnchorProvider({
+  conversationId,
+  messageId,
+  enabled,
+  children,
+}: { conversationId: string | null; messageId: string; enabled: boolean; children: React.ReactNode }) {
+  const value = useMemo(
+    () => (enabled && conversationId ? { conversationId, messageId } : null),
+    [enabled, conversationId, messageId],
+  );
   return <FocusAnchorContext.Provider value={value}>{children}</FocusAnchorContext.Provider>;
 }
 

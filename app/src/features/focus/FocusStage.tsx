@@ -8,6 +8,7 @@ import { cn } from '../../lib/utils';
 import { ChartArtifact } from '../../components/ChartArtifact';
 import type { Artifact } from '../../components/EnhancedArtifactPanel';
 import { parseChartBlock } from '../ask/visual/chartSpec';
+import { tryParseChartSpec } from '../../utils/artifactExtractor';
 import { renderDiagram } from '../ask/visual/VisualBlocks';
 import { useSourceDocument } from '../ask/useSourceDocument';
 import type { SearchHit } from '../ask/types';
@@ -430,22 +431,26 @@ function MermaidStage({ source, label, dark, commandRef }: { source: string; lab
 }
 
 function ChartStage({ source, label, theme, commandRef }: { source: string; label: string; theme: string; commandRef: StageCommandRef }) {
+  // Fenced ```chart blocks use parseChartBlock; charts extracted from an
+  // answer as artifacts use the artifact parser. Accept either.
   const parsed = useMemo(() => parseChartBlock(source), [source]);
+  const legacy = useMemo(() => (parsed.ok ? null : tryParseChartSpec(source)), [parsed, source]);
+  const title = parsed.ok ? parsed.chart.title ?? null : legacy?.title ?? null;
   const artifact = useMemo<Artifact | null>(() => {
-    if (!parsed.ok) return null;
+    const content = parsed.ok ? JSON.stringify(parsed.chart) : legacy ? source : null;
+    if (content === null) return null;
     return {
       id: 'focus-chart',
       artifact_type: 'chart',
-      title: parsed.chart.title ?? 'Chart',
-      content: JSON.stringify(parsed.chart),
+      title: title ?? 'Chart',
+      content,
       editable: false,
       version: 1,
       created_at: '',
     } as Artifact;
-  }, [parsed]);
-  if ('error' in parsed) return <StageError message={`Chart not drawn: ${parsed.error}`} detail={source} />;
-  if (!artifact) return null;
-  const titled = Boolean(parsed.chart.title);
+  }, [parsed, legacy, source, title]);
+  if (!artifact) return <StageError message={`Chart not drawn: ${'error' in parsed ? parsed.error : 'unreadable chart data'}`} detail={source} />;
+  const titled = Boolean(title);
   return (
     <CanvasStage natural={CHART_SIZE} label={label} commandRef={commandRef}>
       {scale => (

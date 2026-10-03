@@ -307,8 +307,6 @@ function AssistantMessage({
             onDecide={onDecide}
             onRuntimeInstalled={onRuntimeInstalled}
             onOpenSettings={onOpenSettings}
-            artifacts={message.artifacts}
-            onOpenArtifact={onOpenArtifact}
           />
         </>
       ) : (

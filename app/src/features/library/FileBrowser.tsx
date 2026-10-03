@@ -17,7 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { buildFileTree, countTree, findDir, folderEntries, searchFiles, typeBadge, typeFamily } from './fileTree';
+import { buildFileTree, countTree, displayPath, findDir, folderEntries, searchFiles, typeBadge, typeFamily } from './fileTree';
 import type { DirNode, FileNode, IndexedFileRow, SortKey, TreeEntry, TypeFamily } from './fileTree';
 import { copyPath, joinPath, openInDefaultApp, showInFolder } from './fileActions';
 import { FileViewer } from './FileViewer';
@@ -61,6 +61,8 @@ interface FileBrowserProps {
   onExit: () => void;
   /** Start a chat about a file. */
   onAskAboutFile: (file: FileNode, source: LibrarySource) => void;
+  /** Number of indexed files the index reports for this source. */
+  onFileCount?: (count: number) => void;
 }
 
 function entryKey(entry: TreeEntry): string {
@@ -75,7 +77,7 @@ function entryKey(entry: TreeEntry): string {
  * Keyboard: ↑/↓/Home/End move, Enter opens, Backspace goes up a folder,
  * Esc closes the open file (or clears the filter).
  */
-export function FileBrowser({ source, onExit, onAskAboutFile }: FileBrowserProps) {
+export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: FileBrowserProps) {
   const [load, setLoad] = useState<LoadState>({ status: 'loading' });
   const [segments, setSegments] = useState<string[]>([]);
   const [filter, setFilter] = useState('');
@@ -91,11 +93,13 @@ export function FileBrowser({ source, onExit, onAskAboutFile }: FileBrowserProps
     setLoad({ status: 'loading' });
     try {
       const rows = await invoke<IndexedFileRow[]>('get_source_files', { sourceId: source.id });
-      setLoad({ status: 'ready', rows: Array.isArray(rows) ? rows : [] });
+      const list = Array.isArray(rows) ? rows : [];
+      setLoad({ status: 'ready', rows: list });
+      onFileCount?.(list.length);
     } catch (error) {
       setLoad({ status: 'error', message: error instanceof Error ? error.message : String(error) });
     }
-  }, [source.id]);
+  }, [source.id, onFileCount]);
 
   // Reload when the source finishes (re)indexing.
   useEffect(() => {
@@ -330,6 +334,7 @@ export function FileBrowser({ source, onExit, onAskAboutFile }: FileBrowserProps
                     onFocus={() => setActiveKey(entryKey(entry))}
                     onActivate={() => activate(entry)}
                     folderPath={entry.kind === 'dir' ? joinPath(source.path, entry.dir) : null}
+                    filePath={entry.kind === 'file' ? displayPath(source.path, entry) : null}
                     onAsk={entry.kind === 'file' ? () => onAskAboutFile(entry, source) : undefined}
                   />
                 ))}
@@ -347,6 +352,7 @@ export function FileBrowser({ source, onExit, onAskAboutFile }: FileBrowserProps
           <OpenFilePane
             key={openFile.path}
             file={openFile}
+            shownPath={displayPath(source.path, openFile)}
             onClose={() => { setOpenFile(null); focusRow(activeIndex); }}
             onAsk={() => onAskAboutFile(openFile, source)}
           />
@@ -391,12 +397,14 @@ interface EntryRowProps {
   selected: boolean;
   showFolder: boolean;
   folderPath: string | null;
+  /** The file's path as shown, copied and opened. */
+  filePath: string | null;
   onFocus: () => void;
   onActivate: () => void;
   onAsk?: () => void;
 }
 
-function EntryRow({ entry, rowKey, tabbable, selected, showFolder, folderPath, onFocus, onActivate, onAsk }: EntryRowProps) {
+function EntryRow({ entry, rowKey, tabbable, selected, showFolder, folderPath, filePath, onFocus, onActivate, onAsk }: EntryRowProps) {
   const isDir = entry.kind === 'dir';
   const counts = isDir ? countTree(entry) : null;
   const label = isDir
@@ -453,9 +461,9 @@ function EntryRow({ entry, rowKey, tabbable, selected, showFolder, folderPath, o
               ]
             : [
                 { label: 'Open in Shodh', icon: FileText, run: onActivate },
-                { label: 'Open in default app', icon: ExternalLink, run: () => void openInDefaultApp(entry.path) },
-                { label: 'Show in folder', icon: FolderSearch, run: () => void showInFolder(entry.path) },
-                { label: 'Copy path', icon: Copy, run: () => void copyPath(entry.path) },
+                { label: 'Open in default app', icon: ExternalLink, run: () => void openInDefaultApp(filePath!) },
+                { label: 'Show in folder', icon: FolderSearch, run: () => void showInFolder(filePath!) },
+                { label: 'Copy path', icon: Copy, run: () => void copyPath(filePath!) },
                 ...(onAsk ? [{ label: 'Ask about this file', icon: MessageCircle, run: onAsk }] : []),
               ]
         }
@@ -561,7 +569,7 @@ function RowMenu({ name, items, tabbable }: { name: string; items: MenuItemSpec[
   );
 }
 
-function OpenFilePane({ file, onClose, onAsk }: { file: FileNode; onClose: () => void; onAsk: () => void }) {
+function OpenFilePane({ file, shownPath, onClose, onAsk }: { file: FileNode; shownPath: string; onClose: () => void; onAsk: () => void }) {
   const titleId = useId();
   return (
     <section aria-labelledby={titleId} className="shell-view-enter flex-1 min-w-0 min-h-0 flex flex-col bg-shodh-surface">
@@ -570,7 +578,7 @@ function OpenFilePane({ file, onClose, onAsk }: { file: FileNode; onClose: () =>
           <TypeBadge extension={file.extension} />
           <div className="flex-1 min-w-0">
             <h2 id={titleId} className="text-[14px] font-semibold text-shodh-text truncate" title={file.name}>{file.name}</h2>
-            <p className="text-[11.5px] text-shodh-text-faint truncate" title={file.path}>{file.path}</p>
+            <p className="text-[11.5px] text-shodh-text-faint truncate" title={shownPath}>{shownPath}</p>
           </div>
           <button
             type="button"
@@ -587,15 +595,15 @@ function OpenFilePane({ file, onClose, onAsk }: { file: FileNode; onClose: () =>
             <MessageCircle className="w-3.5 h-3.5" aria-hidden="true" />
             Ask about this file
           </button>
-          <button type="button" onClick={() => void openInDefaultApp(file.path)} className={BUTTON}>
+          <button type="button" onClick={() => void openInDefaultApp(shownPath)} className={BUTTON}>
             <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
             Open in default app
           </button>
-          <button type="button" onClick={() => void showInFolder(file.path)} className={BUTTON}>
+          <button type="button" onClick={() => void showInFolder(shownPath)} className={BUTTON}>
             <FolderSearch className="w-3.5 h-3.5" aria-hidden="true" />
             Show in folder
           </button>
-          <button type="button" onClick={() => void copyPath(file.path)} className={BUTTON}>
+          <button type="button" onClick={() => void copyPath(shownPath)} className={BUTTON}>
             <Copy className="w-3.5 h-3.5" aria-hidden="true" />
             Copy path
           </button>

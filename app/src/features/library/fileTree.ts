@@ -230,3 +230,14 @@ const CODE = new Set(['rs', 'js', 'ts', 'tsx', 'jsx', 'py', 'java', 'c', 'cpp', 
 export function typeFamily(extension: string): TypeFamily {
   return FAMILIES[extension] ?? (CODE.has(extension) ? 'code' : 'other');
 }
+
+/**
+ * Path to show, copy and hand to the OS for a file. The index stores Windows
+ * paths lowercased with forward slashes; under the source root, the root's
+ * own spelling and separator are used instead.
+ */
+export function displayPath(rootPath: string, file: Pick<FileNode, 'path' | 'dir' | 'name'>): string {
+  if (relativeDir(rootPath, file.path) === null) return file.path;
+  const sep = rootPath.includes('\\') ? '\\' : '/';
+  return [rootPath.replace(/[\\/]+$/, ''), ...file.dir, file.name].join(sep);
+}

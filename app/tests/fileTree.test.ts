@@ -8,6 +8,7 @@ import {
   baseName,
   buildFileTree,
   countTree,
+  displayPath,
   extensionOf,
   findDir,
   folderEntries,
@@ -113,4 +114,13 @@ test('type badges and families', () => {
   assert.equal(typeFamily('xlsx'), 'sheet');
   assert.equal(typeFamily('rs'), 'code');
   assert.equal(typeFamily('zzz'), 'other');
+});
+
+test('display paths keep the root spelling and separator', () => {
+  const tree = buildFileTree(ROOT, ROWS, []);
+  const invoice = findDir(tree, ['2024', 'q1'])!.files[0];
+  assert.equal(displayPath(ROOT, invoice), ['C:\\Users\\Asha\\Contracts', '2024', 'q1', invoice.name].join('\\'));
+  assert.equal(displayPath('/home/asha/Docs', { path: '/home/asha/Docs/a.md', dir: [], name: 'a.md' }), '/home/asha/Docs/a.md');
+  // Outside the root: the path as the index reported it.
+  assert.equal(displayPath(ROOT, { path: 'd:/elsewhere/a.txt', dir: [], name: 'a.txt' }), 'd:/elsewhere/a.txt');
 });

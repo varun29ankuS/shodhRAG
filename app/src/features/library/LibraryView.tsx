@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useState } from 'react';
+import React, { useCallback, useEffect, useId, useState } from 'react';
 import {
   AlertTriangle,
   ChevronDown,
@@ -47,6 +47,8 @@ interface LibraryViewProps {
   onToggleSource: (id: string) => void;
   onRemoveSource: (id: string, event: React.MouseEvent) => void;
   onAskAboutFile: (file: FileNode, source: LibrarySource) => void;
+  /** The file browser counted a source's indexed files. */
+  onFileCount: (id: string, count: number) => void;
 }
 
 /**
@@ -64,9 +66,14 @@ export function LibraryView({
   onToggleSource,
   onRemoveSource,
   onAskAboutFile,
+  onFileCount,
 }: LibraryViewProps) {
   const [browsingId, setBrowsingId] = useState<string | null>(null);
   const browsing = sources.find(s => s.id === browsingId) ?? null;
+
+  const reportCount = useCallback((count: number) => {
+    if (browsingId) onFileCount(browsingId, count);
+  }, [browsingId, onFileCount]);
 
   // The browsed source was removed.
   useEffect(() => {
@@ -76,7 +83,7 @@ export function LibraryView({
   if (browsing && indexReady) {
     return (
       <div key={browsing.id} className="shell-view-enter h-full">
-        <FileBrowser source={browsing} onExit={() => setBrowsingId(null)} onAskAboutFile={onAskAboutFile} />
+        <FileBrowser source={browsing} onExit={() => setBrowsingId(null)} onAskAboutFile={onAskAboutFile} onFileCount={reportCount} />
       </div>
     );
   }

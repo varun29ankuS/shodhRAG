@@ -134,6 +134,11 @@ function AppSplitView() {
     }
   });
   const [currentlyIndexing, setCurrentlyIndexing] = useState<string | null>(null);
+  // Latest sources and indexing actions for listeners registered once (drag and drop).
+  const sourcesRef = useRef<Source[]>(sources);
+  sourcesRef.current = sources;
+  const indexSourceRef = useRef<((source: Source, kind: 'folder' | 'file') => Promise<void>) | null>(null);
+  const indexingBusyRef = useRef<(() => boolean) | null>(null);
   // Text placed in the Ask composer by another view ("Ask about this file").
   const [askDraft, setAskDraft] = useState<{ text: string; seq: number } | null>(null);
   const clearAskDraft = useCallback(() => setAskDraft(null), []);
@@ -271,7 +276,10 @@ function AppSplitView() {
     writeFirstRun(safeStorage(), next);
   }, []);
 
+  // Reopening a finished setup and closing it again must not mark it skipped.
+  const statusBeforeOpenRef = useRef(firstRun.status);
   const openFirstRun = useCallback((step?: FirstRunStep) => {
+    statusBeforeOpenRef.current = firstRun.status;
     saveFirstRun({ status: 'pending', step: step ?? resumeStep(firstRun) });
     setFirstRunOpen(true);
   }, [firstRun, saveFirstRun]);
@@ -289,7 +297,7 @@ function AppSplitView() {
   const skipFirstRun = useCallback(() => {
     setFirstRunOpen(false);
     setFirstRun(prev => {
-      const next: FirstRunState = { status: prev.status === 'completed' ? 'completed' : 'skipped', step: prev.step };
+      const next: FirstRunState = { status: statusBeforeOpenRef.current === 'completed' ? 'completed' : 'skipped', step: prev.step };
       writeFirstRun(safeStorage(), next);
       return next;
     });
@@ -572,108 +580,28 @@ function AppSplitView() {
                 const pathsToIndex = documentFiles.length > 0 ? documentFiles : files;
 
                 for (const path of pathsToIndex) {
-                  const fileName = path.split(/[\\\/]/).pop() || 'Document';
-
-                  // Check if path is a file or directory using Tauri filesystem API
+                  if (indexingBusyRef.current?.()) break;
                   let isDirectory = false;
-
                   try {
-                    // Use Tauri's stat to check if it's a directory
                     const stats = await invoke<{ isDirectory: boolean }>('check_path_type', { path });
                     isDirectory = stats.isDirectory;
                   } catch (e) {
                     console.warn('Failed to check path type, assuming file:', e);
-                    // If check fails, assume it's a file
-                    isDirectory = false;
                   }
-
-                  // Create a new source
-                  const newSource: Source = {
-                    id: Date.now().toString() + Math.random(),
-                    name: fileName,
-                    path: path,
+                  const known = sourcesRef.current.find(s => s.path.toLowerCase() === path.toLowerCase());
+                  const source: Source = known ?? {
+                    id: `${isDirectory ? 'folder' : 'file'}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                    name: path.split(/[\\/]/).filter(Boolean).pop() || path,
+                    path,
                     type: 'documents',
                     fileCount: 0,
                     indexedAt: new Date().toISOString(),
                     status: 'indexing',
-                    selected: true
+                    selected: true,
                   };
-
-                  setSources(prev => {
-                    const updated = [...prev, newSource];
-                    return updated;
-                  });
-
-                  setCurrentlyIndexing(newSource.id);
-
-                  // Index differently based on whether it's a file or folder
-                  let result;
-
-                  // Add timeout wrapper (5 minutes max)
-                  const timeoutPromise = new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('Indexing timeout - file too large or complex')), 5 * 60 * 1000)
-                  );
-
-                  try {
-                    if (isDirectory) {
-                      // Index entire folder
-                      debugLog(`📁 Folder detected: ${fileName}, indexing all files`);
-                      result = await Promise.race([
-                        invoke("link_folder_enhanced", {
-                          folderPath: path,
-                          spaceId: newSource.id,
-                          options: {
-                            skip_indexed: false,
-                            watch_changes: false,
-                            process_subdirs: true,
-                            priority: 'normal',
-                            file_types: ['txt', 'md', 'pdf', 'rs', 'js', 'ts', 'py', 'java', 'cpp', 'c', 'html', 'json', 'docx', 'xlsx', 'pptx', 'csv']
-                          }
-                        }),
-                        timeoutPromise
-                      ]);
-                    } else {
-                      // Index single file only
-                      debugLog(`📄 Single file detected: ${fileName}, indexing only this file`);
-                      result = await Promise.race([
-                        invoke("index_single_file", {
-                          filePath: path,
-                          spaceId: newSource.id
-                        }),
-                        timeoutPromise
-                      ]);
-                    }
-                  } catch (indexError) {
-                    console.error('❌ Indexing error:', indexError);
-
-                    // Update source to error state
-                    setSources(prev => prev.map(s =>
-                      s.id === newSource.id
-                        ? { ...s, status: 'error' as const }
-                        : s
-                    ));
-                    setCurrentlyIndexing(null);
-
-                    throw indexError; // Re-throw to be caught by outer catch
-                  }
-
-                  debugLog('✅ Document indexed:', result);
-
-                  // Update source status
-                  setSources(prev => prev.map(s =>
-                    s.id === newSource.id
-                      ? { ...s, status: 'ready' as const, fileCount: (result as any)?.file_count || 1 }
-                      : s
-                  ));
-                  setCurrentlyIndexing(null);
-
-                  // Show success message
-                  appendMessage({
-                    id: newNoticeId(),
-                    role: 'assistant',
-                    content: `📄 **${fileName} indexed successfully!**\n\nThe document has been added to your sources and is now searchable.`,
-                    timestamp: new Date().toISOString()
-                  });
+                  if (!known) setSources(prev => [...prev, source]);
+                  // Sequential: progress events carry no source id.
+                  await indexSourceRef.current?.(source, isDirectory ? 'folder' : 'file');
                 }
               }
             } catch (error) {
@@ -970,19 +898,21 @@ function AppSplitView() {
    * source: file count, completion time and per-file failures, or the error.
    * Re-indexing is idempotent (each file's previous chunks are replaced).
    */
-  const indexFolder = async (source: Source) => {
+  const indexSource = async (source: Source, kind: 'folder' | 'file' = 'folder') => {
     setCurrentlyIndexing(source.id);
     setSources(prev => prev.map(s => s.id === source.id
       ? { ...s, status: 'indexing' as const, progress: 0, processedCount: 0, currentFile: undefined, lastError: undefined }
       : s));
     try {
-      const raw = await invoke('link_folder_enhanced', {
-        folderPath: source.path,
-        spaceId: source.id,
-        // Nested struct fields are snake_case. An empty file_types list means
-        // every type the indexer supports.
-        options: { skip_indexed: false, watch_changes: false, process_subdirs: true, priority: 'normal', file_types: [] },
-      });
+      const raw = kind === 'file'
+        ? await invoke('index_single_file', { filePath: source.path, spaceId: source.id })
+        : await invoke('link_folder_enhanced', {
+            folderPath: source.path,
+            spaceId: source.id,
+            // Nested struct fields are snake_case. An empty file_types list
+            // means every type the indexer supports.
+            options: { skip_indexed: false, watch_changes: false, process_subdirs: true, priority: 'normal', file_types: [] },
+          });
       const outcome = readIndexingResult(raw);
       setSources(prev => prev.map(s => s.id === source.id
         ? {
@@ -1015,9 +945,21 @@ function AppSplitView() {
 
   /** Progress events carry no source id, so one index runs at a time. */
   const indexingBusy = () => {
-    if (!sources.some(s => s.status === 'indexing')) return false;
+    if (!sourcesRef.current.some(s => s.status === 'indexing')) return false;
     notify.info('Indexing is already running', { description: 'Add or re-index another folder once it finishes.' });
     return true;
+  };
+  indexSourceRef.current = indexSource;
+  indexingBusyRef.current = indexingBusy;
+
+  /** Whether a source is a single dropped file or a folder, asked of the file system. */
+  const sourceKind = async (source: Source): Promise<'folder' | 'file'> => {
+    try {
+      const info = await invoke<{ isDirectory: boolean; isFile: boolean }>('check_path_type', { path: source.path });
+      return info.isFile && !info.isDirectory ? 'file' : 'folder';
+    } catch {
+      return 'folder';
+    }
   };
 
   const handleAddSource = async () => {
@@ -1034,7 +976,7 @@ function AppSplitView() {
     const existing = sources.find(s => s.path.toLowerCase() === picked.toLowerCase());
     if (existing) {
       notify.info(`${existing.name} is already in the Library`, { description: 'Indexing it again to pick up changes.' });
-      await indexFolder(existing);
+      await indexSource(existing, await sourceKind(existing));
       return;
     }
     const newSource: Source = {
@@ -1048,13 +990,18 @@ function AppSplitView() {
       selected: true,
     };
     setSources(prev => [...prev, newSource]);
-    await indexFolder(newSource);
+    await indexSource(newSource, 'folder');
   };
+
+  /** The file browser counted a source's indexed files: correct a stale card count. */
+  const handleFileCount = useCallback((id: string, count: number) => {
+    setSources(prev => prev.map(s => (s.id === id && s.status === 'ready' && s.fileCount !== count ? { ...s, fileCount: count } : s)));
+  }, []);
 
   const handleReindex = async (id: string) => {
     const source = sources.find(s => s.id === id);
     if (!source || indexingBusy()) return;
-    await indexFolder(source);
+    await indexSource(source, await sourceKind(source));
   };
 
   /** Start a chat about a Library file: a new conversation with the file named in the composer. */
@@ -1504,6 +1451,7 @@ function AppSplitView() {
               onToggleSource={toggleSource}
               onRemoveSource={removeSource}
               onAskAboutFile={handleAskAboutFile}
+              onFileCount={handleFileCount}
             />
           )}
 

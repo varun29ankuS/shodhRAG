@@ -118,6 +118,8 @@ export default function Sidebar({
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'n') {
         e.preventDefault();
+        // Not behind a modal dialog (setup, palette).
+        if (document.querySelector('[aria-modal="true"]')) return;
         if (!e.repeat) newConversationRef.current();
       }
     };

@@ -20,8 +20,6 @@ import { ImageUpload } from './components/ImageUpload';
 import Sidebar from './components/shell/Sidebar';
 import SettingsView from './components/shell/SettingsView';
 import { ConversationDock } from './components/shell/ConversationDock';
-import type { DockMode } from './components/shell/ConversationDock';
-import { useMediaQuery } from './hooks/useMediaQuery';
 import { normalizeViewTab, VIEW_TAB_LABELS } from './lib/viewTabs';
 import type { ViewTab } from './lib/viewTabs';
 import { useTheme } from './contexts/ThemeContext';
@@ -125,14 +123,6 @@ function AppSplitView() {
   const [isLoading, setIsLoading] = useState(true);
   const [isFirstTime, setIsFirstTime] = useState(false);
   const [activeTab, setActiveTab] = useState<ViewTab>('ask');
-  const [dockMode, setDockMode] = useState<DockMode>('hidden');
-  // On wide windows the open dock gets its own column, so it never covers
-  // the view's primary actions; the minimised pill reserves a bottom strip.
-  const dockColumn = useMediaQuery('(min-width: 1200px)');
-  const dockReserve: React.CSSProperties | undefined =
-    dockMode === 'open' && dockColumn ? { paddingRight: 404 }
-      : dockMode === 'minimized' ? { paddingBottom: 56 }
-        : undefined;
   const prefersReducedMotion = useReducedMotion();
   const [sources, setSources] = useState<Source[]>([]);
   const [docsExpandedSources, setDocsExpandedSources] = useState<Set<string>>(new Set());
@@ -1707,7 +1697,6 @@ function AppSplitView() {
         <motion.div
           key={activeTab}
           className="flex-1 overflow-hidden"
-          style={dockReserve}
           initial={prefersReducedMotion ? false : { opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: prefersReducedMotion ? 0 : 0.2, ease: [0.2, 0.7, 0.2, 1] }}
@@ -1967,7 +1956,7 @@ function AppSplitView() {
       <UpdateNotification />
 
       {/* Active conversation while another view is open */}
-      <ConversationDock activeTab={activeTab} onExpand={() => setActiveTab('ask')} onModeChange={setDockMode} />
+      <ConversationDock activeTab={activeTab} onExpand={() => setActiveTab('ask')} />
 
     </div>
   );

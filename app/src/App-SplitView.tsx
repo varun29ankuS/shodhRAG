@@ -22,6 +22,7 @@ import Sidebar from './components/shell/Sidebar';
 import SettingsView from './components/shell/SettingsView';
 import { ConversationDock } from './components/shell/ConversationDock';
 import { normalizeViewTab, VIEW_TAB_LABELS } from './lib/viewTabs';
+import { isBlankConversation } from './lib/conversationGroups';
 import type { ViewTab } from './lib/viewTabs';
 import { useTheme } from './contexts/ThemeContext';
 import { useSidebar } from './contexts/SidebarContext';
@@ -30,7 +31,8 @@ import { AskView } from './features/ask/AskView';
 import { useCommandPalette } from './hooks/useCommandPalette';
 import CommandPalette from './components/CommandPalette';
 import DocumentPreviewPanel from './components/DocumentPreviewPanel';
-import CalendarTodoPanel from './components/CalendarTodoPanel';
+import TasksView from './features/tasks/TasksView';
+import ActivityView from './features/activity/ActivityView';
 import { useSearchConfig } from './components/SearchSettings';
 import { OnboardingFlow } from './components/OnboardingFlow';
 import { FeedbackDialog } from './components/FeedbackDialog';
@@ -229,8 +231,13 @@ function AppSplitView() {
     setEditingInstructionText('');
   };
 
-  // Create new conversation with current source association and show it
+  // Create new conversation with current source association and show it.
+  // An untouched active conversation is reused rather than piling up blanks.
   const handleNewConversation = () => {
+    if (activeConversation && isBlankConversation(activeConversation)) {
+      setActiveTab('ask');
+      return;
+    }
     createConversation({
       spaceId: activeSpaceId || undefined,
       spaceName: activeSourceName || undefined,
@@ -1663,10 +1670,11 @@ function AppSplitView() {
             />
           )}
 
-          {/* Calendar Tab */}
-          {activeTab === 'calendar' && (
-            <CalendarTodoPanel />
-          )}
+          {/* Tasks: list first, calendar as a view */}
+          {activeTab === 'tasks' && <TasksView />}
+
+          {/* Activity: usage and the audit log */}
+          {activeTab === 'activity' && <ActivityView />}
 
           {/* Settings Tab */}
           {activeTab === 'settings' && (

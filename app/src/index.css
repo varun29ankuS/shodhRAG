@@ -127,11 +127,24 @@
 
     --radius: 0.75rem;
 
-    /* Motion */
+    /*
+     * Motion. One system for the whole app:
+     *   micro  — hover, press, colour changes
+     *   panel  — popovers, menus, list items, view content entering
+     *   screen — docks, side panels, full-surface changes
+     * Exits run faster than entrances so dismissed UI never lingers.
+     * Easings: `standard` for movement between two resting states,
+     * `enter` (decelerate) for things appearing, `exit` (accelerate) for
+     * things leaving. framer-motion code reads the same values from
+     * src/lib/motion.ts.
+     */
     --dur-micro: 120ms;
     --dur-panel: 200ms;
     --dur-screen: 280ms;
+    --dur-exit: 140ms;
     --ease-standard: cubic-bezier(.2, .7, .2, 1);
+    --ease-enter: cubic-bezier(0, 0, .2, 1);
+    --ease-exit: cubic-bezier(.4, 0, 1, 1);
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -139,6 +152,7 @@
       --dur-micro: 0ms;
       --dur-panel: 0ms;
       --dur-screen: 0ms;
+      --dur-exit: 0ms;
     }
   }
 }
@@ -297,7 +311,41 @@
   to { opacity: 1; transform: none; }
 }
 
+/*
+ * Shell motion: view content entering, popovers, and loading skeletons.
+ * Opacity plus a small rise only, so switching views never shifts layout.
+ */
+@layer utilities {
+  .shell-view-enter {
+    animation: ask-rise var(--dur-panel) var(--ease-enter) both;
+  }
+
+  .shell-pop {
+    transform-origin: top right;
+    animation: shell-pop var(--dur-panel) var(--ease-enter) both;
+  }
+
+  .shell-skeleton {
+    display: block;
+    background-color: var(--c-raised-2);
+    animation: shell-skeleton 1.4s ease-in-out infinite;
+  }
+}
+
+@keyframes shell-pop {
+  from { opacity: 0; transform: scale(0.96) translateY(-2px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes shell-skeleton {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .shell-view-enter,
+  .shell-pop,
+  .shell-skeleton,
   .ask-rise,
   .ask-slide-in,
   .ask-fade-in,

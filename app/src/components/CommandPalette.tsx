@@ -129,7 +129,8 @@ export default function CommandPalette({
     const navItems: { id: ViewTab; icon: React.ElementType; keywords: string }[] = [
       { id: 'ask', icon: MessageCircle, keywords: 'ask chat messages conversation' },
       { id: 'library', icon: Folder, keywords: 'library documents files sources' },
-      { id: 'calendar', icon: CalendarDays, keywords: 'calendar tasks todo events schedule' },
+      { id: 'tasks', icon: CalendarDays, keywords: 'calendar tasks todo events schedule' },
+      { id: 'activity', icon: Clock, keywords: 'activity audit usage log' },
       { id: 'settings', icon: Settings, keywords: 'settings preferences models search data' },
     ];
     navItems.forEach(nav => {

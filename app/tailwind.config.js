@@ -165,9 +165,12 @@ module.exports = {
         micro: "var(--dur-micro)",
         panel: "var(--dur-panel)",
         screen: "var(--dur-screen)",
+        exit: "var(--dur-exit)",
       },
       transitionTimingFunction: {
         standard: "var(--ease-standard)",
+        enter: "var(--ease-enter)",
+        exit: "var(--ease-exit)",
       },
     },
   },

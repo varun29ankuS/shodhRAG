@@ -289,7 +289,7 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose, onOpenView 
   const openSource = async () => {
     if (record) {
       if (record !== 'note') {
-        onOpenView?.('calendar');
+        onOpenView?.('tasks');
         onClose();
       }
       return;

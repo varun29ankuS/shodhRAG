@@ -12,6 +12,7 @@ import { SidebarProvider } from "./contexts/SidebarContext";
 import { SearchModelsProvider } from "./features/setup/SearchModelsContext";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { Toaster } from "sonner";
+import { MotionConfig } from "framer-motion";
 import { initErrorReporting } from "./lib/errorReporting";
 
 initErrorReporting();
@@ -58,6 +59,7 @@ function ThemedToaster() {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
+    <MotionConfig reducedMotion="user">
     <ErrorBoundary>
       <ThemeProvider>
         <SidebarProvider>
@@ -72,5 +74,6 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
         </SidebarProvider>
       </ThemeProvider>
     </ErrorBoundary>
+    </MotionConfig>
   </React.StrictMode>,
 );

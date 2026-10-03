@@ -30,6 +30,44 @@ const MIN_PASSAGE_CHARS: usize = 300;
 /// Characters reserved per passage for its JSON fields other than `text`.
 const PASSAGE_OVERHEAD_CHARS: usize = 400;
 
+/// Results fetched per file when the answer is limited to some pages:
+/// the page filter is applied after retrieval (pages are chunk metadata, not
+/// an index column), so more candidates are fetched than will be kept.
+const PAGE_OVERFETCH: usize = 3;
+/// Upper bound on that over-fetch per file, to bound reranking cost.
+const MAX_PAGE_FETCH: usize = 48;
+
+/// The pages a result covers, from the metadata written at indexing time
+/// (`page_start`/`page_end`, else `page`). `None` for unpaged chunks.
+fn result_pages(result: &ComprehensiveResult) -> Option<(u32, u32)> {
+    let read = |key: &str| {
+        result
+            .metadata
+            .get(key)
+            .and_then(|v| v.trim().parse::<u32>().ok())
+    };
+    match (read("page_start"), read("page_end")) {
+        (Some(start), Some(end)) => Some((start.min(end), start.max(end))),
+        (Some(one), None) | (None, Some(one)) => Some((one, one)),
+        (None, None) => read("page").map(|p| (p, p)),
+    }
+}
+
+/// Whether `result` lies on one of `pages`. Unpaged chunks never do.
+fn on_pages(result: &ComprehensiveResult, pages: &[u32]) -> bool {
+    result_pages(result).is_some_and(|(start, end)| pages.iter().any(|p| (start..=end).contains(p)))
+}
+
+/// "pages 3, 4 and 9" / "page 3".
+fn pages_text(pages: &[u32]) -> String {
+    let list: Vec<String> = pages.iter().map(u32::to_string).collect();
+    match list.as_slice() {
+        [one] => format!("page {one}"),
+        [rest @ .., last] => format!("pages {} and {last}", rest.join(", ")),
+        [] => String::new(),
+    }
+}
+
 /// Text budget per passage so that all `k` numbered passages reach the model
 /// whole: the registry caps tool output at [`MAX_MODEL_OUTPUT_CHARS`], and a
 /// passage cut off there would leave a citation number the model never saw.
@@ -225,7 +263,19 @@ impl HostTool for SearchDocumentsTool {
         } else {
             (sources, Vec::new())
         };
+        // Pages apply only to the user's file limit, not to sources the
+        // model chose.
+        let pages: &[u32] = if scoped_files.is_empty() {
+            &[]
+        } else {
+            &scope.pages
+        };
         let mut results = if !scoped_files.is_empty() {
+            let fetch = if pages.is_empty() {
+                k
+            } else {
+                (k * PAGE_OVERFETCH).min(MAX_PAGE_FETCH).max(k)
+            };
             let mut merged = Vec::new();
             for file in &scoped_files {
                 let filter = MetadataFilter {
@@ -233,10 +283,13 @@ impl HostTool for SearchDocumentsTool {
                     ..MetadataFilter::default()
                 };
                 let hits = rag
-                    .search_comprehensive(query, k, Some(filter))
+                    .search_comprehensive(query, fetch, Some(filter))
                     .await
                     .map_err(|e| ToolError::Failed(format!("Search failed: {e}")))?;
-                merged.extend(hits);
+                merged.extend(
+                    hits.into_iter()
+                        .filter(|h| pages.is_empty() || on_pages(h, pages)),
+                );
             }
             merged.sort_by(|a, b| b.score.total_cmp(&a.score));
             merged
@@ -263,7 +316,13 @@ impl HostTool for SearchDocumentsTool {
         drop(rag);
         results.truncate(k);
 
-        let limited_to = if !scoped_files.is_empty() {
+        let limited_to = if !scoped_files.is_empty() && !pages.is_empty() {
+            Some(format!(
+                "The user limited this answer to {} of {}.",
+                pages_text(pages),
+                scoped_files.join(", ")
+            ))
+        } else if !scoped_files.is_empty() {
             Some(format!(
                 "The user limited this answer to {}.",
                 scoped_files.join(", ")
@@ -385,6 +444,46 @@ mod tests {
             passage(2, &untitled, MAX_PASSAGE_CHARS).file,
             "Event (untitled)"
         );
+    }
+
+    fn paged(start: Option<&str>, end: Option<&str>, page: Option<&str>) -> ComprehensiveResult {
+        let mut metadata = HashMap::new();
+        for (key, value) in [("page_start", start), ("page_end", end), ("page", page)] {
+            if let Some(v) = value {
+                metadata.insert(key.to_string(), v.to_string());
+            }
+        }
+        ComprehensiveResult {
+            id: Uuid::nil(),
+            score: 0.5,
+            metadata,
+            citation: Citation::default(),
+            snippet: String::new(),
+            source_index: "hybrid".into(),
+        }
+    }
+
+    #[test]
+    fn page_scope_keeps_only_results_on_those_pages() {
+        let page4 = paged(Some("4"), Some("4"), None);
+        let span = paged(Some("6"), Some("8"), None);
+        let legacy = paged(None, None, Some("9"));
+        let unpaged = paged(None, None, None);
+        assert!(on_pages(&page4, &[4]));
+        assert!(!on_pages(&page4, &[3, 5]));
+        assert!(
+            on_pages(&span, &[7]),
+            "a merged chunk covers its whole range"
+        );
+        assert!(!on_pages(&span, &[9]));
+        assert!(on_pages(&legacy, &[9]));
+        assert!(!on_pages(&unpaged, &[1]), "unpaged chunks are on no page");
+        assert_eq!(
+            result_pages(&paged(Some("8"), Some("6"), None)),
+            Some((6, 8))
+        );
+        assert_eq!(pages_text(&[3]), "page 3");
+        assert_eq!(pages_text(&[3, 4, 9]), "pages 3, 4 and 9");
     }
 
     #[test]

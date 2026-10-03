@@ -46,6 +46,12 @@ pub struct ConversationRecord {
     pub space_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    /// Side discussions that belong to the conversation but not to one of
+    /// its messages (e.g. about a task), as the focus pop-out stores them.
+    /// Opaque to the backend. Threads about a message live in that
+    /// message's `metadata`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_threads: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,4 +189,40 @@ pub async fn pin_conversation(
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn focus_threads_round_trip_and_old_files_load() {
+        let old = r#"{"conversations": [{"id": "c1", "title": "Taxes", "messages": [],
+            "createdAt": "2026-10-01T00:00:00Z", "updatedAt": "2026-10-01T00:00:00Z",
+            "pinned": false}]}"#;
+        let file: ConversationsFile = serde_json::from_str(old).unwrap();
+        assert_eq!(file.conversations[0].focus_threads, None);
+        // Not written back when absent.
+        let text = serde_json::to_string(&file).unwrap();
+        assert!(!text.contains("focusThreads"));
+
+        let mut record = file.conversations[0].clone();
+        let threads = serde_json::json!([{"id": "t1", "anchor": {"conversationId": "c1",
+            "target": {"kind": "task", "label": "File ITR"}}, "turns": []}]);
+        record.focus_threads = Some(threads.clone());
+        let text = serde_json::to_string(&record).unwrap();
+        assert!(text.contains("\"focusThreads\""));
+        let back: ConversationRecord = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.focus_threads, Some(threads));
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = ConversationStore::in_dir(dir.path());
+        store
+            .update(|all| {
+                all.push(record.clone());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.load().unwrap()[0].focus_threads, record.focus_threads);
+    }
 }

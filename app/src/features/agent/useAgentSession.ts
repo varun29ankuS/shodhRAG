@@ -47,6 +47,8 @@ export function toAgentError(error: unknown): AgentError {
 export interface AnswerScope {
   sourceIds: string[];
   sourceFiles: string[];
+  /** 1-based pages of `sourceFiles` (only with files); absent means every page. */
+  pages?: number[];
 }
 
 export interface HistoryTurn {
@@ -80,9 +82,13 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 }
 
 export const agentApi = {
-  /** Start or reuse the conversation's session. Rejects with `AgentError`. */
-  start: (conversationId: string, instructions: string | null) =>
-    call<string>('agent_start', { conversationId, profileId: null, instructions }),
+  /**
+   * Start or reuse the conversation's session. Rejects with `AgentError`.
+   * `parentConversationId` marks a focus side-thread session: its work is
+   * audited under that conversation and it is evicted before ordinary ones.
+   */
+  start: (conversationId: string, instructions: string | null, parentConversationId: string | null = null) =>
+    call<string>('agent_start', { conversationId, profileId: null, instructions, parentConversationId }),
   /** `scope` limits what the answer may search (selected sources, or files for "Ask about this file"). */
   send: (sessionId: string, text: string, requestId: string, history: HistoryTurn[], scope: AnswerScope | null = null) =>
     call<string>('agent_send', { sessionId, text, requestId, history, scope }),

@@ -13,10 +13,12 @@ import {
   createLocalThreadStore,
   metadataWithThreads,
   metadataWithoutThreads,
+  mergeThreads,
   readThreads,
   SUMMARY_ANSWER_CHARS,
   removeThread,
   sameTarget,
+  sideScope,
   threadSummary,
   repliesLabel,
   sideSessionKey,
@@ -190,4 +192,41 @@ test('local store: prune drops threads of deleted conversations only', () => {
   assert.equal(storage.getItem('unrelated'), 'x');
   const noKeys = createLocalThreadStore({ getItem: () => null, setItem() {}, removeItem() {} });
   assert.equal(noKeys.prune(new Set()), 0);
+});
+
+test('threads kept on this device merge into the conversation without duplicates', () => {
+  const at = (t: FocusThread, updatedAt: string): FocusThread => ({ ...t, updatedAt });
+  const stored = [at(thread('a', null), '2026-10-03T10:05:00.000Z'), at(thread('b', null), '2026-10-03T10:01:00.000Z')];
+  const device = [at(thread('b', null), '2026-10-03T10:09:00.000Z'), at(thread('c', null), '2026-10-03T10:02:00.000Z')];
+  const merged = mergeThreads(stored, device);
+  assert.deepEqual(merged.map(t => t.id), ['c', 'a', 'b'], 'ordered by last update');
+  assert.equal(merged.find(t => t.id === 'b')?.updatedAt, '2026-10-03T10:09:00.000Z', 'the newer copy wins');
+  // Merging again (a save that did not land) changes nothing.
+  assert.deepEqual(mergeThreads(merged, device), merged);
+  const many = Array.from({ length: MAX_LOCAL_THREADS + 3 }, (_, i) =>
+    at(thread(`t${i}`, null), `2026-10-03T10:${String(i).padStart(2, '0')}:00.000Z`));
+  const capped = mergeThreads([], many);
+  assert.equal(capped.length, MAX_LOCAL_THREADS);
+  assert.equal(capped[0].id, 't3', 'the oldest are dropped');
+});
+
+test('side questions about a document passage search that file around its pages', () => {
+  const hit = {
+    number: 2,
+    sourceFile: 'C:/docs/report.pdf',
+    fileName: 'report.pdf',
+    title: 'Report',
+    text: 'Revenue grew',
+    snippet: 'Revenue grew',
+    score: 0.4,
+    page: { start: 4, end: 5 },
+    lineRange: null,
+    url: null,
+  };
+  const target = { kind: 'source' as const, label: 'report.pdf, p. 4', hit };
+  assert.deepEqual(sideScope(target, {}), { sourceIds: [], sourceFiles: ['C:/docs/report.pdf'], pages: [3, 4, 5, 6] });
+  assert.deepEqual(sideScope(target, { page: 1 }).pages, [1, 2], 'the page being viewed, never below 1');
+  assert.deepEqual(sideScope({ ...target, hit: { ...hit, page: null } }, {}), { sourceIds: [], sourceFiles: ['C:/docs/report.pdf'] });
+  assert.equal(sideScope({ ...target, hit: { ...hit, url: 'https://example.com/a.pdf' } }, {}), null, 'web results are not indexed files');
+  assert.equal(sideScope({ kind: 'mermaid', label: 'Flow', source: 'graph TD; A-->B' }, {}), null);
 });

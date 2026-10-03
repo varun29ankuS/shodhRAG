@@ -30,6 +30,12 @@ export interface Conversation {
   spaceId?: string;
   spaceName?: string;
   systemPrompt?: string;
+  /**
+   * Side discussions not tied to a message (e.g. about a task). Opaque here;
+   * read and written through features/focus/threadStore. Saved with the
+   * conversation (`ConversationRecord.focus_threads`).
+   */
+  focusThreads?: unknown[];
 }
 
 /** Emitted by the backend when the agent renames or pins a conversation. */
@@ -141,14 +147,17 @@ export function useConversations() {
 
   const activeConversation = conversations.find(c => c.id === activeConversationId) || null;
 
-  // Debounced save, per conversation
-  const scheduleSave = useCallback((conv: Conversation) => {
+  // Debounced save, per conversation. `onSaved` runs only if this save is
+  // the one that reaches the backend and succeeds.
+  const scheduleSave = useCallback((conv: Conversation, onSaved?: () => void) => {
     const timers = saveTimersRef.current;
     const existing = timers.get(conv.id);
     if (existing) clearTimeout(existing);
     timers.set(conv.id, setTimeout(() => {
       timers.delete(conv.id);
-      invoke('save_conversation', { conversation: conv }).catch(console.error);
+      invoke('save_conversation', { conversation: conv })
+        .then(() => onSaved?.())
+        .catch(console.error);
     }, 500));
   }, []);
 
@@ -311,6 +320,31 @@ export function useConversations() {
     );
   }, [scheduleSave]);
 
+  /**
+   * Change a conversation's side threads that have no parent message. With
+   * `touch: false` the conversation keeps its place in the list (used when
+   * moving threads kept by an older version into the conversation).
+   */
+  const updateFocusThreads = useCallback((
+    id: string,
+    update: (prev: unknown[] | undefined) => unknown[],
+    options: { touch?: boolean; onSaved?: () => void } = {},
+  ) => {
+    setConversations(prev =>
+      prev.map(c => {
+        if (c.id !== id) return c;
+        const next = update(c.focusThreads);
+        const updated: Conversation = {
+          ...c,
+          focusThreads: next.length > 0 ? next : undefined,
+          ...(options.touch === false ? {} : { updatedAt: new Date().toISOString() }),
+        };
+        scheduleSave(updated, options.onSaved);
+        return updated;
+      })
+    );
+  }, [scheduleSave]);
+
   const pinConversation = useCallback((id: string) => {
     setConversations(prev =>
       prev.map(c =>
@@ -344,6 +378,7 @@ export function useConversations() {
     deleteConversation,
     pinConversation,
     updateConversationMeta,
+    updateFocusThreads,
     reorderConversations,
   };
 }

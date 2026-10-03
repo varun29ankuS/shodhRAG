@@ -10,13 +10,17 @@ import type { FocusExtras, FocusTarget, FocusThread, ThreadAnchor, ThreadTurn } 
 import {
   appendTurn,
   createLocalThreadStore,
+  MAX_LOCAL_THREADS,
+  mergeThreads,
+  readThreads,
   sameTarget,
+  sideScope,
   sideSessionKey,
   threadHistory,
   threadsFromMetadata,
   upsertThread,
 } from './threadStore';
-import type { HistoryTurnLike, LocalThreadStore } from './threadStore';
+import type { HistoryTurnLike } from './threadStore';
 import { FocusOverlay } from './FocusOverlay';
 
 /** How long an interrupt may take before the side answer is closed locally. */
@@ -79,7 +83,7 @@ export interface SideLiveView {
 export interface FocusContextValue {
   openFocus: (request: FocusRequest) => void;
   closeFocus: () => void;
-  /** Threads with no parent message, kept on this device for a conversation. */
+  /** Threads with no parent message (e.g. about a task), stored on the conversation. */
   localThreads: (conversationId: string) => FocusThread[];
   /** A thread by id, wherever it is kept. */
   findThread: (conversationId: string, parentMessageId: string | null, threadId: string) => FocusThread | null;
@@ -146,17 +150,12 @@ export function useFocusAnchor(): FocusAnchorValue | null {
  */
 export function FocusProvider({ children }: { children: React.ReactNode }) {
   const session = useChatSession();
-  const { conversations, activeConversationId, messages, updateThreads, claimSideRun, releaseSideRun, setRuntimeInstalled } = session;
+  const { conversations, activeConversationId, messages, updateThreads, updateFocusThreads, claimSideRun, releaseSideRun, setRuntimeInstalled } = session;
 
   const [open, setOpen] = useState<OpenFocus | null>(null);
-  const [local, setLocal] = useState<Record<string, FocusThread[]>>({});
   const [sideLive, setSideLive] = useState<SideLiveView | null>(null);
   const seqRef = useRef(0);
   const liveRef = useRef<SideLive | null>(null);
-  const storeRef = useRef<LocalThreadStore | null>(null);
-  if (!storeRef.current) storeRef.current = createLocalThreadStore(browserStorage());
-  const localRef = useRef(local);
-  localRef.current = local;
 
   const conversationsRef = useRef(conversations);
   conversationsRef.current = conversations;
@@ -165,34 +164,35 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
   const activeIdRef = useRef(activeConversationId);
   activeIdRef.current = activeConversationId;
 
-  /** Always reads the latest local threads (used while mutating). */
-  const readLocal = useCallback((conversationId: string): FocusThread[] => {
-    const cached = localRef.current[conversationId];
-    if (cached) return cached;
-    return storeRef.current?.list(conversationId) ?? [];
-  }, []);
-  // Public reader whose identity changes with the local threads, so
-  // consumers (e.g. a task's reply count) re-render when they change.
+  // Identity changes with the conversations, so consumers (e.g. a task's
+  // reply count) re-render when a conversation's threads change.
   const localThreads = useCallback(
-    (conversationId: string): FocusThread[] => local[conversationId] ?? readLocal(conversationId),
-    [local, readLocal],
+    (conversationId: string): FocusThread[] =>
+      readThreads(conversations.find(c => c.id === conversationId)?.focusThreads),
+    [conversations],
   );
 
-  // Once per launch, after conversations load: drop device-kept threads of
-  // conversations deleted since (not at delete time, so Undo keeps them).
-  const prunedRef = useRef(false);
+  // Once per launch, after conversations load: move threads that earlier
+  // versions kept in this device's localStorage into their conversation.
+  // The old key is removed only after the conversation saved; if that save
+  // is superseded or fails, the next launch merges again (by thread id, so
+  // nothing is duplicated). Keys of conversations deleted since are dropped.
+  const migratedRef = useRef(false);
   useEffect(() => {
-    if (prunedRef.current || conversations.length === 0) return;
-    prunedRef.current = true;
-    storeRef.current?.prune(new Set(conversations.map(c => c.id)));
-  }, [conversations]);
-
-  // Load a conversation's local threads into state once it is looked at.
-  useEffect(() => {
-    if (!activeConversationId || local[activeConversationId]) return;
-    const loaded = storeRef.current?.list(activeConversationId) ?? [];
-    setLocal(prev => (prev[activeConversationId] ? prev : { ...prev, [activeConversationId]: loaded }));
-  }, [activeConversationId, local]);
+    if (migratedRef.current || conversations.length === 0) return;
+    migratedRef.current = true;
+    const legacy = createLocalThreadStore(browserStorage());
+    for (const conversation of conversations) {
+      const old = legacy.list(conversation.id);
+      if (old.length === 0) continue;
+      updateFocusThreads(
+        conversation.id,
+        prev => mergeThreads(readThreads(prev), old),
+        { touch: false, onSaved: () => legacy.clear(conversation.id) },
+      );
+    }
+    legacy.prune(new Set(conversations.map(c => c.id)));
+  }, [conversations, updateFocusThreads]);
 
   /** Threads stored on a message: the visible copy first, else the stored conversation. */
   const messageThreads = useCallback((conversationId: string, messageId: string): FocusThread[] => {
@@ -220,19 +220,13 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       });
       return;
     }
-    const conversationId = anchor.conversationId;
-    const list = readLocal(conversationId);
-    const current = list.find(t => t.id === threadId) ?? fresh();
-    const next = upsertThread(list, change(current));
-    if (!storeRef.current?.save(conversationId, next)) {
-      notify.error('This side discussion could not be saved on this device', {
-        description: 'Storage is full or unavailable. It stays visible until the app closes.',
-      });
-    }
-    // Updated now so a second change in the same tick builds on this one.
-    localRef.current = { ...localRef.current, [conversationId]: next };
-    setLocal(prev => ({ ...prev, [conversationId]: next }));
-  }, [updateThreads, readLocal]);
+    // Applied to the latest stored list, so two changes in one tick compose.
+    updateFocusThreads(anchor.conversationId, prev => {
+      const list = readThreads(prev);
+      const current = list.find(t => t.id === threadId) ?? fresh();
+      return upsertThread(list, change(current)).slice(-MAX_LOCAL_THREADS);
+    });
+  }, [updateThreads, updateFocusThreads]);
 
   /** Main-conversation turns up to (and including) the parent message. */
   const mainTurns = useCallback((conversationId: string, parentMessageId: string | null): HistoryTurnLike[] => {
@@ -360,11 +354,11 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     ).map(t => ({ role: t.role, content: t.content }));
     const instructions = conversationsRef.current.find(c => c.id === conversationId)?.systemPrompt?.trim() || null;
     try {
-      const sessionId = await api.start(sideSessionKey(conversationId, threadId), instructions);
+      const sessionId = await api.start(sideSessionKey(conversationId, threadId), instructions, conversationId);
       if (live.settled) return true;
       live.sessionId = sessionId;
       setRuntimeInstalled(true);
-      await api.send(sessionId, composeSideQuestion(target.target, text, extras), runId, history);
+      await api.send(sessionId, composeSideQuestion(target.target, text, extras), runId, history, sideScope(target.target, extras));
     } catch (error) {
       const failure = toAgentError(error);
       enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);

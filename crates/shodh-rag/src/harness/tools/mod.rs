@@ -119,6 +119,9 @@ pub struct RunScope {
     pub source_ids: Vec<String>,
     /// Indexed files to search, as paths.
     pub files: Vec<String>,
+    /// Pages of `files` to search (1-based); empty means every page. Only
+    /// meaningful with `files`.
+    pub pages: Vec<u32>,
 }
 
 impl RunScope {

@@ -5,21 +5,24 @@
  * - Threads anchored to a message are stored inside that message's opaque
  *   `metadata` (key `focusThreads`), which `save_conversation` already
  *   persists to conversations.json. They sync with the conversation.
- * - Threads with no parent message (e.g. about a task) have no field in the
- *   conversation record that survives a save, so they are kept per
- *   conversation in this device's localStorage.
+ * - Threads with no parent message (e.g. about a task) are stored on the
+ *   conversation itself (`focusThreads`, `ConversationRecord.focus_threads`).
+ *   Earlier versions kept them in this device's localStorage; those are moved
+ *   into the conversation once (`mergeThreads`) and the old key removed after
+ *   the conversation saved.
  *
  * Pure module (storage is injected) so it is unit-tested with Node
  * (`app/tests/focusThreads.test.ts`).
  */
 
-import type { FocusPageSpan, FocusSourceHit, FocusTarget, FocusTaskSnapshot, FocusThread, ThreadAnchor, ThreadTurn } from './focusTypes.ts';
+import type { FocusExtras, FocusPageSpan, FocusSourceHit, FocusTarget, FocusTaskSnapshot, FocusThread, ThreadAnchor, ThreadTurn } from './focusTypes.ts';
+import type { AnswerScope } from '../agent/useAgentSession.ts';
 
 /** Key of the side threads inside a message's `metadata`. */
 export const METADATA_KEY = 'focusThreads';
-/** localStorage key prefix of threads without a parent message. */
+/** localStorage key prefix where earlier versions kept threads without a parent message. */
 export const LOCAL_KEY_PREFIX = 'shodh.focusThreads.v1.';
-/** Threads kept per conversation in localStorage (oldest dropped first). */
+/** Threads without a parent message kept per conversation (oldest dropped first). */
 export const MAX_LOCAL_THREADS = 40;
 /** Turns kept per thread (oldest dropped first). */
 export const MAX_TURNS = 200;
@@ -158,6 +161,21 @@ export function readThreads(value: unknown): FocusThread[] {
     }
   }
   return out;
+}
+
+/**
+ * Threads of both lists, one per id: on a clash the one updated later wins.
+ * Ordered by last update, capped at `MAX_LOCAL_THREADS` (oldest dropped).
+ */
+export function mergeThreads(existing: readonly FocusThread[], incoming: readonly FocusThread[]): FocusThread[] {
+  const byId = new Map<string, FocusThread>();
+  for (const thread of [...existing, ...incoming]) {
+    const kept = byId.get(thread.id);
+    if (!kept || thread.updatedAt > kept.updatedAt) byId.set(thread.id, thread);
+  }
+  return [...byId.values()]
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : a.updatedAt > b.updatedAt ? 1 : 0))
+    .slice(-MAX_LOCAL_THREADS);
 }
 
 /** Insert or replace a thread (by id), newest-updated last. */
@@ -365,4 +383,29 @@ export function threadSummary(thread: Pick<FocusThread, 'turns' | 'anchor'>): st
     question ? `Q: ${question}` : '',
     `A: ${excerpt}`,
   ].filter(Boolean).join('\n');
+}
+
+/** Pages either side of a passage a document side question also searches. */
+const SCOPE_PAGE_MARGIN = 1;
+
+/**
+ * What a side question may search. About a passage of an indexed file: that
+ * file only, on the page being viewed (or the passage's pages), one page
+ * either side so text running over a page break is found. Other targets
+ * (tasks, charts, web results) search everything.
+ */
+export function sideScope(target: FocusTarget, extras: FocusExtras): AnswerScope | null {
+  if (target.kind !== 'source') return null;
+  const { hit } = target;
+  if (hit.url || !hit.sourceFile || hit.sourceFile.includes('://')) return null;
+  const span = typeof extras.page === 'number' && extras.page > 0
+    ? { start: extras.page, end: extras.page }
+    : hit.page;
+  const scope: AnswerScope = { sourceIds: [], sourceFiles: [hit.sourceFile] };
+  if (span && span.start > 0 && span.end >= span.start) {
+    const first = Math.max(1, Math.floor(span.start) - SCOPE_PAGE_MARGIN);
+    const last = Math.floor(span.end) + SCOPE_PAGE_MARGIN;
+    scope.pages = Array.from({ length: last - first + 1 }, (_, i) => first + i);
+  }
+  return scope;
 }

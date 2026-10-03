@@ -133,6 +133,8 @@ export interface ChatSessionValue {
    * conversation or in the background one it belongs to.
    */
   updateThreads: (conversationId: string, messageId: string, update: (threads: FocusThread[]) => FocusThread[]) => void;
+  /** Change a conversation's side threads that have no parent message (stored on the conversation). */
+  updateFocusThreads: ConversationsApi['updateFocusThreads'];
 }
 
 /** The side-thread answer that holds the run. */
@@ -647,6 +649,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     claimSideRun,
     releaseSideRun,
     updateThreads,
+    updateFocusThreads: conv.updateFocusThreads,
   }), [conv, view, streamingConversationId, liveRun, navigation, runtimeInstalled, send, retry, steer, cancel, approve, appendMessage, updateMessage, sideRun, claimSideRun, releaseSideRun, updateThreads]);
 
   return <ChatSessionContext.Provider value={value}>{children}</ChatSessionContext.Provider>;

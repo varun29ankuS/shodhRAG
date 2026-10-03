@@ -131,6 +131,10 @@ fn now_ms() -> u64 {
 
 struct SessionEntry {
     conversation_id: String,
+    /// For a focus side thread: the conversation it belongs to. Its tool
+    /// calls and questions are audited under that conversation, and its
+    /// session is evicted before ordinary ones.
+    parent_conversation_id: Option<String>,
     profile_id: String,
     instructions: Option<String>,
     /// Model and credentials the session was started with (see
@@ -146,6 +150,47 @@ impl SessionEntry {
     fn touch(&self) {
         self.last_used_ms.store(now_ms(), Ordering::Relaxed);
     }
+
+    /// The conversation the audit log attributes this session's work to.
+    fn audit_conversation(&self) -> &str {
+        self.parent_conversation_id
+            .as_deref()
+            .unwrap_or(&self.conversation_id)
+    }
+}
+
+/// A live session that could be stopped to make room.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EvictionCandidate {
+    session_id: String,
+    conversation_id: String,
+    /// A focus side-thread session.
+    focus: bool,
+    /// An answer is running.
+    busy: bool,
+    last_used_ms: u64,
+}
+
+/// Which sessions to stop so that `excess` fewer remain. Never the
+/// conversations in `keep` (the one starting and, for a side thread, its
+/// parent) and never one with an answer running. Idle side-thread sessions
+/// go first (they are cheap to restart and their history is replayed),
+/// then the least recently used.
+fn eviction_order(candidates: &[EvictionCandidate], keep: &[&str], excess: usize) -> Vec<String> {
+    let mut idle: Vec<&EvictionCandidate> = candidates
+        .iter()
+        .filter(|c| !c.busy && !keep.contains(&c.conversation_id.as_str()))
+        .collect();
+    idle.sort_by(|a, b| {
+        b.focus
+            .cmp(&a.focus)
+            .then(a.last_used_ms.cmp(&b.last_used_ms))
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
+    idle.into_iter()
+        .take(excess)
+        .map(|c| c.session_id.clone())
+        .collect()
 }
 
 /// Live agent sessions, managed as Tauri state.
@@ -208,24 +253,26 @@ impl AgentSessions {
             .clone()
     }
 
-    /// Stop the least recently used idle sessions so that, with the ones
-    /// being launched, at most [`MAX_LIVE_SESSIONS`] remain.
-    async fn evict_idle(&self, keep_conversation: &str) {
-        let mut idle: Vec<(u64, String)> = self
-            .sessions
-            .iter()
-            .filter(|e| {
-                e.conversation_id != keep_conversation && e.session.active_run_id().is_none()
-            })
-            .map(|e| (e.last_used_ms.load(Ordering::Relaxed), e.key().clone()))
-            .collect();
+    /// Stop idle sessions so that, with the ones being launched, at most
+    /// [`MAX_LIVE_SESSIONS`] remain (see [`eviction_order`]).
+    async fn evict_idle(&self, keep: &[&str]) {
         let live = self.sessions.len() + self.starting.load(Ordering::SeqCst);
         let excess = live.saturating_sub(MAX_LIVE_SESSIONS);
         if excess == 0 {
             return;
         }
-        idle.sort();
-        for (_, session_id) in idle.into_iter().take(excess) {
+        let candidates: Vec<EvictionCandidate> = self
+            .sessions
+            .iter()
+            .map(|e| EvictionCandidate {
+                session_id: e.key().clone(),
+                conversation_id: e.conversation_id.clone(),
+                focus: e.parent_conversation_id.is_some(),
+                busy: e.session.active_run_id().is_some(),
+                last_used_ms: e.last_used_ms.load(Ordering::Relaxed),
+            })
+            .collect();
+        for session_id in eviction_order(&candidates, keep, excess) {
             if let Some(entry) = self.remove(&session_id) {
                 entry.session.shutdown().await;
                 tracing::info!(target: "shodh::harness", session = %session_id, "idle agent session stopped");
@@ -281,13 +328,19 @@ fn truncate(text: &str, max: usize) -> String {
 /// Most sources or files one answer may be limited to.
 const MAX_SCOPE_ITEMS: usize = 50;
 
+/// Most pages one answer may be limited to.
+const MAX_SCOPE_PAGES: usize = 200;
+
 /// What the user limited an answer to: selected sources ("Include this
-/// source when answering") and files ("Ask about this file").
+/// source when answering"), files ("Ask about this file") and, for files,
+/// pages (a side question about a passage on page 4).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SendScope {
     pub source_ids: Vec<String>,
     pub source_files: Vec<String>,
+    /// 1-based pages of `source_files`; absent or empty means every page.
+    pub pages: Option<Vec<u32>>,
 }
 
 impl SendScope {
@@ -310,9 +363,27 @@ impl SendScope {
             }
             Ok(items)
         };
+        let files = clean(self.source_files, "files")?;
+        let mut pages = self.pages.unwrap_or_default();
+        pages.sort_unstable();
+        pages.dedup();
+        if !pages.is_empty() && files.is_empty() {
+            return Err(AgentCommandError::invalid(
+                "Pages can only limit an answer to files; give sourceFiles too",
+            ));
+        }
+        if pages.contains(&0) {
+            return Err(AgentCommandError::invalid("Page numbers start at 1"));
+        }
+        if pages.len() > MAX_SCOPE_PAGES {
+            return Err(AgentCommandError::invalid(format!(
+                "At most {MAX_SCOPE_PAGES} pages can limit one answer"
+            )));
+        }
         Ok(RunScope {
             source_ids: clean(self.source_ids, "sources")?,
-            files: clean(self.source_files, "files")?,
+            files,
+            pages,
         })
     }
 }
@@ -428,6 +499,10 @@ async fn resolve_key(llm: &LLMState, mode: &LLMMode) -> Option<String> {
 ///
 /// `instructions` are the conversation's custom instructions; a change
 /// restarts the session with the new system prompt.
+///
+/// `parent_conversation_id` marks a focus side-thread session: its work is
+/// audited under the parent conversation, the parent's session is kept
+/// alive while it starts, and idle side-thread sessions are evicted first.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri injects each managed state as an argument.
 pub async fn agent_start(
@@ -435,6 +510,7 @@ pub async fn agent_start(
     conversation_id: String,
     profile_id: Option<String>,
     instructions: Option<String>,
+    parent_conversation_id: Option<String>,
     sessions: State<'_, AgentSessions>,
     rag: State<'_, RagState>,
     llm: State<'_, LLMState>,
@@ -442,6 +518,12 @@ pub async fn agent_start(
 ) -> CommandResult<String> {
     let started = Instant::now();
     check_id("conversation id", &conversation_id)?;
+    let parent_conversation_id = parent_conversation_id
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty() && *p != conversation_id);
+    if let Some(parent) = &parent_conversation_id {
+        check_id("parent conversation id", parent)?;
+    }
     let profile_id = profile_id
         .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty())
@@ -499,6 +581,7 @@ pub async fn agent_start(
     if let Some(session_id) = existing {
         let reusable = sessions.sessions.get(&session_id).and_then(|e| {
             let fits = !e.session.is_closed()
+                && e.parent_conversation_id == parent_conversation_id
                 && e.profile_id == profile_id
                 && e.instructions == instructions
                 && e.model_fingerprint == fingerprint;
@@ -513,7 +596,10 @@ pub async fn agent_start(
         }
     }
     let _starting = StartingGuard::new(&sessions.starting);
-    sessions.evict_idle(&conversation_id).await;
+    let keep: Vec<&str> = std::iter::once(conversation_id.as_str())
+        .chain(parent_conversation_id.as_deref())
+        .collect();
+    sessions.evict_idle(&keep).await;
 
     let app_data_dir = app_data_dir(&app)?;
     let registry = sessions
@@ -567,7 +653,10 @@ pub async fn agent_start(
         session_id: session_id.clone(),
     };
 
-    let tool_audit = audit.tool_audit(&conversation_id, &profile_id);
+    let audit_conversation = parent_conversation_id
+        .as_deref()
+        .unwrap_or(&conversation_id);
+    let tool_audit = audit.tool_audit(audit_conversation, &profile_id);
     let (session, mut events) = OmpSession::start(SessionConfig {
         launch,
         profile,
@@ -604,6 +693,7 @@ pub async fn agent_start(
         session_id.clone(),
         Arc::new(SessionEntry {
             conversation_id: conversation_id.clone(),
+            parent_conversation_id,
             profile_id,
             instructions,
             model_fingerprint: fingerprint,
@@ -662,7 +752,7 @@ pub async fn agent_send(
         .await?;
     entry.primed.store(true, Ordering::SeqCst);
     if scoped {
-        tracing::info!(target: "shodh::harness", run_id = %run_id, sources = scope.source_ids.len(), files = scope.files.len(), "answer limited to a scope");
+        tracing::info!(target: "shodh::harness", run_id = %run_id, sources = scope.source_ids.len(), files = scope.files.len(), pages = scope.pages.len(), "answer limited to a scope");
     }
     audit.record(question_record(
         &entry,
@@ -692,7 +782,7 @@ fn question_record(
             "history_replayed": history_replayed,
         }),
     )
-    .conversation(entry.conversation_id.clone())
+    .conversation(entry.audit_conversation().to_string())
     .profile(entry.profile_id.clone())
     .run(run_id.to_string())
 }
@@ -864,6 +954,77 @@ mod tests {
         assert!(!text.contains("q14\n"));
         assert!(text.contains("User: q15\n"));
         assert!(text.contains("User: q24\n"));
+    }
+
+    fn candidate(
+        id: &str,
+        conversation: &str,
+        focus: bool,
+        busy: bool,
+        used: u64,
+    ) -> EvictionCandidate {
+        EvictionCandidate {
+            session_id: id.into(),
+            conversation_id: conversation.into(),
+            focus,
+            busy,
+            last_used_ms: used,
+        }
+    }
+
+    #[test]
+    fn idle_focus_sessions_are_evicted_first_and_parents_kept() {
+        let live = [
+            candidate("s-old", "c-old", false, false, 10),
+            candidate("s-parent", "c-parent", false, false, 5),
+            candidate("s-focus-new", "c-x--focus--t2", true, false, 90),
+            candidate("s-focus-old", "c-x--focus--t1", true, false, 50),
+            candidate("s-busy-focus", "c-y--focus--t3", true, true, 1),
+            candidate("s-busy", "c-busy", false, true, 2),
+        ];
+        let keep = ["c-new--focus--t9", "c-parent"];
+        assert_eq!(eviction_order(&live, &keep, 1), vec!["s-focus-old"]);
+        assert_eq!(
+            eviction_order(&live, &keep, 3),
+            vec!["s-focus-old", "s-focus-new", "s-old"],
+            "then the least recently used ordinary session"
+        );
+        // Never a kept conversation or a running answer, however many are asked for.
+        let all = eviction_order(&live, &keep, 10);
+        assert_eq!(all.len(), 3);
+        assert!(!all
+            .iter()
+            .any(|s| s == "s-parent" || s.starts_with("s-busy")));
+        assert!(eviction_order(&live, &keep, 0).is_empty());
+    }
+
+    #[test]
+    fn scopes_limit_pages_only_within_files() {
+        let scope = SendScope {
+            source_files: vec![" C:/docs/a.pdf ".into()],
+            pages: Some(vec![9, 4, 4]),
+            ..SendScope::default()
+        }
+        .validated()
+        .unwrap();
+        assert_eq!(scope.files, vec!["C:/docs/a.pdf"]);
+        assert_eq!(scope.pages, vec![4, 9], "sorted and deduplicated");
+        let no_files = SendScope {
+            pages: Some(vec![1]),
+            ..SendScope::default()
+        };
+        assert!(no_files.validated().is_err());
+        let zero = SendScope {
+            source_files: vec!["a.pdf".into()],
+            pages: Some(vec![0]),
+            ..SendScope::default()
+        };
+        assert!(zero.validated().is_err());
+        let wire: SendScope =
+            serde_json::from_str(r#"{"sourceFiles": ["a.pdf"], "pages": [2]}"#).unwrap();
+        assert_eq!(wire.validated().unwrap().pages, vec![2]);
+        let old: SendScope = serde_json::from_str(r#"{"sourceFiles": ["a.pdf"]}"#).unwrap();
+        assert!(old.validated().unwrap().pages.is_empty());
     }
 
     #[test]

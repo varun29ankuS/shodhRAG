@@ -63,6 +63,9 @@ jobs:
         run: choco install protoc -y
 
       # Model-backed tests stay ignored here: SHODH_TEST_MODELS is not set in CI.
+      - name: Tests (shodh-ontology)
+        run: cargo test --package shodh-ontology
+
       - name: Library tests (shodh-rag)
         run: cargo test --package shodh-rag --lib
 

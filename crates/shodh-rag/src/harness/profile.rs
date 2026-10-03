@@ -30,7 +30,7 @@ pub mod app_tools {
     pub const EXPORT_DOCUMENT: &str = "export_document";
 
     /// Every app-layer tool, in registration order.
-    pub const ALL: [&str; 17] = [
+    pub const ALL: [&str; 19] = [
         CREATE_TASK,
         CREATE_EVENT,
         LIST_TASKS,
@@ -48,6 +48,8 @@ pub mod app_tools {
         OPEN_CONVERSATION,
         ORGANIZE_CONVERSATION,
         AUDIT_QUERY,
+        GET_SETTINGS,
+        UPDATE_SETTING,
     ];
 }
 

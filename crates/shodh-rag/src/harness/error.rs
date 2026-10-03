@@ -45,6 +45,9 @@ pub enum HarnessError {
     #[error("The model {0} is not allowed: stealth models may log prompts for training. Choose another model, or set SHODH_ALLOW_STEALTH_MODELS=1 to accept that risk.")]
     DisallowedModel(String),
 
+    #[error("Local-only mode is on, so the agent cannot use {0}, which sends data off this computer. Choose a local model (Ollama) in Settings → Models, or turn off Local-only mode in Settings → Privacy.")]
+    LocalOnlyCloudModel(String),
+
     #[error("Unknown agent profile {0:?}.")]
     UnknownProfile(String),
 

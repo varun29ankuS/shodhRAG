@@ -6,10 +6,14 @@ use shodh_rag::harness::tools::ToolContext;
 use shodh_rag::indexing::{IndexingOptions, IndexingState};
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::{CalendarChange, ConversationChange, HostEffects, IndexJob};
+use super::{CalendarChange, ConversationChange, HostEffects, IndexJob, ModelInfo};
+use crate::app_settings::AppSettings;
 use crate::calendar_commands::{spawn_reindex, CALENDAR_CHANGED_EVENT};
 use crate::event_emitter::TauriEventEmitter;
+use crate::llm_commands::LLMState;
 use crate::rag_commands::RagState;
+use shodh_rag::audit::payload::{is_cloud, provider_id};
+use shodh_rag::llm::LLMMode;
 
 pub struct TauriEffects {
     app: AppHandle,
@@ -37,6 +41,40 @@ fn agent_indexing_options() -> IndexingOptions {
 pub const CONVERSATION_UPDATED_EVENT: &str = "conversation-updated";
 
 impl HostEffects for TauriEffects {
+    fn settings_changed(&self, settings: &AppSettings) {
+        crate::app_settings::broadcast(&self.app, settings);
+    }
+
+    fn model_info(&self) -> Option<ModelInfo> {
+        let llm = self.app.state::<LLMState>();
+        let mode = llm
+            .config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .mode
+            .clone();
+        match mode {
+            LLMMode::External {
+                provider, model, ..
+            } => {
+                let id = provider_id(&provider);
+                Some(ModelInfo {
+                    provider: id.to_string(),
+                    model: Some(model),
+                    cloud: is_cloud(id),
+                })
+            }
+            LLMMode::Local { model_path } => Some(ModelInfo {
+                provider: "local".to_string(),
+                model: model_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned()),
+                cloud: false,
+            }),
+            LLMMode::Disabled => None,
+        }
+    }
+
     fn conversation_changed(&self, change: ConversationChange) {
         if let Err(e) = self.app.emit(CONVERSATION_UPDATED_EVENT, &change) {
             tracing::warn!("Failed to emit {}: {}", CONVERSATION_UPDATED_EVENT, e);

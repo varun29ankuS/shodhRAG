@@ -1,6 +1,7 @@
 mod analytics_commands;
 mod answer_validator;
 mod api_key_store;
+mod app_settings;
 mod audit_commands;
 mod chat_history;
 mod context_commands;
@@ -573,6 +574,10 @@ pub fn run() {
             conversation_commands::delete_conversation,
             conversation_commands::rename_conversation,
             conversation_commands::pin_conversation,
+            // App settings (preferences: user and agent; policy: user only)
+            app_settings::get_app_settings,
+            app_settings::update_app_preferences,
+            app_settings::set_app_policy,
             // Calendar/Todo commands
             calendar_commands::load_tasks,
             calendar_commands::create_task,

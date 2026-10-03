@@ -29,9 +29,11 @@ use tokio::sync::{Mutex as AsyncMutex, OnceCell};
 
 use crate::agent_tools::{build_registry, AgentHost, TauriEffects, AGENT_CANNOT_DO};
 use crate::api_key_store;
+use crate::app_settings::SettingsStore;
 use crate::audit_commands::AuditState;
 use crate::llm_commands::LLMState;
 use crate::rag_commands::RagState;
+use shodh_rag::audit::payload::is_cloud;
 
 /// Tauri event name for agent events.
 pub const AGENT_EVENT: &str = "agent_event";
@@ -97,7 +99,8 @@ impl From<HarnessError> for AgentCommandError {
             | HarnessError::UnsupportedProvider(_)
             | HarnessError::MissingApiKey(_)
             | HarnessError::InvalidModel(_)
-            | HarnessError::DisallowedModel(_) => "model_config",
+            | HarnessError::DisallowedModel(_)
+            | HarnessError::LocalOnlyCloudModel(_) => "model_config",
             HarnessError::RunInProgress => "busy",
             HarnessError::SlashCommand
             | HarnessError::EmptyMessage
@@ -431,6 +434,17 @@ pub async fn agent_start(
         (_, mode) => mode,
     };
     let model = select_model(&mode, |_| None)?;
+    // Local-only mode: refuse any model whose provider is off this computer.
+    let local_only = SettingsStore::in_dir(&app_data_dir(&app)?)
+        .load()
+        .map(|s| s.policy.local_only)
+        .map_err(|e| AgentCommandError {
+            code: "runtime_error",
+            message: format!("Settings could not be read: {e}"),
+        })?;
+    if local_only && is_cloud(&model.model_arg) {
+        return Err(HarnessError::LocalOnlyCloudModel(model.model_arg.clone()).into());
+    }
     let fingerprint = model_fingerprint(&model);
 
     let lock = sessions.start_lock(&conversation_id);

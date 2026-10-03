@@ -12,6 +12,7 @@
 mod audit;
 mod calendar;
 mod history;
+mod settings;
 mod sources;
 mod tauri_host;
 
@@ -25,12 +26,13 @@ use shodh_rag::harness::tools::navigate::{
     OpenViewTool, ShowAuditTool, ShowDocumentTool, ShowSourceTool,
 };
 use shodh_rag::harness::tools::plan::UpdatePlanTool;
-use shodh_rag::harness::tools::search::SearchDocumentsTool;
+use shodh_rag::harness::tools::search::{DefaultK, SearchDocumentsTool};
 use shodh_rag::harness::tools::sources::ListSourcesTool;
 use shodh_rag::harness::tools::{RegistryError, ToolContext, ToolError, ToolRegistry};
 use shodh_rag::RAGEngine;
 use tokio::sync::RwLock;
 
+use crate::app_settings::{AppSettings, SettingsStore};
 use crate::calendar_store::{CalendarEvent, TodoItem};
 
 pub use tauri_host::TauriEffects;
@@ -80,6 +82,14 @@ pub struct ConversationChange {
     pub updated_at: String,
 }
 
+/// The model that answers, as the user configured it. Never carries a key.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ModelInfo {
+    pub provider: String,
+    pub model: Option<String>,
+    pub cloud: bool,
+}
+
 /// A background indexing job started by a tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexJob {
@@ -98,6 +108,10 @@ pub trait HostEffects: Send + Sync {
     fn start_indexing(&self, ctx: &ToolContext, job: IndexJob);
     /// A saved conversation was renamed or pinned: update the open list.
     fn conversation_changed(&self, change: ConversationChange);
+    /// Settings changed: apply them in the UI.
+    fn settings_changed(&self, settings: &AppSettings);
+    /// The configured model, if any.
+    fn model_info(&self) -> Option<ModelInfo>;
 }
 
 /// Everything an app tool can reach.
@@ -113,7 +127,20 @@ pub struct AgentHost {
 pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryError> {
     let mut registry = ToolRegistry::new();
     let rag = host.rag.clone();
-    registry.register(Arc::new(SearchDocumentsTool::new(rag.clone())))?;
+    let settings = SettingsStore::in_dir(&host.data_dir);
+    let default_k: DefaultK = Arc::new(move || {
+        let preferred = match settings.load() {
+            Ok(s) => s.preferences.search_max_results,
+            Err(e) => {
+                tracing::warn!(target: "shodh::harness", error = %e, "settings unreadable; default passage count used");
+                crate::app_settings::Preferences::default().search_max_results
+            }
+        };
+        usize::try_from(preferred).unwrap_or(usize::MAX)
+    });
+    registry.register(Arc::new(
+        SearchDocumentsTool::new(rag.clone()).with_default_k(default_k),
+    ))?;
     registry.register(Arc::new(OpenDocumentTool::new(rag.clone())))?;
     registry.register(Arc::new(ListSourcesTool::new(rag.clone())))?;
     registry.register(Arc::new(UpdatePlanTool))?;
@@ -124,6 +151,7 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     calendar::register(&mut registry, &host)?;
     history::register(&mut registry, &host)?;
     audit::register(&mut registry, &host)?;
+    settings::register(&mut registry, &host)?;
     sources::register(&mut registry, &host)?;
     Ok(registry)
 }
@@ -163,6 +191,7 @@ pub(crate) mod testing {
         pub calendar: Mutex<Vec<CalendarChange>>,
         pub indexing: Mutex<Vec<IndexJob>>,
         pub conversations: Mutex<Vec<ConversationChange>>,
+        pub settings: Mutex<Vec<AppSettings>>,
     }
 
     impl HostEffects for Recorder {
@@ -183,6 +212,15 @@ pub(crate) mod testing {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push(change);
+        }
+        fn settings_changed(&self, settings: &AppSettings) {
+            self.settings
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(settings.clone());
+        }
+        fn model_info(&self) -> Option<ModelInfo> {
+            None
         }
     }
 

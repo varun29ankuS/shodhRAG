@@ -40,13 +40,35 @@ fn passage_budget(k: usize) -> usize {
         .clamp(MIN_PASSAGE_CHARS, MAX_PASSAGE_CHARS)
 }
 
+/// Supplies the number of passages a search returns when the model does
+/// not pass `k` (the user's preference).
+pub type DefaultK = Arc<dyn Fn() -> usize + Send + Sync>;
+
 pub struct SearchDocumentsTool {
     rag: Arc<RwLock<RAGEngine>>,
+    default_k: Option<DefaultK>,
 }
 
 impl SearchDocumentsTool {
     pub fn new(rag: Arc<RwLock<RAGEngine>>) -> Self {
-        Self { rag }
+        Self {
+            rag,
+            default_k: None,
+        }
+    }
+
+    /// Use the user's preferred passage count when `k` is not given.
+    pub fn with_default_k(mut self, default_k: DefaultK) -> Self {
+        self.default_k = Some(default_k);
+        self
+    }
+
+    fn default_k(&self) -> usize {
+        self.default_k
+            .as_ref()
+            .map(|f| f())
+            .unwrap_or_else(|| self.default_k())
+            .clamp(1, MAX_K)
     }
 }
 
@@ -168,7 +190,7 @@ impl HostTool for SearchDocumentsTool {
             .get("k")
             .and_then(Value::as_u64)
             .and_then(|k| usize::try_from(k).ok())
-            .unwrap_or(DEFAULT_K)
+            .unwrap_or_else(|| self.default_k())
             .clamp(1, MAX_K);
         let sources: Vec<String> = args
             .get("sources")

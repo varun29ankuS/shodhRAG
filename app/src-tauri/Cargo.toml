@@ -32,6 +32,9 @@ tauri-plugin-clipboard-manager = "2.0"
 tauri-plugin-notification = "~2.3.3"
 # Optional "start with Windows" (off by default)
 tauri-plugin-autostart = "~2.5.1"
+# One Shodh per user: a second launch (e.g. while hidden in the tray) shows the
+# running window instead of starting another process on the same data
+tauri-plugin-single-instance = "=2.3.6"
 # tauri-plugin-updater = "2.0"  # Disabled until update server is configured
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

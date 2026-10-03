@@ -154,6 +154,16 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Shodh was started again while running (often: hidden in the tray, the
+/// user opened it from the Start menu). Show the running window, unless the
+/// second launch was the autostart entry, which must stay in the tray.
+pub fn on_second_launch(app: &AppHandle, args: &[String]) {
+    if args.iter().any(|a| a == BACKGROUND_FLAG) {
+        return;
+    }
+    show_main(app);
+}
+
 /// Whether this launch came from the autostart entry.
 pub fn started_in_background() -> bool {
     std::env::args().any(|a| a == BACKGROUND_FLAG)

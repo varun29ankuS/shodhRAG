@@ -145,6 +145,10 @@ pub fn run() {
         .init();
 
     let app = tauri::Builder::default()
+        // First, so a second launch exits before it opens any data.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            background::on_second_launch(app, &args);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())

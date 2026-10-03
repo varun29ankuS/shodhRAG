@@ -365,7 +365,7 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose, onOpenView 
     let viewerNode: React.ReactNode;
     if (viewer === 'pdf') {
       viewerNode = (
-        <PdfViewer key={fileInfo.path} filePath={hit.sourceFile} passage={passage} citedPages={hit.page} onLocate={setLocate} onFatal={handlePdfFatal} />
+        <PdfViewer key={fileInfo.path} filePath={hit.sourceFile} fileSize={fileInfo.sizeBytes} passage={passage} citedPages={hit.page} onLocate={setLocate} onFatal={handlePdfFatal} />
       );
     } else if (viewer === 'table') {
       viewerNode = <TableViewer key={fileInfo.path} filePath={hit.sourceFile} passage={passage} onLocate={setLocate} onError={handleViewerError} />;

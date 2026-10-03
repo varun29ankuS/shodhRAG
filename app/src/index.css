@@ -395,6 +395,21 @@
   height: 100%;
 }
 
+/* Text-line placeholders on a page whose document is still loading. */
+.pdf-page .pdf-skeleton-line {
+  display: block;
+  flex-shrink: 0;
+  border-radius: 2px;
+  background-color: #e6e6e9;
+  animation: shell-skeleton 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pdf-page .pdf-skeleton-line {
+    animation: none;
+  }
+}
+
 /* Minimal port of pdf.js's .textLayer rules (web/pdf_viewer.css). */
 .pdf-text-layer {
   color-scheme: only light;

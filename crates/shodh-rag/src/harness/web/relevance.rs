@@ -70,13 +70,14 @@ impl RankMethod {
     }
 }
 
-/// Minimum content scores for a result to be kept.
+/// Minimum content scores for a result to be kept; `None` keeps every
+/// result scored that way (ordering only).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Thresholds {
     /// Minimum sigmoid of the cross-encoder logit.
-    pub cross_encoder: f32,
+    pub cross_encoder: Option<f32>,
     /// Minimum lexical coverage (0..=1).
-    pub lexical: f32,
+    pub lexical: Option<f32>,
 }
 
 /// Paper cutoffs, calibrated on the recorded answers in
@@ -99,21 +100,32 @@ pub struct Thresholds {
 /// clear junk (the unrelated title-query hits cover 0.36 at most) and favours
 /// precision over recall.
 pub const PAPER_THRESHOLDS: Thresholds = Thresholds {
-    cross_encoder: 0.38,
-    lexical: 0.5,
+    cross_encoder: Some(0.38),
+    lexical: Some(0.5),
 };
 
-/// Web source cutoff with the cross-encoder. Web snippets are short and often
-/// a paraphrase (a provider's answer segment, a page description), so they
-/// score lower than an abstract for the same relevance and the bar is lower
-/// than for papers: sigmoid 0.1 (logit -2.2) still drops what the paper
-/// calibration shows as off-topic (logits of -2.9 and below) without
-/// demanding abstract-level overlap. Without the cross-encoder, web results
-/// keep the provider's own ranking (a search engine ranked them); see
-/// [`rank`]'s `lexical_cut` argument.
-pub const WEB_THRESHOLDS: Thresholds = Thresholds {
-    cross_encoder: 0.1,
-    lexical: 0.0,
+/// Cutoff for web pages returned by a search engine as such (SearXNG): a
+/// title and a page description. Not calibrated on recorded engine
+/// answers (no provider was configured to record them); inferred from the
+/// paper calibration, where off-topic items score logits of -2.9 and
+/// below, and set lower than for papers because a page description says less
+/// than an abstract: sigmoid 0.1 (logit -2.2). Without the cross-encoder the
+/// engine's own order is kept: a keyword cut on short descriptions drops
+/// good pages.
+pub const WEB_PAGE_THRESHOLDS: Thresholds = Thresholds {
+    cross_encoder: Some(0.1),
+    lexical: None,
+};
+
+/// Grounded answers (OpenRouter's web plugin, Gemini with Google Search)
+/// are not cut, only ordered. Their sources were chosen by the provider to
+/// support an answer to this query, and their snippets are often fragments
+/// of that answer ("This victory marks Spain's record fourth title.") or a
+/// bare domain, which the cross-encoder cannot judge out of context: on the
+/// recorded Gemini answer such a supporting source scores logit -4.9.
+pub const GROUNDED_THRESHOLDS: Thresholds = Thresholds {
+    cross_encoder: None,
+    lexical: None,
 };
 
 /// One kept item with its scores.
@@ -413,15 +425,14 @@ const CONTENT_WEIGHT: f32 = 0.85;
 /// Score, cut and order `candidates`.
 ///
 /// With a scorer the cutoff is `thresholds.cross_encoder` on the sigmoid of
-/// its logit; a scorer error falls back to the lexical score (logged). The
-/// lexical cutoff applies only when `lexical_cut` is true; otherwise, without
-/// a scorer, every candidate is kept in prior order with its lexical score.
+/// its logit; without one (or when it fails, which is logged) it is
+/// `thresholds.lexical` on the lexical score. With no cutoff every
+/// candidate is kept, in prior order.
 pub fn rank<T>(
     query: &str,
     candidates: Vec<Candidate<T>>,
     scorer: Option<&dyn PassageScorer>,
     thresholds: Thresholds,
-    lexical_cut: bool,
 ) -> Ranking<T> {
     let texts: Vec<String> = candidates.iter().map(|c| c.text.clone()).collect();
     let neural = match scorer {
@@ -447,12 +458,12 @@ pub fn rank<T>(
         Some(logits) => (
             RankMethod::CrossEncoder,
             logits.into_iter().map(sigmoid).collect::<Vec<_>>(),
-            Some(thresholds.cross_encoder),
+            thresholds.cross_encoder,
         ),
         None => (
             RankMethod::Lexical,
             lexical_scores(query, &texts),
-            lexical_cut.then_some(thresholds.lexical),
+            thresholds.lexical,
         ),
     };
     let mut kept = Vec::new();
@@ -636,7 +647,6 @@ mod tests {
             ],
             Some(&Fixed(vec![-8.0, 2.0, 4.0, -9.0])),
             PAPER_THRESHOLDS,
-            true,
         );
         assert_eq!(ranking.method, RankMethod::CrossEncoder);
         assert_eq!(ranking.dropped, 1);
@@ -654,7 +664,6 @@ mod tests {
             ],
             Some(&Broken),
             PAPER_THRESHOLDS,
-            true,
         );
         assert_eq!(ranking.method, RankMethod::Lexical);
         assert_eq!(ranking.dropped, 1);
@@ -667,8 +676,7 @@ mod tests {
             "rust",
             vec![cand("b", 0.5, false), cand("a", 1.0, false)],
             None,
-            WEB_THRESHOLDS,
-            false,
+            GROUNDED_THRESHOLDS,
         );
         assert_eq!(ranking.dropped, 0);
         assert_eq!(ranking.kept[0].item, "a");

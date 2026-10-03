@@ -248,7 +248,7 @@ fn every_kept_paper_clears_the_threshold_or_is_a_title_match() {
         for p in &papers {
             let r = p.relevance.unwrap();
             assert!(
-                p.title_match || r >= PAPER_THRESHOLDS.cross_encoder,
+                p.title_match || PAPER_THRESHOLDS.cross_encoder.is_some_and(|t| r >= t),
                 "{}: {} at {r}",
                 f.name,
                 p.title
@@ -258,7 +258,7 @@ fn every_kept_paper_clears_the_threshold_or_is_a_title_match() {
         for p in &papers {
             let r = p.relevance.unwrap();
             assert!(
-                p.title_match || r >= PAPER_THRESHOLDS.lexical,
+                p.title_match || PAPER_THRESHOLDS.lexical.is_some_and(|t| r >= t),
                 "{}",
                 p.title
             );

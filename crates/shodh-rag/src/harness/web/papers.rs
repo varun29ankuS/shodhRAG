@@ -742,7 +742,6 @@ pub fn rank_papers(
         candidates,
         scorer.map(|s| s.as_ref()),
         PAPER_THRESHOLDS,
-        true,
     );
     let papers = ranking
         .kept

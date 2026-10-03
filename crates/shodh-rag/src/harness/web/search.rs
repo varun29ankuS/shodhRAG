@@ -13,7 +13,8 @@ use url::Url;
 
 use super::client::{SafeClient, WebError};
 use super::relevance::{
-    canonical_url, rank, rank_prior, Candidate, RankMethod, SharedScorer, WEB_THRESHOLDS,
+    canonical_url, rank, rank_prior, Candidate, RankMethod, SharedScorer, GROUNDED_THRESHOLDS,
+    WEB_PAGE_THRESHOLDS,
 };
 
 pub const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
@@ -85,6 +86,11 @@ pub struct SearchOutcome {
     /// search suggestions). Rendered only in a sandboxed frame without
     /// scripts.
     pub attribution_html: Option<String>,
+    /// The sources back an answer the provider wrote for this query
+    /// (OpenRouter's web plugin, Gemini grounding), as opposed to a search
+    /// engine's page list. Grounded sources are ordered, never cut
+    /// ([`GROUNDED_THRESHOLDS`]).
+    pub grounded: bool,
 }
 
 fn truncate(text: &str, max: usize) -> String {
@@ -127,14 +133,15 @@ fn push_unique(results: &mut Vec<WebResult>, result: WebResult) {
 
 /// Order web results by relevance to `query`, dropping weak ones.
 ///
-/// With the cross-encoder each `title + snippet` is scored and results below
-/// [`WEB_THRESHOLDS`] are dropped. Without it the provider's order is kept:
-/// these providers are search engines that already ranked the results, and
-/// a keyword cut on short paraphrased snippets drops good sources. Returns
-/// the kept results with their relevance, the number dropped and the method.
+/// Each `title + snippet` is scored. A search engine's page list
+/// (`grounded` false) is cut at [`WEB_PAGE_THRESHOLDS`] with the
+/// cross-encoder and kept in the engine's order without it; grounded
+/// sources are never cut ([`GROUNDED_THRESHOLDS`]). Returns the kept results
+/// with their relevance, the number dropped and the method.
 pub fn rank_results(
     query: &str,
     results: Vec<WebResult>,
+    grounded: bool,
     scorer: Option<&SharedScorer>,
 ) -> (Vec<(WebResult, f32)>, usize, RankMethod) {
     let candidates = results
@@ -155,8 +162,11 @@ pub fn rank_results(
         query,
         candidates,
         scorer.map(|s| s.as_ref()),
-        WEB_THRESHOLDS,
-        false,
+        if grounded {
+            GROUNDED_THRESHOLDS
+        } else {
+            WEB_PAGE_THRESHOLDS
+        },
     );
     let kept = ranking
         .kept
@@ -223,6 +233,7 @@ pub fn parse_openrouter(response: &Value) -> Result<SearchOutcome, WebError> {
         results,
         summary: (!text.trim().is_empty()).then(|| truncate(text, 2_000)),
         attribution_html: None,
+        grounded: true,
     })
 }
 
@@ -310,6 +321,7 @@ pub fn parse_gemini(response: &Value) -> Result<SearchOutcome, WebError> {
         results,
         summary: (!text.trim().is_empty()).then(|| truncate(&text, 2_000)),
         attribution_html,
+        grounded: true,
     })
 }
 
@@ -343,6 +355,7 @@ pub fn parse_searxng(response: &Value) -> Result<SearchOutcome, WebError> {
         results,
         summary: None,
         attribution_html: None,
+        grounded: false,
     })
 }
 
@@ -508,7 +521,8 @@ mod tests {
     fn web_results_are_reranked_and_cut_with_the_cross_encoder() {
         let results = parse_searxng(&json(SEARXNG)).unwrap().results;
         let scorer: SharedScorer = std::sync::Arc::new(Fixed(vec![-7.0, 3.0]));
-        let (kept, dropped, method) = rank_results("rust async closures", results, Some(&scorer));
+        let (kept, dropped, method) =
+            rank_results("rust async closures", results, false, Some(&scorer));
         assert_eq!(method, RankMethod::CrossEncoder);
         assert_eq!(dropped, 1);
         assert_eq!(kept.len(), 1);
@@ -517,9 +531,25 @@ mod tests {
     }
 
     #[test]
+    fn grounded_sources_are_ordered_but_never_cut() {
+        let outcome = parse_gemini(&json(GEMINI)).unwrap();
+        assert!(outcome.grounded);
+        // Recorded with the cross-encoder: the answer fragment backing the
+        // second source scores -4.9 although it supports the answer.
+        let scorer: SharedScorer = std::sync::Arc::new(Fixed(vec![8.28, -4.88]));
+        let (kept, dropped, method) =
+            rank_results("euro 2024 winner", outcome.results, true, Some(&scorer));
+        assert_eq!(method, RankMethod::CrossEncoder);
+        assert_eq!(dropped, 0);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].0.title, "uefa.com", "provider order kept");
+        assert!(!parse_searxng(&json(SEARXNG)).unwrap().grounded);
+    }
+
+    #[test]
     fn without_the_cross_encoder_web_results_keep_the_providers_order() {
         let results = parse_searxng(&json(SEARXNG)).unwrap().results;
-        let (kept, dropped, method) = rank_results("unrelated words", results.clone(), None);
+        let (kept, dropped, method) = rank_results("unrelated words", results.clone(), false, None);
         assert_eq!(method, RankMethod::Lexical);
         assert_eq!(dropped, 0);
         let urls: Vec<&str> = kept.iter().map(|(r, _)| r.url.as_str()).collect();

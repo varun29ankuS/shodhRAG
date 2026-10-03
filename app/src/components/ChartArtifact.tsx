@@ -11,6 +11,8 @@ import { tryParseChartSpec } from '../utils/artifactExtractor';
 interface ChartArtifactProps {
   artifact: Artifact;
   theme: string;
+  /** Plot height in pixels (the focus view enlarges it to zoom). */
+  height?: number;
 }
 
 // Softer, more modern palette
@@ -22,7 +24,7 @@ const DEFAULT_COLORS = [
 
 const FONT = '"Geist Variable", system-ui, -apple-system, "Segoe UI", sans-serif';
 
-export function ChartArtifact({ artifact, theme }: ChartArtifactProps) {
+export function ChartArtifact({ artifact, theme, height = 320 }: ChartArtifactProps) {
   const isDark = theme === 'dark';
   const textColor = isDark ? '#9ca3af' : '#6b7280';
   const titleColor = isDark ? '#e5e7eb' : '#1f2937';
@@ -266,7 +268,7 @@ export function ChartArtifact({ artifact, theme }: ChartArtifactProps) {
           </h3>
         </div>
       )}
-      <div style={{ width: '100%', height: 320, padding: '4px 8px 8px' }}>
+      <div style={{ width: '100%', height, padding: '4px 8px 8px' }}>
         <ResponsiveContainer width="100%" height="100%">
           {renderChart()}
         </ResponsiveContainer>

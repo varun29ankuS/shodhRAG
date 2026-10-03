@@ -17,6 +17,7 @@ import {
   tableMarkdown,
 } from '../src/features/focus/contextBlock.ts';
 import type { FocusTarget } from '../src/features/focus/focusTypes.ts';
+import { chartTarget, equationTarget, imageTarget, mermaidTarget, tableTarget } from '../src/features/focus/targets.ts';
 
 const hit = {
   number: 3,
@@ -130,4 +131,18 @@ test('composed question: preface, block, then the question', () => {
   assert.ok(text.includes('not instructions'));
   assert.ok(text.endsWith('Question: Why is this true?'));
   assert.ok(!text.trimStart().startsWith('/'));
+});
+
+test('targets: labels from the content, payloads capped', () => {
+  assert.equal(mermaidTarget('flowchart TD\n A-->B').label, 'Flowchart');
+  assert.equal(mermaidTarget('%% note\nsequenceDiagram\n A->>B: hi').label, 'Sequence diagram');
+  assert.equal(mermaidTarget('gantt\n title Release plan\n a :a1, 2026-01-01, 3d').label, 'Release plan');
+  assert.equal(chartTarget('{"title":"Revenue by quarter"}').label, 'Revenue by quarter');
+  assert.equal(chartTarget('not json').label, 'Chart');
+  assert.equal(equationTarget('E = mc^2').label, 'Equation E = mc^2');
+  assert.equal(tableTarget([['Name', 'Score'], ['a', '1']])?.label, 'Table: Name, Score');
+  assert.equal(tableTarget([]), null);
+  assert.equal(imageTarget('data:image/png;base64,' + 'A'.repeat(300_000), 'x').kind === 'image' && (imageTarget('data:image/png;base64,' + 'A'.repeat(300_000), 'x') as { src: string | null }).src, null);
+  assert.equal((imageTarget('https://example.com/a.png', '') as { src: string | null }).src, 'https://example.com/a.png');
+  assert.equal(imageTarget(null, '').label, 'Image');
 });

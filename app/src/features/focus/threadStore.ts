@@ -292,3 +292,50 @@ export function sideSessionKey(conversationId: string, threadId: string): string
   const safe = (s: string) => s.replace(/[^A-Za-z0-9_-]/g, '_');
   return `${safe(conversationId).slice(0, 90)}--focus--${safe(threadId).slice(0, 90)}`;
 }
+
+/** Whether two targets are the same object (same kind and content). */
+export function sameTarget(a: FocusTarget, b: FocusTarget): boolean {
+  if (a.kind !== b.kind) return false;
+  switch (a.kind) {
+    case 'source': {
+      const other = b as typeof a;
+      return a.hit.sourceFile === other.hit.sourceFile && a.hit.number === other.hit.number && a.hit.text === other.hit.text;
+    }
+    case 'task':
+      return a.task.id === (b as typeof a).task.id;
+    default:
+      return JSON.stringify(a) === JSON.stringify(b);
+  }
+}
+
+/** Longest answer excerpt placed in the default summary. */
+export const SUMMARY_ANSWER_CHARS = 700;
+
+/**
+ * Default text offered when a side discussion is added to the main
+ * conversation: what it was about, the last question and (an excerpt of)
+ * its answer. The user edits it before it is posted.
+ */
+export function threadSummary(thread: Pick<FocusThread, 'turns' | 'anchor'>): string {
+  const lastAnswerIndex = (() => {
+    for (let i = thread.turns.length - 1; i >= 0; i--) if (thread.turns[i].role === 'assistant' && thread.turns[i].content.trim()) return i;
+    return -1;
+  })();
+  const label = thread.anchor.target.label.replace(/\s+/g, ' ').trim();
+  if (lastAnswerIndex < 0) return `About "${label}": `;
+  let question = '';
+  for (let i = lastAnswerIndex - 1; i >= 0; i--) {
+    if (thread.turns[i].role === 'user') {
+      question = thread.turns[i].content.replace(/\s+/g, ' ').trim();
+      break;
+    }
+  }
+  const answer = thread.turns[lastAnswerIndex].content.trim();
+  const chars = Array.from(answer);
+  const excerpt = chars.length > SUMMARY_ANSWER_CHARS ? `${chars.slice(0, SUMMARY_ANSWER_CHARS).join('').trimEnd()}…` : answer;
+  return [
+    `From a side discussion about "${label}":`,
+    question ? `Q: ${question}` : '',
+    `A: ${excerpt}`,
+  ].filter(Boolean).join('\n');
+}

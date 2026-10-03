@@ -14,7 +14,10 @@ import {
   metadataWithThreads,
   metadataWithoutThreads,
   readThreads,
+  SUMMARY_ANSWER_CHARS,
   removeThread,
+  sameTarget,
+  threadSummary,
   repliesLabel,
   sideSessionKey,
   threadHistory,
@@ -149,4 +152,25 @@ test('side session key: only safe characters and within the id limit', () => {
   const key = sideSessionKey('conv-1:2/3', 'thread#9');
   assert.match(key, /^[A-Za-z0-9_-]+$/);
   assert.ok(sideSessionKey('c'.repeat(300), 't'.repeat(300)).length <= 200);
+});
+
+test('same target: by content, by file passage, by task id', () => {
+  const a = thread('a').anchor.target;
+  assert.equal(sameTarget(a, { ...a }), true);
+  assert.equal(sameTarget(a, { kind: 'mermaid', label: 'Flow', source: 'graph LR; A-->B' }), false);
+  assert.equal(sameTarget(a, { kind: 'chart', label: 'Flow', source: 'graph TD; A-->B' }), false);
+  const task = { id: 't1', title: 'A', status: 'pending', priority: 'low', dueDate: null, notes: '', tags: [], subtasks: [], project: null };
+  assert.equal(sameTarget({ kind: 'task', label: 'A', task }, { kind: 'task', label: 'B', task: { ...task, title: 'B' } }), true);
+});
+
+test('summary: last question and an excerpt of its answer', () => {
+  let t = thread('a');
+  assert.equal(threadSummary(t), 'About "Flow": ');
+  t = appendTurn(t, { id: 'u1', role: 'user', content: 'What does A do?', timestamp: '1' });
+  t = appendTurn(t, { id: 'r1', role: 'assistant', content: 'A starts the flow.', timestamp: '2' });
+  assert.equal(threadSummary(t), 'From a side discussion about "Flow":\nQ: What does A do?\nA: A starts the flow.');
+  t = appendTurn(t, { id: 'r2', role: 'assistant', content: 'x'.repeat(SUMMARY_ANSWER_CHARS + 10), timestamp: '3' });
+  const long = threadSummary(t);
+  assert.ok(long.endsWith('…'));
+  assert.ok(long.length < SUMMARY_ANSWER_CHARS + 100);
 });

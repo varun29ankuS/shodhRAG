@@ -25,7 +25,8 @@ function loadMermaid(): Promise<Mermaid> {
 // (several in one answer, or a streaming re-render) cannot interleave.
 let renderQueue: Promise<unknown> = Promise.resolve();
 
-function renderDiagram(id: string, source: string, dark: boolean): Promise<string> {
+/** Render mermaid source to SVG markup; `id` must be unique in the document. */
+export function renderDiagram(id: string, source: string, dark: boolean): Promise<string> {
   const job = renderQueue.then(async () => {
     const mermaid = await loadMermaid();
     mermaid.initialize({

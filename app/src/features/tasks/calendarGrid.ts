@@ -1,7 +1,9 @@
 /**
- * Month grid for the Tasks calendar view. Pure module (no runtime imports)
- * so it is unit-tested directly with Node (`app/tests/calendarGrid.test.ts`).
+ * Month grid for the Tasks calendar view. Pure module (imports only other
+ * pure modules) so it is unit-tested directly with Node
+ * (`app/tests/calendarGrid.test.ts`).
  */
+import { storedDayKey } from './dueDate.ts';
 
 /** Local calendar day key, e.g. "2026-10-03". */
 export function dayKey(date: Date): string {
@@ -11,11 +13,12 @@ export function dayKey(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
-/** Day key of an ISO timestamp, or null when it does not parse. */
+/**
+ * Local day key of a stored date/time, or null when it does not parse.
+ * Date-only values (`2026-10-03`) are local days, not UTC midnight.
+ */
 export function isoDayKey(iso: string | null | undefined): string | null {
-  if (!iso) return null;
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? null : dayKey(date);
+  return storedDayKey(iso);
 }
 
 export interface GridDay {

@@ -4,6 +4,9 @@ import CalendarTodoPanel from '../../components/CalendarTodoPanel';
 import { cn } from '../../lib/utils';
 import { useChatSession } from '../ask/ChatSessionContext';
 import TasksCalendar from './TasksCalendar';
+import { TasksStoreProvider, useTasksStore } from './TasksStore';
+import TaskDetailSheet from './TaskDetailSheet';
+import EventDetailSheet from './EventDetailSheet';
 
 export type TasksMode = 'list' | 'calendar';
 
@@ -39,11 +42,33 @@ const MODES: { id: TasksMode; label: string; icon: React.ElementType }[] = [
   { id: 'calendar', label: 'Calendar', icon: CalendarDays },
 ];
 
+/** Detail sheets for whichever task or event the store has open. */
+function DetailSheets() {
+  const { detailTask, detailEvent, closeDetail } = useTasksStore();
+  return (
+    <>
+      <TaskDetailSheet task={detailTask} onClose={closeDetail} />
+      <EventDetailSheet event={detailEvent} onClose={closeDetail} />
+    </>
+  );
+}
+
 /**
  * Tasks: list first (the task panel), with a calendar view of the same
- * tasks and events. The choice is remembered per viewer.
+ * tasks and events. The choice is remembered per viewer. Both layouts share
+ * one store, mounted above the layout switch so edits in flight and pending
+ * undo windows survive switching.
  */
 export default function TasksView() {
+  return (
+    <TasksStoreProvider>
+      <TasksLayouts />
+      <DetailSheets />
+    </TasksStoreProvider>
+  );
+}
+
+function TasksLayouts() {
   const [mode, setMode] = useState<TasksMode>(readMode);
   const { navigation } = useChatSession();
 

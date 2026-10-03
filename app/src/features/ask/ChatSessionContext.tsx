@@ -19,6 +19,8 @@ import { toAgentError, useAgentSession } from '../agent/useAgentSession';
 import type { AnswerScope, HistoryTurn } from '../agent/useAgentSession';
 import type { FocusThread } from '../focus/focusTypes';
 import { metadataWithThreads, metadataWithoutThreads, threadsFromMetadata } from '../focus/threadStore';
+import { metadataWithSummary, readSideSummary, summaryPrompt } from '../focus/summary';
+import type { SideSummaryRef } from '../focus/summary';
 import type {
   ChatMessage,
   RawSearchResult,
@@ -105,7 +107,11 @@ export interface ChatSessionValue {
   runtimeInstalled: boolean | null;
   setRuntimeInstalled: (installed: boolean) => void;
 
-  send: (text: string, options: SendOptions) => Promise<void>;
+  /**
+   * Post a message and run the agent on it. `extra.sideSummary` marks it as
+   * a summary brought back from a side discussion.
+   */
+  send: (text: string, options: SendOptions, extra?: { sideSummary?: SideSummaryRef }) => Promise<void>;
   /** Re-run the user prompt that produced `assistantMessageId`. */
   retry: (assistantMessageId: string, options: SendOptions) => void;
   /** Redirect the running answer. */
@@ -180,8 +186,9 @@ function readRun(value: unknown): RunRecord | undefined {
 }
 
 function fromStored(m: ConversationMessage): ChatMessage {
-  const metadata = metadataWithoutThreads(m.metadata);
+  const metadata = metadataWithSummary(metadataWithoutThreads(m.metadata), null);
   const threads = threadsFromMetadata(m.metadata);
+  const sideSummary = m.role === 'user' ? readSideSummary(m.metadata) : null;
   return {
     id: m.id,
     role: m.role,
@@ -193,6 +200,7 @@ function fromStored(m: ConversationMessage): ChatMessage {
     run: readRun(m.run),
     transcript: fromPersisted(m.transcript) ?? undefined,
     threads: threads.length > 0 ? threads : undefined,
+    sideSummary: sideSummary ?? undefined,
   };
 }
 
@@ -205,7 +213,7 @@ function toStored(m: ChatMessage): ConversationMessage {
   };
   if (m.artifacts && m.artifacts.length > 0) stored.artifacts = m.artifacts;
   if (m.searchResults && m.searchResults.length > 0) stored.searchResults = m.searchResults;
-  const metadata = metadataWithThreads(m.metadata, m.threads ?? []);
+  const metadata = metadataWithThreads(metadataWithSummary(m.metadata, m.sideSummary ?? null), m.threads ?? []);
   if (metadata) stored.metadata = metadata;
   if (m.run) {
     const { activity: _activity, ...persistable } = m.run;
@@ -232,7 +240,7 @@ function historyOf(messages: readonly ChatMessage[]): HistoryTurn[] {
     .filter((m): m is ChatMessage & { role: 'user' | 'assistant' } => m.role === 'user' || m.role === 'assistant')
     .filter(m => m.content.trim().length > 0 && isPersistable(m))
     .slice(-HISTORY_LIMIT)
-    .map(m => ({ role: m.role, content: m.content }));
+    .map(m => ({ role: m.role, content: m.sideSummary ? summaryPrompt(m.sideSummary, m.content) : m.content }));
 }
 
 export function ChatSessionProvider({ children }: { children: React.ReactNode }) {
@@ -457,18 +465,21 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     }
   }, [api, enqueue, publish]);
 
-  const send = useCallback(async (text: string, options: SendOptions) => {
-    const prompt = text.trim();
+  const send = useCallback(async (text: string, options: SendOptions, extra?: { sideSummary?: SideSummaryRef }) => {
+    const content = text.trim();
     const conversationId = viewRef.current.conversationId;
-    if (!prompt || !conversationId || liveRef.current || sideRunRef.current) return;
+    if (!content || !conversationId || liveRef.current || sideRunRef.current) return;
 
     const history = viewRef.current.messages;
+    const sideSummary = extra?.sideSummary;
     const userMessage: ChatMessage = {
       id: newId('msg'),
       role: 'user',
-      content: prompt,
+      content,
       timestamp: new Date().toISOString(),
+      ...(sideSummary ? { sideSummary } : {}),
     };
+    const prompt = sideSummary ? summaryPrompt(sideSummary, content) : content;
     publish(conversationId, userMessage, true);
 
     const active = activeConversationRef.current;
@@ -492,7 +503,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       }
     }
     if (userIndex < 0) return;
-    const prompt = messages[userIndex].content;
+    const asked = messages[userIndex];
+    const prompt = asked.sideSummary ? summaryPrompt(asked.sideSummary, asked.content) : asked.content;
 
     if (index === messages.length - 1) {
       // Latest answer: replace it in place and re-run the same prompt.
@@ -502,7 +514,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         : v));
       void runAgent(conversationId, prompt, messages.slice(0, userIndex), options);
     } else {
-      void send(prompt, options);
+      void send(asked.content, options, asked.sideSummary ? { sideSummary: asked.sideSummary } : undefined);
     }
   }, [runAgent, send]);
 

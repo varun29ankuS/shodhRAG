@@ -10,6 +10,7 @@
 
 import type { TranscriptState } from '../agent/reducer';
 import type { FocusThread } from '../focus/focusTypes';
+import type { SideSummaryRef } from '../focus/summary';
 
 export type ChatRole = 'user' | 'assistant' | 'system';
 
@@ -120,6 +121,12 @@ export interface ChatMessage {
    * the message's opaque `metadata` under `focusThreads`.
    */
   threads?: FocusThread[];
+  /**
+   * A user message posted from a side discussion ("Add to main
+   * conversation"): rendered as a card that reopens the discussion.
+   * Persisted in `metadata` under `focusSummary`.
+   */
+  sideSummary?: SideSummaryRef;
 }
 
 /** Options that scope a request; supplied by the caller at send time. */

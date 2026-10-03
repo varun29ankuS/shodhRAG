@@ -114,6 +114,14 @@ export function metadataWithSummary(metadata: unknown, ref: SideSummaryRef | nul
 }
 
 /**
+ * What the agent reads for a posted summary (as the prompt and in replayed
+ * history): the summary introduced as coming from a side discussion.
+ */
+export function summaryPrompt(ref: Pick<SideSummaryRef, 'label'>, text: string): string {
+  return `From a side discussion about "${oneLine(ref.label)}":\n\n${text.trim()}`;
+}
+
+/**
  * Whether a user message should render as Markdown (math, fenced code or a
  * table) rather than as plain text. Plain text keeps its line breaks and
  * never interprets `*`, `_` or `#` typed casually.

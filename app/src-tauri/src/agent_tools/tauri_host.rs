@@ -1,12 +1,13 @@
 //! [`HostEffects`] for the running app.
 
+use serde_json::json;
 use shodh_rag::audit::payload::{indexing_outcome, source_change, ChangeOrigin};
 use shodh_rag::audit::AuditEventType;
 use shodh_rag::harness::tools::ToolContext;
 use shodh_rag::indexing::{IndexingOptions, IndexingState};
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::{CalendarChange, ConversationChange, HostEffects, IndexJob, ModelInfo};
+use super::{CalendarChange, ConversationChange, FileIndexJob, HostEffects, IndexJob, ModelInfo};
 use crate::app_settings::AppSettings;
 use crate::calendar_commands::{spawn_reindex, CALENDAR_CHANGED_EVENT};
 use crate::event_emitter::TauriEventEmitter;
@@ -36,6 +37,10 @@ fn agent_indexing_options() -> IndexingOptions {
     }
 }
 
+/// Emitted when files or folders of a source change on disk (the agent
+/// created a folder or downloaded a file); the Library refreshes.
+pub const LIBRARY_CHANGED_EVENT: &str = "library-changed";
+
 /// Emitted when the agent renames or pins a saved conversation; the UI
 /// patches its in-memory list so its next save keeps the change.
 pub const CONVERSATION_UPDATED_EVENT: &str = "conversation-updated";
@@ -43,6 +48,59 @@ pub const CONVERSATION_UPDATED_EVENT: &str = "conversation-updated";
 impl HostEffects for TauriEffects {
     fn settings_changed(&self, settings: &AppSettings) {
         crate::app_settings::broadcast(&self.app, settings);
+    }
+
+    fn index_file(&self, ctx: &ToolContext, job: FileIndexJob) {
+        let app = self.app.clone();
+        let ctx = ctx.clone();
+        tokio::spawn(async move {
+            let rag = app.state::<RagState>().rag.clone();
+            let emitter = TauriEventEmitter::new(app.clone());
+            let mut engine = rag.write().await;
+            let result = shodh_rag::indexing::index_single_file(
+                &job.path,
+                &job.source_id,
+                &mut engine,
+                Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
+            )
+            .await;
+            drop(engine);
+            if let Err(e) = &result {
+                tracing::warn!(target: "shodh::harness", path = %job.path, error = %e, "indexing a downloaded file failed");
+            }
+            ctx.audit(
+                AuditEventType::SourceChange,
+                source_change(
+                    "add_file",
+                    ChangeOrigin::Agent,
+                    Some(&job.source_id),
+                    Some(&job.path),
+                    indexing_outcome(&result),
+                ),
+            );
+            if let Err(e) = app.emit(LIBRARY_CHANGED_EVENT, json!({ "sourceId": job.source_id })) {
+                tracing::warn!("Failed to emit {}: {}", LIBRARY_CHANGED_EVENT, e);
+            }
+        });
+    }
+
+    fn library_changed(&self, source_id: &str) {
+        if let Err(e) = self
+            .app
+            .emit(LIBRARY_CHANGED_EVENT, json!({ "sourceId": source_id }))
+        {
+            tracing::warn!("Failed to emit {}: {}", LIBRARY_CHANGED_EVENT, e);
+        }
+    }
+
+    fn documents_dir(&self) -> Option<std::path::PathBuf> {
+        match self.app.path().document_dir() {
+            Ok(dir) => Some(dir),
+            Err(e) => {
+                tracing::warn!("The Documents folder is unavailable: {e}");
+                None
+            }
+        }
     }
 
     fn openrouter_key(&self) -> Option<String> {

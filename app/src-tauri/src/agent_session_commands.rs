@@ -18,7 +18,7 @@ use serde_json::json;
 use shodh_rag::audit::{AuditEventType, AuditRecord, RunAuditTap};
 use shodh_rag::harness::model::EnvValue;
 use shodh_rag::harness::profile::is_valid_slug;
-use shodh_rag::harness::tools::ToolRegistry;
+use shodh_rag::harness::tools::{RunScope, ToolRegistry};
 use shodh_rag::harness::{
     fetch_omp, resolve_binary_path, select_model, AgentEvent, AgentHarness, AgentProfile,
     HarnessError, LaunchSpec, OmpLayout, OmpModel, OmpSession, SessionConfig, OMP_VERSION,
@@ -28,7 +28,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, OnceCell};
 
 use crate::agent_tools::{
-    build_registry, web_block_reason, AgentHost, TauriEffects, AGENT_CANNOT_DO,
+    build_registry, web_block_reason, AgentHost, IndexedRoots, TauriEffects, AGENT_CANNOT_DO,
 };
 use crate::api_key_store;
 use crate::app_settings::SettingsStore;
@@ -278,6 +278,45 @@ fn truncate(text: &str, max: usize) -> String {
     out
 }
 
+/// Most sources or files one answer may be limited to.
+const MAX_SCOPE_ITEMS: usize = 50;
+
+/// What the user limited an answer to: selected sources ("Include this
+/// source when answering") and files ("Ask about this file").
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SendScope {
+    pub source_ids: Vec<String>,
+    pub source_files: Vec<String>,
+}
+
+impl SendScope {
+    fn validated(self) -> CommandResult<RunScope> {
+        let clean = |items: Vec<String>, what: &str| -> CommandResult<Vec<String>> {
+            let items: Vec<String> = items
+                .into_iter()
+                .map(|i| i.trim().to_string())
+                .filter(|i| !i.is_empty())
+                .collect();
+            if items.len() > MAX_SCOPE_ITEMS {
+                return Err(AgentCommandError::invalid(format!(
+                    "At most {MAX_SCOPE_ITEMS} {what} can limit one answer"
+                )));
+            }
+            if items.iter().any(|i| i.len() > 2048) {
+                return Err(AgentCommandError::invalid(format!(
+                    "A {what} entry is too long"
+                )));
+            }
+            Ok(items)
+        };
+        Ok(RunScope {
+            source_ids: clean(self.source_ids, "sources")?,
+            files: clean(self.source_files, "files")?,
+        })
+    }
+}
+
 /// One earlier turn of the conversation, replayed into a fresh session.
 #[derive(Debug, Clone, Deserialize)]
 pub struct HistoryTurn {
@@ -486,6 +525,9 @@ pub async fn agent_start(
                 audit: audit.log(),
                 effects: Arc::new(TauriEffects::new(app.clone())),
                 web: SafeClient::system(),
+                roots: Arc::new(IndexedRoots {
+                    rag: rag.rag.clone(),
+                }),
             });
             build_registry(host)
                 .map(Arc::new)
@@ -593,10 +635,15 @@ pub async fn agent_send(
     text: String,
     request_id: String,
     history: Option<Vec<HistoryTurn>>,
+    scope: Option<SendScope>,
     sessions: State<'_, AgentSessions>,
     audit: State<'_, AuditState>,
 ) -> CommandResult<String> {
     check_id("request id", &request_id)?;
+    let scope = scope
+        .map(SendScope::validated)
+        .transpose()?
+        .unwrap_or_default();
     let entry = sessions.entry(&session_id)?;
     entry.touch();
     // Checked here because the history preamble would hide a leading '/'.
@@ -608,8 +655,15 @@ pub async fn agent_send(
         Some(history) if replay => with_history(&text, history),
         _ => text.clone(),
     };
-    let run_id = entry.session.prompt(&message, Some(request_id)).await?;
+    let scoped = !scope.is_empty();
+    let run_id = entry
+        .session
+        .prompt_scoped(&message, Some(request_id), scope.clone())
+        .await?;
     entry.primed.store(true, Ordering::SeqCst);
+    if scoped {
+        tracing::info!(target: "shodh::harness", run_id = %run_id, sources = scope.source_ids.len(), files = scope.files.len(), "answer limited to a scope");
+    }
     audit.record(question_record(
         &entry,
         &run_id,

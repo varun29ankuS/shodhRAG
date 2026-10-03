@@ -317,12 +317,31 @@ pub async fn get_app_settings(app: AppHandle) -> Result<AppSettings, String> {
     store(&app)?.load().map_err(|e| e.to_string())
 }
 
+/// Preference fields the UI changes; absent fields stay as they are.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PreferencesPatch {
+    pub theme: Option<Theme>,
+    pub search_max_results: Option<u32>,
+}
+
+impl PreferencesPatch {
+    pub fn apply(&self, prefs: &mut Preferences) {
+        if let Some(theme) = self.theme {
+            prefs.theme = theme;
+        }
+        if let Some(n) = self.search_max_results {
+            prefs.search_max_results = n;
+        }
+    }
+}
+
 /// Change preferences from the UI. With `seed`, the values come from the
 /// UI's local storage and are applied only if the store was never seeded.
 #[tauri::command]
 pub async fn update_app_preferences(
     app: AppHandle,
-    preferences: Preferences,
+    preferences: PreferencesPatch,
     seed: Option<bool>,
     audit: State<'_, AuditState>,
 ) -> Result<AppSettings, String> {
@@ -331,7 +350,7 @@ pub async fn update_app_preferences(
         .update(|s| {
             let before = s.preferences.clone();
             if !seed || !s.seeded {
-                s.preferences = preferences;
+                preferences.apply(&mut s.preferences);
             }
             s.seeded = true;
             Ok(before)

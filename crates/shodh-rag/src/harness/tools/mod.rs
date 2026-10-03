@@ -111,6 +111,22 @@ impl RunPassages {
     }
 }
 
+/// What the user limited one answer to ("Ask about this file", or the
+/// sources selected in the Library). Empty means everything indexed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunScope {
+    /// Source ids (`space_id`s) to search.
+    pub source_ids: Vec<String>,
+    /// Indexed files to search, as paths.
+    pub files: Vec<String>,
+}
+
+impl RunScope {
+    pub fn is_empty(&self) -> bool {
+        self.source_ids.is_empty() && self.files.is_empty()
+    }
+}
+
 /// Result of a successful tool execution.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolOutput {
@@ -204,6 +220,16 @@ pub trait HostTool: Send + Sync {
             details: args.clone(),
         })
     }
+    /// [`HostTool::preview`] with the call's context, for previews that
+    /// depend on the run (e.g. resolving citation numbers). The registry
+    /// calls this one; the default defers to `preview`.
+    async fn preview_in(
+        &self,
+        args: &Value,
+        _ctx: &ToolContext,
+    ) -> Result<ApprovalPreview, ToolError> {
+        self.preview(args).await
+    }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError>;
 }
 
@@ -217,6 +243,7 @@ pub struct ToolContext {
     outbound: Option<mpsc::UnboundedSender<OutboundFrame>>,
     passages: Arc<RunPassages>,
     audit: Option<ToolAudit>,
+    scope: Arc<RunScope>,
 }
 
 /// Where a tool call's audit events go.
@@ -240,6 +267,7 @@ impl ToolContext {
             outbound: None,
             passages: Arc::new(RunPassages::new()),
             audit: None,
+            scope: Arc::new(RunScope::default()),
         }
     }
 
@@ -277,6 +305,17 @@ impl ToolContext {
     /// the first (1-based). Concurrent searches get disjoint ranges.
     pub fn reserve_passages(&self, count: u32) -> u32 {
         self.passages.reserve(count)
+    }
+
+    /// Limit this call's run to `scope`.
+    pub fn with_scope(mut self, scope: Arc<RunScope>) -> Self {
+        self.scope = scope;
+        self
+    }
+
+    /// What the user limited this answer to.
+    pub fn scope(&self) -> &RunScope {
+        &self.scope
     }
 
     /// Remember what a citation number refers to.
@@ -756,7 +795,7 @@ impl ToolRegistry {
             RiskTier::Destructive => true,
         };
         if needs_approval || tool.must_confirm(&args).await? {
-            let preview = tool.preview(&args).await?;
+            let preview = tool.preview_in(&args, ctx).await?;
             let label = preview
                 .label
                 .unwrap_or_else(|| render_label(tool.label_template(), &args));
@@ -1202,7 +1241,7 @@ mod tests {
             rx.recv().await.unwrap(),
             AgentEvent::Navigated {
                 run_id: "run-1".into(),
-                view: "calendar".into(),
+                view: "tasks".into(),
                 focus: Some("task-9".into()),
                 target: None,
             }

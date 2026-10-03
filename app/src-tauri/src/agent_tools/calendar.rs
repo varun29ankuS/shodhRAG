@@ -958,7 +958,7 @@ impl HostTool for ShowCalendarTool {
         "Opening the calendar[ on {date!}]"
     }
     fn description(&self) -> &'static str {
-        "Open the Calendar view for the user at a date (YYYY-MM-DD), a task or an event (ids from \
+        "Open the tasks view (the calendar) for the user at a date (YYYY-MM-DD), a task or an event (ids from \
          list_tasks / list_events). Give at least one."
     }
     fn schema(&self) -> Value {
@@ -1010,7 +1010,7 @@ impl HostTool for ShowCalendarTool {
         }
         emit_navigation(
             ctx,
-            "calendar",
+            "tasks",
             task_id.or(event_id).map(str::to_string),
             Some(NavigationTarget::Calendar {
                 date: date_text.clone(),
@@ -1236,7 +1236,7 @@ mod tests {
                 target,
                 ..
             } => {
-                assert_eq!(view, "calendar");
+                assert_eq!(view, "tasks");
                 assert_eq!(focus.as_deref(), Some(id.as_str()));
                 assert_eq!(
                     target,

@@ -28,7 +28,29 @@ pub const SHOW_AUDIT: &str = "show_audit";
 pub const SHOW_SOURCE: &str = "show_source";
 
 /// Views the agent may open.
-pub const VIEWS: [&str; 4] = ["ask", "library", "calendar", "settings"];
+pub const VIEWS: [&str; 5] = ["ask", "library", "tasks", "activity", "settings"];
+
+/// Earlier view ids, still accepted: `calendar` is now `tasks` and `audit`
+/// is now `activity`.
+pub const VIEW_ALIASES: [(&str, &str); 2] = [("calendar", "tasks"), ("audit", "activity")];
+
+/// The current id of `view`, if it is a view the agent may open.
+pub fn normalize_view(view: &str) -> Option<&'static str> {
+    VIEWS.iter().copied().find(|v| *v == view).or_else(|| {
+        VIEW_ALIASES
+            .iter()
+            .find(|(old, _)| *old == view)
+            .map(|(_, new)| *new)
+    })
+}
+
+fn accepted_views() -> Vec<&'static str> {
+    VIEWS
+        .iter()
+        .copied()
+        .chain(VIEW_ALIASES.iter().map(|(old, _)| *old))
+        .collect()
+}
 
 /// Longest passage text sent to the viewer for highlighting.
 const MAX_PASSAGE_CHARS: usize = 500;
@@ -63,14 +85,15 @@ impl HostTool for OpenViewTool {
     }
     fn description(&self) -> &'static str {
         "Switch the app to a view so the user can see a result: ask (conversation), library \
-         (indexed folders), calendar (tasks and events), settings. Optionally focus an item by id, \
-         e.g. the id of a task you just created."
+         (indexed folders and their files), tasks (the calendar: tasks and events), activity \
+         (usage and the audit log), settings. Optionally focus an item by id, e.g. the id of a \
+         task you just created."
     }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "view": {"type": "string", "enum": VIEWS},
+                "view": {"type": "string", "enum": accepted_views()},
                 "focus": {"type": "string", "minLength": 1, "maxLength": 200}
             },
             "required": ["view"],
@@ -82,13 +105,11 @@ impl HostTool for OpenViewTool {
     }
 
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
-        let view = req_str(&args, "view", OPEN_VIEW)?;
-        if !VIEWS.contains(&view) {
-            return Err(ToolError::InvalidArguments {
-                tool: OPEN_VIEW.to_string(),
-                reasons: format!("unknown view {view}"),
-            });
-        }
+        let requested = req_str(&args, "view", OPEN_VIEW)?;
+        let view = normalize_view(requested).ok_or_else(|| ToolError::InvalidArguments {
+            tool: OPEN_VIEW.to_string(),
+            reasons: format!("unknown view {requested}"),
+        })?;
         let focus = opt_str(&args, "focus").map(str::to_string);
         emit_navigation(ctx, view, focus.clone(), None);
         Ok(ToolOutput {
@@ -197,7 +218,7 @@ impl HostTool for ShowAuditTool {
         "Opening the audit log"
     }
     fn description(&self) -> &'static str {
-        "Open Settings → Usage & Audit for the user with filters applied: event types, a tool \
+        "Open the activity (usage and audit) log for the user with filters applied: event types, a tool \
          name, a time range (RFC 3339 from/to) and free text. Use audit_query to read the log \
          yourself."
     }
@@ -251,7 +272,7 @@ impl HostTool for ShowAuditTool {
         let text = opt_str(&args, "text").map(str::to_string);
         emit_navigation(
             ctx,
-            "settings",
+            "activity",
             None,
             Some(NavigationTarget::Audit {
                 types: types.clone(),
@@ -395,7 +416,7 @@ mod tests {
             .unwrap();
         match rx.recv().await.unwrap() {
             AgentEvent::Navigated { view, target, .. } => {
-                assert_eq!(view, "settings");
+                assert_eq!(view, "activity");
                 match target {
                     Some(NavigationTarget::Audit {
                         types, tool, from, ..

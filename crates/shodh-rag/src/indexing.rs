@@ -40,6 +40,8 @@ pub struct FileInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexingProgress {
+    /// The source being indexed, so concurrent jobs can be told apart.
+    pub space_id: String,
     pub current_file: String,
     pub processed_files: usize,
     pub total_files: usize,
@@ -233,8 +235,8 @@ pub async fn index_single_file(
         return Err(format!("Unsupported file type: {}", extension));
     }
 
-    emit_progress(emitter, file_path, 0, 1, 0.0, "Reading file...");
-    emit_progress(emitter, file_path, 0, 1, 50.0, "Indexing...");
+    emit_progress(emitter, space_id, file_path, 0, 1, 0.0, "Reading file...");
+    emit_progress(emitter, space_id, file_path, 0, 1, 50.0, "Indexing...");
 
     let file_name = path
         .file_name()
@@ -258,7 +260,7 @@ pub async fn index_single_file(
 
     let chunks_created = ids.len();
 
-    emit_progress(emitter, file_path, 1, 1, 100.0, "Complete!");
+    emit_progress(emitter, space_id, file_path, 1, 1, 100.0, "Complete!");
 
     let duration = start_time.elapsed().as_millis() as u64;
 
@@ -296,7 +298,15 @@ pub async fn index_folder(
 
     indexing_state.reset();
 
-    emit_progress(emitter, "Starting...", 0, 0, 0.0, "Initializing indexing");
+    emit_progress(
+        emitter,
+        space_id,
+        "Starting...",
+        0,
+        0,
+        0.0,
+        "Initializing indexing",
+    );
 
     // Collect files to process
     let mut files_to_process = Vec::new();
@@ -371,6 +381,7 @@ pub async fn index_folder(
 
             emit_progress(
                 emitter,
+                space_id,
                 current_file,
                 files_processed,
                 total_files,
@@ -415,6 +426,7 @@ pub async fn index_folder(
 
     emit_progress(
         emitter,
+        space_id,
         "Completed",
         files_processed,
         total_files,
@@ -521,6 +533,7 @@ async fn process_file_with_options(
 
 fn emit_progress(
     emitter: Option<&dyn EventEmitter>,
+    space_id: &str,
     current_file: &str,
     processed: usize,
     total: usize,
@@ -529,6 +542,7 @@ fn emit_progress(
 ) {
     if let Some(e) = emitter {
         let progress = IndexingProgress {
+            space_id: space_id.to_string(),
             current_file: current_file.to_string(),
             processed_files: processed,
             total_files: total,

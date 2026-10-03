@@ -47,7 +47,19 @@ pub trait AgentHarness: Send + Sync {
     /// Start a run for a new user message. Fails with
     /// [`HarnessError::RunInProgress`] while a run is active. Returns the run id
     /// (`run_id` when given).
-    async fn prompt(&self, text: &str, run_id: Option<String>) -> Result<String, HarnessError>;
+    async fn prompt(&self, text: &str, run_id: Option<String>) -> Result<String, HarnessError> {
+        self.prompt_scoped(text, run_id, tools::RunScope::default())
+            .await
+    }
+
+    /// [`AgentHarness::prompt`] with the run limited to `scope` (document
+    /// search only looks there unless the model names sources itself).
+    async fn prompt_scoped(
+        &self,
+        text: &str,
+        run_id: Option<String>,
+        scope: tools::RunScope,
+    ) -> Result<String, HarnessError>;
 
     /// Redirect the active run; starts a new run when idle. Returns the run id.
     async fn steer(&self, text: &str) -> Result<String, HarnessError>;

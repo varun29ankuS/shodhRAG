@@ -11,7 +11,10 @@
 
 mod audit;
 mod calendar;
+mod export;
+mod files;
 mod history;
+mod research;
 mod settings;
 mod sources;
 mod tauri_host;
@@ -37,6 +40,8 @@ use tokio::sync::RwLock;
 use crate::app_settings::{AppSettings, SettingsStore};
 use crate::calendar_store::{CalendarEvent, TodoItem};
 
+pub use files::{IndexedRoots, SourceRoot, SourceRoots};
+pub use research::{list_directory_in, DirEntry, Listing};
 pub use tauri_host::TauriEffects;
 pub use web::web_block_reason;
 
@@ -93,6 +98,13 @@ pub struct ModelInfo {
     pub cloud: bool,
 }
 
+/// A single file to index (a download) into an existing source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileIndexJob {
+    pub path: String,
+    pub source_id: String,
+}
+
 /// A background indexing job started by a tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexJob {
@@ -118,6 +130,13 @@ pub trait HostEffects: Send + Sync {
     /// The user's OpenRouter API key, if one is configured (used only for
     /// web search requests to OpenRouter; never logged or returned).
     fn openrouter_key(&self) -> Option<String>;
+    /// The user's Documents folder.
+    fn documents_dir(&self) -> Option<PathBuf>;
+    /// Index one new file in the background (audited in `ctx`'s scope) and
+    /// refresh the Library.
+    fn index_file(&self, ctx: &ToolContext, job: FileIndexJob);
+    /// Files or folders of a source changed on disk: refresh the Library.
+    fn library_changed(&self, source_id: &str);
 }
 
 /// Everything an app tool can reach.
@@ -128,6 +147,8 @@ pub struct AgentHost {
     pub effects: Arc<dyn HostEffects>,
     /// HTTP client for web tools (SSRF-checked).
     pub web: SafeClient,
+    /// The indexed source folders (where file-creating tools may write).
+    pub roots: Arc<dyn SourceRoots>,
 }
 
 /// Build the registry with every agent tool. Fails if two tools share a
@@ -161,6 +182,8 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     audit::register(&mut registry, &host)?;
     settings::register(&mut registry, &host)?;
     web::register(&mut registry, &host, &host.web)?;
+    export::register(&mut registry, &host)?;
+    research::register(&mut registry, &host)?;
     sources::register(&mut registry, &host)?;
     Ok(registry)
 }
@@ -195,12 +218,14 @@ pub(crate) mod testing {
     use super::*;
     use std::sync::Mutex;
 
-    #[derive(Default)]
     pub struct Recorder {
+        pub documents: PathBuf,
         pub calendar: Mutex<Vec<CalendarChange>>,
         pub indexing: Mutex<Vec<IndexJob>>,
         pub conversations: Mutex<Vec<ConversationChange>>,
         pub settings: Mutex<Vec<AppSettings>>,
+        pub indexed_files: Mutex<Vec<FileIndexJob>>,
+        pub library: Mutex<Vec<String>>,
     }
 
     impl HostEffects for Recorder {
@@ -234,12 +259,28 @@ pub(crate) mod testing {
         fn openrouter_key(&self) -> Option<String> {
             None
         }
+        fn documents_dir(&self) -> Option<PathBuf> {
+            Some(self.documents.clone())
+        }
+        fn index_file(&self, _ctx: &ToolContext, job: FileIndexJob) {
+            self.indexed_files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(job);
+        }
+        fn library_changed(&self, source_id: &str) {
+            self.library
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(source_id.to_string());
+        }
     }
 
     pub struct TestHost {
         pub dir: tempfile::TempDir,
         pub host: Arc<AgentHost>,
         pub effects: Arc<Recorder>,
+        pub roots: Arc<FixedRoots>,
     }
 
     /// A host with an empty RAG engine (no search models) and an audit log
@@ -251,15 +292,69 @@ pub(crate) mod testing {
         config.embedding.model_dir = dir.path().join("no-models");
         let rag = RAGEngine::new(config).await.unwrap();
         let audit = AuditLog::open(dir.path().join("shodh.db"), None).unwrap();
-        let effects = Arc::new(Recorder::default());
+        let effects = Arc::new(Recorder {
+            documents: dir.path().join("Documents"),
+            calendar: Mutex::default(),
+            indexing: Mutex::default(),
+            conversations: Mutex::default(),
+            settings: Mutex::default(),
+            indexed_files: Mutex::default(),
+            library: Mutex::default(),
+        });
+        std::fs::create_dir_all(&effects.documents).unwrap();
+        let roots = Arc::new(FixedRoots::default());
         let host = Arc::new(AgentHost {
             data_dir: dir.path().to_path_buf(),
             rag: Arc::new(RwLock::new(rag)),
             audit: Some(Arc::new(audit)),
             effects: effects.clone(),
             web: SafeClient::system(),
+            roots: roots.clone(),
         });
-        TestHost { dir, host, effects }
+        TestHost {
+            dir,
+            host,
+            effects,
+            roots,
+        }
+    }
+
+    /// Indexed source folders for tests.
+    #[derive(Default)]
+    pub struct FixedRoots {
+        pub roots: Mutex<Vec<SourceRoot>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SourceRoots for FixedRoots {
+        async fn roots(&self) -> Result<Vec<SourceRoot>, ToolError> {
+            Ok(self.roots.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+    }
+
+    /// Treat `folder` as an indexed source folder; returns its source id.
+    pub async fn index_folder(t: &TestHost, folder: &std::path::Path) -> String {
+        let mut roots = t.roots.roots.lock().unwrap_or_else(|e| e.into_inner());
+        let source_id = format!("source-{}", roots.len() + 1);
+        roots.push(SourceRoot {
+            source_id: source_id.clone(),
+            folder: std::fs::canonicalize(folder)
+                .map(|p| super::sources::strip_verbatim(&p))
+                .unwrap_or_else(|_| folder.to_path_buf()),
+        });
+        source_id
+    }
+
+    /// The test host with another web client (in-process DNS and HTTP).
+    pub fn with_web(t: &TestHost, web: SafeClient) -> Arc<AgentHost> {
+        Arc::new(AgentHost {
+            data_dir: t.host.data_dir.clone(),
+            rag: t.host.rag.clone(),
+            audit: t.host.audit.clone(),
+            effects: t.host.effects.clone(),
+            web,
+            roots: t.host.roots.clone(),
+        })
     }
 
     /// A tool context whose events land in the returned receiver.

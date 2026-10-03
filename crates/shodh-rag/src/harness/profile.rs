@@ -28,9 +28,12 @@ pub mod app_tools {
     pub const GET_SETTINGS: &str = "get_settings";
     pub const UPDATE_SETTING: &str = "update_setting";
     pub const EXPORT_DOCUMENT: &str = "export_document";
+    pub const CREATE_FOLDER: &str = "create_folder";
+    pub const DOWNLOAD_FILE: &str = "download_file";
+    pub const LIST_DIRECTORY: &str = "list_directory";
 
     /// Every app-layer tool, in registration order.
-    pub const ALL: [&str; 19] = [
+    pub const ALL: [&str; 23] = [
         CREATE_TASK,
         CREATE_EVENT,
         LIST_TASKS,
@@ -50,6 +53,10 @@ pub mod app_tools {
         AUDIT_QUERY,
         GET_SETTINGS,
         UPDATE_SETTING,
+        EXPORT_DOCUMENT,
+        CREATE_FOLDER,
+        DOWNLOAD_FILE,
+        LIST_DIRECTORY,
     ];
 }
 

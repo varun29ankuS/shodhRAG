@@ -23,11 +23,15 @@ tauri-build = { version = "2.0", features = [] }
 audit-encryption = ["shodh-rag/sqlcipher"]
 
 [dependencies]
-tauri = { version = "2.0", features = [] }
+tauri = { version = "2.0", features = ["tray-icon"] }
 tauri-plugin-opener = "2.2"
 tauri-plugin-fs = "2.0"
 tauri-plugin-dialog = "2.0"
 tauri-plugin-clipboard-manager = "2.0"
+# Native reminder notifications (desktop: title and body only, see reminders.rs)
+tauri-plugin-notification = "~2.3.3"
+# Optional "start with Windows" (off by default)
+tauri-plugin-autostart = "~2.5.1"
 # tauri-plugin-updater = "2.0"  # Disabled until update server is configured
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -79,3 +83,5 @@ windows = { version = "0.58", features = [
 tempfile = "3"
 zip = "2"
 bytes = "1"
+# Time zones with daylight saving for the reminder scheduler tests
+chrono-tz = "0.10"

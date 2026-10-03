@@ -77,6 +77,9 @@ fn event_to_indexable_text(event: &CalendarEvent) -> String {
     if event.all_day {
         parts.push("All-day event.".to_string());
     }
+    if let Some(location) = event.location.as_deref().filter(|l| !l.trim().is_empty()) {
+        parts.push(format!("Location: {}.", location.trim()));
+    }
     if !event.source.is_empty() {
         parts.push(format!("Created by: {}.", event.source));
     }
@@ -255,4 +258,21 @@ pub async fn reindex_all(
     );
 
     Ok((tasks_indexed, events_indexed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_text_includes_the_location() {
+        let mut event: CalendarEvent = serde_json::from_str(
+            r#"{"id": "e1", "title": "Board review", "startTime": "2026-10-10T10:00",
+                "createdAt": "2026-10-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert!(!event_to_indexable_text(&event).contains("Location"));
+        event.location = Some(" Room 4B ".into());
+        assert!(event_to_indexable_text(&event).contains("Location: Room 4B."));
+    }
 }

@@ -173,6 +173,8 @@ impl HostEffects for TauriEffects {
         if let Err(e) = self.app.emit(CALENDAR_CHANGED_EVENT, ()) {
             tracing::warn!("Failed to emit {}: {}", CALENDAR_CHANGED_EVENT, e);
         }
+        // A reminder may have been set, moved or removed.
+        crate::reminders::wake(&self.app);
     }
 
     /// Folder indexing holds the RAG engine's write lock for the whole job,

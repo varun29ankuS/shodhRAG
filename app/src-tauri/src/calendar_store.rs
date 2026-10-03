@@ -89,8 +89,20 @@ pub struct TodoItem {
     pub updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// When to remind: an absolute local date-time `YYYY-MM-DDTHH:MM`
+    /// (see [`check_reminder`]). The UI offers presets relative to the due
+    /// time; what is stored is always the absolute moment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reminder: Option<String>,
+    /// When the reminder was shown (RFC 3339, UTC). Set once per reminder
+    /// or snooze, so a reminder never fires twice; cleared when the
+    /// reminder changes or is snoozed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reminder_fired_at: Option<String>,
+    /// A snoozed reminder fires again at this local date-time
+    /// (`YYYY-MM-DDTHH:MM`) instead of at `reminder`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snoozed_until: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -107,6 +119,9 @@ pub struct CalendarEvent {
     pub all_day: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Where the event takes place (free text: a room, an address, a link).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
     #[serde(default = "default_source")]
     pub source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -179,6 +194,114 @@ pub fn parse_moment(value: &str) -> Option<Moment> {
 }
 
 pub const MOMENT_HINT: &str = "use YYYY-MM-DD, YYYY-MM-DDTHH:MM or an RFC 3339 timestamp";
+
+// ── Reminders ────────────────────────────────────────────────────
+
+/// Stored shape of `reminder` and `snoozed_until`: a local wall-clock
+/// date-time to the minute. Local, not UTC, so "remind me at 9:00" stays at
+/// 9:00 across daylight-saving changes and when the computer changes time
+/// zone; the scheduler converts it to an instant each time it plans.
+pub const REMINDER_FORMAT: &str = "%Y-%m-%dT%H:%M";
+
+pub const REMINDER_HINT: &str =
+    "a reminder needs a date and a time: use YYYY-MM-DDTHH:MM (local time) or an RFC 3339 timestamp";
+
+/// A stored reminder value as a local date-time, if it is one. Values
+/// written before reminders were validated may be anything; those read as
+/// `None` and never ring.
+pub fn parse_reminder(value: &str) -> Option<NaiveDateTime> {
+    NaiveDateTime::parse_from_str(value.trim(), REMINDER_FORMAT)
+        .ok()
+        .or_else(|| match parse_moment(value)? {
+            Moment::DateTime(dt) => Some(dt),
+            Moment::Date(_) => None,
+        })
+}
+
+/// Normalise a reminder to [`REMINDER_FORMAT`] in `tz`'s wall-clock time.
+/// A timestamp with an offset (`…T09:00Z`) is converted to `tz`, so it rings
+/// at that instant; a plain date-time is taken as already local. A date
+/// without a time is rejected: a reminder must say when to ring.
+pub fn normalize_reminder_in<Tz: chrono::TimeZone>(value: &str, tz: &Tz) -> CalendarResult<String> {
+    let value = value.trim();
+    let invalid = || CalendarError::Invalid(format!("`reminder` {value:?}: {REMINDER_HINT}"));
+    let local = match DateTime::parse_from_rfc3339(value) {
+        Ok(instant) => instant.with_timezone(tz).naive_local(),
+        Err(_) => match parse_moment(value) {
+            Some(Moment::DateTime(dt)) => dt,
+            _ => return Err(invalid()),
+        },
+    };
+    Ok(local.format(REMINDER_FORMAT).to_string())
+}
+
+/// [`normalize_reminder_in`] for this computer's time zone.
+pub fn check_reminder(value: &str) -> CalendarResult<String> {
+    normalize_reminder_in(value, &chrono::Local)
+}
+
+// ── Clearing optional fields ─────────────────────────────────────
+
+/// The optional fields of a task an update may clear. Absent from an
+/// update means "keep"; naming a field in `clear` is the only way to empty
+/// it, so a client that omits a value can never erase it by accident.
+pub const TASK_CLEARABLE: [&str; 4] = ["due_date", "project", "description", "reminder"];
+
+/// The optional fields of an event an update may clear.
+pub const EVENT_CLEARABLE: [&str; 3] = ["description", "end_time", "location"];
+
+/// Validate a `clear` list against `allowed`; returns the names, deduplicated.
+fn clear_names<'a>(
+    clear: &'a [String],
+    allowed: &[&str],
+    what: &str,
+) -> CalendarResult<Vec<&'a str>> {
+    let mut out: Vec<&str> = Vec::new();
+    for name in clear {
+        let name = name.trim();
+        if !allowed.contains(&name) {
+            return Err(CalendarError::Invalid(format!(
+                "`{name}` cannot be cleared on {what}; clearable fields: {}",
+                allowed.join(", ")
+            )));
+        }
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    Ok(out)
+}
+
+fn set_and_cleared(field: &str) -> CalendarError {
+    CalendarError::Invalid(format!(
+        "`{field}` is both set and cleared in the same update"
+    ))
+}
+
+/// `slot` cleared, unless the update also sets it.
+fn clear_slot(slot: &mut Option<Option<String>>, field: &str) -> CalendarResult<()> {
+    if matches!(slot, Some(Some(_))) {
+        return Err(set_and_cleared(field));
+    }
+    *slot = Some(None);
+    Ok(())
+}
+
+/// Notes cleared (set to empty), unless the update also sets them.
+fn clear_text(slot: &mut Option<String>, field: &str) -> CalendarResult<()> {
+    if slot.as_deref().is_some_and(|d| !d.is_empty()) {
+        return Err(set_and_cleared(field));
+    }
+    *slot = Some(String::new());
+    Ok(())
+}
+
+/// An optional text set to `value`: blank text means "none".
+fn optional_text(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
 
 // ── File access ──────────────────────────────────────────────────
 
@@ -275,8 +398,8 @@ pub struct SubtaskSpec {
     pub completed: bool,
 }
 
-/// Changes to a task. `None` leaves a field as it is; for `due_date`,
-/// `Some(None)` clears it.
+/// Changes to a task. `None` leaves a field as it is; for the optional
+/// fields, `Some(None)` clears it (an empty `description` clears the notes).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TaskPatch {
     pub title: Option<String>,
@@ -285,8 +408,8 @@ pub struct TaskPatch {
     pub priority: Option<String>,
     pub status: Option<String>,
     pub tags: Option<Vec<String>>,
-    pub project: Option<String>,
-    pub reminder: Option<String>,
+    pub project: Option<Option<String>>,
+    pub reminder: Option<Option<String>>,
     /// Replaces the subtask list.
     pub subtasks: Option<Vec<SubtaskSpec>>,
 }
@@ -294,6 +417,20 @@ pub struct TaskPatch {
 impl TaskPatch {
     pub fn is_empty(&self) -> bool {
         *self == TaskPatch::default()
+    }
+
+    /// Clear the fields named in `clear` (see [`TASK_CLEARABLE`]). Fails on
+    /// an unknown name or on a field this patch also sets.
+    pub fn clearing(mut self, clear: &[String]) -> CalendarResult<Self> {
+        for name in clear_names(clear, &TASK_CLEARABLE, "a task")? {
+            match name {
+                "due_date" => clear_slot(&mut self.due_date, name)?,
+                "project" => clear_slot(&mut self.project, name)?,
+                "reminder" => clear_slot(&mut self.reminder, name)?,
+                _ => clear_text(&mut self.description, name)?,
+            }
+        }
+        Ok(self)
     }
 }
 
@@ -367,6 +504,11 @@ pub fn apply_task_patch(
         Some(None) => Some(None),
         None => None,
     };
+    let reminder = match &patch.reminder {
+        Some(Some(r)) => Some(Some(check_reminder(r)?)),
+        Some(None) => Some(None),
+        None => None,
+    };
     let subtasks = match &patch.subtasks {
         Some(specs) => {
             let mut out = Vec::with_capacity(specs.len());
@@ -413,10 +555,15 @@ pub fn apply_task_patch(
         task.tags = v.clone();
     }
     if let Some(v) = &patch.project {
-        task.project = Some(v.clone());
+        task.project = optional_text(v.clone());
     }
-    if let Some(v) = &patch.reminder {
-        task.reminder = Some(v.clone());
+    if let Some(v) = reminder {
+        if v != task.reminder {
+            // A new or removed reminder starts over: not yet shown, not snoozed.
+            task.reminder_fired_at = None;
+            task.snoozed_until = None;
+        }
+        task.reminder = v;
     }
     if let Some(v) = subtasks {
         task.subtasks = v;
@@ -491,6 +638,7 @@ impl CalendarData {
             .as_deref()
             .map(|d| check_moment("due", d))
             .transpose()?;
+        let reminder = new.reminder.as_deref().map(check_reminder).transpose()?;
         let stamp = now();
         let task = TodoItem {
             id: Uuid::new_v4().to_string(),
@@ -501,13 +649,15 @@ impl CalendarData {
             status: default_status(),
             tags: new.tags.unwrap_or_default(),
             subtasks: Vec::new(),
-            project: new.project,
+            project: optional_text(new.project),
             source: new.source.unwrap_or_else(default_source),
             source_ref: new.source_ref,
             created_at: stamp.clone(),
             updated_at: stamp,
             completed_at: None,
-            reminder: new.reminder,
+            reminder,
+            reminder_fired_at: None,
+            snoozed_until: None,
         };
         self.tasks.push(task.clone());
         Ok(task)
@@ -558,6 +708,64 @@ impl CalendarData {
         Ok(task.clone())
     }
 
+    pub fn rename_subtask(
+        &mut self,
+        task_id: &str,
+        subtask_id: &str,
+        title: &str,
+    ) -> CalendarResult<TodoItem> {
+        let title = check_title(title)?;
+        let task = self.task_mut(task_id)?;
+        let subtask = task
+            .subtasks
+            .iter_mut()
+            .find(|s| s.id == subtask_id)
+            .ok_or_else(|| CalendarError::SubtaskNotFound(subtask_id.to_string()))?;
+        if subtask.title != title {
+            subtask.title = title;
+            task.updated_at = now();
+        }
+        Ok(task.clone())
+    }
+
+    /// Record that the reminder ringing at `due` (the task's current
+    /// `snoozed_until` or `reminder` value) was shown at `fired_at`.
+    /// Returns false, changing nothing, when it was already shown or the
+    /// reminder has changed since it was planned: the caller then must not
+    /// notify, which makes firing idempotent.
+    pub fn mark_reminder_fired(
+        &mut self,
+        task_id: &str,
+        due: &str,
+        fired_at: &str,
+    ) -> CalendarResult<bool> {
+        let task = self.task_mut(task_id)?;
+        let current = task.snoozed_until.as_deref().or(task.reminder.as_deref());
+        if task.reminder_fired_at.is_some() || current != Some(due) {
+            return Ok(false);
+        }
+        task.reminder_fired_at = Some(fired_at.to_string());
+        Ok(true)
+    }
+
+    /// Ring the task's reminder again at `until` (local, [`REMINDER_FORMAT`]).
+    pub fn snooze_reminder(
+        &mut self,
+        task_id: &str,
+        until: NaiveDateTime,
+    ) -> CalendarResult<TodoItem> {
+        let task = self.task_mut(task_id)?;
+        if task.reminder.is_none() {
+            return Err(CalendarError::Invalid(format!(
+                "Task \"{}\" has no reminder to snooze",
+                task.title
+            )));
+        }
+        task.snoozed_until = Some(until.format(REMINDER_FORMAT).to_string());
+        task.reminder_fired_at = None;
+        Ok(task.clone())
+    }
+
     pub fn delete_subtask(&mut self, task_id: &str, subtask_id: &str) -> CalendarResult<TodoItem> {
         let task = self.task_mut(task_id)?;
         task.subtasks.retain(|s| s.id != subtask_id);
@@ -582,6 +790,7 @@ impl CalendarData {
             end_time: end,
             all_day: new.all_day.unwrap_or(false),
             color: new.color,
+            location: optional_text(new.location),
             source: new.source.unwrap_or_else(default_source),
             source_ref: new.source_ref,
             created_at: now(),
@@ -623,11 +832,13 @@ pub struct NewEvent {
     pub all_day: Option<bool>,
     pub description: Option<String>,
     pub color: Option<String>,
+    pub location: Option<String>,
     pub source: Option<String>,
     pub source_ref: Option<String>,
 }
 
-/// Changes to an event. For `end_time`, `Some(None)` clears it.
+/// Changes to an event. For `end_time` and `location`, `Some(None)` clears
+/// it; an empty `description` clears the notes.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EventPatch {
     pub title: Option<String>,
@@ -636,11 +847,25 @@ pub struct EventPatch {
     pub end_time: Option<Option<String>>,
     pub all_day: Option<bool>,
     pub color: Option<String>,
+    pub location: Option<Option<String>>,
 }
 
 impl EventPatch {
     pub fn is_empty(&self) -> bool {
         *self == EventPatch::default()
+    }
+
+    /// Clear the fields named in `clear` (see [`EVENT_CLEARABLE`]). Fails on
+    /// an unknown name or on a field this patch also sets.
+    pub fn clearing(mut self, clear: &[String]) -> CalendarResult<Self> {
+        for name in clear_names(clear, &EVENT_CLEARABLE, "an event")? {
+            match name {
+                "end_time" => clear_slot(&mut self.end_time, name)?,
+                "location" => clear_slot(&mut self.location, name)?,
+                _ => clear_text(&mut self.description, name)?,
+            }
+        }
+        Ok(self)
     }
 }
 
@@ -688,6 +913,9 @@ pub fn apply_event_patch(
     if let Some(v) = &patch.color {
         event.color = Some(v.clone());
     }
+    if let Some(v) = &patch.location {
+        event.location = optional_text(v.clone());
+    }
 
     let mut changes = Vec::new();
     let mut diff = |field: &'static str, b: Value, a: Value| {
@@ -705,6 +933,7 @@ pub fn apply_event_patch(
     diff("end", json!(before.end_time), json!(event.end_time));
     diff("allDay", json!(before.all_day), json!(event.all_day));
     diff("color", json!(before.color), json!(event.color));
+    diff("location", json!(before.location), json!(event.location));
     Ok(changes)
 }
 
@@ -794,9 +1023,11 @@ pub fn list_events<'a>(data: &'a CalendarData, filter: &EventFilter) -> Vec<&'a 
                 && filter.to.is_none_or(|t| start.date() <= t)
         })
         .filter(|e| {
-            needle
-                .as_deref()
-                .is_none_or(|n| contains_ci(&e.title, n) || contains_ci(&e.description, n))
+            needle.as_deref().is_none_or(|n| {
+                contains_ci(&e.title, n)
+                    || contains_ci(&e.description, n)
+                    || e.location.as_deref().is_some_and(|l| contains_ci(l, n))
+            })
         })
         .collect();
     out.sort_by_key(|e| parse_moment(&e.start_time).map(Moment::as_datetime));
@@ -1064,5 +1295,220 @@ mod tests {
         let removed = store.update(|d| d.delete_event(&e.id)).unwrap();
         assert_eq!(removed.title, "Team offsite");
         assert!(store.load().unwrap().events.is_empty());
+    }
+
+    #[test]
+    fn records_written_before_reminders_and_locations_still_load() {
+        let old = r#"{
+            "tasks": [{"id": "t1", "title": "Pay rent", "createdAt": "2026-01-01T00:00:00Z",
+                       "updatedAt": "2026-01-01T00:00:00Z", "reminder": "whenever"}],
+            "events": [{"id": "e1", "title": "Standup", "startTime": "2026-10-10T09:00",
+                        "createdAt": "2026-01-01T00:00:00Z"}]
+        }"#;
+        let data: CalendarData = serde_json::from_str(old).unwrap();
+        let task = data.task("t1").unwrap();
+        assert_eq!(task.reminder_fired_at, None);
+        assert_eq!(task.snoozed_until, None);
+        assert_eq!(parse_reminder(task.reminder.as_deref().unwrap()), None);
+        assert_eq!(data.event("e1").unwrap().location, None);
+        // Absent fields stay absent when written back.
+        let text = serde_json::to_string(&data).unwrap();
+        assert!(!text.contains("location") && !text.contains("snoozedUntil"));
+    }
+
+    #[test]
+    fn locations_round_trip_and_can_be_cleared() {
+        let (_dir, store) = store();
+        let e = store
+            .update(|d| {
+                d.insert_event(NewEvent {
+                    title: "Review".into(),
+                    start_time: "2026-10-10T10:00".into(),
+                    location: Some("  Room 4B ".into()),
+                    ..NewEvent::default()
+                })
+            })
+            .unwrap();
+        assert_eq!(e.location.as_deref(), Some("Room 4B"));
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.event(&e.id).unwrap(), &e);
+        let found = list_events(
+            &loaded,
+            &EventFilter {
+                text: Some("room 4b".into()),
+                ..EventFilter::default()
+            },
+        );
+        assert_eq!(found.len(), 1);
+        let patch = EventPatch::default()
+            .clearing(&["location".into(), "end_time".into()])
+            .unwrap();
+        let (_, after, changes) = store.update(|d| d.patch_event(&e.id, &patch)).unwrap();
+        assert_eq!(after.location, None);
+        let fields: Vec<&str> = changes.iter().map(|c| c.field).collect();
+        assert_eq!(fields, vec!["location"], "end was already empty");
+    }
+
+    #[test]
+    fn clearing_needs_an_allowlisted_name_and_never_conflicts_with_a_set() {
+        let unknown = TaskPatch::default().clearing(&["title".into()]);
+        assert!(matches!(unknown, Err(CalendarError::Invalid(_))));
+        let event_only = TaskPatch::default().clearing(&["location".into()]);
+        assert!(event_only.is_err(), "location is an event field");
+        let both = TaskPatch {
+            project: Some(Some("Tax".into())),
+            ..TaskPatch::default()
+        }
+        .clearing(&["project".into()]);
+        assert!(both.is_err());
+        let notes = TaskPatch {
+            description: Some("keep".into()),
+            ..TaskPatch::default()
+        }
+        .clearing(&["description".into()]);
+        assert!(notes.is_err());
+        assert!(EventPatch::default()
+            .clearing(&["due_date".into()])
+            .is_err());
+    }
+
+    #[test]
+    fn cleared_fields_empty_and_absent_fields_keep() {
+        let (_dir, store) = store();
+        let t = store
+            .update(|d| {
+                d.insert_task(NewTask {
+                    title: "File return".into(),
+                    description: Some("Form 16".into()),
+                    due_date: Some("2026-10-30".into()),
+                    project: Some("Tax".into()),
+                    reminder: Some("2026-10-29T09:00".into()),
+                    ..NewTask::default()
+                })
+            })
+            .unwrap();
+        // Nothing named: nothing cleared.
+        let keep = TaskPatch {
+            title: Some("File ITR".into()),
+            ..TaskPatch::default()
+        }
+        .clearing(&[])
+        .unwrap();
+        let (_, kept, _) = store.update(|d| d.patch_task(&t.id, &keep)).unwrap();
+        assert_eq!(kept.project.as_deref(), Some("Tax"));
+        assert_eq!(kept.due_date.as_deref(), Some("2026-10-30"));
+        assert_eq!(kept.reminder.as_deref(), Some("2026-10-29T09:00"));
+        let clear = TaskPatch::default()
+            .clearing(&[
+                "due_date".into(),
+                "project".into(),
+                "description".into(),
+                "reminder".into(),
+                "project".into(),
+            ])
+            .unwrap();
+        let (_, cleared, changes) = store.update(|d| d.patch_task(&t.id, &clear)).unwrap();
+        assert_eq!(cleared.due_date, None);
+        assert_eq!(cleared.project, None);
+        assert_eq!(cleared.description, "");
+        assert_eq!(cleared.reminder, None);
+        let fields: Vec<&str> = changes.iter().map(|c| c.field).collect();
+        assert_eq!(fields, vec!["notes", "due", "project", "reminder"]);
+        // Blank text sets nothing rather than an empty project.
+        let blank = TaskPatch {
+            project: Some(Some("   ".into())),
+            ..TaskPatch::default()
+        };
+        let (_, after, _) = store.update(|d| d.patch_task(&t.id, &blank)).unwrap();
+        assert_eq!(after.project, None);
+    }
+
+    #[test]
+    fn subtasks_can_be_renamed() {
+        let (_dir, store) = store();
+        let t = task(&store, "Trip", None);
+        let with_sub = store
+            .update(|d| d.add_subtask(&t.id, "Book hotel"))
+            .unwrap();
+        let sub = with_sub.subtasks[0].id.clone();
+        let renamed = store
+            .update(|d| d.rename_subtask(&t.id, &sub, "  Book hotel near venue "))
+            .unwrap();
+        assert_eq!(renamed.subtasks[0].title, "Book hotel near venue");
+        assert_eq!(renamed.subtasks[0].id, sub, "the id is kept");
+        assert!(matches!(
+            store.update(|d| d.rename_subtask(&t.id, &sub, "  ")),
+            Err(CalendarError::Invalid(_))
+        ));
+        assert!(matches!(
+            store.update(|d| d.rename_subtask(&t.id, "missing", "x")),
+            Err(CalendarError::SubtaskNotFound(_))
+        ));
+        assert_eq!(
+            store.load().unwrap().task(&t.id).unwrap().subtasks[0].title,
+            "Book hotel near venue"
+        );
+    }
+
+    #[test]
+    fn reminders_are_normalised_to_local_minutes() {
+        let ist = chrono::FixedOffset::east_opt(5 * 3600 + 1800).unwrap();
+        assert_eq!(
+            normalize_reminder_in("2026-10-29T09:00", &ist).unwrap(),
+            "2026-10-29T09:00"
+        );
+        assert_eq!(
+            normalize_reminder_in("2026-10-29 09:00:45", &ist).unwrap(),
+            "2026-10-29T09:00"
+        );
+        // An instant with an offset rings at that instant, in local time.
+        assert_eq!(
+            normalize_reminder_in("2026-10-29T03:30:00Z", &ist).unwrap(),
+            "2026-10-29T09:00"
+        );
+        assert!(normalize_reminder_in("2026-10-29", &ist).is_err());
+        assert!(normalize_reminder_in("tomorrow 9am", &ist).is_err());
+    }
+
+    #[test]
+    fn changing_a_reminder_resets_its_fired_and_snoozed_state() {
+        let (_dir, store) = store();
+        let t = store
+            .update(|d| {
+                d.insert_task(NewTask {
+                    title: "Call bank".into(),
+                    reminder: Some("2026-10-29T09:00".into()),
+                    ..NewTask::default()
+                })
+            })
+            .unwrap();
+        let fire = |at: &str| {
+            store
+                .update(|d| d.mark_reminder_fired(&t.id, "2026-10-29T09:00", at))
+                .unwrap()
+        };
+        assert!(fire("2026-10-29T03:30:00Z"));
+        assert!(!fire("2026-10-29T03:31:00Z"), "a reminder fires once");
+        let nine_ten = NaiveDate::from_ymd_opt(2026, 10, 29)
+            .unwrap()
+            .and_hms_opt(9, 10, 0)
+            .unwrap();
+        let snoozed = store
+            .update(|d| d.snooze_reminder(&t.id, nine_ten))
+            .unwrap();
+        assert_eq!(snoozed.snoozed_until.as_deref(), Some("2026-10-29T09:10"));
+        assert_eq!(snoozed.reminder_fired_at, None);
+        assert!(!fire("x"), "the planned time is no longer current");
+        let patch = TaskPatch {
+            reminder: Some(Some("2026-10-30T08:00".into())),
+            ..TaskPatch::default()
+        };
+        let (_, moved, _) = store.update(|d| d.patch_task(&t.id, &patch)).unwrap();
+        assert_eq!(moved.snoozed_until, None);
+        assert_eq!(moved.reminder_fired_at, None);
+        let plain = task(&store, "Plain", None);
+        assert!(store
+            .update(|d| d.snooze_reminder(&plain.id, nine_ten))
+            .is_err());
     }
 }

@@ -91,6 +91,7 @@ fn task_line(task: &TodoItem) -> Value {
         "status": task.status,
         "priority": task.priority,
         "project": task.project,
+        "reminder": task.snoozed_until.as_ref().or(task.reminder.as_ref()),
         "subtasks": if task.subtasks.is_empty() {
             Value::Null
         } else {
@@ -106,6 +107,7 @@ fn event_line(event: &CalendarEvent) -> Value {
         "start": event.start_time,
         "end": event.end_time,
         "allDay": event.all_day,
+        "location": event.location,
     })
 }
 
@@ -140,8 +142,10 @@ impl HostTool for CreateTaskTool {
         "Creating task {title}"
     }
     fn description(&self) -> &'static str {
-        "Create a calendar task (a to-do with an optional due date and priority). source_ref can \
-         hold the file the task came from, e.g. a contract path."
+        "Create a calendar task (a to-do with an optional due date, priority and reminder). \
+         reminder is when to notify the user: a local date-time YYYY-MM-DDTHH:MM (or an RFC 3339 \
+         timestamp), e.g. an hour before the due time. source_ref can hold the file the task came \
+         from, e.g. a contract path."
     }
     fn schema(&self) -> Value {
         json!({
@@ -151,6 +155,7 @@ impl HostTool for CreateTaskTool {
                 "due": {"type": "string", "minLength": 10, "maxLength": 40},
                 "priority": {"type": "string", "enum": PRIORITIES},
                 "notes": {"type": "string", "maxLength": 4000},
+                "reminder": {"type": "string", "minLength": 16, "maxLength": 40},
                 "source_ref": {"type": "string", "minLength": 1, "maxLength": 1024}
             },
             "required": ["title"],
@@ -168,6 +173,7 @@ impl HostTool for CreateTaskTool {
                 "due": str_arg(args, "due"),
                 "priority": str_arg(args, "priority"),
                 "notes": str_arg(args, "notes"),
+                "reminder": str_arg(args, "reminder"),
                 "sourceRef": str_arg(args, "source_ref"),
             }),
         })
@@ -181,6 +187,7 @@ impl HostTool for CreateTaskTool {
             due_date: str_arg(&args, "due").map(str::to_string),
             priority: str_arg(&args, "priority").map(str::to_string),
             description: str_arg(&args, "notes").map(str::to_string),
+            reminder: str_arg(&args, "reminder").map(str::to_string),
             source: Some("agent".to_string()),
             source_ref: str_arg(&args, "source_ref").map(str::to_string),
             ..NewTask::default()
@@ -225,7 +232,8 @@ impl HostTool for CreateEventTool {
         "Creating event {title}"
     }
     fn description(&self) -> &'static str {
-        "Create a calendar event. A date without a time makes an all-day event."
+        "Create a calendar event, optionally with a location. A date without a time makes an \
+         all-day event."
     }
     fn schema(&self) -> Value {
         json!({
@@ -234,7 +242,8 @@ impl HostTool for CreateEventTool {
                 "title": {"type": "string", "minLength": 1, "maxLength": 200},
                 "start": {"type": "string", "minLength": 10, "maxLength": 40},
                 "end": {"type": "string", "minLength": 10, "maxLength": 40},
-                "notes": {"type": "string", "maxLength": 4000}
+                "notes": {"type": "string", "maxLength": 4000},
+                "location": {"type": "string", "minLength": 1, "maxLength": 500}
             },
             "required": ["title", "start"],
             "additionalProperties": false
@@ -251,6 +260,7 @@ impl HostTool for CreateEventTool {
                 "start": str_arg(args, "start"),
                 "end": str_arg(args, "end"),
                 "notes": str_arg(args, "notes"),
+                "location": str_arg(args, "location"),
             }),
         })
     }
@@ -266,6 +276,7 @@ impl HostTool for CreateEventTool {
             end_time: str_arg(&args, "end").map(str::to_string),
             all_day: Some(all_day),
             description: str_arg(&args, "notes").map(str::to_string),
+            location: str_arg(&args, "location").map(str::to_string),
             source: Some("agent".to_string()),
             ..NewEvent::default()
         };
@@ -286,7 +297,8 @@ impl HostTool for CreateEventTool {
                 "title": event.title,
                 "start": event.start_time,
                 "end": event.end_time,
-                "allDay": event.all_day
+                "allDay": event.all_day,
+                "location": event.location
             })),
         })
     }
@@ -435,12 +447,17 @@ impl HostTool for ListEventsTool {
 
 // ── update_task / complete_task ────────────────────────────────────────────
 
-fn task_patch_from_args(tool: &str, args: &Value) -> Result<TaskPatch, ToolError> {
-    let due_date = match args.get("due") {
+/// A nullable string argument: absent keeps the field, `null` clears it.
+fn nullable_arg(args: &Value, key: &str) -> Option<Option<String>> {
+    match args.get(key) {
         Some(Value::Null) => Some(None),
         Some(Value::String(s)) => Some(Some(s.trim().to_string())),
         _ => None,
-    };
+    }
+}
+
+fn task_patch_from_args(tool: &str, args: &Value) -> Result<TaskPatch, ToolError> {
+    let due_date = nullable_arg(args, "due");
     let subtasks = args.get("subtasks").and_then(Value::as_array).map(|items| {
         items
             .iter()
@@ -463,13 +480,16 @@ fn task_patch_from_args(tool: &str, args: &Value) -> Result<TaskPatch, ToolError
         due_date,
         priority: str_arg(args, "priority").map(str::to_string),
         status: str_arg(args, "status").map(str::to_string),
+        project: nullable_arg(args, "project"),
+        reminder: nullable_arg(args, "reminder"),
         subtasks,
         ..TaskPatch::default()
     };
     if patch.is_empty() {
         return Err(invalid(
             tool,
-            "give at least one field to change: title, notes, due, priority, status or subtasks",
+            "give at least one field to change: title, notes, due, priority, status, project, \
+             reminder or subtasks",
         ));
     }
     Ok(patch)
@@ -555,9 +575,11 @@ impl HostTool for UpdateTaskTool {
         "Updating task[ {title}]"
     }
     fn description(&self) -> &'static str {
-        "Change a task (id from list_tasks): title, notes, due date (null clears it), priority, \
-         status, or the full subtask list (keep a subtask's id to keep it; omit the id to add one; \
-         leave one out to remove it). Only the fields you pass change."
+        "Change a task (id from list_tasks): title, notes (\"\" clears them), due date, priority, \
+         status, project, reminder, or the full subtask list (keep a subtask's id to keep it; omit \
+         the id to add one; leave one out to remove it). null clears due, project or reminder. \
+         reminder is when to notify the user, a local date-time YYYY-MM-DDTHH:MM (or RFC 3339); \
+         setting it again re-arms a reminder that already rang. Only the fields you pass change."
     }
     fn schema(&self) -> Value {
         json!({
@@ -569,6 +591,8 @@ impl HostTool for UpdateTaskTool {
                 "due": {"type": ["string", "null"], "maxLength": 40},
                 "priority": {"type": "string", "enum": PRIORITIES},
                 "status": {"type": "string", "enum": STATUSES},
+                "project": {"type": ["string", "null"], "maxLength": 200},
+                "reminder": {"type": ["string", "null"], "maxLength": 40},
                 "subtasks": {
                     "type": "array",
                     "maxItems": 50,
@@ -676,11 +700,7 @@ impl HostTool for CompleteTaskTool {
 // ── update_event ───────────────────────────────────────────────────────────
 
 fn event_patch_from_args(tool: &str, args: &Value) -> Result<EventPatch, ToolError> {
-    let end_time = match args.get("end") {
-        Some(Value::Null) => Some(None),
-        Some(Value::String(s)) => Some(Some(s.trim().to_string())),
-        _ => None,
-    };
+    let end_time = nullable_arg(args, "end");
     let start_time = str_arg(args, "start").map(str::to_string);
     let all_day = match (&start_time, args.get("all_day").and_then(Value::as_bool)) {
         (_, Some(explicit)) => Some(explicit),
@@ -697,11 +717,12 @@ fn event_patch_from_args(tool: &str, args: &Value) -> Result<EventPatch, ToolErr
         end_time,
         all_day,
         color: None,
+        location: nullable_arg(args, "location"),
     };
     if patch.is_empty() {
         return Err(invalid(
             tool,
-            "give at least one field to change: title, notes, start, end or all_day",
+            "give at least one field to change: title, notes, start, end, all_day or location",
         ));
     }
     Ok(patch)
@@ -723,8 +744,9 @@ impl HostTool for UpdateEventTool {
         "Updating event[ {title}]"
     }
     fn description(&self) -> &'static str {
-        "Change an event (id from list_events): title, notes, start, end (null clears it) or \
-         all_day. A start given as a date alone makes it all-day. Only the fields you pass change."
+        "Change an event (id from list_events): title, notes (\"\" clears them), start, end, \
+         all_day or location; null clears end or location. A start given as a date alone makes \
+         it all-day. Only the fields you pass change."
     }
     fn schema(&self) -> Value {
         json!({
@@ -735,7 +757,8 @@ impl HostTool for UpdateEventTool {
                 "notes": {"type": "string", "maxLength": 4000},
                 "start": {"type": "string", "minLength": 10, "maxLength": 40},
                 "end": {"type": ["string", "null"], "maxLength": 40},
-                "all_day": {"type": "boolean"}
+                "all_day": {"type": "boolean"},
+                "location": {"type": ["string", "null"], "maxLength": 500}
             },
             "required": ["event_id"],
             "additionalProperties": false

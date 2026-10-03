@@ -68,6 +68,7 @@ fn to_rag_event(event: &CalendarEvent) -> shodh_rag::agent::calendar::CalendarEv
         end_time: event.end_time.clone(),
         all_day: event.all_day,
         color: event.color.clone(),
+        location: event.location.clone(),
         source: event.source.clone(),
         source_ref: event.source_ref.clone(),
         created_at: event.created_at.clone(),
@@ -174,6 +175,9 @@ pub async fn create_task(
     Ok(task)
 }
 
+/// Change a task. A field left out keeps its value; `clear` names the
+/// optional fields to empty (`due_date`, `project`, `description`,
+/// `reminder`), since an absent value can never mean "remove".
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri passes each field as its own argument.
 pub async fn update_task(
@@ -187,6 +191,7 @@ pub async fn update_task(
     tags: Option<Vec<String>>,
     project: Option<String>,
     reminder: Option<String>,
+    clear: Option<Vec<String>>,
 ) -> Result<TodoItem, String> {
     let patch = TaskPatch {
         title,
@@ -195,10 +200,12 @@ pub async fn update_task(
         priority,
         status,
         tags,
-        project,
-        reminder,
+        project: project.map(Some),
+        reminder: reminder.map(Some),
         subtasks: None,
-    };
+    }
+    .clearing(&clear.unwrap_or_default())
+    .map_err(|e| e.to_string())?;
     let (_, updated, _) = store(&app)?
         .update(|d| d.patch_task(&id, &patch))
         .map_err(|e| e.to_string())?;
@@ -246,6 +253,20 @@ pub async fn toggle_subtask(
 }
 
 #[tauri::command]
+pub async fn rename_subtask(
+    app: AppHandle,
+    task_id: String,
+    subtask_id: String,
+    title: String,
+) -> Result<TodoItem, String> {
+    let updated = store(&app)?
+        .update(|d| d.rename_subtask(&task_id, &subtask_id, &title))
+        .map_err(|e| e.to_string())?;
+    report(&app, CalendarChange::TaskSaved(updated.clone()));
+    Ok(updated)
+}
+
+#[tauri::command]
 pub async fn delete_subtask(
     app: AppHandle,
     task_id: String,
@@ -277,6 +298,7 @@ pub async fn create_event(
     color: Option<String>,
     source: Option<String>,
     source_ref: Option<String>,
+    location: Option<String>,
 ) -> Result<CalendarEvent, String> {
     let event = store(&app)?
         .update(|d| {
@@ -287,6 +309,7 @@ pub async fn create_event(
                 all_day,
                 description,
                 color,
+                location,
                 source,
                 source_ref,
             })
@@ -297,6 +320,8 @@ pub async fn create_event(
     Ok(event)
 }
 
+/// Change an event. A field left out keeps its value; `clear` names the
+/// optional fields to empty (`description`, `end_time`, `location`).
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri passes each field as its own argument.
 pub async fn update_event(
@@ -308,6 +333,8 @@ pub async fn update_event(
     end_time: Option<String>,
     all_day: Option<bool>,
     color: Option<String>,
+    location: Option<String>,
+    clear: Option<Vec<String>>,
 ) -> Result<CalendarEvent, String> {
     let patch = EventPatch {
         title,
@@ -316,7 +343,10 @@ pub async fn update_event(
         end_time: end_time.map(Some),
         all_day,
         color,
-    };
+        location: location.map(Some),
+    }
+    .clearing(&clear.unwrap_or_default())
+    .map_err(|e| e.to_string())?;
     let (_, updated, _) = store(&app)?
         .update(|d| d.patch_event(&id, &patch))
         .map_err(|e| e.to_string())?;

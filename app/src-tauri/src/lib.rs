@@ -20,6 +20,7 @@ mod llm_response;
 mod mcp;
 mod mcp_commands;
 mod rag_commands;
+mod reminders;
 mod search_history;
 mod search_models_commands;
 mod smart_templates;
@@ -147,6 +148,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // Get app data directory for persistent storage. Without it
             // nothing can be stored, so this is the one fatal setup error.
@@ -254,6 +256,9 @@ pub fn run() {
             });
 
             app.manage(IndexingState::default());
+            // Task reminders: native notifications while the app runs.
+            app.manage(reminders::ReminderState::default());
+            reminders::spawn(app.handle().clone());
             app.manage(agent_session_commands::AgentSessions::default());
             let analytics_path = app_data_dir.join("analytics.json");
             app.manage(AnalyticsState::load_or_default(&analytics_path));
@@ -589,11 +594,16 @@ pub fn run() {
             calendar_commands::delete_task,
             calendar_commands::add_subtask,
             calendar_commands::toggle_subtask,
+            calendar_commands::rename_subtask,
             calendar_commands::delete_subtask,
             calendar_commands::load_events,
             calendar_commands::create_event,
             calendar_commands::update_event,
             calendar_commands::delete_event,
+            // Task reminders
+            reminders::snooze_reminder,
+            reminders::list_missed_reminders,
+            reminders::dismiss_missed_reminders,
         ])
         .build(tauri::generate_context!());
 

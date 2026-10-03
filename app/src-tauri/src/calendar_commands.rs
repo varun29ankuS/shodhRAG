@@ -2,7 +2,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 use crate::rag_commands::RagState;
@@ -119,8 +119,16 @@ fn write_calendar(app: &AppHandle, data: &CalendarDataFile) -> Result<(), String
         .map_err(|e| format!("Failed to serialize calendar data: {}", e))?;
     fs::write(&tmp_path, &json).map_err(|e| format!("Failed to write temp file: {}", e))?;
     fs::rename(&tmp_path, &path).map_err(|e| format!("Failed to rename temp file: {}", e))?;
+    // Every task/event change (UI, agent tools, subtasks) goes through here, so open
+    // views refresh from one signal instead of each caller remembering to notify.
+    if let Err(e) = app.emit(CALENDAR_CHANGED_EVENT, ()) {
+        tracing::warn!("Failed to emit {}: {}", CALENDAR_CHANGED_EVENT, e);
+    }
     Ok(())
 }
+
+/// Emitted after calendar data is written; listeners re-read tasks and events.
+pub const CALENDAR_CHANGED_EVENT: &str = "calendar-changed";
 
 // ── RAG Indexing Helpers ─────────────────────────────────────────
 //

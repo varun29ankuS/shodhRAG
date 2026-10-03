@@ -43,7 +43,7 @@ export function ReminderField({
   const stored = reminderChoice(task.reminder, task.dueDate);
   // "Custom" stays open while the user picks a time, before anything is saved.
   const [customOpen, setCustomOpen] = useState(false);
-  const choice = customOpen && stored === 'none' ? 'custom' : stored;
+  const choice = customOpen ? 'custom' : stored;
   const hasDue = REMINDER_PRESETS.some(p => presetReminder(task.dueDate, p) !== null);
   const status = statusText(task);
   const Icon = reminderStatus(task) === 'rang' ? BellOff : reminderStatus(task) === 'none' ? Bell : BellRing;

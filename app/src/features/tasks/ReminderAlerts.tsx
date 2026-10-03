@@ -50,7 +50,7 @@ function ReminderToast({ id, reminder }: { id: string | number; reminder: DueRem
   };
   return (
     <div
-      role="alertdialog"
+      role="alert"
       aria-labelledby={`${id}-title`}
       aria-describedby={`${id}-when`}
       className="w-[356px] max-w-full flex flex-col gap-2 p-3 rounded-[10px] border border-shodh-border-strong bg-shodh-surface text-shodh-text shadow-[0_8px_24px_rgba(0,0,0,0.3)]"
@@ -112,7 +112,7 @@ function MissedToast({ reminders }: { reminders: DueReminder[] }) {
   const more = reminders.length - shown.length;
   return (
     <div
-      role="alertdialog"
+      role="alert"
       aria-labelledby="reminders-missed-title"
       className="w-[356px] max-w-full flex flex-col gap-2 p-3 rounded-[10px] border border-shodh-border-strong bg-shodh-surface text-shodh-text shadow-[0_8px_24px_rgba(0,0,0,0.3)]"
     >

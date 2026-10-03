@@ -220,6 +220,11 @@ impl SearchModels {
     }
 }
 
+/// The engine's cross-encoder, shared so other rankers use the loaded model
+/// without taking the engine lock (indexing holds it for long stretches).
+/// `None` until the search models are attached, or when reranking is off.
+pub type SharedReranker = Arc<parking_lot::RwLock<Option<CrossEncoderReranker>>>;
+
 pub struct RAGEngine {
     store: LanceStore,
     text_search: TextSearch,
@@ -231,7 +236,9 @@ pub struct RAGEngine {
     chunker: TextChunker,
     parser: DocumentParser,
     config: RAGConfig,
-    reranker: Option<CrossEncoderReranker>,
+    /// The cross-encoder, shared with other rankers (web and paper results)
+    /// through [`Self::reranker_handle`]; filled when models are attached.
+    reranker: SharedReranker,
 }
 
 impl RAGEngine {
@@ -288,7 +295,7 @@ impl RAGEngine {
             chunker,
             parser: DocumentParser::new(),
             config,
-            reranker: None,
+            reranker: SharedReranker::default(),
         };
         if let Some(models) = models {
             if let Err(e) = engine.attach_search_models(models) {
@@ -314,6 +321,13 @@ impl RAGEngine {
         Ok(engine)
     }
 
+    /// The shared slot holding the cross-encoder once it is loaded. The
+    /// handle stays valid for the engine's life; read it at use time, since
+    /// models attached later fill the same slot.
+    pub fn reranker_handle(&self) -> SharedReranker {
+        self.reranker.clone()
+    }
+
     /// Whether the search models are loaded (search and indexing work).
     pub fn has_search_models(&self) -> bool {
         self.embeddings.is_some()
@@ -330,10 +344,10 @@ impl RAGEngine {
             );
         }
         self.embeddings = Some(models.embeddings);
-        self.reranker = models.reranker;
+        *self.reranker.write() = models.reranker;
         tracing::info!(
             dimension,
-            reranker = self.reranker.is_some(),
+            reranker = self.reranker.read().is_some(),
             "Search models attached"
         );
         Ok(())
@@ -820,7 +834,8 @@ impl RAGEngine {
         Self::deduplicate_results(&mut results, 0.75);
 
         // Apply cross-encoder reranking if available (before MMR so diversity uses final scores)
-        if let Some(reranker) = &self.reranker {
+        let reranker = self.reranker.read().clone();
+        if let Some(reranker) = &reranker {
             if results.len() > 1 {
                 let candidates: Vec<(String, String)> = results
                     .iter()

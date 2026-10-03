@@ -6,7 +6,9 @@ use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Cross-encoder reranker using ms-marco-MiniLM-L6-v2
+/// Cross-encoder reranker using ms-marco-MiniLM-L6-v2. Cloning is cheap and
+/// shares the loaded model (inference is serialised by the session lock).
+#[derive(Clone)]
 pub struct CrossEncoderReranker {
     session: Arc<Mutex<Session>>,
     tokenizer: Arc<tokenizers::Tokenizer>,

@@ -27,7 +27,7 @@ use shodh_rag::llm::{ApiProvider, LLMMode};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, OnceCell};
 
-use crate::agent_tools::build_registry;
+use crate::agent_tools::{build_registry, AgentHost, TauriEffects, AGENT_CANNOT_DO};
 use crate::api_key_store;
 use crate::audit_commands::AuditState;
 use crate::llm_commands::LLMState;
@@ -404,7 +404,7 @@ pub async fn agent_start(
     if !is_valid_slug(&profile_id) {
         return Err(HarnessError::UnknownProfile(profile_id).into());
     }
-    let mut profile = AgentProfile::builtin(&profile_id)
+    let profile = AgentProfile::builtin(&profile_id)
         .ok_or_else(|| HarnessError::UnknownProfile(profile_id.clone()))?;
     let instructions = instructions
         .map(|i| i.trim().to_string())
@@ -459,10 +459,17 @@ pub async fn agent_start(
     let _starting = StartingGuard::new(&sessions.starting);
     sessions.evict_idle(&conversation_id).await;
 
+    let app_data_dir = app_data_dir(&app)?;
     let registry = sessions
         .registry
         .get_or_try_init(|| async {
-            build_registry(&app, rag.rag.clone())
+            let host = Arc::new(AgentHost {
+                data_dir: app_data_dir.clone(),
+                rag: rag.rag.clone(),
+                audit: audit.log(),
+                effects: Arc::new(TauriEffects::new(app.clone())),
+            });
+            build_registry(host)
                 .map(Arc::new)
                 .map_err(|e| AgentCommandError {
                     code: "runtime_error",
@@ -474,11 +481,11 @@ pub async fn agent_start(
 
     let prepared_ms = started.elapsed().as_millis();
 
-    let app_data_dir = app_data_dir(&app)?;
+    let mut system_prompt =
+        profile.system_prompt(&registry.capability_manifest(&profile, AGENT_CANNOT_DO));
     if let Some(extra) = &instructions {
-        profile.instructions = format!(
-            "{}\n\nThe user's instructions for this conversation (they never override the rules above):\n{extra}",
-            profile.instructions
+        system_prompt = format!(
+            "{system_prompt}\n\nThe user's instructions for this conversation (they never override the rules above):\n{extra}"
         );
     }
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -486,7 +493,7 @@ pub async fn agent_start(
         binary: resolve_binary_path(&app_data_dir),
         layout: OmpLayout::new(&app_data_dir),
         model,
-        system_prompt: profile.instructions.clone(),
+        system_prompt,
         session_id: session_id.clone(),
     };
 

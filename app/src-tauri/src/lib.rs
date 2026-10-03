@@ -33,6 +33,7 @@ mod window_commands;
 mod agent_session_commands;
 mod agent_tools;
 mod calendar_commands;
+mod calendar_store;
 mod conversation_commands;
 mod event_emitter;
 

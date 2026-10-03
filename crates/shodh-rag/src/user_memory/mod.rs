@@ -18,6 +18,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod guard;
+pub mod learn;
 mod recall;
 #[cfg(test)]
 mod tests;
@@ -261,6 +262,11 @@ impl MemoryService {
     /// The statement store.
     pub fn store(&self) -> &Arc<StatementStore> {
         &self.store
+    }
+
+    /// The audit log, if writes are audited.
+    pub fn audit_log(&self) -> Option<&Arc<AuditLog>> {
+        self.audit.as_ref()
     }
 
     /// The app version recorded as the user's extractor version.
@@ -611,8 +617,10 @@ impl MemoryService {
                     "extractor": origin.extractor.label(),
                     "approval": match &origin.authority {
                         WriteAuthority::UserApproval { step_id } => Some(step_id.clone()),
+                        WriteAuthority::LearnPolicy { proposal_id } => Some(proposal_id.clone()),
                         WriteAuthority::UserInterface => None,
                     },
+                    "authority": origin.authority.label(),
                     "via": actor.via,
                 }),
             );
@@ -624,7 +632,18 @@ impl MemoryService {
     }
 
     fn build_statement(&self, content: MemoryContent, origin: &Origin) -> MemoryResult<Statement> {
-        let now = self.store.now();
+        self.build_statement_at(content, origin, self.store.now())
+    }
+
+    /// The statement for `content`, extracted at `extracted_at` (a learned memory keeps
+    /// the time of the turn it came from, not the time it was accepted).
+    pub(crate) fn build_statement_at(
+        &self,
+        content: MemoryContent,
+        origin: &Origin,
+        extracted_at: DateTime<Utc>,
+    ) -> MemoryResult<Statement> {
+        let now = extracted_at;
         let (class, subject, mut properties, valid_from) = match content {
             MemoryContent::Note { text } => {
                 let text = text.trim().to_string();
@@ -686,8 +705,121 @@ impl MemoryService {
         })
     }
 
+    /// Stores a statement formulated by the learning pipeline (see [`learn`]), after
+    /// [`check_write_origin`]. A write under the user's automatic-learning policy
+    /// ([`WriteAuthority::LearnPolicy`]) is refused here when the statement is sensitive
+    /// ([`learn::sensitivity::classify`]), whatever the caller decided: sensitive memories
+    /// are only ever stored with the user's explicit approval. Audited as `memory_write`
+    /// with action `learn`.
+    pub async fn put_learned(
+        &self,
+        statement: Statement,
+        scope: Scope,
+        intent: PutIntent,
+        origin: &Origin,
+        actor: &Actor,
+    ) -> MemoryResult<RememberOutcome> {
+        check_write_origin(origin)?;
+        let ontology = self.store.ontology();
+        let valid = ontology
+            .validate(&statement)
+            .map_err(|v| MemoryError::Statement(StatementError::Invalid(v)))?;
+        if matches!(origin.authority, WriteAuthority::LearnPolicy { .. }) {
+            let reasons = learn::sensitivity::classify(ontology, &valid);
+            if !reasons.is_empty() {
+                return Err(MemoryError::Forbidden(format!(
+                    "sensitive memories ({}) are never stored automatically; they need the user's approval",
+                    reasons
+                        .iter()
+                        .map(|r| r.label())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+        }
+        let outcome = self.store.put(statement, scope.clone(), intent).await?;
+        self.after_write("learn", &outcome, &scope, origin, actor)
+            .await
+    }
+
+    /// Undoes a learned write: forgets the stored memory `id` and reopens what it
+    /// superseded. Refused when the memory changed since. Audited as `memory_write`.
+    pub async fn revert_learned(&self, id: &str, actor: &Actor) -> MemoryResult<Vec<String>> {
+        let target = self.memory_statement(id).await?;
+        let reopened = self.store.revert(id).await?;
+        self.audit_change(
+            actor,
+            "undo_learned",
+            &target,
+            json!({ "reopened": reopened }),
+        );
+        Ok(reopened)
+    }
+
+    /// Archives a current memory (soft and reversible: it is closed without a successor
+    /// and kept as history). Audited as `memory_write`.
+    pub async fn archive(&self, id: &str, actor: &Actor) -> MemoryResult<()> {
+        let target = self.memory_statement(id).await?;
+        self.store.archive(id).await?;
+        self.audit_change(actor, "archive", &target, json!({}));
+        Ok(())
+    }
+
+    /// Reopens an archived memory. Audited as `memory_write`.
+    pub async fn unarchive(&self, id: &str, actor: &Actor) -> MemoryResult<()> {
+        let target = self.memory_statement(id).await?;
+        self.store.unarchive(id).await?;
+        self.audit_change(actor, "unarchive", &target, json!({}));
+        Ok(())
+    }
+
+    /// Resolves a contradiction: memory `retire` is closed as superseded by `keep`.
+    /// Audited as `memory_write`.
+    pub async fn retire(&self, retire: &str, keep: &str, actor: &Actor) -> MemoryResult<()> {
+        let target = self.memory_statement(retire).await?;
+        self.memory_statement(keep).await?;
+        self.store.retire(retire, keep).await?;
+        self.audit_change(actor, "resolve_conflict", &target, json!({ "keep": keep }));
+        Ok(())
+    }
+
+    /// Undoes [`MemoryService::retire`]. Audited as `memory_write`.
+    pub async fn unretire(&self, retire: &str, keep: &str, actor: &Actor) -> MemoryResult<()> {
+        let target = self.memory_statement(retire).await?;
+        self.store.unretire(retire, keep).await?;
+        self.audit_change(
+            actor,
+            "undo_resolve_conflict",
+            &target,
+            json!({ "keep": keep }),
+        );
+        Ok(())
+    }
+
+    fn audit_change(
+        &self,
+        actor: &Actor,
+        action: &str,
+        target: &StoredStatement,
+        extra: JsonValue,
+    ) {
+        let mut payload = json!({
+            "action": action,
+            "id": target.id(),
+            "class": target.statement.class,
+            "scope": target.scope.as_key(),
+            "text": snippet(&target.text),
+            "extractor": "llm",
+            "via": actor.via,
+        });
+        if let (Some(map), JsonValue::Object(extra)) = (payload.as_object_mut(), extra) {
+            map.extend(extra);
+        }
+        self.audit(actor, AuditEventType::MemoryWrite, payload);
+    }
+
     /// A memory statement (not a document-derived statement) by id.
-    async fn memory_statement(&self, id: &str) -> MemoryResult<StoredStatement> {
+    pub(crate) async fn memory_statement(&self, id: &str) -> MemoryResult<StoredStatement> {
         let stored = self.store.get(id).await?;
         let source = stored
             .statement

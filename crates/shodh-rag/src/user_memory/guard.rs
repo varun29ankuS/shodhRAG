@@ -29,6 +29,26 @@ pub enum WriteAuthority {
         /// The approved step.
         step_id: String,
     },
+    /// The user turned on automatic learning (Settings → Memory → "Learn from
+    /// conversations: automatic") and this LLM-formulated statement from one of the user's
+    /// own turns met that policy: high confidence and not sensitive. Only the learning
+    /// pipeline writes with this authority, and the memory service re-checks sensitivity
+    /// before storing.
+    LearnPolicy {
+        /// The suggestion the write applies.
+        proposal_id: String,
+    },
+}
+
+impl WriteAuthority {
+    /// Stable name for the audit log.
+    pub fn label(&self) -> &'static str {
+        match self {
+            WriteAuthority::UserInterface => "user_interface",
+            WriteAuthority::UserApproval { .. } => "user_approval",
+            WriteAuthority::LearnPolicy { .. } => "learn_policy",
+        }
+    }
 }
 
 /// Where a memory comes from and who authorised it.
@@ -83,7 +103,8 @@ impl Origin {
 ///   document path, a URL or any other source;
 /// - Settings writes are the user's own (`UserInterface`, extractor `User`);
 /// - conversation writes need the user's approval of that exact write (an LLM-formulated
-///   statement included, which also needs a confidence).
+///   statement included, which also needs a confidence);
+/// - automatic learning writes only LLM-formulated statements from a conversation turn.
 pub fn check_write_origin(origin: &Origin) -> Result<(), MemoryError> {
     let forbidden = |reason: &str| Err(MemoryError::Forbidden(reason.to_string()));
     if matches!(
@@ -121,6 +142,14 @@ pub fn check_write_origin(origin: &Origin) -> Result<(), MemoryError> {
         }
         (WriteAuthority::UserApproval { .. }, _) => forbidden(
             "a memory proposed in a conversation must come from that conversation and be approved by the user",
+        ),
+        (WriteAuthority::LearnPolicy { proposal_id }, ExtractorKind::Llm)
+            if from_conversation && !proposal_id.trim().is_empty() =>
+        {
+            Ok(())
+        }
+        (WriteAuthority::LearnPolicy { .. }, _) => forbidden(
+            "automatic learning only stores statements an LLM formulated from the user's own conversation turn",
         ),
     }
 }
@@ -202,6 +231,27 @@ mod tests {
                 matches!(check_write_origin(&case), Err(MemoryError::Forbidden(_))),
                 "{case:?}"
             );
+        }
+        // Automatic learning: only LLM statements from a conversation turn.
+        let learned = |source: &str, extractor| {
+            origin(
+                source,
+                extractor,
+                WriteAuthority::LearnPolicy {
+                    proposal_id: "p1".into(),
+                },
+            )
+        };
+        assert!(
+            check_write_origin(&learned("conversation://c1/turn/r1", ExtractorKind::Llm)).is_ok()
+        );
+        for case in [
+            learned("conversation://c1/turn/r1", ExtractorKind::User),
+            learned(SETTINGS_SOURCE, ExtractorKind::Llm),
+            learned("https://example.com", ExtractorKind::Llm),
+            learned("conversation://c1/turn/r1", ExtractorKind::Rule),
+        ] {
+            assert!(check_write_origin(&case).is_err(), "{case:?}");
         }
         let mut bad_confidence = Origin::user_interface("1.0");
         bad_confidence.confidence = f64::NAN;

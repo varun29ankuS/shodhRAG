@@ -403,7 +403,7 @@ function AppSplitView() {
             appendMessage({
               id: newNoticeId(),
               role: 'assistant',
-              content: `📸 **[FILE PICKER] Image uploaded and processed successfully!**\n\n**Extracted Text (${wordCount} words, ${(confidence * 100).toFixed(0)}% confidence):**\n\n${extractedText}\n\n*The text has been indexed and is now searchable.*`,
+              content: `📸 **[FILE PICKER] Image uploaded and processed successfully!**\n\n**Extracted Text (${wordCount} words, ${(confidence * 100).toFixed(0)}% confidence):**\n\n${extractedText}`,
               timestamp: new Date().toISOString(),
               image: imageData
             });
@@ -482,7 +482,7 @@ function AppSplitView() {
                     appendMessage({
                       id: newNoticeId(),
                       role: 'assistant',
-                      content: `📸 **Image processed successfully!**\n\n**Extracted Text (${wordCount} words, ${(confidence * 100).toFixed(0)}% confidence):**\n\n${extractedText}\n\n*The text has been indexed and is now searchable.*`,
+                      content: `📸 **Image processed successfully!**\n\n**Extracted Text (${wordCount} words, ${(confidence * 100).toFixed(0)}% confidence):**\n\n${extractedText}`,
                       timestamp: new Date().toISOString(),
                       image: imageData
                     });
@@ -685,7 +685,7 @@ function AppSplitView() {
               appendMessage({
                 id: newNoticeId(),
                 role: 'assistant',
-                content: `📸 **Image pasted and processed successfully!**\n\n**Extracted Text (${wordCount} words, ${(confidence * 100).toFixed(0)}% confidence):**\n\n${extractedText}\n\n*The text has been indexed and is now searchable.*`,
+                content: `📸 **Image pasted and processed successfully!**\n\n**Extracted Text (${wordCount} words, ${(confidence * 100).toFixed(0)}% confidence):**\n\n${extractedText}`,
                 timestamp: new Date().toISOString(),
                 image: base64Data
               });

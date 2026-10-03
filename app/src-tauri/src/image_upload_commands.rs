@@ -104,7 +104,6 @@ async fn run_ocr(_image_bytes: &[u8]) -> Result<(String, f32), String> {
 
 // ─── Commands ───────────────────────────────────────────────────────────────
 
-/// Process an image from base64 data (paste/screenshot)
 /// Encode raw RGBA pixels as a `data:image/png;base64,...` URI.
 fn rgba_to_png_data_uri(rgba: Vec<u8>, width: u32, height: u32) -> Result<String, String> {
     use base64::Engine as _;
@@ -121,11 +120,22 @@ fn rgba_to_png_data_uri(rgba: Vec<u8>, width: u32, height: u32) -> Result<String
     ))
 }
 
-/// The image on the system clipboard as a PNG data URI, or `None` when the
-/// clipboard holds no image (e.g. text). Used by the Ctrl+V image paste.
+/// The image on the system clipboard as a PNG data URI, or `None` when there
+/// is no image to process. Used by the global Ctrl+V image paste, which runs
+/// on every paste: copies from Excel, Word or a browser put a bitmap next to
+/// their text, so a clipboard that also holds text is treated as a text
+/// paste and left to the focused input.
 #[tauri::command]
 pub async fn read_clipboard_image(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_clipboard_manager::ClipboardExt;
+
+    if app
+        .clipboard()
+        .read_text()
+        .is_ok_and(|text| !text.trim().is_empty())
+    {
+        return Ok(None);
+    }
 
     let (rgba, width, height) = match app.clipboard().read_image() {
         Ok(image) => (image.rgba().to_vec(), image.width(), image.height()),
@@ -144,6 +154,7 @@ pub async fn read_clipboard_image(app: tauri::AppHandle) -> Result<Option<String
         .map(Some)
 }
 
+/// Process an image from base64 data (paste/screenshot)
 #[tauri::command]
 pub async fn process_image_from_base64(
     image_data: String,

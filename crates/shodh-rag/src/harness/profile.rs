@@ -75,8 +75,19 @@ pub const CORE_TOOLS: [&str; 11] = [
     web::SEARCH_PAPERS,
 ];
 
-/// Default per-answer tool-call budget (spec §7.1).
-pub const DEFAULT_MAX_TOOL_CALLS: u32 = 8;
+/// Per-answer tool-call budget of the assistant profile (`update_plan` is
+/// not counted).
+///
+/// Why 24: the longest flow the assistant is built for is research, e.g.
+/// search_papers (1) -> create_folder (1) -> download_file for 5 to 8 papers
+/// -> list_directory to check them (1) -> search_documents over the new
+/// files (2 to 3) -> show_source / open_document (1 to 2): 11 to 16 calls,
+/// plus room for a retried search or a failed download. The earlier 8 cut
+/// such a flow off after the third download. The per-call safeguards still
+/// bound one answer: every write asks for approval, each result reaching
+/// the model is capped at `MAX_MODEL_OUTPUT_CHARS` (24 000 characters),
+/// downloads have their own deadline, and the user can interrupt.
+pub const DEFAULT_MAX_TOOL_CALLS: u32 = 24;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentProfile {
@@ -199,6 +210,7 @@ mod tests {
         assert!(p.allows("remove_source"));
         assert!(!p.allows("bash"));
         assert!(!p.auto_approve_writes);
+        assert_eq!(p.max_tool_calls, DEFAULT_MAX_TOOL_CALLS);
         assert_eq!(AgentProfile::builtin("assistant"), Some(p));
         assert_eq!(AgentProfile::builtin("../etc"), None);
     }

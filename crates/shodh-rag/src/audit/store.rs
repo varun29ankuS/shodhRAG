@@ -38,8 +38,9 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 
 /// Ordered schema migrations of `shodh.db`. Never edit an applied entry; append a new one.
-/// The database is shared: the audit chain (1) and the dynamics of typed statements (2) use
-/// one version sequence, so every component that opens it sees the same schema.
+/// The database is shared: the audit chain (1), the dynamics of typed statements (2) and the
+/// generated-visuals gallery (3) use one version sequence, so every component that opens it
+/// sees the same schema.
 const MIGRATIONS: &[(i64, &str)] = &[
     (
         1,
@@ -91,6 +92,70 @@ const MIGRATIONS: &[(i64, &str)] = &[
             CHECK (from_id < to_id)
         );
         CREATE INDEX statement_links_to ON statement_links(to_id);",
+    ),
+    (
+        3,
+        // Visuals generated in answers (diagrams, charts, sketches, plots, simulations,
+        // equations, tables), kept so they can be found, refined and reused. A refinement is
+        // a new row of the same chain (`root_id`, `version`), never an edit of an earlier one;
+        // title, pin, note and deletion belong to the whole chain. Captures of one answer are
+        // deduplicated by content hash (`generated_visuals_origin`); the index ignores
+        // deletion so a deleted visual is not captured again. `generated_visuals_fts` is an
+        // external-content FTS5 index over title, note and source, kept by triggers.
+        "CREATE TABLE generated_visuals (
+            seq INTEGER PRIMARY KEY,
+            id TEXT NOT NULL UNIQUE,
+            root_id TEXT NOT NULL,
+            parent_id TEXT NULL,
+            version INTEGER NOT NULL CHECK (version >= 1),
+            conversation_id TEXT NOT NULL,
+            message_id TEXT NULL,
+            thread_id TEXT NULL,
+            turn_id TEXT NULL,
+            kind TEXT NOT NULL CHECK (kind IN
+                ('mermaid', 'chart', 'svg', 'plot', 'simulation', 'equation', 'table')),
+            title TEXT NOT NULL,
+            source TEXT NOT NULL,
+            params_json TEXT NOT NULL DEFAULT '{}',
+            content_hash TEXT NOT NULL,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            note TEXT NOT NULL DEFAULT '',
+            instruction TEXT NULL,
+            created_by TEXT NOT NULL CHECK (created_by IN ('capture', 'user', 'agent')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT NULL,
+            UNIQUE (root_id, version)
+        );
+        CREATE UNIQUE INDEX generated_visuals_origin ON generated_visuals(
+            conversation_id, IFNULL(message_id, ''), IFNULL(thread_id, ''), IFNULL(turn_id, ''),
+            content_hash
+        ) WHERE parent_id IS NULL;
+        CREATE INDEX generated_visuals_root ON generated_visuals(root_id, version);
+        CREATE INDEX generated_visuals_conversation ON generated_visuals(conversation_id);
+        CREATE VIRTUAL TABLE generated_visuals_fts USING fts5(
+            title, note, source,
+            content = 'generated_visuals', content_rowid = 'seq', tokenize = 'unicode61'
+        );
+        CREATE TRIGGER generated_visuals_fts_insert AFTER INSERT ON generated_visuals BEGIN
+            INSERT INTO generated_visuals_fts(rowid, title, note, source)
+            VALUES (new.seq, new.title, new.note, new.source);
+        END;
+        CREATE TRIGGER generated_visuals_fts_delete AFTER DELETE ON generated_visuals BEGIN
+            INSERT INTO generated_visuals_fts(generated_visuals_fts, rowid, title, note, source)
+            VALUES ('delete', old.seq, old.title, old.note, old.source);
+        END;
+        CREATE TRIGGER generated_visuals_fts_update AFTER UPDATE OF title, note, source
+        ON generated_visuals BEGIN
+            INSERT INTO generated_visuals_fts(generated_visuals_fts, rowid, title, note, source)
+            VALUES ('delete', old.seq, old.title, old.note, old.source);
+            INSERT INTO generated_visuals_fts(rowid, title, note, source)
+            VALUES (new.seq, new.title, new.note, new.source);
+        END;
+        CREATE TABLE visual_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );",
     ),
 ];
 
@@ -1406,6 +1471,9 @@ mod tests {
             .execute_batch(
                 "DROP TABLE statement_dynamics;
                  DROP TABLE statement_links;
+                 DROP TABLE generated_visuals_fts;
+                 DROP TABLE generated_visuals;
+                 DROP TABLE visual_settings;
                  DELETE FROM schema_version WHERE version > 1;",
             )
             .unwrap();
@@ -1415,7 +1483,7 @@ mod tests {
         let version: i64 = shared
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, latest_schema_version());
         let tables: i64 = shared
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type = 'table'                  AND name IN ('statement_dynamics', 'statement_links')",
@@ -1429,7 +1497,7 @@ mod tests {
         let versions: i64 = raw(&dir)
             .query_row("SELECT count(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(versions, 2);
+        assert_eq!(versions, latest_schema_version());
         let report = log.verify().unwrap();
         assert!(report.ok, "{report:?}");
         assert_eq!(report.checked, 3);

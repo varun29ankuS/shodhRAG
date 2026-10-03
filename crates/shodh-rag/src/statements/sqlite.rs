@@ -1,4 +1,4 @@
-//! Statement dynamics and Hebbian links in `shodh.db` (schema version 2).
+//! Statement dynamics and Hebbian links in `shodh.db` (introduced in schema version 2).
 //!
 //! Strength is stored at an anchor time and decayed lazily by the reader, so rows change
 //! only when something happens to a statement (written, used, pinned), never on read.

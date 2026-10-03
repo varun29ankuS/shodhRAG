@@ -10,7 +10,7 @@
 //!   the validity interval
 //!   (`valid_from`, `valid_to`, `expires_at`, `forgotten_at`). Rows are appended; only the
 //!   validity columns are ever updated (supersede and forget), never the content.
-//! - **SQLite** `shodh.db` (schema version 2, next to the audit log): `statement_dynamics`
+//! - **SQLite** `shodh.db` (schema version 2 and later, next to the audit log): `statement_dynamics`
 //!   (strength at an anchor time, importance, use count, last use, pin) and
 //!   `statement_links` (Hebbian co-activation weights). Decay is computed at read time from
 //!   the class [`shodh_ontology::Dynamics`], so reads never rewrite rows.

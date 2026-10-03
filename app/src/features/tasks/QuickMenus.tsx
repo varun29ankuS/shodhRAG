@@ -96,7 +96,9 @@ export function PriorityMenu({
       e.stopPropagation();
       close(true);
     } else if (e.key === 'Tab') {
-      close(false);
+      // The menu lives in a body-level portal; Tab would leave the page order.
+      e.preventDefault();
+      close(true);
     }
   };
 
@@ -130,7 +132,7 @@ export function PriorityMenu({
           onKeyDown={onMenuKeyDown}
           onClick={e => e.stopPropagation()}
           className={POPOVER}
-          style={pos ? { left: pos.left, top: pos.top } : { visibility: 'hidden', left: 0, top: 0 }}
+          style={pos ? { left: pos.left, top: pos.top } : { opacity: 0, left: 0, top: 0 }}
         >
           {PRIORITIES.map(p => (
             <button
@@ -240,7 +242,7 @@ export function DueMenu({
             }
           }}
           className={cn(POPOVER, 'w-[220px]')}
-          style={pos ? { left: pos.left, top: pos.top } : { visibility: 'hidden', left: 0, top: 0 }}
+          style={pos ? { left: pos.left, top: pos.top } : { opacity: 0, left: 0, top: 0 }}
         >
           {[
             { label: 'Today', days: 0 },

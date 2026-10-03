@@ -116,8 +116,11 @@ function SubtaskList({ task }: { task: TodoItem }) {
           placeholder="Add a subtask"
           onChange={e => setDraft(e.target.value)}
           onKeyDown={e => {
-            if (e.key === 'Escape' && draft) {
+            // The sheet ignores Esc from inputs, so step out of the field here
+            // (the next Esc closes the sheet).
+            if (e.key === 'Escape') {
               setDraft('');
+              e.currentTarget.closest<HTMLElement>('[role="dialog"]')?.focus();
             }
           }}
           className={cn(INLINE_INPUT, 'h-8 text-[13px] px-1.5')}

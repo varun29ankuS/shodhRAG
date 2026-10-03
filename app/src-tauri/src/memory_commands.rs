@@ -170,6 +170,10 @@ pub async fn recall_for_run(
     );
     match service.recall(&request, actor).await {
         Ok(recalled) => render_injection(&recalled, MAX_INJECTION_CHARS),
+        Err(MemoryError::Statement(StatementError::EmbeddingUnavailable(_))) => {
+            tracing::debug!(target: "shodh::memory", "search models not installed; no memories recalled");
+            None
+        }
         Err(e) => {
             tracing::warn!(target: "shodh::memory", error = %e, "memory recall failed; nothing injected");
             None

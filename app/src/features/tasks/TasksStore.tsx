@@ -33,6 +33,14 @@ export interface NewTaskInput {
   project?: string | null;
 }
 
+export interface NewEventInput {
+  title: string;
+  /** Stored moment: a day key for all-day events, else a local date-time. */
+  startTime: string;
+  endTime?: string | null;
+  allDay: boolean;
+}
+
 type Detail = { kind: 'task'; id: string } | { kind: 'event'; id: string } | null;
 
 interface TasksStoreValue {
@@ -42,6 +50,7 @@ interface TasksStoreValue {
   error: string | null;
   refresh: () => Promise<void>;
   createTask: (input: NewTaskInput) => Promise<TodoItem | null>;
+  createEvent: (input: NewEventInput) => Promise<CalendarEvent | null>;
   /** Resolves true when saved (or nothing changed), false when rolled back. */
   updateTask: (id: string, patch: TaskPatch) => Promise<boolean>;
   /** Hides the task at once; it is deleted when the undo window ends. */
@@ -202,6 +211,24 @@ export function TasksStoreProvider({ children }: { children: React.ReactNode }) 
     }
   }, []);
 
+  const createEvent = useCallback(async (input: NewEventInput): Promise<CalendarEvent | null> => {
+    const args: Record<string, unknown> = {
+      title: input.title.trim(),
+      startTime: input.startTime,
+      allDay: input.allDay,
+      source: 'user',
+    };
+    if (input.endTime) args.endTime = input.endTime;
+    try {
+      const event = await invoke<CalendarEvent>('create_event', args);
+      dispatch({ type: 'insertEvent', event });
+      return event;
+    } catch (err) {
+      notify.error('Could not add the event', { description: errorText(err) });
+      return null;
+    }
+  }, []);
+
   const addSubtask = useCallback(async (taskId: string, title: string): Promise<boolean> => {
     const current = latest.current.tasks.find(t => t.id === taskId);
     const text = title.trim();
@@ -353,6 +380,7 @@ export function TasksStoreProvider({ children }: { children: React.ReactNode }) 
     error,
     refresh,
     createTask,
+    createEvent,
     updateTask,
     deleteTask,
     addSubtask,
@@ -365,7 +393,7 @@ export function TasksStoreProvider({ children }: { children: React.ReactNode }) 
     detailTask,
     detailEvent,
     closeDetail,
-  }), [tasks, events, loading, error, refresh, createTask, updateTask, deleteTask, addSubtask, toggleSubtask, deleteSubtask, updateEvent, deleteEvent, openTask, openEvent, detailTask, detailEvent, closeDetail]);
+  }), [tasks, events, loading, error, refresh, createTask, createEvent, updateTask, deleteTask, addSubtask, toggleSubtask, deleteSubtask, updateEvent, deleteEvent, openTask, openEvent, detailTask, detailEvent, closeDetail]);
 
   return <TasksStoreContext.Provider value={value}>{children}</TasksStoreContext.Provider>;
 }

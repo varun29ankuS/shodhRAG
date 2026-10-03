@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Bot, Check, ChevronLeft, ChevronRight, GripVertical, RotateCcw } from 'lucide-react';
+import { AlertCircle, Bot, Check, ChevronLeft, ChevronRight, GripVertical, Plus, RotateCcw } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { addDays, dayKey, groupByDay, monthGrid } from './calendarGrid';
 import type { GridDay } from './calendarGrid';
-import { parseMoment, rescheduleTo, storedDayKey, storedTime } from './dueDate';
+import { fromInputs, parseMoment, rescheduleTo, storedDayKey, storedTime } from './dueDate';
 import { useTasksStore } from './TasksStore';
 import { isDone } from './types';
 import type { CalendarEvent as CalendarEntry, TodoItem as CalendarTask } from './types';
@@ -128,6 +128,107 @@ function useTaskDrag(onDrop: (taskId: string, toDay: string) => void) {
  * editing. Tasks can be dragged to another day (the detail sheet's due date
  * is the keyboard route).
  */
+type ComposerKind = 'task' | 'event';
+
+/**
+ * Adds a task due on, or an event on, the selected day. Events default to
+ * 09:00–10:00; "All day" stores day-only start/end.
+ */
+function DayComposer({ dayKeyValue, inputRef }: { dayKeyValue: string; inputRef: React.RefObject<HTMLInputElement> }) {
+  const { createTask, createEvent } = useTasksStore();
+  const [kind, setKind] = useState<ComposerKind>('task');
+  const [title, setTitle] = useState('');
+  const [allDay, setAllDay] = useState(false);
+  const [start, setStart] = useState('09:00');
+  const [end, setEnd] = useState('10:00');
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = title.trim();
+    if (!text || busy) return;
+    setProblem(null);
+    let ok = false;
+    setBusy(true);
+    if (kind === 'task') {
+      ok = (await createTask({ title: text, dueDate: fromInputs(dayKeyValue, '') })) !== null;
+    } else {
+      const startTime = fromInputs(dayKeyValue, allDay ? '' : start);
+      const endTime = allDay ? null : fromInputs(dayKeyValue, end);
+      if (!startTime || (!allDay && !endTime)) {
+        setProblem('Enter a valid start and end time.');
+      } else if (!allDay && endTime && (storedTime(endTime) ?? 0) <= (storedTime(startTime) ?? 0)) {
+        setProblem('The event must end after it starts.');
+      } else {
+        ok = (await createEvent({ title: text, startTime, endTime, allDay })) !== null;
+      }
+    }
+    setBusy(false);
+    if (ok) setTitle('');
+    inputRef.current?.focus();
+  };
+
+  const control = 'h-8 rounded-lg border border-shodh-border bg-shodh-surface px-2 text-[12.5px] text-shodh-text hover:border-shodh-border-strong focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+  const segment = (value: ComposerKind, label: string) => (
+    <button
+      type="button"
+      aria-pressed={kind === value}
+      onClick={() => { setKind(value); setProblem(null); }}
+      className={cn(
+        'flex-1 h-7 rounded-md text-[12px] transition-colors duration-micro',
+        kind === value ? 'bg-shodh-surface text-shodh-text shadow-sm' : 'text-shodh-text-muted hover:text-shodh-text',
+        FOCUS_RING,
+      )}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <form onSubmit={submit} aria-label={kind === 'task' ? 'Add a task for this day' : 'Add an event on this day'} className="shrink-0 flex flex-col gap-2 p-2.5 mb-4 rounded-xl border border-shodh-border bg-shodh-raised">
+      <div className="flex gap-1 p-0.5 rounded-lg bg-shodh-raised-2" role="group" aria-label="What to add">
+        {segment('task', 'Task')}
+        {segment('event', 'Event')}
+      </div>
+      <input
+        ref={inputRef}
+        type="text"
+        value={title}
+        onChange={e => setTitle(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Escape' && title) { e.preventDefault(); setTitle(''); } }}
+        placeholder={kind === 'task' ? 'Task due this day' : 'Event title'}
+        aria-label={kind === 'task' ? 'Task title' : 'Event title'}
+        className={cn(control, 'w-full')}
+      />
+      {kind === 'event' && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <label className="inline-flex items-center gap-1.5 text-[12px] text-shodh-text-secondary">
+            <input type="checkbox" checked={allDay} onChange={e => setAllDay(e.target.checked)} className="accent-[var(--c-accent)]" />
+            All day
+          </label>
+          {!allDay && (
+            <>
+              <input type="time" aria-label="Starts" value={start} onChange={e => setStart(e.target.value)} className={cn(control, 'w-[6.5rem] tabular-nums')} />
+              <span className="text-[12px] text-shodh-text-faint" aria-hidden="true">–</span>
+              <input type="time" aria-label="Ends" value={end} onChange={e => setEnd(e.target.value)} className={cn(control, 'w-[6.5rem] tabular-nums')} />
+            </>
+          )}
+        </div>
+      )}
+      {problem && <p role="alert" className="text-[12px] text-shodh-error">{problem}</p>}
+      <button
+        type="submit"
+        disabled={!title.trim() || busy}
+        className={cn('h-8 rounded-lg bg-shodh-accent text-shodh-on-accent text-[12.5px] font-medium hover:bg-shodh-accent-hover disabled:opacity-50 transition-colors duration-micro inline-flex items-center justify-center gap-1.5', FOCUS_RING)}
+      >
+        <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+        {kind === 'task' ? 'Add task' : 'Add event'}
+      </button>
+    </form>
+  );
+}
+
 export default function TasksCalendar() {
   const { tasks, events, loading, error, refresh, updateTask, openTask, openEvent } = useTasksStore();
   const [announcement, setAnnouncement] = useState('');
@@ -137,6 +238,7 @@ export default function TasksCalendar() {
     return { year: now.getFullYear(), month: now.getMonth() };
   });
   const gridRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLInputElement>(null);
   const focusAfterRender = useRef(false);
 
   const reschedule = useCallback((taskId: string, toDay: string) => {
@@ -200,6 +302,10 @@ export default function TasksCalendar() {
     } else if (e.key === 'End') {
       e.preventDefault();
       select(addDays(selected, 6 - selected.getDay()), true);
+    } else if (e.key === 'Enter' || e.key === 'n') {
+      // Enter / N on a day: add something to it.
+      e.preventDefault();
+      composerRef.current?.focus();
     }
   };
 
@@ -282,6 +388,7 @@ export default function TasksCalendar() {
                   isDropTarget={drag !== null && drag.overDay === day.key && drag.fromDay !== day.key}
                   onTaskPointerDown={startDrag}
                   onSelect={() => { if (!suppressClick.current) select(day.date, false); }}
+                  onAdd={() => { select(day.date, false); window.requestAnimationFrame(() => composerRef.current?.focus()); }}
                 />
               ))}
             </div>
@@ -293,10 +400,11 @@ export default function TasksCalendar() {
         <h2 id="tasks-calendar-day" className="text-[15px] font-semibold mb-3 h-8 flex items-center">
           {selectedLabel}
         </h2>
+        <DayComposer key={selectedKey} dayKeyValue={selectedKey} inputRef={composerRef} />
         <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin flex flex-col gap-4">
           {dayEvents.length === 0 && dayTasks.length === 0 ? (
             <p className="text-[12.5px] text-shodh-text-faint">
-              Nothing on this day. Ask Shodh to schedule something, or add a task with a due date from the list view.
+              Nothing on this day yet. Double-click a day (or press Enter on it) to add something, or ask Shodh to schedule it.
             </p>
           ) : null}
           {dayTasks.length > 0 && (
@@ -397,6 +505,7 @@ function DayCell({
   isDropTarget,
   onTaskPointerDown,
   onSelect,
+  onAdd,
 }: {
   day: GridDay;
   loading: boolean;
@@ -407,6 +516,7 @@ function DayCell({
   isDropTarget: boolean;
   onTaskPointerDown: (e: React.PointerEvent, task: CalendarTask) => void;
   onSelect: () => void;
+  onAdd: () => void;
 }) {
   const chips = [
     ...events.map(e => {
@@ -430,6 +540,7 @@ function DayCell({
         data-day={day.key}
         tabIndex={isSelected ? 0 : -1}
         onClick={onSelect}
+        onDoubleClick={onAdd}
         aria-label={`${dateLabel}${isToday ? ', today' : ''}${summary ? `, ${summary}` : ''}`}
         aria-current={isToday ? 'date' : undefined}
         className={cn(

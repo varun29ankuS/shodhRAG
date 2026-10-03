@@ -3,7 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { AlertTriangle, CheckCircle2, ExternalLink, Info, Loader2, Maximize2, Minimize2, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
-import { formatLocation, isWebUrl, jumpToSourceArgs } from './searchResults';
+import { appRecordKind, formatLocation, isWebUrl, jumpToSourceArgs, sourceLabel } from './searchResults';
+import type { ViewTab } from '../../lib/viewTabs';
 import type { SearchHit } from './types';
 import { ImageViewer } from './viewer/ImageViewer';
 import { PdfViewer } from './viewer/PdfViewer';
@@ -24,8 +25,9 @@ type ViewerMode = 'pdf' | 'text' | 'table' | 'image';
 type PanelState =
   | { status: 'loading' }
   | { status: 'web' }
+  | { status: 'record' }
   | { status: 'unavailable'; error: SourceAccessError; info: SourceFileInfo | null }
-  | { status: 'view'; info: SourceFileInfo; viewer: ViewerMode; reason: string | null };
+  | { status: 'view'; info: SourceFileInfo; viewer: ViewerMode; reason: string | null; retryPdf: boolean };
 
 function shortFolder(path: string): string | null {
   const idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
@@ -72,11 +74,15 @@ function PassageBlock({ passage }: { passage: string }) {
 }
 
 /** Shown whenever the document itself cannot be displayed. */
-function PassageFallback({ message, passage }: { message: string; passage: string }) {
+function PassageFallback({ message, passage, tone = 'warning' }: { message: string; passage: string; tone?: 'warning' | 'info' }) {
   return (
     <div tabIndex={0} aria-label="Cited passage" className={cn('flex-1 min-h-0 overflow-y-auto scrollbar-thin p-5 flex flex-col gap-4', FOCUS_RING)}>
-      <p role="alert" className="flex items-start gap-2 text-[13px] leading-relaxed text-shodh-text-secondary">
-        <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
+      <p role={tone === 'warning' ? 'alert' : undefined} className="flex items-start gap-2 text-[13px] leading-relaxed text-shodh-text-secondary">
+        {tone === 'warning' ? (
+          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
+        ) : (
+          <Info className="w-4 h-4 mt-0.5 shrink-0 text-shodh-info" aria-hidden="true" />
+        )}
         <span>{message}</span>
       </p>
       <figure className="m-0 flex flex-col gap-2">
@@ -87,7 +93,25 @@ function PassageFallback({ message, passage }: { message: string; passage: strin
   );
 }
 
-function LocateNotice({ result, reason, passage }: { result: LocateResult | null; reason: string | null; passage: string }) {
+/** A dynamic import() of a viewer bundle failed (network or stale dev bundle), as opposed to the file. */
+function isModuleLoadFailure(error: unknown): boolean {
+  return (
+    error instanceof TypeError &&
+    /dynamically imported module|Importing a module script failed|error loading dynamically imported module/i.test(error.message)
+  );
+}
+
+function LocateNotice({
+  result,
+  reason,
+  passage,
+  onRetry,
+}: {
+  result: LocateResult | null;
+  reason: string | null;
+  passage: string;
+  onRetry?: () => void;
+}) {
   const showPassage = result !== null && (result.status === 'notFound' || result.status === 'approximate');
   const Icon =
     result?.status === 'found' ? CheckCircle2 : result?.status === 'searching' ? Loader2 : result ? AlertTriangle : Info;
@@ -96,7 +120,21 @@ function LocateNotice({ result, reason, passage }: { result: LocateResult | null
       {reason && (
         <p className="flex items-start gap-2 text-[12.5px] leading-snug text-shodh-text-secondary">
           <Info className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-info" aria-hidden="true" />
-          <span>{reason}</span>
+          <span>
+            {reason}
+            {onRetry && (
+              <>
+                {' '}
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  className="font-medium text-shodh-accent-text hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
+                >
+                  Try again
+                </button>
+              </>
+            )}
+          </span>
         </p>
       )}
       <p role="status" aria-live="polite" className="flex items-start gap-2 text-[12.5px] leading-snug text-shodh-text-secondary min-h-[18px]">
@@ -135,6 +173,8 @@ interface SourcePreviewProps {
   siblings: readonly SearchHit[];
   onSelectHit: (hit: SearchHit) => void;
   onClose: () => void;
+  /** Switch to an app view; used to open a cited task or event in Calendar. */
+  onOpenView?: (tab: ViewTab) => void;
 }
 
 /**
@@ -143,7 +183,7 @@ interface SourcePreviewProps {
  * the cited passage highlighted. Every failure path degrades to the retrieved
  * passage with an explanation, never an empty panel.
  */
-export function SourcePreview({ hit, siblings, onSelectHit, onClose }: SourcePreviewProps) {
+export function SourcePreview({ hit, siblings, onSelectHit, onClose, onOpenView }: SourcePreviewProps) {
   const titleId = useId();
   const panelRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -152,6 +192,7 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose }: SourcePre
   const [expanded, setExpanded] = useState(false);
   const [opening, setOpening] = useState(false);
   const isUrl = isWebUrl(hit.sourceFile);
+  const record = appRecordKind(hit.sourceFile);
   const passage = hit.text.trim() || hit.snippet.trim();
 
   // Move focus into the panel when it opens or switches to another passage.
@@ -179,6 +220,10 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose }: SourcePre
       setPanel({ status: 'web' });
       return;
     }
+    if (record) {
+      setPanel({ status: 'record' });
+      return;
+    }
     let cancelled = false;
     setPanel({ status: 'loading' });
     getSourceFileInfo(hit.sourceFile)
@@ -191,7 +236,7 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose }: SourcePre
             error: toSourceError({ kind: 'unsupported', message: `Shodh cannot display .${info.extension} files here.` }),
           });
         } else {
-          setPanel({ status: 'view', info, viewer: info.kind, reason: null });
+          setPanel({ status: 'view', info, viewer: info.kind, reason: null, retryPdf: false });
         }
       })
       .catch(error => {
@@ -200,7 +245,7 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose }: SourcePre
     return () => {
       cancelled = true;
     };
-  }, [hit.sourceFile, isUrl]);
+  }, [hit.sourceFile, isUrl, record]);
 
   const handleViewerError = useCallback((error: unknown) => {
     setLocate(null);
@@ -212,23 +257,43 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose }: SourcePre
   }, []);
 
   // pdf.js could not open the file: fall back to the indexer's extracted text.
+  // When the page viewer itself failed to load (not the file), offer a retry.
   const handlePdfFatal = useCallback((error: unknown) => {
+    const viewerMissing = isModuleLoadFailure(error);
     const sourceError = toSourceError(error);
-    const detail =
-      error instanceof Error && error.name === 'PasswordException'
+    const detail = viewerMissing
+      ? 'the page viewer did not load'
+      : error instanceof Error && error.name === 'PasswordException'
         ? 'it is password-protected'
         : sourceError.kind === 'unknown'
-          ? 'it could not be rendered'
+          ? 'the file could not be rendered'
           : sourceError.message;
     setLocate(null);
     setPanel(prev =>
       prev.status === 'view'
-        ? { ...prev, viewer: 'text', reason: `The PDF pages are not shown because ${detail}. Showing its extracted text instead.` }
+        ? {
+            ...prev,
+            viewer: 'text',
+            reason: `The PDF pages are not shown because ${detail}. Showing its extracted text instead.`,
+            retryPdf: viewerMissing,
+          }
         : prev,
     );
   }, []);
 
+  const retryPdf = useCallback(() => {
+    setLocate(null);
+    setPanel(prev => (prev.status === 'view' ? { ...prev, viewer: 'pdf', reason: null, retryPdf: false } : prev));
+  }, []);
+
   const openSource = async () => {
+    if (record) {
+      if (record !== 'note') {
+        onOpenView?.('calendar');
+        onClose();
+      }
+      return;
+    }
     if (isUrl) {
       window.open(hit.sourceFile, '_blank', 'noopener,noreferrer');
       return;
@@ -264,9 +329,9 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose }: SourcePre
   };
 
   const info = panel.status === 'view' || panel.status === 'unavailable' ? panel.info : null;
-  const fileName = info?.fileName ?? hit.fileName;
+  const fileName = record ? sourceLabel(hit) : info?.fileName ?? hit.fileName;
   const location = formatLocation(hit);
-  const folder = isUrl ? null : shortFolder(info?.path ?? hit.sourceFile);
+  const folder = isUrl || record ? null : shortFolder(info?.path ?? hit.sourceFile);
   const subtitle = [location, folder].filter(Boolean).join(' · ');
   const otherPassages = siblings.filter(s => s.number !== hit.number);
   const fileMissing = panel.status === 'unavailable' && panel.error.kind === 'notFound';
@@ -281,6 +346,18 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose }: SourcePre
     );
   } else if (panel.status === 'web') {
     body = <PassageFallback message="This source is a web page. Use Open in browser to view it." passage={passage} />;
+  } else if (panel.status === 'record') {
+    body = (
+      <PassageFallback
+        message={
+          record === 'note'
+            ? 'This source is a note saved in Shodh. Its indexed text is shown below.'
+            : 'This source is an item in your Shodh calendar. Its indexed details are shown below; use Open in Calendar to see or edit it.'
+        }
+        passage={passage}
+        tone="info"
+      />
+    );
   } else if (panel.status === 'unavailable') {
     body = <PassageFallback message={unavailableMessage(panel.error, panel.info)} passage={passage} />;
   } else {
@@ -318,7 +395,7 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose }: SourcePre
     }
     body = (
       <>
-        <LocateNotice result={locate} reason={panel.reason} passage={passage} />
+        <LocateNotice result={locate} reason={panel.reason} passage={passage} onRetry={panel.retryPdf ? retryPdf : undefined} />
         <ViewerBoundary
           key={`${fileInfo.path}:${viewer}`}
           fallback={error => <PassageFallback message={`The document viewer failed (${error.message}).`} passage={passage} />}
@@ -349,7 +426,7 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose }: SourcePre
           {hit.number}
         </span>
         <div className="flex flex-col min-w-0 flex-1">
-          <h2 id={titleId} className="text-[13.5px] font-semibold text-shodh-text truncate" title={info?.path ?? hit.sourceFile}>
+          <h2 id={titleId} className="text-[13.5px] font-semibold text-shodh-text truncate" title={record ? fileName : info?.path ?? hit.sourceFile}>
             {fileName}
           </h2>
           {subtitle && <span className="text-[11.5px] text-shodh-text-muted truncate">{subtitle}</span>}
@@ -357,14 +434,14 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose }: SourcePre
         <button
           type="button"
           onClick={openSource}
-          disabled={opening || fileMissing}
+          disabled={opening || fileMissing || record === 'note' || (record !== null && !onOpenView)}
           className={cn(
             'h-[30px] px-2.5 shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border-strong text-[12px] text-shodh-text hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro',
             FOCUS_RING,
           )}
         >
           {opening ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />}
-          {isUrl ? 'Open in browser' : 'Open in default app'}
+          {record ? 'Open in Calendar' : isUrl ? 'Open in browser' : 'Open in default app'}
         </button>
         <button
           type="button"

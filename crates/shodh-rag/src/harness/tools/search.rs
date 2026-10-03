@@ -64,6 +64,37 @@ struct Passage {
     text: String,
 }
 
+/// What the user sees for a source: the file name for files, and the record's
+/// title for in-app records (`calendar://task/<id>` would otherwise show its id).
+fn display_name(path: &str, result: &ComprehensiveResult) -> String {
+    if let Some((scheme, rest)) = path.split_once("://") {
+        let title = result
+            .metadata
+            .get("title")
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty())
+            .or_else(|| Some(result.citation.title.trim()).filter(|t| !t.is_empty()));
+        let kind = match (scheme, rest.split('/').next()) {
+            ("calendar", Some("task")) => "Task",
+            ("calendar", Some("event")) => "Event",
+            ("calendar", _) => "Calendar",
+            ("note", _) => "Note",
+            _ => "",
+        };
+        return match (kind, title) {
+            ("", Some(t)) => t.to_string(),
+            ("", None) => path.to_string(),
+            (k, Some(t)) => format!("{k}: {t}"),
+            (k, None) => format!("{k} (untitled)"),
+        };
+    }
+    path.rsplit(['/', '\\'])
+        .next()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| result.citation.title.clone())
+}
+
 fn passage(n: u32, result: &ComprehensiveResult, max_chars: usize) -> Passage {
     let path = if result.citation.source.is_empty() {
         result
@@ -75,12 +106,7 @@ fn passage(n: u32, result: &ComprehensiveResult, max_chars: usize) -> Passage {
     } else {
         result.citation.source.clone()
     };
-    let file = path
-        .rsplit(['/', '\\'])
-        .next()
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| result.citation.title.clone());
+    let file = display_name(&path, result);
     Passage {
         n,
         file,
@@ -249,6 +275,37 @@ mod tests {
         assert_eq!(p.file, "acme_msa.pdf");
         assert_eq!(p.page.as_deref(), Some("4"));
         assert_eq!(p.text, "Notice period is sixty days.");
+    }
+
+    #[test]
+    fn calendar_records_are_labelled_by_title_not_id() {
+        let mut metadata = HashMap::new();
+        metadata.insert("title".to_string(), "  File GST return ".to_string());
+        let result = ComprehensiveResult {
+            id: Uuid::nil(),
+            score: 0.5,
+            metadata,
+            citation: Citation {
+                source: "calendar://task/ae887fee-eaa5-4c05-b53d-9b3e9905edef".into(),
+                ..Citation::default()
+            },
+            snippet: "Task: File GST return.".into(),
+            source_index: "hybrid".into(),
+        };
+        let p = passage(1, &result, MAX_PASSAGE_CHARS);
+        assert_eq!(p.file, "Task: File GST return");
+        assert_eq!(
+            p.path,
+            "calendar://task/ae887fee-eaa5-4c05-b53d-9b3e9905edef"
+        );
+
+        let mut untitled = result;
+        untitled.metadata.clear();
+        untitled.citation.source = "calendar://event/1".into();
+        assert_eq!(
+            passage(2, &untitled, MAX_PASSAGE_CHARS).file,
+            "Event (untitled)"
+        );
     }
 
     #[test]

@@ -70,6 +70,14 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [react(), pdfjsAssets()],
 
+  // Packages reached only through dynamic import() are otherwise discovered
+  // when first opened; the dev server then re-optimizes and the in-flight
+  // import fails ("Failed to fetch dynamically imported module", a 504 for
+  // the stale bundle). Pre-bundle them at startup instead.
+  optimizeDeps: {
+    include: ["pdfjs-dist", "@tauri-apps/api/webview"],
+  },
+
   // Explicitly set root directory
   root: __dirname,
 

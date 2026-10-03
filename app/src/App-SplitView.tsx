@@ -12,8 +12,11 @@ import { Badge } from "./components/ui/badge";
 import { Input } from "./components/ui/input";
 import { Progress } from "./components/ui/progress";
 import {
-  MessageSquare, Settings, Bot, FolderOpen, FileText, Code, Terminal, Plus, Check, X, Loader2, Pencil, Download, ChevronDown, ChevronUp, Database, FileCode, BookOpen, FileSpreadsheet, Presentation, Trash2, Braces, Coffee
+  MessageSquare, Settings, Bot, FolderOpen, FileText, Code, Terminal, Plus, Check, X, Loader2, Pencil, Download, ChevronDown, ChevronUp, Database, FileCode, BookOpen, FileSpreadsheet, Presentation, Trash2, Braces, Coffee,
+  FolderPlus, PanelLeftOpen, PanelLeftClose, Sun, Moon, Bug
 } from 'lucide-react';
+
+const IS_MAC = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
 
 // Core components
 import { SearchSetupCard } from './features/setup/SearchSetupCard';
@@ -30,6 +33,7 @@ import { ChatSessionProvider, useChatSession } from './features/ask/ChatSessionC
 import { AskView } from './features/ask/AskView';
 import { useCommandPalette } from './hooks/useCommandPalette';
 import CommandPalette from './components/CommandPalette';
+import type { PaletteAction } from './components/CommandPalette';
 import DocumentPreviewPanel from './components/DocumentPreviewPanel';
 import TasksView from './features/tasks/TasksView';
 import ActivityView from './features/activity/ActivityView';
@@ -73,7 +77,7 @@ interface Source {
 function AppSplitView() {
   // Theme
   const { theme, colors, toggleTheme } = useTheme();
-  const { collapsed } = useSidebar();
+  const { collapsed, toggleSidebar } = useSidebar();
   const { config: searchConfig, updateConfig: updateSearchConfig, resetConfig: resetSearchConfig } = useSearchConfig();
 
   // Conversations and the active chat session
@@ -245,7 +249,16 @@ function AppSplitView() {
     setActiveTab('ask');
   };
 
-  // Search State
+  // Primary actions offered by the command palette.
+  const paletteActions: PaletteAction[] = [
+    { id: 'new-chat', label: 'New chat', icon: Plus, keywords: 'new chat conversation ask create', shortcut: IS_MAC ? '⌘N' : 'Ctrl+N', run: handleNewConversation },
+    { id: 'add-folder', label: 'Add folder to Library', description: 'Index a folder of documents', icon: FolderPlus, keywords: 'add source folder documents index import', run: () => { setActiveTab('library'); void handleAddSource(); } },
+    { id: 'choose-model', label: 'Choose model', description: 'Provider and model that answer', icon: Bot, keywords: 'model llm provider ai settings api key', run: () => setActiveTab('settings') },
+    { id: 'toggle-sidebar', label: collapsed ? 'Expand sidebar' : 'Collapse sidebar', icon: collapsed ? PanelLeftOpen : PanelLeftClose, keywords: 'sidebar toggle hide show collapse expand', shortcut: IS_MAC ? '⌘B' : 'Ctrl+B', run: toggleSidebar },
+    { id: 'toggle-theme', label: theme === 'dark' ? 'Use light theme' : 'Use dark theme', icon: theme === 'dark' ? Sun : Moon, keywords: 'theme dark light mode appearance', run: toggleTheme },
+    { id: 'feedback', label: 'Send feedback', icon: Bug, keywords: 'feedback bug report problem', run: () => setShowFeedback(true) },
+  ];
+
 
   // Stats
   const [stats, setStats] = useState({
@@ -1888,10 +1901,10 @@ function AppSplitView() {
         open={cmdPaletteOpen}
         onClose={closePalette}
         onNavigate={setActiveTab}
-        onNewConversation={handleNewConversation}
-        onToggleTheme={toggleTheme}
-        onAddSource={() => { handleAddSource(); closePalette(); }}
-        sources={sources.map(s => ({ id: s.id, name: s.name, selected: s.selected }))}
+        actions={paletteActions}
+        conversations={conversations}
+        onOpenConversation={(id: string) => { switchConversation(id); setActiveTab('ask'); }}
+        sources={sources.map(s => ({ id: s.id, name: s.name, path: s.path }))}
       />
 
       {/* Onboarding Flow */}

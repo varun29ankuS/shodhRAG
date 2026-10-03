@@ -1,339 +1,310 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { invoke } from '@tauri-apps/api/core';
-import {
-  Search,
-  MessageCircle,
-  FileText,
-  Folder,
-  CalendarDays,
-  Moon,
-  Sun,
-  Plus,
-  Clock,
-  Settings,
-  FolderOpen,
-  ArrowRight,
-} from 'lucide-react';
-import { useTheme } from '../contexts/ThemeContext';
-import { VIEW_TAB_LABELS } from '../lib/viewTabs';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { ArrowRight, FileText, MessageCircle, Search } from 'lucide-react';
+import { cn } from '../lib/utils';
+import { ENTER_TRANSITION, EXIT_TRANSITION } from '../lib/motion';
+import { filterEntries, groupBySection } from '../lib/paletteFilter';
+import type { PaletteEntry } from '../lib/paletteFilter';
+import { VIEW_TABS, VIEW_TAB_DESCRIPTIONS, VIEW_TAB_KEYWORDS, VIEW_TAB_LABELS } from '../lib/viewTabs';
 import type { ViewTab } from '../lib/viewTabs';
+import { relativeTime } from '../utils/time';
+import { NAV_ICONS } from './shell/Sidebar';
+
+/** A primary action offered by the shell (new chat, add folder, …). */
+export interface PaletteAction {
+  id: string;
+  label: string;
+  description?: string;
+  icon: React.ElementType;
+  keywords?: string;
+  /** Shown as a keyboard hint, e.g. "Ctrl+N". */
+  shortcut?: string;
+  run: () => void;
+}
+
+export interface PaletteConversation {
+  id: string;
+  title: string;
+  updatedAt: string;
+  spaceName?: string;
+}
+
+export interface PaletteSource {
+  id: string;
+  name: string;
+  path?: string;
+}
 
 interface CommandPaletteProps {
   open: boolean;
   onClose: () => void;
   onNavigate: (view: ViewTab) => void;
-  onNewConversation: () => void;
-  onToggleTheme: () => void;
-  onAddSource: () => void;
-  sources: { id: string; name: string; selected: boolean }[];
+  actions: PaletteAction[];
+  conversations: PaletteConversation[];
+  onOpenConversation: (id: string) => void;
+  sources: PaletteSource[];
 }
 
-interface CommandItem {
-  id: string;
-  label: string;
+type Section = 'Actions' | 'Go to' | 'Chats' | 'Library';
+const SECTION_ORDER: readonly Section[] = ['Actions', 'Go to', 'Chats', 'Library'];
+
+/** Chats listed before anything is typed. */
+const RECENT_CHATS = 5;
+/** Chats listed for a query. */
+const MATCHING_CHATS = 30;
+
+interface Entry extends PaletteEntry {
+  section: Section;
   description?: string;
   icon: React.ElementType;
-  section: 'recent' | 'actions' | 'navigate' | 'sources';
-  action: () => void;
-  keywords?: string;
+  shortcut?: string;
+  run: () => void;
 }
 
+/**
+ * Ctrl+K: every view, the primary actions, chats (recent first, all of them
+ * searchable by title) and Library folders.
+ */
 export default function CommandPalette({
   open,
   onClose,
   onNavigate,
-  onNewConversation,
-  onToggleTheme,
-  onAddSource,
+  actions,
+  conversations,
+  onOpenConversation,
   sources,
 }: CommandPaletteProps) {
-  const { theme, colors } = useTheme();
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [recentSearches, setRecentSearches] = useState<string[]>([]);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const baseId = useId();
+  const listId = `${baseId}-list`;
 
+  // Reset on open; give focus back to whatever had it on close.
   useEffect(() => {
     if (open) {
+      restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       setQuery('');
       setSelectedIndex(0);
-      setTimeout(() => inputRef.current?.focus(), 50);
-
-      invoke<any[]>('get_search_history', { spaceId: null, limit: 5 })
-        .then(entries => {
-          setRecentSearches(entries.map((e: any) => e.query || e.search_query || '').filter(Boolean));
-        })
-        .catch(() => {});
+    } else if (restoreFocusRef.current) {
+      const target = restoreFocusRef.current;
+      restoreFocusRef.current = null;
+      if (target.isConnected) target.focus();
     }
   }, [open]);
 
-  const commands = useMemo<CommandItem[]>(() => {
-    const items: CommandItem[] = [];
+  const entries = useMemo<Entry[]>(() => {
+    const close = (fn: () => void) => () => { onClose(); fn(); };
+    const items: Entry[] = [];
 
-    // Recent searches
-    recentSearches.forEach((q, i) => {
+    for (const action of actions) {
       items.push({
-        id: `recent-${i}`,
-        label: q,
-        icon: Clock,
-        section: 'recent',
-        action: () => {
-          onNavigate('ask');
-          onClose();
-        },
-        keywords: q,
+        id: `action-${action.id}`,
+        section: 'Actions',
+        label: action.label,
+        description: action.description,
+        keywords: action.keywords,
+        icon: action.icon,
+        shortcut: action.shortcut,
+        run: close(action.run),
       });
-    });
+    }
 
-    // Actions
-    items.push({
-      id: 'new-conversation',
-      label: 'New conversation',
-      description: 'Start a new conversation',
-      icon: Plus,
-      section: 'actions',
-      action: () => { onNewConversation(); onClose(); },
-      keywords: 'new chat conversation ask create',
-    });
-    items.push({
-      id: 'toggle-theme',
-      label: theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode',
-      description: 'Toggle between light and dark theme',
-      icon: theme === 'dark' ? Sun : Moon,
-      section: 'actions',
-      action: () => { onToggleTheme(); onClose(); },
-      keywords: 'theme dark light mode toggle',
-    });
-    items.push({
-      id: 'llm-settings',
-      label: 'AI Model Settings',
-      description: 'Configure LLM provider and model',
-      icon: Settings,
-      section: 'actions',
-      action: () => { onNavigate('settings'); onClose(); },
-      keywords: 'settings model llm ai configure provider',
-    });
-    items.push({
-      id: 'add-source',
-      label: 'Add Document Source',
-      description: 'Index a new folder of documents',
-      icon: FolderOpen,
-      section: 'actions',
-      action: () => { onAddSource(); onClose(); },
-      keywords: 'add source folder documents index workspace',
-    });
-
-    // Navigate
-    const navItems: { id: ViewTab; icon: React.ElementType; keywords: string }[] = [
-      { id: 'ask', icon: MessageCircle, keywords: 'ask chat messages conversation' },
-      { id: 'library', icon: Folder, keywords: 'library documents files sources' },
-      { id: 'tasks', icon: CalendarDays, keywords: 'calendar tasks todo events schedule' },
-      { id: 'activity', icon: Clock, keywords: 'activity audit usage log' },
-      { id: 'settings', icon: Settings, keywords: 'settings preferences models search data' },
-    ];
-    navItems.forEach(nav => {
+    for (const view of VIEW_TABS) {
       items.push({
-        id: `nav-${nav.id}`,
-        label: `Go to ${VIEW_TAB_LABELS[nav.id]}`,
-        icon: nav.icon,
-        section: 'navigate',
-        action: () => { onNavigate(nav.id); onClose(); },
-        keywords: nav.keywords,
+        id: `view-${view}`,
+        section: 'Go to',
+        label: VIEW_TAB_LABELS[view],
+        description: VIEW_TAB_DESCRIPTIONS[view],
+        keywords: `go open view ${VIEW_TAB_KEYWORDS[view]}`,
+        icon: NAV_ICONS[view],
+        run: close(() => onNavigate(view)),
       });
-    });
+    }
 
-    // Sources
-    sources.forEach(source => {
+    const byRecency = [...conversations].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    for (const conv of byRecency) {
+      items.push({
+        id: `chat-${conv.id}`,
+        section: 'Chats',
+        label: conv.title,
+        description: [conv.spaceName, relativeTime(conv.updatedAt)].filter(Boolean).join(' · '),
+        keywords: `chat conversation ${conv.spaceName ?? ''}`,
+        icon: MessageCircle,
+        run: close(() => onOpenConversation(conv.id)),
+      });
+    }
+
+    for (const source of sources) {
       items.push({
         id: `source-${source.id}`,
+        section: 'Library',
         label: source.name,
-        description: source.selected ? 'Active' : 'Inactive',
+        description: source.path,
+        keywords: `folder source library ${source.path ?? ''}`,
         icon: FileText,
-        section: 'sources',
-        action: () => { onNavigate('ask'); onClose(); },
-        keywords: `source ${source.name}`,
+        run: close(() => onNavigate('library')),
       });
-    });
-
-    return items;
-  }, [recentSearches, theme, sources, onNavigate, onNewConversation, onToggleTheme, onAddSource, onClose]);
-
-  const filtered = useMemo(() => {
-    if (!query.trim()) return commands;
-    const q = query.toLowerCase();
-    return commands.filter(
-      cmd => cmd.label.toLowerCase().includes(q) || cmd.keywords?.toLowerCase().includes(q)
-    );
-  }, [query, commands]);
-
-  const sections = useMemo(() => {
-    const groups: { key: string; label: string; items: CommandItem[] }[] = [];
-    const sectionOrder = ['recent', 'actions', 'navigate', 'sources'] as const;
-    const sectionLabels: Record<string, string> = {
-      recent: 'Recent',
-      actions: 'Actions',
-      navigate: 'Navigate',
-      sources: 'Sources',
-    };
-
-    for (const key of sectionOrder) {
-      const items = filtered.filter(c => c.section === key);
-      if (items.length > 0) {
-        groups.push({ key, label: sectionLabels[key], items });
-      }
     }
-    return groups;
-  }, [filtered]);
+    return items;
+  }, [actions, conversations, sources, onNavigate, onOpenConversation, onClose]);
 
-  const flatItems = useMemo(() => sections.flatMap(s => s.items), [sections]);
+  const groups = useMemo(() => {
+    const matched = filterEntries(entries, query, SECTION_ORDER);
+    const limit = query.trim() ? MATCHING_CHATS : RECENT_CHATS;
+    let chats = 0;
+    return groupBySection(matched.filter(e => e.section !== 'Chats' || chats++ < limit));
+  }, [entries, query]);
+
+  const flat = useMemo(() => groups.flatMap(g => g.items), [groups]);
 
   useEffect(() => {
     setSelectedIndex(0);
   }, [query]);
 
+  const activeIndex = Math.min(selectedIndex, Math.max(0, flat.length - 1));
+  const activeId = flat[activeIndex] ? `${baseId}-${flat[activeIndex].id}` : undefined;
+
+  // Keep the active option in view.
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (!open) return;
+    if (!open || !activeId) return;
+    document.getElementById(activeId)?.scrollIntoView({ block: 'nearest' });
+  }, [open, activeId]);
 
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onClose();
-      } else if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setSelectedIndex(prev => Math.min(prev + 1, flatItems.length - 1));
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setSelectedIndex(prev => Math.max(prev - 1, 0));
-      } else if (e.key === 'Enter') {
-        e.preventDefault();
-        if (flatItems[selectedIndex]) {
-          flatItems[selectedIndex].action();
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [open, flatItems, selectedIndex, onClose]);
-
-  // Scroll selected item into view
-  useEffect(() => {
-    if (listRef.current) {
-      const selected = listRef.current.querySelector(`[data-index="${selectedIndex}"]`);
-      selected?.scrollIntoView({ block: 'nearest' });
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (flat.length > 0) setSelectedIndex((activeIndex + 1) % flat.length);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (flat.length > 0) setSelectedIndex((activeIndex - 1 + flat.length) % flat.length);
+    } else if (e.key === 'PageDown') {
+      e.preventDefault();
+      setSelectedIndex(Math.min(flat.length - 1, activeIndex + 8));
+    } else if (e.key === 'PageUp') {
+      e.preventDefault();
+      setSelectedIndex(Math.max(0, activeIndex - 8));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      flat[activeIndex]?.run();
+    } else if (e.key === 'Tab') {
+      // The palette is modal and its input is the only tab stop.
+      e.preventDefault();
     }
-  }, [selectedIndex]);
+  };
 
-  if (!open) return null;
-
-  let globalIndex = -1;
+  let optionIndex = -1;
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-start justify-center pt-[15vh]">
-      {/* Backdrop */}
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        transition={{ duration: 0.15 }}
-        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-        onClick={onClose}
-      />
-
-      {/* Panel */}
-      <motion.div
-        initial={{ opacity: 0, scale: 0.96, y: -8 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.96, y: -8 }}
-        transition={{ duration: 0.15, ease: 'easeOut' }}
-        className="relative w-[560px] max-h-[420px] rounded-xl border overflow-hidden"
-        style={{
-          backgroundColor: colors.bgSecondary,
-          borderColor: colors.border,
-          boxShadow: '0 24px 48px rgba(0,0,0,0.25)',
-        }}
-      >
-        {/* Search input */}
-        <div className="flex items-center gap-3 px-4 py-3 border-b" style={{ borderColor: colors.border }}>
-          <Search className="w-4 h-4 shrink-0" style={{ color: colors.textMuted }} />
-          <input
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            placeholder="Type a command or search..."
-            className="flex-1 bg-transparent text-sm outline-none"
-            style={{ color: colors.text }}
+    <AnimatePresence>
+      {open && (
+        <div className="fixed inset-0 z-[9999] flex items-start justify-center pt-[14vh] px-4" onKeyDown={handleKeyDown}>
+          <motion.div
+            className="absolute inset-0 bg-black/50"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1, transition: ENTER_TRANSITION }}
+            exit={{ opacity: 0, transition: EXIT_TRANSITION }}
+            onClick={onClose}
+            aria-hidden="true"
           />
-          <kbd
-            className="text-[10px] px-1.5 py-0.5 rounded border font-mono shrink-0"
-            style={{ borderColor: colors.border, color: colors.textMuted }}
+          <motion.div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Search and commands"
+            className="relative w-full max-w-[600px] rounded-xl border border-shodh-border-strong bg-shodh-raised shadow-2xl overflow-hidden flex flex-col max-h-[min(480px,70vh)]"
+            initial={{ opacity: 0, scale: 0.97, y: -6 }}
+            animate={{ opacity: 1, scale: 1, y: 0, transition: ENTER_TRANSITION }}
+            exit={{ opacity: 0, scale: 0.98, y: -4, transition: EXIT_TRANSITION }}
           >
-            ESC
-          </kbd>
-        </div>
-
-        {/* Results */}
-        <div ref={listRef} className="overflow-y-auto max-h-[340px] py-1">
-          {flatItems.length === 0 ? (
-            <div className="px-4 py-8 text-center">
-              <p className="text-sm" style={{ color: colors.textMuted }}>No results found</p>
+            <div className="flex items-center gap-3 px-4 h-12 border-b border-shodh-border shrink-0">
+              <Search className="w-4 h-4 shrink-0 text-shodh-text-muted" aria-hidden="true" />
+              <input
+                autoFocus
+                type="text"
+                role="combobox"
+                aria-expanded="true"
+                aria-controls={listId}
+                aria-activedescendant={activeId}
+                aria-autocomplete="list"
+                aria-label="Search views, actions, chats and folders"
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder="Search views, actions, chats and folders…"
+                className="flex-1 bg-transparent text-[14px] text-shodh-text placeholder:text-shodh-text-faint outline-none"
+              />
+              <kbd className="text-[10.5px] px-1.5 py-0.5 rounded border border-shodh-border font-mono text-shodh-text-muted shrink-0">
+                Esc
+              </kbd>
             </div>
-          ) : (
-            sections.map(section => (
-              <div key={section.key}>
-                <div className="px-4 pt-2 pb-1">
-                  <span className="text-[10px] font-bold tracking-widest" style={{ color: colors.textMuted }}>
-                    {section.label.toUpperCase()}
-                  </span>
-                </div>
-                {section.items.map(item => {
-                  globalIndex++;
-                  const idx = globalIndex;
-                  const isSelected = idx === selectedIndex;
-                  const Icon = item.icon;
 
-                  return (
-                    <button
-                      key={item.id}
-                      data-index={idx}
-                      onClick={item.action}
-                      onMouseEnter={() => setSelectedIndex(idx)}
-                      className="w-full flex items-center gap-3 px-4 py-2 text-left transition-colors"
-                      style={{
-                        backgroundColor: isSelected ? colors.bgHover : 'transparent',
-                      }}
+            <div id={listId} role="listbox" aria-label="Results" className="overflow-y-auto scrollbar-thin py-1.5 flex-1 min-h-0">
+              {flat.length === 0 ? (
+                <p className="px-4 py-8 text-center text-[13px] text-shodh-text-muted" role="status">
+                  Nothing matches “{query.trim()}”.
+                </p>
+              ) : (
+                groups.map(group => (
+                  <div key={group.section} role="group" aria-labelledby={`${baseId}-g-${group.section}`}>
+                    <div
+                      id={`${baseId}-g-${group.section}`}
+                      className="px-4 pt-2 pb-1 text-[11px] font-semibold tracking-[0.08em] uppercase text-shodh-text-faint"
                     >
-                      <Icon
-                        className="w-4 h-4 shrink-0"
-                        style={{ color: isSelected ? colors.accentText : colors.textTertiary }}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <span
-                          className="text-sm font-medium"
-                          style={{ color: isSelected ? colors.text : colors.textSecondary }}
+                      {group.section}
+                    </div>
+                    {group.items.map(item => {
+                      optionIndex += 1;
+                      const index = optionIndex;
+                      const selected = index === activeIndex;
+                      const Icon = item.icon;
+                      return (
+                        <div
+                          key={item.id}
+                          id={`${baseId}-${item.id}`}
+                          role="option"
+                          aria-selected={selected}
+                          onClick={item.run}
+                          onMouseMove={() => { if (!selected) setSelectedIndex(index); }}
+                          className={cn(
+                            'mx-1.5 flex items-center gap-3 px-2.5 h-9 rounded-lg cursor-pointer transition-colors duration-micro',
+                            selected ? 'bg-shodh-raised-2 text-shodh-text' : 'text-shodh-text-secondary',
+                          )}
                         >
-                          {item.label}
-                        </span>
-                        {item.description && (
-                          <span className="ml-2 text-xs" style={{ color: colors.textMuted }}>
-                            {item.description}
+                          <Icon
+                            className={cn('w-4 h-4 shrink-0', selected ? 'text-shodh-accent-text' : 'text-shodh-text-muted')}
+                            aria-hidden="true"
+                          />
+                          <span className="flex-1 min-w-0 flex items-baseline gap-2">
+                            <span className="text-[13.5px] font-medium truncate">{item.label}</span>
+                            {item.description && (
+                              <span className="text-[12px] text-shodh-text-faint truncate">{item.description}</span>
+                            )}
                           </span>
-                        )}
-                      </div>
-                      {isSelected && (
-                        <ArrowRight className="w-3.5 h-3.5 shrink-0" style={{ color: colors.textMuted }} />
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            ))
-          )}
+                          {item.shortcut && (
+                            <kbd className="text-[10.5px] font-mono text-shodh-text-faint shrink-0">{item.shortcut}</kbd>
+                          )}
+                          {selected && <ArrowRight className="w-3.5 h-3.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))
+              )}
+            </div>
+            <div
+              className="shrink-0 border-t border-shodh-border px-4 h-8 flex items-center gap-4 text-[11px] text-shodh-text-faint"
+              aria-hidden="true"
+            >
+              <span><kbd className="font-mono">↑ ↓</kbd> move</span>
+              <span><kbd className="font-mono">Enter</kbd> open</span>
+              <span><kbd className="font-mono">Esc</kbd> close</span>
+            </div>
+          </motion.div>
         </div>
-      </motion.div>
-    </div>
+      )}
+    </AnimatePresence>
   );
 }

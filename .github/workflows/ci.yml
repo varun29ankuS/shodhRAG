@@ -16,8 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
           components: rustfmt
       - run: cargo fmt --all --check
 
@@ -27,8 +28,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
@@ -51,7 +53,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
 
       - uses: Swatinem/rust-cache@v2
 

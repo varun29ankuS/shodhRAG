@@ -1,0 +1,5 @@
+# Pinned so local builds and CI use the same compiler and the same clippy lints.
+# Upgrade deliberately (one PR) and fix any new lints in that PR.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]

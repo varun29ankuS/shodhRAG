@@ -104,6 +104,9 @@ pub enum RegistryError {
 }
 
 /// A capability exposed to the agent. Implemented in Rust, executed in-process.
+// async-trait adds `#[must_use]` to the boxed futures it generates, which clippy's
+// `double_must_use` flags on code we don't write; the lint does not apply here.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait HostTool: Send + Sync {
     /// Unique tool name, as the model calls it.

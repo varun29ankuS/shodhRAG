@@ -33,6 +33,9 @@ pub use sidecar::{
 /// implementation; spec §7.1's in-process fallback would implement the same
 /// trait. Events are delivered on the receiver returned when the session is
 /// started.
+// async-trait adds `#[must_use]` to the boxed futures it generates, which clippy's
+// `double_must_use` flags on code we don't write; the lint does not apply here.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait AgentHarness: Send + Sync {
     fn session_id(&self) -> &str;

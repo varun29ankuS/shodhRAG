@@ -19,7 +19,7 @@ import { useChatSession } from './ChatSessionContext';
 import { MessageContentRenderer } from './MessageContentRenderer';
 import { RunChip } from './RunChip';
 import { SourcePreview } from './SourcePreview';
-import { citedNumbers, fileExtensionOf, fileStemOf, formatLocation, groupSources, toSearchHits } from './searchResults';
+import { appRecordKind, citedNumbers, fileExtensionOf, formatLocation, groupSources, sourceLabel, toSearchHits } from './searchResults';
 import type { SourceGroup } from './searchResults';
 import type { ChatMessage, SearchHit, SendOptions } from './types';
 
@@ -90,8 +90,10 @@ const FILE_BADGE_CLASS: Record<string, string> = {
 };
 
 function FileBadge({ path }: { path: string }) {
-  const ext = fileExtensionOf(path);
+  const record = appRecordKind(path);
+  const ext = record ?? fileExtensionOf(path);
   if (!ext) return null;
+  const badge = record === 'calendar' ? 'cal' : record ?? ext.slice(0, 4);
   return (
     <span
       className={cn(
@@ -100,7 +102,7 @@ function FileBadge({ path }: { path: string }) {
       )}
       aria-hidden="true"
     >
-      {ext.slice(0, 4)}
+      {badge}
     </span>
   );
 }
@@ -130,7 +132,7 @@ function SourceChips({
               type="button"
               onClick={e => onOpen(group.primary, e.currentTarget)}
               aria-pressed={isActive}
-              title={group.sourceFile}
+              title={appRecordKind(group.sourceFile) ? sourceLabel(group.primary) : group.sourceFile}
               className={cn(
                 'inline-flex items-center gap-2 h-8 max-w-full pl-2 pr-3 rounded-[10px] border text-shodh-text transition-colors duration-micro',
                 isActive
@@ -140,7 +142,7 @@ function SourceChips({
               )}
             >
               <FileBadge path={group.sourceFile} />
-              <span className="text-[12.5px] truncate">{fileStemOf(group.sourceFile)}</span>
+              <span className="text-[12.5px] truncate">{sourceLabel(group.primary)}</span>
               {where && <span className="text-[11.5px] text-shodh-text-faint whitespace-nowrap">{where}</span>}
               {group.hits.length > 1 && (
                 <span className="text-[11.5px] text-shodh-text-faint whitespace-nowrap">{`· ${group.hits.length} passages`}</span>
@@ -639,6 +641,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
           siblings={previewSiblings}
           onSelectHit={hit => setPreview(p => (p ? { ...p, hit } : p))}
           onClose={closePreview}
+          onOpenView={onNavigate}
         />
       )}
 

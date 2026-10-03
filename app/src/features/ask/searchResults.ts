@@ -63,6 +63,33 @@ export function isWebUrl(path: string): boolean {
   return /^https?:\/\//i.test(path);
 }
 
+export type AppRecordKind = 'task' | 'event' | 'calendar' | 'note';
+
+/** In-app records are indexed under pseudo-sources (`calendar://task/<id>`, `note://<id>`), not files. */
+export function appRecordKind(path: string): AppRecordKind | null {
+  const match = /^(calendar|note):\/\/([^/]*)/i.exec(path);
+  if (!match) return null;
+  if (match[1].toLowerCase() === 'note') return 'note';
+  const sub = match[2].toLowerCase();
+  return sub === 'task' || sub === 'event' ? sub : 'calendar';
+}
+
+const RECORD_NOUN: Record<AppRecordKind, string> = { task: 'Task', event: 'Event', calendar: 'Calendar', note: 'Note' };
+
+/** "Task: File GST return"; never the record's id. */
+export function recordLabel(kind: AppRecordKind, title: string | null | undefined): string {
+  const t = title?.trim();
+  return t ? `${RECORD_NOUN[kind]}: ${t}` : `${RECORD_NOUN[kind]} (untitled)`;
+}
+
+/** Compact chip label: the file name without extension, or the record label. */
+export function sourceLabel(hit: Pick<SearchHit, 'sourceFile' | 'fileName'>): string {
+  const record = appRecordKind(hit.sourceFile);
+  if (!record) return fileStemOf(hit.sourceFile);
+  // Answers saved before records carried titles hold the bare id as the name.
+  return hit.fileName && hit.fileName !== fileNameOf(hit.sourceFile) ? hit.fileName : recordLabel(record, null);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -77,7 +104,9 @@ export function toSearchHits(raw: readonly unknown[] | undefined): SearchHit[] {
     const sourceFile = typeof r.sourceFile === 'string' ? r.sourceFile : '';
     if (!sourceFile) return;
     const citation = isRecord(r.citation) ? r.citation : null;
-    const fileName = fileNameOf(sourceFile);
+    const record = appRecordKind(sourceFile);
+    const citationTitle = citation && typeof citation.title === 'string' ? citation.title : null;
+    const fileName = record ? recordLabel(record, citationTitle) : fileNameOf(sourceFile);
     const text = typeof r.text === 'string' ? r.text : '';
     hits.push({
       number: index + 1,

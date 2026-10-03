@@ -345,6 +345,21 @@ export function threadHistory(main: readonly HistoryTurnLike[], thread: readonly
   return [...lead, ...own];
 }
 
+/**
+ * Adjacent turns of the same role joined into one, so replayed history
+ * alternates (a summary brought back from a nested discussion is a user
+ * turn that was never answered).
+ */
+export function alternateTurns(turns: readonly HistoryTurnLike[]): HistoryTurnLike[] {
+  const merged: HistoryTurnLike[] = [];
+  for (const turn of turns) {
+    const last = merged[merged.length - 1];
+    if (last && last.role === turn.role) merged[merged.length - 1] = { role: last.role, content: `${last.content}\n\n${turn.content}` };
+    else merged.push({ role: turn.role, content: turn.content });
+  }
+  return merged;
+}
+
 /** "3 replies about Revenue by quarter" ("1 question about …" before the first answer). */
 export function repliesLabel(thread: Pick<FocusThread, 'turns' | 'anchor'>): string {
   const answers = thread.turns.filter(t => t.role === 'assistant').length;

@@ -232,6 +232,25 @@ export interface SideQuestionOptions {
   ancestors?: readonly AncestorInfo[];
   /** Ask for suggested next questions (side threads). */
   followups?: boolean;
+  /** Summaries brought back from nested discussions since the last answer. */
+  notes?: readonly { label: string; text: string }[];
+}
+
+/** Characters of the brought-back summaries placed in one question. */
+export const MAX_NOTES_CHARS = 4_000;
+
+/** Summaries brought back from nested discussions, newest kept within the cap. */
+export function notesBlock(notes: readonly { label: string; text: string }[], max = MAX_NOTES_CHARS): string {
+  const parts: string[] = [];
+  let budget = max;
+  for (let i = notes.length - 1; i >= 0 && budget > 0; i--) {
+    const cut = capText(notes[i].text.trim(), budget);
+    if (!cut.text) continue;
+    budget -= Array.from(cut.text).length;
+    const more = cut.omitted > 0 ? `\n(${cut.omitted} more characters not included)` : '';
+    parts.unshift(`Context — brought back from the nested discussion about "${oneLine(notes[i].label)}":\n${fenced(cut.text, 'markdown')}${more}`);
+  }
+  return parts.join('\n\n');
 }
 
 /** The full text sent to the agent for one side question. */
@@ -250,6 +269,7 @@ export function composeSideQuestion(
     lead,
     chain ? `Context — how the reader got here (outermost first):\n${fenced(chain, 'text')}` : '',
     block,
+    notesBlock(options.notes ?? []),
     `Question: ${question.trim()}`,
     options.followups ? FOLLOWUPS_INSTRUCTION : '',
   ].filter(Boolean).join('\n\n');

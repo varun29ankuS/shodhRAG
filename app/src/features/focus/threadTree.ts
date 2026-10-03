@@ -112,6 +112,51 @@ export function findChildThread(
   return threads.find(t => (parents.get(t.id) ?? null) === parentThreadId && sameTarget(t.anchor.target, target)) ?? null;
 }
 
+/** An outer level of a nested thread: its object and the exchange the next level came from. */
+export interface ThreadAncestor {
+  target: FocusTarget;
+  question?: string;
+  answer?: string;
+}
+
+/**
+ * The outer levels of a thread opened from `parentThreadId` (at its answer
+ * `parentTurnId`), outermost first: for each, the object, the answer the
+ * next level was opened from (the latest answer when unknown) and the
+ * question before it.
+ */
+export function ancestorsFor(
+  threads: readonly FocusThread[],
+  parentThreadId: string | null,
+  parentTurnId: string | null,
+): ThreadAncestor[] {
+  if (!parentThreadId) return [];
+  const path = threadPath(threads, parentThreadId).slice(-MAX_DEPTH);
+  return path.map((thread, i) => {
+    const turnId = i === path.length - 1 ? parentTurnId : path[i + 1].parentTurnId ?? null;
+    let at = turnId ? thread.turns.findIndex(t => t.id === turnId && t.role === 'assistant') : -1;
+    if (at < 0) {
+      for (let k = thread.turns.length - 1; k >= 0; k--) {
+        if (thread.turns[k].role === 'assistant') {
+          at = k;
+          break;
+        }
+      }
+    }
+    const info: ThreadAncestor = { target: thread.anchor.target };
+    if (at >= 0) {
+      info.answer = thread.turns[at].content;
+      for (let k = at - 1; k >= 0; k--) {
+        if (thread.turns[k].role === 'user') {
+          info.question = thread.turns[k].content;
+          break;
+        }
+      }
+    }
+    return info;
+  });
+}
+
 /** One visible row of the exploration map (a `role="tree"`). */
 export interface FlatNode {
   id: string;

@@ -141,3 +141,59 @@ test('nearest paper: own target first, then outer levels', () => {
   const web: FocusTarget = { ...source, hit: { ...source.hit, url: 'https://x' } } as FocusTarget;
   assert.equal(paperOf(web), null);
 });
+
+test('ancestorsFor: outer levels with the exchange each next level came from', async () => {
+  const { ancestorsFor } = await import('../src/features/focus/threadTree.ts');
+  const turn = (id: string, role: 'user' | 'assistant', content: string) => ({ id, role, content, timestamp: id });
+  const root = {
+    id: 'r',
+    anchor: { conversationId: 'c', parentMessageId: 'm', target: eq },
+    turns: [turn('q1', 'user', 'First?'), turn('a1', 'assistant', 'First answer'), turn('q2', 'user', 'Second?'), turn('a2', 'assistant', 'Second answer')],
+    createdAt: '0',
+    updatedAt: '0',
+  };
+  const mid = {
+    id: 'm1',
+    parentThreadId: 'r',
+    parentTurnId: 'a1',
+    anchor: { conversationId: 'c', parentMessageId: 'm', target: diagram },
+    turns: [turn('q3', 'user', 'Node B?'), turn('a3', 'assistant', 'B is the knot')],
+    createdAt: '0',
+    updatedAt: '0',
+  };
+  const chain = ancestorsFor([root, mid], 'm1', 'a3');
+  assert.equal(chain.length, 2);
+  assert.deepEqual(chain[0], { target: eq, question: 'First?', answer: 'First answer' }, 'root: the answer the child came from, not the latest');
+  assert.deepEqual(chain[1], { target: diagram, question: 'Node B?', answer: 'B is the knot' });
+  assert.deepEqual(ancestorsFor([root, mid], null, null), []);
+  // Unknown turn: the latest answer is used.
+  assert.equal(ancestorsFor([root], 'r', 'gone')[0].answer, 'Second answer');
+  // Missing parent thread: no chain rather than a crash.
+  assert.deepEqual(ancestorsFor([mid], 'missing', 'x'), []);
+});
+
+test('brought-back notes travel with the next question, capped', async () => {
+  const { MAX_NOTES_CHARS, notesBlock } = await import('../src/features/focus/contextBlock.ts');
+  const q = composeSideQuestion(eq, 'Next?', {}, { notes: [{ label: 'Spline', text: 'Summary with $x^2$' }] });
+  assert.match(q, /Context — brought back from the nested discussion about "Spline":\n```markdown\nSummary with \$x\^2\$\n```/);
+  assert.ok(q.indexOf('brought back') < q.indexOf('Question: Next?'));
+  const big = notesBlock([{ label: 'old', text: 'o'.repeat(5000) }, { label: 'new', text: 'n'.repeat(5000) }]);
+  assert.ok(!big.includes('"old"'), 'newest kept first');
+  assert.match(big, /more characters not included/);
+  assert.ok((big.match(/n/g) ?? []).length <= MAX_NOTES_CHARS + 10);
+  assert.equal(notesBlock([]), '');
+});
+
+test('replayed history alternates: unanswered brought-back notes merge into the next question', async () => {
+  const { alternateTurns, threadHistory } = await import('../src/features/focus/threadStore.ts');
+  const out = alternateTurns(threadHistory(
+    [{ role: 'user', content: 'main q' }, { role: 'assistant', content: 'main a' }],
+    [{ role: 'user', content: 'note' }, { role: 'user', content: 'side q' }, { role: 'assistant', content: 'side a\n```followups\n["x"]\n```' }],
+  ));
+  assert.deepEqual(out, [
+    { role: 'user', content: 'main q' },
+    { role: 'assistant', content: 'main a' },
+    { role: 'user', content: 'note\n\nside q' },
+    { role: 'assistant', content: 'side a' },
+  ]);
+});

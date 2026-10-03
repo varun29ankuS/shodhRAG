@@ -2,7 +2,7 @@ import React, { useCallback, useRef } from 'react';
 import { MessageSquareText } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { FocusTarget } from './focusTypes';
-import { useFocus, useFocusAnchor } from './FocusContext';
+import { notifyDepthLimit, useFocus, useFocusAnchor, useFocusDrill } from './FocusContext';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -24,30 +24,40 @@ export interface FocusFrameProps {
  * Gives a visual in an answer its way into the focus pop-out: an always
  * visible "Expand & ask" button (Tab reaches it, Enter opens), plus
  * double-click. It stays subdued until hovered so it does not compete
- * with the visual. Renders the visual unchanged outside an
- * answer (no anchor), e.g. inside the pop-out's own side discussion.
+ * with the visual. Inside a finished side answer it opens the visual as a
+ * nested level of the pop-out. Renders the visual unchanged anywhere else
+ * (no anchor), e.g. a side answer still being written.
  */
 export function FocusFrame({ noun, getTarget, doubleClick = true, inline = false, className, children }: FocusFrameProps) {
   const focus = useFocus();
-  const anchor = useFocusAnchor();
+  const drill = useFocusDrill();
+  const answerAnchor = useFocusAnchor();
+  // Inside a side answer the drill context wins: the pop-out's own levels.
+  const anchor = drill ? null : answerAnchor;
   const frameRef = useRef<HTMLElement>(null);
   const Wrapper = inline ? 'span' : 'div';
   const buttonRef = useRef<HTMLButtonElement>(null);
 
   const open = useCallback((trigger: HTMLElement | null) => {
     const el = frameRef.current;
-    if (!focus || !anchor || !el) return;
+    if (!focus || (!anchor && !drill) || !el) return;
     const target = getTarget(el);
     if (!target) return;
+    if (drill) {
+      const result = focus.drillDown({ target, parentThreadId: drill.parentThreadId, parentTurnId: drill.parentTurnId });
+      if (result === 'depth') notifyDepthLimit();
+      return;
+    }
+    if (!anchor) return;
     focus.openFocus({
       target,
       conversationId: anchor.conversationId,
       parentMessageId: anchor.messageId,
       trigger: trigger ?? buttonRef.current,
     });
-  }, [focus, anchor, getTarget]);
+  }, [focus, anchor, drill, getTarget]);
 
-  if (!focus || !anchor) return <Wrapper className={cn(inline && 'inline-block', className)}>{children}</Wrapper>;
+  if (!focus || (!anchor && !drill)) return <Wrapper className={cn(inline && 'inline-block', className)}>{children}</Wrapper>;
 
   const onDoubleClick = (e: React.MouseEvent<HTMLElement>) => {
     if (e.target instanceof Element && e.target.closest('button, a, input, textarea, select')) return;

@@ -327,12 +327,20 @@ export function useSourceDocument(hit: SearchHit, { onPageChange }: SourceDocume
     body = (
       <>
         <LocateNotice result={locate} reason={panel.reason} passage={passage} onRetry={panel.retryPdf ? retryPdf : undefined} />
-        <ViewerBoundary
-          key={`${fileInfo.path}:${viewer}`}
-          fallback={error => <PassageFallback message={`The document viewer failed (${error.message}).`} passage={passage} />}
+        {/* Selected text in the document can be asked about ("Ask about this", features/focus/SelectionAsk). */}
+        <div
+          className="flex-1 min-h-0 min-w-0 flex flex-col"
+          data-ask-scope="document"
+          data-source-file={hit.sourceFile}
+          data-file-name={fileInfo.fileName}
         >
-          {viewerNode}
-        </ViewerBoundary>
+          <ViewerBoundary
+            key={`${fileInfo.path}:${viewer}`}
+            fallback={error => <PassageFallback message={`The document viewer failed (${error.message}).`} passage={passage} />}
+          >
+            {viewerNode}
+          </ViewerBoundary>
+        </div>
       </>
     );
   }

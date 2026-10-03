@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Check, Copy, FolderPlus, MessagesSquare, RotateCcw } from 'lucide-react';
+import { Check, Copy, CornerLeftUp, FolderPlus, MessagesSquare, RotateCcw } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { cn } from '../../lib/utils';
 import type { ViewTab } from '../../lib/viewTabs';
@@ -19,6 +19,9 @@ import { FocusAnchorProvider, useFocus } from '../focus/FocusContext';
 import type { FocusThread } from '../focus/focusTypes';
 import { sourceTarget } from '../focus/targets';
 import { repliesLabel } from '../focus/threadStore';
+import { descendantCount, rootThreads } from '../focus/threadTree';
+import type { SideSummaryRef } from '../focus/summary';
+import { UserText } from './UserText';
 import { useChatSession } from './ChatSessionContext';
 import { MessageContentRenderer } from './MessageContentRenderer';
 import { RunChip } from './RunChip';
@@ -215,7 +218,8 @@ function CopyAnswerButton({ text }: { text: string }) {
 
 /** "2 replies about Revenue by quarter": reopens that side discussion. */
 function ThreadChips({ threads, onOpen }: { threads: readonly FocusThread[]; onOpen: (thread: FocusThread, trigger: HTMLElement) => void }) {
-  const withReplies = threads.filter(t => t.turns.length > 0);
+  // Nested (drill-down) discussions open from their root; the chip counts them.
+  const withReplies = rootThreads(threads).filter(t => t.turns.length > 0);
   if (withReplies.length === 0) return null;
   return (
     <ul className="flex flex-wrap gap-2" aria-label="Side discussions">
@@ -232,6 +236,10 @@ function ThreadChips({ threads, onOpen }: { threads: readonly FocusThread[]; onO
           >
             <MessagesSquare className="w-3.5 h-3.5 shrink-0 text-shodh-accent-text" aria-hidden="true" />
             <span className="truncate">{repliesLabel(thread)}</span>
+            {(() => {
+              const deeper = descendantCount(threads, thread.id);
+              return deeper > 0 ? <span className="shrink-0 text-shodh-text-muted">{` · ${deeper} deeper`}</span> : null;
+            })()}
           </button>
         </li>
       ))}
@@ -295,7 +303,14 @@ function AssistantMessage({
   );
 
   const article = (
-    <article className="ask-rise group/msg flex flex-col gap-4" aria-busy={running}>
+    <article
+      className="ask-rise group/msg flex flex-col gap-4"
+      aria-busy={running}
+      // Selected text in a finished answer can be asked about (features/focus/SelectionAsk).
+      data-ask-scope={!running && conversationId ? 'answer' : undefined}
+      data-conversation-id={conversationId ?? undefined}
+      data-message-id={messageId}
+    >
       {transcript ? (
         <>
           {inlinePlan && transcript.plan && <PlanPanel items={transcript.plan} live={running} variant="inline" />}
@@ -378,6 +393,55 @@ function AssistantMessage({
     <FocusAnchorProvider conversationId={conversationId} messageId={messageId} enabled={!running}>
       {article}
     </FocusAnchorProvider>
+  );
+}
+
+/**
+ * A summary brought back from a side discussion: a card (not a plain
+ * bubble) that renders its equations and diagrams and reopens the
+ * discussion it came from.
+ */
+function SideSummaryCard({
+  summary,
+  content,
+  canOpen,
+  onOpen,
+}: {
+  summary: SideSummaryRef;
+  content: string;
+  canOpen: boolean;
+  onOpen: (trigger: HTMLElement) => void;
+}) {
+  return (
+    <div className="ask-rise flex justify-end">
+      <section
+        aria-label={`From a side discussion about ${summary.label}`}
+        className="w-full max-w-[560px] min-w-0 rounded-[18px] border border-shodh-border bg-shodh-surface px-4 py-3 flex flex-col gap-2"
+      >
+        <header className="flex items-center gap-2 min-w-0 text-[12px] text-shodh-text-muted">
+          <CornerLeftUp className="w-3.5 h-3.5 shrink-0 text-shodh-accent-text" aria-hidden="true" />
+          <span className="truncate">
+            From a side discussion about <span className="text-shodh-text-secondary">{summary.label}</span>
+          </span>
+          <button
+            type="button"
+            onClick={e => onOpen(e.currentTarget)}
+            disabled={!canOpen}
+            title={canOpen ? 'Reopen the side discussion' : 'This side discussion is no longer available'}
+            className={cn(
+              'ml-auto shrink-0 inline-flex items-center gap-1 h-6 px-2 rounded-full border border-shodh-border text-[11.5px] text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-45 disabled:cursor-not-allowed transition-colors duration-micro',
+              FOCUS_RING,
+            )}
+          >
+            <MessagesSquare className="w-3 h-3" aria-hidden="true" />
+            Open discussion
+          </button>
+        </header>
+        <div className="text-[14.5px] leading-[1.55] text-shodh-text">
+          <UserText text={content} markdown />
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -551,10 +615,28 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     focus.openFocus({
       target: sourceTarget(preview.hit, sourceLabel(preview.hit)),
       conversationId,
-      parentMessageId: preview.messageId,
+      // A document the agent showed belongs to no answer: kept on this device.
+      parentMessageId: preview.messageId === AGENT_DOCUMENT_PREVIEW ? null : preview.messageId,
       trigger,
     });
   }, [focus, preview, conversationId]);
+
+  const summaryThreadExists = useCallback((summary: SideSummaryRef): boolean =>
+    Boolean(conversationId && focus?.findThread(conversationId, summary.parentMessageId, summary.threadId)),
+  [focus, conversationId]);
+
+  const openSummaryThread = useCallback((summary: SideSummaryRef, trigger: HTMLElement) => {
+    if (!focus || !conversationId) return;
+    const thread = focus.findThread(conversationId, summary.parentMessageId, summary.threadId);
+    if (!thread) return;
+    focus.openFocus({
+      target: thread.anchor.target,
+      conversationId,
+      parentMessageId: summary.parentMessageId,
+      threadId: thread.id,
+      trigger,
+    });
+  }, [focus, conversationId]);
 
   const closePreview = useCallback(() => {
     setPreview(null);
@@ -686,10 +768,22 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
         >
           {messages.map(message => {
             if (message.role === 'user') {
+              const summary = message.sideSummary;
+              if (summary) {
+                return (
+                  <SideSummaryCard
+                    key={message.id}
+                    summary={summary}
+                    content={message.content}
+                    canOpen={summaryThreadExists(summary)}
+                    onOpen={trigger => openSummaryThread(summary, trigger)}
+                  />
+                );
+              }
               return (
                 <div key={message.id} className="ask-rise flex justify-end">
-                  <div className="max-w-[520px] px-4 py-[11px] rounded-[18px] bg-shodh-raised-2 text-[15px] leading-[1.55] text-shodh-text whitespace-pre-wrap break-words">
-                    {message.content}
+                  <div className="max-w-[520px] min-w-0 px-4 py-[11px] rounded-[18px] bg-shodh-raised-2 text-[15px] leading-[1.55] text-shodh-text">
+                    <UserText text={message.content} />
                   </div>
                 </div>
               );
@@ -738,15 +832,18 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
       )}
 
       {preview && (
-        <SourcePreview
-          key={preview.messageId}
-          hit={preview.hit}
-          siblings={previewSiblings}
-          onSelectHit={hit => setPreview(p => (p ? { ...p, hit } : p))}
-          onClose={closePreview}
-          onOpenView={onNavigate}
-          onFocus={focus ? focusPreview : undefined}
-        />
+        // Text selected in the document is asked about in a side discussion on its answer.
+        <div className="contents" data-ask-message-id={preview.messageId === AGENT_DOCUMENT_PREVIEW ? undefined : preview.messageId}>
+          <SourcePreview
+            key={preview.messageId}
+            hit={preview.hit}
+            siblings={previewSiblings}
+            onSelectHit={hit => setPreview(p => (p ? { ...p, hit } : p))}
+            onClose={closePreview}
+            onOpenView={onNavigate}
+            onFocus={focus ? focusPreview : undefined}
+          />
+        </div>
       )}
 
       {openArtifactId && allArtifacts.length > 0 && (

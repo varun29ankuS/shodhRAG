@@ -371,6 +371,8 @@ interface PdfViewerProps {
   rememberView?: boolean;
   /** Called once, when the first page is on screen. */
   onFirstPageVisible?: () => void;
+  /** The page the reader is on changed (scrolling, keys or the page field). */
+  onPageChange?: (page: number) => void;
 }
 
 /**
@@ -391,6 +393,7 @@ export function PdfViewer({
   onFatal,
   rememberView = false,
   onFirstPageVisible,
+  onPageChange,
 }: PdfViewerProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -444,11 +447,13 @@ export function PdfViewer({
   const onLocateRef = useRef(onLocate);
   const onFatalRef = useRef(onFatal);
   const onFirstPageVisibleRef = useRef(onFirstPageVisible);
+  const onPageChangeRef = useRef(onPageChange);
   useEffect(() => {
     onLocateRef.current = onLocate;
     onFatalRef.current = onFatal;
     onFirstPageVisibleRef.current = onFirstPageVisible;
-  }, [onLocate, onFatal, onFirstPageVisible]);
+    onPageChangeRef.current = onPageChange;
+  }, [onLocate, onFatal, onFirstPageVisible, onPageChange]);
 
   const scale = zoom.mode === 'fit' ? fitScale : zoom.scale;
   const numPages = sizes.length;
@@ -460,6 +465,7 @@ export function PdfViewer({
   useEffect(() => {
     currentPageRef.current = currentPage;
     setPageInput(String(currentPage));
+    onPageChangeRef.current?.(currentPage);
   }, [currentPage]);
   useEffect(() => {
     zoomRef.current = zoom;
@@ -980,6 +986,38 @@ export function PdfViewer({
     anchorPage.current = currentPage;
     setZoom({ mode: 'manual', scale: clampScale(scale * factor) });
   };
+
+  // Ctrl/⌘ + wheel (and trackpad pinch, which arrives as a ctrl wheel) zooms
+  // the pages instead of the window. Native listener: React's onWheel is
+  // passive and cannot cancel the window zoom. Steps are folded per frame so
+  // a pinch re-renders the pages once per frame, not once per event.
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    let pending = 1;
+    let frame: number | null = null;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const pixels = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
+      pending *= Math.min(2, Math.max(0.5, Math.exp(-pixels * 0.0025)));
+      if (frame !== null) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        const factor = pending;
+        pending = 1;
+        anchorPage.current = currentPageRef.current;
+        setZoom({ mode: 'manual', scale: clampScale(scaleRef.current * factor) });
+      });
+    };
+    scroller.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      scroller.removeEventListener('wheel', onWheel);
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, []);
   const fitWidth = () => {
     anchorPage.current = currentPage;
     setZoom({ mode: 'fit' });

@@ -17,6 +17,8 @@ import {
 import type { TranscriptAction, TranscriptState } from '../agent/reducer';
 import { toAgentError, useAgentSession } from '../agent/useAgentSession';
 import type { HistoryTurn } from '../agent/useAgentSession';
+import type { FocusThread } from '../focus/focusTypes';
+import { metadataWithThreads, metadataWithoutThreads, threadsFromMetadata } from '../focus/threadStore';
 import type {
   ChatMessage,
   RawSearchResult,
@@ -113,6 +115,29 @@ export interface ChatSessionValue {
   /** Append a non-chat message (e.g. OCR or upload notices) to the active conversation. */
   appendMessage: (message: ChatMessage) => void;
   updateMessage: (id: string, patch: Partial<ChatMessage>) => void;
+
+  /** A side-thread question being answered; blocks main sends until it ends. */
+  sideRun: SideRunInfo | null;
+  /**
+   * Reserve the single agent run for a side thread. False when an answer
+   * (main or side) is already running.
+   */
+  claimSideRun: (info: SideRunInfo) => boolean;
+  /** Give the run back; only the holder's `threadId` releases it. */
+  releaseSideRun: (threadId: string) => void;
+  /**
+   * Change the side threads stored on a message, in the visible
+   * conversation or in the background one it belongs to.
+   */
+  updateThreads: (conversationId: string, messageId: string, update: (threads: FocusThread[]) => FocusThread[]) => void;
+}
+
+/** The side-thread answer that holds the run. */
+export interface SideRunInfo {
+  conversationId: string;
+  threadId: string;
+  /** What the question is about, e.g. "Revenue by quarter". */
+  label: string;
 }
 
 const ChatSessionContext = createContext<ChatSessionValue | null>(null);
@@ -153,6 +178,8 @@ function readRun(value: unknown): RunRecord | undefined {
 }
 
 function fromStored(m: ConversationMessage): ChatMessage {
+  const metadata = metadataWithoutThreads(m.metadata);
+  const threads = threadsFromMetadata(m.metadata);
   return {
     id: m.id,
     role: m.role,
@@ -160,9 +187,10 @@ function fromStored(m: ConversationMessage): ChatMessage {
     timestamp: m.timestamp,
     artifacts: m.artifacts,
     searchResults: m.searchResults as RawSearchResult[] | undefined,
-    metadata: isRecord(m.metadata) ? (m.metadata as ResponseMetadata) : undefined,
+    metadata: metadata ? (metadata as ResponseMetadata) : undefined,
     run: readRun(m.run),
     transcript: fromPersisted(m.transcript) ?? undefined,
+    threads: threads.length > 0 ? threads : undefined,
   };
 }
 
@@ -175,7 +203,8 @@ function toStored(m: ChatMessage): ConversationMessage {
   };
   if (m.artifacts && m.artifacts.length > 0) stored.artifacts = m.artifacts;
   if (m.searchResults && m.searchResults.length > 0) stored.searchResults = m.searchResults;
-  if (m.metadata) stored.metadata = m.metadata as Record<string, unknown>;
+  const metadata = metadataWithThreads(m.metadata, m.threads ?? []);
+  if (metadata) stored.metadata = metadata;
   if (m.run) {
     const { activity: _activity, ...persistable } = m.run;
     stored.run = persistable as unknown as Record<string, unknown>;
@@ -210,8 +239,11 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const [liveRun, setLiveRun] = useState<LiveRunInfo | null>(null);
   const [navigation, setNavigation] = useState<AgentNavigation | null>(null);
   const [runtimeInstalled, setRuntimeInstalled] = useState<boolean | null>(null);
+  const [sideRun, setSideRun] = useState<SideRunInfo | null>(null);
 
   const liveRef = useRef<LiveRun | null>(null);
+  // Read synchronously by send/retry/claim so two runs can never start in one tick.
+  const sideRunRef = useRef<SideRunInfo | null>(null);
   const viewRef = useRef(view);
   viewRef.current = view;
   const activeConversationRef = useRef(activeConversation);
@@ -414,7 +446,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const send = useCallback(async (text: string, options: SendOptions) => {
     const prompt = text.trim();
     const conversationId = viewRef.current.conversationId;
-    if (!prompt || !conversationId || liveRef.current) return;
+    if (!prompt || !conversationId || liveRef.current || sideRunRef.current) return;
 
     const history = viewRef.current.messages;
     const userMessage: ChatMessage = {
@@ -435,7 +467,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
 
   const retry = useCallback((assistantMessageId: string, options: SendOptions) => {
     const { conversationId, messages } = viewRef.current;
-    if (!conversationId || liveRef.current) return;
+    if (!conversationId || liveRef.current || sideRunRef.current) return;
     const index = messages.findIndex(m => m.id === assistantMessageId);
     if (index < 0) return;
     let userIndex = -1;
@@ -535,6 +567,37 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     setView(v => ({ ...v, messages: v.messages.map(m => (m.id === id ? { ...m, ...patch } : m)) }));
   }, []);
 
+  const claimSideRun = useCallback((info: SideRunInfo) => {
+    if (liveRef.current || sideRunRef.current) return false;
+    sideRunRef.current = info;
+    setSideRun(info);
+    return true;
+  }, []);
+
+  const releaseSideRun = useCallback((threadId: string) => {
+    if (sideRunRef.current?.threadId !== threadId) return;
+    sideRunRef.current = null;
+    setSideRun(null);
+  }, []);
+
+  const updateThreads = useCallback((conversationId: string, messageId: string, update: (threads: FocusThread[]) => FocusThread[]) => {
+    const apply = (threads: FocusThread[] | undefined) => {
+      const next = update(threads ?? []);
+      return next.length > 0 ? next : undefined;
+    };
+    if (viewRef.current.conversationId === conversationId) {
+      dirtyRef.current = true;
+      setView(v => (v.conversationId !== conversationId
+        ? v
+        : { ...v, messages: v.messages.map(m => (m.id === messageId ? { ...m, threads: apply(m.threads) } : m)) }));
+      return;
+    }
+    // Background conversation: edit the stored message, keeping its other metadata.
+    updateConversationMessages(conversationId, prev => prev.map(m => (m.id !== messageId
+      ? m
+      : { ...m, metadata: metadataWithThreads(m.metadata, apply(threadsFromMetadata(m.metadata)) ?? []) })));
+  }, [updateConversationMessages]);
+
   const streamingConversationId = liveRun?.conversationId ?? null;
 
   const value = useMemo<ChatSessionValue>(() => ({
@@ -561,7 +624,11 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     approve,
     appendMessage,
     updateMessage,
-  }), [conv, view, streamingConversationId, liveRun, navigation, runtimeInstalled, send, retry, steer, cancel, approve, appendMessage, updateMessage]);
+    sideRun,
+    claimSideRun,
+    releaseSideRun,
+    updateThreads,
+  }), [conv, view, streamingConversationId, liveRun, navigation, runtimeInstalled, send, retry, steer, cancel, approve, appendMessage, updateMessage, sideRun, claimSideRun, releaseSideRun, updateThreads]);
 
   return <ChatSessionContext.Provider value={value}>{children}</ChatSessionContext.Provider>;
 }

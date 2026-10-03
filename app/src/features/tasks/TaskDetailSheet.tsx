@@ -1,9 +1,12 @@
 import React, { useId, useRef, useState } from 'react';
-import { Bot, Check, FileText, Plus, Trash2, X } from 'lucide-react';
+import { Bot, Check, FileText, MessageSquareText, Plus, Trash2, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import DetailSheet from './DetailSheet';
 import { ChipInput, DateTimeField, FIELD_LABEL, FOCUS_RING, INLINE_INPUT, InlineText, Segmented } from './fields';
 import { useTasksStore } from './TasksStore';
+import { useChatSession } from '../ask/ChatSessionContext';
+import { useFocus } from '../focus/FocusContext';
+import { taskTarget } from '../focus/targets';
 import { isTempSubtaskId } from './taskStore';
 import { PRIORITIES, PRIORITY_LABELS, STATUSES, STATUS_LABELS } from './types';
 import type { TodoItem } from './types';
@@ -131,6 +134,56 @@ function SubtaskList({ task }: { task: TodoItem }) {
 }
 
 /** Task detail and editing sheet. Every field saves on its own (blur/Enter/click). */
+/**
+ * Opens the task in the focus pop-out with a side discussion about it. The
+ * discussion belongs to the conversation open in Ask; tasks are not part
+ * of a conversation, so it is kept on this device.
+ */
+function AskAboutTask({ task }: { task: TodoItem }) {
+  const focus = useFocus();
+  const { activeConversationId, activeConversation } = useChatSession();
+  if (!focus || !activeConversationId) return null;
+  const replies = focus
+    .localThreads(activeConversationId)
+    .filter(t => t.anchor.target.kind === 'task' && t.anchor.target.task.id === task.id)
+    .reduce((n, t) => n + t.turns.filter(turn => turn.role === 'assistant').length, 0);
+  const open = (trigger: HTMLElement) => {
+    focus.openFocus({
+      target: taskTarget({
+        id: task.id,
+        title: task.title,
+        status: task.status,
+        priority: task.priority,
+        dueDate: task.dueDate ?? null,
+        notes: task.description,
+        tags: task.tags,
+        subtasks: task.subtasks.map(s => ({ title: s.title, completed: s.completed })),
+        project: task.project ?? null,
+      }),
+      parentMessageId: null,
+      trigger,
+    });
+  };
+  const conversation = activeConversation?.title?.trim() || 'the current conversation';
+  return (
+    <div className="px-2.5">
+      <button
+        type="button"
+        onClick={e => open(e.currentTarget)}
+        title={`Ask about this task in a side discussion of “${conversation}”`}
+        className={cn(
+          'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border-strong text-[12.5px] text-shodh-text hover:bg-shodh-raised transition-colors duration-micro',
+          FOCUS_RING,
+        )}
+      >
+        <MessageSquareText className="w-3.5 h-3.5" aria-hidden="true" />
+        Ask about this task
+        {replies > 0 && <span className="text-shodh-text-muted tabular-nums">{`· ${replies} ${replies === 1 ? 'reply' : 'replies'}`}</span>}
+      </button>
+    </div>
+  );
+}
+
 export default function TaskDetailSheet({ task, onClose }: { task: TodoItem | null; onClose: () => void }) {
   const { updateTask, deleteTask, tasks } = useTasksStore();
   // Keep showing the last task while the sheet animates closed.
@@ -178,6 +231,7 @@ export default function TaskDetailSheet({ task, onClose }: { task: TodoItem | nu
         className="h-auto py-1.5 text-[17px] font-semibold"
       />
       <Provenance source={shown.source} sourceRef={shown.sourceRef} />
+      <AskAboutTask task={shown} />
       <div className="px-2.5 flex flex-wrap gap-x-6 gap-y-3">
         <Segmented
           label="Status"

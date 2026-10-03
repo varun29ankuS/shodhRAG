@@ -261,11 +261,12 @@ impl StatementStore {
                     unchanged.get_or_insert(row);
                 }
                 Some(Relation::Update) => updates.push((row, existing)),
-                Some(Relation::Historical { valid_to }) => {
-                    if historical.as_ref().is_none_or(|(_, t)| valid_to < *t) {
-                        historical = Some((row, valid_to));
-                    }
+                Some(Relation::Historical { valid_to })
+                    if historical.as_ref().is_none_or(|(_, t)| valid_to < *t) =>
+                {
+                    historical = Some((row, valid_to));
                 }
+                Some(Relation::Historical { .. }) => {}
             }
         }
 
@@ -788,6 +789,20 @@ impl StatementStore {
         if let Some(subject) = &query.subject {
             parts.push(format!("subject = {}", quote(subject)));
         }
+        if !query.source_prefixes.is_empty() {
+            let any = query
+                .source_prefixes
+                .iter()
+                .map(|prefix| {
+                    format!(
+                        "source LIKE {}",
+                        quote(&format!("{}%", like_escape(prefix)))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            parts.push(format!("({any})"));
+        }
         if !query.scopes.is_empty() {
             parts.push(format!(
                 "scope IN ({})",
@@ -816,6 +831,14 @@ impl StatementStore {
                 .any(|v| v.to_string() == filter.equals)
         })
     }
+}
+
+/// Escapes `LIKE` wildcards (`%`, `_`) and the escape character (backslash, the default
+/// escape of LanceDB's SQL filters, as in `LanceStore::delete_by_source_prefix`).
+fn like_escape(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 /// Rows current at `at`: started, not superseded, not expired.

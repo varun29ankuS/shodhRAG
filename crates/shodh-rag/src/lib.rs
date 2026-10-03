@@ -19,6 +19,7 @@ pub mod statements;
 pub mod storage;
 pub mod templates;
 pub mod types;
+pub mod user_memory;
 
 // Ported modules from old shodh-rag
 pub mod agent;

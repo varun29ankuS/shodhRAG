@@ -9,30 +9,31 @@ use shodh_ontology::{Extractor, ExtractorKind, Ontology, Provenance, RawValue, S
 use super::{Clock, DynamicsStore, EmbedderSource, StatementResult, StatementStore};
 use crate::embeddings::EmbeddingModel;
 
-pub(crate) const DIM: usize = 64;
+pub(crate) const DIM: usize = 256;
 
-/// Hashes lower-cased words into `DIM` buckets and L2-normalises: texts sharing words are
-/// similar, texts sharing none are orthogonal.
-pub(crate) struct WordEmbedder;
+/// Gives each distinct lower-cased word its own dimension (a per-embedder vocabulary) and
+/// L2-normalises: texts sharing words are similar, texts sharing none are orthogonal.
+#[derive(Default)]
+pub(crate) struct WordEmbedder {
+    vocabulary: Mutex<std::collections::HashMap<String, usize>>,
+}
 
 impl WordEmbedder {
-    fn embed(text: &str) -> Vec<f32> {
+    fn embed(&self, text: &str) -> Vec<f32> {
         let mut v = vec![0.0f32; DIM];
+        let mut vocabulary = self.vocabulary.lock().unwrap();
         for word in text
             .split(|c: char| !c.is_alphanumeric())
             .filter(|w| w.len() > 1)
         {
-            let word = word.to_lowercase();
-            let mut h: u64 = 1469598103934665603;
-            for b in word.bytes() {
-                h ^= u64::from(b);
-                h = h.wrapping_mul(1099511628211);
-            }
-            v[(h % DIM as u64) as usize] += 1.0;
+            let next = vocabulary.len();
+            let index = *vocabulary.entry(word.to_lowercase()).or_insert(next);
+            assert!(index < DIM, "test vocabulary exceeded {DIM} words");
+            v[index] += 1.0;
         }
         let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         if norm == 0.0 {
-            v[0] = 1.0;
+            v[DIM - 1] = 1.0;
         } else {
             v.iter_mut().for_each(|x| *x /= norm);
         }
@@ -42,10 +43,10 @@ impl WordEmbedder {
 
 impl EmbeddingModel for WordEmbedder {
     fn embed_query(&self, text: &str) -> anyhow::Result<Vec<f32>> {
-        Ok(Self::embed(text))
+        Ok(self.embed(text))
     }
     fn embed_document(&self, text: &str) -> anyhow::Result<Vec<f32>> {
-        Ok(Self::embed(text))
+        Ok(self.embed(text))
     }
     fn dimension(&self) -> usize {
         DIM
@@ -106,7 +107,7 @@ pub(crate) async fn fixture() -> Fixture {
         DIM,
         ontology(),
         dynamics,
-        Arc::new(FixedEmbedder(Arc::new(WordEmbedder))),
+        Arc::new(FixedEmbedder(Arc::new(WordEmbedder::default()))),
         clock.clone(),
     )
     .await

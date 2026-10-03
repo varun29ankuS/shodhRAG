@@ -40,7 +40,7 @@ use shodh_ontology::{PropertyChange, Statement, Violation};
 
 pub use dynamics::{DynamicsState, LinkState};
 pub use identity::identity_tokens;
-pub use render::render_text;
+pub use render::{render_text, SELF_ENTITY_ID};
 pub use sqlite::DynamicsStore;
 pub use store::{EmbedderSource, StatementStore, STATEMENTS_TABLE};
 
@@ -337,6 +337,9 @@ pub struct StatementQuery {
     pub properties: Vec<PropertyFilter>,
     /// Only these scopes. Empty means all scopes.
     pub scopes: Vec<Scope>,
+    /// Only statements whose provenance source starts with one of these prefixes (for
+    /// example `conversation://`). Empty means any source.
+    pub source_prefixes: Vec<String>,
     /// Current at this time instead of now. Ignored with `include_history`.
     pub as_of: Option<DateTime<Utc>>,
     /// Include superseded and expired statements (forgotten ones are never returned).

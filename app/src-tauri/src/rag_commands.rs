@@ -874,7 +874,7 @@ fn is_supported_file(filename: &str) -> bool {
         "tiff", "tif",
     ];
 
-    if let Some(ext) = filename.split('.').last() {
+    if let Some(ext) = filename.rsplit('.').next() {
         supported_extensions.contains(&ext.to_lowercase().as_str())
     } else {
         false
@@ -1801,8 +1801,8 @@ pub async fn get_source_files(
                             .cloned()
                             .unwrap_or_else(|| {
                                 file_path
-                                    .split(&['/', '\\'][..])
-                                    .last()
+                                    .rsplit(&['/', '\\'][..])
+                                    .next()
                                     .unwrap_or("unknown")
                                     .to_string()
                             });
@@ -1815,7 +1815,7 @@ pub async fn get_source_files(
                             .cloned()
                             .unwrap_or_else(|| {
                                 // Extract extension from file path
-                                file_path.split('.').last().unwrap_or("txt").to_lowercase()
+                                file_path.rsplit('.').next().unwrap_or("txt").to_lowercase()
                             });
 
                         // All documents in the index are considered successfully indexed
@@ -1986,8 +1986,8 @@ pub(crate) fn is_code_file(path: &str) -> bool {
         "xml", "sql",
     ];
 
-    path.split('.')
-        .last()
+    path.rsplit('.')
+        .next()
         .map(|ext| code_extensions.contains(&ext.to_lowercase().as_str()))
         .unwrap_or(false)
 }
@@ -2123,7 +2123,6 @@ pub async fn get_document_preview(
     tracing::info!("📄 Getting preview for: {}", file_path);
 
     use std::fs;
-    use std::io::{BufRead, BufReader};
     use std::path::Path;
 
     // Check if file exists
@@ -2151,11 +2150,12 @@ pub async fn get_document_preview(
 
     // Extract excerpt based on file type
     let excerpt = if is_code_file(&file_path) || extension == "txt" || extension == "md" {
-        // Extract text excerpt
-        let file = fs::File::open(&file_path).map_err(|e| format!("Failed to open file: {}", e))?;
-
-        let reader = BufReader::new(file);
-        let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
+        // Decode lossily so a line with invalid UTF-8 is kept (with U+FFFD) instead of
+        // being dropped: dropping it would shift every later line and make `line_range`
+        // point at the wrong text. A read error aborts instead of being retried forever.
+        let bytes = fs::read(&file_path).map_err(|e| format!("Failed to read file: {}", e))?;
+        let text = String::from_utf8_lossy(&bytes);
+        let lines: Vec<&str> = text.lines().collect();
 
         if let Some((start, end)) = line_range {
             let start_idx = (start.saturating_sub(1)) as usize;

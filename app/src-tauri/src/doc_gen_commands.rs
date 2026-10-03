@@ -1807,8 +1807,8 @@ pub async fn get_comparable_documents(
                         .metadata
                         .get("file_path")
                         .map(|p| {
-                            p.split(&['/', '\\'][..])
-                                .last()
+                            p.rsplit(&['/', '\\'][..])
+                                .next()
                                 .unwrap_or("Unknown")
                                 .to_string()
                         })

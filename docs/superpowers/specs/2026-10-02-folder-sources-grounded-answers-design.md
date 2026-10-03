@@ -80,6 +80,17 @@ These findings motivate the design. All were confirmed in source.
 | Enterprise | Signed installer, auto-update, managed deployment (MSI + GPO/MDM) | Before the first corporate pilot |
 | Enterprise | Feedback loop (ratings and corrections feed the private eval set) | With M1 private-folder evals |
 
+**Hierarchical retrieval (added 2026-10-03).** Each layer is gated on M1 evaluation showing a gain: broad questions (which / list / overview) for layers 3–4, section-level questions for layers 1–2.
+
+| Layer | Behaviour | Depends on | Cost |
+|---|---|---|---|
+| 1. Parent–child retrieval | Match on small chunks, return the enclosing section as model context (bounded by token budget) | Section structure from M3 parsing (`section_path`) | Index-time only |
+| 2. `document_outline(path)` agent tool (`read` tier) | Heading tree with pages/char ranges; the agent navigates outline → section → paragraph via `open_document` | M3 section structure | None |
+| 3. Document-level index | Per-document summary + typed key fields (parties, dates, type), searched first; chunk search then runs within the top-k documents and is fused with global chunk search | Background LLM pass (one call per document; skipped in Local-only mode unless a local model is configured) | ~1 LLM call / document |
+| 4. Corpus summaries (RAPTOR-style recursive clustering and summarisation) | Cluster-level summaries for corpus-wide overview questions | Layer 3 | Highest; ships only if layer 3 leaves a measured gap |
+
+Layers 1–3 sit in the search-quality block after M1. Hierarchy covers document structure; the knowledge graph covers cross-document entities.
+
 **Knowledge graph design revision (graph extraction spike).**
 
 Measured on 5 synthetic documents with 70 gold mentions and 35 relations:

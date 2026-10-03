@@ -30,6 +30,7 @@ const SUGGESTIONS: Record<FocusKind, string[]> = {
   image: ['Describe what this image shows'],
   source: ['Explain this passage in plain words', 'What does the rest of the document say about this?'],
   task: ['Break this task into concrete steps', 'What do I need before I can start?'],
+  selection: ['Explain this in plain words', 'Why does this matter here?'],
 };
 
 function UserTurn({ turn }: { turn: ThreadTurn }) {

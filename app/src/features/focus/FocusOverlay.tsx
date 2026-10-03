@@ -26,6 +26,7 @@ const KIND_LABEL: Record<FocusKind, string> = {
   image: 'Image',
   source: 'Source',
   task: 'Task',
+  selection: 'Selection',
 };
 
 const MIN_WIDTH = 560;

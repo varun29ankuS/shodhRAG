@@ -553,6 +553,37 @@ function TaskStage({ task }: { task: FocusTaskSnapshot }) {
   );
 }
 
+/** The selected text, shown within the passage it came from. */
+function SelectionStage({ target }: { target: Extract<FocusTarget, { kind: 'selection' }> }) {
+  const text = target.text.trim();
+  const paragraph = target.paragraph.trim();
+  const at = paragraph && text ? paragraph.indexOf(text) : -1;
+  const where = target.document
+    ? `${target.document.fileName || target.document.sourceFile}${target.document.page !== null ? `, page ${target.document.page}` : ''}`
+    : 'From an answer';
+  return (
+    <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin bg-shodh-raised-2 p-6 flex justify-center">
+      <article className="w-full max-w-[640px] h-fit rounded-2xl border border-shodh-border bg-shodh-surface p-5 flex flex-col gap-3">
+        <p className="text-[11.5px] font-medium uppercase tracking-wider text-shodh-text-faint">{where}</p>
+        {at >= 0 ? (
+          <p className="text-[15px] leading-relaxed text-shodh-text-secondary whitespace-pre-wrap break-words">
+            {paragraph.slice(0, at)}
+            <mark className="rounded-[3px] bg-shodh-accent-soft px-0.5 text-shodh-text">{text}</mark>
+            {paragraph.slice(at + text.length)}
+          </p>
+        ) : (
+          <>
+            <blockquote className="pl-4 border-l-2 border-shodh-accent text-[15px] leading-relaxed text-shodh-text whitespace-pre-wrap break-words">{text}</blockquote>
+            {paragraph && (
+              <p className="text-[13.5px] leading-relaxed text-shodh-text-muted whitespace-pre-wrap break-words">{paragraph}</p>
+            )}
+          </>
+        )}
+      </article>
+    </div>
+  );
+}
+
 function TableView({ rows }: { rows: string[][] }) {
   const [header, ...body] = rows;
   return (
@@ -590,7 +621,7 @@ export interface FocusStageProps {
 /** The focused object, drawn for close reading. */
 export function FocusStage({ target, theme, commandRef, onPageChange }: FocusStageProps) {
   // Documents and tasks have no stage zoom (PDF pages zoom in their own viewer).
-  if (target.kind === 'source' || target.kind === 'task') commandRef.current = null;
+  if (target.kind === 'source' || target.kind === 'task' || target.kind === 'selection') commandRef.current = null;
   switch (target.kind) {
     case 'mermaid':
       return <MermaidStage source={target.source} label={target.label} dark={theme === 'dark'} commandRef={commandRef} />;
@@ -616,5 +647,7 @@ export function FocusStage({ target, theme, commandRef, onPageChange }: FocusSta
       return <SourceStage hit={target.hit} onPageChange={onPageChange} />;
     case 'task':
       return <TaskStage task={target.task} />;
+    case 'selection':
+      return <SelectionStage target={target} />;
   }
 }

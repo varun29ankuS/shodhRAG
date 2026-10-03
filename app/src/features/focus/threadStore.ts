@@ -13,7 +13,9 @@
  * (`app/tests/focusThreads.test.ts`).
  */
 
-import type { FocusPageSpan, FocusSourceHit, FocusTarget, FocusTaskSnapshot, FocusThread, ThreadAnchor, ThreadTurn } from './focusTypes.ts';
+import type { FocusDocumentRef, FocusPageSpan, FocusSourceHit, FocusTarget, FocusTaskSnapshot, FocusThread, ThreadAnchor, ThreadTurn } from './focusTypes.ts';
+import { readFollowups, stripFollowups } from './followups.ts';
+import { safeTruncate } from './markdownSafe.ts';
 
 /** Key of the side threads inside a message's `metadata`. */
 export const METADATA_KEY = 'focusThreads';
@@ -80,6 +82,16 @@ function readTask(value: unknown): FocusTaskSnapshot | null {
   };
 }
 
+function readDocument(value: unknown): FocusDocumentRef | null {
+  if (!isRecord(value) || !str(value.sourceFile) || !value.sourceFile) return null;
+  const page = typeof value.page === 'number' && Number.isInteger(value.page) && value.page > 0 ? value.page : null;
+  return { sourceFile: value.sourceFile, fileName: str(value.fileName) ? value.fileName : '', page };
+}
+
+/** Characters of a selected text and of its paragraph kept with a thread. */
+export const MAX_SELECTION_TARGET_CHARS = 4_000;
+export const MAX_PARAGRAPH_TARGET_CHARS = 3_000;
+
 /** A stored target, or null when it is not a valid one. */
 export function readTarget(value: unknown): FocusTarget | null {
   if (!isRecord(value) || !str(value.kind)) return null;
@@ -106,6 +118,17 @@ export function readTarget(value: unknown): FocusTarget | null {
       const task = readTask(value.task);
       return task ? { kind: 'task', label, task } : null;
     }
+    case 'selection': {
+      if (!str(value.text) || !value.text.trim()) return null;
+      return {
+        kind: 'selection',
+        label,
+        text: capped(value.text, MAX_SELECTION_TARGET_CHARS),
+        paragraph: str(value.paragraph) ? capped(value.paragraph, MAX_PARAGRAPH_TARGET_CHARS) : '',
+        origin: value.origin === 'document' ? 'document' : 'answer',
+        document: readDocument(value.document),
+      };
+    }
     default:
       return null;
   }
@@ -118,6 +141,12 @@ function readTurn(value: unknown): ThreadTurn | null {
   if (str(value.selection) && value.selection) turn.selection = value.selection;
   if (typeof value.page === 'number' && Number.isFinite(value.page)) turn.page = value.page;
   if (isRecord(value.transcript)) turn.transcript = value.transcript;
+  const followups = readFollowups(value.followups);
+  if (followups && turn.role === 'assistant') turn.followups = followups;
+  const from = value.summaryOf;
+  if (turn.role === 'user' && isRecord(from) && str(from.threadId) && from.threadId && str(from.label)) {
+    turn.summaryOf = { threadId: from.threadId, label: from.label };
+  }
   return turn;
 }
 
@@ -136,13 +165,19 @@ export function readThread(value: unknown): FocusThread | null {
   if (!anchor) return null;
   const turns = Array.isArray(value.turns) ? value.turns.map(readTurn).filter((t): t is ThreadTurn => t !== null) : [];
   const createdAt = str(value.createdAt) ? value.createdAt : new Date(0).toISOString();
-  return {
+  const thread: FocusThread = {
     id: value.id,
     anchor,
     turns: turns.slice(-MAX_TURNS),
     createdAt,
     updatedAt: str(value.updatedAt) ? value.updatedAt : createdAt,
   };
+  // Threads saved before drill-down existed have no parent: they are roots.
+  if (str(value.parentThreadId) && value.parentThreadId && value.parentThreadId !== value.id) {
+    thread.parentThreadId = value.parentThreadId;
+    if (str(value.parentTurnId) && value.parentTurnId) thread.parentTurnId = value.parentTurnId;
+  }
+  return thread;
 }
 
 /** Valid threads of a stored list; anything malformed is dropped, never thrown. */
@@ -177,7 +212,10 @@ export function removeThread(list: readonly FocusThread[], threadId: string): Fo
   return list.filter(t => t.id !== threadId);
 }
 
-/** Threads of one parent message, oldest first. */
+/**
+ * Threads of one parent message, oldest first. Includes nested
+ * (drill-down) threads; see `threadTree` for the hierarchy.
+ */
 export function threadsForMessage(list: readonly FocusThread[], messageId: string): FocusThread[] {
   return list.filter(t => t.anchor.parentMessageId === messageId);
 }
@@ -298,7 +336,10 @@ export interface HistoryTurnLike {
  */
 export function threadHistory(main: readonly HistoryTurnLike[], thread: readonly HistoryTurnLike[], limit = 10): HistoryTurnLike[] {
   const usable = (t: HistoryTurnLike) => t.content.trim().length > 0;
-  const own = thread.filter(usable).slice(-limit);
+  const own = thread
+    .map(t => (t.role === 'assistant' ? { role: t.role, content: stripFollowups(t.content) } : t))
+    .filter(usable)
+    .slice(-limit);
   const room = Math.max(0, limit - own.length);
   const lead = room > 0 ? main.filter(usable).slice(-room) : [];
   return [...lead, ...own];
@@ -357,9 +398,9 @@ export function threadSummary(thread: Pick<FocusThread, 'turns' | 'anchor'>): st
       break;
     }
   }
-  const answer = thread.turns[lastAnswerIndex].content.trim();
-  const chars = Array.from(answer);
-  const excerpt = chars.length > SUMMARY_ANSWER_CHARS ? `${chars.slice(0, SUMMARY_ANSWER_CHARS).join('').trimEnd()}…` : answer;
+  const answer = stripFollowups(thread.turns[lastAnswerIndex].content).trim();
+  // Never cut inside an equation or a fenced block: they would render as raw source.
+  const excerpt = safeTruncate(answer, SUMMARY_ANSWER_CHARS);
   return [
     `From a side discussion about "${label}":`,
     question ? `Q: ${question}` : '',

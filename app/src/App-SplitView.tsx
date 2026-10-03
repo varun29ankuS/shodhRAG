@@ -44,6 +44,8 @@ import { useTheme } from './contexts/ThemeContext';
 import { useSidebar } from './contexts/SidebarContext';
 import { ChatSessionProvider, useChatSession } from './features/ask/ChatSessionContext';
 import { FocusProvider } from './features/focus/FocusContext';
+import { VisualsButton } from './features/visuals/GalleryDialog';
+import { VisualNavigator } from './features/visuals/VisualNavigator';
 import { ReminderAlerts } from './features/tasks/ReminderAlerts';
 import { AskView } from './features/ask/AskView';
 import { useCommandPalette } from './hooks/useCommandPalette';
@@ -1213,6 +1215,9 @@ function AppSplitView() {
               </>
             )}
             {activeTab === 'ask' && activeConversationId && (
+              <VisualsButton conversationId={activeConversationId} conversationTitle={activeConversation?.title ?? ''} />
+            )}
+            {activeTab === 'ask' && activeConversationId && (
               <div className="relative">
                 <button
                   onClick={() => {
@@ -1516,6 +1521,7 @@ function AppSplitViewRoot() {
     <ChatSessionProvider>
       <FocusProvider>
         <AppSplitView />
+        <VisualNavigator />
       </FocusProvider>
     </ChatSessionProvider>
   );

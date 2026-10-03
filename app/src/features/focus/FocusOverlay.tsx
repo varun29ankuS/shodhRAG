@@ -18,6 +18,7 @@ import type { StageCommandRef } from './FocusStage';
 import { PaperPane } from './PaperPane';
 import { SideThread } from './SideThread';
 import { nearestPaper } from './targets';
+import { VisualBar } from '../visuals/VisualBar';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -517,6 +518,10 @@ export function FocusOverlay({ session, onClose }: FocusOverlayProps) {
               />
             )}
           </div>
+
+          {level.visual && (
+            <VisualBar level={level} stage={stageAreaRef} dark={theme === 'dark'} onClose={onClose} />
+          )}
 
           <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
 

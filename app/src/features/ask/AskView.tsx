@@ -29,6 +29,10 @@ import { useNavigationTarget } from '../agent/useNavigationTarget';
 import { appRecordKind, citedNumbers, documentHit, fileExtensionOf, formatLocation, groupSources, sourceLabel, toSearchHits, webHost } from './searchResults';
 import type { SourceGroup } from './searchResults';
 import { openExternal } from '../agent/WebSources';
+import { notify } from '../../lib/notify';
+import { clearReveal, pendingReveal, subscribeReveal } from '../visuals/reveal';
+import type { MessageReveal } from '../visuals/reveal';
+import { scrollBehavior } from './viewer/sourceAccess';
 import type { ChatMessage, SearchHit, SendOptions } from './types';
 
 const FOCUS_RING =
@@ -275,6 +279,9 @@ interface AssistantMessageProps {
   onOpenThread: (messageId: string, thread: FocusThread, trigger: HTMLElement) => void;
 }
 
+/** How long an answer reached with "Go to message" stays highlighted. */
+const REVEAL_HIGHLIGHT_MS = 2_400;
+
 function AssistantMessage({
   conversationId,
   message,
@@ -321,7 +328,7 @@ function AssistantMessage({
 
   const article = (
     <article
-      className="ask-rise group/msg flex flex-col gap-4"
+      className="ask-rise group/msg flex flex-col gap-4 rounded-xl outline-none data-[revealed=true]:ring-2 data-[revealed=true]:ring-shodh-accent data-[revealed=true]:ring-offset-4 data-[revealed=true]:ring-offset-shodh-ground"
       aria-busy={running}
       // Selected text in a finished answer can be asked about (features/focus/SelectionAsk).
       data-ask-scope={!running && conversationId ? 'answer' : undefined}
@@ -540,6 +547,30 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
       el.scrollTop = el.scrollHeight;
     }
   }, [messages]);
+
+  // "Go to message" from the gallery: scroll to that answer once it is shown.
+  const [reveal, setReveal] = useState<MessageReveal | null>(() => pendingReveal());
+  useEffect(() => subscribeReveal(setReveal), []);
+  useEffect(() => {
+    if (!reveal || reveal.conversationId !== conversationId || messages.length === 0) return;
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    clearReveal(reveal);
+    setReveal(null);
+    const target = scroller.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(reveal.messageId)}"]`);
+    if (!target) {
+      notify.info('That answer is no longer in this conversation');
+      return;
+    }
+    target.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
+    target.setAttribute('tabindex', '-1');
+    target.focus({ preventScroll: true });
+    target.dataset.revealed = 'true';
+    const timer = window.setTimeout(() => {
+      delete target.dataset.revealed;
+    }, REVEAL_HIGHLIGHT_MS);
+    return () => window.clearTimeout(timer);
+  }, [reveal, conversationId, messages]);
 
   const latest = useMemo(() => latestTranscript(messages), [messages]);
   const liveTranscript = isStreaming && latest && isLive(latest) ? latest : null;

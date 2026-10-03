@@ -13,6 +13,7 @@ import {
 import { cn } from '../../lib/utils';
 import { relativeTime } from '../../utils/time';
 import { SearchSetupCard } from '../setup/SearchSetupCard';
+import { VisualGallery } from '../visuals/VisualGallery';
 import { scrollBehavior } from '../ask/viewer/sourceAccess';
 import { baseName } from './fileTree';
 import type { FileNode } from './fileTree';
@@ -158,6 +159,18 @@ export function LibraryView({
             </section>
           ))
         )}
+
+        <section aria-labelledby="library-generated" className="flex flex-col gap-3">
+          <div className="flex flex-col gap-0.5">
+            <h2 id="library-generated" className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
+              Generated
+            </h2>
+            <p className="text-[12.5px] text-shodh-text-muted">
+              Diagrams, charts, sketches, plots, simulations, equations and tables from every conversation.
+            </p>
+          </div>
+          <VisualGallery conversationId={null} />
+        </section>
       </div>
     </div>
   );

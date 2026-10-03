@@ -268,29 +268,29 @@ function fencedVisual(lang: string, body: string): Omit<Located, 'start' | 'end'
     return {
       kind: 'chart',
       source: body,
-      own: parsed.ok ? flat(parsed.chart.title ?? '') : jsonTitle(body),
+      own: 'chart' in parsed ? flat(parsed.chart.title ?? '') : jsonTitle(body),
       firstLabel: '',
-      ...(parsed.ok ? {} : { problem: parsed.error }),
+      ...('error' in parsed ? { problem: parsed.error } : {}),
     };
   }
   if (language === 'svg') {
     const problem = body.length > SVG_MAX_CHARS ? 'The sketch is larger than the drawing limit.' : (() => {
       const r = sanitizeSvg(body);
-      return r.ok ? undefined : r.error;
+      return 'error' in r ? r.error : undefined;
     })();
     return { kind: 'svg', source: body, own: svgTitle(body), firstLabel: '', ...(problem ? { problem } : {}) };
   }
   if (language === 'plot') {
     const problem = body.length > PLOT_MAX_CHARS ? 'The plot spec is larger than the drawing limit.' : (() => {
       const r = parsePlotSpec(body);
-      return r.ok ? undefined : r.error;
+      return 'error' in r ? r.error : undefined;
     })();
     return { kind: 'plot', source: body, own: jsonTitle(body), firstLabel: '', ...(problem ? { problem } : {}) };
   }
   if (language === 'simulation') {
     const problem = body.length > SIMULATION_MAX_CHARS ? 'The simulation spec is larger than the drawing limit.' : (() => {
       const r = parseSimulationSpec(body);
-      return r.ok ? undefined : r.error;
+      return 'error' in r ? r.error : undefined;
     })();
     return { kind: 'simulation', source: body, own: jsonTitle(body), firstLabel: '', ...(problem ? { problem } : {}) };
   }

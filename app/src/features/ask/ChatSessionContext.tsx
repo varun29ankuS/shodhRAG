@@ -6,6 +6,7 @@ import { normalizeViewTab } from '../../lib/viewTabs';
 import type { ViewTab } from '../../lib/viewTabs';
 import type { AgentEventEnvelope, NavigationTarget } from '../agent/events';
 import { navigationFromEvent, publishTarget } from '../agent/navigation';
+import { recordAnswerVisuals } from '../visuals/recording';
 import {
   answerText,
   fromPersisted,
@@ -358,6 +359,10 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     if (liveRef.current === live) liveRef.current = null;
     setLiveRun(null);
     commit(live.conversationId, message);
+    // Its diagrams, charts, sketches, plots, simulations, equations and tables join the gallery.
+    if (transcript.status === 'completed') {
+      recordAnswerVisuals({ conversationId: live.conversationId, messageId: message.id, threadId: null, turnId: null }, message.content);
+    }
   }, [commit, publish]);
 
   const enqueue = useCallback((live: LiveRun, action: TranscriptAction, immediate = false) => {

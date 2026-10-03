@@ -27,8 +27,12 @@ function loadMermaid(): Promise<Mermaid> {
 // (several in one answer, or a streaming re-render) cannot interleave.
 let renderQueue: Promise<unknown> = Promise.resolve();
 
-/** Render mermaid source to SVG markup; `id` must be unique in the document. */
-export function renderDiagram(id: string, source: string, dark: boolean): Promise<string> {
+/**
+ * Render mermaid source to SVG markup; `id` must be unique in the document.
+ * `textLabels` draws labels as SVG text instead of HTML in <foreignObject>,
+ * so the markup stands alone (export) and can be drawn to a canvas.
+ */
+export function renderDiagram(id: string, source: string, dark: boolean, textLabels = false): Promise<string> {
   const job = renderQueue.then(async () => {
     const mermaid = await loadMermaid();
     mermaid.initialize({
@@ -37,6 +41,8 @@ export function renderDiagram(id: string, source: string, dark: boolean): Promis
       securityLevel: 'strict',
       theme: dark ? 'dark' : 'default',
       fontFamily: '"Geist Variable", system-ui, sans-serif',
+      htmlLabels: !textLabels,
+      flowchart: { htmlLabels: !textLabels },
     });
     await mermaid.parse(source);
     const { svg } = await mermaid.render(id, source);

@@ -27,6 +27,12 @@ import {
 } from './threadStore';
 import type { HistoryTurnLike } from './threadStore';
 import { ancestorsFor, findChildThread, threadPath } from './threadTree';
+import { toVisualError, visualsApi } from '../visuals/api';
+import { composeRefineRequest, parseRefineResponse } from '../visuals/refine';
+import type { RefineResult } from '../visuals/refine';
+import type { VisualRecord, VisualRef } from '../visuals/model';
+import { recordTarget, visualRef } from '../visuals/model';
+import { recordAnswerVisuals } from '../visuals/recording';
 import { FocusOverlay } from './FocusOverlay';
 import { SelectionAsk } from './SelectionAsk';
 
@@ -56,6 +62,8 @@ export interface FocusRequest {
   threadId?: string | null;
   /** Element focus returns to when the pop-out closes. */
   trigger?: HTMLElement | null;
+  /** The gallery visual shown (version switcher, refine, export). */
+  visual?: VisualRef | null;
 }
 
 /** An object opened inside the current level (a visual or a selection in a side answer). */
@@ -83,6 +91,8 @@ export interface OpenFocus {
   trigger: HTMLElement | null;
   /** Unique per level, so a reopened object remounts its state. */
   seq: number;
+  /** The gallery visual this level shows, when it was opened from the gallery. */
+  visual: VisualRef | null;
 }
 
 /** The pop-out as opened: its levels. `key` stays while levels change. */
@@ -97,7 +107,12 @@ export type SummaryResult =
   | { ok: true; text: string }
   | { ok: false; reason: 'busy' | 'stopped' | 'failed'; message?: string };
 
-type SidePurpose = 'answer' | 'summary';
+type SidePurpose = 'answer' | 'summary' | 'refine';
+
+/** What a refine run produced. */
+export type RefineOutcome =
+  | RefineResult
+  | { ok: false; reason: 'busy' | 'stopped' | 'failed'; message: string };
 
 /** The side answer (or summary) being produced. */
 interface SideLive {
@@ -115,6 +130,8 @@ interface SideLive {
   links: { parentThreadId: string | null; parentTurnId: string | null };
   /** Receives the result of a summary run. */
   onSummary: ((result: SummaryResult) => void) | null;
+  /** Receives the result of a refine run, with the kind and source it revised. */
+  onRefine: { kind: VisualRecord['kind']; previous: string; resolve: (result: RefineOutcome) => void } | null;
 }
 
 export interface SideLiveView {
@@ -149,6 +166,13 @@ export interface FocusContextValue {
   summarize: (open: OpenFocus, destination: SummaryDestination) => Promise<SummaryResult>;
   /** Post a summary of a nested level into its parent discussion and go up to it. */
   bringBack: (open: OpenFocus, text: string) => boolean;
+  /**
+   * Ask the agent for a revised version of a gallery visual (not added to the
+   * discussion). Resolves to the revised source or why there is none.
+   */
+  refine: (open: OpenFocus, instruction: string) => Promise<RefineOutcome>;
+  /** Show another version of the gallery visual as the pop-out's only level. */
+  showVisualVersion: (record: VisualRecord) => void;
   /** Interrupt the side answer. */
   stop: () => void;
   /** Answer a pending approval of the side answer. */
@@ -365,7 +389,17 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       live.frame = null;
     }
     const transcript = live.transcript;
-    if (live.purpose === 'summary') {
+    if (live.purpose === 'refine') {
+      const refine = live.onRefine;
+      if (refine) {
+        const result: RefineOutcome = transcript.status === 'completed'
+          ? parseRefineResponse(answerText(transcript), refine.kind, refine.previous)
+          : transcript.status === 'aborted'
+            ? { ok: false, reason: 'stopped', message: 'The refinement was stopped.' }
+            : { ok: false, reason: 'failed', message: transcript.error ?? 'The refinement failed.' };
+        refine.resolve(result);
+      }
+    } else if (live.purpose === 'summary') {
       const text = cleanSummary(answerText(transcript));
       const result: SummaryResult = transcript.status === 'completed' && text
         ? { ok: true, text }
@@ -383,6 +417,14 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
         ...(followups.length > 0 && transcript.status === 'completed' ? { followups } : {}),
       };
       mutateThread(live.anchor, live.threadId, thread => appendTurn(thread, answer), live.links);
+      if (transcript.status === 'completed') {
+        recordAnswerVisuals({
+          conversationId: live.anchor.conversationId,
+          messageId: live.anchor.parentMessageId,
+          threadId: live.threadId,
+          turnId: answer.id,
+        }, body);
+      }
     }
     if (transcript.errorCode === 'runtime_missing') setRuntimeInstalled(false);
     if (liveRef.current === live) liveRef.current = null;
@@ -447,6 +489,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     purpose: SidePurpose,
     label: string,
     onSummary: ((result: SummaryResult) => void) | null,
+    onRefine: SideLive['onRefine'] = null,
   ): SideLive | null => {
     if (liveRef.current) return null;
     const { conversationId, parentMessageId, threadId } = level;
@@ -465,6 +508,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       abortTimer: null,
       links: { parentThreadId: level.parentThreadId, parentTurnId: level.parentTurnId },
       onSummary,
+      onRefine,
     };
     liveRef.current = live;
     setSideLive({ threadId, purpose, transcript: live.transcript });
@@ -565,6 +609,74 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     });
   }, [api, beginRun, enqueue, findThread, setRuntimeInstalled]);
 
+  const refine = useCallback((level: OpenFocus, instruction: string): Promise<RefineOutcome> => {
+    const text = instruction.trim();
+    const visual = level.visual;
+    if (!visual || !text) {
+      return Promise.resolve({ ok: false, reason: 'failed', message: 'Only a visual from the gallery can be refined.' });
+    }
+    if (liveRef.current) {
+      return Promise.resolve({ ok: false, reason: 'busy', message: 'Another answer is running. Try again when it has finished.' });
+    }
+    return new Promise<RefineOutcome>(resolve => {
+      void (async () => {
+        let record: VisualRecord;
+        try {
+          // The stored version: the request carries its exact source.
+          record = (await visualsApi.get(visual.id)).visual;
+        } catch (error) {
+          resolve({ ok: false, reason: 'failed', message: toVisualError(error).message });
+          return;
+        }
+        const live = beginRun(level, 'refine', `refining ${level.target.label}`, null, { kind: record.kind, previous: record.source, resolve });
+        if (!live) {
+          resolve({ ok: false, reason: 'busy', message: 'Another answer is running. Try again when it has finished.' });
+          return;
+        }
+        const target = level.target;
+        const values = target.kind === 'plot' || target.kind === 'simulation' ? target.values : [];
+        const request = composeRefineRequest({ kind: record.kind, title: record.title, source: record.source, values, instruction: text });
+        const instructions = conversationsRef.current.find(c => c.id === level.conversationId)?.systemPrompt?.trim() || null;
+        // A session of its own: the request never enters the discussion's agent memory.
+        const key = sideSessionKey(level.conversationId, `${level.threadId}-refine`);
+        try {
+          const sessionId = await api.start(key, instructions, level.conversationId);
+          if (live.settled) return;
+          live.sessionId = sessionId;
+          setRuntimeInstalled(true);
+          await api.send(sessionId, request, live.runId, []);
+        } catch (error) {
+          const failure = toAgentError(error);
+          enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);
+        }
+      })();
+    });
+  }, [api, beginRun, enqueue, setRuntimeInstalled]);
+
+  const showVisualVersion = useCallback((record: VisualRecord) => {
+    const target = recordTarget(record);
+    if (!target) return;
+    const parentMessageId = record.messageId;
+    const list = locationThreads(record.conversationId, parentMessageId);
+    const threadId = findChildThread(list, target, null)?.id ?? newId('thread');
+    const seq = nextSeq();
+    setSession(s => {
+      if (!s) return s;
+      const level: OpenFocus = {
+        target,
+        conversationId: record.conversationId,
+        parentMessageId,
+        threadId,
+        parentThreadId: null,
+        parentTurnId: null,
+        trigger: s.stack.levels[0].trigger,
+        seq,
+        visual: visualRef(record),
+      };
+      return { ...s, stack: initialStack(level) };
+    });
+  }, [locationThreads]);
+
   const stop = useCallback(() => {
     const live = liveRef.current;
     if (!live || live.settled) return;
@@ -610,6 +722,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       parentTurnId: t.parentTurnId ?? null,
       trigger,
       seq: nextSeq(),
+      visual: null,
     }));
   }, [locationThreads]);
 
@@ -637,6 +750,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
         parentTurnId: null,
         trigger,
         seq: nextSeq(),
+        visual: request.visual ?? null,
       }),
     });
   }, [levelsFor, locationThreads]);
@@ -666,6 +780,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       parentTurnId: request.parentTurnId,
       trigger: here.trigger,
       seq: nextSeq(),
+      visual: null,
     };
     setSession(s => (s ? { ...s, stack: stackReducer(s.stack, { type: 'push', level }) } : s));
     return 'opened';
@@ -723,11 +838,13 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     findThread,
     ask,
     summarize,
+    refine,
+    showVisualVersion,
     bringBack,
     stop,
     approve,
     sideLive,
-  }), [openFocus, closeFocus, drillDown, navigate, jumpToThread, session, localThreads, locationThreads, findThread, ask, summarize, bringBack, stop, approve, sideLive]);
+  }), [openFocus, closeFocus, drillDown, navigate, jumpToThread, session, localThreads, locationThreads, findThread, ask, summarize, refine, showVisualVersion, bringBack, stop, approve, sideLive]);
 
   return (
     <FocusContext.Provider value={value}>

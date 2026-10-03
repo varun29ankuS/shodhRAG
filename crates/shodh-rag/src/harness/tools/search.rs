@@ -9,7 +9,8 @@ use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
 use super::{
-    req_str, HostTool, ToolContext, ToolError, ToolOutput, MAX_MODEL_OUTPUT_CHARS, UNTRUSTED_NOTICE,
+    req_str, CitedPassage, HostTool, ToolContext, ToolError, ToolOutput, MAX_MODEL_OUTPUT_CHARS,
+    UNTRUSTED_NOTICE,
 };
 use crate::harness::events::RiskTier;
 use crate::harness::protocol::ToolLoadMode;
@@ -225,6 +226,15 @@ impl HostTool for SearchDocumentsTool {
             .zip(first..)
             .map(|(r, n)| passage(n, r, budget))
             .collect();
+        for p in &passages {
+            ctx.record_passage(CitedPassage {
+                n: p.n,
+                file: p.file.clone(),
+                path: p.path.clone(),
+                page: p.page.clone(),
+                web: false,
+            });
+        }
         let files: HashSet<&str> = passages.iter().map(|p| p.path.as_str()).collect();
         let body = serde_json::to_string(&passages)
             .map_err(|e| ToolError::Failed(format!("Could not encode results: {e}")))?;

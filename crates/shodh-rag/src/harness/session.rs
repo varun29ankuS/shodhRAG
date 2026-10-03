@@ -32,7 +32,7 @@ use super::protocol::{
 };
 use super::sidecar::{self, LaunchSpec};
 use super::tools::plan::UPDATE_PLAN;
-use super::tools::{ApprovalGate, ToolAudit, ToolCall, ToolContext, ToolRegistry};
+use super::tools::{ApprovalGate, RunPassages, ToolAudit, ToolCall, ToolContext, ToolRegistry};
 use super::{truncate_chars, AgentHarness};
 
 /// Longest stdout line accepted. omp's v1 frames are capped at 1 MiB.
@@ -76,7 +76,7 @@ struct Inner {
     inflight: Mutex<HashMap<String, (String, AbortHandle)>>,
     calls_in_run: AtomicU32,
     /// Citation numbers handed out in the active run (see `search_documents`).
-    passages_in_run: Arc<AtomicU32>,
+    passages_in_run: Arc<RunPassages>,
     next_id: AtomicU64,
     closing: AtomicBool,
     closed: AtomicBool,
@@ -247,7 +247,7 @@ impl Inner {
         };
         let ctx = ToolContext::new(run_id, call.tool_call_id.clone(), self.events.clone())
             .with_host_call(call.id.clone(), self.outbound.clone())
-            .with_passage_counter(Arc::clone(&self.passages_in_run))
+            .with_run_passages(Arc::clone(&self.passages_in_run))
             .with_audit(self.audit.clone());
         let host_id = call.id.clone();
         let step_id = call.tool_call_id.clone();
@@ -367,7 +367,7 @@ impl Inner {
             let started =
                 state.begin_run(&run_id, &self.session_id, &self.model, &prompt_id, now_ms());
             self.calls_in_run.store(0, Ordering::SeqCst);
-            self.passages_in_run.store(0, Ordering::SeqCst);
+            self.passages_in_run.reset();
             self.emit(started);
         }
         tracing::info!(target: "shodh::audit", event = "question", session = %self.session_id, run_id = %run_id, profile = %self.profile.id, model = %self.model, chars = message.chars().count(), "agent prompt");
@@ -526,7 +526,7 @@ impl OmpSession {
             pending: Mutex::new(HashMap::new()),
             inflight: Mutex::new(HashMap::new()),
             calls_in_run: AtomicU32::new(0),
-            passages_in_run: Arc::new(AtomicU32::new(0)),
+            passages_in_run: Arc::new(RunPassages::new()),
             next_id: AtomicU64::new(0),
             closing: AtomicBool::new(false),
             closed: AtomicBool::new(false),

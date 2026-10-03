@@ -158,6 +158,16 @@ fn insert_layout_metadata(
     meta.insert("unit_kind".to_string(), layout.unit.to_string());
 }
 
+/// Whether a search result should be widened with its neighbouring chunks.
+/// Window chunks cut text mid-thought, so their neighbours restore context.
+/// Structure chunks (`unit_kind` set) are complete units — a section's
+/// paragraphs, a table, a theorem, one bibliography entry — and their page
+/// and section labels describe exactly their own text; widening them would
+/// cross headings and pages and merge adjacent references.
+fn wants_neighbor_expansion(meta: &HashMap<String, String>) -> bool {
+    !meta.contains_key("unit_kind")
+}
+
 /// Other spellings under which older versions of the indexer may have stored
 /// `path`: the verbatim string, its forward-slash form, and the previous
 /// normalization (forward slashes, lowercased on Windows, `\\?\` prefixes and
@@ -1046,9 +1056,13 @@ impl RAGEngine {
 
     /// Expand top-k results with neighboring chunks from the same document.
     /// For each result, fetches ±window adjacent chunks by chunk_index and
-    /// concatenates them in reading order (prev + current + next).
+    /// concatenates them in reading order (prev + current + next). Structure
+    /// chunks are left as they are (see [`wants_neighbor_expansion`]).
     async fn expand_with_neighbors(&self, results: &mut Vec<ComprehensiveResult>, window: u32) {
         for result in results.iter_mut() {
+            if !wants_neighbor_expansion(&result.metadata) {
+                continue;
+            }
             let doc_id = match result.metadata.get("doc_id") {
                 Some(id) if !id.is_empty() => id.clone(),
                 _ => continue,
@@ -1608,6 +1622,16 @@ mod page_metadata_tests {
         .map(|(s, k)| (*s, k.to_string()))
         .collect();
         assert_eq!(order, expected);
+    }
+
+    #[test]
+    fn only_window_chunks_are_widened_with_neighbours() {
+        let mut window = HashMap::new();
+        window.insert("chunk_index".to_string(), "4".to_string());
+        assert!(wants_neighbor_expansion(&window));
+        let mut unit = window.clone();
+        unit.insert("unit_kind".to_string(), "reference_entry".to_string());
+        assert!(!wants_neighbor_expansion(&unit));
     }
 
     #[test]

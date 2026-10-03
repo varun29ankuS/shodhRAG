@@ -6,7 +6,8 @@
 //! 3. validates the arguments against the tool's JSON schema,
 //! 4. applies the risk-tier gate (write/destructive calls wait for approval),
 //! 5. executes the tool and caps its output,
-//! 6. writes an audit record through `tracing` (target `shodh::audit`).
+//! 6. records the call (and, for document tools, what was retrieved) in the
+//!    audit log when the context carries one.
 //!
 //! Failures at any step become a structured error result for the model; the
 //! tool does not run.
@@ -31,6 +32,9 @@ use super::omp::{render_label, StepMeta};
 use super::profile::AgentProfile;
 use super::protocol::{HostToolDefinition, OutboundFrame, ToolLoadMode, ToolResultPayload};
 use super::truncate_chars;
+use crate::audit::{
+    payload as audit_payload, AuditEventType, AuditLog, AuditScope, SYSTEM_PRINCIPAL,
+};
 
 /// How long an approval prompt waits before it counts as declined.
 pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -138,6 +142,14 @@ pub struct ToolContext {
     events: mpsc::UnboundedSender<AgentEvent>,
     outbound: Option<mpsc::UnboundedSender<OutboundFrame>>,
     passages: Arc<AtomicU32>,
+    audit: Option<ToolAudit>,
+}
+
+/// Where a tool call's audit events go.
+#[derive(Clone, Debug)]
+pub struct ToolAudit {
+    pub log: Arc<AuditLog>,
+    pub scope: AuditScope,
 }
 
 impl ToolContext {
@@ -153,7 +165,30 @@ impl ToolContext {
             events,
             outbound: None,
             passages: Arc::new(AtomicU32::new(0)),
+            audit: None,
         }
+    }
+
+    /// Record this call's events in `audit`.
+    pub fn with_audit(mut self, audit: Option<ToolAudit>) -> Self {
+        self.audit = audit;
+        self
+    }
+
+    /// Queue an audit event for this call's run (no-op without an audit log).
+    fn audit(&self, event_type: AuditEventType, payload: Value) {
+        if let Some(audit) = &self.audit {
+            audit
+                .log
+                .submit(audit.scope.record(&self.run_id, event_type, payload));
+        }
+    }
+
+    fn audit_principal(&self) -> &str {
+        self.audit
+            .as_ref()
+            .map(|a| a.scope.principal.as_str())
+            .unwrap_or(crate::audit::LOCAL_OWNER)
     }
 
     /// Share the run's passage counter, so citation numbers continue across
@@ -443,6 +478,24 @@ impl ToolRegistry {
             },
         };
 
+        ctx.audit(
+            AuditEventType::ToolCall,
+            audit_payload::tool_call(
+                &call.tool,
+                tier,
+                &args,
+                outcome.ok,
+                &outcome.summary,
+                duration_ms,
+            ),
+        );
+        if outcome.ok {
+            if let Some(retrieval) =
+                audit_payload::retrieval(&call.tool, &args, outcome.detail.as_ref())
+            {
+                ctx.audit(AuditEventType::Retrieval, retrieval);
+            }
+        }
         tracing::info!(
             target: "shodh::audit",
             event = "tool_call",
@@ -524,7 +577,16 @@ impl ToolRegistry {
                 tier: tool.tier(),
                 preview: preview.details,
             });
-            match approvals.wait(&ctx.step_id).await {
+            let decision = approvals.wait(&ctx.step_id).await;
+            let who = match decision {
+                ApprovalDecision::Approved | ApprovalDecision::Denied => ctx.audit_principal(),
+                ApprovalDecision::TimedOut | ApprovalDecision::Cancelled => SYSTEM_PRINCIPAL,
+            };
+            ctx.audit(
+                AuditEventType::Approval,
+                audit_payload::approval(name, &label, tool.tier(), decision, who),
+            );
+            match decision {
                 ApprovalDecision::Approved => {}
                 ApprovalDecision::Denied => return Err(ToolError::Declined(label)),
                 ApprovalDecision::TimedOut => {

@@ -49,7 +49,9 @@ Other observations:
    - Release also requires one of: a patched pinned build that removes the catalog fetch and local-port discovery, or an upstream configuration flag if one is added.
    - The spike's proxy test stays in CI as a regression check. It is not the release gate.
 4. **Pinning and contract tests are mandatory.** The binary is pinned by hash. Every RPC frame shape Shodh relies on gets a contract test, re-run on each upgrade.
-5. **Stealth models are disallowed.** OpenRouter stealth models typically log prompts for training, so they are never permitted with user documents. The provider policy must support an allow-list.
+5. **Stealth models are disallowed by default.** OpenRouter stealth models typically log prompts for training, so they are refused with user documents. The provider policy must support an allow-list.
+   - Developers can opt in with `SHODH_ALLOW_STEALTH_MODELS=1` (for example, to reproduce this spike). The opt-in logs a one-time warning, and every run with such a model carries a data-handling `warning` on `RunStarted` that the transcript shows for the whole run.
+   - Release builds must not set the variable.
 
 ## Alternatives considered
 

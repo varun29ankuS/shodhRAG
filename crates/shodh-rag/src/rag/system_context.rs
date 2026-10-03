@@ -18,9 +18,7 @@ use chrono::Local;
 use std::env;
 use std::path::PathBuf;
 
-/// Rich context from PersonalAssistant and Memory systems
-/// This should be populated from:
-/// - assistant::PersonalAssistant (activity tracking, patterns, projects)
+/// Rich context from the memory system and recent screenshots:
 /// - memory::MemorySystem (conversation history, experiences)
 /// - Recent screenshots (OCR analysis)
 pub struct RichContextData {

@@ -14,6 +14,8 @@ export interface ConversationMessage {
   metadata?: Record<string, unknown>;
   /** Run record observed while the answer streamed (see features/ask/types). */
   run?: Record<string, unknown>;
+  /** Agent transcript of the answer (see features/agent/reducer). */
+  transcript?: Record<string, unknown>;
 }
 
 export interface Conversation {

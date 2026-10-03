@@ -24,6 +24,7 @@ import { VIEW_TABS, VIEW_TAB_LABELS } from '../../lib/viewTabs';
 import type { ViewTab } from '../../lib/viewTabs';
 import { relativeTime } from '../../utils/time';
 import type { Conversation } from '../../hooks/useConversations';
+import { ActivityTray } from './ActivityTray';
 
 export interface SidebarSource {
   id: string;
@@ -256,6 +257,7 @@ export default function Sidebar({
         )}
 
         <div className={cn('flex gap-1', collapsed ? 'flex-col items-center' : 'items-center')}>
+          <ActivityTray jobs={sources.filter(s => s.status === 'indexing')} onOpenConversation={onOpenConversation} />
           <FooterIconButton label={SEARCH_LABEL} onClick={onOpenCommandPalette}>
             <Search className="w-4 h-4" aria-hidden="true" />
           </FooterIconButton>

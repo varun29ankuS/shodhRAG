@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Plus, Check, Trash2, ChevronLeft, ChevronRight, Clock,
@@ -809,6 +810,17 @@ export default function CalendarTodoPanel() {
 
   useEffect(() => {
     fetchData();
+  }, [fetchData]);
+
+  // Tasks and events can change outside this view (e.g. the agent creates a task
+  // while the calendar is open); the backend emits after every write.
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | null = null;
+    listen('calendar-changed', () => { fetchData(); })
+      .then(fn => { if (active) unlisten = fn; else fn(); })
+      .catch(err => console.error('Failed to listen for calendar changes:', err));
+    return () => { active = false; unlisten?.(); };
   }, [fetchData]);
 
   const handleToggle = async (id: string, status: string) => {

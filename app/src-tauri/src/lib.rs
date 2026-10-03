@@ -9,14 +9,12 @@ mod doc_gen_commands;
 mod document_upload_commands;
 mod enhanced_rag_commands;
 mod file_watcher;
-mod graph_commands;
 mod history_commands;
 mod image_upload_commands;
 mod llm_bootstrap;
 mod llm_commands;
 mod llm_response;
 mod mcp;
-mod mcp_bridge;
 mod mcp_commands;
 mod query_rewriter;
 mod rag_commands;
@@ -32,12 +30,11 @@ mod template_commands;
 mod window_commands;
 
 // Unified chat system modules
-mod agent_commands;
-mod artifact_store;
+mod agent_session_commands;
+mod agent_tools;
 mod calendar_commands;
-mod chat_engine;
 mod conversation_commands;
-mod unified_chat_commands;
+mod event_emitter;
 
 use tauri::Manager;
 
@@ -226,19 +223,13 @@ pub fn run() {
                 space_manager: Mutex::new(space_manager),
                 conversation_manager: Arc::new(AsyncRwLock::new(None)),
                 memory_system: Arc::new(AsyncRwLock::new(None)),
-                personal_assistant: Arc::new(AsyncRwLock::new(None)),
                 app_paths,
                 rag_initialized: Arc::new(AsyncRwLock::new(false)),
                 initialization_lock: Arc::new(tokio::sync::Mutex::new(())),
-
-                // Unified chat system
-                artifact_store: Arc::new(AsyncRwLock::new(artifact_store::ArtifactStore::new())),
-                conversation_id: Arc::new(AsyncRwLock::new(None)),
-                agent_system: Arc::new(AsyncRwLock::new(None)),
-                llm_manager: shared_llm_manager.clone(),
             });
 
             app.manage(IndexingState::default());
+            app.manage(agent_session_commands::AgentSessions::default());
             let analytics_path = app_data_dir.join("analytics.json");
             app.manage(AnalyticsState::load_or_default(&analytics_path));
             app.manage(TemplateStore::default());
@@ -460,7 +451,6 @@ pub fn run() {
             history_commands::export_chat_history,
             history_commands::search_with_history,
             // Graph commands
-            graph_commands::get_knowledge_graph,
             // Document generation commands
             doc_gen_commands::generate_document,
             doc_gen_commands::generate_from_rag,
@@ -555,34 +545,20 @@ pub fn run() {
             // Document Upload commands
             document_upload_commands::upload_document_file,
             document_upload_commands::save_temp_file,
-            // Unified Chat System commands
-            unified_chat_commands::unified_chat,
-            unified_chat_commands::apply_artifact_to_file,
-            unified_chat_commands::update_artifact,
-            unified_chat_commands::get_artifact_history,
-            unified_chat_commands::get_conversation_artifacts,
+            // Agent sessions (omp harness)
+            agent_session_commands::agent_start,
+            agent_session_commands::agent_send,
+            agent_session_commands::agent_steer,
+            agent_session_commands::agent_abort,
+            agent_session_commands::agent_approve,
+            agent_session_commands::agent_install_runtime,
+            agent_session_commands::agent_runtime_status,
             // Conversation persistence commands
             conversation_commands::load_conversations,
             conversation_commands::save_conversation,
             conversation_commands::delete_conversation,
             conversation_commands::rename_conversation,
             conversation_commands::pin_conversation,
-            // Agent commands
-            agent_commands::get_agent_dashboard,
-            agent_commands::get_active_executions,
-            agent_commands::toggle_agent,
-            agent_commands::create_agent,
-            agent_commands::update_agent,
-            agent_commands::delete_agent,
-            agent_commands::get_agent,
-            agent_commands::list_agents,
-            agent_commands::execute_agent,
-            // Crew commands
-            agent_commands::create_crew,
-            agent_commands::get_crew,
-            agent_commands::list_crews,
-            agent_commands::delete_crew,
-            agent_commands::execute_crew,
             // Calendar/Todo commands
             calendar_commands::load_tasks,
             calendar_commands::create_task,
@@ -596,6 +572,13 @@ pub fn run() {
             calendar_commands::update_event,
             calendar_commands::delete_event,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Stop every omp sidecar before the process exits.
+                let sessions = app_handle.state::<agent_session_commands::AgentSessions>();
+                tauri::async_runtime::block_on(sessions.shutdown_all());
+            }
+        });
 }

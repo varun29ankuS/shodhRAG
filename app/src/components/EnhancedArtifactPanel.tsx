@@ -9,7 +9,6 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -60,6 +59,8 @@ interface EnhancedArtifactPanelProps {
   isFullscreen?: boolean;
   onToggleFullscreen?: () => void;
   selectedArtifactId?: string;
+  /** Persist edited content (stored with the conversation message). */
+  onSave?: (artifactId: string, content: string) => void;
 }
 
 function getGroupForType(typeKey: ArtifactKind): string {
@@ -146,12 +147,12 @@ export function EnhancedArtifactPanel({
   isFullscreen = false,
   onToggleFullscreen,
   selectedArtifactId,
+  onSave,
 }: EnhancedArtifactPanelProps) {
   const { colors, theme } = useTheme();
   const [selectedId, setSelectedId] = useState<string>(selectedArtifactId || artifacts[0]?.id || '');
   const [editMode, setEditMode] = useState(false);
   const [editedContent, setEditedContent] = useState('');
-  const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
 
@@ -185,21 +186,10 @@ export function EnhancedArtifactPanel({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleSave = async () => {
-    if (!selectedArtifact) return;
-    setSaving(true);
-    try {
-      const updated = await invoke<Artifact>('update_artifact', {
-        artifactId: selectedArtifact.id,
-        newContent: editedContent,
-      });
-      setSelectedId(updated.id);
-      setEditMode(false);
-    } catch (err) {
-      console.error('Failed to save artifact:', err);
-    } finally {
-      setSaving(false);
-    }
+  const handleSave = () => {
+    if (!selectedArtifact || !onSave) return;
+    onSave(selectedArtifact.id, editedContent);
+    setEditMode(false);
   };
 
   const handleDownload = async () => {
@@ -432,12 +422,12 @@ export function EnhancedArtifactPanel({
                   </button>
                   <button
                     onClick={handleSave}
-                    disabled={saving}
+                    disabled={!onSave}
                     className="px-2 py-1 text-xs rounded transition-colors flex items-center gap-1 disabled:opacity-50"
                     style={{ backgroundColor: colors.primary, color: colors.primaryText }}
                   >
                     <SaveIcon className="w-3 h-3" />
-                    {saving ? 'Saving...' : 'Save'}
+                    Save
                   </button>
                 </div>
               </motion.div>

@@ -4,3 +4,8 @@ members = [
     "crates/shodh-rag",
     "app/src-tauri",
 ]
+
+# The agent runtime binary is hashed before every launch (ADR 0001). An
+# unoptimized sha2 makes that take seconds in dev builds.
+[profile.dev.package.sha2]
+opt-level = 3

@@ -37,8 +37,6 @@ static SETTINGS_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, thiserror::Error)]
 pub enum SettingsError {
-    #[error("Unknown setting {0:?}")]
-    UnknownKey(String),
     #[error("{key}: {reason}")]
     InvalidValue { key: String, reason: String },
     #[error("Settings file error ({path}): {source}")]

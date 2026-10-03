@@ -38,7 +38,6 @@ fn store(host: &AgentHost) -> SettingsStore {
 fn tool_error(tool: &str, error: SettingsError) -> ToolError {
     match error {
         SettingsError::InvalidValue { key, reason } => invalid(tool, format!("{key} {reason}")),
-        SettingsError::UnknownKey(key) => invalid(tool, format!("unknown setting {key}")),
         other => ToolError::Failed(other.to_string()),
     }
 }

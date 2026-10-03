@@ -441,22 +441,19 @@ fn task_patch_from_args(tool: &str, args: &Value) -> Result<TaskPatch, ToolError
         Some(Value::String(s)) => Some(Some(s.trim().to_string())),
         _ => None,
     };
-    let subtasks = match args.get("subtasks").and_then(Value::as_array) {
-        Some(items) => Some(
-            items
-                .iter()
-                .map(|item| SubtaskSpec {
-                    id: str_arg(item, "id").map(str::to_string),
-                    title: str_arg(item, "title").unwrap_or_default().to_string(),
-                    completed: item
-                        .get("completed")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                })
-                .collect(),
-        ),
-        None => None,
-    };
+    let subtasks = args.get("subtasks").and_then(Value::as_array).map(|items| {
+        items
+            .iter()
+            .map(|item| SubtaskSpec {
+                id: str_arg(item, "id").map(str::to_string),
+                title: str_arg(item, "title").unwrap_or_default().to_string(),
+                completed: item
+                    .get("completed")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            })
+            .collect()
+    });
     let patch = TaskPatch {
         title: str_arg(args, "title").map(str::to_string),
         description: args

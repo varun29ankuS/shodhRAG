@@ -141,6 +141,7 @@ pub async fn load_tasks(app: AppHandle) -> Result<Vec<TodoItem>, String> {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri passes each field as its own argument.
 pub async fn create_task(
     app: AppHandle,
     title: String,
@@ -174,6 +175,7 @@ pub async fn create_task(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri passes each field as its own argument.
 pub async fn update_task(
     app: AppHandle,
     id: String,
@@ -264,6 +266,7 @@ pub async fn load_events(app: AppHandle) -> Result<Vec<CalendarEvent>, String> {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri passes each field as its own argument.
 pub async fn create_event(
     app: AppHandle,
     title: String,
@@ -295,6 +298,7 @@ pub async fn create_event(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri passes each field as its own argument.
 pub async fn update_event(
     app: AppHandle,
     id: String,

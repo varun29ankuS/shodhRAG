@@ -16,7 +16,7 @@ arrow = { version = "57", features = ["prettyprint"] }
 tantivy = "0.22"
 
 # Embeddings (ONNX)
-ort = "2.0.0-rc.10"
+ort = "2.0.0-rc.13"
 # default-features = false drops `esaxx_fast`, whose esaxx-rs build script hardcodes
 # `static_crt(true)` (/MT). Every other native dep (llama.cpp, onnxruntime, onig) is
 # built against the dynamic CRT (/MD), so the static esaxx object caused LNK2038

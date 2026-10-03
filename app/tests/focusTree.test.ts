@@ -163,6 +163,12 @@ test('tree keyboard map', () => {
   assert.equal(treeKey(rows, 'r', 'x'), null);
 });
 
+test('chips: a root with no turns still shows when something beneath it has turns', async () => {
+  const { activeRootThreads } = await import('../src/features/focus/threadTree.ts');
+  const list = [thread('emptyRoot'), thread('child', 'emptyRoot', 2), thread('idle'), thread('busy', undefined, 1)];
+  assert.deepEqual(activeRootThreads(list).map(t => t.id), ['emptyRoot', 'busy']);
+});
+
 test('depth cap is six nested levels', () => {
   assert.equal(MAX_DEPTH, 6);
 });

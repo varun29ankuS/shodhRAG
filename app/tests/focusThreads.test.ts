@@ -168,10 +168,12 @@ test('same target: by content, by file passage, by task id', () => {
 
 test('summary: last question and an excerpt of its answer', () => {
   let t = thread('a');
-  assert.equal(threadSummary(t), 'About "Flow": ');
+  assert.equal(threadSummary(t), '', 'nothing to summarise before the first answer');
   t = appendTurn(t, { id: 'u1', role: 'user', content: 'What does A do?', timestamp: '1' });
   t = appendTurn(t, { id: 'r1', role: 'assistant', content: 'A starts the flow.', timestamp: '2' });
-  assert.equal(threadSummary(t), 'From a side discussion about "Flow":\nQ: What does A do?\nA: A starts the flow.');
+  // No "From a side discussion" header: the card and the agent prompt add it once.
+  assert.equal(threadSummary(t), '**Asked:** What does A do?\n\nA starts the flow.');
+  assert.ok(!threadSummary(t).includes('side discussion'));
   t = appendTurn(t, { id: 'r2', role: 'assistant', content: 'x'.repeat(SUMMARY_ANSWER_CHARS + 10), timestamp: '3' });
   const long = threadSummary(t);
   assert.ok(long.endsWith('…'));

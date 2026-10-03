@@ -5,7 +5,7 @@ import { cn } from '../../lib/utils';
 import { FOCUS_OVERLAY_SELECTOR } from './focusDom';
 import { notifyDepthLimit, useFocus } from './FocusContext';
 import type { DrillResult } from './FocusContext';
-import { selectionTarget } from './targets';
+import { MAX_SELECTED_CHARS, selectionTarget } from './targets';
 
 /** Attribute marking where selected text can be asked about. */
 export const ASK_SCOPE_ATTR = 'data-ask-scope';
@@ -25,6 +25,22 @@ interface Pending {
   act: () => void;
 }
 
+/** Characters of a block read around a selection (a large text file is one long block). */
+const CONTEXT_WINDOW = 4_000;
+
+/**
+ * The block's text near the selection, bounded so a huge block (a whole
+ * text file) is never processed on every selection change.
+ */
+function nearText(block: Element, selected: string): string {
+  const full = block.textContent ?? '';
+  if (full.length <= CONTEXT_WINDOW * 2) return full;
+  const probe = selected.trim().slice(0, 120);
+  const at = probe ? full.indexOf(probe) : -1;
+  const center = at >= 0 ? at : 0;
+  return full.slice(Math.max(0, center - CONTEXT_WINDOW), center + probe.length + CONTEXT_WINDOW);
+}
+
 function elementOf(node: Node | null): Element | null {
   if (!node) return null;
   return node instanceof Element ? node : node.parentElement;
@@ -38,7 +54,8 @@ function elementOf(node: Node | null): Element | null {
 function readSelection(focus: NonNullable<ReturnType<typeof useFocus>>): Omit<Pending, 'left' | 'top'> & { rect: DOMRect } | null {
   const sel = document.getSelection();
   if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
-  const raw = sel.toString();
+  // Bounded: select-all in a large document must not be processed whole on every change.
+  const raw = sel.toString().slice(0, MAX_SELECTED_CHARS * 2);
   if (raw.replace(/\s+/g, ' ').trim().length < 2) return null;
   const range = sel.getRangeAt(0);
   const start = elementOf(range.startContainer);
@@ -62,7 +79,7 @@ function readSelection(focus: NonNullable<ReturnType<typeof useFocus>>): Omit<Pe
 
   if (kind === 'answer' || kind === 'thread') {
     const block = common?.closest<HTMLElement>(BLOCK_SELECTOR);
-    const context = (block && scope.contains(block) ? block : scope).textContent ?? '';
+    const context = nearText(block && scope.contains(block) ? block : scope, raw);
     const target = selectionTarget({ text: raw, context, origin: 'answer' });
     if (!target) return null;
     if (kind === 'answer') {
@@ -86,7 +103,7 @@ function readSelection(focus: NonNullable<ReturnType<typeof useFocus>>): Omit<Pe
     const block = pageEl ?? common?.closest<HTMLElement>(BLOCK_SELECTOR) ?? scope;
     const target = selectionTarget({
       text: raw,
-      context: block.textContent ?? '',
+      context: nearText(block, raw),
       origin: 'document',
       document: { sourceFile, fileName: scope.dataset.fileName ?? '', page },
     });

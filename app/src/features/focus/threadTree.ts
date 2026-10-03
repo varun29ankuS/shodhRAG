@@ -70,6 +70,16 @@ export function rootThreads(threads: readonly FocusThread[]): FocusThread[] {
   return threads.filter(t => parents.get(t.id) === null);
 }
 
+/**
+ * Roots worth a chip in the conversation: those with turns of their own or
+ * anywhere beneath them (a root left empty because the reader drilled down
+ * before asking must still lead to its nested discussions).
+ */
+export function activeRootThreads(threads: readonly FocusThread[]): FocusThread[] {
+  const busy = (node: ThreadNode): boolean => node.thread.turns.length > 0 || node.children.some(busy);
+  return buildThreadTree(threads).filter(busy).map(n => n.thread);
+}
+
 /** The chain from a root to `threadId` (inclusive); empty when unknown. */
 export function threadPath(threads: readonly FocusThread[], threadId: string): FocusThread[] {
   const byId = new Map(threads.map(t => [t.id, t]));

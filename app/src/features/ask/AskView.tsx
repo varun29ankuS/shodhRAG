@@ -18,8 +18,7 @@ import { Transcript } from '../agent/Transcript';
 import { FocusAnchorProvider, useFocus } from '../focus/FocusContext';
 import type { FocusThread } from '../focus/focusTypes';
 import { sourceTarget } from '../focus/targets';
-import { repliesLabel } from '../focus/threadStore';
-import { descendantCount, rootThreads } from '../focus/threadTree';
+import { activeRootThreads, descendantCount, nodeLabel } from '../focus/threadTree';
 import type { SideSummaryRef } from '../focus/summary';
 import { UserText } from './UserText';
 import { useChatSession } from './ChatSessionContext';
@@ -219,7 +218,7 @@ function CopyAnswerButton({ text }: { text: string }) {
 /** "2 replies about Revenue by quarter": reopens that side discussion. */
 function ThreadChips({ threads, onOpen }: { threads: readonly FocusThread[]; onOpen: (thread: FocusThread, trigger: HTMLElement) => void }) {
   // Nested (drill-down) discussions open from their root; the chip counts them.
-  const withReplies = rootThreads(threads).filter(t => t.turns.length > 0);
+  const withReplies = activeRootThreads(threads);
   if (withReplies.length === 0) return null;
   return (
     <ul className="flex flex-wrap gap-2" aria-label="Side discussions">
@@ -235,7 +234,7 @@ function ThreadChips({ threads, onOpen }: { threads: readonly FocusThread[]; onO
             )}
           >
             <MessagesSquare className="w-3.5 h-3.5 shrink-0 text-shodh-accent-text" aria-hidden="true" />
-            <span className="truncate">{repliesLabel(thread)}</span>
+            <span className="truncate">{nodeLabel(thread)}</span>
             {(() => {
               const deeper = descendantCount(threads, thread.id);
               return deeper > 0 ? <span className="shrink-0 text-shodh-text-muted">{` · ${deeper} deeper`}</span> : null;

@@ -350,7 +350,7 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
       </header>
 
       {summary !== null && (
-        <div data-esc-local="" className="shrink-0 max-h-[65%] overflow-y-auto scrollbar-thin px-4 py-3 border-b border-shodh-border-subtle bg-shodh-surface-2 flex flex-col gap-2">
+        <div className="shrink-0 max-h-[65%] overflow-y-auto scrollbar-thin px-4 py-3 border-b border-shodh-border-subtle bg-shodh-surface-2 flex flex-col gap-2">
           {summary.status === 'writing' ? (
             <div className="flex items-center gap-2 text-[12.5px] text-shodh-text-secondary" role="status">
               <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
@@ -374,6 +374,7 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
               <textarea
                 id={`${headingId}-summary`}
                 ref={summaryRef}
+                data-esc-local=""
                 value={summary.text}
                 onChange={e => setSummary({ status: 'editing', text: e.target.value, note: summary.note })}
                 onKeyDown={e => {

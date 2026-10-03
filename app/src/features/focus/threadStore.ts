@@ -395,17 +395,17 @@ export function sameTarget(a: FocusTarget, b: FocusTarget): boolean {
 export const SUMMARY_ANSWER_CHARS = 700;
 
 /**
- * Default text offered when a side discussion is added to the main
- * conversation: what it was about, the last question and (an excerpt of)
- * its answer. The user edits it before it is posted.
+ * Fallback summary of a side discussion, used when the agent could not
+ * write one: the last question and (an excerpt of) its answer, as Markdown.
+ * It has no "From a side discussion about …" header: the card and the
+ * prompt that carry it already say so. Empty before the first answer.
  */
-export function threadSummary(thread: Pick<FocusThread, 'turns' | 'anchor'>): string {
+export function threadSummary(thread: Pick<FocusThread, 'turns'>): string {
   const lastAnswerIndex = (() => {
     for (let i = thread.turns.length - 1; i >= 0; i--) if (thread.turns[i].role === 'assistant' && thread.turns[i].content.trim()) return i;
     return -1;
   })();
-  const label = thread.anchor.target.label.replace(/\s+/g, ' ').trim();
-  if (lastAnswerIndex < 0) return `About "${label}": `;
+  if (lastAnswerIndex < 0) return '';
   let question = '';
   for (let i = lastAnswerIndex - 1; i >= 0; i--) {
     if (thread.turns[i].role === 'user') {
@@ -416,9 +416,5 @@ export function threadSummary(thread: Pick<FocusThread, 'turns' | 'anchor'>): st
   const answer = stripFollowups(thread.turns[lastAnswerIndex].content).trim();
   // Never cut inside an equation or a fenced block: they would render as raw source.
   const excerpt = safeTruncate(answer, SUMMARY_ANSWER_CHARS);
-  return [
-    `From a side discussion about "${label}":`,
-    question ? `Q: ${question}` : '',
-    `A: ${excerpt}`,
-  ].filter(Boolean).join('\n');
+  return [question ? `**Asked:** ${question}` : '', excerpt].filter(Boolean).join('\n\n');
 }

@@ -1,6 +1,9 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { Check, Copy } from 'lucide-react';
@@ -13,6 +16,8 @@ import { TableArtifact } from '../../components/TableArtifact';
 import { ArtifactPreviewCard } from '../../components/ArtifactPreviewCard';
 import type { SearchHit } from './types';
 import { sourceLabel } from './searchResults';
+import { ChartBlock, MermaidBlock } from './visual/VisualBlocks';
+import { escapeCurrency, isMermaidLanguage, mermaidSource, normalizeMathDelimiters, protectMath } from './visual/mathText';
 
 /** Citation placeholders: ASCII markers that survive markdown parsing. */
 const CITE_OPEN = 'XCSHODH';
@@ -66,9 +71,11 @@ export interface MessageContentRendererProps {
  * Renders an assistant answer: markdown prose with inline citation pills,
  * followed by inline charts, tables and other artifact cards.
  *
- * Pipeline (unchanged from the original chat renderer):
- * 1. Strip artifact fences (rendered separately) and inline chart JSON.
- * 2. Protect code blocks from citation rewriting.
+ * Pipeline:
+ * 1. Answers that arrived with backend artifacts: strip their fences (the
+ *    artifacts render separately). Otherwise ```mermaid and ```chart fences
+ *    render inline as diagrams and charts.
+ * 2. Protect code blocks and math from citation rewriting.
  * 3. Collapse citation-only lines into the previous line.
  * 4. Replace `[N]` / `【N†…】` with placeholders that survive markdown parsing.
  * 5. Render markdown; text nodes swap placeholders for citation pills.
@@ -85,6 +92,8 @@ export function MessageContentRenderer({
   const { theme } = useTheme();
   const isDark = theme === 'dark';
 
+  const hasArtifacts = (artifacts?.length ?? 0) > 0;
+
   const hitsByNumber = useMemo(() => {
     const map = new Map<number, SearchHit>();
     for (const hit of hits) map.set(hit.number, hit);
@@ -94,14 +103,20 @@ export function MessageContentRenderer({
   const preprocessed = useMemo(() => {
     let text = content;
 
-    text = text.replace(/```(?:chart|table|mermaid|flowchart|sequence|classDiagram|erDiagram|stateDiagram|gantt|gitGraph|journey|form|action)\s*\n[\s\S]*?```/g, '');
-    text = stripChartContent(text);
+    if (hasArtifacts) {
+      text = text.replace(/```(?:chart|table|mermaid|flowchart|sequence|classDiagram|erDiagram|stateDiagram|gantt|gitGraph|journey|form|action)\s*\n[\s\S]*?```/g, '');
+      text = stripChartContent(text);
+    }
 
     const codeBlocks: string[] = [];
     text = text.replace(/```[\s\S]*?```/g, match => {
       codeBlocks.push(match);
       return `\x01CODE${codeBlocks.length - 1}\x01`;
     });
+
+    text = escapeCurrency(normalizeMathDelimiters(text));
+    const math = protectMath(text);
+    text = math.text;
 
     const lines = text.split('\n');
     const merged: string[] = [];
@@ -123,9 +138,10 @@ export function MessageContentRenderer({
         .join(''),
     );
 
+    text = math.restore(text);
     text = text.replace(/\x01CODE(\d+)\x01/g, (_, idx: string) => codeBlocks[Number(idx)] ?? '');
     return text.replace(/\n{3,}/g, '\n\n');
-  }, [content]);
+  }, [content, hasArtifacts]);
 
   const renderWithCitations = useCallback((text: string): React.ReactNode => {
     if (hitsByNumber.size === 0) {
@@ -198,13 +214,21 @@ export function MessageContentRenderer({
         {children}
       </a>
     ),
-    pre: ({ children }) => (
-      <div className="my-4 rounded-xl overflow-hidden border border-shodh-border bg-shodh-surface">{children}</div>
-    ),
+    pre: ({ children }) => {
+      // Diagrams and charts draw their own frame.
+      const child = React.Children.toArray(children)[0];
+      const lang = React.isValidElement<{ className?: string }>(child)
+        ? /language-([\w-]+)/.exec(child.props.className || '')?.[1] ?? ''
+        : '';
+      if (lang === 'chart' || isMermaidLanguage(lang)) return <>{children}</>;
+      return <div className="my-4 rounded-xl overflow-hidden border border-shodh-border bg-shodh-surface">{children}</div>;
+    },
     code: ({ children, className }) => {
-      const match = /language-(\w+)/.exec(className || '');
+      const match = /language-([\w-]+)/.exec(className || '');
       if (match) {
         const codeString = String(children).replace(/\n$/, '');
+        if (isMermaidLanguage(match[1])) return <MermaidBlock source={mermaidSource(match[1], codeString)} dark={isDark} />;
+        if (match[1] === 'chart') return <ChartBlock source={codeString} theme={theme} />;
         return (
           <div>
             <div className="flex items-center justify-between pl-3 pr-1.5 h-8 border-b border-shodh-border-subtle bg-shodh-raised">
@@ -243,7 +267,7 @@ export function MessageContentRenderer({
     ),
     tr: ({ children }) => <tr>{children}</tr>,
     hr: () => <hr className="my-6 border-shodh-border" />,
-  }), [isDark, processChildren]);
+  }), [isDark, theme, processChildren]);
 
   const { charts, tables, others } = useMemo(() => {
     const list = artifacts ?? [];
@@ -261,7 +285,7 @@ export function MessageContentRenderer({
     <div className="flex flex-col gap-4">
       {preprocessed.trim().length > 0 && (
         <div className={cn('text-shodh-text-secondary break-words', compact ? 'text-[13.5px] leading-[1.6]' : 'text-[16px] leading-[1.75]')}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+          <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={markdownComponents}>
             {preprocessed}
           </ReactMarkdown>
         </div>

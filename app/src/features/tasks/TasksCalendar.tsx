@@ -7,6 +7,7 @@ import { fromInputs, parseMoment, rescheduleTo, storedDayKey, storedTime } from 
 import { focusDayKey, useTasksStore } from './TasksStore';
 import { isDone } from './types';
 import type { CalendarEvent as CalendarEntry, TodoItem as CalendarTask } from './types';
+import { ReminderBadge } from './ReminderField';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -438,7 +439,9 @@ export default function TasksCalendar() {
                       <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-shodh-info shrink-0" aria-hidden="true" />
                       <span className="flex-1 min-w-0 flex flex-col">
                         <span className="text-[13px] text-shodh-text truncate">{ev.title}</span>
-                        <span className="text-[11.5px] text-shodh-text-faint">{eventTimeLabel(ev)}</span>
+                        <span className="text-[11.5px] text-shodh-text-faint truncate">
+                          {eventTimeLabel(ev)}{ev.location ? ` · ${ev.location}` : ''}
+                        </span>
                       </span>
                       {ev.source === 'agent' && (
                         <Bot className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-text-muted" aria-label="Created by agent" />
@@ -481,6 +484,7 @@ export default function TasksCalendar() {
                       </span>
                       <span className="text-[11.5px] text-shodh-text-faint capitalize">{task.priority} priority</span>
                     </button>
+                    <ReminderBadge task={task} />
                     {task.source === 'agent' && (
                       <Bot className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-text-muted" aria-label="Created by agent" />
                     )}

@@ -8,6 +8,7 @@ import { dayKey, monthGrid } from '../features/tasks/calendarGrid';
 import { fromInputs, isOverdue, storedDayKey, storedTime } from '../features/tasks/dueDate';
 import { FOCUS_RING } from '../features/tasks/fields';
 import { DueMenu, PriorityMenu } from '../features/tasks/QuickMenus';
+import { ReminderBadge } from '../features/tasks/ReminderField';
 import ConfirmDialog from '../features/tasks/ConfirmDialog';
 import { useTasksStore } from '../features/tasks/TasksStore';
 import { isDone, PRIORITIES, PRIORITY_LABELS } from '../features/tasks/types';
@@ -268,6 +269,7 @@ function TaskRow({
               tabIndex={inner}
               onChange={dueDate => void updateTask(task.id, { dueDate })}
             />
+            <ReminderBadge task={task} />
             <PriorityMenu
               priority={task.priority}
               taskTitle={task.title}
@@ -665,7 +667,9 @@ export default function CalendarTodoPanel() {
                       <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-shodh-info shrink-0" aria-hidden="true" />
                       <span className="flex-1 min-w-0 flex flex-col">
                         <span className="text-[12.5px] text-shodh-text truncate">{ev.title}</span>
-                        <span className="text-[11.5px] text-shodh-text-faint">{formatEventWhen(ev)}</span>
+                        <span className="text-[11.5px] text-shodh-text-faint truncate">
+                          {formatEventWhen(ev)}{ev.location ? ` · ${ev.location}` : ''}
+                        </span>
                       </span>
                       {ev.source === 'agent' && <Bot className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-text-muted" aria-label="Created by agent" />}
                     </button>

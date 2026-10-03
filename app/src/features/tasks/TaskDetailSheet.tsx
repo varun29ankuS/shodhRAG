@@ -1,8 +1,9 @@
-import React, { useId, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { Bot, Check, FileText, MessageSquareText, Plus, Trash2, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import DetailSheet from './DetailSheet';
 import { ChipInput, DateTimeField, FIELD_LABEL, FOCUS_RING, INLINE_INPUT, InlineText, Segmented } from './fields';
+import { ReminderField } from './ReminderField';
 import { useTasksStore } from './TasksStore';
 import { useChatSession } from '../ask/ChatSessionContext';
 import { useFocus } from '../focus/FocusContext';
@@ -44,8 +45,59 @@ export function Provenance({ source, sourceRef }: { source: string; sourceRef?: 
   );
 }
 
+/** A subtask's title, edited in place: Enter or leaving the field saves, Esc reverts. */
+function SubtaskTitle({ title, completed, disabled, onRename }: {
+  title: string;
+  completed: boolean;
+  disabled: boolean;
+  onRename: (next: string) => void;
+}) {
+  const [draft, setDraft] = useState(title);
+  const editing = useRef(false);
+  const cancelled = useRef(false);
+  useEffect(() => {
+    if (!editing.current) setDraft(title);
+  }, [title]);
+  return (
+    <input
+      type="text"
+      value={draft}
+      disabled={disabled}
+      aria-label={`Subtask title: ${title}`}
+      onFocus={() => { editing.current = true; }}
+      onChange={e => setDraft(e.target.value)}
+      onBlur={() => {
+        editing.current = false;
+        const next = draft.trim();
+        if (cancelled.current || !next || next === title) {
+          cancelled.current = false;
+          setDraft(title);
+          return;
+        }
+        onRename(next);
+      }}
+      onKeyDown={e => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          e.currentTarget.blur();
+        } else if (e.key === 'Escape') {
+          // The sheet ignores Esc from inputs: step out to the dialog instead.
+          cancelled.current = true;
+          setDraft(title);
+          e.currentTarget.closest<HTMLElement>('[role="dialog"]')?.focus();
+        }
+      }}
+      className={cn(
+        INLINE_INPUT,
+        'flex-1 min-w-0 h-7 px-1.5 text-[13px] truncate',
+        completed ? 'line-through text-shodh-text-faint' : 'text-shodh-text-secondary',
+      )}
+    />
+  );
+}
+
 function SubtaskList({ task }: { task: TodoItem }) {
-  const { addSubtask, toggleSubtask, deleteSubtask } = useTasksStore();
+  const { addSubtask, toggleSubtask, renameSubtask, deleteSubtask } = useTasksStore();
   const [draft, setDraft] = useState('');
   const headingId = useId();
   const inputId = useId();
@@ -85,9 +137,12 @@ function SubtaskList({ task }: { task: TodoItem }) {
                 >
                   {sub.completed && <Check className="w-3 h-3" strokeWidth={3} aria-hidden="true" />}
                 </button>
-                <span className={cn('flex-1 min-w-0 truncate text-[13px]', sub.completed ? 'line-through text-shodh-text-faint' : 'text-shodh-text-secondary')}>
-                  {sub.title}
-                </span>
+                <SubtaskTitle
+                  title={sub.title}
+                  completed={sub.completed}
+                  disabled={saving}
+                  onRename={title => void renameSubtask(task.id, sub.id, title)}
+                />
                 <button
                   type="button"
                   aria-label={`Delete subtask ${sub.title}`}
@@ -136,8 +191,7 @@ function SubtaskList({ task }: { task: TodoItem }) {
 /** Task detail and editing sheet. Every field saves on its own (blur/Enter/click). */
 /**
  * Opens the task in the focus pop-out with a side discussion about it. The
- * discussion belongs to the conversation open in Ask; tasks are not part
- * of a conversation, so it is kept on this device.
+ * discussion belongs to the conversation open in Ask and is saved with it.
  */
 function AskAboutTask({ task }: { task: TodoItem }) {
   const focus = useFocus();
@@ -253,7 +307,11 @@ export default function TaskDetailSheet({ task, onClose }: { task: TodoItem | nu
           value={shown.dueDate}
           emptyHint="No due date. Pick a date; a time is optional."
           onCommit={dueDate => void updateTask(shown.id, { dueDate })}
+          onClear={() => void updateTask(shown.id, { dueDate: null })}
         />
+      </div>
+      <div className="px-2.5">
+        <ReminderField task={shown} onChange={reminder => void updateTask(shown.id, { reminder })} />
       </div>
       <InlineText
         key={`notes-${shown.id}`}
@@ -271,9 +329,8 @@ export default function TaskDetailSheet({ task, onClose }: { task: TodoItem | nu
           value={shown.project ?? ''}
           placeholder="No project"
           list={projectListId}
-          required={!!shown.project}
-          hint={shown.project ? 'A project can be changed but not removed yet.' : undefined}
-          onCommit={project => void updateTask(shown.id, { project })}
+          hint={shown.project ? 'Clear the name to remove the project.' : undefined}
+          onCommit={project => void updateTask(shown.id, { project: project || null })}
         />
         <datalist id={projectListId}>
           {projects.map(p => <option key={p} value={p} />)}

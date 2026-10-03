@@ -178,7 +178,8 @@ export function DueMenu({
   done: boolean;
   taskTitle: string;
   tabIndex: number;
-  onChange: (next: string) => void;
+  /** The new due date, or null to remove it. */
+  onChange: (next: string | null) => void;
 }) {
   const { open, setOpen, close, pos, triggerRef, popRef } = usePopover();
   const dialogId = useId();
@@ -253,6 +254,18 @@ export function DueMenu({
               {opt.label}
             </button>
           ))}
+          {dueDate && (
+            <button
+              type="button"
+              className={MENU_ITEM}
+              onClick={() => {
+                close(true);
+                onChange(null);
+              }}
+            >
+              No date
+            </button>
+          )}
           <form
             className="flex items-center gap-1.5 px-1.5 pt-1.5 mt-1 border-t border-shodh-border-subtle"
             onSubmit={e => {

@@ -44,6 +44,7 @@ import { useTheme } from './contexts/ThemeContext';
 import { useSidebar } from './contexts/SidebarContext';
 import { ChatSessionProvider, useChatSession } from './features/ask/ChatSessionContext';
 import { FocusProvider } from './features/focus/FocusContext';
+import { ReminderAlerts } from './features/tasks/ReminderAlerts';
 import { AskView } from './features/ask/AskView';
 import { useCommandPalette } from './hooks/useCommandPalette';
 import CommandPalette from './components/CommandPalette';
@@ -1498,6 +1499,7 @@ function AppSplitView() {
 
       {/* Update Notification */}
       <UpdateNotification />
+      <ReminderAlerts />
 
       {/* Active conversation while another view is open */}
       <ConversationDock activeTab={activeTab} onExpand={() => setActiveTab('ask')} />

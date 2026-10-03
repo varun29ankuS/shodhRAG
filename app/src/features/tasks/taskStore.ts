@@ -130,3 +130,67 @@ export const TEMP_SUBTASK_PREFIX = 'pending:';
 export function isTempSubtaskId(id: string): boolean {
   return id.startsWith(TEMP_SUBTASK_PREFIX);
 }
+
+// ── Wire arguments ─────────────────────────────────────────────────
+
+/** Task fields `update_task` can set; `null` clears an optional one. */
+export interface TaskPatch {
+  title?: string;
+  description?: string;
+  dueDate?: string | null;
+  priority?: string;
+  status?: string;
+  tags?: string[];
+  project?: string | null;
+  reminder?: string | null;
+}
+
+/** Event fields `update_event` can set; `null` clears an optional one. */
+export interface EventPatch {
+  title?: string;
+  description?: string;
+  startTime?: string;
+  endTime?: string | null;
+  allDay?: boolean;
+  location?: string | null;
+}
+
+/** Backend names of the fields a `null` clears (`calendar_store.rs::TASK_CLEARABLE`). */
+const TASK_CLEAR: Record<'dueDate' | 'project' | 'reminder', string> = {
+  dueDate: 'due_date',
+  project: 'project',
+  reminder: 'reminder',
+};
+
+/** `calendar_store.rs::EVENT_CLEARABLE`. */
+const EVENT_CLEAR: Record<'endTime' | 'location', string> = {
+  endTime: 'end_time',
+  location: 'location',
+};
+
+function wireArgs(id: string, patch: object, clearable: Record<string, string>): Record<string, unknown> {
+  const args: Record<string, unknown> = { id };
+  const clear: string[] = [];
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    if (value === null || (key in clearable && typeof value === 'string' && value.trim() === '')) {
+      // An absent value means "keep" to the backend; clearing must be named.
+      // Clear names are values, which Tauri does not case-convert: snake_case.
+      if (key in clearable) clear.push(clearable[key]);
+      continue;
+    }
+    args[key] = value;
+  }
+  if (clear.length > 0) args.clear = clear;
+  return args;
+}
+
+/** Arguments of `update_task` (camelCase keys; Tauri maps them to snake_case). */
+export function taskArgs(id: string, patch: TaskPatch): Record<string, unknown> {
+  return wireArgs(id, patch, TASK_CLEAR);
+}
+
+/** Arguments of `update_event`. */
+export function eventArgs(id: string, patch: EventPatch): Record<string, unknown> {
+  return wireArgs(id, patch, EVENT_CLEAR);
+}

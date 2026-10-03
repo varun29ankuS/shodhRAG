@@ -228,24 +228,28 @@ const DATE_INPUT = cn(
 /**
  * Native date + optional time inputs for a stored date/time (see dueDate.ts).
  * Saves when focus leaves the pair or on Enter; Esc reverts. With no time
- * the value is date-only. An emptied date reverts (the backend cannot
- * clear it) and says so.
+ * the value is date-only (unless `requireTime`). With `onClear`, emptying
+ * the date (or the Remove button) clears the value; without it the value is
+ * required and an emptied date reverts.
  */
 export function DateTimeField({
   label,
   value,
   onCommit,
+  onClear,
   allowTime = true,
-  clearable = false,
+  requireTime = false,
   emptyHint,
   validate,
 }: {
   label: string;
   value: string | null | undefined;
   onCommit: (next: string) => void;
+  /** Clear the value; omit for a required field. */
+  onClear?: () => void;
   allowTime?: boolean;
-  /** When false (backend cannot clear), emptying the date reverts. */
-  clearable?: boolean;
+  /** A time must be given (reminders). */
+  requireTime?: boolean;
   emptyHint?: string;
   /** Returns an error message to reject the value. */
   validate?: (next: string) => string | null;
@@ -274,8 +278,18 @@ export function DateTimeField({
 
   const commit = (nextDate: string, nextTime: string) => {
     if (!nextDate) {
+      if (value && onClear) {
+        setNote(null);
+        onClear();
+        return;
+      }
       revert();
-      if (value && !clearable) setNote('A date can be changed but not removed yet.');
+      if (value) setNote(`${label} is required.`);
+      return;
+    }
+    if (requireTime && !nextTime) {
+      // Wait for the time: moving from the date to the time input is not a commit.
+      setNote('Pick a time as well.');
       return;
     }
     const next = fromInputs(nextDate, allowTime ? nextTime : '');
@@ -350,7 +364,7 @@ export function DateTimeField({
               onChange={e => { dirty.current = true; setTime(e.target.value); }}
               className={DATE_INPUT}
             />
-            {time && (
+            {time && !requireTime && (
               <button
                 type="button"
                 onClick={() => {
@@ -367,6 +381,20 @@ export function DateTimeField({
               </button>
             )}
           </>
+        )}
+        {value && onClear && (
+          <button
+            type="button"
+            aria-label={`Remove ${label.toLowerCase()}`}
+            onClick={() => {
+              dirty.current = false;
+              setNote(null);
+              onClear();
+            }}
+            className={cn('h-8 px-2 rounded-lg text-[12px] text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro', FOCUS_RING)}
+          >
+            Remove
+          </button>
         )}
       </div>
       {(note || (!value && emptyHint)) && (

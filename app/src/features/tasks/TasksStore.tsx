@@ -8,24 +8,22 @@ import { sameMoment, storedDayKey } from './dueDate';
 import { sameTags } from './tags';
 import {
   changedFields,
+  eventArgs,
   initialStore,
   isTempSubtaskId,
   storeReducer,
+  taskArgs,
   TEMP_SUBTASK_PREFIX,
   visibleEvents,
   visibleTasks,
 } from './taskStore';
-import type { PendingOp } from './taskStore';
+import type { EventPatch, PendingOp, TaskPatch } from './taskStore';
 import type { CalendarEvent, TodoItem } from './types';
+
+export type { EventPatch, TaskPatch } from './taskStore';
 
 /** How long a deleted task or event can be restored from the toast. */
 export const UNDO_WINDOW_MS = 6000;
-
-/** Task fields `update_task` can set. It cannot clear a field (None keeps it). */
-export type TaskPatch = Partial<Pick<TodoItem, 'title' | 'description' | 'dueDate' | 'priority' | 'status' | 'tags' | 'project'>>;
-
-/** Event fields `update_event` can set. It cannot clear `endTime`. */
-export type EventPatch = Partial<Pick<CalendarEvent, 'title' | 'description' | 'startTime' | 'endTime' | 'allDay'>>;
 
 export interface NewTaskInput {
   title: string;
@@ -40,6 +38,7 @@ export interface NewEventInput {
   startTime: string;
   endTime?: string | null;
   allDay: boolean;
+  location?: string | null;
 }
 
 type Detail = { kind: 'task'; id: string } | { kind: 'event'; id: string } | null;
@@ -79,7 +78,10 @@ interface TasksStoreValue {
   deleteTask: (id: string) => void;
   addSubtask: (taskId: string, title: string) => Promise<boolean>;
   toggleSubtask: (taskId: string, subtaskId: string) => Promise<boolean>;
+  renameSubtask: (taskId: string, subtaskId: string, title: string) => Promise<boolean>;
   deleteSubtask: (taskId: string, subtaskId: string) => Promise<boolean>;
+  /** Ring the task's reminder again in `minutes`. */
+  snoozeReminder: (taskId: string, minutes: number) => Promise<boolean>;
   updateEvent: (id: string, patch: EventPatch) => Promise<boolean>;
   deleteEvent: (id: string) => void;
   openTask: (id: string) => void;
@@ -102,23 +104,6 @@ export function useTasksStore(): TasksStoreValue {
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-/** Wire args for `update_task`: camelCase keys (Tauri maps them to snake_case), changed fields only, never `reminder`. */
-function taskArgs(id: string, patch: TaskPatch): Record<string, unknown> {
-  const args: Record<string, unknown> = { id };
-  for (const key of ['title', 'description', 'dueDate', 'priority', 'status', 'tags', 'project'] as const) {
-    if (patch[key] !== undefined) args[key] = patch[key];
-  }
-  return args;
-}
-
-function eventArgs(id: string, patch: EventPatch): Record<string, unknown> {
-  const args: Record<string, unknown> = { id };
-  for (const key of ['title', 'description', 'startTime', 'endTime', 'allDay'] as const) {
-    if (patch[key] !== undefined) args[key] = patch[key];
-  }
-  return args;
 }
 
 interface PendingDelete {
@@ -206,17 +191,22 @@ export function TasksStoreProvider({ children }: { children: React.ReactNode }) 
     const current = latest.current.tasks.find(t => t.id === id);
     if (!current) return false;
     const requested: TaskPatch = { ...patch };
-    // update_task treats a missing value as "keep": these cannot be cleared.
-    if (requested.dueDate !== undefined && !requested.dueDate) delete requested.dueDate;
-    if (requested.project !== undefined && !requested.project?.trim()) delete requested.project;
+    // Empty optional values clear the field (sent as `clear`); a title is required.
+    if (requested.dueDate !== undefined && !requested.dueDate) requested.dueDate = null;
+    if (requested.reminder !== undefined && !requested.reminder) requested.reminder = null;
+    if (requested.project !== undefined) requested.project = requested.project?.trim() || null;
     if (requested.title !== undefined && !requested.title.trim()) delete requested.title;
-    const changes = changedFields(current, requested);
-    if (changes.dueDate !== undefined && sameMoment(changes.dueDate, current.dueDate)) delete changes.dueDate;
+    const changes = changedFields(current, requested as Partial<TodoItem>) as TaskPatch;
+    if (changes.dueDate && sameMoment(changes.dueDate, current.dueDate)) delete changes.dueDate;
     if (changes.tags !== undefined && sameTags(changes.tags, current.tags)) delete changes.tags;
     if (Object.keys(changes).length === 0) return true;
+    // A new or removed reminder starts over (as the backend does).
+    const optimistic: Partial<TodoItem> = changes.reminder !== undefined
+      ? { ...changes, reminderFiredAt: null, snoozedUntil: null }
+      : changes;
     return runTaskOp(
       id,
-      changes,
+      optimistic,
       () => invoke<TodoItem>('update_task', taskArgs(id, changes)),
       'Could not save the task',
     );
@@ -245,6 +235,7 @@ export function TasksStoreProvider({ children }: { children: React.ReactNode }) 
       source: 'user',
     };
     if (input.endTime) args.endTime = input.endTime;
+    if (input.location?.trim()) args.location = input.location.trim();
     try {
       const event = await invoke<CalendarEvent>('create_event', args);
       dispatch({ type: 'insertEvent', event });
@@ -279,6 +270,30 @@ export function TasksStoreProvider({ children }: { children: React.ReactNode }) 
     );
   }, [runTaskOp]);
 
+  const renameSubtask = useCallback(async (taskId: string, subtaskId: string, title: string): Promise<boolean> => {
+    const current = latest.current.tasks.find(t => t.id === taskId);
+    const text = title.trim();
+    if (!current || !text || isTempSubtaskId(subtaskId)) return false;
+    if (current.subtasks.find(s => s.id === subtaskId)?.title === text) return true;
+    return runTaskOp(
+      taskId,
+      { subtasks: current.subtasks.map(s => (s.id === subtaskId ? { ...s, title: text } : s)) },
+      () => invoke<TodoItem>('rename_subtask', { taskId, subtaskId, title: text }),
+      'Could not rename the subtask',
+    );
+  }, [runTaskOp]);
+
+  const snoozeReminder = useCallback(async (taskId: string, minutes: number): Promise<boolean> => {
+    try {
+      const task = await invoke<TodoItem>('snooze_reminder', { taskId, minutes });
+      dispatch({ type: 'insertTask', task });
+      return true;
+    } catch (err) {
+      notify.error('Could not snooze the reminder', { description: errorText(err) });
+      return false;
+    }
+  }, []);
+
   const deleteSubtask = useCallback(async (taskId: string, subtaskId: string): Promise<boolean> => {
     const current = latest.current.tasks.find(t => t.id === taskId);
     if (!current || isTempSubtaskId(subtaskId)) return false;
@@ -294,15 +309,17 @@ export function TasksStoreProvider({ children }: { children: React.ReactNode }) 
     const current = latest.current.events.find(e => e.id === id);
     if (!current) return false;
     const requested: EventPatch = { ...patch };
-    if (requested.endTime !== undefined && !requested.endTime) delete requested.endTime;
+    // Empty optional values clear the field; start and title are required.
+    if (requested.endTime !== undefined && !requested.endTime) requested.endTime = null;
+    if (requested.location !== undefined) requested.location = requested.location?.trim() || null;
     if (requested.startTime !== undefined && !requested.startTime) delete requested.startTime;
     if (requested.title !== undefined && !requested.title.trim()) delete requested.title;
-    const changes = changedFields(current, requested);
+    const changes = changedFields(current, requested as Partial<CalendarEvent>) as EventPatch;
     if (changes.startTime !== undefined && sameMoment(changes.startTime, current.startTime)) delete changes.startTime;
-    if (changes.endTime !== undefined && sameMoment(changes.endTime, current.endTime)) delete changes.endTime;
+    if (changes.endTime && sameMoment(changes.endTime, current.endTime)) delete changes.endTime;
     if (Object.keys(changes).length === 0) return true;
     const opId = nextOp();
-    dispatch({ type: 'begin', op: { opId, kind: 'event', id, patch: changes } });
+    dispatch({ type: 'begin', op: { opId, kind: 'event', id, patch: changes as Partial<CalendarEvent> } });
     try {
       const event = await invoke<CalendarEvent>('update_event', eventArgs(id, changes));
       dispatch({ type: 'commit', opId, event });
@@ -425,7 +442,9 @@ export function TasksStoreProvider({ children }: { children: React.ReactNode }) 
     deleteTask,
     addSubtask,
     toggleSubtask,
+    renameSubtask,
     deleteSubtask,
+    snoozeReminder,
     updateEvent,
     deleteEvent,
     openTask,
@@ -434,7 +453,7 @@ export function TasksStoreProvider({ children }: { children: React.ReactNode }) 
     detailEvent,
     closeDetail,
     focusRequest,
-  }), [tasks, events, loading, error, refresh, createTask, createEvent, updateTask, deleteTask, addSubtask, toggleSubtask, deleteSubtask, updateEvent, deleteEvent, openTask, openEvent, detailTask, detailEvent, closeDetail, focusRequest]);
+  }), [tasks, events, loading, error, refresh, createTask, createEvent, updateTask, deleteTask, addSubtask, toggleSubtask, renameSubtask, deleteSubtask, snoozeReminder, updateEvent, deleteEvent, openTask, openEvent, detailTask, detailEvent, closeDetail, focusRequest]);
 
   return <TasksStoreContext.Provider value={value}>{children}</TasksStoreContext.Provider>;
 }

@@ -105,8 +105,16 @@ export default function EventDetailSheet({ event, onClose }: { event: CalendarEv
           emptyHint="No end set."
           validate={validateEnd}
           onCommit={endTime => void updateEvent(shown.id, { endTime })}
+          onClear={() => void updateEvent(shown.id, { endTime: null })}
         />
       </div>
+      <InlineText
+        key={`location-${shown.id}`}
+        label="Location"
+        value={shown.location ?? ''}
+        placeholder="Add a place, address or link"
+        onCommit={location => void updateEvent(shown.id, { location: location || null })}
+      />
       <InlineText
         key={`notes-${shown.id}`}
         label="Notes"

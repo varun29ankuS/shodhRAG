@@ -23,7 +23,12 @@ export interface TodoItem {
   createdAt: string;
   updatedAt: string;
   completedAt?: string | null;
+  /** Local `YYYY-MM-DDTHH:MM` (see `reminders.ts`). */
   reminder?: string | null;
+  /** When the reminder rang (RFC 3339); cleared when it changes or is snoozed. */
+  reminderFiredAt?: string | null;
+  /** A snoozed reminder rings again at this local time instead. */
+  snoozedUntil?: string | null;
 }
 
 export interface CalendarEvent {
@@ -34,6 +39,7 @@ export interface CalendarEvent {
   endTime?: string | null;
   allDay: boolean;
   color?: string | null;
+  location?: string | null;
   source: string;
   sourceRef?: string | null;
   createdAt: string;

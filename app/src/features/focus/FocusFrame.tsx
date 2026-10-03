@@ -1,5 +1,5 @@
 import React, { useCallback, useRef } from 'react';
-import { Maximize2 } from 'lucide-react';
+import { MessageSquareText } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { FocusTarget } from './focusTypes';
 import { useFocus, useFocusAnchor } from './FocusContext';
@@ -21,9 +21,10 @@ export interface FocusFrameProps {
 }
 
 /**
- * Gives a visual in an answer its way into the focus pop-out: an Expand
- * button shown on hover and keyboard focus (always reachable with Tab;
- * Enter opens), plus double-click. Renders the visual unchanged outside an
+ * Gives a visual in an answer its way into the focus pop-out: an always
+ * visible "Expand & ask" button (Tab reaches it, Enter opens), plus
+ * double-click. It stays subdued until hovered so it does not compete
+ * with the visual. Renders the visual unchanged outside an
  * answer (no anchor), e.g. inside the pop-out's own side discussion.
  */
 export function FocusFrame({ noun, getTarget, doubleClick = true, inline = false, className, children }: FocusFrameProps) {
@@ -70,12 +71,12 @@ export function FocusFrame({ noun, getTarget, doubleClick = true, inline = false
         title={doubleClick ? 'Expand (or double-click): zoom and ask about it' : 'Expand: zoom and ask about it'}
         className={cn(
           'absolute top-2 right-2 z-10 h-7 px-2 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface/95 text-[11.5px] font-medium text-shodh-text-secondary shadow-sm',
-          'opacity-0 group-hover/focus:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 hover:text-shodh-text hover:bg-shodh-raised transition-opacity duration-micro',
+          'opacity-75 group-hover/focus:opacity-100 focus-visible:opacity-100 hover:text-shodh-text hover:bg-shodh-raised transition-opacity duration-micro',
           FOCUS_RING,
         )}
       >
-        <Maximize2 className="w-3.5 h-3.5" aria-hidden="true" />
-        Expand
+        <MessageSquareText className="w-3.5 h-3.5" aria-hidden="true" />
+        Expand &amp; ask
       </button>
     </Wrapper>
   );

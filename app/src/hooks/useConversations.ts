@@ -148,17 +148,43 @@ export function useConversations() {
   const activeConversation = conversations.find(c => c.id === activeConversationId) || null;
 
   // Debounced save, per conversation. `onSaved` runs only if this save is
-  // the one that reaches the backend and succeeds.
+  // the one that reaches the backend and succeeds. Pending saves are flushed
+  // when the provider unmounts (reload, hot update) or the page is hidden, so
+  // a change made in the last 500 ms is never dropped.
+  const pendingSavesRef = useRef<Map<string, { conv: Conversation; onSaved?: () => void }>>(new Map());
   const scheduleSave = useCallback((conv: Conversation, onSaved?: () => void) => {
     const timers = saveTimersRef.current;
     const existing = timers.get(conv.id);
     if (existing) clearTimeout(existing);
+    pendingSavesRef.current.set(conv.id, { conv, onSaved });
     timers.set(conv.id, setTimeout(() => {
       timers.delete(conv.id);
+      pendingSavesRef.current.delete(conv.id);
       invoke('save_conversation', { conversation: conv })
         .then(() => onSaved?.())
         .catch(console.error);
     }, 500));
+  }, []);
+
+  useEffect(() => {
+    const timers = saveTimersRef.current;
+    const pending = pendingSavesRef.current;
+    const flush = () => {
+      for (const [id, { conv, onSaved }] of pending) {
+        const timer = timers.get(id);
+        if (timer) clearTimeout(timer);
+        timers.delete(id);
+        invoke('save_conversation', { conversation: conv })
+          .then(() => onSaved?.())
+          .catch(console.error);
+      }
+      pending.clear();
+    };
+    window.addEventListener('pagehide', flush);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      flush();
+    };
   }, []);
 
   const createConversation = useCallback((opts?: { spaceId?: string; spaceName?: string }): string => {

@@ -2,7 +2,6 @@ import React, { createContext, useCallback, useContext, useEffect, useLayoutEffe
 import { useConversations } from '../../hooks/useConversations';
 import type { ConversationMessage } from '../../hooks/useConversations';
 import { notify } from '../../lib/notify';
-import { extractArtifacts } from '../../utils/artifactExtractor';
 import { normalizeViewTab } from '../../lib/viewTabs';
 import type { ViewTab } from '../../lib/viewTabs';
 import type { AgentEventEnvelope, NavigationTarget } from '../agent/events';
@@ -335,13 +334,9 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       setLiveRun({ conversationId: live.conversationId, messageId: message.id, transcript });
       return;
     }
-    // Charts, tables and other artifacts in the finished answer render
-    // below the text and open in the artifact panel.
-    const artifacts = extractArtifacts(message.content);
-    if (artifacts.length > 0) {
-      message.artifacts = artifacts;
-      live.message = message;
-    }
+    // Diagrams, charts, equations and tables in agent answers render inline
+    // (MessageContentRenderer) and open in the focus pop-out; they are not
+    // extracted into side-panel artifacts.
     live.settled = true;
     if (live.abortTimer !== null) {
       window.clearTimeout(live.abortTimer);

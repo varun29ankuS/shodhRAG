@@ -4,6 +4,7 @@ import { cn } from '../../lib/utils';
 import { groupConversations } from '../../lib/conversationGroups';
 import { relativeTime } from '../../utils/time';
 import type { Conversation } from '../../hooks/useConversations';
+import { ConversationPreviewCard, usePreviewVisibility } from './ConversationPreviewCard';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-sidebar';
@@ -144,6 +145,9 @@ function ConversationRow({
   const menuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const menuId = useId();
+  const previewId = `${menuId}-preview`;
+  const preview = usePreviewVisibility();
+  const showPreview = !editing && !menuOpen && preview.open && openButtonRef.current !== null;
 
   const closeMenu = useCallback((restoreFocus: boolean) => {
     setMenuOpen(false);
@@ -247,10 +251,16 @@ function ConversationRow({
           ref={openButtonRef}
           type="button"
           data-history-item=""
-          onClick={() => onOpen(conversation.id)}
+          onClick={() => { preview.hide(); onOpen(conversation.id); }}
+          onMouseEnter={preview.show}
+          onMouseLeave={preview.hide}
+          onFocus={preview.show}
+          onBlur={preview.hide}
+          aria-describedby={showPreview ? previewId : undefined}
           onKeyDown={e => {
             if (e.key === 'F2') {
               e.preventDefault();
+              preview.hide();
               startRename();
             }
           }}
@@ -287,6 +297,10 @@ function ConversationRow({
         >
           <MoreHorizontal className="w-4 h-4" aria-hidden="true" />
         </button>
+      )}
+
+      {showPreview && openButtonRef.current && (
+        <ConversationPreviewCard id={previewId} conversation={conversation} anchor={openButtonRef.current} />
       )}
 
       {menuOpen && (

@@ -109,11 +109,31 @@ impl Policy {
     }
 }
 
+/// Background mode (see [`crate::background`]). User-only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BackgroundPrefs {
+    /// Closing the main window hides it to the tray, so reminders keep ringing.
+    pub close_to_tray: bool,
+    /// The user has been told, once, where the window went.
+    pub close_to_tray_explained: bool,
+}
+
+impl Default for BackgroundPrefs {
+    fn default() -> Self {
+        Self {
+            close_to_tray: true,
+            close_to_tray_explained: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
     pub preferences: Preferences,
     pub policy: Policy,
+    pub background: BackgroundPrefs,
     /// The UI has copied its earlier local-storage preferences here.
     pub seeded: bool,
 }
@@ -156,7 +176,7 @@ pub const AGENT_WRITABLE: [SettingKey; 2] = [SettingKey::Theme, SettingKey::Sear
 /// these by name (in addition to its schema only listing [`AGENT_WRITABLE`]),
 /// so a prompt-injected request gets a clear refusal rather than a
 /// best-effort match.
-pub const AGENT_DENIED: [(&str, &str); 10] = [
+pub const AGENT_DENIED: [(&str, &str); 12] = [
     ("api_keys", "API keys are secrets; a manipulated agent could leak or replace them."),
     ("provider", "Switching the model provider changes who receives the user's documents."),
     ("model", "Switching the model changes who receives the user's documents and what it costs."),
@@ -167,6 +187,8 @@ pub const AGENT_DENIED: [(&str, &str); 10] = [
     ("audit_export", "The audit log is the user's record of the agent; the agent must not move or prune it."),
     ("local_only", "Local-only mode decides whether data may leave this computer; only the user may widen that."),
     ("web_access", "Web access decides whether the agent may contact the internet; only the user may grant it."),
+    ("close_to_tray", "Whether Shodh keeps running after its window closes is the user's call about their computer."),
+    ("start_with_windows", "Adding a program to Windows startup changes the user's system; only the user may do that."),
 ];
 
 /// Why `key` is withheld from the agent, if it is.
@@ -422,6 +444,15 @@ mod tests {
             .web_block_reason()
             .unwrap()
             .contains("Local-only"));
+    }
+
+    #[test]
+    fn settings_without_background_mode_default_to_close_to_tray() {
+        let old: AppSettings =
+            serde_json::from_str(r#"{"preferences": {"theme": "light"}, "seeded": true}"#).unwrap();
+        assert!(old.background.close_to_tray);
+        assert!(!old.background.close_to_tray_explained);
+        assert_eq!(old.preferences.theme, Theme::Light);
     }
 
     #[test]

@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::{CalendarChange, ConversationChange, FileIndexJob, HostEffects, IndexJob, ModelInfo};
 use crate::app_settings::AppSettings;
+use crate::background::BackgroundState;
 use crate::calendar_commands::{spawn_reindex, CALENDAR_CHANGED_EVENT};
 use crate::event_emitter::TauriEventEmitter;
 use crate::llm_commands::LLMState;
@@ -54,6 +55,9 @@ impl HostEffects for TauriEffects {
         let app = self.app.clone();
         let ctx = ctx.clone();
         tokio::spawn(async move {
+            // Paused from the tray: wait before taking the index lock, so
+            // searches never queue behind a held job.
+            app.state::<BackgroundState>().wait_until_resumed().await;
             let rag = app.state::<RagState>().rag.clone();
             let emitter = TauriEventEmitter::new(app.clone());
             let mut engine = rag.write().await;
@@ -184,6 +188,7 @@ impl HostEffects for TauriEffects {
         let app = self.app.clone();
         let ctx = ctx.clone();
         tokio::spawn(async move {
+            app.state::<BackgroundState>().wait_until_resumed().await;
             let rag = app.state::<RagState>().rag.clone();
             let indexing_state = app.state::<IndexingState>();
             let emitter = TauriEventEmitter::new(app.clone());

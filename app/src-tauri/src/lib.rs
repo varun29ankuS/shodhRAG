@@ -3,6 +3,7 @@ mod answer_validator;
 mod api_key_store;
 mod app_settings;
 mod audit_commands;
+mod background;
 mod chat_history;
 mod context_commands;
 mod database_commands;
@@ -149,6 +150,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![background::BACKGROUND_FLAG]),
+        ))
+        .on_window_event(background::on_window_event)
         .setup(|app| {
             // Get app data directory for persistent storage. Without it
             // nothing can be stored, so this is the one fatal setup error.
@@ -259,6 +265,20 @@ pub fn run() {
             // Task reminders: native notifications while the app runs.
             app.manage(reminders::ReminderState::default());
             reminders::spawn(app.handle().clone());
+
+            // Tray icon: the window can hide there and reminders keep ringing.
+            app.manage(background::BackgroundState::default());
+            if let Err(e) = background::create_tray(app.handle()) {
+                // Without a tray, hiding would strand the window: closing quits.
+                tracing::error!("Tray icon unavailable: {e}");
+            }
+            if background::started_in_background() {
+                if let Some(window) = app.get_webview_window(background::MAIN_WINDOW) {
+                    if let Err(e) = window.hide() {
+                        tracing::warn!("Could not start hidden: {e}");
+                    }
+                }
+            }
             app.manage(agent_session_commands::AgentSessions::default());
             let analytics_path = app_data_dir.join("analytics.json");
             app.manage(AnalyticsState::load_or_default(&analytics_path));
@@ -604,6 +624,10 @@ pub fn run() {
             reminders::snooze_reminder,
             reminders::list_missed_reminders,
             reminders::dismiss_missed_reminders,
+            // Background mode (tray, start with Windows)
+            background::get_background_status,
+            background::set_close_to_tray,
+            background::set_start_with_windows,
         ])
         .build(tauri::generate_context!());
 

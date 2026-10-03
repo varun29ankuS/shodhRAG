@@ -3,7 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { notify } from '../../lib/notify';
-import { sameMoment } from './dueDate';
+import { useNavigationTarget } from '../agent/useNavigationTarget';
+import { sameMoment, storedDayKey } from './dueDate';
 import { sameTags } from './tags';
 import {
   changedFields,
@@ -43,6 +44,27 @@ export interface NewEventInput {
 
 type Detail = { kind: 'task'; id: string } | { kind: 'event'; id: string } | null;
 
+/**
+ * A day, task or event the agent asked to show (`show_calendar`). Both
+ * layouts bring it into view; `seq` grows with every request so a repeat
+ * of the same target is applied again.
+ */
+export interface FocusRequest {
+  seq: number;
+  /** `YYYY-MM-DD`, or null to use the task's due day or the event's day. */
+  day: string | null;
+  taskId: string | null;
+  eventId: string | null;
+}
+
+/** The day a focus request is about: its date, else the task's due day or the event's day. */
+export function focusDayKey(request: FocusRequest, tasks: readonly TodoItem[], events: readonly CalendarEvent[]): string | null {
+  if (request.day) return request.day;
+  if (request.taskId) return storedDayKey(tasks.find(t => t.id === request.taskId)?.dueDate);
+  if (request.eventId) return storedDayKey(events.find(e => e.id === request.eventId)?.startTime);
+  return null;
+}
+
 interface TasksStoreValue {
   tasks: TodoItem[];
   events: CalendarEvent[];
@@ -66,6 +88,8 @@ interface TasksStoreValue {
   detailTask: TodoItem | null;
   detailEvent: CalendarEvent | null;
   closeDetail: () => void;
+  /** Latest agent request to show a day, task or event. */
+  focusRequest: FocusRequest | null;
 }
 
 const TasksStoreContext = createContext<TasksStoreValue | null>(null);
@@ -115,6 +139,8 @@ export function TasksStoreProvider({ children }: { children: React.ReactNode }) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail>(null);
+  const [focusRequest, setFocusRequest] = useState<FocusRequest | null>(null);
+  const focusSeq = useRef(0);
   const opSeq = useRef(0);
   const pendingDeletes = useRef(new Map<number, PendingDelete>());
 
@@ -301,9 +327,10 @@ export function TasksStoreProvider({ children }: { children: React.ReactNode }) 
     pendingDeletes.current.delete(opId);
     clearTimeout(entry.timer);
     toast.dismiss(entry.toastId);
-    const command = entry.kind === 'task' ? 'delete_task' : 'delete_event';
     try {
-      await invoke(command, { id: entry.id });
+      // Literal command names: the agent coverage gate checks every invoke.
+      if (entry.kind === 'task') await invoke('delete_task', { id: entry.id });
+      else await invoke('delete_event', { id: entry.id });
       dispatch({ type: 'commit', opId, removed: true });
     } catch (err) {
       const message = errorText(err);
@@ -364,6 +391,19 @@ export function TasksStoreProvider({ children }: { children: React.ReactNode }) 
   const openEvent = useCallback((id: string) => setDetail({ kind: 'event', id }), []);
   const closeDetail = useCallback(() => setDetail(null), []);
 
+  // The agent pointed at a day, task or event. Reload first: the agent
+  // usually just wrote the record, and a sheet opened for an id the list
+  // does not have yet would be closed as deleted.
+  useNavigationTarget('calendar', target => {
+    const seq = ++focusSeq.current;
+    void refresh().then(() => {
+      if (seq !== focusSeq.current) return;
+      setFocusRequest({ seq, day: target.date, taskId: target.taskId, eventId: target.eventId });
+      if (target.taskId) setDetail({ kind: 'task', id: target.taskId });
+      else if (target.eventId) setDetail({ kind: 'event', id: target.eventId });
+    });
+  });
+
   const detailTask = detail?.kind === 'task' ? tasks.find(t => t.id === detail.id) ?? null : null;
   const detailEvent = detail?.kind === 'event' ? events.find(e => e.id === detail.id) ?? null : null;
 
@@ -393,7 +433,8 @@ export function TasksStoreProvider({ children }: { children: React.ReactNode }) 
     detailTask,
     detailEvent,
     closeDetail,
-  }), [tasks, events, loading, error, refresh, createTask, createEvent, updateTask, deleteTask, addSubtask, toggleSubtask, deleteSubtask, updateEvent, deleteEvent, openTask, openEvent, detailTask, detailEvent, closeDetail]);
+    focusRequest,
+  }), [tasks, events, loading, error, refresh, createTask, createEvent, updateTask, deleteTask, addSubtask, toggleSubtask, deleteSubtask, updateEvent, deleteEvent, openTask, openEvent, detailTask, detailEvent, closeDetail, focusRequest]);
 
   return <TasksStoreContext.Provider value={value}>{children}</TasksStoreContext.Provider>;
 }

@@ -4,7 +4,7 @@ import { cn } from '../../lib/utils';
 import { addDays, dayKey, groupByDay, monthGrid } from './calendarGrid';
 import type { GridDay } from './calendarGrid';
 import { fromInputs, parseMoment, rescheduleTo, storedDayKey, storedTime } from './dueDate';
-import { useTasksStore } from './TasksStore';
+import { focusDayKey, useTasksStore } from './TasksStore';
 import { isDone } from './types';
 import type { CalendarEvent as CalendarEntry, TodoItem as CalendarTask } from './types';
 
@@ -230,7 +230,7 @@ function DayComposer({ dayKeyValue, inputRef }: { dayKeyValue: string; inputRef:
 }
 
 export default function TasksCalendar() {
-  const { tasks, events, loading, error, refresh, updateTask, openTask, openEvent } = useTasksStore();
+  const { tasks, events, loading, error, refresh, updateTask, openTask, openEvent, focusRequest } = useTasksStore();
   const [announcement, setAnnouncement] = useState('');
   const [selected, setSelected] = useState<Date>(() => new Date());
   const [month, setMonth] = useState(() => {
@@ -273,6 +273,18 @@ export default function TasksCalendar() {
     );
     focusAfterRender.current = moveFocus;
   }, []);
+
+  // The agent pointed at a day, task or event: select its day (its sheet opens too).
+  // A request made before this layout mounted is not replayed.
+  const appliedFocusSeq = useRef(focusRequest?.seq ?? 0);
+  useEffect(() => {
+    if (!focusRequest || focusRequest.seq <= appliedFocusSeq.current) return;
+    appliedFocusSeq.current = focusRequest.seq;
+    const key = focusDayKey(focusRequest, tasks, events);
+    if (!key) return;
+    const [y, m, d] = key.split('-').map(Number);
+    select(new Date(y, m - 1, d), false);
+  }, [focusRequest, tasks, events, select]);
 
   // Keep keyboard focus on the selected day after arrow-key moves (which may change month).
   useEffect(() => {

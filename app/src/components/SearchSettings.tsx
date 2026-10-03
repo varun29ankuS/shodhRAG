@@ -2,6 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Search, Sliders, RotateCcw } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
+import {
+  MAX_SEARCH_RESULTS,
+  MIN_SEARCH_RESULTS,
+  clampSearchResults,
+  getAppSettings,
+  onAppSettingsChanged,
+  updatePreferences,
+} from '../lib/appSettings';
 
 interface SearchConfig {
   maxResults: number;
@@ -11,7 +19,7 @@ interface SearchConfig {
 }
 
 const DEFAULT_CONFIG: SearchConfig = {
-  maxResults: 10,
+  maxResults: 8,
   searchMode: 'hybrid',
   includeMetadata: true,
   minRelevanceScore: 0.3,
@@ -19,26 +27,62 @@ const DEFAULT_CONFIG: SearchConfig = {
 
 const STORAGE_KEY = 'shodh_search_config';
 
+function saveLocal(config: SearchConfig) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+  } catch {
+    // Storage unavailable; the backend keeps the passage count.
+  }
+}
+
+/**
+ * Search preferences. The passage count lives in the backend settings
+ * store (the agent's searches use it, and the agent may change it); the
+ * other fields are kept in local storage.
+ */
 export function useSearchConfig() {
   const [config, setConfig] = useState<SearchConfig>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
-      return saved ? { ...DEFAULT_CONFIG, ...JSON.parse(saved) } : DEFAULT_CONFIG;
+      const merged = saved ? { ...DEFAULT_CONFIG, ...JSON.parse(saved) } : DEFAULT_CONFIG;
+      return { ...merged, maxResults: clampSearchResults(merged.maxResults) };
     } catch {
       return DEFAULT_CONFIG;
     }
   });
 
+  useEffect(() => {
+    let cancelled = false;
+    const apply = (maxResults: number) =>
+      setConfig(prev => (prev.maxResults === maxResults ? prev : { ...prev, maxResults }));
+    getAppSettings()
+      .then(settings => {
+        if (!cancelled && settings?.seeded) apply(settings.preferences.searchMaxResults);
+      })
+      .catch(err => console.error('Loading search settings failed:', err));
+    const unsubscribe = onAppSettingsChanged(settings => apply(settings.preferences.searchMaxResults));
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
   const updateConfig = (updates: Partial<SearchConfig>) => {
+    if (updates.maxResults !== undefined) {
+      const searchMaxResults = clampSearchResults(updates.maxResults);
+      updatePreferences({ searchMaxResults }).catch(err => console.error('Saving search settings failed:', err));
+    }
     setConfig(prev => {
       const next = { ...prev, ...updates };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      saveLocal(next);
       return next;
     });
   };
 
   const resetConfig = () => {
-    localStorage.removeItem(STORAGE_KEY);
+    updatePreferences({ searchMaxResults: DEFAULT_CONFIG.maxResults })
+      .catch(err => console.error('Saving search settings failed:', err));
+    saveLocal(DEFAULT_CONFIG);
     setConfig(DEFAULT_CONFIG);
   };
 
@@ -109,16 +153,17 @@ export default function SearchSettings({ config, onUpdate, onReset }: SearchSett
         </div>
         <input
           type="range"
-          min={3}
-          max={25}
+          min={MIN_SEARCH_RESULTS}
+          max={MAX_SEARCH_RESULTS}
           value={config.maxResults}
+          aria-label="Passages per search"
           onChange={e => onUpdate({ maxResults: Number(e.target.value) })}
           className="w-full h-1 rounded-full appearance-none cursor-pointer"
           style={{ accentColor: colors.primary }}
         />
         <div className="flex justify-between text-[10px] mt-0.5" style={{ color: colors.textMuted }}>
-          <span>3 (fast)</span>
-          <span>25 (thorough)</span>
+          <span>{MIN_SEARCH_RESULTS} (fast)</span>
+          <span>{MAX_SEARCH_RESULTS} (thorough)</span>
         </div>
       </div>
 

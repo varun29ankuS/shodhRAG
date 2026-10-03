@@ -46,6 +46,42 @@ pub struct PlanItem {
     pub status: PlanStatus,
 }
 
+/// Where a `navigated` event points inside a view. Serialised with a `kind`
+/// discriminator in snake_case and camelCase fields; optional fields are
+/// always present (`null` when absent).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum NavigationTarget {
+    /// Open a document in the viewer, optionally at a page and passage.
+    Document {
+        path: String,
+        page: Option<u32>,
+        passage: Option<String>,
+    },
+    /// Show a calendar date, task or event.
+    Calendar {
+        date: Option<String>,
+        task_id: Option<String>,
+        event_id: Option<String>,
+    },
+    /// Open a saved conversation.
+    Conversation { conversation_id: String },
+    /// Show the audit log filtered to these event types, tool, range and text.
+    Audit {
+        types: Vec<String>,
+        tool: Option<String>,
+        from: Option<String>,
+        to: Option<String>,
+        text: Option<String>,
+    },
+    /// Show an indexed folder source in the Library.
+    Source { source_id: String },
+}
+
 /// A normalised agent event. Produced from omp frames and from host-tool
 /// execution, consumed by the transcript UI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -113,6 +149,10 @@ pub enum AgentEvent {
         run_id: String,
         view: String,
         focus: Option<String>,
+        /// What to show inside the view. Absent in events from older
+        /// builds, which only switched the view.
+        #[serde(default)]
+        target: Option<NavigationTarget>,
     },
     Usage {
         run_id: String,
@@ -260,9 +300,14 @@ mod tests {
                     run_id: "r".into(),
                     view: "calendar".into(),
                     focus: Some("task-1".into()),
+                    target: Some(NavigationTarget::Calendar {
+                        date: Some("2026-10-30".into()),
+                        task_id: Some("task-1".into()),
+                        event_id: None,
+                    }),
                 },
                 "navigated",
-                vec!["runId", "view", "focus"],
+                vec!["runId", "view", "focus", "target"],
             ),
             (
                 AgentEvent::Usage {
@@ -314,6 +359,84 @@ mod tests {
         }
     }
 
+    fn targets() -> Vec<(NavigationTarget, &'static str, Vec<&'static str>)> {
+        vec![
+            (
+                NavigationTarget::Document {
+                    path: "c:/docs/a.pdf".into(),
+                    page: Some(4),
+                    passage: Some("notice period".into()),
+                },
+                "document",
+                vec!["path", "page", "passage"],
+            ),
+            (
+                NavigationTarget::Calendar {
+                    date: Some("2026-10-30".into()),
+                    task_id: None,
+                    event_id: Some("e1".into()),
+                },
+                "calendar",
+                vec!["date", "taskId", "eventId"],
+            ),
+            (
+                NavigationTarget::Conversation {
+                    conversation_id: "c1".into(),
+                },
+                "conversation",
+                vec!["conversationId"],
+            ),
+            (
+                NavigationTarget::Audit {
+                    types: vec!["tool_call".into()],
+                    tool: Some("web_search".into()),
+                    from: None,
+                    to: None,
+                    text: None,
+                },
+                "audit",
+                vec!["types", "tool", "from", "to", "text"],
+            ),
+            (
+                NavigationTarget::Source {
+                    source_id: "s1".into(),
+                },
+                "source",
+                vec!["sourceId"],
+            ),
+        ]
+    }
+
+    #[test]
+    fn navigation_targets_round_trip_with_pinned_keys() {
+        for (target, kind, keys) in targets() {
+            let value = serde_json::to_value(&target).unwrap();
+            assert_eq!(value["kind"], Value::String(kind.to_string()));
+            for key in keys {
+                assert!(value.get(key).is_some(), "{kind} is missing {key}: {value}");
+            }
+            let back: NavigationTarget = serde_json::from_value(value).unwrap();
+            assert_eq!(back, target);
+        }
+    }
+
+    #[test]
+    fn navigated_without_a_target_still_parses() {
+        let old = json!({"type": "navigated", "runId": "r", "view": "library", "focus": null});
+        let event: AgentEvent = serde_json::from_value(old).unwrap();
+        assert_eq!(
+            event,
+            AgentEvent::Navigated {
+                run_id: "r".into(),
+                view: "library".into(),
+                focus: None,
+                target: None,
+            }
+        );
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["target"], Value::Null);
+    }
+
     #[test]
     fn optional_fields_serialise_as_null() {
         let event = AgentEvent::RunFinished {
@@ -350,6 +473,18 @@ mod tests {
                 assert!(
                     TS_CONTRACT.contains(&format!("{key}:")),
                     "events.ts is missing key {key} (variant {tag})"
+                );
+            }
+        }
+        for (_, kind, keys) in targets() {
+            assert!(
+                TS_CONTRACT.contains(&format!("kind: \"{kind}\"")),
+                "events.ts is missing navigation target {kind}"
+            );
+            for key in keys {
+                assert!(
+                    TS_CONTRACT.contains(&format!("{key}:")),
+                    "events.ts is missing key {key} (target {kind})"
                 );
             }
         }

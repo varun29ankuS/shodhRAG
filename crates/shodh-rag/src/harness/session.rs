@@ -32,7 +32,9 @@ use super::protocol::{
 };
 use super::sidecar::{self, LaunchSpec};
 use super::tools::plan::UPDATE_PLAN;
-use super::tools::{ApprovalGate, ToolAudit, ToolCall, ToolContext, ToolRegistry};
+use super::tools::{
+    ApprovalGate, RunPassages, RunScope, ToolAudit, ToolCall, ToolContext, ToolRegistry,
+};
 use super::{truncate_chars, AgentHarness};
 
 /// Longest stdout line accepted. omp's v1 frames are capped at 1 MiB.
@@ -76,7 +78,9 @@ struct Inner {
     inflight: Mutex<HashMap<String, (String, AbortHandle)>>,
     calls_in_run: AtomicU32,
     /// Citation numbers handed out in the active run (see `search_documents`).
-    passages_in_run: Arc<AtomicU32>,
+    passages_in_run: Arc<RunPassages>,
+    /// What the user limited the active run to.
+    scope: Mutex<Arc<RunScope>>,
     next_id: AtomicU64,
     closing: AtomicBool,
     closed: AtomicBool,
@@ -247,7 +251,8 @@ impl Inner {
         };
         let ctx = ToolContext::new(run_id, call.tool_call_id.clone(), self.events.clone())
             .with_host_call(call.id.clone(), self.outbound.clone())
-            .with_passage_counter(Arc::clone(&self.passages_in_run))
+            .with_run_passages(Arc::clone(&self.passages_in_run))
+            .with_scope(Arc::clone(&lock(&self.scope)))
             .with_audit(self.audit.clone());
         let host_id = call.id.clone();
         let step_id = call.tool_call_id.clone();
@@ -351,7 +356,12 @@ impl Inner {
         Ok(trimmed)
     }
 
-    fn start_run(&self, text: &str, run_id: Option<String>) -> Result<String, HarnessError> {
+    fn start_run(
+        &self,
+        text: &str,
+        run_id: Option<String>,
+        scope: RunScope,
+    ) -> Result<String, HarnessError> {
         self.ensure_open()?;
         let message = Self::validate_message(text)?;
         let prompt_id = self.next_id("p");
@@ -367,7 +377,8 @@ impl Inner {
             let started =
                 state.begin_run(&run_id, &self.session_id, &self.model, &prompt_id, now_ms());
             self.calls_in_run.store(0, Ordering::SeqCst);
-            self.passages_in_run.store(0, Ordering::SeqCst);
+            self.passages_in_run.reset();
+            *lock(&self.scope) = Arc::new(scope);
             self.emit(started);
         }
         tracing::info!(target: "shodh::audit", event = "question", session = %self.session_id, run_id = %run_id, profile = %self.profile.id, model = %self.model, chars = message.chars().count(), "agent prompt");
@@ -526,7 +537,8 @@ impl OmpSession {
             pending: Mutex::new(HashMap::new()),
             inflight: Mutex::new(HashMap::new()),
             calls_in_run: AtomicU32::new(0),
-            passages_in_run: Arc::new(AtomicU32::new(0)),
+            passages_in_run: Arc::new(RunPassages::new()),
+            scope: Mutex::new(Arc::new(RunScope::default())),
             next_id: AtomicU64::new(0),
             closing: AtomicBool::new(false),
             closed: AtomicBool::new(false),
@@ -657,8 +669,13 @@ impl AgentHarness for OmpSession {
         &self.inner.model
     }
 
-    async fn prompt(&self, text: &str, run_id: Option<String>) -> Result<String, HarnessError> {
-        self.inner.start_run(text, run_id)
+    async fn prompt_scoped(
+        &self,
+        text: &str,
+        run_id: Option<String>,
+        scope: RunScope,
+    ) -> Result<String, HarnessError> {
+        self.inner.start_run(text, run_id, scope)
     }
 
     async fn steer(&self, text: &str) -> Result<String, HarnessError> {
@@ -687,7 +704,7 @@ impl AgentHarness for OmpSession {
                 tracing::info!(target: "shodh::audit", event = "steer", session = %inner.session_id, run_id = %run_id, "agent steer");
                 Ok(run_id)
             }
-            None => inner.start_run(message, None),
+            None => inner.start_run(message, None, RunScope::default()),
         }
     }
 

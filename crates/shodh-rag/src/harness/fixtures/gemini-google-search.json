@@ -1,0 +1,57 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "Spain won Euro 2024, defeating England 2-1 in the final. This victory marks Spain's record fourth European Championship title."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "groundingMetadata": {
+        "webSearchQueries": [
+          "UEFA Euro 2024 winner",
+          "who won euro 2024"
+        ],
+        "searchEntryPoint": {
+          "renderedContent": "<style>.container { align-items: center; border-radius: 999px; display: flex; }</style><div class=\"container\"><div class=\"headline\"><a class=\"chip\" href=\"https://www.google.com/search?q=who+won+euro+2024\">who won euro 2024</a></div></div>"
+        },
+        "groundingChunks": [
+          {
+            "web": {
+              "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AbF9wXE1",
+              "title": "uefa.com"
+            }
+          },
+          {
+            "web": {
+              "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AbF9wXE2",
+              "title": "aljazeera.com"
+            }
+          }
+        ],
+        "groundingSupports": [
+          {
+            "segment": {
+              "startIndex": 0,
+              "endIndex": 55,
+              "text": "Spain won Euro 2024, defeating England 2-1 in the final."
+            },
+            "groundingChunkIndices": [0]
+          },
+          {
+            "segment": {
+              "startIndex": 56,
+              "endIndex": 125,
+              "text": "This victory marks Spain's record fourth European Championship title."
+            },
+            "groundingChunkIndices": [0, 1]
+          }
+        ]
+      }
+    }
+  ],
+  "modelVersion": "gemini-2.5-flash"
+}

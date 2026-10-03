@@ -399,25 +399,66 @@ fn strip_intent(args: &Value) -> Value {
 }
 
 /// Fill `{name}` placeholders from string or number arguments. Placeholders
-/// without a value are dropped.
+/// without a value are dropped. A `[...]` group is kept only when every
+/// placeholder inside it has a value, so optional phrases disappear whole:
+/// `"Listing tasks[ due by {due_to}]"`. Values are quoted unless the
+/// placeholder is written `{name!}`.
 pub fn render_label(template: &str, args: &Value) -> String {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
+    while let Some(open) = rest.find('[') {
+        out.push_str(&fill_placeholders(&rest[..open], args).0);
+        let after = &rest[open + 1..];
+        match after.find(']') {
+            Some(close) => {
+                let (group, complete) = fill_placeholders(&after[..close], args);
+                if complete {
+                    out.push_str(&group);
+                }
+                rest = &after[close + 1..];
+            }
+            None => {
+                out.push_str(&fill_placeholders(&rest[open..], args).0);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(&fill_placeholders(rest, args).0);
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Fill the placeholders of `segment`; the flag is false when any was empty.
+fn fill_placeholders(segment: &str, args: &Value) -> (String, bool) {
+    let mut out = String::with_capacity(segment.len());
+    let mut complete = true;
+    let mut rest = segment;
     while let Some(open) = rest.find('{') {
         out.push_str(&rest[..open]);
         let after = &rest[open + 1..];
         match after.find('}') {
             Some(close) => {
-                let key = &after[..close];
+                let raw_key = &after[..close];
+                let (key, quoted) = match raw_key.strip_suffix('!') {
+                    Some(k) => (k, false),
+                    None => (raw_key, true),
+                };
                 let value = match args.get(key) {
-                    Some(Value::String(s)) => Some(s.clone()),
+                    Some(Value::String(s)) if !s.trim().is_empty() => Some(s.clone()),
                     Some(Value::Number(n)) => Some(n.to_string()),
                     _ => None,
                 };
-                if let Some(value) = value {
-                    out.push('“');
-                    out.push_str(&truncate_chars(value.trim(), 60));
-                    out.push('”');
+                match value {
+                    Some(value) => {
+                        let value = truncate_chars(value.trim(), 60);
+                        if quoted {
+                            out.push('“');
+                            out.push_str(&value);
+                            out.push('”');
+                        } else {
+                            out.push_str(&value);
+                        }
+                    }
+                    None => complete = false,
                 }
                 rest = &after[close + 1..];
             }
@@ -428,7 +469,7 @@ pub fn render_label(template: &str, args: &Value) -> String {
         }
     }
     out.push_str(rest);
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    (out, complete)
 }
 
 fn first_line_summary(payload: Option<&ToolResultPayload>, ok: bool) -> String {
@@ -911,5 +952,26 @@ mod tests {
             "Page “3” of “a.pdf”"
         );
         assert_eq!(render_label("Broken {brace", &json!({})), "Broken {brace");
+    }
+
+    #[test]
+    fn optional_label_groups_drop_whole() {
+        let template = "Listing tasks[ due {due_from!} to {due_to!}][ matching {text}]";
+        assert_eq!(render_label(template, &json!({})), "Listing tasks");
+        assert_eq!(
+            render_label(
+                template,
+                &json!({"due_from": "2026-10-05", "due_to": "2026-10-11"})
+            ),
+            "Listing tasks due 2026-10-05 to 2026-10-11"
+        );
+        assert_eq!(
+            render_label(template, &json!({"due_from": "2026-10-05", "text": "gst"})),
+            "Listing tasks matching “gst”"
+        );
+        assert_eq!(
+            render_label("Unclosed [group {x}", &json!({"x": "y"})),
+            "Unclosed [group “y”"
+        );
     }
 }

@@ -2,9 +2,10 @@ import React, { useState } from 'react';
 import LLMSettings from '../../LLMSettings';
 import SearchSettings from '../SearchSettings';
 import DataManagement from '../DataManagement';
+import PrivacySettings from '../PrivacySettings';
 import { cn } from '../../lib/utils';
 
-export type SettingsSection = 'models' | 'search' | 'data';
+export type SettingsSection = 'models' | 'search' | 'privacy' | 'data';
 
 const SECTIONS: { id: SettingsSection; label: string; description: string }[] = [
   {
@@ -16,6 +17,11 @@ const SECTIONS: { id: SettingsSection; label: string; description: string }[] = 
     id: 'search',
     label: 'Search',
     description: 'Choose the retrieval mode, how many passages are retrieved, and the minimum relevance a passage needs to be used.',
+  },
+  {
+    id: 'privacy',
+    label: 'Privacy',
+    description: 'Decide whether anything may leave this computer, and whether the assistant may use the web.',
   },
   {
     id: 'data',
@@ -117,6 +123,8 @@ export default function SettingsView({
                   onUpdate={onUpdateSearchConfig}
                   onReset={onResetSearchConfig}
                 />
+              ) : section === 'privacy' ? (
+                <PrivacySettings />
               ) : (
                 <DataManagement
                   sources={sources}

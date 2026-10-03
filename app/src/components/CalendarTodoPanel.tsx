@@ -329,6 +329,12 @@ function MiniCalendar({
     const now = new Date();
     return { year: now.getFullYear(), month: now.getMonth() };
   });
+  // Show the month of a day selected from outside the grid (e.g. by the agent).
+  useEffect(() => {
+    if (!selected) return;
+    const [y, m] = selected.split('-').map(Number);
+    setView(prev => (prev.year === y && prev.month === m - 1 ? prev : { year: y, month: m - 1 }));
+  }, [selected]);
   const weeks = useMemo(() => monthGrid(view.year, view.month), [view]);
   const today = dayKey(new Date());
   const label = new Date(view.year, view.month, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
@@ -391,7 +397,7 @@ function MiniCalendar({
  * Delete asks before deleting (with an undo window either way).
  */
 export default function CalendarTodoPanel() {
-  const { tasks, events, loading, error, refresh, deleteTask, openEvent } = useTasksStore();
+  const { tasks, events, loading, error, refresh, deleteTask, openEvent, focusRequest } = useTasksStore();
   const [filter, setFilter] = useState<FilterTab>('all');
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
@@ -400,6 +406,8 @@ export default function CalendarTodoPanel() {
   const [confirm, setConfirm] = useState<TodoItem | null>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const focusAfterDelete = useRef<string | null>(null);
+  // Agent focus requests already applied; one made before this layout mounted is not replayed.
+  const appliedFocusSeq = useRef(focusRequest?.seq ?? 0);
 
   const allProjects = useMemo(
     () => Array.from(new Set(tasks.map(t => t.project).filter((p): p is string => !!p))).sort(),
@@ -461,6 +469,24 @@ export default function CalendarTodoPanel() {
     focusAfterDelete.current = null;
     focusRow(id);
   }, [filteredTasks]);
+
+  // The agent pointed at a day or task: clear the filters that could hide it,
+  // filter to its day, and bring the task's row into view (its sheet opens too).
+  useEffect(() => {
+    if (!focusRequest || focusRequest.seq <= appliedFocusSeq.current) return;
+    appliedFocusSeq.current = focusRequest.seq;
+    const task = focusRequest.taskId ? tasks.find(t => t.id === focusRequest.taskId) ?? null : null;
+    setFilter('all');
+    setProjectFilter(null);
+    setSelectedDay(task && storedDayKey(task.dueDate) !== focusRequest.day ? null : focusRequest.day);
+    if (!task) return;
+    setActiveId(task.id);
+    requestAnimationFrame(() => {
+      listRef.current
+        ?.querySelector<HTMLElement>(`[data-task-row="${CSS.escape(task.id)}"]`)
+        ?.scrollIntoView({ block: 'center' });
+    });
+  }, [focusRequest, tasks]);
 
   const pendingCount = tasks.filter(t => !isDone(t)).length;
   const completedCount = tasks.length - pendingCount;

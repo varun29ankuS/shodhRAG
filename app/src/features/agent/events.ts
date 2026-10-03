@@ -88,11 +88,59 @@ export interface PlanUpdatedEvent {
   items: PlanItem[];
 }
 
+/** Where a `navigated` event points inside a view (`kind` discriminator). */
+export interface DocumentTarget {
+  kind: "document";
+  path: string;
+  /** 1-based page, when known. */
+  page: number | null;
+  /** Text to highlight in the document. */
+  passage: string | null;
+}
+
+export interface CalendarTarget {
+  kind: "calendar";
+  /** YYYY-MM-DD. */
+  date: string | null;
+  taskId: string | null;
+  eventId: string | null;
+}
+
+export interface ConversationTarget {
+  kind: "conversation";
+  conversationId: string;
+}
+
+export interface AuditTarget {
+  kind: "audit";
+  /** Audit event types, e.g. "tool_call"; empty means all. */
+  types: string[];
+  tool: string | null;
+  /** RFC 3339 bounds. */
+  from: string | null;
+  to: string | null;
+  text: string | null;
+}
+
+export interface SourceTarget {
+  kind: "source";
+  sourceId: string;
+}
+
+export type NavigationTarget =
+  | DocumentTarget
+  | CalendarTarget
+  | ConversationTarget
+  | AuditTarget
+  | SourceTarget;
+
 export interface NavigatedEvent {
   type: "navigated";
   runId: string;
   view: string;
   focus: string | null;
+  /** What to show inside the view; null when the event only switches views. */
+  target: NavigationTarget | null;
 }
 
 export interface UsageEvent {

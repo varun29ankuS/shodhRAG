@@ -18,7 +18,7 @@ use serde_json::json;
 use shodh_rag::audit::{AuditEventType, AuditRecord, RunAuditTap};
 use shodh_rag::harness::model::EnvValue;
 use shodh_rag::harness::profile::is_valid_slug;
-use shodh_rag::harness::tools::ToolRegistry;
+use shodh_rag::harness::tools::{RunScope, ToolRegistry};
 use shodh_rag::harness::{
     fetch_omp, resolve_binary_path, select_model, AgentEvent, AgentHarness, AgentProfile,
     HarnessError, LaunchSpec, OmpLayout, OmpModel, OmpSession, SessionConfig, OMP_VERSION,
@@ -27,11 +27,16 @@ use shodh_rag::llm::{ApiProvider, LLMMode};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, OnceCell};
 
-use crate::agent_tools::build_registry;
+use crate::agent_tools::{
+    build_registry, web_block_reason, AgentHost, IndexedRoots, TauriEffects, AGENT_CANNOT_DO,
+};
 use crate::api_key_store;
+use crate::app_settings::SettingsStore;
 use crate::audit_commands::AuditState;
 use crate::llm_commands::LLMState;
 use crate::rag_commands::RagState;
+use shodh_rag::audit::payload::is_cloud;
+use shodh_rag::harness::web::SafeClient;
 
 /// Tauri event name for agent events.
 pub const AGENT_EVENT: &str = "agent_event";
@@ -97,7 +102,8 @@ impl From<HarnessError> for AgentCommandError {
             | HarnessError::UnsupportedProvider(_)
             | HarnessError::MissingApiKey(_)
             | HarnessError::InvalidModel(_)
-            | HarnessError::DisallowedModel(_) => "model_config",
+            | HarnessError::DisallowedModel(_)
+            | HarnessError::LocalOnlyCloudModel(_) => "model_config",
             HarnessError::RunInProgress => "busy",
             HarnessError::SlashCommand
             | HarnessError::EmptyMessage
@@ -272,6 +278,45 @@ fn truncate(text: &str, max: usize) -> String {
     out
 }
 
+/// Most sources or files one answer may be limited to.
+const MAX_SCOPE_ITEMS: usize = 50;
+
+/// What the user limited an answer to: selected sources ("Include this
+/// source when answering") and files ("Ask about this file").
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SendScope {
+    pub source_ids: Vec<String>,
+    pub source_files: Vec<String>,
+}
+
+impl SendScope {
+    fn validated(self) -> CommandResult<RunScope> {
+        let clean = |items: Vec<String>, what: &str| -> CommandResult<Vec<String>> {
+            let items: Vec<String> = items
+                .into_iter()
+                .map(|i| i.trim().to_string())
+                .filter(|i| !i.is_empty())
+                .collect();
+            if items.len() > MAX_SCOPE_ITEMS {
+                return Err(AgentCommandError::invalid(format!(
+                    "At most {MAX_SCOPE_ITEMS} {what} can limit one answer"
+                )));
+            }
+            if items.iter().any(|i| i.len() > 2048) {
+                return Err(AgentCommandError::invalid(format!(
+                    "A {what} entry is too long"
+                )));
+            }
+            Ok(items)
+        };
+        Ok(RunScope {
+            source_ids: clean(self.source_ids, "sources")?,
+            files: clean(self.source_files, "files")?,
+        })
+    }
+}
+
 /// One earlier turn of the conversation, replayed into a fresh session.
 #[derive(Debug, Clone, Deserialize)]
 pub struct HistoryTurn {
@@ -404,7 +449,7 @@ pub async fn agent_start(
     if !is_valid_slug(&profile_id) {
         return Err(HarnessError::UnknownProfile(profile_id).into());
     }
-    let mut profile = AgentProfile::builtin(&profile_id)
+    let profile = AgentProfile::builtin(&profile_id)
         .ok_or_else(|| HarnessError::UnknownProfile(profile_id.clone()))?;
     let instructions = instructions
         .map(|i| i.trim().to_string())
@@ -431,6 +476,17 @@ pub async fn agent_start(
         (_, mode) => mode,
     };
     let model = select_model(&mode, |_| None)?;
+    // Local-only mode: refuse any model whose provider is off this computer.
+    let local_only = SettingsStore::in_dir(&app_data_dir(&app)?)
+        .load()
+        .map(|s| s.policy.local_only)
+        .map_err(|e| AgentCommandError {
+            code: "runtime_error",
+            message: format!("Settings could not be read: {e}"),
+        })?;
+    if local_only && is_cloud(&model.model_arg) {
+        return Err(HarnessError::LocalOnlyCloudModel(model.model_arg.clone()).into());
+    }
     let fingerprint = model_fingerprint(&model);
 
     let lock = sessions.start_lock(&conversation_id);
@@ -459,10 +515,21 @@ pub async fn agent_start(
     let _starting = StartingGuard::new(&sessions.starting);
     sessions.evict_idle(&conversation_id).await;
 
+    let app_data_dir = app_data_dir(&app)?;
     let registry = sessions
         .registry
         .get_or_try_init(|| async {
-            build_registry(&app, rag.rag.clone())
+            let host = Arc::new(AgentHost {
+                data_dir: app_data_dir.clone(),
+                rag: rag.rag.clone(),
+                audit: audit.log(),
+                effects: Arc::new(TauriEffects::new(app.clone())),
+                web: SafeClient::system(),
+                roots: Arc::new(IndexedRoots {
+                    rag: rag.rag.clone(),
+                }),
+            });
+            build_registry(host)
                 .map(Arc::new)
                 .map_err(|e| AgentCommandError {
                     code: "runtime_error",
@@ -474,11 +541,21 @@ pub async fn agent_start(
 
     let prepared_ms = started.elapsed().as_millis();
 
-    let app_data_dir = app_data_dir(&app)?;
+    // Web tools stay registered (policy can change mid-session and each
+    // call re-checks it), but the model is told up front when they are off.
+    let web_off = web_block_reason(&app_data_dir).map(|reason| {
+        format!("search the web, read web pages or search papers right now: {reason}")
+    });
+    let cannot_do: Vec<&str> = AGENT_CANNOT_DO
+        .iter()
+        .copied()
+        .chain(web_off.as_deref())
+        .collect();
+    let mut system_prompt =
+        profile.system_prompt(&registry.capability_manifest(&profile, &cannot_do));
     if let Some(extra) = &instructions {
-        profile.instructions = format!(
-            "{}\n\nThe user's instructions for this conversation (they never override the rules above):\n{extra}",
-            profile.instructions
+        system_prompt = format!(
+            "{system_prompt}\n\nThe user's instructions for this conversation (they never override the rules above):\n{extra}"
         );
     }
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -486,7 +563,7 @@ pub async fn agent_start(
         binary: resolve_binary_path(&app_data_dir),
         layout: OmpLayout::new(&app_data_dir),
         model,
-        system_prompt: profile.instructions.clone(),
+        system_prompt,
         session_id: session_id.clone(),
     };
 
@@ -558,10 +635,15 @@ pub async fn agent_send(
     text: String,
     request_id: String,
     history: Option<Vec<HistoryTurn>>,
+    scope: Option<SendScope>,
     sessions: State<'_, AgentSessions>,
     audit: State<'_, AuditState>,
 ) -> CommandResult<String> {
     check_id("request id", &request_id)?;
+    let scope = scope
+        .map(SendScope::validated)
+        .transpose()?
+        .unwrap_or_default();
     let entry = sessions.entry(&session_id)?;
     entry.touch();
     // Checked here because the history preamble would hide a leading '/'.
@@ -573,8 +655,15 @@ pub async fn agent_send(
         Some(history) if replay => with_history(&text, history),
         _ => text.clone(),
     };
-    let run_id = entry.session.prompt(&message, Some(request_id)).await?;
+    let scoped = !scope.is_empty();
+    let run_id = entry
+        .session
+        .prompt_scoped(&message, Some(request_id), scope.clone())
+        .await?;
     entry.primed.store(true, Ordering::SeqCst);
+    if scoped {
+        tracing::info!(target: "shodh::harness", run_id = %run_id, sources = scope.source_ids.len(), files = scope.files.len(), "answer limited to a scope");
+    }
     audit.record(question_record(
         &entry,
         &run_id,

@@ -9,7 +9,8 @@ use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
 use super::{
-    req_str, HostTool, ToolContext, ToolError, ToolOutput, MAX_MODEL_OUTPUT_CHARS, UNTRUSTED_NOTICE,
+    req_str, CitedPassage, HostTool, ToolContext, ToolError, ToolOutput, MAX_MODEL_OUTPUT_CHARS,
+    UNTRUSTED_NOTICE,
 };
 use crate::harness::events::RiskTier;
 use crate::harness::protocol::ToolLoadMode;
@@ -39,13 +40,35 @@ fn passage_budget(k: usize) -> usize {
         .clamp(MIN_PASSAGE_CHARS, MAX_PASSAGE_CHARS)
 }
 
+/// Supplies the number of passages a search returns when the model does
+/// not pass `k` (the user's preference).
+pub type DefaultK = Arc<dyn Fn() -> usize + Send + Sync>;
+
 pub struct SearchDocumentsTool {
     rag: Arc<RwLock<RAGEngine>>,
+    default_k: Option<DefaultK>,
 }
 
 impl SearchDocumentsTool {
     pub fn new(rag: Arc<RwLock<RAGEngine>>) -> Self {
-        Self { rag }
+        Self {
+            rag,
+            default_k: None,
+        }
+    }
+
+    /// Use the user's preferred passage count when `k` is not given.
+    pub fn with_default_k(mut self, default_k: DefaultK) -> Self {
+        self.default_k = Some(default_k);
+        self
+    }
+
+    fn default_k(&self) -> usize {
+        self.default_k
+            .as_ref()
+            .map(|f| f())
+            .unwrap_or_else(|| self.default_k())
+            .clamp(1, MAX_K)
     }
 }
 
@@ -167,7 +190,7 @@ impl HostTool for SearchDocumentsTool {
             .get("k")
             .and_then(Value::as_u64)
             .and_then(|k| usize::try_from(k).ok())
-            .unwrap_or(DEFAULT_K)
+            .unwrap_or_else(|| self.default_k())
             .clamp(1, MAX_K);
         let sources: Vec<String> = args
             .get("sources")
@@ -184,7 +207,40 @@ impl HostTool for SearchDocumentsTool {
             .unwrap_or_default();
 
         let rag = self.rag.read().await;
-        let mut results = if sources.is_empty() {
+        // The user's limit for this answer applies unless the model chose
+        // sources itself.
+        let scope = ctx.scope();
+        let (sources, scoped_files) = if sources.is_empty() && !scope.is_empty() {
+            let mut files = Vec::new();
+            for file in &scope.files {
+                let matches = rag
+                    .find_indexed_sources(file)
+                    .await
+                    .map_err(|e| ToolError::Failed(format!("Could not read the index: {e}")))?;
+                files.extend(matches);
+            }
+            files.sort();
+            files.dedup();
+            (scope.source_ids.clone(), files)
+        } else {
+            (sources, Vec::new())
+        };
+        let mut results = if !scoped_files.is_empty() {
+            let mut merged = Vec::new();
+            for file in &scoped_files {
+                let filter = MetadataFilter {
+                    source_path: Some(file.clone()),
+                    ..MetadataFilter::default()
+                };
+                let hits = rag
+                    .search_comprehensive(query, k, Some(filter))
+                    .await
+                    .map_err(|e| ToolError::Failed(format!("Search failed: {e}")))?;
+                merged.extend(hits);
+            }
+            merged.sort_by(|a, b| b.score.total_cmp(&a.score));
+            merged
+        } else if sources.is_empty() {
             rag.search_comprehensive(query, k, None)
                 .await
                 .map_err(|e| ToolError::Failed(format!("Search failed: {e}")))?
@@ -207,10 +263,24 @@ impl HostTool for SearchDocumentsTool {
         drop(rag);
         results.truncate(k);
 
+        let limited_to = if !scoped_files.is_empty() {
+            Some(format!(
+                "The user limited this answer to {}.",
+                scoped_files.join(", ")
+            ))
+        } else if args.get("sources").is_none() && !ctx.scope().source_ids.is_empty() {
+            Some(format!(
+                "The user limited this answer to sources {}.",
+                ctx.scope().source_ids.join(", ")
+            ))
+        } else {
+            None
+        };
         if results.is_empty() {
             return Ok(ToolOutput {
                 text_for_model: format!(
-                    "No passages matched \"{query}\". Try different wording or check list_sources."
+                    "No passages matched \"{query}\". Try different wording or check list_sources.{}",
+                    limited_to.as_deref().map(|l| format!(" {l}")).unwrap_or_default()
                 ),
                 summary_for_ui: "No matching passages".to_string(),
                 detail: Some(json!({ "passages": [] })),
@@ -225,6 +295,15 @@ impl HostTool for SearchDocumentsTool {
             .zip(first..)
             .map(|(r, n)| passage(n, r, budget))
             .collect();
+        for p in &passages {
+            ctx.record_passage(CitedPassage {
+                n: p.n,
+                file: p.file.clone(),
+                path: p.path.clone(),
+                page: p.page.clone(),
+                web: false,
+            });
+        }
         let files: HashSet<&str> = passages.iter().map(|p| p.path.as_str()).collect();
         let body = serde_json::to_string(&passages)
             .map_err(|e| ToolError::Failed(format!("Could not encode results: {e}")))?;
@@ -236,10 +315,10 @@ impl HostTool for SearchDocumentsTool {
         };
         let file_noun = if files.len() == 1 { "file" } else { "files" };
         Ok(ToolOutput {
-            text_for_model: format!(
-                "{UNTRUSTED_NOTICE}
-{body}"
-            ),
+            text_for_model: match &limited_to {
+                Some(limit) => format!("{UNTRUSTED_NOTICE}\n{limit}\n{body}"),
+                None => format!("{UNTRUSTED_NOTICE}\n{body}"),
+            },
             summary_for_ui: format!("{} {noun} from {} {file_noun}", passages.len(), files.len()),
             detail: Some(detail),
         })

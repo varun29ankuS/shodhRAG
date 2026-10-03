@@ -1,0 +1,57 @@
+{
+  "id": "gen-1759480000-abc123",
+  "provider": "OpenAI",
+  "model": "openai/gpt-4o-mini",
+  "object": "chat.completion",
+  "created": 1759480000,
+  "choices": [
+    {
+      "logprobs": null,
+      "finish_reason": "stop",
+      "native_finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Rust 2024 shipped with Rust 1.85 [example.org]. It stabilised async closures and reserved the gen keyword.",
+        "refusal": null,
+        "reasoning": null,
+        "annotations": [
+          {
+            "type": "url_citation",
+            "url_citation": {
+              "url": "https://www.example.org/rust-2024-edition",
+              "title": "Rust 2024 edition announced",
+              "content": "The Rust 2024 edition is the largest edition the project has released, stabilised with Rust 1.85.",
+              "start_index": 0,
+              "end_index": 45
+            }
+          },
+          {
+            "type": "url_citation",
+            "url_citation": {
+              "url": "https://blog.example.net/async-closures",
+              "title": "",
+              "start_index": 51,
+              "end_index": 76
+            }
+          },
+          {
+            "type": "url_citation",
+            "url_citation": {
+              "url": "https://www.example.org/rust-2024-edition",
+              "title": "Rust 2024 edition announced",
+              "content": "Duplicate citation of the same page.",
+              "start_index": 80,
+              "end_index": 104
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 1834,
+    "completion_tokens": 41,
+    "total_tokens": 1875
+  }
+}

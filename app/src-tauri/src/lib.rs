@@ -1,6 +1,7 @@
 mod analytics_commands;
 mod answer_validator;
 mod api_key_store;
+mod app_settings;
 mod audit_commands;
 mod chat_history;
 mod context_commands;
@@ -12,6 +13,7 @@ mod enhanced_rag_commands;
 mod file_watcher;
 mod history_commands;
 mod image_upload_commands;
+mod library_commands;
 mod llm_bootstrap;
 mod llm_commands;
 mod llm_response;
@@ -30,9 +32,11 @@ mod template_commands;
 mod window_commands;
 
 // Unified chat system modules
+mod agent_coverage;
 mod agent_session_commands;
 mod agent_tools;
 mod calendar_commands;
+mod calendar_store;
 mod conversation_commands;
 mod event_emitter;
 
@@ -572,6 +576,12 @@ pub fn run() {
             conversation_commands::delete_conversation,
             conversation_commands::rename_conversation,
             conversation_commands::pin_conversation,
+            // Library file browser
+            library_commands::list_directory,
+            // App settings (preferences: user and agent; policy: user only)
+            app_settings::get_app_settings,
+            app_settings::update_app_preferences,
+            app_settings::set_app_policy,
             // Calendar/Todo commands
             calendar_commands::load_tasks,
             calendar_commands::create_task,

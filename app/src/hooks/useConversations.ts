@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { notify } from '../lib/notify';
 import { markStartup } from '../lib/startupTiming';
@@ -31,6 +32,24 @@ export interface Conversation {
   systemPrompt?: string;
 }
 
+/** Emitted by the backend when the agent renames or pins a conversation. */
+const CONVERSATION_UPDATED_EVENT = 'conversation-updated';
+
+interface ConversationChange {
+  conversationId: string;
+  title: string;
+  pinned: boolean;
+  updatedAt: string;
+}
+
+function parseConversationChange(value: unknown): ConversationChange | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.conversationId !== 'string' || typeof v.title !== 'string') return null;
+  if (typeof v.pinned !== 'boolean' || typeof v.updatedAt !== 'string') return null;
+  return { conversationId: v.conversationId, title: v.title, pinned: v.pinned, updatedAt: v.updatedAt };
+}
+
 function generateId(): string {
   return `conv-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
 }
@@ -50,6 +69,30 @@ export function useConversations() {
   const saveTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const loadedRef = useRef(false);
   const pendingDeleteRef = useRef<Map<string, { timeout: ReturnType<typeof setTimeout>; conversation: Conversation }>>(new Map());
+
+  // The agent renamed or pinned a conversation (organize_conversation). The
+  // backend saved it already; patch the in-memory copy so the next save of
+  // the whole record keeps the change.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    listen<unknown>(CONVERSATION_UPDATED_EVENT, event => {
+      const change = parseConversationChange(event.payload);
+      if (!change) return;
+      setConversations(prev => prev.map(c => (c.id === change.conversationId
+        ? { ...c, title: change.title, pinned: change.pinned, updatedAt: change.updatedAt }
+        : c)));
+    })
+      .then(fn => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(err => console.error(`Failed to listen for ${CONVERSATION_UPDATED_EVENT}:`, err));
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
 
   // Load conversations on mount
   useEffect(() => {

@@ -13,6 +13,7 @@ import {
 import { cn } from '../../lib/utils';
 import { relativeTime } from '../../utils/time';
 import { SearchSetupCard } from '../setup/SearchSetupCard';
+import { scrollBehavior } from '../ask/viewer/sourceAccess';
 import { baseName } from './fileTree';
 import type { FileNode } from './fileTree';
 import { FileBrowser } from './FileBrowser';
@@ -49,6 +50,8 @@ interface LibraryViewProps {
   onAskAboutFile: (file: FileNode, source: LibrarySource) => void;
   /** The file browser counted a source's indexed files. */
   onFileCount: (id: string, count: number) => void;
+  /** Source the agent pointed at (`show_source`): its card is scrolled to and highlighted. */
+  focusedSourceId?: string | null;
 }
 
 /**
@@ -67,6 +70,7 @@ export function LibraryView({
   onRemoveSource,
   onAskAboutFile,
   onFileCount,
+  focusedSourceId = null,
 }: LibraryViewProps) {
   const [browsingId, setBrowsingId] = useState<string | null>(null);
   const browsing = sources.find(s => s.id === browsingId) ?? null;
@@ -79,6 +83,20 @@ export function LibraryView({
   useEffect(() => {
     if (browsingId && !browsing) setBrowsingId(null);
   }, [browsingId, browsing]);
+
+  // The agent pointed at a source: leave the file browser so its card shows.
+  useEffect(() => {
+    if (focusedSourceId) setBrowsingId(null);
+  }, [focusedSourceId]);
+
+  // Bring the pointed-at card into view once it is rendered.
+  const showingCards = !(browsing && indexReady);
+  useEffect(() => {
+    if (!focusedSourceId || !showingCards) return;
+    document
+      .getElementById(`library-source-${focusedSourceId}`)
+      ?.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
+  }, [focusedSourceId, showingCards]);
 
   if (browsing && indexReady) {
     return (
@@ -127,6 +145,7 @@ export function LibraryView({
                   <li key={source.id} className="ask-rise">
                     <FolderCard
                       source={source}
+                      focused={source.id === focusedSourceId}
                       browseDisabled={!indexReady}
                       onBrowse={() => setBrowsingId(source.id)}
                       onReindex={() => onReindex(source.id)}
@@ -168,6 +187,8 @@ function EmptyLibrary({ onAddFolder }: { onAddFolder: () => void }) {
 
 interface FolderCardProps {
   source: LibrarySource;
+  /** The agent pointed at this source. */
+  focused: boolean;
   browseDisabled: boolean;
   onBrowse: () => void;
   onReindex: () => void;
@@ -175,7 +196,7 @@ interface FolderCardProps {
   onRemove: (e: React.MouseEvent) => void;
 }
 
-function FolderCard({ source, browseDisabled, onBrowse, onReindex, onToggle, onRemove }: FolderCardProps) {
+function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onToggle, onRemove }: FolderCardProps) {
   const [showFailures, setShowFailures] = useState(false);
   const failuresId = useId();
   const nameId = useId();
@@ -237,7 +258,15 @@ function FolderCard({ source, browseDisabled, onBrowse, onReindex, onToggle, onR
   }
 
   return (
-    <article aria-labelledby={nameId} className="h-full rounded-xl border border-shodh-border bg-shodh-surface p-4 flex flex-col gap-3 hover:border-shodh-border-strong transition-colors duration-micro">
+    <article
+      id={`library-source-${source.id}`}
+      aria-labelledby={nameId}
+      aria-current={focused ? 'true' : undefined}
+      className={cn(
+        'h-full rounded-xl border bg-shodh-surface p-4 flex flex-col gap-3 transition-colors duration-micro',
+        focused ? 'border-shodh-accent ring-1 ring-shodh-accent' : 'border-shodh-border hover:border-shodh-border-strong',
+      )}
+    >
       <div className="flex items-start gap-3 min-w-0">
         <span className="w-9 h-9 shrink-0 rounded-lg bg-shodh-raised inline-flex items-center justify-center" aria-hidden="true">
           {source.status === 'indexing' ? <FolderOpen className="w-[18px] h-[18px] text-shodh-warning" /> : <Folder className="w-[18px] h-[18px] text-shodh-text-muted" />}

@@ -120,4 +120,8 @@ export interface ChatMessage {
 export interface SendOptions {
   spaceId: string | null;
   spaceName: string | null;
+  /** Sources the answer may search; empty or absent means every source. */
+  sourceIds?: string[];
+  /** Files the answer is about ("Ask about this file"); limits search to them. */
+  sourceFiles?: string[];
 }

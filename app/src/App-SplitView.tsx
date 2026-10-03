@@ -61,6 +61,7 @@ import { notify, setNotificationHandler } from './lib/notify';
 import { migrateLegacyApiKeys } from './lib/apiKeyMigration';
 import { useNotifications } from './hooks/useNotifications';
 import NotificationCenter from './components/NotificationCenter';
+import { useNavigationTarget } from './features/agent/useNavigationTarget';
 
 // Debug logging — set to true during development, false for demo/production
 const DEBUG = false;
@@ -133,6 +134,9 @@ function AppSplitView() {
       return [];
     }
   });
+  /** Library source the agent pointed at (show_source); LibraryView scrolls to and highlights it. */
+  const [focusedSourceId, setFocusedSourceId] = useState<string | null>(null);
+  useNavigationTarget('source', target => setFocusedSourceId(target.sourceId));
   const [currentlyIndexing, setCurrentlyIndexing] = useState<string | null>(null);
   // Latest sources and indexing actions for listeners registered once (drag and drop).
   const sourcesRef = useRef<Source[]>(sources);
@@ -1452,6 +1456,7 @@ function AppSplitView() {
               onRemoveSource={removeSource}
               onAskAboutFile={handleAskAboutFile}
               onFileCount={handleFileCount}
+              focusedSourceId={focusedSourceId}
             />
           )}
 

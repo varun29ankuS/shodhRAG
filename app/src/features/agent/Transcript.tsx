@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { CornerDownRight, Settings2 } from 'lucide-react';
+import { ChevronRight, CornerDownRight, Settings2 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { MessageContentRenderer } from '../ask/MessageContentRenderer';
 import type { SearchHit } from '../ask/types';
@@ -7,6 +7,7 @@ import { RuntimeCard } from './RuntimeCard';
 import { Spinner, StepLine } from './StepLine';
 import { currentStep, isLive } from './reducer';
 import type { TranscriptState } from './reducer';
+import { workFold } from './workSummary';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -58,6 +59,8 @@ export function Transcript({
   const lastBlock = transcript.blocks[transcript.blocks.length - 1];
   const textBlocks = useMemo(() => transcript.blocks.filter(b => b.kind === 'text').length, [transcript.blocks]);
   let textSeen = 0;
+  // A finished answer folds its working into one line so the answer starts at the top.
+  const fold = useMemo(() => workFold(transcript), [transcript]);
 
   // While running with nothing in flight and no text streaming, the model is
   // working on its next move; say so instead of showing a frozen screen.
@@ -69,7 +72,54 @@ export function Transcript({
 
   return (
     <div className={cn('flex flex-col min-w-0', compact ? 'gap-2.5' : 'gap-3.5')}>
-      {transcript.blocks.map(block => {
+      {fold && (
+        <details className="group/work">
+          <summary
+            className={cn(
+              'list-none [&::-webkit-details-marker]:hidden w-fit inline-flex items-center gap-1.5 rounded-md cursor-pointer select-none text-shodh-text-muted hover:text-shodh-text transition-colors duration-micro',
+              compact ? 'text-[12px]' : 'text-[12.5px]',
+              FOCUS_RING,
+            )}
+          >
+            <ChevronRight className="w-3.5 h-3.5 transition-transform duration-micro group-open/work:rotate-90 motion-reduce:transition-none" aria-hidden="true" />
+            {fold.label}
+          </summary>
+          <div className={cn('mt-2 pl-3 border-l border-shodh-border-subtle flex flex-col', compact ? 'gap-2' : 'gap-3')}>
+            {transcript.blocks.slice(0, fold.answerIndex).map(block => {
+              if (block.kind === 'step') {
+                const s = transcript.steps[block.stepId];
+                return s ? <StepLine key={block.stepId} step={s} steps={transcript.steps} compact={compact} /> : null;
+              }
+              if (block.kind === 'steer') {
+                return (
+                  <p key={block.id} className="flex items-start gap-2 text-[12.5px] text-shodh-text-secondary">
+                    <CornerDownRight className="w-3.5 h-3.5 mt-[3px] shrink-0 text-shodh-accent-text" aria-hidden="true" />
+                    <span className="min-w-0 break-words">
+                      <span className="sr-only">You steered: </span>
+                      {block.text}
+                    </span>
+                  </p>
+                );
+              }
+              return (
+                <MessageContentRenderer
+                  key={block.id}
+                  compact
+                  content={block.text}
+                  hits={hits}
+                  activeCitation={activeCitation}
+                  onOpenCitation={onOpenCitation}
+                />
+              );
+            })}
+          </div>
+        </details>
+      )}
+      {transcript.blocks.map((block, index) => {
+        if (fold && index < fold.answerIndex) {
+          if (block.kind === 'text') textSeen += 1;
+          return null;
+        }
         if (block.kind === 'step') {
           const s = transcript.steps[block.stepId];
           return s ? (

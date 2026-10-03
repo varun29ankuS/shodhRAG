@@ -53,10 +53,12 @@ It works as follows:
 | Artifact | Source | Checksum |
 |---|---|---|
 | CUAD | `https://zenodo.org/records/4595826/files/CUAD_v1.zip`, 105,883,672 bytes | md5 `c38f490a984420b8a62600db401fafd5`; licence CC BY 4.0, attribution required |
-| E5 model | `https://huggingface.co/intfloat/multilingual-e5-base/resolve/d128750597153bb5987e10b1c3493a34e5a4502a/onnx/model_O4.onnx` | sha256 `624dd6b2e6a05872f80228b2f4e46cbd78018f3f563f6261f9c1d943e0b79291` |
-| E5 tokenizer | `…/intfloat/multilingual-e5-base/resolve/d128750597153bb5987e10b1c3493a34e5a4502a/onnx/tokenizer.json` | sha256 `31cfad7e457e392bdebe2bd63796205ff3f6ab825e13da0a03d83dfbf932c919` |
-| Reranker model | `https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/233902d25c440f23af6f7d6e94d2946bac0bee0a/onnx/model_O4.onnx` | sha256 `bac792bcecd53d54764e3edf5e65410754c894a37e036668879abbcc0fdaa934` |
+| E5 model | `https://huggingface.co/intfloat/multilingual-e5-base/resolve/d128750597153bb5987e10b1c3493a34e5a4502a/onnx/model_O4.onnx` | sha256 `f60256a833caee5c75a3903e589116752ee016ca7bc16f9b96e4db09984c5703` |
+| E5 tokenizer | `…/intfloat/multilingual-e5-base/resolve/d128750597153bb5987e10b1c3493a34e5a4502a/onnx/tokenizer.json` | sha256 `62c24cdc13d4c9952d63718d6c9fa4c287974249e16b7ade6d5a85e7bbb75626` |
+| Reranker model | `https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/233902d25c440f23af6f7d6e94d2946bac0bee0a/onnx/model_O4.onnx` | sha256 `b232c2eeedd97a593edc177e3ce4cbd1d6c8f6d8f61a5c201cd0cdeb8134da18` |
 | Reranker tokenizer | `…/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/233902d25c440f23af6f7d6e94d2946bac0bee0a/tokenizer.json` | sha256 `d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66` |
+
+The model SHA-256 values are of the file contents, measured by streaming each pinned URL (they match Hugging Face's LFS object ids). Earlier drafts listed Xet storage ids, which are not content hashes and fail verification. The app pins the same files in `crates/shodh-rag/src/embeddings/model_store.rs`.
 
 **Model directory layout** (read by `shodh-rag`):
 - `<models>/multilingual-e5-base/{model_O4.onnx,tokenizer.json}`
@@ -1342,17 +1344,17 @@ pub const MODEL_FILES: [PinnedFile; 4] = [
     PinnedFile {
         url: "https://huggingface.co/intfloat/multilingual-e5-base/resolve/d128750597153bb5987e10b1c3493a34e5a4502a/onnx/model_O4.onnx",
         relative_path: "multilingual-e5-base/model_O4.onnx",
-        checksum: Checksum::Sha256("624dd6b2e6a05872f80228b2f4e46cbd78018f3f563f6261f9c1d943e0b79291"),
+        checksum: Checksum::Sha256("f60256a833caee5c75a3903e589116752ee016ca7bc16f9b96e4db09984c5703"),
     },
     PinnedFile {
         url: "https://huggingface.co/intfloat/multilingual-e5-base/resolve/d128750597153bb5987e10b1c3493a34e5a4502a/onnx/tokenizer.json",
         relative_path: "multilingual-e5-base/tokenizer.json",
-        checksum: Checksum::Sha256("31cfad7e457e392bdebe2bd63796205ff3f6ab825e13da0a03d83dfbf932c919"),
+        checksum: Checksum::Sha256("62c24cdc13d4c9952d63718d6c9fa4c287974249e16b7ade6d5a85e7bbb75626"),
     },
     PinnedFile {
         url: "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/233902d25c440f23af6f7d6e94d2946bac0bee0a/onnx/model_O4.onnx",
         relative_path: "ms-marco-MiniLM-L6-v2/model_O4.onnx",
-        checksum: Checksum::Sha256("bac792bcecd53d54764e3edf5e65410754c894a37e036668879abbcc0fdaa934"),
+        checksum: Checksum::Sha256("b232c2eeedd97a593edc177e3ce4cbd1d6c8f6d8f61a5c201cd0cdeb8134da18"),
     },
     PinnedFile {
         url: "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/233902d25c440f23af6f7d6e94d2946bac0bee0a/tokenizer.json",

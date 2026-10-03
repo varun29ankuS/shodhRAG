@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use uuid::Uuid;
 
 use crate::config::RAGConfig;
@@ -166,7 +166,7 @@ fn extract_structured_fields(text: &str) -> HashMap<String, String> {
 /// ~600 MB, so it is separate from [`RAGEngine::new`] and can run on a
 /// blocking thread before [`RAGEngine::attach_search_models`].
 pub struct SearchModels {
-    embeddings: Box<dyn EmbeddingModel>,
+    embeddings: Arc<dyn EmbeddingModel>,
     reranker: Option<CrossEncoderReranker>,
 }
 
@@ -181,8 +181,8 @@ impl SearchModels {
     pub fn load(config: &RAGConfig) -> Result<Self> {
         let e5_config =
             E5Config::auto_detect(&config.embedding.model_dir).ok_or(SearchModelsMissing)?;
-        let embeddings: Box<dyn EmbeddingModel> =
-            Box::new(E5Embeddings::new(e5_config).context("Failed to load E5 embeddings")?);
+        let embeddings: Arc<dyn EmbeddingModel> =
+            Arc::new(E5Embeddings::new(e5_config).context("Failed to load E5 embeddings")?);
 
         let reranker = if config.features.enable_reranking || config.features.enable_cross_encoder {
             let reranker_dir = config.embedding.model_dir.join("ms-marco-MiniLM-L6-v2");
@@ -225,7 +225,9 @@ pub struct RAGEngine {
     text_search: TextSearch,
     /// `None` until the search models are installed and attached; search and
     /// indexing then fail with [`SearchModelsMissing`].
-    embeddings: Option<Box<dyn EmbeddingModel>>,
+    /// Shared (`Arc`) so other stores, such as the statement store, embed with the same
+    /// model without holding the engine lock during inference.
+    embeddings: Option<Arc<dyn EmbeddingModel>>,
     chunker: TextChunker,
     parser: DocumentParser,
     config: RAGConfig,
@@ -1162,6 +1164,12 @@ impl RAGEngine {
     /// The embedding model, when the search models are attached.
     pub fn embeddings(&self) -> Option<&dyn EmbeddingModel> {
         self.embeddings.as_deref()
+    }
+
+    /// A shared handle to the embedding model, for callers that embed outside the
+    /// engine lock (inference is blocking; run it on a blocking thread).
+    pub fn shared_embeddings(&self) -> Option<Arc<dyn EmbeddingModel>> {
+        self.embeddings.clone()
     }
 
     /// Access to config

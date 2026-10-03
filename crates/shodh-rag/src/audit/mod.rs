@@ -30,7 +30,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use canonical::canonical_json;
-pub use store::{AuditLog, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS};
+pub use store::{
+    open_shared_connection, AuditLog, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS,
+    MIN_RETENTION_DAYS,
+};
 pub use tap::RunAuditTap;
 
 /// The principal of every event recorded by the desktop app.
@@ -99,10 +102,16 @@ pub enum AuditEventType {
     SettingsChange,
     RuntimeInstall,
     RetentionCheckpoint,
+    /// A memory statement was stored (added, updated or superseded).
+    MemoryWrite,
+    /// A memory was forgotten (soft-deleted).
+    MemoryForget,
+    /// Memories were recalled and used in an answer.
+    MemoryUse,
 }
 
 impl AuditEventType {
-    pub const ALL: [AuditEventType; 9] = [
+    pub const ALL: [AuditEventType; 12] = [
         AuditEventType::Question,
         AuditEventType::ToolCall,
         AuditEventType::Approval,
@@ -112,6 +121,9 @@ impl AuditEventType {
         AuditEventType::SettingsChange,
         AuditEventType::RuntimeInstall,
         AuditEventType::RetentionCheckpoint,
+        AuditEventType::MemoryWrite,
+        AuditEventType::MemoryForget,
+        AuditEventType::MemoryUse,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -125,6 +137,9 @@ impl AuditEventType {
             AuditEventType::SettingsChange => "settings_change",
             AuditEventType::RuntimeInstall => "runtime_install",
             AuditEventType::RetentionCheckpoint => "retention_checkpoint",
+            AuditEventType::MemoryWrite => "memory_write",
+            AuditEventType::MemoryForget => "memory_forget",
+            AuditEventType::MemoryUse => "memory_use",
         }
     }
 }

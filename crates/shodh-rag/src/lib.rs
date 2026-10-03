@@ -15,6 +15,7 @@ pub mod rag_engine;
 pub mod reranking;
 pub mod search;
 pub mod space;
+pub mod statements;
 pub mod storage;
 pub mod templates;
 pub mod types;

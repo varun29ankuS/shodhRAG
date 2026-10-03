@@ -66,6 +66,10 @@ tokio-util = { version = "0.7", features = ["codec"] }
 sha2 = "0.10"
 hex = "0.4"
 
+# Typed statements (memory, records, graph) are validated against the ontology.
+shodh-ontology = { path = "../shodh-ontology" }
+semver = "1"
+
 # Audit log: SQLite store. Plain bundled SQLite by default; the `sqlcipher`
 # feature switches to SQLCipher with a vendored OpenSSL (needs a Windows-native
 # Perl such as Strawberry Perl to build on Windows).

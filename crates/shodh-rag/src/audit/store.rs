@@ -15,7 +15,10 @@ use std::time::Duration;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{params, params_from_iter, Connection, ErrorCode, OpenFlags, OptionalExtension};
+use rusqlite::{
+    params, params_from_iter, Connection, ErrorCode, OpenFlags, OptionalExtension,
+    TransactionBehavior,
+};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -34,10 +37,13 @@ const RETENTION_KEY: &str = "retention_days";
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 
-/// Ordered schema migrations. Never edit an applied entry; append a new one.
-const MIGRATIONS: &[(i64, &str)] = &[(
-    1,
-    "CREATE TABLE audit_events (
+/// Ordered schema migrations of `shodh.db`. Never edit an applied entry; append a new one.
+/// The database is shared: the audit chain (1) and the dynamics of typed statements (2) use
+/// one version sequence, so every component that opens it sees the same schema.
+const MIGRATIONS: &[(i64, &str)] = &[
+    (
+        1,
+        "CREATE TABLE audit_events (
         id INTEGER PRIMARY KEY,
         ts TEXT NOT NULL,
         principal TEXT NOT NULL,
@@ -56,7 +62,37 @@ const MIGRATIONS: &[(i64, &str)] = &[(
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
     );",
-)];
+    ),
+    (
+        2,
+        // Mutable state of statements whose content lives in LanceDB: recall strength is
+        // stored at an anchor time and decayed lazily at read time, so reads never rewrite
+        // rows. Links are undirected (from_id < to_id) Hebbian co-activation weights.
+        "CREATE TABLE statement_dynamics (
+            statement_id TEXT PRIMARY KEY,
+            scope TEXT NOT NULL,
+            class TEXT NOT NULL,
+            strength REAL NOT NULL CHECK (strength >= 0.0 AND strength <= 1.0),
+            anchor_at TEXT NOT NULL,
+            importance REAL NOT NULL CHECK (importance >= 0.0 AND importance <= 1.0),
+            use_count INTEGER NOT NULL DEFAULT 0,
+            last_used_at TEXT NULL,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX statement_dynamics_scope ON statement_dynamics(scope);
+        CREATE TABLE statement_links (
+            from_id TEXT NOT NULL,
+            to_id TEXT NOT NULL,
+            weight REAL NOT NULL CHECK (weight >= 0.0 AND weight <= 1.0),
+            co_activations INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (from_id, to_id),
+            CHECK (from_id < to_id)
+        );
+        CREATE INDEX statement_links_to ON statement_links(to_id);",
+    ),
+];
 
 fn latest_schema_version() -> i64 {
     MIGRATIONS.last().map(|(v, _)| *v).unwrap_or(0)
@@ -162,9 +198,11 @@ fn open_connection(path: &Path, key: Option<&AuditKey>) -> AuditResult<(Connecti
     Ok((conn, encrypted))
 }
 
-/// Apply pending migrations in one transaction.
+/// Apply pending migrations in one transaction. `IMMEDIATE` takes the write lock before the
+/// version is read, so two components opening the database at once cannot both apply the
+/// same migration.
 fn migrate(conn: &mut Connection) -> AuditResult<()> {
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (
             version INTEGER PRIMARY KEY,
@@ -192,6 +230,16 @@ fn migrate(conn: &mut Connection) -> AuditResult<()> {
     }
     tx.commit()?;
     Ok(())
+}
+
+/// Open `shodh.db` for a component other than the audit log (the statement store's
+/// dynamics tables): the same key and connection settings, with every migration applied.
+/// The connection is independent of the audit writer; SQLite's WAL and busy timeout
+/// serialise the two writers.
+pub fn open_shared_connection(path: &Path, key: Option<&AuditKey>) -> AuditResult<Connection> {
+    let (mut conn, _) = open_connection(path, key)?;
+    migrate(&mut conn)?;
+    Ok(conn)
 }
 
 fn read_retention(conn: &Connection) -> AuditResult<u32> {
@@ -1346,6 +1394,51 @@ mod tests {
             .unwrap();
         assert_eq!(versions, latest_schema_version());
         assert!(log.verify().unwrap().ok);
+    }
+
+    #[test]
+    fn a_version_1_database_migrates_to_statement_tables_with_its_chain_intact() {
+        let (dir, log) = temp_log();
+        fill(&log, 3);
+        drop(log);
+        // Reduce the database to exactly what a version-1 app left behind.
+        raw(&dir)
+            .execute_batch(
+                "DROP TABLE statement_dynamics;
+                 DROP TABLE statement_links;
+                 DELETE FROM schema_version WHERE version > 1;",
+            )
+            .unwrap();
+        let path = dir.path().join("shodh.db");
+        // The statement store may open the database before the audit log does.
+        let shared = open_shared_connection(&path, None).unwrap();
+        let version: i64 = shared
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+        let tables: i64 = shared
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table'                  AND name IN ('statement_dynamics', 'statement_links')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 2);
+        // Opening again (the audit log after the statement store) applies nothing twice.
+        let log = AuditLog::open(&path, None).unwrap();
+        let versions: i64 = raw(&dir)
+            .query_row("SELECT count(*) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(versions, 2);
+        let report = log.verify().unwrap();
+        assert!(report.ok, "{report:?}");
+        assert_eq!(report.checked, 3);
+        // Links are stored once per unordered pair.
+        let reversed = shared.execute(
+            "INSERT INTO statement_links(from_id, to_id, weight, updated_at) VALUES ('b', 'a', 0.5, 'x')",
+            [],
+        );
+        assert!(reversed.is_err());
     }
 
     #[test]

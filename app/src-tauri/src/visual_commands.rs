@@ -198,14 +198,18 @@ pub async fn visuals_backfill_status(state: State<'_, VisualState>) -> VisualCom
     state.run(|store| store.backfill_done()).await
 }
 
-/// Records the visuals of conversations saved before the gallery existed, then marks the
-/// backfill as done. Idempotent: answers already recorded add nothing.
+/// Records the visuals of conversations saved before the gallery existed. The UI sends the
+/// answers in chunks; the chunk with `finished` (the default) marks the backfill as done, so
+/// an interrupted backfill runs again on the next open. Idempotent: answers already
+/// recorded add nothing.
 #[tauri::command]
 pub async fn visuals_backfill(
     app: AppHandle,
     state: State<'_, VisualState>,
     batches: Vec<CaptureBatch>,
+    finished: Option<bool>,
 ) -> VisualCommandResult<BackfillReport> {
+    let finished = finished.unwrap_or(true);
     if batches.len() > MAX_BACKFILL_BATCHES {
         return Err(VisualError::Invalid(format!(
             "{} answers in one backfill; at most {MAX_BACKFILL_BATCHES}",
@@ -225,7 +229,9 @@ pub async fn visuals_backfill(
                     }
                 }
             }
-            store.mark_backfill_done()?;
+            if finished {
+                store.mark_backfill_done()?;
+            }
             Ok(report)
         })
         .await?;

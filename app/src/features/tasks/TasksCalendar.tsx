@@ -1,31 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-import { AlertCircle, Bot, Check, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react';
+import { AlertCircle, Bot, Check, ChevronLeft, ChevronRight, GripVertical, RotateCcw } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { notify } from '../../lib/notify';
 import { addDays, dayKey, groupByDay, monthGrid } from './calendarGrid';
 import type { GridDay } from './calendarGrid';
-
-/** Wire shape of `load_tasks` (camelCase `TodoItem`); only the fields shown here. */
-interface CalendarTask {
-  id: string;
-  title: string;
-  dueDate: string | null;
-  priority: string;
-  status: string;
-  source: string;
-}
-
-/** Wire shape of `load_events` (camelCase `CalendarEvent`); only the fields shown here. */
-interface CalendarEntry {
-  id: string;
-  title: string;
-  startTime: string;
-  endTime: string | null;
-  allDay: boolean;
-  source: string;
-}
+import { parseMoment, rescheduleTo, storedDayKey, storedTime } from './dueDate';
+import { useTasksStore } from './TasksStore';
+import { isDone } from './types';
+import type { CalendarEvent as CalendarEntry, TodoItem as CalendarTask } from './types';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -42,24 +23,114 @@ const WEEKDAYS = Array.from({ length: 7 }, (_, i) =>
   new Date(2026, 1, 1 + i).toLocaleDateString(undefined, { weekday: 'short' }),
 );
 
-function formatTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+function formatTime(value: string): string {
+  const m = parseMoment(value);
+  if (!m || m.kind === 'date') return '';
+  return new Date(m.year, m.month - 1, m.day, m.hour, m.minute).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
 
-function isDone(task: CalendarTask): boolean {
-  return task.status === 'completed';
+/** "9:00 AM – 10:00 AM", or "All day" for all-day and date-only events. */
+function eventTimeLabel(ev: CalendarEntry): string {
+  const start = ev.allDay ? '' : formatTime(ev.startTime);
+  if (!start) return 'All day';
+  const end = ev.endTime ? formatTime(ev.endTime) : '';
+  return end ? `${start} – ${end}` : start;
+}
+
+/** Pointer travel before a press becomes a drag, so plain clicks still select. */
+const DRAG_THRESHOLD_PX = 4;
+
+interface DragState {
+  taskId: string;
+  title: string;
+  fromDay: string;
+  startX: number;
+  startY: number;
+  x: number;
+  y: number;
+  active: boolean;
+  overDay: string | null;
+}
+
+/**
+ * Drag a task to another day with the pointer. Built on pointer events, not
+ * HTML5 drag and drop, because the Tauri window handles OS file drops (the
+ * Library relies on that), which stops HTML5 drop events in the webview.
+ */
+function useTaskDrag(onDrop: (taskId: string, toDay: string) => void) {
+  const [drag, setDrag] = useState<DragState | null>(null);
+  const dragRef = useRef<DragState | null>(null);
+  const suppressClick = useRef(false);
+
+  const update = (next: DragState | null) => {
+    dragRef.current = next;
+    setDrag(next);
+  };
+
+  const dragging = drag !== null;
+  useEffect(() => {
+    if (!dragging) return;
+    const dayAt = (x: number, y: number) =>
+      document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-day]')?.dataset.day ?? null;
+    const onMove = (e: PointerEvent) => {
+      const cur = dragRef.current;
+      if (!cur) return;
+      const moved = Math.hypot(e.clientX - cur.startX, e.clientY - cur.startY) >= DRAG_THRESHOLD_PX;
+      const active = cur.active || moved;
+      update({ ...cur, x: e.clientX, y: e.clientY, active, overDay: active ? dayAt(e.clientX, e.clientY) : null });
+    };
+    const onUp = (e: PointerEvent) => {
+      const cur = dragRef.current;
+      update(null);
+      if (!cur?.active) return;
+      // The release ends a drag; it must not also count as a click on the day under it.
+      suppressClick.current = true;
+      window.setTimeout(() => { suppressClick.current = false; }, 0);
+      const target = dayAt(e.clientX, e.clientY);
+      if (target && target !== cur.fromDay) onDrop(cur.taskId, target);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        update(null);
+      }
+    };
+    const cancel = () => update(null);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', cancel);
+    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('blur', cancel);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', cancel);
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('blur', cancel);
+    };
+    // Listeners read the latest state from dragRef, so they bind once per drag.
+  }, [dragging, onDrop]);
+
+  const start = (e: React.PointerEvent, task: CalendarTask) => {
+    if (e.button !== 0 || !e.isPrimary) return;
+    const fromDay = storedDayKey(task.dueDate);
+    if (!fromDay) return;
+    update({ taskId: task.id, title: task.title, fromDay, startX: e.clientX, startY: e.clientY, x: e.clientX, y: e.clientY, active: false, overDay: null });
+  };
+
+  return { drag: drag?.active ? drag : null, start, suppressClick };
 }
 
 /**
  * Tasks as a month calendar: tasks on their due day, events on their start
  * day. Arrow keys move between days; the selected day's items are listed
- * beside the grid, where tasks can be completed.
+ * beside the grid, where tasks can be completed and items opened for
+ * editing. Tasks can be dragged to another day (the detail sheet's due date
+ * is the keyboard route).
  */
 export default function TasksCalendar() {
-  const [tasks, setTasks] = useState<CalendarTask[]>([]);
-  const [events, setEvents] = useState<CalendarEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { tasks, events, loading, error, refresh, updateTask, openTask, openEvent } = useTasksStore();
+  const [announcement, setAnnouncement] = useState('');
   const [selected, setSelected] = useState<Date>(() => new Date());
   const [month, setMonth] = useState(() => {
     const now = new Date();
@@ -68,41 +139,22 @@ export default function TasksCalendar() {
   const gridRef = useRef<HTMLDivElement>(null);
   const focusAfterRender = useRef(false);
 
-  const fetchData = useCallback(async () => {
-    try {
-      const [t, e] = await Promise.all([
-        invoke<CalendarTask[]>('load_tasks'),
-        invoke<CalendarEntry[]>('load_events'),
-      ]);
-      setTasks(t);
-      setEvents(e);
-      setError(null);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const reschedule = useCallback((taskId: string, toDay: string) => {
+    const task = tasks.find(t => t.id === taskId);
+    const next = task?.dueDate ? rescheduleTo(task.dueDate, toDay) : null;
+    if (!task || !next) return;
+    void updateTask(taskId, { dueDate: next });
+    const [y, m, d] = toDay.split('-').map(Number);
+    setAnnouncement(`Moved “${task.title}” to ${new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}.`);
+  }, [tasks, updateTask]);
 
-  useEffect(() => {
-    void fetchData();
-  }, [fetchData]);
-
-  // The backend emits after every task or event write, including the agent's.
-  useEffect(() => {
-    let active = true;
-    let unlisten: (() => void) | null = null;
-    listen('calendar-changed', () => { void fetchData(); })
-      .then(fn => { if (active) unlisten = fn; else fn(); })
-      .catch(err => console.error('Failed to listen for calendar changes:', err));
-    return () => { active = false; unlisten?.(); };
-  }, [fetchData]);
+  const { drag, start: startDrag, suppressClick } = useTaskDrag(reschedule);
 
   const weeks = useMemo(() => monthGrid(month.year, month.month), [month]);
   const tasksByDay = useMemo(() => groupByDay(tasks, t => t.dueDate), [tasks]);
   const eventsByDay = useMemo(() => {
     const map = groupByDay(events, e => e.startTime);
-    for (const list of map.values()) list.sort((a, b) => a.startTime.localeCompare(b.startTime));
+    for (const list of map.values()) list.sort((a, b) => (storedTime(a.startTime) ?? 0) - (storedTime(b.startTime) ?? 0));
     return map;
   }, [events]);
 
@@ -151,15 +203,8 @@ export default function TasksCalendar() {
     }
   };
 
-  const toggleTask = async (task: CalendarTask) => {
-    const status = isDone(task) ? 'pending' : 'completed';
-    setTasks(prev => prev.map(t => (t.id === task.id ? { ...t, status } : t)));
-    try {
-      await invoke('update_task', { id: task.id, status });
-    } catch (err) {
-      setTasks(prev => prev.map(t => (t.id === task.id ? task : t)));
-      notify.error('Could not update the task', { description: String(err) });
-    }
+  const toggleTask = (task: CalendarTask) => {
+    void updateTask(task.id, { status: isDone(task) ? 'pending' : 'completed' });
   };
 
   if (error && tasks.length === 0 && events.length === 0) {
@@ -171,7 +216,7 @@ export default function TasksCalendar() {
           <p className="text-[12px] text-shodh-text-faint break-words">{error}</p>
           <button
             type="button"
-            onClick={() => { setLoading(true); void fetchData(); }}
+            onClick={() => void refresh()}
             className={cn('h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border text-[12.5px] hover:bg-shodh-raised', FOCUS_RING)}
           >
             <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
@@ -234,7 +279,9 @@ export default function TasksCalendar() {
                   isSelected={day.key === selectedKey}
                   tasks={tasksByDay.get(day.key) ?? []}
                   events={eventsByDay.get(day.key) ?? []}
-                  onSelect={() => select(day.date, false)}
+                  isDropTarget={drag !== null && drag.overDay === day.key && drag.fromDay !== day.key}
+                  onTaskPointerDown={startDrag}
+                  onSelect={() => { if (!suppressClick.current) select(day.date, false); }}
                 />
               ))}
             </div>
@@ -252,22 +299,31 @@ export default function TasksCalendar() {
               Nothing on this day. Ask Shodh to schedule something, or add a task with a due date from the list view.
             </p>
           ) : null}
+          {dayTasks.length > 0 && (
+            <p className="text-[11.5px] text-shodh-text-faint">
+              Drag a task onto another day to move it, or open it to change its due date.
+            </p>
+          )}
           {dayEvents.length > 0 && (
             <div className="flex flex-col gap-1.5">
               <h3 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">Events</h3>
               <ul className="flex flex-col gap-1.5">
                 {dayEvents.map(ev => (
-                  <li key={ev.id} className="flex items-start gap-2 px-3 py-2 rounded-lg bg-shodh-surface border border-shodh-border">
-                    <span className="mt-1 w-1.5 h-1.5 rounded-full bg-shodh-info shrink-0" aria-hidden="true" />
-                    <span className="flex-1 min-w-0 flex flex-col">
-                      <span className="text-[13px] text-shodh-text truncate">{ev.title}</span>
-                      <span className="text-[11.5px] text-shodh-text-faint">
-                        {ev.allDay ? 'All day' : `${formatTime(ev.startTime)}${ev.endTime ? ` – ${formatTime(ev.endTime)}` : ''}`}
+                  <li key={ev.id}>
+                    <button
+                      type="button"
+                      onClick={() => openEvent(ev.id)}
+                      className={cn('w-full flex items-start gap-2 px-3 py-2 rounded-lg bg-shodh-surface border border-shodh-border text-left hover:bg-shodh-raised transition-colors duration-micro', FOCUS_RING)}
+                    >
+                      <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-shodh-info shrink-0" aria-hidden="true" />
+                      <span className="flex-1 min-w-0 flex flex-col">
+                        <span className="text-[13px] text-shodh-text truncate">{ev.title}</span>
+                        <span className="text-[11.5px] text-shodh-text-faint">{eventTimeLabel(ev)}</span>
                       </span>
-                    </span>
-                    {ev.source === 'agent' && (
-                      <Bot className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-text-muted" aria-label="Created by the assistant" />
-                    )}
+                      {ev.source === 'agent' && (
+                        <Bot className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-text-muted" aria-label="Created by agent" />
+                      )}
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -293,15 +349,22 @@ export default function TasksCalendar() {
                     >
                       {isDone(task) && <Check className="w-3 h-3" strokeWidth={3} aria-hidden="true" />}
                     </button>
-                    <span className="flex-1 min-w-0 flex flex-col">
+                    <button
+                      type="button"
+                      onClick={() => { if (!suppressClick.current) openTask(task.id); }}
+                      onPointerDown={e => startDrag(e, task)}
+                      aria-label={`${task.title}, ${task.priority} priority. Open details`}
+                      className={cn('flex-1 min-w-0 flex flex-col text-left rounded-sm cursor-grab active:cursor-grabbing select-none', FOCUS_RING)}
+                    >
                       <span className={cn('text-[13px] truncate', isDone(task) ? 'line-through text-shodh-text-faint' : 'text-shodh-text')}>
                         {task.title}
                       </span>
                       <span className="text-[11.5px] text-shodh-text-faint capitalize">{task.priority} priority</span>
-                    </span>
+                    </button>
                     {task.source === 'agent' && (
-                      <Bot className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-text-muted" aria-label="Created by the assistant" />
+                      <Bot className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-text-muted" aria-label="Created by agent" />
                     )}
+                    <GripVertical className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-text-faint" aria-hidden="true" />
                   </li>
                 ))}
               </ul>
@@ -309,6 +372,17 @@ export default function TasksCalendar() {
           )}
         </div>
       </aside>
+
+      <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
+      {drag && (
+        <div
+          className="fixed z-50 pointer-events-none max-w-[220px] truncate px-2 py-1 rounded-md border border-shodh-border-strong bg-shodh-surface text-[12px] text-shodh-text shadow-[0_8px_24px_rgba(0,0,0,0.3)]"
+          style={{ left: drag.x + 12, top: drag.y + 8 }}
+          aria-hidden="true"
+        >
+          {drag.title}
+        </div>
+      )}
     </div>
   );
 }
@@ -320,6 +394,8 @@ function DayCell({
   isSelected,
   tasks,
   events,
+  isDropTarget,
+  onTaskPointerDown,
   onSelect,
 }: {
   day: GridDay;
@@ -328,11 +404,16 @@ function DayCell({
   isSelected: boolean;
   tasks: CalendarTask[];
   events: CalendarEntry[];
+  isDropTarget: boolean;
+  onTaskPointerDown: (e: React.PointerEvent, task: CalendarTask) => void;
   onSelect: () => void;
 }) {
   const chips = [
-    ...events.map(e => ({ id: `e-${e.id}`, title: e.allDay ? e.title : `${formatTime(e.startTime)} ${e.title}`, kind: 'event' as const, done: false })),
-    ...tasks.map(t => ({ id: `t-${t.id}`, title: t.title, kind: 'task' as const, done: isDone(t) })),
+    ...events.map(e => {
+      const time = e.allDay ? '' : formatTime(e.startTime);
+      return { id: `e-${e.id}`, title: time ? `${time} ${e.title}` : e.title, kind: 'event' as const, done: false, task: null as CalendarTask | null };
+    }),
+    ...tasks.map(t => ({ id: `t-${t.id}`, title: t.title, kind: 'task' as const, done: isDone(t), task: t as CalendarTask | null })),
   ];
   const shown = chips.slice(0, MAX_CHIPS);
   const more = chips.length - shown.length;
@@ -355,6 +436,7 @@ function DayCell({
           'w-full h-full flex flex-col items-stretch gap-0.5 p-1.5 text-left transition-colors duration-micro focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
           isSelected ? 'bg-shodh-accent-soft' : 'hover:bg-shodh-raised/60',
           !day.inMonth && 'opacity-60',
+          isDropTarget && 'ring-2 ring-inset ring-shodh-accent-text bg-shodh-accent-soft',
         )}
       >
         <span
@@ -375,9 +457,10 @@ function DayCell({
             {shown.map(chip => (
               <span
                 key={chip.id}
+                onPointerDown={chip.task ? e => onTaskPointerDown(e, chip.task as CalendarTask) : undefined}
                 className={cn(
-                  'truncate text-[11px] leading-4 px-1.5 rounded',
-                  chip.kind === 'event' ? 'bg-shodh-info/15 text-shodh-text' : 'bg-shodh-raised-2 text-shodh-text-secondary',
+                  'truncate text-[11px] leading-4 px-1.5 rounded select-none',
+                  chip.kind === 'event' ? 'bg-shodh-info/15 text-shodh-text' : 'bg-shodh-raised-2 text-shodh-text-secondary cursor-grab',
                   chip.done && 'line-through text-shodh-text-faint',
                 )}
               >

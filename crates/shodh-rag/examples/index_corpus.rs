@@ -19,6 +19,11 @@ use shodh_rag::rag_engine::RAGEngine;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // `RUST_LOG=shodh_rag::rag_engine=info` prints per-file parse/chunk/embed/store times.
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() < 3 {
         bail!("usage: index_corpus <folder> <model_dir> <scratch_data_dir> [query...]");

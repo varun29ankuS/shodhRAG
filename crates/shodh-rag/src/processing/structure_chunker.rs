@@ -491,69 +491,77 @@ fn statement_pieces(
 
 /// Split prose at sentence boundaries into pieces of at most `budget`
 /// tokens. A sentence longer than the budget is split at word boundaries.
+///
+/// Each sentence (and, for over-long sentences, each word) is counted once
+/// and pieces are sized by summing: tokenizing every growing candidate
+/// would be quadratic in the paragraph length.
 pub fn split_text(text: &str, budget: usize, count_tokens: &dyn Fn(&str) -> usize) -> Vec<String> {
-    let sentences = split_sentences(text);
+    let overhead = count_tokens("");
+    let cost = |s: &str| count_tokens(s).saturating_sub(overhead);
+    let room = budget.saturating_sub(overhead).max(1);
     let mut pieces = Vec::new();
-    let mut current = String::new();
-    for sentence in sentences {
-        let candidate = if current.is_empty() {
-            sentence.to_string()
-        } else {
-            format!("{current} {sentence}")
-        };
-        if count_tokens(&candidate) <= budget {
-            current = candidate;
+    let mut current: Vec<&str> = Vec::new();
+    let mut used = 0usize;
+    for sentence in split_sentences(text) {
+        let tokens = cost(sentence);
+        if tokens > room {
+            if !current.is_empty() {
+                pieces.push(current.join(" "));
+                current.clear();
+                used = 0;
+            }
+            pieces.extend(pack_by_cost(sentence.split_whitespace(), " ", room, &cost));
             continue;
         }
-        if !current.is_empty() {
-            pieces.push(std::mem::take(&mut current));
+        if used + tokens > room && !current.is_empty() {
+            pieces.push(current.join(" "));
+            current.clear();
+            used = 0;
         }
-        if count_tokens(sentence) <= budget {
-            current = sentence.to_string();
-        } else {
-            let mut words = String::new();
-            for word in sentence.split_whitespace() {
-                let candidate = if words.is_empty() {
-                    word.to_string()
-                } else {
-                    format!("{words} {word}")
-                };
-                if count_tokens(&candidate) > budget && !words.is_empty() {
-                    pieces.push(std::mem::take(&mut words));
-                    words = word.to_string();
-                } else {
-                    words = candidate;
-                }
-            }
-            current = words;
-        }
+        current.push(sentence);
+        used += tokens;
     }
-    if !current.trim().is_empty() {
-        pieces.push(current);
+    if !current.is_empty() {
+        pieces.push(current.join(" "));
+    }
+    pieces.retain(|p| !p.trim().is_empty());
+    pieces
+}
+
+/// Greedily pack `parts` (joined by `separator`) into pieces whose summed
+/// cost stays within `room`; a single part over `room` becomes its own piece.
+fn pack_by_cost<'a>(
+    parts: impl Iterator<Item = &'a str>,
+    separator: &str,
+    room: usize,
+    cost: &dyn Fn(&str) -> usize,
+) -> Vec<String> {
+    let mut pieces = Vec::new();
+    let mut current: Vec<&str> = Vec::new();
+    let mut used = 0usize;
+    for part in parts {
+        let tokens = cost(part);
+        if used + tokens > room && !current.is_empty() {
+            pieces.push(current.join(separator));
+            current.clear();
+            used = 0;
+        }
+        current.push(part);
+        used += tokens;
+    }
+    if !current.is_empty() {
+        pieces.push(current.join(separator));
     }
     pieces
 }
 
 /// Split code at line boundaries into pieces of at most `budget` tokens.
 fn split_lines(text: &str, budget: usize, count_tokens: &dyn Fn(&str) -> usize) -> Vec<String> {
-    let mut pieces = Vec::new();
-    let mut current = String::new();
-    for line in text.lines() {
-        let candidate = if current.is_empty() {
-            line.to_string()
-        } else {
-            format!("{current}\n{line}")
-        };
-        if count_tokens(&candidate) > budget && !current.is_empty() {
-            pieces.push(std::mem::take(&mut current));
-            current = line.to_string();
-        } else {
-            current = candidate;
-        }
-    }
-    if !current.trim().is_empty() {
-        pieces.push(current);
-    }
+    let overhead = count_tokens("");
+    let cost = |s: &str| count_tokens(s).saturating_sub(overhead) + 1;
+    let room = budget.saturating_sub(overhead).max(1);
+    let mut pieces = pack_by_cost(text.lines(), "\n", room, &cost);
+    pieces.retain(|p| !p.trim().is_empty());
     pieces
 }
 
@@ -889,6 +897,49 @@ mod tests {
             assert!(c.contextualized_text.contains("Bibliography entry."));
         }
         assert!(chunks[0].text.ends_with("Paper one. 2020."));
+    }
+
+    #[test]
+    fn split_text_counts_each_sentence_once_and_respects_the_budget() {
+        let calls = std::cell::Cell::new(0usize);
+        // Counter with a fixed 5-token overhead, like the embedder's prefix.
+        let counter = |t: &str| {
+            calls.set(calls.get() + 1);
+            words(t) + 5
+        };
+        let text: String = (0..40)
+            .map(|i| sentence(12, &format!("S{i}")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let pieces = split_text(&text, 50, &counter);
+        assert!(pieces.len() > 1);
+        for piece in &pieces {
+            assert!(
+                words(piece) + 5 <= 50,
+                "piece over budget: {}",
+                words(piece)
+            );
+        }
+        assert_eq!(pieces.join(" "), text);
+        // One count for the overhead plus one per sentence: linear.
+        assert!(calls.get() <= 41, "tokenizer called {} times", calls.get());
+
+        let code: String = (0..30)
+            .map(|i| format!("let x{i} = compute({i});"))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        let lines = split_lines(&code, 30, &|t: &str| words(t) + 5);
+        assert!(lines.len() > 1);
+        assert_eq!(
+            lines.join(
+                "
+"
+            ),
+            code
+        );
     }
 
     #[test]

@@ -108,3 +108,5 @@ windows = { version = "0.58", features = [
 
 [dev-dependencies]
 tempfile = "3"
+# Per-file timing logs in the corpus benchmark example.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

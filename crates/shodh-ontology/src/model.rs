@@ -236,6 +236,9 @@ pub struct Property {
     pub required: bool,
     /// Regex the whole lexical value must match (only for String, Url and Email ranges).
     pub pattern: Option<String>,
+    /// Whether finding the pattern in text selects the domain classes when slicing.
+    /// Only for distinctive patterns (GSTIN, DOI), never for loose ones (postal codes).
+    pub pattern_is_cue: bool,
     /// External IRIs this property is equivalent to.
     pub equivalent_to: Vec<String>,
     /// Id of the source that defines the property.
@@ -267,7 +270,8 @@ pub struct Ontology {
     pub(crate) cue_matchers: Vec<Option<Regex>>,
     /// Property index -> anchored validation regex.
     pub(crate) anchored_patterns: Vec<Option<Regex>>,
-    /// Property index -> unanchored, word-bounded regex used for slicing.
+    /// Property index -> unanchored, word-bounded regex used for slicing
+    /// (only for properties with `pattern_is_cue`).
     pub(crate) scan_patterns: Vec<Option<Regex>>,
 }
 

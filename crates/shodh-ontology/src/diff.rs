@@ -49,6 +49,8 @@ pub enum PropertyField {
     Required,
     /// Value pattern.
     Pattern,
+    /// Whether the pattern is used as a slicing cue.
+    PatternIsCue,
     /// External equivalences.
     EquivalentTo,
 }
@@ -169,11 +171,15 @@ impl OntologyDiff {
             || changed_properties
                 .iter()
                 .any(|p| p.fields.iter().any(breaking_property));
+        let additive_property = |f: &PropertyField| matches!(f, PropertyField::PatternIsCue);
         let additive = !added_classes.is_empty()
             || !added_properties.is_empty()
             || changed_classes
                 .iter()
-                .any(|c| c.fields.iter().any(additive_class));
+                .any(|c| c.fields.iter().any(additive_class))
+            || changed_properties
+                .iter()
+                .any(|p| p.fields.iter().any(additive_property));
         let compatibility = if breaking {
             Compatibility::Breaking
         } else if additive {
@@ -208,7 +214,11 @@ impl OntologyDiff {
             property_domains(new.property(id));
         }
         for change in &changed_properties {
-            if change.fields.iter().any(breaking_property) {
+            if change
+                .fields
+                .iter()
+                .any(|f| breaking_property(f) || additive_property(f))
+            {
                 property_domains(old.property(&change.id));
                 property_domains(new.property(&change.id));
             }
@@ -292,6 +302,7 @@ fn property_fields(old: &Property, new: &Property) -> Vec<PropertyField> {
     check(old.temporal != new.temporal, PropertyField::Temporal);
     check(old.required != new.required, PropertyField::Required);
     check(old.pattern != new.pattern, PropertyField::Pattern);
+    check(old.pattern_is_cue != new.pattern_is_cue, PropertyField::PatternIsCue);
     check(old.equivalent_to != new.equivalent_to, PropertyField::EquivalentTo);
     fields
 }

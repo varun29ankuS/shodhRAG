@@ -56,7 +56,7 @@ reinforcement = 0.15
 id = "Dataset"
 label = "Dataset"
 description = "A dataset or benchmark methods are trained or evaluated on."
-cue_terms = ["dataset", "benchmark", "corpus", "train set", "test set", "validation set", "split"]
+cue_terms = ["dataset", "benchmark", "corpus", "train set", "dev set", "test set", "validation set", "split"]
 equivalent_to = ["https://schema.org/Dataset"]
 [class.dynamics]
 decay_half_life_days = 1095
@@ -99,6 +99,7 @@ domain = "Paper"
 range = "String"
 cardinality = "one"
 pattern = '10\.[0-9]{4,9}/[^\s]+'
+pattern_is_cue = true
 equivalent_to = ["http://prismstandard.org/namespaces/basic/2.0/doi"]
 
 [[property]]
@@ -109,6 +110,7 @@ domain = "Paper"
 range = "String"
 cardinality = "one"
 pattern = '[0-9]{4}\.[0-9]{4,5}(?:v[0-9]+)?'
+pattern_is_cue = true
 
 [[property]]
 id = "publicationYear"
@@ -180,6 +182,7 @@ domain = "Author"
 range = "String"
 cardinality = "one"
 pattern = '[0-9]{4}-[0-9]{4}-[0-9]{4}-[0-9]{3}[0-9X]'
+pattern_is_cue = true
 
 [[property]]
 id = "affiliation"

@@ -6,7 +6,9 @@
 # - `parent` defaults to `Thing`. Single inheritance only.
 # - `range` is a class id or a datatype: String, Boolean, Integer, Decimal, Money, Date,
 #   DateTime, Url, Email, Enum (with `values`). A regex-constrained value is
-#   `range = "String"` plus `pattern` (whole-value match; also used to slice text).
+#   `range = "String"` plus `pattern` (whole-value match). `pattern_is_cue = true`
+#   additionally lets a match in running text select the class when slicing; use it only
+#   for distinctive patterns (GSTIN, PAN, DOI), never for loose ones (postal codes).
 # - `cardinality` is "one" or "many". `temporal = true` (only with "one") means a newer
 #   value supersedes the older one, which is kept as history with valid_to.
 # - `[class.dynamics]` replaces the inherited dynamics as a whole; omitted fields mean
@@ -346,6 +348,7 @@ domain = "TaxId"
 range = "String"
 cardinality = "one"
 pattern = '[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]'
+pattern_is_cue = true
 
 [[property]]
 id = "pan"
@@ -355,6 +358,7 @@ domain = "TaxId"
 range = "String"
 cardinality = "one"
 pattern = '[A-Z]{3}[ABCFGHJLPT][A-Z][0-9]{4}[A-Z]'
+pattern_is_cue = true
 
 [[property]]
 id = "livesIn"

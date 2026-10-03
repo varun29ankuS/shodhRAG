@@ -101,6 +101,8 @@ struct RawProperty {
     required: bool,
     pattern: Option<String>,
     #[serde(default)]
+    pattern_is_cue: bool,
+    #[serde(default)]
     equivalent_to: Vec<String>,
 }
 
@@ -844,7 +846,7 @@ impl<'a> Compiler<'a> {
                                 "`pattern` is only allowed with String, Url or Email ranges, not {range}"
                             )),
                         );
-                    } else if let Err(error) = anchored(pattern) {
+                    } else if let Err(error) = anchored(pattern).and_then(|_| scanning(pattern)) {
                         self.error(
                             location.clone(),
                             LoadErrorKind::InvalidPattern {
@@ -858,6 +860,12 @@ impl<'a> Compiler<'a> {
                     RawCardinality::One => Cardinality::One,
                     RawCardinality::Many => Cardinality::Many,
                 };
+                if raw.pattern_is_cue && raw.pattern.is_none() {
+                    self.error(
+                        location.clone(),
+                        invalid("`pattern_is_cue = true` requires a `pattern`".to_owned()),
+                    );
+                }
                 if raw.temporal && cardinality != Cardinality::One {
                     self.error(
                         location.clone(),
@@ -877,6 +885,7 @@ impl<'a> Compiler<'a> {
                     temporal: raw.temporal,
                     required: raw.required,
                     pattern: raw.pattern.clone(),
+                    pattern_is_cue: raw.pattern_is_cue,
                     equivalent_to: raw.equivalent_to.clone(),
                     source: source_id.clone(),
                     location,
@@ -1029,7 +1038,7 @@ impl<'a> Compiler<'a> {
                 Some(pattern) => match (anchored(pattern), scanning(pattern)) {
                     (Ok(full), Ok(scan)) => {
                         anchored_patterns.push(Some(full));
-                        scan_patterns.push(Some(scan));
+                        scan_patterns.push(property.pattern_is_cue.then_some(scan));
                     }
                     (Err(error), _) | (_, Err(error)) => {
                         self.error(

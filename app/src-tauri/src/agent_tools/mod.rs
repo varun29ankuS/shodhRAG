@@ -40,8 +40,8 @@ use tokio::sync::RwLock;
 use crate::app_settings::{AppSettings, SettingsStore};
 use crate::calendar_store::{CalendarEvent, TodoItem};
 
-pub use files::{IndexedRoots, SourceRoot, SourceRoots};
-pub use research::{list_directory_in, DirEntry, Listing};
+pub use files::{IndexedRoots, SourceRoots};
+pub use research::{list_directory_in, DirEntry};
 pub use tauri_host::TauriEffects;
 pub use web::web_block_reason;
 
@@ -215,6 +215,7 @@ pub(crate) fn limit_arg(args: &Value, default: usize, max: usize) -> usize {
 pub(crate) mod testing {
     //! A host over temporary storage that records every effect.
 
+    use super::files::SourceRoot;
     use super::*;
     use std::sync::Mutex;
 
@@ -287,8 +288,10 @@ pub(crate) mod testing {
     /// in a fresh temporary directory.
     pub async fn host() -> TestHost {
         let dir = tempfile::tempdir().unwrap();
-        let mut config = shodh_rag::config::RAGConfig::default();
-        config.data_dir = dir.path().join("index");
+        let mut config = shodh_rag::config::RAGConfig {
+            data_dir: dir.path().join("index"),
+            ..shodh_rag::config::RAGConfig::default()
+        };
         config.embedding.model_dir = dir.path().join("no-models");
         let rag = RAGEngine::new(config).await.unwrap();
         let audit = AuditLog::open(dir.path().join("shodh.db"), None).unwrap();

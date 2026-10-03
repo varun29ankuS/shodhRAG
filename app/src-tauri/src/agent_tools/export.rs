@@ -239,9 +239,10 @@ struct Inline {
     strike: bool,
 }
 
+// Boxed: docx-rs runs and paragraphs are large values.
 enum Piece {
-    Run(Run),
-    Link(Hyperlink),
+    Run(Box<Run>),
+    Link(Box<Hyperlink>),
 }
 
 #[derive(Default)]
@@ -258,8 +259,8 @@ struct DocxBuilder {
 }
 
 enum Body {
-    Paragraph(Paragraph),
-    Table(Table),
+    Paragraph(Box<Paragraph>),
+    Table(Box<Table>),
 }
 
 fn styled_run(text: &str, inline: Inline) -> Run {
@@ -284,7 +285,7 @@ impl DocxBuilder {
         let run = styled_run(text, self.inline);
         match &mut self.link {
             Some((_, runs)) => runs.push(run.color("0563C1").underline("single")),
-            None => self.pieces.push(Piece::Run(run)),
+            None => self.pieces.push(Piece::Run(Box::new(run))),
         }
     }
 
@@ -292,8 +293,8 @@ impl DocxBuilder {
         let mut p = Paragraph::new();
         for piece in self.pieces.drain(..) {
             p = match piece {
-                Piece::Run(run) => p.add_run(run),
-                Piece::Link(link) => p.add_hyperlink(link),
+                Piece::Run(run) => p.add_run(*run),
+                Piece::Link(link) => p.add_hyperlink(*link),
             };
         }
         p
@@ -320,7 +321,7 @@ impl DocxBuilder {
             let left = i32::try_from(depth * 360).unwrap_or(i32::MAX);
             p = p.indent(Some(left), None, None, None);
         }
-        self.body.push(Body::Paragraph(p));
+        self.body.push(Body::Paragraph(Box::new(p)));
     }
 
     fn handle(&mut self, event: Event) {
@@ -350,11 +351,11 @@ impl DocxBuilder {
             Event::InlineMath(text) | Event::DisplayMath(text) => self.push_text(&text),
             Event::SoftBreak => self.push_text(" "),
             Event::HardBreak => self.flush_paragraph(),
-            Event::Rule => self.body.push(Body::Paragraph(
+            Event::Rule => self.body.push(Body::Paragraph(Box::new(
                 Paragraph::new()
                     .add_run(Run::new().add_text("———"))
                     .align(AlignmentType::Center),
-            )),
+            ))),
             Event::TaskListMarker(done) => self.push_text(if done { "☑ " } else { "☐ " }),
             Event::Html(html) | Event::InlineHtml(html) => self.push_text(&html),
             Event::FootnoteReference(label) => self.push_text(&format!("[^{label}]")),
@@ -364,7 +365,7 @@ impl DocxBuilder {
     fn flush_code_line(&mut self) {
         let mut p = self.paragraph_from_pieces();
         p = p.indent(Some(360), None, None, None);
-        self.body.push(Body::Paragraph(p));
+        self.body.push(Body::Paragraph(Box::new(p)));
     }
 
     fn start(&mut self, tag: Tag) {
@@ -414,7 +415,8 @@ impl DocxBuilder {
                     }
                     _ => "• ".to_string(),
                 };
-                self.pieces.push(Piece::Run(Run::new().add_text(marker)));
+                self.pieces
+                    .push(Piece::Run(Box::new(Run::new().add_text(marker))));
             }
             Tag::Emphasis => self.inline.italic = true,
             Tag::Strong => self.inline.bold = true,
@@ -473,7 +475,7 @@ impl DocxBuilder {
                     for run in runs {
                         link = link.add_run(run);
                     }
-                    self.pieces.push(Piece::Link(link));
+                    self.pieces.push(Piece::Link(Box::new(link)));
                 }
             }
             TagEnd::TableHead => self.inline.bold = false,
@@ -490,8 +492,8 @@ impl DocxBuilder {
                                         let mut p = Paragraph::new();
                                         for piece in pieces {
                                             p = match piece {
-                                                Piece::Run(run) => p.add_run(run),
-                                                Piece::Link(link) => p.add_hyperlink(link),
+                                                Piece::Run(run) => p.add_run(*run),
+                                                Piece::Link(link) => p.add_hyperlink(*link),
                                             };
                                         }
                                         TableCell::new().add_paragraph(p)
@@ -500,7 +502,7 @@ impl DocxBuilder {
                             )
                         })
                         .collect();
-                    self.body.push(Body::Table(Table::new(rows)));
+                    self.body.push(Body::Table(Box::new(Table::new(rows))));
                 }
             }
             _ => {}
@@ -537,8 +539,8 @@ fn docx_bytes(title: &str, markdown: &str, sources: &[SourceEntry]) -> Result<Ve
         .add_style(heading_style("Heading3", "Heading 3", 26, 2));
     for item in builder.body {
         docx = match item {
-            Body::Paragraph(p) => docx.add_paragraph(p),
-            Body::Table(t) => docx.add_table(t),
+            Body::Paragraph(p) => docx.add_paragraph(*p),
+            Body::Table(t) => docx.add_table(*t),
         };
     }
     if !sources.is_empty() {

@@ -809,7 +809,7 @@ fn entry_for(path: &Path, meta: &std::fs::Metadata) -> DirEntry {
         name,
         path: path.display().to_string(),
         is_dir: meta.is_dir(),
-        size_bytes: (!meta.is_dir()).then(|| meta.len()),
+        size_bytes: (!meta.is_dir()).then_some(meta.len()),
         modified_ms,
         extension,
     }
@@ -980,12 +980,15 @@ mod tests {
     use std::collections::HashMap;
     use std::net::IpAddr;
 
+    /// Status, headers and body of a canned response.
+    type Route = (u16, Vec<(String, String)>, Vec<u8>);
+
     /// In-process DNS + HTTP: hosts resolve to fixed addresses, URLs answer
     /// with canned responses.
     #[derive(Default)]
     struct FakeNet {
         hosts: HashMap<String, Vec<IpAddr>>,
-        routes: HashMap<String, (u16, Vec<(String, String)>, Vec<u8>)>,
+        routes: HashMap<String, Route>,
     }
 
     impl FakeNet {

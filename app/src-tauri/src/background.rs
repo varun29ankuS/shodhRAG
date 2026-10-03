@@ -44,6 +44,9 @@ const RESUME_LABEL: &str = "Resume background work";
 pub struct BackgroundState {
     /// Quit was chosen: let the main window close.
     quitting: AtomicBool,
+    /// The tray icon exists. Without it a hidden window could not be
+    /// brought back, so closing then quits as usual.
+    tray_ready: AtomicBool,
     paused: AtomicBool,
     resumed: Notify,
     pause_item: Mutex<Option<MenuItem<Wry>>>,
@@ -145,6 +148,9 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
         tray = tray.icon(icon.clone());
     }
     tray.build(app)?;
+    app.state::<BackgroundState>()
+        .tray_ready
+        .store(true, Ordering::SeqCst);
     Ok(())
 }
 
@@ -163,11 +169,8 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
         return;
     }
     let app = window.app_handle();
-    if app
-        .state::<BackgroundState>()
-        .quitting
-        .load(Ordering::SeqCst)
-    {
+    let state = app.state::<BackgroundState>();
+    if state.quitting.load(Ordering::SeqCst) || !state.tray_ready.load(Ordering::SeqCst) {
         return;
     }
     let store = match app.path().app_data_dir() {

@@ -268,11 +268,12 @@ pub fn run() {
 
             // Tray icon: the window can hide there and reminders keep ringing.
             app.manage(background::BackgroundState::default());
-            if let Err(e) = background::create_tray(app.handle()) {
+            let tray = background::create_tray(app.handle());
+            if let Err(e) = &tray {
                 // Without a tray, hiding would strand the window: closing quits.
                 tracing::error!("Tray icon unavailable: {e}");
             }
-            if background::started_in_background() {
+            if tray.is_ok() && background::started_in_background() {
                 if let Some(window) = app.get_webview_window(background::MAIN_WINDOW) {
                     if let Err(e) = window.hide() {
                         tracing::warn!("Could not start hidden: {e}");

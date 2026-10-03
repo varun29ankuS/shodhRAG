@@ -1239,6 +1239,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reminders_projects_and_locations_can_be_set_and_cleared() {
+        let t = testing::host().await;
+        let (ctx, _rx) = testing::ctx();
+        let created = CreateTaskTool {
+            host: t.host.clone(),
+        }
+        .execute(
+            json!({"title": "File ITR", "due": "2026-10-30", "reminder": "2026-10-29T09:00"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let id = created.detail.unwrap()["id"].as_str().unwrap().to_string();
+        let stored = store(&t.host).load().unwrap();
+        assert_eq!(
+            stored.task(&id).unwrap().reminder.as_deref(),
+            Some("2026-10-29T09:00")
+        );
+        let bad = CreateTaskTool {
+            host: t.host.clone(),
+        }
+        .execute(json!({"title": "x", "reminder": "2026-10-29"}), &ctx)
+        .await;
+        assert!(
+            matches!(bad, Err(ToolError::InvalidArguments { .. })),
+            "a reminder needs a time"
+        );
+
+        let update = UpdateTaskTool {
+            host: t.host.clone(),
+        };
+        update
+            .execute(json!({"task_id": id, "project": "Tax"}), &ctx)
+            .await
+            .unwrap();
+        let preview = update
+            .preview(&json!({"task_id": id, "project": null, "reminder": null}))
+            .await
+            .unwrap();
+        let fields: Vec<&str> = preview.details["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["field"].as_str().unwrap())
+            .collect();
+        assert_eq!(fields, vec!["project", "reminder"]);
+        update
+            .execute(
+                json!({"task_id": id, "project": null, "reminder": null}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let task = store(&t.host).load().unwrap().task(&id).unwrap().clone();
+        assert_eq!(task.project, None);
+        assert_eq!(task.reminder, None);
+
+        let event = CreateEventTool {
+            host: t.host.clone(),
+        }
+        .execute(
+            json!({"title": "Review", "start": "2026-10-15T10:00", "location": "Room 4B"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let event_id = event.detail.unwrap()["id"].as_str().unwrap().to_string();
+        let listed = ListEventsTool {
+            host: t.host.clone(),
+        }
+        .execute(json!({"text": "room 4b"}), &ctx)
+        .await
+        .unwrap();
+        assert!(listed.text_for_model.contains("Room 4B"));
+        UpdateEventTool {
+            host: t.host.clone(),
+        }
+        .execute(json!({"event_id": event_id, "location": null}), &ctx)
+        .await
+        .unwrap();
+        assert_eq!(
+            store(&t.host)
+                .load()
+                .unwrap()
+                .event(&event_id)
+                .unwrap()
+                .location,
+            None
+        );
+    }
+
+    #[tokio::test]
     async fn show_calendar_checks_ids_and_navigates_to_the_due_date() {
         let t = testing::host().await;
         let id = create(&t, "Renew lease", "2026-11-05T17:00").await;

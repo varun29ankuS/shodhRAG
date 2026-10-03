@@ -216,6 +216,61 @@ fn passage_entry(passage: &Value) -> Value {
     Value::Object(entry)
 }
 
+/// Who started a source change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeOrigin {
+    /// The user, through the app's UI.
+    Ui,
+    /// The agent, after the user's approval where the tool needs one.
+    Agent,
+}
+
+impl ChangeOrigin {
+    fn as_str(self) -> &'static str {
+        match self {
+            ChangeOrigin::Ui => "ui",
+            ChangeOrigin::Agent => "agent",
+        }
+    }
+}
+
+/// `source_change` payload. `action` is e.g. `index_folder`, `add_file`,
+/// `reindex`, `remove`, `clear_all`.
+pub fn source_change(
+    action: &str,
+    origin: ChangeOrigin,
+    source_id: Option<&str>,
+    path: Option<&str>,
+    details: Value,
+) -> Value {
+    let mut payload = json!({
+        "action": action,
+        "via": origin.as_str(),
+        "source_id": source_id,
+        "path": path,
+    });
+    if let (Value::Object(map), Value::Object(extra)) = (&mut payload, details) {
+        map.extend(extra);
+    }
+    payload
+}
+
+/// Outcome fields of an indexing job for a `source_change` payload.
+pub fn indexing_outcome<E: std::fmt::Display>(
+    result: &Result<crate::indexing::IndexingResult, E>,
+) -> Value {
+    match result {
+        Ok(r) => json!({
+            "ok": true,
+            "files": r.files_processed,
+            "chunks": r.total_chunks,
+            "failed_files": r.failed_files.len(),
+            "duration_ms": r.duration,
+        }),
+        Err(e) => json!({"ok": false, "error": truncate(&e.to_string(), 500)}),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,6 +341,22 @@ mod tests {
         assert_eq!(open["location"], "page 4 of 9");
         assert!(retrieval("list_sources", &json!({}), Some(&json!({}))).is_none());
         assert!(retrieval(SEARCH_DOCUMENTS, &json!({}), None).is_none());
+    }
+
+    #[test]
+    fn source_changes_merge_details() {
+        let p = source_change(
+            "remove",
+            ChangeOrigin::Agent,
+            Some("s1"),
+            Some("c:/docs"),
+            json!({"ok": true, "chunks": 12}),
+        );
+        assert_eq!(p["action"], "remove");
+        assert_eq!(p["via"], "agent");
+        assert_eq!(p["chunks"], 12);
+        let failed: Result<crate::indexing::IndexingResult, String> = Err("disk full".into());
+        assert_eq!(indexing_outcome(&failed)["ok"], false);
     }
 
     #[test]

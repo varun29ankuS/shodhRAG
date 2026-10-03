@@ -6,6 +6,11 @@ use std::io::Write;
 use std::path::Path;
 use tauri::State;
 
+use crate::audit_commands::AuditState;
+use serde_json::json;
+use shodh_rag::audit::payload::{source_change, ChangeOrigin};
+use shodh_rag::audit::{AuditEventType, AuditRecord};
+
 /// Clear all data from the database and reset to fresh state
 #[tauri::command]
 pub async fn reset_database(state: State<'_, RagState>) -> Result<String, String> {
@@ -43,8 +48,7 @@ pub async fn reset_database(state: State<'_, RagState>) -> Result<String, String
 }
 
 /// Clear all documents from the database but keep spaces
-#[tauri::command]
-pub async fn clear_all_documents(state: State<'_, RagState>) -> Result<String, String> {
+async fn clear_all_documents_inner(state: State<'_, RagState>) -> Result<String, String> {
     tracing::info!("=== Clearing all documents ===");
 
     let mut rag_guard = state.rag.write().await;
@@ -413,4 +417,22 @@ pub struct BackupFileInfo {
     pub file_path: String,
     pub size_bytes: u64,
     pub created_at: u64,
+}
+
+/// Clear every document from the index (audited).
+#[tauri::command]
+pub async fn clear_all_documents(
+    state: State<'_, RagState>,
+    audit: State<'_, AuditState>,
+) -> Result<String, String> {
+    let result = clear_all_documents_inner(state).await;
+    let outcome = match &result {
+        Ok(_) => json!({"ok": true}),
+        Err(e) => json!({"ok": false, "error": e}),
+    };
+    audit.record(AuditRecord::new(
+        AuditEventType::SourceChange,
+        source_change("clear_all", ChangeOrigin::Ui, None, None, outcome),
+    ));
+    result
 }

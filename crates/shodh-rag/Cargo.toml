@@ -77,6 +77,8 @@ dirs = "5"
 
 [features]
 default = []
+# Report dead code, unused variables and imports (see lib.rs).
+strict = []
 # Encrypt the audit database with SQLCipher (key from the OS keychain).
 sqlcipher = ["rusqlite/bundled-sqlcipher-vendored-openssl"]
 

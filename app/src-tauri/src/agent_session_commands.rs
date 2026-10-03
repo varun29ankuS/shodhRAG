@@ -14,6 +14,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use shodh_rag::audit::{AuditEventType, AuditRecord, RunAuditTap};
 use shodh_rag::harness::model::EnvValue;
 use shodh_rag::harness::profile::is_valid_slug;
 use shodh_rag::harness::tools::ToolRegistry;
@@ -27,6 +29,7 @@ use tokio::sync::{Mutex as AsyncMutex, OnceCell};
 
 use crate::agent_tools::build_registry;
 use crate::api_key_store;
+use crate::audit_commands::AuditState;
 use crate::llm_commands::LLMState;
 use crate::rag_commands::RagState;
 
@@ -47,6 +50,9 @@ const MAX_INSTRUCTIONS_CHARS: usize = 4_000;
 /// Earlier turns replayed into a fresh session (e.g. after a restart).
 const MAX_HISTORY_TURNS: usize = 10;
 const MAX_HISTORY_TURN_CHARS: usize = 2_000;
+
+/// Longest question text stored in the audit log.
+const MAX_AUDIT_QUESTION_CHARS: usize = 8_000;
 
 /// Minimum interval between runtime download progress events.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(200);
@@ -378,6 +384,7 @@ async fn resolve_key(llm: &LLMState, mode: &LLMMode) -> Option<String> {
 /// `instructions` are the conversation's custom instructions; a change
 /// restarts the session with the new system prompt.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri injects each managed state as an argument.
 pub async fn agent_start(
     app: AppHandle,
     conversation_id: String,
@@ -386,6 +393,7 @@ pub async fn agent_start(
     sessions: State<'_, AgentSessions>,
     rag: State<'_, RagState>,
     llm: State<'_, LLMState>,
+    audit: State<'_, AuditState>,
 ) -> CommandResult<String> {
     let started = Instant::now();
     check_id("conversation id", &conversation_id)?;
@@ -482,10 +490,12 @@ pub async fn agent_start(
         session_id: session_id.clone(),
     };
 
+    let tool_audit = audit.tool_audit(&conversation_id, &profile_id);
     let (session, mut events) = OmpSession::start(SessionConfig {
         launch,
         profile,
         registry,
+        audit: tool_audit.clone(),
     })
     .await?;
     let session = Arc::new(session);
@@ -493,7 +503,16 @@ pub async fn agent_start(
     let forward_app = app.clone();
     let forward_id = session_id.clone();
     tauri::async_runtime::spawn(async move {
+        // Builds each run's `answer` audit event from the stream.
+        let mut tap = RunAuditTap::new();
         while let Some(event) = events.recv().await {
+            if let (Some(answer), Some(audit)) = (tap.observe(&event), &tool_audit) {
+                audit.log.submit(audit.scope.record(
+                    &answer.run_id,
+                    AuditEventType::Answer,
+                    answer.payload,
+                ));
+            }
             let envelope = AgentEventEnvelope {
                 session_id: forward_id.clone(),
                 event,
@@ -540,6 +559,7 @@ pub async fn agent_send(
     request_id: String,
     history: Option<Vec<HistoryTurn>>,
     sessions: State<'_, AgentSessions>,
+    audit: State<'_, AuditState>,
 ) -> CommandResult<String> {
     check_id("request id", &request_id)?;
     let entry = sessions.entry(&session_id)?;
@@ -548,13 +568,44 @@ pub async fn agent_send(
     if text.trim().starts_with('/') {
         return Err(HarnessError::SlashCommand.into());
     }
+    let replay = !entry.primed.load(Ordering::SeqCst);
     let message = match &history {
-        Some(history) if !entry.primed.load(Ordering::SeqCst) => with_history(&text, history),
-        _ => text,
+        Some(history) if replay => with_history(&text, history),
+        _ => text.clone(),
     };
     let run_id = entry.session.prompt(&message, Some(request_id)).await?;
     entry.primed.store(true, Ordering::SeqCst);
+    audit.record(question_record(
+        &entry,
+        &run_id,
+        &text,
+        false,
+        replay && history.as_ref().is_some_and(|h| !h.is_empty()),
+    ));
     Ok(run_id)
+}
+
+/// The `question` audit event: the user's own words (never the replayed
+/// history preamble), with the conversation, profile and model.
+fn question_record(
+    entry: &SessionEntry,
+    run_id: &str,
+    text: &str,
+    steer: bool,
+    history_replayed: bool,
+) -> AuditRecord {
+    AuditRecord::new(
+        AuditEventType::Question,
+        json!({
+            "text": truncate(text.trim(), MAX_AUDIT_QUESTION_CHARS),
+            "model": entry.session.model(),
+            "steer": steer,
+            "history_replayed": history_replayed,
+        }),
+    )
+    .conversation(entry.conversation_id.clone())
+    .profile(entry.profile_id.clone())
+    .run(run_id.to_string())
 }
 
 /// Redirect the running answer (starts a new run when idle). Returns the run id.
@@ -563,9 +614,13 @@ pub async fn agent_steer(
     session_id: String,
     text: String,
     sessions: State<'_, AgentSessions>,
+    audit: State<'_, AuditState>,
 ) -> CommandResult<String> {
-    let session = sessions.get(&session_id)?;
-    Ok(session.steer(&text).await?)
+    let entry = sessions.entry(&session_id)?;
+    entry.touch();
+    let run_id = entry.session.steer(&text).await?;
+    audit.record(question_record(&entry, &run_id, &text, true, false));
+    Ok(run_id)
 }
 
 /// Interrupt the running answer.
@@ -641,6 +696,7 @@ struct RuntimeProgress {
 pub async fn agent_install_runtime(
     app: AppHandle,
     sessions: State<'_, AgentSessions>,
+    audit: State<'_, AuditState>,
 ) -> CommandResult<RuntimeInstall> {
     let _guard = sessions.install_lock.lock().await;
     let dir = app_data_dir(&app)?;
@@ -658,7 +714,26 @@ pub async fn agent_install_runtime(
             tracing::debug!(target: "shodh::harness", error = %e, "emitting runtime progress failed");
         }
     };
-    let installed = fetch_omp(&dir, &progress).await?;
+    let installed = match fetch_omp(&dir, &progress).await {
+        Ok(installed) => installed,
+        Err(e) => {
+            // A checksum mismatch is the most security-relevant outcome here.
+            audit.record(AuditRecord::new(
+                AuditEventType::RuntimeInstall,
+                json!({"version": OMP_VERSION, "ok": false, "error": e.to_string()}),
+            ));
+            return Err(e.into());
+        }
+    };
+    audit.record(AuditRecord::new(
+        AuditEventType::RuntimeInstall,
+        json!({
+            "version": OMP_VERSION,
+            "ok": true,
+            "sha256": installed.sha256,
+            "path": installed.path.display().to_string(),
+        }),
+    ));
     Ok(RuntimeInstall {
         path: installed.path.display().to_string(),
         version: OMP_VERSION,

@@ -1,6 +1,7 @@
 mod analytics_commands;
 mod answer_validator;
 mod api_key_store;
+mod audit_commands;
 mod chat_history;
 mod context_commands;
 mod database_commands;
@@ -142,6 +143,11 @@ pub fn run() {
             }
 
             tracing::info!("App data directory: {:?}", app_data_dir);
+
+            // Audit log first, so every later event can be recorded.
+            let audit_state = audit_commands::AuditState::open(&app_data_dir);
+            audit_state.spawn_retention();
+            app.manage(audit_state);
 
             // Resolve model directory with multi-tier fallback for portability
             let model_dir = resolve_model_dir(&app_data_dir);
@@ -552,6 +558,11 @@ pub fn run() {
             agent_session_commands::agent_abort,
             agent_session_commands::agent_approve,
             agent_session_commands::agent_install_runtime,
+            audit_commands::audit_query,
+            audit_commands::audit_verify,
+            audit_commands::audit_export,
+            audit_commands::audit_set_retention_days,
+            audit_commands::audit_stats,
             agent_session_commands::agent_runtime_status,
             // Conversation persistence commands
             conversation_commands::load_conversations,

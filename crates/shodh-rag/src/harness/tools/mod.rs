@@ -175,8 +175,9 @@ impl ToolContext {
         self
     }
 
-    /// Queue an audit event for this call's run (no-op without an audit log).
-    fn audit(&self, event_type: AuditEventType, payload: Value) {
+    /// Queue an audit event for this call's run, in the session's scope
+    /// (no-op without an audit log). Never blocks.
+    pub fn audit(&self, event_type: AuditEventType, payload: Value) {
         if let Some(audit) = &self.audit {
             audit
                 .log

@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { notify } from '../lib/notify';
+import { markStartup } from '../lib/startupTiming';
 
 export interface ConversationMessage {
   id: string;
@@ -57,6 +58,7 @@ export function useConversations() {
 
     invoke<Conversation[]>('load_conversations')
       .then((loaded) => {
+        markStartup('conversations-loaded');
         if (loaded.length > 0) {
           setConversations(loaded);
           setActiveConversationId(loaded[0].id);
@@ -77,6 +79,7 @@ export function useConversations() {
         }
       })
       .catch((err) => {
+        markStartup('conversations-loaded');
         console.error('Failed to load conversations:', err);
         const id = generateId();
         const now = new Date().toISOString();

@@ -12,7 +12,11 @@ import { SidebarProvider } from "./contexts/SidebarContext";
 import { SearchModelsProvider } from "./features/setup/SearchModelsContext";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { Toaster } from "sonner";
+import { MotionConfig } from "framer-motion";
 import { initErrorReporting } from "./lib/errorReporting";
+import { markStartup } from "./lib/startupTiming";
+
+markStartup("modules-evaluated");
 
 initErrorReporting();
 
@@ -58,19 +62,22 @@ function ThemedToaster() {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <ErrorBoundary>
-      <ThemeProvider>
-        <SidebarProvider>
-          {Component === App ? (
-            <SearchModelsProvider>
-              <App />
-            </SearchModelsProvider>
-          ) : (
-            <Component />
-          )}
-          <ThemedToaster />
-        </SidebarProvider>
-      </ThemeProvider>
-    </ErrorBoundary>
+    {/* Every framer-motion animation follows prefers-reduced-motion. */}
+    <MotionConfig reducedMotion="user">
+      <ErrorBoundary>
+        <ThemeProvider>
+          <SidebarProvider>
+            {Component === App ? (
+              <SearchModelsProvider>
+                <App />
+              </SearchModelsProvider>
+            ) : (
+              <Component />
+            )}
+            <ThemedToaster />
+          </SidebarProvider>
+        </ThemeProvider>
+      </ErrorBoundary>
+    </MotionConfig>
   </React.StrictMode>,
 );

@@ -71,6 +71,10 @@ export interface AskViewProps {
   /** A file is being dragged over the window. */
   isDraggingFile?: boolean;
   dropHandlers?: Pick<React.HTMLAttributes<HTMLElement>, 'onDrop' | 'onDragOver' | 'onDragEnter' | 'onDragLeave'>;
+  /** Text another view wants in the composer; applied once per `seq`. */
+  draftRequest?: { text: string; seq: number } | null;
+  /** The draft request was placed in the composer. */
+  onDraftApplied?: () => void;
 }
 
 interface PreviewTarget {
@@ -339,7 +343,7 @@ function SystemNotice({ message }: { message: ChatMessage }) {
  * (centered 700px column) with a floating composer and a source preview
  * slide-over.
  */
-export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggingFile = false, dropHandlers }: AskViewProps) {
+export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggingFile = false, dropHandlers, draftRequest = null, onDraftApplied }: AskViewProps) {
   const { theme } = useTheme();
   const session = useChatSession();
   const { messages, isStreaming, streamingConversationId, send, retry, cancel, steer, approve, runtimeInstalled, setRuntimeInstalled, updateMessage } = session;
@@ -449,6 +453,15 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     setDraft(prompt);
     composerRef.current?.focus();
   }, []);
+
+  // e.g. "Ask about this file" from the Library: prefill, then let the user finish the question.
+  const appliedDraftSeq = useRef(0);
+  useEffect(() => {
+    if (!draftRequest || draftRequest.seq === appliedDraftSeq.current) return;
+    appliedDraftSeq.current = draftRequest.seq;
+    applyStarter(draftRequest.text);
+    onDraftApplied?.();
+  }, [draftRequest, applyStarter, onDraftApplied]);
 
   const openSource = useCallback((messageId: string, hit: SearchHit, trigger: HTMLElement) => {
     previewTriggerRef.current = trigger;

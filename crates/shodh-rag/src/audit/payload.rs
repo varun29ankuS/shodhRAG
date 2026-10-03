@@ -75,11 +75,14 @@ pub fn model_switch(mode: &LLMMode) -> Value {
                 "cloud": is_cloud(id),
             })
         }
-        LLMMode::Local { model, .. } => json!({
+        // The file name only: the full path can contain the user's name.
+        LLMMode::Local { model_path } => json!({
             "action": "model_switch",
             "mode": "local",
             "provider": "local",
-            "model": model.model_id(),
+            "model": model_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned()),
             "cloud": false,
         }),
         LLMMode::Disabled => json!({
@@ -274,7 +277,6 @@ pub fn indexing_outcome<E: std::fmt::Display>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::{DeviceType, LocalModel, QuantizationType};
 
     #[test]
     fn model_switch_never_includes_the_key() {
@@ -299,18 +301,18 @@ mod tests {
         assert!(!custom.to_string().contains(sentinel));
 
         let local = model_switch(&LLMMode::Local {
-            model: LocalModel::Phi3Mini,
-            device: DeviceType::Cpu,
-            quantization: QuantizationType::Q4,
+            model_path: std::path::PathBuf::from("C:/Users/someone/models/qwen3-4b-q4_k_m.gguf"),
         });
         assert_eq!(local["cloud"], false);
+        assert_eq!(local["model"], "qwen3-4b-q4_k_m.gguf");
+        assert!(!local.to_string().contains("someone"));
     }
 
     #[test]
     fn cloud_detection() {
         assert!(is_cloud("anthropic/claude-x"));
         assert!(is_cloud("openai"));
-        assert!(!is_cloud("ollama/phi3"));
+        assert!(!is_cloud("ollama/qwen3:4b"));
         assert!(!is_cloud(""));
     }
 

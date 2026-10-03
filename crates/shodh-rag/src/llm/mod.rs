@@ -1,52 +1,33 @@
-//! LLM Module - Hybrid local/external language model support
-//! Supports both local models (via Candle) and external APIs
+//! LLM module: local GGUF inference (llama.cpp) and external API providers.
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::fmt;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
-// Hybrid LLM implementation - llama.cpp for CPU, ONNX Runtime GenAI for GPU
-pub mod bpe_tokenizer;
-pub mod download_tokenizers;
 pub mod external;
-pub mod genai_provider; // ONNX Runtime GenAI provider (GPU optimized)
-pub mod gqa_cache;
-pub mod hf_tokenizer;
-pub mod llamacpp_provider; // llama.cpp provider (CPU with KV caching)
-pub mod local;
-pub mod model_config;
-pub mod model_manager;
-pub mod onnx_llm;
-pub mod onnx_llm_production;
-pub mod onnxruntime_genai; // Safe Rust wrappers
-pub mod onnxruntime_genai_sys; // Low-level FFI bindings
+pub mod llamacpp_provider; // llama.cpp provider (CPU, GGUF models)
 pub mod simple_external;
 pub mod streaming;
-pub mod tokenizer_loader;
 
 pub use external::ExternalProvider;
-pub use genai_provider::GenAIProvider;
 pub use llamacpp_provider::LlamaCppProvider;
-pub use local::LocalModelProvider;
-pub use model_manager::{ModelDownloader, ModelManager};
 pub use simple_external::SimpleExternalProvider;
 pub use streaming::{StreamingResponse, TokenStream};
 
 /// LLM operation mode
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum LLMMode {
-    /// Local model running in-process
-    Local {
-        model: LocalModel,
-        device: DeviceType,
-        quantization: QuantizationType,
-    },
+    /// Local GGUF model run in-process by llama.cpp.
+    Local { model_path: PathBuf },
     /// External API provider
     External {
         provider: ApiProvider,
+        /// Never serialized: keys live only in memory and the OS keychain.
+        #[serde(skip_serializing, default)]
         api_key: String,
         model: String,
     },
@@ -54,44 +35,34 @@ pub enum LLMMode {
     Disabled,
 }
 
-/// Supported local models
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum LocalModel {
-    Phi3Mini,                                  // Microsoft Phi-3 3.8B
-    Phi4,                                      // Microsoft Phi-4 14B - Latest model
-    Mistral7B,                                 // Mistral 7B Instruct
-    Orca2_7B,                                  // Microsoft Orca 2 7B
-    Qwen2_5B,                                  // Alibaba Qwen2 0.5B
-    Gemma2B,                                   // Google Gemma 2B
-    Sarvam1,                                   // Sarvam AI Sarvam-1 2B (Indic multilingual)
-    Custom { name: String, filename: String }, // Custom model
-}
-
-impl LocalModel {
-    pub fn model_id(&self) -> &str {
+impl LLMMode {
+    /// Stable mode name for the UI and logs: `local`, `external` or `disabled`.
+    pub fn kind(&self) -> &'static str {
         match self {
-            Self::Phi3Mini => "microsoft/Phi-3-mini-4k-instruct-onnx",
-            Self::Phi4 => "microsoft/phi-4",
-            Self::Mistral7B => "mistralai/Mistral-7B-Instruct-v0.2",
-            Self::Orca2_7B => "microsoft/Orca-2-7b",
-            Self::Qwen2_5B => "Qwen/Qwen2-0.5B-Instruct",
-            Self::Gemma2B => "google/gemma-2b",
-            Self::Sarvam1 => "sarvamai/sarvam-1",
-            Self::Custom { name, .. } => name,
+            LLMMode::Local { .. } => "local",
+            LLMMode::External { .. } => "external",
+            LLMMode::Disabled => "disabled",
         }
     }
+}
 
-    pub fn size_gb(&self) -> f32 {
+/// Redacts the API key: `LLMMode` is logged and shown in diagnostics.
+impl fmt::Debug for LLMMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            // int4 cpu ONNX weights (.onnx.data) are 2,722,861,056 bytes
-            Self::Phi3Mini => 2.54,
-            Self::Phi4 => 8.0,
-            Self::Mistral7B => 4.0,
-            Self::Orca2_7B => 4.0,
-            Self::Qwen2_5B => 1.5,
-            Self::Gemma2B => 1.0,
-            Self::Sarvam1 => 1.7,
-            Self::Custom { .. } => 2.0,
+            LLMMode::Local { model_path } => f
+                .debug_struct("Local")
+                .field("model_path", model_path)
+                .finish(),
+            LLMMode::External {
+                provider, model, ..
+            } => f
+                .debug_struct("External")
+                .field("provider", provider)
+                .field("api_key", &"[REDACTED]")
+                .field("model", model)
+                .finish(),
+            LLMMode::Disabled => f.write_str("Disabled"),
         }
     }
 }
@@ -111,24 +82,6 @@ pub enum ApiProvider {
     Ollama,
     HuggingFace { model_id: String },
     Custom { endpoint: String },
-}
-
-/// Device type for local models
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DeviceType {
-    Cpu,
-    Cuda(usize), // GPU index
-    Metal,       // Apple Silicon
-}
-
-/// Quantization type for model compression
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum QuantizationType {
-    F32,    // Full precision
-    F16,    // Half precision
-    Q8,     // 8-bit quantization
-    Q4,     // 4-bit quantization
-    Q4_K_M, // 4-bit with k-means
 }
 
 /// LLM configuration
@@ -401,208 +354,32 @@ pub struct MemoryUsage {
     pub model_size_mb: usize,
 }
 
-/// Hardware detection result
-#[derive(Debug, Clone)]
-pub struct HardwareInfo {
-    pub has_cuda: bool,
-    pub has_directml: bool,
-    pub has_metal: bool,
-    pub recommended_device: DeviceType,
-}
-
-impl HardwareInfo {
-    /// Auto-detect available hardware acceleration
-    pub fn detect() -> Self {
-        tracing::info!("Detecting available hardware acceleration");
-
-        // Check for NVIDIA GPU (CUDA)
-        let has_cuda = Self::check_cuda();
-
-        // Check for DirectML (Windows GPU - AMD/Intel/NVIDIA)
-        let has_directml = Self::check_directml();
-
-        // Check for Metal (Apple Silicon)
-        let has_metal = Self::check_metal();
-
-        // Determine recommended device
-        let recommended_device = if has_cuda {
-            tracing::info!("CUDA GPU detected");
-            DeviceType::Cuda(0)
-        } else if has_directml {
-            tracing::info!("DirectML GPU detected (Windows)");
-            DeviceType::Cpu // DirectML uses CPU enum but GPU inference
-        } else if has_metal {
-            tracing::info!("Metal GPU detected (Apple Silicon)");
-            DeviceType::Metal
-        } else {
-            tracing::info!("No GPU detected, will use CPU");
-            DeviceType::Cpu
-        };
-
-        HardwareInfo {
-            has_cuda,
-            has_directml,
-            has_metal,
-            recommended_device,
-        }
-    }
-
-    fn check_cuda() -> bool {
-        // Check for CUDA availability via environment or nvidia-smi
-        if std::env::var("CUDA_PATH").is_ok() || std::env::var("CUDA_HOME").is_ok() {
-            return true;
-        }
-
-        // Try running nvidia-smi
-        #[cfg(not(target_os = "windows"))]
-        let result = std::process::Command::new("nvidia-smi").output();
-        #[cfg(target_os = "windows")]
-        let result = std::process::Command::new("nvidia-smi.exe").output();
-
-        result.map(|o| o.status.success()).unwrap_or(false)
-    }
-
-    fn check_directml() -> bool {
-        // DirectML is available on Windows 10+ with any GPU
-        #[cfg(target_os = "windows")]
-        {
-            // Check Windows version (DirectML requires Windows 10 build 1903+)
-            return true; // Assume available on Windows
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            false
-        }
-    }
-
-    fn check_metal() -> bool {
-        // Metal is available on macOS with Apple Silicon
-        #[cfg(target_os = "macos")]
-        {
-            // Check for Apple Silicon (arm64)
-            #[cfg(target_arch = "aarch64")]
-            return true;
-            #[cfg(not(target_arch = "aarch64"))]
-            return false;
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            false
-        }
-    }
-}
-
 /// Main LLM manager
 pub struct LLMManager {
     config: LLMConfig,
     provider: Option<Box<dyn LLMProvider>>,
-    model_cache_dir: PathBuf,
 }
 
 impl LLMManager {
-    /// Auto-detect best hardware and create config
-    pub fn auto_config(mode: LLMMode) -> LLMConfig {
-        let hw_info = HardwareInfo::detect();
-        tracing::info!(
-            cuda = hw_info.has_cuda,
-            directml = hw_info.has_directml,
-            metal = hw_info.has_metal,
-            recommended = ?hw_info.recommended_device,
-            "Hardware summary"
-        );
-
-        LLMConfig {
-            mode,
-            ..Default::default()
-        }
-    }
-
     /// Create new LLM manager
     pub fn new(config: LLMConfig) -> Self {
         Self {
             config,
             provider: None,
-            model_cache_dir: PathBuf::from("./models"),
         }
     }
 
-    /// Create new LLM manager with custom cache directory
-    pub fn new_with_cache_dir(config: LLMConfig, cache_dir: PathBuf) -> Self {
-        Self {
-            config,
-            provider: None,
-            model_cache_dir: cache_dir,
-        }
-    }
-
-    /// Create new LLM manager with custom model and tokenizer paths
-    pub fn new_with_paths(
-        config: LLMConfig,
-        model_path: PathBuf,
-        tokenizer_path: Option<PathBuf>,
-    ) -> Self {
-        // Store tokenizer path in environment variable for ONNX provider to pick up
-        if let Some(tokenizer) = tokenizer_path {
-            std::env::set_var("ROSHERA_TOKENIZER_PATH", tokenizer);
-        }
-
-        Self {
-            config,
-            provider: None,
-            model_cache_dir: model_path,
-        }
-    }
-
-    /// Initialize the LLM provider with hybrid backend selection
+    /// Create the provider for the configured mode.
     pub async fn initialize(&mut self) -> Result<()> {
         match &self.config.mode {
-            LLMMode::Local {
-                model,
-                device,
-                quantization,
-            } => {
-                // HYBRID BACKEND SELECTION
-                // llama.cpp for CPU (has KV caching) + ONNX Runtime GenAI for GPU
-
-                let use_gpu = match device {
-                    DeviceType::Cpu => {
-                        tracing::info!("Device explicitly set to CPU, using llama.cpp");
-                        false
-                    }
-                    DeviceType::Cuda(_) => {
-                        tracing::info!(
-                            "Device explicitly set to CUDA GPU, using ONNX Runtime GenAI"
-                        );
-                        true
-                    }
-                    DeviceType::Metal => {
-                        tracing::info!("Device explicitly set to Metal, using ONNX Runtime GenAI");
-                        true
-                    }
-                };
-
-                // Create appropriate provider based on device
-                let provider: Box<dyn LLMProvider> = if use_gpu {
-                    // GPU path: Use ONNX Runtime GenAI (CUDA, DirectML, TensorRT)
-                    tracing::info!("Initializing ONNX Runtime GenAI for GPU acceleration");
-                    Box::new(GenAIProvider::new(
-                        model.clone(),
-                        device.clone(),
-                        quantization.clone(),
-                        &self.model_cache_dir,
-                    )?)
-                } else {
-                    // CPU path: Use llama.cpp (KV caching, prompt caching, SIMD)
-                    tracing::info!("Initializing llama.cpp for CPU with prompt caching");
-                    Box::new(LlamaCppProvider::new(
-                        model.clone(),
-                        device.clone(),
-                        quantization.clone(),
-                        &self.model_cache_dir,
-                    )?)
-                };
-
-                self.provider = Some(provider);
+            LLMMode::Local { model_path } => {
+                // llama.cpp loads and memory-maps the whole model; keep it off
+                // the async workers.
+                let path = model_path.clone();
+                let provider = tokio::task::spawn_blocking(move || LlamaCppProvider::new(&path))
+                    .await
+                    .map_err(|e| anyhow!("llama.cpp loader task failed: {e}"))??;
+                self.provider = Some(Box::new(provider));
                 Ok(())
             }
             LLMMode::External {
@@ -610,10 +387,8 @@ impl LLMManager {
                 api_key,
                 model,
             } => {
-                // Create simple external provider for better reliability
                 let provider =
                     SimpleExternalProvider::new(provider.clone(), api_key.clone(), model.clone())?;
-
                 self.provider = Some(Box::new(provider));
                 Ok(())
             }
@@ -622,6 +397,11 @@ impl LLMManager {
                 Ok(())
             }
         }
+    }
+
+    /// The active configuration.
+    pub fn config(&self) -> &LLMConfig {
+        &self.config
     }
 
     /// Switch to a different mode
@@ -913,11 +693,24 @@ mod tests {
     }
 
     #[test]
-    fn test_local_model_info() {
-        let model = LocalModel::Phi3Mini;
-        // model_id doubles as the on-disk cache directory name for the ONNX repo
-        assert_eq!(model.model_id(), "microsoft/Phi-3-mini-4k-instruct-onnx");
-        // size_gb is the download size in GiB (int4 weights), not the 3.8B parameter count
-        assert_eq!(model.size_gb(), 2.54);
+    fn debug_output_redacts_the_api_key() {
+        let mode = LLMMode::External {
+            provider: ApiProvider::OpenRouter,
+            api_key: "sk-or-secret".to_string(),
+            model: "m".to_string(),
+        };
+        let rendered = format!("{mode:?}");
+        assert!(!rendered.contains("sk-or-secret"));
+        assert!(rendered.contains("[REDACTED]"));
+        let json = serde_json::to_string(&mode).unwrap();
+        assert!(!json.contains("sk-or-secret"));
+        assert_eq!(mode.kind(), "external");
+        assert_eq!(
+            LLMMode::Local {
+                model_path: PathBuf::from("m.gguf")
+            }
+            .kind(),
+            "local"
+        );
     }
 }

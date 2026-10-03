@@ -48,7 +48,7 @@ use llm_commands::{ApiKeys, LLMState};
 use mcp_commands::MCPState;
 use rag_commands::{AppPaths, RagState};
 use search_history::SearchHistoryManager;
-use shodh_rag::llm::{LLMConfig, ModelManager};
+use shodh_rag::llm::LLMConfig;
 use space_manager::SpaceManager;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -187,12 +187,9 @@ pub fn run() {
 
             app.manage(LLMState {
                 manager: shared_llm_manager.clone(),
-                model_manager: Arc::new(ModelManager::new(model_dir.clone())),
                 config: Arc::new(Mutex::new(LLMConfig::default())),
                 api_keys: Arc::new(Mutex::new(ApiKeys::default())),
                 custom_model_path: Arc::new(Mutex::new(None)),
-                custom_tokenizer_path: Arc::new(Mutex::new(None)),
-                model_dir: Arc::new(model_dir.clone()),
             });
 
             // Load provider API keys saved in the OS credential store, then
@@ -436,7 +433,6 @@ pub fn run() {
             file_watcher::stop_watching_folder,
             file_watcher::get_watched_folders,
             // LLM commands
-            llm_commands::initialize_llm,
             llm_commands::switch_llm_mode,
             llm_commands::llm_generate,
             llm_commands::llm_generate_stream,
@@ -445,17 +441,11 @@ pub fn run() {
             llm_commands::set_api_key,
             llm_commands::delete_api_key,
             llm_commands::get_configured_providers,
-            llm_commands::is_model_cached,
-            llm_commands::download_model,
-            llm_commands::get_model_cache_info,
-            llm_commands::delete_cached_model,
             llm_commands::update_llm_config,
             llm_commands::browse_model_file,
-            llm_commands::browse_tokenizer_file,
             llm_commands::set_custom_model_path,
-            llm_commands::set_custom_tokenizer_path,
-            llm_commands::initialize_llm_with_custom_path,
             llm_commands::get_custom_model_path,
+            llm_commands::test_llm_inference,
             // Space commands
             space_commands::create_space,
             space_commands::get_spaces,

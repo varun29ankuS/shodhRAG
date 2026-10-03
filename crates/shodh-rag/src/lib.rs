@@ -42,8 +42,7 @@ pub mod comprehensive_system {
 
 // Re-export LLM types
 pub use llm::{
-    ApiProvider, DeviceType, GenerationConfig, LLMConfig, LLMManager, LLMMode, LocalModel,
-    MemoryUsage, ModelManager, ProviderInfo, QuantizationType,
+    ApiProvider, GenerationConfig, LLMConfig, LLMManager, LLMMode, MemoryUsage, ProviderInfo,
 };
 
 // Re-export common types

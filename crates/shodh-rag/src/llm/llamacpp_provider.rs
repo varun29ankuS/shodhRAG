@@ -6,7 +6,7 @@
 
 use anyhow::{anyhow, Context as AnyhowContext, Result};
 use async_trait::async_trait;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -19,10 +19,7 @@ use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
 
 use super::streaming::TokenStream;
-use super::{
-    DeviceType, GenerationConfig, LLMProvider, LocalModel, MemoryUsage, ProviderInfo,
-    QuantizationType,
-};
+use super::{GenerationConfig, LLMProvider, MemoryUsage, ProviderInfo};
 
 /// Information about the loaded model for metadata/info reporting.
 struct ModelInfo {
@@ -43,41 +40,50 @@ unsafe impl Send for LlamaCppProvider {}
 unsafe impl Sync for LlamaCppProvider {}
 
 impl LlamaCppProvider {
-    pub fn new(
-        model_variant: LocalModel,
-        _device: DeviceType,
-        _quantization: QuantizationType,
-        cache_dir: &Path,
-    ) -> Result<Self> {
-        // Initialize the llama.cpp backend
+    /// Load the GGUF model at `model_path` (any llama.cpp-compatible model,
+    /// e.g. Qwen3, Gemma 3 or Llama 3.2 quantised to Q4_K_M).
+    pub fn new(model_path: &Path) -> Result<Self> {
+        if !model_path.is_file() {
+            return Err(anyhow!(
+                "GGUF model file not found: {}",
+                model_path.display()
+            ));
+        }
+        let is_gguf = model_path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("gguf"));
+        if !is_gguf {
+            return Err(anyhow!(
+                "Not a GGUF model file: {} (llama.cpp loads .gguf files)",
+                model_path.display()
+            ));
+        }
+
         let backend = LlamaBackend::init().context("Failed to initialize llama.cpp backend")?;
 
-        // Resolve the GGUF file path
-        let gguf_path = Self::resolve_model_path(&model_variant, cache_dir)?;
+        tracing::info!(path = %model_path.display(), "Loading GGUF model via llama.cpp");
 
-        tracing::info!(
-            model = %model_variant.model_id(),
-            path = %gguf_path.display(),
-            "Loading GGUF model via llama.cpp"
-        );
-
-        // Configure model params — CPU only, no GPU offload
+        // CPU inference; no GPU offload.
         let model_params = LlamaModelParams::default();
-
-        // Load the model
         let model =
-            LlamaModel::load_from_file(&backend, &gguf_path, &model_params).map_err(|e| {
+            LlamaModel::load_from_file(&backend, model_path, &model_params).map_err(|e| {
                 anyhow!(
                     "Failed to load GGUF model from {}: {:?}",
-                    gguf_path.display(),
+                    model_path.display(),
                     e
                 )
             })?;
 
+        let size_mb = std::fs::metadata(model_path)
+            .map(|m| usize::try_from(m.len() / (1024 * 1024)).unwrap_or(usize::MAX))
+            .unwrap_or(0);
         let info = ModelInfo {
-            name: Self::model_display_name(&model_variant),
-            context_window: Self::model_context_window(&model_variant),
-            size_mb: (model_variant.size_gb() * 1024.0) as usize,
+            name: model_path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "GGUF model".to_string()),
+            context_window: model.n_ctx_train() as usize,
+            size_mb,
         };
 
         tracing::info!(
@@ -91,92 +97,6 @@ impl LlamaCppProvider {
             backend: Arc::new(backend),
             info,
         })
-    }
-
-    /// Resolve GGUF file path from LocalModel variant and cache directory.
-    fn resolve_model_path(model: &LocalModel, cache_dir: &Path) -> Result<PathBuf> {
-        // If cache_dir itself is a GGUF file, use it directly
-        if cache_dir.is_file() && cache_dir.extension().map(|e| e == "gguf").unwrap_or(false) {
-            return Ok(cache_dir.to_path_buf());
-        }
-
-        let filename = Self::model_filename(model);
-        let path = cache_dir.join(&filename);
-
-        if path.exists() {
-            return Ok(path);
-        }
-
-        // Try parent directory (models might be one level up from cache_dir)
-        if let Some(parent) = cache_dir.parent() {
-            let parent_path = parent.join(&filename);
-            if parent_path.exists() {
-                return Ok(parent_path);
-            }
-        }
-
-        // Search for any GGUF file in the directory as fallback
-        if cache_dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(cache_dir) {
-                for entry in entries.flatten() {
-                    let p = entry.path();
-                    if p.extension().map(|e| e == "gguf").unwrap_or(false) {
-                        tracing::warn!(
-                            expected = %filename,
-                            found = %p.display(),
-                            "Expected model not found, using first GGUF file in directory"
-                        );
-                        return Ok(p);
-                    }
-                }
-            }
-        }
-
-        Err(anyhow!(
-            "GGUF model file not found. Expected '{}' in {}",
-            filename,
-            cache_dir.display()
-        ))
-    }
-
-    /// Map LocalModel enum to actual GGUF filename on disk.
-    fn model_filename(model: &LocalModel) -> String {
-        match model {
-            LocalModel::Phi3Mini => "Phi-3-mini-128k-instruct.Q4_K_M.gguf".to_string(),
-            LocalModel::Phi4 => "phi-4.Q4_K_M.gguf".to_string(),
-            LocalModel::Mistral7B => "mistral-7b-instruct-v0.2.Q4_K_M.gguf".to_string(),
-            LocalModel::Orca2_7B => "orca-2-7b.Q4_K_M.gguf".to_string(),
-            LocalModel::Qwen2_5B => "qwen2.5-1.5b-instruct-q4_k_m.gguf".to_string(),
-            LocalModel::Gemma2B => "gemma-2b.Q4_K_M.gguf".to_string(),
-            LocalModel::Sarvam1 => "sarvam-1.Q5_K_M.gguf".to_string(),
-            LocalModel::Custom { filename, .. } => filename.clone(),
-        }
-    }
-
-    fn model_display_name(model: &LocalModel) -> String {
-        match model {
-            LocalModel::Phi3Mini => "Phi-3 Mini 128K (Q4_K_M)".to_string(),
-            LocalModel::Phi4 => "Phi-4 (Q4_K_M)".to_string(),
-            LocalModel::Mistral7B => "Mistral 7B Instruct (Q4_K_M)".to_string(),
-            LocalModel::Orca2_7B => "Orca 2 7B (Q4_K_M)".to_string(),
-            LocalModel::Qwen2_5B => "Qwen 2.5 1.5B Instruct (Q4_K_M)".to_string(),
-            LocalModel::Gemma2B => "Gemma 2B (Q4_K_M)".to_string(),
-            LocalModel::Sarvam1 => "Sarvam-1 2B Indic (Q5_K_M)".to_string(),
-            LocalModel::Custom { name, .. } => name.clone(),
-        }
-    }
-
-    fn model_context_window(model: &LocalModel) -> usize {
-        match model {
-            LocalModel::Phi3Mini => 131072, // 128K context
-            LocalModel::Phi4 => 16384,
-            LocalModel::Mistral7B => 8192,
-            LocalModel::Orca2_7B => 4096,
-            LocalModel::Qwen2_5B => 32768,
-            LocalModel::Gemma2B => 8192,
-            LocalModel::Sarvam1 => 4096,
-            LocalModel::Custom { .. } => 8192,
-        }
     }
 
     /// Run synchronous inference. Called from both `generate()` and `generate_stream()`.

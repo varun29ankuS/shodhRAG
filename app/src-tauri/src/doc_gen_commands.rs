@@ -56,7 +56,7 @@ fn get_provider_max_tokens(llm_mode: &LLMMode) -> usize {
             ApiProvider::HuggingFace { .. } => 4_096, // HuggingFace varies by model
             ApiProvider::Custom { .. } => 8_192, // Custom endpoints, conservative default
         },
-        LLMMode::Local { .. } => 4_096, // Local ONNX models are architecturally limited
+        LLMMode::Local { .. } => 4_096, // llama.cpp runs with a 4K context (llamacpp_provider)
         LLMMode::Disabled => 4_096,
     }
 }

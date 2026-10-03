@@ -240,7 +240,6 @@ pub fn select_model_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::{DeviceType, LocalModel, QuantizationType};
 
     fn external(provider: ApiProvider, key: &str, model: &str) -> LLMMode {
         LLMMode::External {
@@ -318,9 +317,7 @@ mod tests {
             Err(HarnessError::LlmDisabled)
         ));
         let local = LLMMode::Local {
-            model: LocalModel::Phi3Mini,
-            device: DeviceType::Cpu,
-            quantization: QuantizationType::Q4,
+            model_path: std::path::PathBuf::from("model.gguf"),
         };
         assert!(matches!(
             select_model(&local, |_| None),

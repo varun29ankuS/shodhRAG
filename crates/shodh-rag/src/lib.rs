@@ -28,7 +28,7 @@ pub mod system;
 
 // Re-export primary types for convenience
 pub use config::RAGConfig;
-pub use rag_engine::RAGEngine;
+pub use rag_engine::{RAGEngine, SearchModels};
 pub use types::{
     Citation, ComprehensiveResult, DocumentFormat, MetadataFilter, SimpleSearchResult,
 };
@@ -42,8 +42,7 @@ pub mod comprehensive_system {
 
 // Re-export LLM types
 pub use llm::{
-    ApiProvider, DeviceType, GenerationConfig, LLMConfig, LLMManager, LLMMode, LocalModel,
-    MemoryUsage, ModelManager, ProviderInfo, QuantizationType,
+    ApiProvider, GenerationConfig, LLMConfig, LLMManager, LLMMode, MemoryUsage, ProviderInfo,
 };
 
 // Re-export common types

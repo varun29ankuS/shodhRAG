@@ -88,9 +88,9 @@ Each item below has a section in the [design spec](docs/superpowers/specs/2026-1
   - **Windows:** [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) and `protoc` (`choco install protoc`).
   - **macOS:** `xcode-select --install`
   - **Linux:** `sudo apt install build-essential libssl-dev libwebkit2gtk-4.1-dev protobuf-compiler`
-- Embedding and reranker models in `models/` at the repository root:
+- Search models (≈600 MB): on first run the app shows **Set up search** in Ask and Library and downloads the pinned, SHA-256-verified files itself. Debug builds install them into `models/` at the root of the checkout; release builds use `<app data>/models`. Setting `MODEL_PATH` overrides the location (and the install target). Layout:
   - `models/multilingual-e5-base/`: `model_O4.onnx` and `tokenizer.json` from [intfloat/multilingual-e5-base](https://huggingface.co/intfloat/multilingual-e5-base/tree/main/onnx)
-  - `models/ms-marco-MiniLM-L6-v2/`: `model_O4.onnx` and `tokenizer.json` from [cross-encoder/ms-marco-MiniLM-L-6-v2](https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2)
+  - `models/ms-marco-MiniLM-L6-v2/`: `model_O4.onnx` and `tokenizer.json` from [cross-encoder/ms-marco-MiniLM-L6-v2](https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2)
 
 ### Run in development
 

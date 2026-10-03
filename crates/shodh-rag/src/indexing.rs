@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use walkdir::WalkDir;
 
 use crate::chat::EventEmitter;
+use crate::embeddings::SearchModelsMissing;
 use crate::rag_engine::RAGEngine;
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -209,6 +210,9 @@ pub async fn index_single_file(
     rag: &mut RAGEngine,
     emitter: Option<&dyn EventEmitter>,
 ) -> Result<IndexingResult, String> {
+    if !rag.has_search_models() {
+        return Err(SearchModelsMissing.to_string());
+    }
     let start_time = Instant::now();
     let path = PathBuf::from(file_path);
 
@@ -276,6 +280,10 @@ pub async fn index_folder(
     indexing_state: &IndexingState,
     emitter: Option<&dyn EventEmitter>,
 ) -> Result<IndexingResult, String> {
+    // Without the embedding model every file would be parsed and then fail.
+    if !rag.has_search_models() {
+        return Err(SearchModelsMissing.to_string());
+    }
     let start_time = Instant::now();
     let path = PathBuf::from(folder_path);
 

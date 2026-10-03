@@ -16,7 +16,8 @@ import {
 } from 'lucide-react';
 
 // Core components
-import { ImageUpload } from './components/ImageUpload';
+import { SearchSetupCard } from './features/setup/SearchSetupCard';
+import { errorMessage as searchErrorMessage } from './features/setup/searchModels';
 import Sidebar from './components/shell/Sidebar';
 import SettingsView from './components/shell/SettingsView';
 import { ConversationDock } from './components/shell/ConversationDock';
@@ -31,7 +32,6 @@ import CommandPalette from './components/CommandPalette';
 import DocumentPreviewPanel from './components/DocumentPreviewPanel';
 import CalendarTodoPanel from './components/CalendarTodoPanel';
 import { useSearchConfig } from './components/SearchSettings';
-import { useActivityTracker } from './hooks/useActivityTracker';
 import { OnboardingFlow } from './components/OnboardingFlow';
 import { FeedbackDialog } from './components/FeedbackDialog';
 import { LoadingState } from './components/LoadingState';
@@ -42,7 +42,6 @@ import { notify, setNotificationHandler } from './lib/notify';
 import { migrateLegacyApiKeys } from './lib/apiKeyMigration';
 import { useNotifications } from './hooks/useNotifications';
 import NotificationCenter from './components/NotificationCenter';
-import { intelligentSearch, trackUserMessage, trackAssistantMessage } from './utils/intelligentRetrieval';
 
 // Debug logging — set to true during development, false for demo/production
 const DEBUG = false;
@@ -115,9 +114,6 @@ function AppSplitView() {
 
   // Command palette
   const { open: cmdPaletteOpen, openPalette, closePalette } = useCommandPalette();
-
-  // Activity Tracker
-  const { trackActivity } = useActivityTracker();
 
   // Core state
   const [isLoading, setIsLoading] = useState(true);
@@ -243,9 +239,6 @@ function AppSplitView() {
   };
 
   // Search State
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<any[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
 
   // Stats
   const [stats, setStats] = useState({
@@ -400,7 +393,7 @@ function AppSplitView() {
             appendMessage({
               id: newNoticeId(),
               role: 'assistant',
-              content: `📸 **[FILE PICKER] Image uploaded and processed successfully!**\n\n**Extracted Text (${wordCount} words, ${(confidence * 100).toFixed(0)}% confidence):**\n\n${extractedText}\n\n*The text has been indexed and is now searchable.*`,
+              content: `📸 **[FILE PICKER] Image uploaded and processed successfully!**\n\n**Extracted Text (${wordCount} words, ${(confidence * 100).toFixed(0)}% confidence):**\n\n${extractedText}`,
               timestamp: new Date().toISOString(),
               image: imageData
             });
@@ -479,7 +472,7 @@ function AppSplitView() {
                     appendMessage({
                       id: newNoticeId(),
                       role: 'assistant',
-                      content: `📸 **Image processed successfully!**\n\n**Extracted Text (${wordCount} words, ${(confidence * 100).toFixed(0)}% confidence):**\n\n${extractedText}\n\n*The text has been indexed and is now searchable.*`,
+                      content: `📸 **Image processed successfully!**\n\n**Extracted Text (${wordCount} words, ${(confidence * 100).toFixed(0)}% confidence):**\n\n${extractedText}`,
                       timestamp: new Date().toISOString(),
                       image: imageData
                     });
@@ -682,7 +675,7 @@ function AppSplitView() {
               appendMessage({
                 id: newNoticeId(),
                 role: 'assistant',
-                content: `📸 **Image pasted and processed successfully!**\n\n**Extracted Text (${wordCount} words, ${(confidence * 100).toFixed(0)}% confidence):**\n\n${extractedText}\n\n*The text has been indexed and is now searchable.*`,
+                content: `📸 **Image pasted and processed successfully!**\n\n**Extracted Text (${wordCount} words, ${(confidence * 100).toFixed(0)}% confidence):**\n\n${extractedText}`,
                 timestamp: new Date().toISOString(),
                 image: base64Data
               });
@@ -1065,18 +1058,11 @@ function AppSplitView() {
           console.error('Failed to get actual file count:', e);
         }
 
-        // Track document indexing activity for timeline
-        await trackActivity({
-          activityType: 'document_added',
-          data: `Indexed ${actualFileCount} files from ${newSource.name}`,
-          project: 'shodh'
-        });
-
         notify.success(`Indexed ${actualFileCount} files`, { description: newSource.name });
       }
     } catch (error) {
       console.error("Failed to add source:", error);
-      notify.error('Indexing failed', { description: String(error) });
+      notify.error('Indexing failed', { description: searchErrorMessage(error) });
 
       // Reset indexing status on error
       if (currentlyIndexing) {
@@ -1159,47 +1145,6 @@ function AppSplitView() {
     });
   };
 
-
-  const handleSearch = async () => {
-    if (!searchQuery.trim()) return;
-
-    setIsSearching(true);
-    try {
-      // Track user search message
-      await trackUserMessage(searchQuery);
-
-      // Use intelligent search
-      const currentSpaceId = sources.find(s => s.selected)?.id || null;
-      const { decision, results } = await intelligentSearch(
-        searchQuery,
-        currentSpaceId,
-        20
-      );
-
-      debugLog("Search decision:", {
-        shouldRetrieve: decision.shouldRetrieve,
-        reasoning: decision.reasoning
-      });
-
-      setSearchResults(results as any[]);
-
-      // Show decision to user if no retrieval
-      if (!decision.shouldRetrieve) {
-        debugLog("Search not needed:", decision.reasoning);
-      }
-
-      // Track search activity
-      await trackActivity({
-        activityType: 'search',
-        data: `Searched for "${searchQuery}"`,
-        project: 'shodh'
-      });
-    } catch (error) {
-      console.error("Search failed:", error);
-    } finally {
-      setIsSearching(false);
-    }
-  };
 
   // Toggle source file list expansion in the Library view
   const toggleDocsSourceExpansion = async (sourceId: string, e: React.MouseEvent) => {
@@ -1759,6 +1704,8 @@ function AppSplitView() {
                     Add Source
                   </button>
                 </div>
+
+                <SearchSetupCard className="mb-6" />
 
                 {sources.length === 0 ? (
                   <EmptyState

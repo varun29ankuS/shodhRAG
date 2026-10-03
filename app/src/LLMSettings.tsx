@@ -1,12 +1,11 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
 import { useTheme } from './contexts/ThemeContext';
 import { notify } from './lib/notify';
 import { migrateLegacyApiKeys } from './lib/apiKeyMigration';
 import {
   Brain, Cloud, Power, Settings, CheckCircle, AlertCircle,
-  FileCode, X, FolderOpen, RefreshCw, Zap, Play, FlaskConical,
+  FileCode, X, FolderOpen, RefreshCw, Play, FlaskConical,
   ChevronDown, ChevronUp,
 } from 'lucide-react';
 
@@ -21,17 +20,12 @@ interface LLMInfo {
     vram_mb?: number;
     model_size_mb: number;
   };
+  /** `local`, `external` or `disabled`. */
   mode: string;
 }
 
-interface ModelProgress {
-  model: string;
-  percentage: number;
-  downloaded_mb: number;
-  total_mb: number;
-  is_complete: boolean;
-  error?: string;
-}
+/** GGUF models that run well with llama.cpp on a typical laptop (suggestions only). */
+const SUGGESTED_GGUF_MODELS = ['Qwen3 4B', 'Qwen3 8B', 'Gemma 3 4B', 'Llama 3.2 3B'] as const;
 
 interface LLMSettingsProps {
   onClose: () => void;
@@ -119,7 +113,6 @@ const PROVIDERS: { id: Provider; label: string; defaultModel: string; keyPlaceho
 export default function LLMSettings({ onClose, onStatusChange, embedded = false }: LLMSettingsProps) {
   const { colors } = useTheme();
   const [llmMode, setLlmMode] = useState<'local' | 'external' | 'disabled'>('disabled');
-  const [inferenceBackend, setInferenceBackend] = useState<'onnx' | 'llamacpp'>('llamacpp');
   const [selectedProvider, setSelectedProvider] = useState<Provider>('openai');
   // Keys typed in this session that are not saved yet. Saved keys live only in
   // the OS credential store (backend); the UI only learns which providers have one.
@@ -130,9 +123,7 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
   );
   const [llmInfo, setLlmInfo] = useState<LLMInfo | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState<ModelProgress | null>(null);
   const [customModelPath, setCustomModelPath] = useState<string | null>(null);
-  const [customTokenizerPath, setCustomTokenizerPath] = useState<string | null>(null);
   const [temperature, setTemperature] = useState(0.7);
   const [maxTokens, setMaxTokens] = useState(1024);
   const [topP, setTopP] = useState(0.95);
@@ -142,14 +133,11 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
   const providerConfig = PROVIDERS.find(p => p.id === selectedProvider)!;
   const draftKey = keyDrafts[selectedProvider].trim();
   const keySaved = configuredProviders.includes(selectedProvider);
-  const isModelReady = inferenceBackend === 'llamacpp' ? !!customModelPath : !!(customModelPath && customTokenizerPath);
+  const isModelReady = !!customModelPath;
+  const localActive = llmInfo?.mode === 'local';
 
   useEffect(() => {
     loadSettings();
-    const unlisten = listen<ModelProgress>('model-download-progress', (event) => {
-      setDownloadProgress(event.payload);
-    });
-    return () => { unlisten.then(fn => fn()); };
   }, []);
 
   const refreshConfiguredProviders = async () => {
@@ -161,8 +149,15 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
 
   const loadSettings = async () => {
     try {
-      const info = await invoke<LLMInfo>('get_llm_info');
-      setLlmInfo(info);
+      try {
+        const info = await invoke<LLMInfo>('get_llm_info');
+        setLlmInfo(info);
+        if (info.mode === 'local' || info.mode === 'external' || info.mode === 'disabled') {
+          setLlmMode(info.mode);
+        }
+      } catch {
+        setLlmInfo(null);
+      }
       const customPath = await invoke<string | null>('get_custom_model_path');
       setCustomModelPath(customPath);
       await migrateLegacyApiKeys();
@@ -174,18 +169,10 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
 
   const handleBrowseModel = async () => {
     try {
-      const modelPath = await invoke<string>('browse_model_file', { backend: inferenceBackend });
+      const modelPath = await invoke<string>('browse_model_file');
       if (modelPath) {
         await invoke<string>('set_custom_model_path', { modelPath });
         setCustomModelPath(modelPath);
-        if (inferenceBackend === 'onnx') {
-          try {
-            const modelDir = modelPath.substring(0, modelPath.lastIndexOf('\\'));
-            const tokenizerPath = `${modelDir}\\tokenizer.json`;
-            await invoke<string>('set_custom_tokenizer_path', { tokenizerPath });
-            setCustomTokenizerPath(tokenizerPath);
-          } catch { /* no auto-detected tokenizer */ }
-        }
         notify.success('Model file selected');
       }
     } catch (error) {
@@ -195,28 +182,13 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
     }
   };
 
-  const handleBrowseTokenizer = async () => {
-    try {
-      const tokenizerPath = await invoke<string>('browse_tokenizer_file');
-      if (tokenizerPath) {
-        await invoke<string>('set_custom_tokenizer_path', { tokenizerPath });
-        setCustomTokenizerPath(tokenizerPath);
-        notify.success('Tokenizer file selected');
-      }
-    } catch (error) {
-      if (error !== 'No file selected') {
-        notify.error(`Failed to select tokenizer: ${error}`);
-      }
-    }
-  };
-
   const handleActivateLocal = async () => {
     setIsLoading(true);
     try {
-      await invoke('switch_llm_mode', { mode: 'custom', backend: inferenceBackend });
+      await invoke('switch_llm_mode', { mode: 'local' });
       await loadSettings();
       onStatusChange?.();
-      notify.success(`Local model activated (${inferenceBackend === 'llamacpp' ? 'llama.cpp' : 'ONNX'})`);
+      notify.success('Local model activated (llama.cpp)');
     } catch (error) {
       notify.error(`Failed to activate model: ${error}`);
     } finally {
@@ -491,44 +463,8 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
 
             {expandedSections.local && (
               <div style={{ marginTop: '16px' }}>
-                {/* Backend selector */}
-                <label style={{ color: colors.textTertiary, fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '8px' }}>
-                  Inference Backend
-                </label>
-                <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
-                  {(['llamacpp', 'onnx'] as const).map(backend => {
-                    const active = inferenceBackend === backend;
-                    return (
-                      <button
-                        key={backend}
-                        onClick={() => setInferenceBackend(backend)}
-                        style={{
-                          flex: 1,
-                          padding: '10px',
-                          fontSize: '13px',
-                          fontWeight: 600,
-                          backgroundColor: active ? colors.secondary : colors.buttonBg,
-                          color: active ? '#fff' : colors.buttonText,
-                          border: `1px solid ${active ? colors.secondary : colors.border}`,
-                          borderRadius: '6px',
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          gap: '6px',
-                          transition: 'all 0.15s',
-                        }}
-                      >
-                        {backend === 'llamacpp' ? <Zap size={14} /> : <Play size={14} />}
-                        {backend === 'llamacpp' ? 'llama.cpp (GGUF)' : 'ONNX Runtime'}
-                      </button>
-                    );
-                  })}
-                </div>
-                <p style={{ color: colors.textMuted, fontSize: '12px', margin: '0 0 16px', lineHeight: 1.4 }}>
-                  {inferenceBackend === 'llamacpp'
-                    ? 'CPU-optimized with AVX2/AVX512 support. Best for GGUF models.'
-                    : 'Cross-platform inference engine. Requires ONNX format models.'}
+                <p style={{ color: colors.textMuted, fontSize: '12px', margin: '0 0 16px', lineHeight: 1.5 }}>
+                  Runs a GGUF model on this computer with llama.cpp (CPU). Nothing leaves your device.
                 </p>
 
                 {/* Model config card */}
@@ -554,7 +490,7 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
                       <div style={{ fontSize: '12px', color: colors.textMuted, marginTop: '2px' }}>
                         {isModelReady
                           ? 'Your model is configured and ready to use'
-                          : `Select your ${inferenceBackend === 'llamacpp' ? 'GGUF' : 'ONNX'} model file`}
+                          : 'Select a .gguf model file'}
                       </div>
                     </div>
                   </div>
@@ -565,10 +501,7 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
                     border: `1px solid ${colors.border}`, marginBottom: '14px',
                     display: 'flex', flexDirection: 'column', gap: '8px',
                   }}>
-                    <FileRow label={inferenceBackend === 'llamacpp' ? 'GGUF Model' : 'ONNX Model'} path={customModelPath} colors={colors} />
-                    {inferenceBackend === 'onnx' && (
-                      <FileRow label="Tokenizer" path={customTokenizerPath} fallback={customModelPath ? 'Not found (select manually)' : 'Auto-detects from model folder'} colors={colors} />
-                    )}
+                    <FileRow label="GGUF Model" path={customModelPath} colors={colors} />
                   </div>
 
                   {/* Action buttons */}
@@ -576,16 +509,11 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
                     <button onClick={handleBrowseModel} style={{ ...btnSecondary, flex: 1 }}>
                       {customModelPath ? <><RefreshCw size={14} /> Change Model</> : <><FolderOpen size={14} /> Select Model</>}
                     </button>
-                    {inferenceBackend === 'onnx' && customModelPath && !customTokenizerPath && (
-                      <button onClick={handleBrowseTokenizer} style={{ ...btnSecondary, flex: 1, borderColor: colors.warning }}>
-                        <FolderOpen size={14} /> Select Tokenizer
-                      </button>
-                    )}
                   </div>
 
                   {isModelReady && (
                     <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
-                      {llmInfo?.mode !== 'custom' ? (
+                      {!localActive ? (
                         <button onClick={handleActivateLocal} disabled={isLoading} style={{ ...btnPrimary, flex: 1, backgroundColor: colors.success }}>
                           <Play size={14} /> Activate Model
                         </button>
@@ -598,7 +526,7 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
                           <CheckCircle size={14} /> Model Active
                         </div>
                       )}
-                      {llmInfo?.mode === 'custom' && (
+                      {localActive && (
                         <button onClick={handleTestInference} disabled={isLoading} style={{ ...btnSecondary }}>
                           <FlaskConical size={14} /> Test
                         </button>
@@ -616,29 +544,13 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
                       <Settings size={13} color={colors.primary} style={{ marginTop: '2px', flexShrink: 0 }} />
                       <span>
                         <strong style={{ color: colors.text }}>Quick Start:</strong>{' '}
-                        {inferenceBackend === 'llamacpp'
-                          ? 'Select your .gguf model file. GGUF models have tokenizers built-in.'
-                          : 'Select your .onnx model file. The tokenizer will auto-detect from the same folder.'}
+                        Download a GGUF model (Q4_K_M is a good balance of size and quality) and select the .gguf file.
+                        Suggested: {SUGGESTED_GGUF_MODELS.join(', ')}. Shodh does not download models for you.
                       </span>
                     </div>
                   )}
                 </div>
 
-                {/* Download progress */}
-                {downloadProgress && !downloadProgress.is_complete && (
-                  <div style={{ marginTop: '14px', padding: '12px', background: colors.bgSecondary, borderRadius: '6px', border: `1px solid ${colors.border}` }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px', fontSize: '13px', color: colors.text }}>
-                      <span>Downloading {downloadProgress.model}...</span>
-                      <span>{downloadProgress.percentage.toFixed(1)}%</span>
-                    </div>
-                    <div style={{ height: '4px', background: colors.bgTertiary, borderRadius: '2px', overflow: 'hidden', marginBottom: '4px' }}>
-                      <div style={{ height: '100%', background: colors.primary, width: `${downloadProgress.percentage}%`, transition: 'width 0.3s' }} />
-                    </div>
-                    <div style={{ fontSize: '11px', color: colors.textMuted }}>
-                      {downloadProgress.downloaded_mb} MB / {downloadProgress.total_mb} MB
-                    </div>
-                  </div>
-                )}
               </div>
             )}
           </div>

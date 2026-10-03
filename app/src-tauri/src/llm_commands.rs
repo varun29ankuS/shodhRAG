@@ -1,13 +1,13 @@
 //! Tauri commands for LLM integration
 
 use serde::Serialize;
-use shodh_rag::llm::{
-    ApiProvider, DeviceType, LLMConfig, LLMManager, LLMMode, LocalModel, ModelManager,
-    QuantizationType,
-};
+use shodh_rag::llm::{ApiProvider, LLMConfig, LLMManager, LLMMode};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, State};
+
+/// Ollama model used when none is chosen.
+pub const OLLAMA_DEFAULT_MODEL: &str = "qwen3:4b";
 use tokio::sync::RwLock as AsyncRwLock;
 
 use crate::api_key_store;
@@ -18,12 +18,10 @@ use shodh_rag::audit::{payload as audit_payload, AuditEventType, AuditRecord};
 /// LLM state managed by Tauri
 pub struct LLMState {
     pub manager: Arc<AsyncRwLock<Option<LLMManager>>>,
-    pub model_manager: Arc<ModelManager>,
     pub config: Arc<Mutex<LLMConfig>>,
     pub api_keys: Arc<Mutex<ApiKeys>>,
+    /// GGUF file chosen for local inference (llama.cpp).
     pub custom_model_path: Arc<Mutex<Option<PathBuf>>>,
-    pub custom_tokenizer_path: Arc<Mutex<Option<PathBuf>>>,
-    pub model_dir: Arc<PathBuf>,
 }
 
 /// In-memory provider API keys. Persisted copies live only in the OS
@@ -107,73 +105,20 @@ impl std::fmt::Debug for ApiKeys {
     }
 }
 
-/// Browse and select model file (supports both ONNX and GGUF)
+/// Pick a local GGUF model file for llama.cpp.
 #[tauri::command]
-pub async fn browse_model_file(
-    app_handle: tauri::AppHandle,
-    backend: Option<String>,
-) -> Result<String, String> {
-    use tauri_plugin_dialog::DialogExt;
-
-    let mut dialog = app_handle.dialog().file();
-
-    // Add filters based on backend type
-    match backend.as_deref() {
-        Some("llamacpp") => {
-            dialog = dialog
-                .add_filter("GGUF Models", &["gguf"])
-                .add_filter("All Files", &["*"]);
-        }
-        Some("onnx") => {
-            dialog = dialog
-                .add_filter("ONNX Models", &["onnx"])
-                .add_filter("All Files", &["*"]);
-        }
-        _ => {
-            // Default: show both formats
-            dialog = dialog
-                .add_filter("Model Files", &["gguf", "onnx"])
-                .add_filter("GGUF Models", &["gguf"])
-                .add_filter("ONNX Models", &["onnx"])
-                .add_filter("All Files", &["*"]);
-        }
-    }
-
-    let file_path = dialog.blocking_pick_file();
-
-    match file_path {
-        Some(path) => {
-            // FilePath enum can be either Path or Url
-            let path_str = match path {
-                tauri_plugin_dialog::FilePath::Path(p) => p.to_string_lossy().to_string(),
-                tauri_plugin_dialog::FilePath::Url(u) => u.to_string(),
-            };
-            Ok(path_str)
-        }
-        None => Err("No file selected".to_string()),
-    }
-}
-
-/// Browse and select tokenizer file
-#[tauri::command]
-pub async fn browse_tokenizer_file(app_handle: tauri::AppHandle) -> Result<String, String> {
+pub async fn browse_model_file(app_handle: tauri::AppHandle) -> Result<String, String> {
     use tauri_plugin_dialog::DialogExt;
 
     let file_path = app_handle
         .dialog()
         .file()
-        .add_filter("Tokenizer Files", &["json"])
-        .add_filter("All Files", &["*"])
+        .add_filter("GGUF models", &["gguf"])
         .blocking_pick_file();
 
     match file_path {
-        Some(path) => {
-            let path_str = match path {
-                tauri_plugin_dialog::FilePath::Path(p) => p.to_string_lossy().to_string(),
-                tauri_plugin_dialog::FilePath::Url(u) => u.to_string(),
-            };
-            Ok(path_str)
-        }
+        Some(tauri_plugin_dialog::FilePath::Path(p)) => Ok(p.to_string_lossy().to_string()),
+        Some(tauri_plugin_dialog::FilePath::Url(u)) => Ok(u.to_string()),
         None => Err("No file selected".to_string()),
     }
 }
@@ -196,181 +141,51 @@ pub fn set_custom_model_path(
 }
 
 fn set_custom_model_path_inner(state: &LLMState, model_path: &str) -> Result<String, String> {
-    let path = PathBuf::from(&model_path);
-
-    // Verify the file exists
-    if !path.exists() {
+    let path = PathBuf::from(model_path);
+    if !path.is_file() {
         return Err(format!("Model file does not exist: {}", model_path));
     }
-
-    // Check if it's a valid model file (ONNX or GGUF)
-    let extension = path.extension().and_then(|s| s.to_str());
-    match extension {
-        Some("onnx") => {
-            // Store the custom path
-            *state
-                .custom_model_path
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(path.clone());
-
-            // Check for associated .data file (ONNX specific)
-            let data_file = path.with_extension("onnx.data");
-            let has_data_file = data_file.exists();
-
-            Ok(format!(
-                "✅ ONNX model path set successfully\n📁 Path: {}\n📦 Data file: {}",
-                model_path,
-                if has_data_file {
-                    "Found"
-                } else {
-                    "Not found (may not be required)"
-                }
-            ))
-        }
-        Some("gguf") => {
-            // Store the custom path
-            *state
-                .custom_model_path
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(path.clone());
-
-            Ok(format!(
-                "✅ GGUF model path set successfully\n📁 Path: {}\n🚀 Backend: llama.cpp (tokenizer built-in)",
-                model_path
-            ))
-        }
-        _ => Err("Invalid model file. Please select a .gguf or .onnx file.".to_string()),
+    let is_gguf = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("gguf"));
+    if !is_gguf {
+        return Err("Select a .gguf model file (llama.cpp format).".to_string());
     }
-}
-
-/// Set custom tokenizer path from user selection
-#[tauri::command]
-pub fn set_custom_tokenizer_path(
-    state: State<'_, LLMState>,
-    audit: State<'_, AuditState>,
-    tokenizer_path: String,
-) -> Result<String, String> {
-    let result = set_custom_tokenizer_path_inner(&state, &tokenizer_path);
-    if result.is_ok() {
-        audit.record(AuditRecord::new(
-            AuditEventType::SettingsChange,
-            json!({"action": "custom_tokenizer_path", "path": tokenizer_path}),
-        ));
-    }
-    result
-}
-
-fn set_custom_tokenizer_path_inner(
-    state: &LLMState,
-    tokenizer_path: &str,
-) -> Result<String, String> {
-    let path = PathBuf::from(&tokenizer_path);
-
-    // Verify the file exists
-    if !path.exists() {
-        return Err(format!("Tokenizer file does not exist: {}", tokenizer_path));
-    }
-
-    // Store the custom tokenizer path
     *state
-        .custom_tokenizer_path
+        .custom_model_path
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = Some(path);
-
-    Ok(format!(
-        "Tokenizer path set successfully: {}",
-        tokenizer_path
-    ))
+    Ok(format!("GGUF model selected: {}", model_path))
 }
 
-/// Initialize LLM with custom path if set
-#[tauri::command]
-pub async fn initialize_llm_with_custom_path(state: State<'_, LLMState>) -> Result<String, String> {
-    let custom_model_path = state
+/// Load the selected GGUF model with llama.cpp and make it the active LLM.
+async fn activate_local_model(state: &LLMState) -> Result<String, String> {
+    let model_path = state
         .custom_model_path
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .clone();
-    let custom_tokenizer_path = state
-        .custom_tokenizer_path
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
+        .clone()
+        .ok_or_else(|| "Select a GGUF model file first.".to_string())?;
 
-    if let Some(model_path) = custom_model_path {
-        // Create config with custom model
-        let mut config = state
-            .config
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        config.mode = LLMMode::Local {
-            model: LocalModel::Custom {
-                name: "custom".to_string(),
-                filename: model_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("model.onnx")
-                    .to_string(),
-            },
-            device: DeviceType::Cpu,
-            quantization: QuantizationType::Q4,
-        };
-
-        // Update stored config
-        *state.config.lock().unwrap_or_else(|e| e.into_inner()) = config.clone();
-
-        // Pass both model and tokenizer paths
-        // Create a custom manager that knows about both paths
-        let mut manager =
-            LLMManager::new_with_paths(config, model_path.clone(), custom_tokenizer_path.clone());
-
-        // Initialize
-        manager.initialize().await.map_err(|e| {
-            format!("Failed to initialize model: {}. Please ensure the model file is valid and compatible.", e)
-        })?;
-
-        // Store manager
-        *state.manager.write().await = Some(manager);
-
-        let mut success_msg = format!("Model loaded successfully from: {}", model_path.display());
-        if let Some(tokenizer_path) = custom_tokenizer_path {
-            success_msg.push_str(&format!("\nTokenizer: {}", tokenizer_path.display()));
-        }
-        Ok(success_msg)
-    } else {
-        Err("No custom model path set. Please select a model file first.".to_string())
-    }
-}
-
-/// Initialize LLM manager
-#[tauri::command]
-pub async fn initialize_llm(state: State<'_, LLMState>, mode: String) -> Result<String, String> {
-    let config = state
+    let mut config = state
         .config
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
+    config.mode = LLMMode::Local {
+        model_path: model_path.clone(),
+    };
+    *state.config.lock().unwrap_or_else(|e| e.into_inner()) = config.clone();
 
-    // Parse mode string to LLMMode
-    let llm_mode = parse_llm_mode(&mode)?;
-
-    // Create new config with mode
-    let mut new_config = config;
-    new_config.mode = llm_mode;
-
-    // Update stored config
-    *state.config.lock().unwrap_or_else(|e| e.into_inner()) = new_config.clone();
-
-    // Create and initialize manager
-    let model_dir = state.model_dir.as_ref().clone();
-    let mut manager = LLMManager::new_with_cache_dir(new_config, model_dir);
-    manager.initialize().await.map_err(|e| e.to_string())?;
-
-    // Store manager
+    let mut manager = LLMManager::new(config);
+    manager.initialize().await.map_err(|e| {
+        format!(
+            "Failed to load {}: {e}. Make sure it is a valid GGUF model.",
+            model_path.display()
+        )
+    })?;
     *state.manager.write().await = Some(manager);
-
-    Ok("LLM initialized successfully".to_string())
+    Ok(format!("Model loaded from {}", model_path.display()))
 }
 
 /// Switch LLM mode
@@ -382,57 +197,33 @@ pub async fn switch_llm_mode(
     model: Option<String>,
     provider: Option<String>,
 ) -> Result<String, String> {
-    // Check if user wants to use custom model
-    if mode == "custom" {
-        let custom_path = state
-            .custom_model_path
+    // Local inference: the GGUF file picked in settings, run by llama.cpp.
+    // ("custom" is the name older frontends used for the same thing.)
+    if mode == "local" || mode == "custom" {
+        let result = activate_local_model(&state).await;
+        let config_mode = state
+            .config
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .mode
             .clone();
-        if custom_path.is_none() {
-            return Err("Please select a model file first using the Browse button".to_string());
-        }
-        let result = initialize_llm_with_custom_path(state).await;
-        audit.record(model_switch_record(
-            json!({"action": "model_switch", "mode": "custom", "provider": "local", "model": null, "cloud": false}),
-            &result,
-        ));
+        let payload = match &config_mode {
+            LLMMode::Local { .. } => audit_payload::model_switch(&config_mode),
+            _ => {
+                json!({"action": "model_switch", "mode": "local", "provider": "local", "model": null, "cloud": false})
+            }
+        };
+        audit.record(model_switch_record(payload, &result));
         return result;
     }
 
-    let llm_mode = if mode == "local" {
-        // Native local inference via llama.cpp (GGUF models)
-        let local_model = match model.as_deref() {
-            Some("phi3") => LocalModel::Phi3Mini,
-            Some("phi4") => LocalModel::Phi4,
-            Some("qwen") => LocalModel::Qwen2_5B,
-            Some("mistral") => LocalModel::Mistral7B,
-            Some("gemma") => LocalModel::Gemma2B,
-            Some("sarvam") | Some("sarvam1") => LocalModel::Sarvam1,
-            Some(other) => {
-                // Treat as custom GGUF filename
-                LocalModel::Custom {
-                    name: other.to_string(),
-                    filename: format!("{}.gguf", other),
-                }
-            }
-            None => LocalModel::Qwen2_5B, // sensible default
-        };
-
-        LLMMode::Local {
-            model: local_model,
-            device: DeviceType::Cpu,
-            quantization: QuantizationType::Q4,
-        }
-    } else if mode == "ollama" {
+    let llm_mode = if mode == "ollama" {
         // Ollama API (separate from native local)
-        let ollama_model = match model.as_deref() {
-            Some("phi3") => "phi3:mini",
-            Some("phi4") => "phi4",
-            Some("qwen") => "qwen2.5:1.5b",
-            Some(m) => m,
-            None => "phi3:mini",
-        };
+        let ollama_model = model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .unwrap_or(OLLAMA_DEFAULT_MODEL);
 
         LLMMode::External {
             provider: ApiProvider::Ollama,
@@ -499,7 +290,7 @@ pub async fn switch_llm_mode(
             ApiProvider::Grok => "grok-2-1212",
             ApiProvider::Perplexity => "llama-3.1-sonar-small-128k-online",
             ApiProvider::Google => "gemini-2.0-flash-exp",
-            ApiProvider::Ollama => "phi3:mini",
+            ApiProvider::Ollama => OLLAMA_DEFAULT_MODEL,
             _ => "gpt-4o-mini",
         };
 
@@ -524,12 +315,7 @@ pub async fn switch_llm_mode(
     let switch_payload = audit_payload::model_switch(&llm_mode);
 
     // Switch mode or create new manager
-    let model_dir = state.model_dir.as_ref().clone();
-    tracing::info!(
-        "Attempting to switch to mode: {}, model_dir: {}",
-        mode,
-        model_dir.display()
-    );
+    tracing::info!("Switching LLM mode to {}", mode);
     let mut manager_lock = state.manager.write().await;
 
     let result = if let Some(manager) = manager_lock.as_mut() {
@@ -541,7 +327,7 @@ pub async fn switch_llm_mode(
             }
             Err(e) => {
                 tracing::warn!("Failed to switch mode, creating new manager: {}", e);
-                let mut new_manager = LLMManager::new_with_cache_dir(config, model_dir);
+                let mut new_manager = LLMManager::new(config);
                 match new_manager.initialize().await {
                     Ok(_) => {
                         *manager_lock = Some(new_manager);
@@ -558,7 +344,7 @@ pub async fn switch_llm_mode(
     } else {
         // No manager exists, create new one
         tracing::info!("No existing manager, creating new one");
-        let mut new_manager = LLMManager::new_with_cache_dir(config, model_dir);
+        let mut new_manager = LLMManager::new(config);
         match new_manager.initialize().await {
             Ok(_) => {
                 *manager_lock = Some(new_manager);
@@ -1038,33 +824,20 @@ pub async fn llm_generate_stream_with_rag(
 /// Get LLM info
 #[tauri::command]
 pub async fn get_llm_info(state: State<'_, LLMState>) -> Result<LLMInfo, String> {
-    tracing::info!("=== get_llm_info called ===");
     let manager_lock = state.manager.read().await;
 
     let manager = match manager_lock.as_ref() {
         Some(m) => m,
-        None => {
-            tracing::info!("No LLM manager found");
-            return Err("LLM not initialized".to_string());
-        }
+        None => return Err("LLM not initialized".to_string()),
     };
 
     let info = match manager.info() {
         Some(i) => i,
-        None => {
-            tracing::info!("No provider info available");
-            return Err("No provider active".to_string());
-        }
+        None => return Err("No provider active".to_string()),
     };
 
-    tracing::info!("Provider info: {:?}", info);
     let memory = manager.memory_usage();
-    let config = state
-        .config
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
-    tracing::info!("Config mode: {:?}", config.mode);
+    let mode = manager.config().mode.kind();
 
     Ok(LLMInfo {
         provider: info.name,
@@ -1077,7 +850,7 @@ pub async fn get_llm_info(state: State<'_, LLMState>) -> Result<LLMInfo, String>
             vram_mb: m.vram_mb,
             model_size_mb: m.model_size_mb,
         }),
-        mode: format!("{:?}", config.mode),
+        mode: mode.to_string(),
     })
 }
 
@@ -1160,122 +933,42 @@ pub fn get_configured_providers(state: State<'_, LLMState>) -> Vec<String> {
         .configured_providers()
 }
 
-/// Check if model is cached
+/// Send a short prompt to the active model and return its reply, so the
+/// user can confirm a newly selected model works.
 #[tauri::command]
-pub async fn is_model_cached(state: State<'_, LLMState>, model: String) -> Result<bool, String> {
-    // For custom models, check if path is set
-    if model == "custom" {
-        let has_custom = state
-            .custom_model_path
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_some();
-        return Ok(has_custom);
-    }
-
-    let _model_enum = match model.as_str() {
-        "phi3" => LocalModel::Phi3Mini,
-        "phi4" => LocalModel::Phi4,
-        "qwen" => LocalModel::Qwen2_5B,
-        "sarvam" | "sarvam1" => LocalModel::Sarvam1,
-        _ => return Err("Unknown model".to_string()),
-    };
-
-    // Always return true for now to prevent download loops
-    Ok(true)
-}
-
-/// Download model
-#[tauri::command]
-pub async fn download_model(
+pub async fn test_llm_inference(
     state: State<'_, LLMState>,
-    model: String,
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
-    let model_enum = match model.as_str() {
-        "phi3" => LocalModel::Phi3Mini,
-        "phi4" => LocalModel::Phi4,
-        "qwen" => LocalModel::Qwen2_5B,
-        "sarvam" | "sarvam1" => LocalModel::Sarvam1,
-        _ => return Err("Unknown model".to_string()),
-    };
+    prompt: String,
+) -> Result<String, String> {
+    const TEST_MAX_TOKENS: usize = 64;
+    const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
-    let model_manager = state.model_manager.clone();
-
-    // Download in background and emit progress
-    tokio::spawn(async move {
-        // Start download
-        let download_result = model_manager.download_model(&model_enum).await;
-
-        // Monitor progress
-        loop {
-            let progress = model_manager.get_progress().await;
-
-            let has_error = progress.error.is_some();
-            let is_complete = progress.is_complete;
-
-            let _ = app_handle.emit(
-                "model-download-progress",
-                &ModelDownloadProgress {
-                    model: model.clone(),
-                    percentage: progress.percentage(),
-                    downloaded_mb: (progress.downloaded / 1024 / 1024) as u32,
-                    total_mb: (progress.total_size / 1024 / 1024) as u32,
-                    is_complete: progress.is_complete,
-                    error: progress.error,
-                },
-            );
-
-            if is_complete || has_error {
-                break;
-            }
-
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        }
-
-        if let Err(e) = download_result {
-            let _ = app_handle.emit("model-download-error", &format!("Download failed: {}", e));
-        }
-    });
-
-    Ok(())
-}
-
-/// Get model cache info
-#[tauri::command]
-pub async fn get_model_cache_info(state: State<'_, LLMState>) -> Result<CacheInfo, String> {
-    let cached_models = state
-        .model_manager
-        .list_cached_models()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let cache_size = state
-        .model_manager
-        .get_cache_size()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(CacheInfo {
-        cached_models,
-        total_size_mb: (cache_size / 1024 / 1024) as u32,
-    })
-}
-
-/// Delete cached model
-#[tauri::command]
-pub async fn delete_cached_model(state: State<'_, LLMState>, model: String) -> Result<(), String> {
-    let model_enum = match model.as_str() {
-        "phi3" => LocalModel::Phi3Mini,
-        "qwen" => LocalModel::Qwen2_5B,
-        _ => return Err("Unknown model".to_string()),
-    };
-
-    state
-        .model_manager
-        .delete_model(&model_enum)
-        .await
-        .map_err(|e| e.to_string())
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return Err("Prompt is empty".to_string());
+    }
+    let manager_lock = state.manager.read().await;
+    let manager = manager_lock
+        .as_ref()
+        .filter(|m| m.info().is_some())
+        .ok_or_else(|| "No model is active. Activate a model first.".to_string())?;
+    let reply = tokio::time::timeout(
+        TEST_TIMEOUT,
+        manager.generate_custom(prompt, TEST_MAX_TOKENS),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "The model did not answer within {} seconds",
+            TEST_TIMEOUT.as_secs()
+        )
+    })?
+    .map_err(|e| e.to_string())?;
+    let reply = reply.trim().to_string();
+    if reply.is_empty() {
+        return Err("The model returned an empty reply".to_string());
+    }
+    Ok(reply)
 }
 
 /// Update LLM config
@@ -1318,13 +1011,6 @@ pub fn get_custom_model_path(state: State<'_, LLMState>) -> Result<Option<String
 
 // Helper functions and types
 
-fn parse_llm_mode(mode: &str) -> Result<LLMMode, String> {
-    match mode {
-        "disabled" => Ok(LLMMode::Disabled),
-        _ => Err("Invalid mode".to_string()),
-    }
-}
-
 #[derive(Serialize, Clone)]
 struct StreamToken {
     stream_id: String,
@@ -1348,22 +1034,6 @@ pub struct MemoryInfo {
     ram_mb: usize,
     vram_mb: Option<usize>,
     model_size_mb: usize,
-}
-
-#[derive(Serialize)]
-pub struct ModelDownloadProgress {
-    model: String,
-    percentage: f32,
-    downloaded_mb: u32,
-    total_mb: u32,
-    is_complete: bool,
-    error: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct CacheInfo {
-    cached_models: Vec<String>,
-    total_size_mb: u32,
 }
 
 #[cfg(test)]

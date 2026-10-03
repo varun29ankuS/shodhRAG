@@ -1,7 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useConversations } from '../../hooks/useConversations';
 import type { ConversationMessage } from '../../hooks/useConversations';
-import { useActivityTracker } from '../../hooks/useActivityTracker';
 import { notify } from '../../lib/notify';
 import { extractArtifacts } from '../../utils/artifactExtractor';
 import { normalizeViewTab } from '../../lib/viewTabs';
@@ -206,7 +205,6 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     updateConversationMessages,
     updateConversationMeta,
   } = conv;
-  const { trackActivity } = useActivityTracker();
 
   const [view, setView] = useState<ViewState>({ conversationId: null, messages: [] });
   const [liveRun, setLiveRun] = useState<LiveRunInfo | null>(null);
@@ -431,10 +429,9 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     if (active && active.id === conversationId && !active.spaceId && options.spaceId && options.spaceName) {
       updateConversationMeta(conversationId, { spaceId: options.spaceId, spaceName: options.spaceName });
     }
-    void trackActivity({ activityType: 'search', data: `Chat: "${prompt}"`, project: 'shodh' });
 
     await runAgent(conversationId, prompt, history);
-  }, [publish, runAgent, trackActivity, updateConversationMeta]);
+  }, [publish, runAgent, updateConversationMeta]);
 
   const retry = useCallback((assistantMessageId: string, options: SendOptions) => {
     const { conversationId, messages } = viewRef.current;

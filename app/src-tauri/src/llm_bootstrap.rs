@@ -138,7 +138,7 @@ pub async fn configure_from_environment(state: &LLMState) -> Result<Option<Strin
         config.clone()
     };
 
-    let mut manager = LLMManager::new_with_cache_dir(config, state.model_dir.as_ref().clone());
+    let mut manager = LLMManager::new(config);
     manager.initialize().await.map_err(|e| {
         format!(
             "failed to initialize {} model {}: {e}",

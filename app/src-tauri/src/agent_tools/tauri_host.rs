@@ -47,6 +47,10 @@ pub const LIBRARY_CHANGED_EVENT: &str = "library-changed";
 pub const CONVERSATION_UPDATED_EVENT: &str = "conversation-updated";
 
 impl HostEffects for TauriEffects {
+    fn visuals_changed(&self, conversation_id: &str) {
+        crate::visual_commands::broadcast_change(&self.app, Some(conversation_id));
+    }
+
     fn settings_changed(&self, settings: &AppSettings) {
         crate::app_settings::broadcast(&self.app, settings);
     }

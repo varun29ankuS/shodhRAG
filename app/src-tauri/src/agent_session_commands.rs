@@ -36,6 +36,7 @@ use crate::audit_commands::AuditState;
 use crate::llm_commands::LLMState;
 use crate::memory_commands::{recall_for_run, with_memories, MemoryState};
 use crate::rag_commands::RagState;
+use crate::visual_commands::VisualState;
 use shodh_rag::audit::payload::is_cloud;
 use shodh_rag::audit::LOCAL_OWNER;
 use shodh_rag::harness::web::SafeClient;
@@ -529,6 +530,7 @@ pub async fn agent_start(
     llm: State<'_, LLMState>,
     audit: State<'_, AuditState>,
     memory: State<'_, MemoryState>,
+    visuals: State<'_, VisualState>,
 ) -> CommandResult<String> {
     let started = Instant::now();
     check_id("conversation id", &conversation_id)?;
@@ -629,6 +631,7 @@ pub async fn agent_start(
                     rag: rag.rag.clone(),
                 }),
                 memory: memory.inner().clone(),
+                visuals: visuals.inner().clone(),
             });
             build_registry(host)
                 .map(Arc::new)

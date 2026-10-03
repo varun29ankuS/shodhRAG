@@ -80,6 +80,12 @@ pub enum NavigationTarget {
     },
     /// Show an indexed folder source in the Library.
     Source { source_id: String },
+    /// Open a generated visual (gallery) in the focus pop-out, at a version (the latest
+    /// when absent).
+    Visual {
+        visual_id: String,
+        version: Option<u32>,
+    },
 }
 
 /// A normalised agent event. Produced from omp frames and from host-tool
@@ -403,6 +409,14 @@ mod tests {
                 },
                 "source",
                 vec!["sourceId"],
+            ),
+            (
+                NavigationTarget::Visual {
+                    visual_id: "v1".into(),
+                    version: Some(2),
+                },
+                "visual",
+                vec!["visualId", "version"],
             ),
         ]
     }

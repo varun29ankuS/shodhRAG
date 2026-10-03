@@ -127,12 +127,21 @@ export interface SourceTarget {
   sourceId: string;
 }
 
+/** A generated visual (gallery), opened in the focus pop-out. */
+export interface VisualTarget {
+  kind: "visual";
+  visualId: string;
+  /** Version to show; the latest when null. */
+  version: number | null;
+}
+
 export type NavigationTarget =
   | DocumentTarget
   | CalendarTarget
   | ConversationTarget
   | AuditTarget
-  | SourceTarget;
+  | SourceTarget
+  | VisualTarget;
 
 export interface NavigatedEvent {
   type: "navigated";

@@ -32,6 +32,7 @@ mod space_manager;
 mod storage_commands;
 mod system_commands;
 mod template_commands;
+mod visual_commands;
 mod window_commands;
 
 // Unified chat system modules
@@ -264,6 +265,10 @@ pub fn run() {
                 &app.state::<audit_commands::AuditState>(),
             );
             app.manage(memory_state);
+            // Generated visuals (the gallery), in shodh.db. Opens on first use.
+            let visual_state =
+                visual_commands::VisualState::new(&app.state::<audit_commands::AuditState>());
+            app.manage(visual_state);
 
             app.manage(RagState {
                 rag: rag_engine,
@@ -632,6 +637,19 @@ pub fn run() {
             memory_commands::memory_set_pinned,
             memory_commands::memory_forget,
             memory_commands::memory_export,
+            // Generated visuals (the gallery and the focus pop-out)
+            visual_commands::visuals_capture,
+            visual_commands::visuals_backfill_status,
+            visual_commands::visuals_backfill,
+            visual_commands::visuals_list,
+            visual_commands::visuals_count,
+            visual_commands::visuals_get,
+            visual_commands::visuals_rename,
+            visual_commands::visuals_set_pinned,
+            visual_commands::visuals_set_note,
+            visual_commands::visuals_add_version,
+            visual_commands::visuals_delete,
+            visual_commands::visuals_restore,
             // Calendar/Todo commands
             calendar_commands::load_tasks,
             calendar_commands::create_task,

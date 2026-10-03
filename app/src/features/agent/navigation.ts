@@ -70,6 +70,11 @@ export function parseTarget(value: unknown): NavigationTarget | null {
       const sourceId = reqString(value.sourceId);
       return sourceId ? { kind: 'source', sourceId } : null;
     }
+    case 'visual': {
+      const visualId = reqString(value.visualId);
+      const version = typeof value.version === 'number' && Number.isInteger(value.version) && value.version > 0 ? value.version : null;
+      return visualId ? { kind: 'visual', visualId, version } : null;
+    }
     default:
       return null;
   }

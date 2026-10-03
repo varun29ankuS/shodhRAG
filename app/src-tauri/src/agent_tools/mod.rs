@@ -19,6 +19,7 @@ mod research;
 mod settings;
 mod sources;
 mod tauri_host;
+mod visuals;
 mod web;
 
 use std::path::PathBuf;
@@ -41,6 +42,7 @@ use tokio::sync::RwLock;
 use crate::app_settings::{AppSettings, SettingsStore};
 use crate::calendar_store::{CalendarEvent, TodoItem};
 use crate::memory_commands::MemoryState;
+use crate::visual_commands::VisualState;
 
 pub use files::{IndexedRoots, SourceRoot, SourceRoots};
 pub use research::{list_directory_in, DirEntry, Listing};
@@ -139,6 +141,8 @@ pub trait HostEffects: Send + Sync {
     fn index_file(&self, ctx: &ToolContext, job: FileIndexJob);
     /// Files or folders of a source changed on disk: refresh the Library.
     fn library_changed(&self, source_id: &str);
+    /// A gallery visual of `conversation_id` was revised or organised: refresh the gallery.
+    fn visuals_changed(&self, conversation_id: &str);
 }
 
 /// Everything an app tool can reach.
@@ -153,6 +157,8 @@ pub struct AgentHost {
     pub roots: Arc<dyn SourceRoots>,
     /// Long-term memory (opened on first use).
     pub memory: MemoryState,
+    /// Generated visuals (the gallery; opened on first use).
+    pub visuals: VisualState,
 }
 
 /// Build the registry with every agent tool. Fails if two tools share a
@@ -190,6 +196,7 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     research::register(&mut registry, &host)?;
     sources::register(&mut registry, &host)?;
     memory::register(&mut registry, &host)?;
+    visuals::register(&mut registry, &host)?;
     Ok(registry)
 }
 
@@ -232,6 +239,7 @@ pub(crate) mod testing {
         pub settings: Mutex<Vec<AppSettings>>,
         pub indexed_files: Mutex<Vec<FileIndexJob>>,
         pub library: Mutex<Vec<String>>,
+        pub visuals: Mutex<Vec<String>>,
     }
 
     impl HostEffects for Recorder {
@@ -280,6 +288,12 @@ pub(crate) mod testing {
                 .unwrap_or_else(|e| e.into_inner())
                 .push(source_id.to_string());
         }
+        fn visuals_changed(&self, conversation_id: &str) {
+            self.visuals
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(conversation_id.to_string());
+        }
     }
 
     pub struct TestHost {
@@ -309,6 +323,7 @@ pub(crate) mod testing {
             settings: Mutex::default(),
             indexed_files: Mutex::default(),
             library: Mutex::default(),
+            visuals: Mutex::default(),
         });
         std::fs::create_dir_all(&effects.documents).unwrap();
         let roots = Arc::new(FixedRoots::default());
@@ -320,6 +335,7 @@ pub(crate) mod testing {
             web: SafeClient::system(),
             roots: roots.clone(),
             memory,
+            visuals: VisualState::at(Some((dir.path().join("shodh.db"), None))),
         });
         TestHost {
             dir,
@@ -365,6 +381,7 @@ pub(crate) mod testing {
             web,
             roots: t.host.roots.clone(),
             memory: t.host.memory.clone(),
+            visuals: t.host.visuals.clone(),
         })
     }
 

@@ -35,9 +35,13 @@ pub mod app_tools {
     pub const RECALL: &str = "recall";
     pub const UPDATE_MEMORY: &str = "update_memory";
     pub const FORGET: &str = "forget";
+    pub const LIST_VISUALS: &str = "list_visuals";
+    pub const OPEN_VISUAL: &str = "open_visual";
+    pub const REVISE_VISUAL: &str = "revise_visual";
+    pub const ORGANIZE_VISUAL: &str = "organize_visual";
 
     /// Every app-layer tool, in registration order.
-    pub const ALL: [&str; 27] = [
+    pub const ALL: [&str; 31] = [
         CREATE_TASK,
         CREATE_EVENT,
         LIST_TASKS,
@@ -65,6 +69,10 @@ pub mod app_tools {
         RECALL,
         UPDATE_MEMORY,
         FORGET,
+        LIST_VISUALS,
+        OPEN_VISUAL,
+        REVISE_VISUAL,
+        ORGANIZE_VISUAL,
     ];
 }
 

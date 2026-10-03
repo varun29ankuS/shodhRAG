@@ -232,11 +232,12 @@ impl CrossEncoderReranker {
 mod tests {
     use super::*;
 
-    const MODELS_ENV: &str = "SHODH_TEST_MODELS_DIR";
+    const MODELS_ENV: &str = "SHODH_TEST_MODELS";
 
-    /// Resolve `$SHODH_TEST_MODELS_DIR/<sub>`. These tests are `#[ignore]`d by default
-    /// because the models are not checked in; when run explicitly (`--ignored`) a
-    /// missing variable or missing file is a hard failure, never a silent skip.
+    /// Resolve `$SHODH_TEST_MODELS/<sub>`. The models are not checked in, so these
+    /// tests are `#[ignore]`d unless `SHODH_TEST_MODELS` was set at build time (see
+    /// build.rs). Once enabled -- or when run with `--ignored` -- a missing variable
+    /// or missing file is a hard failure, never a silent skip.
     fn model_dir(sub: &str) -> PathBuf {
         let root = std::env::var_os(MODELS_ENV).unwrap_or_else(|| {
             panic!("{MODELS_ENV} must point at the models directory to run this test")
@@ -254,7 +255,10 @@ mod tests {
     /// MiniLM WordPiece tokenizer.json must load with the minimal `tokenizers`
     /// feature set (no `esaxx_fast`, no `progressbar`) and produce BERT pair framing.
     #[test]
-    #[ignore = "requires SHODH_TEST_MODELS_DIR containing ms-marco-MiniLM-L6-v2/"]
+    #[cfg_attr(
+        not(shodh_test_models),
+        ignore = "requires SHODH_TEST_MODELS containing ms-marco-MiniLM-L6-v2/"
+    )]
     fn minilm_wordpiece_tokenizer_loads_and_frames_pairs() {
         let dir = model_dir("ms-marco-MiniLM-L6-v2");
         let tok = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json"))
@@ -281,7 +285,10 @@ mod tests {
     /// through `tokenizers` without the C++ esaxx backend, and agree on framing
     /// with the in-crate SentencePiece tokenizer used for embeddings.
     #[test]
-    #[ignore = "requires SHODH_TEST_MODELS_DIR containing multilingual-e5-base/"]
+    #[cfg_attr(
+        not(shodh_test_models),
+        ignore = "requires SHODH_TEST_MODELS containing multilingual-e5-base/"
+    )]
     fn e5_unigram_tokenizer_loads_and_frames_sequences() {
         let dir = model_dir("multilingual-e5-base");
         let tok = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json"))
@@ -309,7 +316,10 @@ mod tests {
     /// End-to-end: tokenizer + ONNX session. A relevant passage must outscore an
     /// unrelated one for the same query.
     #[test]
-    #[ignore = "requires SHODH_TEST_MODELS_DIR containing ms-marco-MiniLM-L6-v2/ with an ONNX model"]
+    #[cfg_attr(
+        not(shodh_test_models),
+        ignore = "requires SHODH_TEST_MODELS containing ms-marco-MiniLM-L6-v2/ with an ONNX model"
+    )]
     fn cross_encoder_ranks_relevant_passage_higher() {
         let dir = model_dir("ms-marco-MiniLM-L6-v2");
         let reranker = CrossEncoderReranker::new(&dir).expect("load reranker");

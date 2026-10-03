@@ -9,3 +9,11 @@ members = [
 # unoptimized sha2 makes that take seconds in dev builds.
 [profile.dev.package.sha2]
 opt-level = 3
+
+# llama-cpp-sys-2's build script links `msvcrtd` (the debug CRT) whenever the build
+# script itself was compiled with debug assertions, even though it builds llama.cpp
+# as Release /MD. In dev/test builds that pulled the debug CRT into every binary
+# alongside Rust's release `msvcrt` (LNK4098). Turning debug assertions off for
+# this package keeps the whole link on the release dynamic CRT.
+[profile.dev.package.llama-cpp-sys-2]
+debug-assertions = false

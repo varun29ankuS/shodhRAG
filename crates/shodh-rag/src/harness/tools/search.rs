@@ -121,8 +121,34 @@ struct Passage {
     page: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     heading: Option<String>,
+    /// Heading chain of the passage ("3 Method > 3.2 Chunkwise form").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    section: Option<String>,
     score: f32,
     text: String,
+    /// Bounding boxes of the passage on its pages, for the viewer only:
+    /// sent in the step detail, never in the text the model reads.
+    #[serde(skip)]
+    regions: Option<Value>,
+}
+
+impl Passage {
+    /// The passage as shown to the UI: the model's fields plus `regions`.
+    fn detail_value(&self) -> Value {
+        let mut value = serde_json::to_value(self).unwrap_or(Value::Null);
+        if let (Some(regions), Some(map)) = (&self.regions, value.as_object_mut()) {
+            map.insert("regions".to_string(), regions.clone());
+        }
+        value
+    }
+}
+
+/// The chunk's stored boxes (`[{"page":3,"x0":..}]`), when valid JSON.
+fn passage_regions(result: &ComprehensiveResult) -> Option<Value> {
+    let raw = result.metadata.get("bboxes")?;
+    let value: Value = serde_json::from_str(raw).ok()?;
+    value.as_array().filter(|a| !a.is_empty())?;
+    Some(value)
 }
 
 /// What the user sees for a source: the file name for files, and the record's
@@ -178,8 +204,14 @@ fn passage(n: u32, result: &ComprehensiveResult, max_chars: usize) -> Passage {
             .get("heading")
             .map(|h| h.trim().to_string())
             .filter(|h| !h.is_empty()),
+        section: result
+            .metadata
+            .get("section_path")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
         score: result.score,
         text: truncate_chars(result.snippet.trim(), max_chars),
+        regions: passage_regions(result),
     }
 }
 
@@ -366,7 +398,9 @@ impl HostTool for SearchDocumentsTool {
         let files: HashSet<&str> = passages.iter().map(|p| p.path.as_str()).collect();
         let body = serde_json::to_string(&passages)
             .map_err(|e| ToolError::Failed(format!("Could not encode results: {e}")))?;
-        let detail = json!({ "passages": passages });
+        let detail = json!({
+            "passages": passages.iter().map(Passage::detail_value).collect::<Vec<_>>()
+        });
         let noun = if passages.len() == 1 {
             "passage"
         } else {
@@ -413,6 +447,43 @@ mod tests {
         assert_eq!(p.file, "acme_msa.pdf");
         assert_eq!(p.page.as_deref(), Some("4"));
         assert_eq!(p.text, "Notice period is sixty days.");
+        assert!(p.section.is_none() && p.regions.is_none());
+    }
+
+    #[test]
+    fn structured_passages_carry_section_and_regions_for_the_viewer_only() {
+        let mut metadata = HashMap::new();
+        metadata.insert("page_start".to_string(), "5".to_string());
+        metadata.insert("page_end".to_string(), "6".to_string());
+        metadata.insert(
+            "section_path".to_string(),
+            "3 Method > 3.2 Chunkwise form".to_string(),
+        );
+        metadata.insert("heading".to_string(), "3.2 Chunkwise form".to_string());
+        metadata.insert(
+            "bboxes".to_string(),
+            r#"[{"page":5,"x0":72.0,"y0":400.0,"x1":300.0,"y1":700.0}]"#.to_string(),
+        );
+        let result = ComprehensiveResult {
+            id: Uuid::nil(),
+            score: 0.7,
+            metadata,
+            citation: Citation {
+                source: "c:/papers/deltanet.pdf".into(),
+                ..Citation::default()
+            },
+            snippet: "The chunkwise form computes...".into(),
+            source_index: "hybrid".into(),
+        };
+        let p = passage(1, &result, MAX_PASSAGE_CHARS);
+        assert_eq!(p.page.as_deref(), Some("5-6"));
+        assert_eq!(p.section.as_deref(), Some("3 Method > 3.2 Chunkwise form"));
+        let for_model = serde_json::to_value(&p).expect("json");
+        assert!(for_model.get("regions").is_none());
+        assert_eq!(for_model["section"], "3 Method > 3.2 Chunkwise form");
+        let for_ui = p.detail_value();
+        assert_eq!(for_ui["regions"][0]["page"], 5);
+        assert_eq!(for_ui["regions"][0]["x0"], 72.0);
     }
 
     #[test]

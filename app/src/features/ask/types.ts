@@ -56,6 +56,15 @@ export interface PageSpan {
   end: number;
 }
 
+/** A layout box of an indexed passage: PDF points, bottom-left origin. */
+export interface PdfRegion {
+  page: number;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
 /** A search result normalised at the frontend boundary. */
 export interface SearchHit {
   /** 1-based position; matches the `[N]` markers the model writes. */
@@ -69,6 +78,10 @@ export interface SearchHit {
   page: PageSpan | null;
   lineRange: [number, number] | null;
   url: string | null;
+  /** Heading chain of the passage, when the document was parsed structurally. */
+  section?: string | null;
+  /** Where the passage sits on its pages; preferred over text search to highlight it. */
+  regions?: PdfRegion[] | null;
 }
 
 export type RunStatus = 'running' | 'done' | 'failed' | 'cancelled';

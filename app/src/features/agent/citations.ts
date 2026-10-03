@@ -20,5 +20,7 @@ export function passageHits(passages: readonly Passage[]): SearchHit[] {
     page: p.web ? null : parsePageSpan(p.page),
     lineRange: null,
     url: p.web ? p.path : null,
+    section: p.web ? null : (p.section ?? null),
+    regions: p.web ? null : (p.regions ?? null),
   }));
 }

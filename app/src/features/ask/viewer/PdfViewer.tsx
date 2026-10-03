@@ -3,10 +3,11 @@ import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from 'pdfjs-dist';
 import { ChevronDown, ChevronUp, Loader2, Minus, MoveHorizontal, Plus, Search, X } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { pathKey } from '../../library/fileTree';
-import type { PageSpan } from '../types';
+import type { PageSpan, PdfRegion } from '../types';
 import { findPassage, matchScore, prepareHaystack, type PassageMatch, type PreparedHaystack, type TextRange } from './passageMatch';
 import { acquirePdf, holdForeground, readPdfMeta, type PdfDocLease } from './pdfDocCache';
 import { isRenderCancelled, loadPdfJs } from './pdfjs';
+import { firstRegionPage, regionToCssRect, regionsOnPages } from './regionGeometry';
 import { scrollBehavior } from './sourceAccess';
 import { findInText, viewerCommand } from './viewerKeys';
 import { getPdfMeta, pdfViewStates, rememberPdfMeta } from './viewerStores';
@@ -32,6 +33,8 @@ interface PageSize {
 interface HighlightTarget {
   page: number;
   ranges: TextRange[];
+  /** Layout boxes to outline (any page); empty when located by text. */
+  boxes: PdfRegion[];
   token: number;
 }
 
@@ -123,6 +126,8 @@ interface PdfPageViewProps {
   quick: boolean;
   getText: (page: number) => Promise<PageText>;
   ranges: TextRange[] | null;
+  /** Layout boxes of the cited passage on this page (PDF points). */
+  boxes: PdfRegion[] | null;
   highlightToken: number | null;
   /** `top` is the first highlight's offset in the page, or null if none could be drawn. */
   onHighlightRendered: (page: number, token: number, top: number | null) => void;
@@ -139,6 +144,7 @@ function PdfPageView({
   quick,
   getText,
   ranges,
+  boxes,
   highlightToken,
   onHighlightRendered,
   onPainted,
@@ -154,6 +160,9 @@ function PdfPageView({
   const [layerUnusable, setLayerUnusable] = useState(false);
   /** null until computed for the current layer and ranges. */
   const [rects, setRects] = useState<Rect[] | null>(null);
+  /** Outlines of `boxes` in page pixels; null while not computed. */
+  const [boxRects, setBoxRects] = useState<Rect[] | null>(null);
+  const boxesKey = boxes && boxes.length > 0 ? JSON.stringify(boxes) : '';
   const quickRef = useRef(quick);
   quickRef.current = quick;
   const hasCanvas = useRef(false);
@@ -302,6 +311,35 @@ function PdfPageView({
     setRects(mergeRects(found));
   }, [layer, ranges]);
 
+  // Layout boxes map straight to the page through the viewport transform;
+  // they need neither the text layer nor a text match.
+  useEffect(() => {
+    if (!doc || !boxesKey) {
+      setBoxRects(null);
+      return;
+    }
+    const regions = JSON.parse(boxesKey) as PdfRegion[];
+    let cancelled = false;
+    doc
+      .getPage(pageNumber)
+      .then(page => {
+        if (cancelled) return;
+        const viewport = page.getViewport({ scale });
+        setBoxRects(regions.map(r => regionToCssRect(r, viewport.transform)));
+      })
+      .catch(() => {
+        if (!cancelled) setBoxRects([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [doc, pageNumber, scale, boxesKey]);
+
+  useEffect(() => {
+    if (highlightToken === null || ranges?.length || boxRects === null) return;
+    onHighlightRendered(pageNumber, highlightToken, boxRects.length > 0 ? boxRects.reduce((m, r) => Math.min(m, r.top), Infinity) : null);
+  }, [boxRects, ranges, highlightToken, pageNumber, onHighlightRendered]);
+
   useEffect(() => {
     if (highlightToken === null || !ranges || ranges.length === 0) return;
     if (layerUnusable) {
@@ -334,10 +372,13 @@ function PdfPageView({
       )}
       <div ref={canvasHostRef} className="absolute inset-0" />
       <div ref={textHostRef} className="absolute inset-0" />
-      {rects && rects.length > 0 && (
+      {((rects && rects.length > 0) || (boxRects && boxRects.length > 0)) && (
         <div className="pdf-highlight-layer" aria-hidden="true">
-          {rects.map((r, i) => (
-            <div key={i} className="pdf-highlight" style={{ left: r.left - 1, top: r.top - 1, width: r.width + 2, height: r.height + 2 }} />
+          {(rects ?? []).map((r, i) => (
+            <div key={`t${i}`} className="pdf-highlight" style={{ left: r.left - 1, top: r.top - 1, width: r.width + 2, height: r.height + 2 }} />
+          ))}
+          {(boxRects ?? []).map((r, i) => (
+            <div key={`b${i}`} className="pdf-highlight" style={{ left: r.left - 2, top: r.top - 2, width: r.width + 4, height: r.height + 4 }} />
           ))}
         </div>
       )}
@@ -367,6 +408,11 @@ interface PdfViewerProps {
   fileModifiedMs?: number | null;
   passage: string;
   citedPages: PageSpan | null;
+  /**
+   * Layout boxes of the cited passage from the index (PDF points). When
+   * present they are outlined directly; text search is the fallback.
+   */
+  regions?: PdfRegion[] | null;
   onLocate: (result: LocateResult) => void;
   onFatal: (error: unknown) => void;
   /** Restore and remember the reading position and zoom for this file. */
@@ -392,6 +438,7 @@ export function PdfViewer({
   fileModifiedMs = null,
   passage,
   citedPages,
+  regions = null,
   onLocate,
   onFatal,
   rememberView = false,
@@ -771,6 +818,7 @@ export function PdfViewer({
 
   const citedStart = citedPages?.start ?? null;
   const citedEnd = citedPages?.end ?? null;
+  const regionsKey = regions && regions.length > 0 ? JSON.stringify(regions) : '';
 
   // Locate the passage: cited page(s) first, then every page by distance.
   useEffect(() => {
@@ -792,6 +840,24 @@ export function PdfViewer({
       requestAnimationFrame(() => {
         if (isCurrent()) scrollToPage(start);
       });
+    }
+
+    // Prefer the indexed layout boxes: exact, and independent of how pdf.js
+    // orders the page text.
+    if (regionsKey) {
+      const span = start !== null ? { start, end: end ?? start } : null;
+      const boxes = regionsOnPages(JSON.parse(regionsKey) as PdfRegion[], span).filter(r => r.page <= total);
+      const page = firstRegionPage(boxes);
+      if (page !== null) {
+        setTarget({ page, ranges: [], boxes, token });
+        if (page !== start) {
+          requestAnimationFrame(() => {
+            if (isCurrent()) scrollToPage(page);
+          });
+        }
+        onLocateRef.current({ status: 'found', message: `Cited passage outlined on page ${page}.` });
+        return;
+      }
     }
 
     const passageText = passage.trim();
@@ -842,7 +908,7 @@ export function PdfViewer({
         return;
       }
 
-      setTarget({ page: best.page, ranges: best.match.ranges, token });
+      setTarget({ page: best.page, ranges: best.match.ranges, boxes: [], token });
       scrollToPage(best.page);
       const moved = start !== null && (best.page < start || best.page > (end ?? start));
       const where = `page ${best.page}`;
@@ -864,7 +930,7 @@ export function PdfViewer({
         message: start !== null ? `The PDF text could not be searched; showing page ${start}.` : 'The PDF text could not be searched; showing the document from the start.',
       });
     });
-  }, [doc, passage, citedStart, citedEnd, getText, scrollToPage]);
+  }, [doc, passage, citedStart, citedEnd, regionsKey, getText, scrollToPage]);
 
   const onHighlightRendered = useCallback((page: number, token: number, top: number | null) => {
     if (scrolledToken.current === token || token !== locateToken.current) return;
@@ -943,7 +1009,7 @@ export function PdfViewer({
     const token = ++locateToken.current;
     targetKind.current = 'find';
     scrolledToken.current = null;
-    setTarget({ page: findSelected.page, ranges: [{ start: findSelected.start, end: findSelected.end }], token });
+    setTarget({ page: findSelected.page, ranges: [{ start: findSelected.start, end: findSelected.end }], boxes: [], token });
     scrollToPage(findSelected.page);
   }, [findSelected, scrollToPage]);
 
@@ -1198,6 +1264,7 @@ export function PdfViewer({
             {sizes.map((size, index) => {
               const pageNumber = index + 1;
               const isTarget = target?.page === pageNumber;
+              const pageBoxes = target ? target.boxes.filter(b => b.page === pageNumber) : [];
               return (
                 <PdfPageView
                   key={pageNumber}
@@ -1209,6 +1276,7 @@ export function PdfViewer({
                   quick={!firstPainted && pageNumber === initialPage}
                   getText={getText}
                   ranges={isTarget ? target.ranges : null}
+                  boxes={pageBoxes.length > 0 ? pageBoxes : null}
                   highlightToken={isTarget ? target.token : null}
                   onHighlightRendered={onHighlightRendered}
                   onPainted={onPainted}

@@ -1,4 +1,5 @@
 import type { PageSpan, RawSearchResult, SearchHit } from './types';
+import { parseRegions } from './viewer/regionGeometry.ts';
 
 const SPAN_PATTERN = /^\s*(\d+)(?:\s*(?:[-–—]|to)\s*(\d+))?\s*$/i;
 
@@ -149,9 +150,12 @@ export function toSearchHits(raw: readonly unknown[] | undefined): SearchHit[] {
       text,
       snippet: typeof r.snippet === 'string' ? r.snippet : text.slice(0, 200),
       score: typeof r.score === 'number' ? r.score : 0,
-      page: parsePageSpan(r.pageNumber ?? citation?.pageNumbers ?? null),
+      // The citation's label carries ranges ("4-5"); `pageNumber` only the first page.
+      page: parsePageSpan(citation?.pageNumbers ?? null) ?? parsePageSpan(r.pageNumber ?? null),
       lineRange: parseLineRange(r.lineRange ?? null),
       url: citation && typeof citation.url === 'string' && citation.url ? citation.url : null,
+      section: typeof r.metadata?.section_path === 'string' && r.metadata.section_path.trim() ? r.metadata.section_path.trim() : null,
+      regions: parseRegions(r.metadata?.bboxes ?? null),
     });
   });
   return hits;

@@ -9,6 +9,8 @@
  */
 
 import type { AgentEvent, PlanItem, RiskTier } from './events';
+import type { PdfRegion } from '../ask/types';
+import { parseRegions } from '../ask/viewer/regionGeometry.ts';
 
 export type StepStatus = 'running' | 'awaiting_approval' | 'done' | 'failed';
 
@@ -55,6 +57,10 @@ export interface Passage {
   text: string;
   /** Untrusted web content; `path` is an http(s) URL. Absent in older transcripts. */
   web?: boolean;
+  /** Heading chain ("3 Method > 3.2 Chunkwise form"); absent for unstructured sources. */
+  section?: string | null;
+  /** Layout boxes on the cited pages; absent for unstructured sources. */
+  regions?: PdfRegion[] | null;
 }
 
 /** A web source as returned in a web tool's `detail.webSources`. */
@@ -208,6 +214,8 @@ export function passagesFromDetail(detail: unknown): Passage[] {
       heading: str(entry.heading),
       score: typeof entry.score === 'number' ? entry.score : 0,
       text: typeof entry.text === 'string' ? entry.text : '',
+      section: str(entry.section),
+      regions: parseRegions(entry.regions),
     });
   }
   return out;

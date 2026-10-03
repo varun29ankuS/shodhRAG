@@ -50,7 +50,12 @@ html2text = "0.14"
 roxmltree = "0.20"
 bytes = "1"
 
-# Document parsing
+# Document parsing. pdf_oxide supplies positioned text runs and table
+# detection for the layout parser (docs/adr/0002-document-parser.md).
+pdf_oxide = "=0.3.78"
+# pdf_oxide 0.3.78 does not compile against office_oxide >= 0.1.11 (a field
+# was added to a struct it constructs); pin the last compatible release.
+office_oxide = { version = "=0.1.10", default-features = false }
 pdf-extract = "0.7"
 lopdf = "0.32"
 zip = "2"

@@ -143,8 +143,19 @@ fn slice_chars(text: &str, start: usize, end: usize) -> (String, usize) {
     (slice, total)
 }
 
-/// Page texts recorded by the parser (`page` > 0).
+/// Page texts recorded by the parser: from the structured document's
+/// blocks when the layout parser read the file, else from paged sections.
 fn parsed_pages(parsed: &ParsedDocument) -> Vec<(usize, String)> {
+    if let Some(doc) = parsed.document.as_ref().filter(|d| !d.pages.is_empty()) {
+        let pages: Vec<(usize, String)> = doc
+            .pages
+            .iter()
+            .map(|p| (p.number as usize, doc.page_text(p.number)))
+            .collect();
+        if pages.iter().any(|(_, text)| !text.trim().is_empty()) {
+            return pages;
+        }
+    }
     parsed
         .structured_sections
         .iter()
@@ -385,6 +396,7 @@ mod tests {
                     heading: None,
                 })
                 .collect(),
+            document: None,
         }
     }
 

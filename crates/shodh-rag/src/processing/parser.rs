@@ -2,7 +2,8 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::tabular;
+use super::document_model::{Block, BlockKind, StructuredDocument};
+use super::{pdf_layout, tabular, text_structure};
 use crate::types::{DocumentFormat, DocumentSection};
 
 #[derive(Debug, Clone)]
@@ -13,6 +14,11 @@ pub struct ParsedDocument {
     pub format: DocumentFormat,
     /// Structured sections for PDFs with forms/tables. Empty for plain text formats.
     pub structured_sections: Vec<DocumentSection>,
+    /// Semantic blocks (headings, paragraphs, tables, theorems, ...) with
+    /// pages and bounding boxes, for formats the structure parsers handle
+    /// (PDF, LaTeX, Markdown). `None` for other formats and for PDFs that
+    /// only the unpaged fallback extractor could read.
+    pub document: Option<StructuredDocument>,
 }
 
 pub struct DocumentParser;
@@ -55,10 +61,28 @@ impl DocumentParser {
             None
         };
 
+        let mut document: Option<StructuredDocument> = None;
         let content = match &tables {
             Some(tables) => tabular::tables_to_text(tables),
             None => match extension.as_str() {
-                "pdf" => self.parse_pdf(path)?,
+                "pdf" => {
+                    let (text, doc) = self.parse_pdf(path)?;
+                    document = doc;
+                    text
+                }
+                "tex" | "latex" => {
+                    let raw = tabular::read_text_file(path)?;
+                    let doc = text_structure::parse_latex(&raw);
+                    let text = doc.plain_text();
+                    document = Some(doc);
+                    text
+                }
+                "md" | "markdown" => {
+                    let raw = tabular::read_text_file(path)?;
+                    let doc = text_structure::parse_markdown(&raw);
+                    document = Some(doc);
+                    raw
+                }
                 "docx" => self.parse_docx(path)?,
                 "pptx" => self.parse_pptx(path)?,
                 "html" | "htm" => self.parse_html(path)?,
@@ -66,14 +90,31 @@ impl DocumentParser {
                 _ => tabular::read_text_file(path)?,
             },
         };
+        if let Some(doc) = &document {
+            if !doc.pages.is_empty() {
+                metadata.insert("page_count".to_string(), doc.pages.len().to_string());
+            }
+        }
 
-        // Extract structured sections for formats with tabular/form data
+        // Extract structured sections for formats with tabular/form data.
+        // PDFs with a structured document only contribute their form fields
+        // and annotations here; their text lives in `document`.
         let structured_sections = match tables {
             Some(tables) => {
                 record_table_metadata(&tables, &mut metadata);
                 tabular::tables_to_sections(tables)
             }
-            None if format == DocumentFormat::PDF => self.extract_pdf_structure(path, &content),
+            None if format == DocumentFormat::PDF => {
+                let sections = self.extract_pdf_structure(path, &content);
+                if document.is_some() {
+                    sections
+                        .into_iter()
+                        .filter(|s| !matches!(s, DocumentSection::Text { .. }))
+                        .collect()
+                } else {
+                    sections
+                }
+            }
             None => Vec::new(),
         };
 
@@ -101,150 +142,70 @@ impl DocumentParser {
             metadata,
             format,
             structured_sections,
+            document,
         })
     }
 
-    fn parse_pdf(&self, path: &Path) -> Result<String> {
+    /// Parse a PDF into text plus, when the layout parser succeeds, its
+    /// structured blocks.
+    ///
+    /// Order of attempts:
+    /// 1. The layout parser ([`pdf_layout`]): paged, positioned blocks.
+    /// 2. When the layout parser cannot open the file, `pdf_extract` text
+    ///    (unpaged).
+    /// 3. When the PDF has no text layer (a scan), Windows OCR page by page.
+    ///
+    /// A PDF is treated as scanned only when its text layer is essentially
+    /// empty across all pages ([`is_effectively_scanned`]), never because one
+    /// extractor failed.
+    fn parse_pdf(&self, path: &Path) -> Result<(String, Option<StructuredDocument>)> {
         let bytes = std::fs::read(path)
             .with_context(|| format!("Failed to read PDF: {}", path.display()))?;
 
-        // Layer 1: pdf_extract for fast text extraction
-        // Wrapped in catch_unwind because pdf_extract can panic on malformed
-        // font tables, CIDFont encodings, or unusual PDF structures.
-        let bytes_clone = bytes.clone();
-        let text_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            pdf_extract::extract_text_from_mem(&bytes_clone)
-        }));
-
-        let text_ok = match text_result {
-            Ok(Ok(text)) => Some(text),
-            Ok(Err(e)) => {
-                tracing::debug!("pdf_extract failed on {}: {:?}", path.display(), e);
-                None
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "pdf_extract panicked on {}, falling through to lopdf/OCR",
-                    path.display()
-                );
-                None
-            }
-        };
-
-        if let Some(text) = text_ok {
-            let cleaned = text
-                .lines()
-                .map(|line| line.trim())
-                .filter(|line| !line.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            if !cleaned.is_empty() {
-                // Check if extraction looks garbled (column merge artifacts)
-                let garble_score = Self::column_garble_score(&cleaned);
-                if garble_score < 0.25 {
-                    // Good quality — use pdf_extract output
-                    return Ok(cleaned);
+        let mut layout_failed = false;
+        match pdf_layout::parse_pdf_layout(&bytes) {
+            Ok(doc) => {
+                let chars = doc.text_chars();
+                if !is_effectively_scanned(chars, doc.pages.len()) {
+                    return Ok((doc.plain_text(), Some(doc)));
                 }
-
-                // Likely garbled columns — try OCR for better spatial layout
                 tracing::info!(
-                    garble_score = format!("{:.2}", garble_score),
-                    "PDF text extraction appears garbled, attempting OCR: {}",
+                    pages = doc.pages.len(),
+                    text_chars = chars,
+                    "PDF has no text layer; trying OCR: {}",
                     path.display()
                 );
-
-                #[cfg(windows)]
-                {
-                    match super::windows_ocr::ocr_pdf(path) {
-                        Ok(ocr_text) if !ocr_text.trim().is_empty() => {
-                            tracing::info!("Using OCR output for garbled PDF: {}", path.display());
-                            return Ok(ocr_text);
-                        }
-                        Ok(_) => {
-                            tracing::warn!("OCR returned empty text, falling back to pdf_extract");
-                        }
-                        Err(e) => {
-                            tracing::warn!("OCR failed ({}), falling back to pdf_extract", e);
-                        }
-                    }
-                }
-
-                // OCR unavailable or failed — return pdf_extract output as-is
-                return Ok(cleaned);
+            }
+            Err(e) => {
+                layout_failed = true;
+                tracing::warn!(error = %e, "PDF layout parsing failed: {}", path.display());
             }
         }
 
-        // pdf_extract failed — try lopdf's content stream parsing
-        if let Ok(lopdf_doc) = super::lopdf_parser::LoPdfParser::parse(path) {
-            let text = lopdf_doc.full_text();
-            if !text.trim().is_empty() {
-                return Ok(text);
+        if layout_failed {
+            if let Some(text) = pdf_extract_text(&bytes) {
+                return Ok((text, None));
             }
         }
 
-        // Both failed — try OCR as last resort
         #[cfg(windows)]
         {
-            tracing::info!("No text in PDF, attempting Windows OCR: {}", path.display());
-            match super::windows_ocr::ocr_pdf(path) {
-                Ok(ocr_text) => return Ok(ocr_text),
-                Err(e) => {
-                    tracing::warn!("Windows OCR failed for {}: {}", path.display(), e);
+            match super::windows_ocr::ocr_pdf_pages(path) {
+                Ok(pages) => {
+                    let doc = ocr_pages_to_document(&pages);
+                    if doc.text_chars() > 0 {
+                        tracing::info!(pages = pages.len(), "Using OCR text: {}", path.display());
+                        return Ok((doc.plain_text(), Some(doc)));
+                    }
                 }
+                Err(e) => tracing::warn!("Windows OCR failed for {}: {:#}", path.display(), e),
             }
         }
 
         Err(anyhow::anyhow!(
-            "PDF contains no extractable text (scanned/image-based): {}",
+            "PDF contains no extractable text (scanned/image-based and OCR found no text): {}",
             path.display()
         ))
-    }
-
-    /// Score how likely the extracted text is garbled from column merging.
-    /// Returns 0.0 (clean) to 1.0 (heavily garbled).
-    ///
-    /// Heuristic: pdf_extract merges multi-column layouts into single lines,
-    /// producing lines with large internal whitespace gaps (3+ spaces) where
-    /// unrelated column content gets concatenated. Normal prose never has this.
-    fn column_garble_score(text: &str) -> f64 {
-        let lines: Vec<&str> = text.lines().collect();
-        if lines.len() < 3 {
-            return 0.0;
-        }
-
-        let mut garbled_lines = 0usize;
-        let mut scored_lines = 0usize;
-
-        for line in &lines {
-            // Skip very short lines (headers, labels)
-            if line.len() < 15 {
-                continue;
-            }
-            scored_lines += 1;
-
-            // Count internal whitespace gaps of 5+ spaces — hallmark of column merge.
-            // Using 5 instead of 3 to avoid false positives on table-style PDFs
-            // (invoices, receipts) where moderate spacing is intentional alignment.
-            let gap_count = line
-                .as_bytes()
-                .windows(5)
-                .filter(|w| w.iter().all(|&b| b == b' '))
-                .count();
-
-            // Also check for tab characters (another column separator artifact)
-            let tab_count = line.chars().filter(|&c| c == '\t').count();
-
-            if gap_count >= 2 || tab_count >= 3 {
-                garbled_lines += 1;
-            }
-        }
-
-        if scored_lines == 0 {
-            return 0.0;
-        }
-
-        garbled_lines as f64 / scored_lines as f64
     }
 
     /// Extract structured sections from a PDF using lopdf.
@@ -440,8 +401,62 @@ impl DocumentParser {
             metadata: HashMap::new(),
             format,
             structured_sections: Vec::new(),
+            document: None,
         }
     }
+}
+
+/// Whether a PDF's text layer is too thin to be its real content: under 200
+/// characters in total and under 8 per page. Pages that are figures only are
+/// normal in papers, so this looks at the whole document, not single pages.
+pub fn is_effectively_scanned(text_chars: usize, pages: usize) -> bool {
+    text_chars < 200 && text_chars < 8 * pages.max(1)
+}
+
+/// Whole-document text via `pdf_extract`, or `None` when it fails, panics
+/// (it can on malformed CMaps) or yields nothing.
+fn pdf_extract_text(bytes: &[u8]) -> Option<String> {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pdf_extract::extract_text_from_mem(bytes)
+    }));
+    let text = match result {
+        Ok(Ok(text)) => text,
+        Ok(Err(e)) => {
+            tracing::debug!("pdf_extract failed: {:?}", e);
+            return None;
+        }
+        Err(_) => {
+            tracing::warn!("pdf_extract panicked");
+            return None;
+        }
+    };
+    let cleaned = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        );
+    (!cleaned.is_empty()).then_some(cleaned)
+}
+
+/// One paragraph block per non-empty OCR'd page, numbered from 1.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn ocr_pages_to_document(pages: &[String]) -> StructuredDocument {
+    let blocks = pages
+        .iter()
+        .enumerate()
+        .filter(|(_, text)| !text.trim().is_empty())
+        .map(|(i, text)| Block::new(BlockKind::Paragraph, text.trim()).on_page(i as u32 + 1, None))
+        .collect();
+    let mut doc = StructuredDocument {
+        pages: Vec::new(),
+        blocks,
+    };
+    doc.finalize();
+    doc
 }
 
 /// Record per-table statistics (sheet count, row count, numeric columns) in
@@ -722,4 +737,76 @@ fn extract_docx_text(xml: &str) -> String {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::processing::pdf_fixtures::{build_pdf, column};
+
+    /// A ToUnicode CMap with a 6-byte bfrange destination. Valid enough for
+    /// PDF viewers, but pdf_extract's CMap parser panics on it ("bad length
+    /// of hexstring") — the failure that made a text PDF look scanned.
+    const ODD_CMAP: &str = "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CMapName /Odd def\n1 begincodespacerange\n<00> <FF>\nendcodespacerange\n1 beginbfrange\n<20> <7E> <0020>\nendbfrange\n1 beginbfrange\n<80> <81> <000000000041>\nendbfrange\nendcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n";
+
+    #[test]
+    fn text_pdf_that_crashes_pdf_extract_is_not_treated_as_scanned() {
+        let bytes = build_pdf(&[column(72.0, 700.0, "robot", 6)], Some(ODD_CMAP));
+        let pdf_extract_result =
+            std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem(&bytes));
+        assert!(
+            pdf_extract_result.is_err(),
+            "fixture must reproduce the pdf_extract panic"
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("robottt-like.pdf");
+        std::fs::write(&path, &bytes).expect("write pdf");
+        let parsed = DocumentParser::new().parse_file(&path).expect("parsed");
+        assert!(
+            parsed.content.contains("robot line 0 of body text"),
+            "{}",
+            parsed.content
+        );
+        let doc = parsed.document.expect("structured document");
+        assert!(!doc.blocks.is_empty());
+        assert!(doc.blocks.iter().all(|b| b.page == Some(1)));
+        assert_eq!(
+            parsed.metadata.get("page_count").map(String::as_str),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn scanned_only_when_text_is_essentially_absent_across_pages() {
+        assert!(is_effectively_scanned(0, 22));
+        assert!(is_effectively_scanned(60, 22));
+        assert!(!is_effectively_scanned(64_190, 22));
+        // A one-page memo with a short text layer is real text.
+        assert!(!is_effectively_scanned(40, 1));
+        assert!(!is_effectively_scanned(250, 40));
+    }
+
+    #[test]
+    fn latex_and_markdown_files_get_structured_documents() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tex = dir.path().join("paper.tex");
+        std::fs::write(
+            &tex,
+            "\\begin{document}\n\\section{Intro}\nPrimes spiral.\n\\begin{lemma}\nEvery prime is odd or two.\n\\end{lemma}\n\\end{document}\n",
+        )
+        .expect("write tex");
+        let parsed = DocumentParser::new().parse_file(&tex).expect("parsed tex");
+        let doc = parsed.document.expect("tex structure");
+        assert!(doc
+            .blocks
+            .iter()
+            .any(|b| matches!(&b.kind, BlockKind::Theorem { label } if label == "Lemma")));
+        assert!(parsed.content.contains("Primes spiral."));
+
+        let md = dir.path().join("notes.md");
+        std::fs::write(&md, "# Notes\n\nSome text.\n").expect("write md");
+        let parsed = DocumentParser::new().parse_file(&md).expect("parsed md");
+        assert_eq!(parsed.document.expect("md structure").blocks.len(), 2);
+    }
 }

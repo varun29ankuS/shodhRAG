@@ -1,8 +1,13 @@
 pub mod chunker;
+pub mod document_model;
 pub mod lopdf_parser;
 pub mod parser;
+#[cfg(test)]
+pub(crate) mod pdf_fixtures;
 pub mod pdf_info;
+pub mod pdf_layout;
 pub mod tabular;
+pub mod text_structure;
 
 #[cfg(windows)]
 pub mod windows_ocr;

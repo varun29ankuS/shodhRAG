@@ -11,6 +11,11 @@ members = [
 [profile.dev.package.sha2]
 opt-level = 3
 
+# PDF layout parsing runs during indexing; unoptimized it is ~20x slower,
+# which made indexing a paper library in dev builds take minutes.
+[profile.dev.package.pdf_oxide]
+opt-level = 3
+
 # llama-cpp-sys-2's build script links `msvcrtd` (the debug CRT) whenever the build
 # script itself was compiled with debug assertions, even though it builds llama.cpp
 # as Release /MD. In dev/test builds that pulled the debug CRT into every binary

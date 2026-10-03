@@ -105,7 +105,18 @@ export function recordLabel(kind: AppRecordKind, title: string | null | undefine
 }
 
 /** Compact chip label: the file name without extension, or the record label. */
+/** "arxiv.org" for a web address (no "www."), or the input when it is not a URL. */
+export function webHost(url: string): string {
+  try {
+    return new URL(url).host.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
+}
+
 export function sourceLabel(hit: Pick<SearchHit, 'sourceFile' | 'fileName'>): string {
+  // Web sources: the page title the search returned, else the site.
+  if (isWebUrl(hit.sourceFile)) return hit.fileName?.trim() || webHost(hit.sourceFile);
   const record = appRecordKind(hit.sourceFile);
   if (!record) return fileStemOf(hit.sourceFile);
   // Answers saved before records carried titles hold the bare id as the name.

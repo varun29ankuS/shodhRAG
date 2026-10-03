@@ -6,7 +6,7 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { Check, Copy } from 'lucide-react';
+import { Check, Copy, Globe } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { cn } from '../../lib/utils';
 import { stripChartContent } from '../../utils/artifactExtractor';
@@ -15,7 +15,7 @@ import { ChartArtifact } from '../../components/ChartArtifact';
 import { TableArtifact } from '../../components/TableArtifact';
 import { ArtifactPreviewCard } from '../../components/ArtifactPreviewCard';
 import type { SearchHit } from './types';
-import { sourceLabel } from './searchResults';
+import { sourceLabel, webHost } from './searchResults';
 import { ChartBlock, MermaidBlock } from './visual/VisualBlocks';
 import { FocusFrame } from '../focus/FocusFrame';
 import { tableRows } from '../focus/focusDom';
@@ -192,7 +192,7 @@ export function MessageContentRenderer({
             onClick={e => onOpenCitation(hit, e.currentTarget)}
             aria-label={`${isWeb ? 'Web source' : 'Source'} ${number}, ${sourceLabel(hit)}`}
             aria-pressed={isActive}
-            title={isWeb ? `Web: ${hit.fileName} — ${hit.url}` : sourceLabel(hit)}
+            title={isWeb && hit.url ? `${sourceLabel(hit)} — ${webHost(hit.url)} (opens in your browser)` : sourceLabel(hit)}
             className={cn(
               'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 ml-[3px] rounded-[5px] align-[3px] text-[10.5px] font-bold leading-none tabular-nums transition-colors duration-micro',
               isActive
@@ -203,6 +203,7 @@ export function MessageContentRenderer({
               FOCUS_RING,
             )}
           >
+            {isWeb && <Globe className="w-2.5 h-2.5 mr-0.5" aria-hidden="true" />}
             {number}
           </button>,
         );

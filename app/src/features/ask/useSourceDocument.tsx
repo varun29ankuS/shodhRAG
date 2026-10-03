@@ -291,6 +291,7 @@ export function useSourceDocument(hit: SearchHit, { onPageChange }: SourceDocume
           key={fileInfo.path}
           filePath={hit.sourceFile}
           fileSize={fileInfo.sizeBytes}
+          fileModifiedMs={fileInfo.modifiedMs}
           passage={passage}
           citedPages={hit.page}
           onLocate={setLocate}

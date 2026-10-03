@@ -145,6 +145,7 @@ export function FileViewer({ path, onFirstPageVisible }: FileViewerProps) {
         key={path}
         filePath={path}
         fileSize={info ? info.sizeBytes : 'pending'}
+        fileModifiedMs={info?.modifiedMs ?? null}
         passage=""
         citedPages={null}
         onLocate={ignoreLocate}

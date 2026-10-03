@@ -554,6 +554,7 @@ pub fn run() {
             source_viewer_commands::read_source_bytes,
             source_viewer_commands::read_source_text,
             source_viewer_commands::read_source_table,
+            source_viewer_commands::get_pdf_info,
             rag_commands::parse_llm_response,
             // Image upload commands
             image_upload_commands::read_clipboard_image,

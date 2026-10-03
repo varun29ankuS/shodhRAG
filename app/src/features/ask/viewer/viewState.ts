@@ -175,6 +175,8 @@ export function parseTextViewState(raw: unknown): TextViewState | null {
 export interface PdfMeta {
   /** File size the metadata was read from (detects a changed file). */
   size: number;
+  /** Modification time (ms) the metadata was read at; null when unknown. */
+  modified: number | null;
   /** Document info Title, when present and plausible. */
   title: string | null;
   pages: number;
@@ -190,7 +192,9 @@ export function parsePdfMeta(raw: unknown): PdfMeta | null {
   if (!finite(r.pages) || !Number.isInteger(r.pages) || r.pages < 1) return null;
   if (!finite(r.width) || !finite(r.height) || r.width <= 0 || r.height <= 0) return null;
   if (r.title !== null && typeof r.title !== 'string') return null;
-  return { size: r.size, title: r.title === null ? null : cleanPdfTitle(r.title), pages: r.pages, width: r.width, height: r.height };
+  // Entries remembered before modification times were known have none.
+  const modified = finite(r.modified) ? r.modified : null;
+  return { size: r.size, modified, title: r.title === null ? null : cleanPdfTitle(r.title), pages: r.pages, width: r.width, height: r.height };
 }
 
 /** Producer prefixes some tools stamp onto the Title field. */

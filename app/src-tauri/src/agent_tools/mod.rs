@@ -40,8 +40,8 @@ use tokio::sync::RwLock;
 use crate::app_settings::{AppSettings, SettingsStore};
 use crate::calendar_store::{CalendarEvent, TodoItem};
 
-pub use files::{IndexedRoots, SourceRoots};
-pub use research::{list_directory_in, DirEntry};
+pub use files::{IndexedRoots, SourceRoot, SourceRoots};
+pub use research::{list_directory_in, DirEntry, Listing};
 pub use tauri_host::TauriEffects;
 pub use web::web_block_reason;
 

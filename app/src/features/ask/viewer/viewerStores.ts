@@ -52,6 +52,7 @@ export function rememberPdfMeta(path: string, meta: PdfMeta): void {
   if (
     previous &&
     previous.size === meta.size &&
+    previous.modified === meta.modified &&
     previous.title === meta.title &&
     previous.pages === meta.pages &&
     previous.width === meta.width &&

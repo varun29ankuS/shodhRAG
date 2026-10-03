@@ -2,7 +2,8 @@
  * Opened documents kept between file opens, so going back to a document is
  * instant and the next one in a list can be read ahead.
  *
- * Entries are keyed by path and file size and hold either prefetched bytes
+ * Entries are keyed by path, file size and (when known) modification time,
+ * and hold either prefetched bytes
  * or an opened document. Opening may consume the bytes (pdf.js transfers the
  * buffer to its worker), so an entry switches from bytes to document with
  * the same byte accounting and a buffer is never opened twice. Reads and
@@ -28,7 +29,8 @@ export interface DocStoreOptions<D> {
   /** Opens a document from bytes (may take ownership of the buffer). */
   open(bytes: Uint8Array): Promise<OpenedDoc<D>>;
   /** Identity of a file version. */
-  keyOf(path: string, size: number): string;
+  /** `version` is the file's modification time (ms) when known. */
+  keyOf(path: string, size: number, version?: number | null): string;
   maxEntries: number;
   maxBytes: number;
   /** Larger files are not read ahead: one would evict most of the cache. */
@@ -51,15 +53,15 @@ export interface DocStore<D> {
    * shared; with null (no stable identity) it is opened privately and
    * destroyed on release.
    */
-  acquire(path: string, size: number | null): Promise<DocLease<D>>;
-  /** The open document for `path` at `size`, only if it is already cached. */
-  acquireCached(path: string, size: number): DocLease<D> | null;
+  acquire(path: string, size: number | null, version?: number | null): Promise<DocLease<D>>;
+  /** The open document for `path` at `size` (and `version`), only if it is already cached. */
+  acquireCached(path: string, size: number, version?: number | null): DocLease<D> | null;
   /**
    * Read a file's bytes ahead of time (no parsing). Does nothing when the
    * file is cached, being opened, or too large; drops the bytes if `signal`
    * was cancelled while the read was in flight.
    */
-  prefetch(path: string, size: number, signal: { readonly cancelled: boolean }): Promise<void>;
+  prefetch(path: string, size: number, signal: { readonly cancelled: boolean }, version?: number | null): Promise<void>;
   /** Mark foreground work (e.g. a first page rendering) until the returned release. */
   holdForeground(): () => void;
   /** Resolves when no foreground work is in progress. */
@@ -127,8 +129,8 @@ export function createDocStore<D>(options: DocStoreOptions<D>): DocStore<D> {
     };
   };
 
-  const acquireCached = (path: string, size: number): DocLease<D> | null => {
-    const lease = cache.acquire(options.keyOf(path, size));
+  const acquireCached = (path: string, size: number, version: number | null = null): DocLease<D> | null => {
+    const lease = cache.acquire(options.keyOf(path, size, version));
     if (!lease) return null;
     if (lease.value.kind !== 'doc') {
       lease.release();
@@ -137,7 +139,7 @@ export function createDocStore<D>(options: DocStoreOptions<D>): DocStore<D> {
     return fromLease(lease, true);
   };
 
-  const acquire = async (path: string, size: number | null): Promise<DocLease<D>> => {
+  const acquire = async (path: string, size: number | null, version: number | null = null): Promise<DocLease<D>> => {
     if (size === null) {
       const release = holdForeground();
       try {
@@ -147,9 +149,9 @@ export function createDocStore<D>(options: DocStoreOptions<D>): DocStore<D> {
       }
     }
 
-    const key = options.keyOf(path, size);
+    const key = options.keyOf(path, size, version);
     for (;;) {
-      const hit = acquireCached(path, size);
+      const hit = acquireCached(path, size, version);
       if (hit) return hit;
       const pending = opens.get(key);
       if (!pending) break;
@@ -186,9 +188,14 @@ export function createDocStore<D>(options: DocStoreOptions<D>): DocStore<D> {
     }
   };
 
-  const prefetch = async (path: string, size: number, signal: { readonly cancelled: boolean }): Promise<void> => {
+  const prefetch = async (
+    path: string,
+    size: number,
+    signal: { readonly cancelled: boolean },
+    version: number | null = null,
+  ): Promise<void> => {
     if (size <= 0 || size > options.prefetchMaxBytes) return;
-    const key = options.keyOf(path, size);
+    const key = options.keyOf(path, size, version);
     if (cache.has(key) || opens.has(key)) return;
     const bytes = await readShared(key, path);
     if (signal.cancelled || opens.has(key) || cache.has(key) || bytes.byteLength !== size) return;

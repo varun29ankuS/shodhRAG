@@ -371,7 +371,7 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
       prefetcher.schedule(pathKey(file.path), delay, async signal => {
         const info = await getSourceFileInfo(file.path);
         if (signal.cancelled || info.kind !== 'pdf') return;
-        await prefetchPdfBytes(file.path, info.sizeBytes, signal);
+        await prefetchPdfBytes(file.path, info.sizeBytes, signal, info.modifiedMs);
       });
     },
     [prefetcher],

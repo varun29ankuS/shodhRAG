@@ -135,8 +135,12 @@ test('text view state', () => {
 });
 
 test('PDF metadata validation', () => {
-  const meta = { size: 1200, title: 'Attention Is All You Need', pages: 15, width: 612, height: 792 };
+  const meta = { size: 1200, modified: 1790000000000, title: 'Attention Is All You Need', pages: 15, width: 612, height: 792 };
   assert.deepEqual(parsePdfMeta(meta), meta);
+  // Remembered before modification times were known: no time, still valid.
+  const { modified: _modified, ...older } = meta;
+  assert.deepEqual(parsePdfMeta(older), { ...meta, modified: null });
+  assert.deepEqual(parsePdfMeta({ ...meta, modified: 'yesterday' }), { ...meta, modified: null });
   assert.deepEqual(parsePdfMeta({ ...meta, title: null }), { ...meta, title: null });
   assert.deepEqual(parsePdfMeta({ ...meta, title: 'untitled' }), { ...meta, title: null });
   assert.equal(parsePdfMeta({ ...meta, pages: 0 }), null);

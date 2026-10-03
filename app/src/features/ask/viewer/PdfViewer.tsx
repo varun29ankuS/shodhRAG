@@ -363,6 +363,8 @@ interface PdfViewerProps {
    * remembered page skeleton and waits; null or omitted opens privately.
    */
   fileSize?: number | 'pending' | null;
+  /** Modification time from `SourceFileInfo`, part of the cache key. */
+  fileModifiedMs?: number | null;
   passage: string;
   citedPages: PageSpan | null;
   onLocate: (result: LocateResult) => void;
@@ -387,6 +389,7 @@ interface PdfViewerProps {
 export function PdfViewer({
   filePath,
   fileSize = null,
+  fileModifiedMs = null,
   passage,
   citedPages,
   onLocate,
@@ -495,7 +498,7 @@ export function PdfViewer({
     setTarget(null);
 
     (async () => {
-      const acquired = await acquirePdf(filePath, typeof fileSize === 'number' ? fileSize : null);
+      const acquired = await acquirePdf(filePath, typeof fileSize === 'number' ? fileSize : null, fileModifiedMs);
       if (cancelled) {
         acquired.release();
         return;
@@ -520,7 +523,7 @@ export function PdfViewer({
       cancelled = true;
       lease?.release();
     };
-  }, [filePath, fileSize]);
+  }, [filePath, fileSize, fileModifiedMs]);
 
   // After the first page is on screen: remember the metadata and resolve
   // every page's real size (mixed-size documents get correct placeholders).
@@ -530,7 +533,7 @@ export function PdfViewer({
     let cancelled = false;
     (async () => {
       if (typeof fileSize === 'number') {
-        const meta = await readPdfMeta(doc, fileSize);
+        const meta = await readPdfMeta(doc, fileSize, fileModifiedMs);
         if (cancelled) return;
         rememberPdfMeta(filePath, meta);
       }
@@ -553,7 +556,7 @@ export function PdfViewer({
     return () => {
       cancelled = true;
     };
-  }, [doc, firstPainted, fileSize, filePath]);
+  }, [doc, firstPainted, fileSize, fileModifiedMs, filePath]);
 
   const onPainted = useCallback(
     (page: number, sharp: boolean) => {

@@ -150,8 +150,8 @@ point (\"x\", \"y\"; \"draggable\": true if they are param names), vector or seg
 [-5, 5], \"y\": [0, 12]}, \"draw\": [{\"type\": \"circle\", \"at\": [0, \"y\"], \"r\": 0.3}], \
 \"readouts\": [{\"label\": \"Height\", \"expr\": \"y\", \"unit\": \"m\"}]}. Draw types: circle, \
 rect, line, rod, spring, vector, trail, label.
-Formulas use + - * / ^ ( ), sin cos tan asin acos atan atan2 sqrt abs exp ln log min max floor \
-ceil, pi, e and g = 9.81.
+Formulas use + - * / ^ ( ), sin cos tan asin acos atan atan2 sqrt abs exp min max floor ceil, \
+ln (natural), log (base 10), pi, e and g = 9.81.
 For physics, kinematics, mechanics and geometry: free-body diagrams and figures as ```svg, \
 relations and trajectories as ```plot with sliders for the parameters, motion as ```simulation. \
 Always give the governing equations in LaTeX alongside, keep visuals physically correct (units, \

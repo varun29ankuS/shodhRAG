@@ -153,11 +153,18 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
   const activeIdRef = useRef(activeConversationId);
   activeIdRef.current = activeConversationId;
 
-  const localThreads = useCallback((conversationId: string): FocusThread[] => {
+  /** Always reads the latest local threads (used while mutating). */
+  const readLocal = useCallback((conversationId: string): FocusThread[] => {
     const cached = localRef.current[conversationId];
     if (cached) return cached;
     return storeRef.current?.list(conversationId) ?? [];
   }, []);
+  // Public reader whose identity changes with the local threads, so
+  // consumers (e.g. a task's reply count) re-render when they change.
+  const localThreads = useCallback(
+    (conversationId: string): FocusThread[] => local[conversationId] ?? readLocal(conversationId),
+    [local, readLocal],
+  );
 
   // Load a conversation's local threads into state once it is looked at.
   useEffect(() => {
@@ -193,7 +200,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     const conversationId = anchor.conversationId;
-    const list = localThreads(conversationId);
+    const list = readLocal(conversationId);
     const current = list.find(t => t.id === threadId) ?? fresh();
     const next = upsertThread(list, change(current));
     if (!storeRef.current?.save(conversationId, next)) {
@@ -201,8 +208,10 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
         description: 'Storage is full or unavailable. It stays visible until the app closes.',
       });
     }
+    // Updated now so a second change in the same tick builds on this one.
+    localRef.current = { ...localRef.current, [conversationId]: next };
     setLocal(prev => ({ ...prev, [conversationId]: next }));
-  }, [updateThreads, localThreads]);
+  }, [updateThreads, readLocal]);
 
   /** Main-conversation turns up to (and including) the parent message. */
   const mainTurns = useCallback((conversationId: string, parentMessageId: string | null): HistoryTurnLike[] => {

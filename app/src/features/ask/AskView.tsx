@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Check, Copy, FolderPlus, RotateCcw } from 'lucide-react';
+import { Check, Copy, FolderPlus, MessagesSquare, RotateCcw } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { cn } from '../../lib/utils';
 import type { ViewTab } from '../../lib/viewTabs';
@@ -15,6 +15,10 @@ import { RuntimeCard } from '../agent/RuntimeCard';
 import { SearchSetupCard } from '../setup/SearchSetupCard';
 import { StatusLine } from '../agent/StatusLine';
 import { Transcript } from '../agent/Transcript';
+import { FocusAnchorProvider, useFocus } from '../focus/FocusContext';
+import type { FocusThread } from '../focus/focusTypes';
+import { sourceTarget } from '../focus/targets';
+import { repliesLabel } from '../focus/threadStore';
 import { useChatSession } from './ChatSessionContext';
 import { MessageContentRenderer } from './MessageContentRenderer';
 import { RunChip } from './RunChip';
@@ -205,7 +209,35 @@ function CopyAnswerButton({ text }: { text: string }) {
   );
 }
 
+/** "2 replies about Revenue by quarter": reopens that side discussion. */
+function ThreadChips({ threads, onOpen }: { threads: readonly FocusThread[]; onOpen: (thread: FocusThread, trigger: HTMLElement) => void }) {
+  const withReplies = threads.filter(t => t.turns.length > 0);
+  if (withReplies.length === 0) return null;
+  return (
+    <ul className="flex flex-wrap gap-2" aria-label="Side discussions">
+      {withReplies.map(thread => (
+        <li key={thread.id} className="min-w-0 max-w-full">
+          <button
+            type="button"
+            onClick={e => onOpen(thread, e.currentTarget)}
+            title="Reopen this side discussion"
+            className={cn(
+              'inline-flex items-center gap-1.5 h-7 max-w-full px-2.5 rounded-full border border-shodh-border bg-shodh-surface text-[12px] text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
+              FOCUS_RING,
+            )}
+          >
+            <MessagesSquare className="w-3.5 h-3.5 shrink-0 text-shodh-accent-text" aria-hidden="true" />
+            <span className="truncate">{repliesLabel(thread)}</span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 interface AssistantMessageProps {
+  /** Conversation the message belongs to (anchors side discussions). */
+  conversationId: string | null;
   message: ChatMessage;
   activeCitation: number | null;
   activeFile: string | null;
@@ -218,9 +250,11 @@ interface AssistantMessageProps {
   onDecide: (stepId: string, approved: boolean) => void;
   onRuntimeInstalled: () => void;
   onOpenSettings: () => void;
+  onOpenThread: (messageId: string, thread: FocusThread, trigger: HTMLElement) => void;
 }
 
 function AssistantMessage({
+  conversationId,
   message,
   activeCitation,
   activeFile,
@@ -232,6 +266,7 @@ function AssistantMessage({
   onDecide,
   onRuntimeInstalled,
   onOpenSettings,
+  onOpenThread,
 }: AssistantMessageProps) {
   const transcript = message.transcript;
   const passages = transcript?.passages;
@@ -250,7 +285,12 @@ function AssistantMessage({
     [messageId, onOpenSource],
   );
 
-  return (
+  const openThread = useCallback(
+    (thread: FocusThread, trigger: HTMLElement) => onOpenThread(messageId, thread, trigger),
+    [messageId, onOpenThread],
+  );
+
+  const article = (
     <article className="ask-rise group/msg flex flex-col gap-4" aria-busy={running}>
       {transcript ? (
         <>
@@ -306,6 +346,8 @@ function AssistantMessage({
 
       {!running && <SourceChips groups={groups} activeFile={activeFile} onOpen={handleOpen} />}
 
+      {!running && message.threads && <ThreadChips threads={message.threads} onOpen={openThread} />}
+
       {!running && (
         <div className="flex items-center gap-0.5 opacity-60 group-hover/msg:opacity-100 focus-within:opacity-100 transition-opacity duration-micro">
           {message.content.length > 0 && <CopyAnswerButton text={message.content} />}
@@ -328,6 +370,14 @@ function AssistantMessage({
       )}
     </article>
   );
+
+  // Visuals in a finished answer can open the focus pop-out, anchored here.
+  if (!conversationId || running) return article;
+  return (
+    <FocusAnchorProvider conversationId={conversationId} messageId={messageId}>
+      {article}
+    </FocusAnchorProvider>
+  );
 }
 
 function SystemNotice({ message }: { message: ChatMessage }) {
@@ -346,7 +396,8 @@ function SystemNotice({ message }: { message: ChatMessage }) {
 export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggingFile = false, dropHandlers, draftRequest = null, onDraftApplied }: AskViewProps) {
   const { theme } = useTheme();
   const session = useChatSession();
-  const { messages, isStreaming, streamingConversationId, send, retry, cancel, steer, approve, runtimeInstalled, setRuntimeInstalled, updateMessage } = session;
+  const { messages, isStreaming, streamingConversationId, sideRun, send, retry, cancel, steer, approve, runtimeInstalled, setRuntimeInstalled, updateMessage } = session;
+  const focus = useFocus();
   const wide = useMediaQuery(WIDE_LAYOUT_QUERY);
 
   const [draft, setDraft] = useState('');
@@ -363,10 +414,12 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     [selectedSource?.id, selectedSource?.name],
   );
 
-  const busyElsewhere = streamingConversationId !== null && !isStreaming;
-  const blockedReason = busyElsewhere
-    ? 'An answer is still being written in another conversation. You can send once it finishes.'
-    : null;
+  const busyElsewhere = (streamingConversationId !== null && !isStreaming) || sideRun !== null;
+  const blockedReason = sideRun
+    ? `Answering your side question about “${sideRun.label}”. You can send once it finishes.`
+    : busyElsewhere
+      ? 'An answer is still being written in another conversation. You can send once it finishes.'
+      : null;
 
   const indexedCount = sources.filter(s => s.status !== 'error').length;
   const scopeLabel = indexedCount === 0
@@ -467,6 +520,26 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     previewTriggerRef.current = trigger;
     setPreview({ messageId, hit });
   }, []);
+
+  const openThread = useCallback((messageId: string, thread: FocusThread, trigger: HTMLElement) => {
+    focus?.openFocus({
+      target: thread.anchor.target,
+      conversationId: thread.anchor.conversationId,
+      parentMessageId: messageId,
+      threadId: thread.id,
+      trigger,
+    });
+  }, [focus]);
+
+  const focusPreview = useCallback((trigger: HTMLElement) => {
+    if (!focus || !preview) return;
+    focus.openFocus({
+      target: sourceTarget(preview.hit, sourceLabel(preview.hit)),
+      conversationId,
+      parentMessageId: preview.messageId,
+      trigger,
+    });
+  }, [focus, preview, conversationId]);
 
   const closePreview = useCallback(() => {
     setPreview(null);
@@ -613,10 +686,11 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
             return (
               <AssistantMessage
                 key={message.id}
+                conversationId={conversationId}
                 message={message}
                 activeCitation={isPreviewed ? preview.hit.number : null}
                 activeFile={isPreviewed ? preview.hit.sourceFile : null}
-                canRetry={streamingConversationId === null}
+                canRetry={streamingConversationId === null && sideRun === null}
                 inlinePlan={!wide}
                 onOpenSource={openSource}
                 onOpenArtifact={setOpenArtifactId}
@@ -624,6 +698,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
                 onDecide={approve}
                 onRuntimeInstalled={markRuntimeInstalled}
                 onOpenSettings={openSettings}
+                onOpenThread={openThread}
               />
             );
           })}
@@ -655,6 +730,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
           onSelectHit={hit => setPreview(p => (p ? { ...p, hit } : p))}
           onClose={closePreview}
           onOpenView={onNavigate}
+          onFocus={focus ? focusPreview : undefined}
         />
       )}
 

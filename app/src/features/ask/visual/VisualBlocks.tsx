@@ -1,8 +1,10 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { AlertTriangle, Loader2 } from 'lucide-react';
 import { ChartArtifact } from '../../../components/ChartArtifact';
 import type { Artifact } from '../../../components/EnhancedArtifactPanel';
 import { parseChartBlock } from './chartSpec';
+import { FocusFrame } from '../../focus/FocusFrame';
+import { chartTarget, mermaidTarget } from '../../focus/targets';
 
 type Mermaid = typeof import('mermaid').default;
 
@@ -80,19 +82,23 @@ export function MermaidBlock({ source, dark }: { source: string; dark: boolean }
     };
   }, [domId, source, dark]);
 
+  const getTarget = useCallback(() => mermaidTarget(source.trim()), [source]);
+
   if (state.status === 'error') return <BlockError title="Diagram not drawn" message={state.message} source={source} />;
   return (
-    <figure className="my-4 rounded-xl border border-shodh-border bg-shodh-surface p-4 overflow-x-auto scrollbar-thin" aria-busy={state.status === 'loading'}>
-      {state.status === 'loading' ? (
-        <div className="flex items-center gap-2 h-24 justify-center text-[12.5px] text-shodh-text-muted">
-          <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-          Drawing diagram…
-        </div>
-      ) : (
-        // SVG produced by mermaid with securityLevel 'strict' (sanitised, no scripts).
-        <div role="img" aria-label="Diagram" className="flex justify-center [&_svg]:max-w-full [&_svg]:h-auto" dangerouslySetInnerHTML={{ __html: state.svg }} />
-      )}
-    </figure>
+    <FocusFrame noun="diagram" getTarget={getTarget} className="my-4">
+      <figure className="m-0 rounded-xl border border-shodh-border bg-shodh-surface p-4 overflow-x-auto scrollbar-thin" aria-busy={state.status === 'loading'}>
+        {state.status === 'loading' ? (
+          <div className="flex items-center gap-2 h-24 justify-center text-[12.5px] text-shodh-text-muted">
+            <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+            Drawing diagram…
+          </div>
+        ) : (
+          // SVG produced by mermaid with securityLevel 'strict' (sanitised, no scripts).
+          <div role="img" aria-label="Diagram" className="flex justify-center [&_svg]:max-w-full [&_svg]:h-auto" dangerouslySetInnerHTML={{ __html: state.svg }} />
+        )}
+      </figure>
+    </FocusFrame>
   );
 }
 
@@ -110,12 +116,16 @@ export function ChartBlock({ source, theme }: { source: string; theme: string })
       created_at: '',
     } as Artifact;
   }, [result, source.length]);
+  const title = result.ok ? result.chart.title ?? null : null;
+  const getTarget = useCallback(() => chartTarget(source, title), [source, title]);
 
   if ('error' in result) return <BlockError title="Chart not drawn" message={result.error} source={source} />;
   if (!artifact) return null;
   return (
-    <figure className="my-4 rounded-xl border border-shodh-border overflow-hidden">
-      <ChartArtifact artifact={artifact} theme={theme} />
-    </figure>
+    <FocusFrame noun="chart" getTarget={getTarget} className="my-4">
+      <figure className="m-0 rounded-xl border border-shodh-border overflow-hidden">
+        <ChartArtifact artifact={artifact} theme={theme} />
+      </figure>
+    </FocusFrame>
   );
 }

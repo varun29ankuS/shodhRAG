@@ -14,6 +14,8 @@ export interface FocusFrameProps {
   getTarget: (element: HTMLElement) => FocusTarget | null;
   /** Double-click opens too. Off where double-click selects text (tables). */
   doubleClick?: boolean;
+  /** Inside running text (images in a paragraph): renders as an inline block. */
+  inline?: boolean;
   className?: string;
   children: React.ReactNode;
 }
@@ -24,10 +26,11 @@ export interface FocusFrameProps {
  * Enter opens), plus double-click. Renders the visual unchanged outside an
  * answer (no anchor), e.g. inside the pop-out's own side discussion.
  */
-export function FocusFrame({ noun, getTarget, doubleClick = true, className, children }: FocusFrameProps) {
+export function FocusFrame({ noun, getTarget, doubleClick = true, inline = false, className, children }: FocusFrameProps) {
   const focus = useFocus();
   const anchor = useFocusAnchor();
-  const frameRef = useRef<HTMLDivElement>(null);
+  const frameRef = useRef<HTMLElement>(null);
+  const Wrapper = inline ? 'span' : 'div';
   const buttonRef = useRef<HTMLButtonElement>(null);
 
   const open = useCallback((trigger: HTMLElement | null) => {
@@ -43,9 +46,9 @@ export function FocusFrame({ noun, getTarget, doubleClick = true, className, chi
     });
   }, [focus, anchor, getTarget]);
 
-  if (!focus || !anchor) return <>{children}</>;
+  if (!focus || !anchor) return <Wrapper className={cn(inline && 'inline-block', className)}>{children}</Wrapper>;
 
-  const onDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+  const onDoubleClick = (e: React.MouseEvent<HTMLElement>) => {
     if (e.target instanceof Element && e.target.closest('button, a, input, textarea, select')) return;
     e.preventDefault();
     window.getSelection()?.removeAllRanges();
@@ -53,7 +56,11 @@ export function FocusFrame({ noun, getTarget, doubleClick = true, className, chi
   };
 
   return (
-    <div ref={frameRef} className={cn('group/focus relative', className)} onDoubleClick={doubleClick ? onDoubleClick : undefined}>
+    <Wrapper
+      ref={frameRef as React.Ref<HTMLDivElement & HTMLSpanElement>}
+      className={cn('group/focus relative', inline && 'inline-block', className)}
+      onDoubleClick={doubleClick ? onDoubleClick : undefined}
+    >
       {children}
       <button
         ref={buttonRef}
@@ -70,6 +77,6 @@ export function FocusFrame({ noun, getTarget, doubleClick = true, className, chi
         <Maximize2 className="w-3.5 h-3.5" aria-hidden="true" />
         Expand
       </button>
-    </div>
+    </Wrapper>
   );
 }

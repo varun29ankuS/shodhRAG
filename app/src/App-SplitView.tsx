@@ -43,6 +43,7 @@ import type { ViewTab } from './lib/viewTabs';
 import { useTheme } from './contexts/ThemeContext';
 import { useSidebar } from './contexts/SidebarContext';
 import { ChatSessionProvider, useChatSession } from './features/ask/ChatSessionContext';
+import { FocusProvider } from './features/focus/FocusContext';
 import { AskView } from './features/ask/AskView';
 import { useCommandPalette } from './hooks/useCommandPalette';
 import CommandPalette from './components/CommandPalette';
@@ -1500,11 +1501,13 @@ function AppSplitView() {
   );
 }
 
-/** App shell with the chat session provider mounted above it. */
+/** App shell with the chat session (and the focus pop-out it hosts) mounted above it. */
 function AppSplitViewRoot() {
   return (
     <ChatSessionProvider>
-      <AppSplitView />
+      <FocusProvider>
+        <AppSplitView />
+      </FocusProvider>
     </ChatSessionProvider>
   );
 }

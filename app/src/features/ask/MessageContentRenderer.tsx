@@ -17,12 +17,30 @@ import { ArtifactPreviewCard } from '../../components/ArtifactPreviewCard';
 import type { SearchHit } from './types';
 import { sourceLabel } from './searchResults';
 import { ChartBlock, MermaidBlock } from './visual/VisualBlocks';
+import { FocusFrame } from '../focus/FocusFrame';
+import { tableRows } from '../focus/focusDom';
+import rehypeFocusEquations, { FOCUS_EQUATION_TAG } from '../focus/rehypeFocusEquations';
+import { chartTarget, equationTarget, imageTarget, tableTarget } from '../focus/targets';
 import { escapeCurrency, isMermaidLanguage, mermaidSource, normalizeMathDelimiters, protectMath } from './visual/mathText';
 
 /** Citation placeholders: ASCII markers that survive markdown parsing. */
 const CITE_OPEN = 'XCSHODH';
 const CITE_CLOSE = 'XESHODH';
 const CITE_PATTERN = new RegExp(`${CITE_OPEN}(\\d+)${CITE_CLOSE}`, 'g');
+
+const REHYPE_PLUGINS = [rehypeKatex, rehypeFocusEquations];
+
+/** Target of a rendered table (header row first). */
+function tableFromElement(el: HTMLElement) {
+  const table = el.querySelector('table');
+  return table ? tableTarget(tableRows(table)) : null;
+}
+
+/** Target of a rendered image. */
+function imageFromElement(el: HTMLElement) {
+  const img = el.querySelector('img');
+  return img ? imageTarget(img.getAttribute('src'), img.getAttribute('alt')) : null;
+}
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -254,10 +272,26 @@ export function MessageContentRenderer({
       <blockquote className="my-4 pl-4 border-l-2 border-shodh-border-strong text-shodh-text-tertiary">{children}</blockquote>
     ),
     table: ({ children }) => (
-      <div className="my-4 overflow-x-auto rounded-xl border border-shodh-border">
-        <table className="w-full text-[14px] border-collapse">{children}</table>
-      </div>
+      <FocusFrame noun="table" getTarget={tableFromElement} doubleClick={false} className="my-4">
+        <div className="overflow-x-auto rounded-xl border border-shodh-border">
+          <table className="w-full text-[14px] border-collapse">{children}</table>
+        </div>
+      </FocusFrame>
     ),
+    img: ({ src, alt }) => (
+      <FocusFrame noun="image" getTarget={imageFromElement} inline className="my-1 max-w-full align-top">
+        <img src={src} alt={alt ?? ''} loading="lazy" className="block max-w-full h-auto rounded-lg border border-shodh-border" />
+      </FocusFrame>
+    ),
+    [FOCUS_EQUATION_TAG]: ({ node, children }) => {
+      const tex = typeof node?.properties?.dataTex === 'string' ? node.properties.dataTex : '';
+      if (!tex) return <>{children}</>;
+      return (
+        <FocusFrame noun="equation" getTarget={() => equationTarget(tex)} className="my-2">
+          {children}
+        </FocusFrame>
+      );
+    },
     thead: ({ children }) => <thead className="bg-shodh-raised">{children}</thead>,
     th: ({ children }) => (
       <th className="px-3 py-2 text-left font-semibold text-shodh-text border-b border-shodh-border">{processChildren(children)}</th>
@@ -285,22 +319,26 @@ export function MessageContentRenderer({
     <div className="flex flex-col gap-4">
       {preprocessed.trim().length > 0 && (
         <div className={cn('text-shodh-text-secondary break-words', compact ? 'text-[13.5px] leading-[1.6]' : 'text-[16px] leading-[1.75]')}>
-          <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={markdownComponents}>
+          <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={REHYPE_PLUGINS} components={markdownComponents}>
             {preprocessed}
           </ReactMarkdown>
         </div>
       )}
 
       {charts.map(artifact => (
-        <div key={artifact.id} className="rounded-2xl overflow-hidden border border-shodh-border">
-          <ChartArtifact artifact={artifact} theme={theme} />
-        </div>
+        <FocusFrame key={artifact.id} noun="chart" getTarget={() => chartTarget(String(artifact.content ?? ''), artifact.title)}>
+          <div className="rounded-2xl overflow-hidden border border-shodh-border">
+            <ChartArtifact artifact={artifact} theme={theme} />
+          </div>
+        </FocusFrame>
       ))}
 
       {tables.map(artifact => (
-        <div key={artifact.id} className="rounded-2xl overflow-hidden border border-shodh-border">
-          <TableArtifact artifact={artifact} theme={theme} />
-        </div>
+        <FocusFrame key={artifact.id} noun="table" getTarget={tableFromElement} doubleClick={false}>
+          <div className="rounded-2xl overflow-hidden border border-shodh-border">
+            <TableArtifact artifact={artifact} theme={theme} />
+          </div>
+        </FocusFrame>
       ))}
 
       {others.length > 0 && onOpenArtifact && (

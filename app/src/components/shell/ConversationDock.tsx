@@ -49,8 +49,6 @@ interface ConversationDockProps {
   activeTab: ViewTab;
   /** Return to the Ask view (full conversation). */
   onExpand: () => void;
-  /** Reported so the page can keep its primary actions clear of the dock. */
-  onModeChange?: (mode: DockMode) => void;
 }
 
 /**
@@ -58,7 +56,7 @@ interface ConversationDockProps {
  * Opens when the agent navigates; Ctrl+J toggles it; minimised it is a pill
  * with a working indicator and an unread count.
  */
-export function ConversationDock({ activeTab, onExpand, onModeChange }: ConversationDockProps) {
+export function ConversationDock({ activeTab, onExpand }: ConversationDockProps) {
   const session = useChatSession();
   const { messages, isStreaming, navigation, steer, send, cancel, approve, setRuntimeInstalled, streamingConversationId } = session;
   const [mode, setMode] = useState<DockMode>(readStoredMode);
@@ -108,10 +106,6 @@ export function ConversationDock({ activeTab, onExpand, onModeChange }: Conversa
   const working = live && transcript ? currentStep(transcript) : null;
   const visible = offAsk && mode !== 'hidden' && messages.length > 0;
   const shownMode: DockMode = visible ? mode : 'hidden';
-
-  useEffect(() => {
-    onModeChange?.(shownMode);
-  }, [shownMode, onModeChange]);
 
   // Unread count while minimised.
   const size = activitySize(messages);

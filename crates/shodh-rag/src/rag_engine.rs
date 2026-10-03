@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::config::RAGConfig;
 use crate::embeddings::e5::{E5Config, E5Embeddings};
-use crate::embeddings::EmbeddingModel;
+use crate::embeddings::{EmbeddingModel, SearchModelsMissing};
 use crate::processing::chunker::{ContextualChunkResult, TextChunker};
 use crate::processing::parser::DocumentParser;
 use crate::reranking::CrossEncoderReranker;
@@ -161,50 +161,31 @@ fn extract_structured_fields(text: &str) -> HashMap<String, String> {
     fields
 }
 
-pub struct RAGEngine {
-    store: LanceStore,
-    text_search: TextSearch,
+/// The ONNX models the engine searches with: the E5 embedder (required) and
+/// the cross-encoder reranker (optional). Loading takes seconds and reads
+/// ~600 MB, so it is separate from [`RAGEngine::new`] and can run on a
+/// blocking thread before [`RAGEngine::attach_search_models`].
+pub struct SearchModels {
     embeddings: Box<dyn EmbeddingModel>,
-    chunker: TextChunker,
-    parser: DocumentParser,
-    config: RAGConfig,
     reranker: Option<CrossEncoderReranker>,
 }
 
-impl RAGEngine {
-    pub async fn new(config: RAGConfig) -> Result<Self> {
-        std::fs::create_dir_all(&config.data_dir).ok();
+impl SearchModels {
+    /// Whether the E5 model files exist under `config.embedding.model_dir`.
+    pub fn available(config: &RAGConfig) -> bool {
+        E5Config::auto_detect(&config.embedding.model_dir).is_some()
+    }
 
-        let lance_path = config.data_dir.join("lance_data");
-        let store = LanceStore::new(
-            lance_path.to_str().unwrap_or("./lance_data"),
-            config.embedding.dimension,
-        )
-        .await
-        .context("Failed to initialize LanceDB store")?;
+    /// Load the models from `config.embedding.model_dir` (blocking).
+    /// Fails with [`SearchModelsMissing`] when the E5 files are absent.
+    pub fn load(config: &RAGConfig) -> Result<Self> {
+        let e5_config =
+            E5Config::auto_detect(&config.embedding.model_dir).ok_or(SearchModelsMissing)?;
+        let embeddings: Box<dyn EmbeddingModel> =
+            Box::new(E5Embeddings::new(e5_config).context("Failed to load E5 embeddings")?);
 
-        let text_search = TextSearch::new(config.data_dir.to_str().unwrap_or("./data"))
-            .context("Failed to initialize Tantivy search")?;
-
-        let embeddings: Box<dyn EmbeddingModel> = if config.embedding.use_e5 {
-            let e5_config = E5Config::auto_detect(&config.embedding.model_dir)
-                .ok_or_else(|| anyhow::anyhow!("E5 model not found at configured path"))?;
-            Box::new(E5Embeddings::new(e5_config).context("Failed to load E5 embeddings")?)
-        } else {
-            return Err(anyhow::anyhow!(
-                "No embedding model available. Place E5 model in: {}",
-                config.embedding.model_dir.display()
-            ));
-        };
-
-        let chunker = TextChunker::new(
-            config.chunking.chunk_size,
-            config.chunking.chunk_overlap,
-            config.chunking.min_chunk_size,
-        );
-
-        // Try to load cross-encoder reranker if enabled and model exists
-        let reranker = if config.features.enable_reranking || config.features.enable_cross_encoder {
+        let reranker = if config.features.enable_reranking || config.features.enable_cross_encoder
+        {
             let reranker_dir = config.embedding.model_dir.join("ms-marco-MiniLM-L6-v2");
             match CrossEncoderReranker::new(&reranker_dir) {
                 Ok(r) => {
@@ -225,16 +206,94 @@ impl RAGEngine {
         } else {
             None
         };
+        Ok(Self {
+            embeddings,
+            reranker,
+        })
+    }
+
+    pub fn dimension(&self) -> usize {
+        self.embeddings.dimension()
+    }
+
+    pub fn has_reranker(&self) -> bool {
+        self.reranker.is_some()
+    }
+}
+
+pub struct RAGEngine {
+    store: LanceStore,
+    text_search: TextSearch,
+    /// `None` until the search models are installed and attached; search and
+    /// indexing then fail with [`SearchModelsMissing`].
+    embeddings: Option<Box<dyn EmbeddingModel>>,
+    chunker: TextChunker,
+    parser: DocumentParser,
+    config: RAGConfig,
+    reranker: Option<CrossEncoderReranker>,
+}
+
+impl RAGEngine {
+    /// Open the stores and, when the model files are present, load the
+    /// search models. Without them (first run) the engine starts in a
+    /// degraded state: stores, listing and deletion work; search and indexing
+    /// return [`SearchModelsMissing`] until [`Self::attach_search_models`].
+    /// A model that is present but fails to load is logged and treated the
+    /// same way, so a damaged model never prevents the app from starting.
+    pub async fn new(config: RAGConfig) -> Result<Self> {
+        std::fs::create_dir_all(&config.data_dir).ok();
+
+        let lance_path = config.data_dir.join("lance_data");
+        let store = LanceStore::new(
+            lance_path.to_str().unwrap_or("./lance_data"),
+            config.embedding.dimension,
+        )
+        .await
+        .context("Failed to initialize LanceDB store")?;
+
+        let text_search = TextSearch::new(config.data_dir.to_str().unwrap_or("./data"))
+            .context("Failed to initialize Tantivy search")?;
+
+        let models = if config.embedding.use_e5 && SearchModels::available(&config) {
+            match SearchModels::load(&config) {
+                Ok(models) => Some(models),
+                Err(e) => {
+                    tracing::error!(
+                        model_dir = %config.embedding.model_dir.display(),
+                        error = %format!("{e:#}"),
+                        "Search models failed to load; starting without search"
+                    );
+                    None
+                }
+            }
+        } else {
+            tracing::warn!(
+                model_dir = %config.embedding.model_dir.display(),
+                "Search models are not installed; starting without search"
+            );
+            None
+        };
+
+        let chunker = TextChunker::new(
+            config.chunking.chunk_size,
+            config.chunking.chunk_overlap,
+            config.chunking.min_chunk_size,
+        );
 
         let mut engine = Self {
             store,
             text_search,
-            embeddings,
+            embeddings: None,
             chunker,
             parser: DocumentParser::new(),
             config,
-            reranker,
+            reranker: None,
         };
+        if let Some(models) = models {
+            if let Err(e) = engine.attach_search_models(models) {
+                tracing::error!(error = %e, "Search models rejected; starting without search");
+            }
+        }
 
         // After schema migration the Tantivy index is empty but LanceDB still
         // has all the chunks.  Rebuild the text index so searches work immediately.
@@ -254,6 +313,37 @@ impl RAGEngine {
         Ok(engine)
     }
 
+    /// Whether the search models are loaded (search and indexing work).
+    pub fn has_search_models(&self) -> bool {
+        self.embeddings.is_some()
+    }
+
+    /// Attach models loaded with [`SearchModels::load`]. Fails when the
+    /// embedding dimension differs from the vector store's.
+    pub fn attach_search_models(&mut self, models: SearchModels) -> Result<()> {
+        let dimension = models.dimension();
+        if dimension != self.config.embedding.dimension {
+            anyhow::bail!(
+                "embedding model produces {dimension}-dimensional vectors but the index uses {}",
+                self.config.embedding.dimension
+            );
+        }
+        self.embeddings = Some(models.embeddings);
+        self.reranker = models.reranker;
+        tracing::info!(
+            dimension,
+            reranker = self.reranker.is_some(),
+            "Search models attached"
+        );
+        Ok(())
+    }
+
+    fn require_embeddings(&self) -> Result<&dyn EmbeddingModel> {
+        self.embeddings
+            .as_deref()
+            .ok_or_else(|| SearchModelsMissing.into())
+    }
+
     /// Ingest a document from raw content
     pub async fn add_document(
         &mut self,
@@ -262,6 +352,7 @@ impl RAGEngine {
         metadata: HashMap<String, String>,
         citation: Citation,
     ) -> Result<Vec<Uuid>> {
+        self.require_embeddings()?;
         let title = metadata
             .get("title")
             .cloned()
@@ -291,6 +382,7 @@ impl RAGEngine {
         path: &Path,
         metadata: HashMap<String, String>,
     ) -> Result<Vec<Uuid>> {
+        self.require_embeddings()?;
         let source = normalize_source_path(path);
 
         let parsed = self.parser.parse_file(path)?;
@@ -374,7 +466,7 @@ impl RAGEngine {
             .iter()
             .map(|c| c.contextualized_text.as_str())
             .collect();
-        let embeddings = self.embeddings.embed_documents(&chunk_texts)?;
+        let embeddings = self.require_embeddings()?.embed_documents(&chunk_texts)?;
 
         let doc_id = Uuid::new_v4();
         let metadata_json = serde_json::to_string(metadata).unwrap_or_else(|_| "{}".to_string());
@@ -515,6 +607,9 @@ impl RAGEngine {
         k: usize,
         filter: Option<MetadataFilter>,
     ) -> Result<Vec<ComprehensiveResult>> {
+        // Checked before decomposition: sub-query failures are swallowed
+        // there, which would turn "not installed" into "no results".
+        self.require_embeddings()?;
         // Decompose complex queries into independent sub-queries
         let decomposed = crate::rag::query_decomposer::decompose_query(query);
 
@@ -566,7 +661,7 @@ impl RAGEngine {
         let candidate_count = k * self.config.search.candidate_multiplier;
 
         // Generate query embedding
-        let query_embedding = self.embeddings.embed_query(query)?;
+        let query_embedding = self.require_embeddings()?.embed_query(query)?;
 
         // Build filter predicate for LanceDB
         let lance_filter = filter.as_ref().and_then(|f| f.to_lance_predicate());
@@ -920,7 +1015,11 @@ impl RAGEngine {
         stats.insert("fts_indexed".to_string(), fts_count.to_string());
         stats.insert(
             "embedding_dimension".to_string(),
-            self.embeddings.dimension().to_string(),
+            self.config.embedding.dimension.to_string(),
+        );
+        stats.insert(
+            "search_models_loaded".to_string(),
+            self.has_search_models().to_string(),
         );
         stats.insert(
             "data_dir".to_string(),
@@ -1061,9 +1160,9 @@ impl RAGEngine {
         self.store.list_chunks(predicate, limit).await
     }
 
-    /// Access to the embedding model for external use
-    pub fn embeddings(&self) -> &dyn EmbeddingModel {
-        self.embeddings.as_ref()
+    /// The embedding model, when the search models are attached.
+    pub fn embeddings(&self) -> Option<&dyn EmbeddingModel> {
+        self.embeddings.as_deref()
     }
 
     /// Access to config

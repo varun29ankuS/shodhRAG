@@ -4,8 +4,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,13 +41,11 @@ pub struct ChatHistoryManager {
 }
 
 impl ChatHistoryManager {
-    pub fn new(app_handle: &AppHandle) -> Result<Self, String> {
-        let app_dir = app_handle
-            .path()
-            .app_data_dir()
-            .map_err(|e| format!("Failed to get app data directory: {}", e))?;
-
-        let storage_path = app_dir.join("chat_history.json");
+    /// Load the history stored under `app_data_dir`. An unreadable or corrupt
+    /// file never stops the app: it is moved aside (`*.corrupt-<time>`) and
+    /// the history starts empty.
+    pub fn new(app_data_dir: &Path) -> Self {
+        let storage_path = app_data_dir.join("chat_history.json");
 
         let mut manager = Self {
             sessions: HashMap::new(),
@@ -64,9 +61,11 @@ impl ChatHistoryManager {
         };
 
         // Load existing chat history
-        manager.load_history()?;
+        if let Err(e) = manager.load_history() {
+            crate::chat_history::quarantine_corrupt_file(&manager.storage_path, "chat history", &e);
+        }
 
-        Ok(manager)
+        manager
     }
 
     /// Add a message to chat history
@@ -286,4 +285,21 @@ pub enum ExportFormat {
     Json,
     Markdown,
     Text,
+}
+
+/// Move an unreadable history file out of the way so the app starts with an
+/// empty history instead of failing, and keep the file for inspection.
+pub(crate) fn quarantine_corrupt_file(path: &Path, what: &str, error: &str) {
+    let aside = path.with_extension(format!("json.corrupt-{}", Utc::now().format("%Y%m%dT%H%M%S")));
+    match fs::rename(path, &aside) {
+        Ok(()) => tracing::error!(
+            "Could not load {what} ({error}); moved {} to {} and starting empty",
+            path.display(),
+            aside.display()
+        ),
+        Err(rename_error) => tracing::error!(
+            "Could not load {what} ({error}) and could not move {} aside ({rename_error}); starting empty",
+            path.display()
+        ),
+    }
 }

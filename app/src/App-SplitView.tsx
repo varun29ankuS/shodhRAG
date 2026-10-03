@@ -17,6 +17,8 @@ import {
 
 // Core components
 import { ImageUpload } from './components/ImageUpload';
+import { SearchSetupCard } from './features/setup/SearchSetupCard';
+import { errorMessage as searchErrorMessage } from './features/setup/searchModels';
 import Sidebar from './components/shell/Sidebar';
 import SettingsView from './components/shell/SettingsView';
 import { ConversationDock } from './components/shell/ConversationDock';
@@ -1086,7 +1088,7 @@ function AppSplitView() {
       }
     } catch (error) {
       console.error("Failed to add source:", error);
-      notify.error('Indexing failed', { description: String(error) });
+      notify.error('Indexing failed', { description: searchErrorMessage(error) });
 
       // Reset indexing status on error
       if (currentlyIndexing) {
@@ -1770,6 +1772,8 @@ function AppSplitView() {
                     Add Source
                   </button>
                 </div>
+
+                <SearchSetupCard className="mb-6" />
 
                 {sources.length === 0 ? (
                   <EmptyState

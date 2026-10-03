@@ -28,7 +28,7 @@ pub mod system;
 
 // Re-export primary types for convenience
 pub use config::RAGConfig;
-pub use rag_engine::RAGEngine;
+pub use rag_engine::{RAGEngine, SearchModels};
 pub use types::{
     Citation, ComprehensiveResult, DocumentFormat, MetadataFilter, SimpleSearchResult,
 };

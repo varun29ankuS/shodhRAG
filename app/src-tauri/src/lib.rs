@@ -21,6 +21,7 @@ mod query_rewriter;
 mod rag_commands;
 mod retrieval_commands;
 mod search_history;
+mod search_models_commands;
 mod smart_templates;
 mod source_viewer_commands;
 mod space_commands;
@@ -55,16 +56,21 @@ use template_commands::TemplateStore;
 use tokio::sync::RwLock as AsyncRwLock;
 use uuid::Uuid;
 
-/// Resolve the models directory with multi-tier fallback for portability.
+/// Resolve the directory holding the search models (E5 + reranker).
 ///
-/// Search order:
+/// The first directory that already contains `multilingual-e5-base/` wins:
 /// 1. `MODEL_PATH` environment variable (explicit override)
-/// 2. Adjacent to executable: `<exe_dir>/models/`
-/// 3. Two levels up from executable: `<exe_dir>/../../models/` (dev layout)
+/// 2. Adjacent to the executable: `<exe_dir>/models/`
+/// 3. Two levels up from the executable: `<exe_dir>/../../models/`
 /// 4. Inside app data: `<app_data_dir>/models/`
-/// 5. Compile-time source tree path (only works on the build machine)
+///
+/// When none has the models yet (first run), this is where
+/// `install_search_models` downloads them:
+/// - debug builds: the repository's `models/` (from `CARGO_MANIFEST_DIR`), so
+///   every dev checkout shares one copy;
+/// - release builds: `<app_data_dir>/models/` — never a build-machine path.
 fn resolve_model_dir(app_data_dir: &std::path::Path) -> PathBuf {
-    let e5_subdir = "multilingual-e5-base";
+    let e5_subdir = shodh_rag::embeddings::model_store::E5_DIR;
 
     // 1. Explicit env var
     if let Ok(env_path) = std::env::var("MODEL_PATH") {
@@ -102,15 +108,29 @@ fn resolve_model_dir(app_data_dir: &std::path::Path) -> PathBuf {
         return candidate;
     }
 
-    // 5. Compile-time fallback (works on build machine only)
-    let compile_time = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|p| p.join("models"))
-        .unwrap_or_else(|| PathBuf::from("models"));
+    // Not installed anywhere yet: choose the install location.
+    if cfg!(debug_assertions) {
+        if let Some(repo_root) = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+        {
+            let dev = repo_root.join("models");
+            tracing::info!("Search models not installed; dev install dir: {:?}", dev);
+            return dev;
+        }
+    }
+    tracing::info!(
+        "Search models not installed; install dir: {:?}",
+        candidate
+    );
+    candidate
+}
 
-    tracing::info!("Model dir from compile-time path: {:?}", compile_time);
-    compile_time
+/// Report a setup failure that leaves the app unable to start.
+fn setup_error(context: &str, error: impl std::fmt::Display) -> Box<dyn std::error::Error> {
+    let message = format!("{context}: {error}");
+    tracing::error!("{}", message);
+    message.into()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -124,23 +144,20 @@ pub fn run() {
         .with_target(false)
         .init();
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
-            // Get app data directory for persistent storage
+            // Get app data directory for persistent storage. Without it
+            // nothing can be stored, so this is the one fatal setup error.
             let app_data_dir = app
                 .path()
                 .app_data_dir()
-                .expect("Failed to get app data directory");
-
-            // Create app data directory if it doesn't exist
-            if !app_data_dir.exists() {
-                std::fs::create_dir_all(&app_data_dir)
-                    .expect("Failed to create app data directory");
-            }
+                .map_err(|e| setup_error("Failed to resolve the app data directory", e))?;
+            std::fs::create_dir_all(&app_data_dir)
+                .map_err(|e| setup_error("Failed to create the app data directory", e))?;
 
             tracing::info!("App data directory: {:?}", app_data_dir);
 
@@ -152,10 +169,9 @@ pub fn run() {
             // Resolve model directory with multi-tier fallback for portability
             let model_dir = resolve_model_dir(&app_data_dir);
             tracing::info!("Model directory: {:?}", model_dir);
-            tracing::info!(
-                "E5 model exists: {}",
-                model_dir.join("multilingual-e5-base").exists()
-            );
+            app.manage(search_models_commands::SearchModelsState::new(
+                model_dir.clone(),
+            ));
 
             // Initialize SpaceManager with persistent storage
             let space_manager = SpaceManager::with_data_dir(app_data_dir.clone());
@@ -210,18 +226,26 @@ pub fn run() {
                 }
             });
 
-            // Initialize RagState with explicit model path configuration
+            // Initialize the RAG engine. Without the search models (first
+            // run) it starts in a "needs setup" state; the frontend offers
+            // `install_search_models`, which attaches them without a restart.
             let mut rag_config = shodh_rag::config::RAGConfig::default();
             rag_config.embedding.model_dir = model_dir.clone();
-            rag_config.embedding.use_e5 = model_dir.join("multilingual-e5-base").exists();
-            if rag_config.embedding.use_e5 {
-                rag_config.embedding.dimension = 768;
-            }
+            rag_config.embedding.use_e5 = true;
+            // The vector index dimension must match the model that will be
+            // attached: the installed E5 variant, else the pinned E5 base (768).
+            rag_config.embedding.dimension =
+                shodh_rag::embeddings::e5::E5Config::auto_detect(&model_dir)
+                    .map(|c| c.dimension)
+                    .unwrap_or(768);
             rag_config.data_dir = app_data_dir.clone();
             let default_rag = tauri::async_runtime::block_on(
                 shodh_rag::comprehensive_system::ComprehensiveRAG::new(rag_config),
             )
-            .expect("Failed to create default RAG instance");
+            .map_err(|e| setup_error("Failed to open the document index", format!("{e:#}")))?;
+            if !default_rag.has_search_models() {
+                tracing::warn!("Search models are not installed; search needs first-run setup");
+            }
 
             app.manage(RagState {
                 rag: Arc::new(AsyncRwLock::new(default_rag)),
@@ -242,9 +266,12 @@ pub fn run() {
 
             // Initialize MCP (Model Context Protocol) state
             let mcp_config_dir = app_data_dir.join("mcp");
-            if !mcp_config_dir.exists() {
-                std::fs::create_dir_all(&mcp_config_dir)
-                    .expect("Failed to create MCP config directory");
+            if let Err(e) = std::fs::create_dir_all(&mcp_config_dir) {
+                tracing::error!(
+                    "Failed to create MCP config directory {:?}: {}; MCP settings will not be saved",
+                    mcp_config_dir,
+                    e
+                );
             }
             let mcp_manager = mcp::MCPManager::new();
             let mcp_registry = mcp::registry::MCPRegistry::new(mcp_config_dir);
@@ -258,20 +285,14 @@ pub fn run() {
             app.manage(ContextState::new(session_id));
 
             // Initialize search and chat history managers
-            let search_history_manager = SearchHistoryManager::new(&app.app_handle())
-                .expect("Failed to initialize search history manager");
+            let search_history_manager = SearchHistoryManager::new(&app_data_dir);
             app.manage(Arc::new(Mutex::new(search_history_manager)));
 
-            let chat_history_manager = ChatHistoryManager::new(&app.app_handle())
-                .expect("Failed to initialize chat history manager");
+            let chat_history_manager = ChatHistoryManager::new(&app_data_dir);
             app.manage(Arc::new(Mutex::new(chat_history_manager)));
 
             // Initialize conversation manager and memory system with app data directory
-            let app_dir = app
-                .path()
-                .app_data_dir()
-                .expect("Failed to get app data directory");
-            let memory_store_path = app_dir.join("memory_store");
+            let memory_store_path = app_data_dir.join("memory_store");
 
             let rag_state = app.state::<RagState>();
             let conversation_manager_arc = rag_state.conversation_manager.clone();
@@ -311,11 +332,22 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     // Brief delay to let RAG engine finish initializing
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    calendar_commands::reindex_all_calendar_data(&app_handle).await;
+                    let ready = app_handle
+                        .state::<RagState>()
+                        .rag
+                        .read()
+                        .await
+                        .has_search_models();
+                    // Without search models this would fail per item; the
+                    // install command re-runs it once they are attached.
+                    if ready {
+                        calendar_commands::reindex_all_calendar_data(&app_handle).await;
+                    }
                 });
             }
 
-            // Initialize LLM manager on startup
+            // Start with the configured (default: disabled) LLM mode unless the
+            // environment bootstrap above already installed a manager.
             let llm_state = app.state::<LLMState>();
             let manager_clone = llm_state.manager.clone();
             let config_clone = llm_state.config.clone();
@@ -325,28 +357,15 @@ pub fn run() {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .clone();
-
-                let model_dir = if cfg!(debug_assertions) {
-                    let exe_dir = std::env::current_exe()
-                        .ok()
-                        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-                        .unwrap_or_else(|| std::env::current_dir().unwrap());
-                    exe_dir.join("../../../../models")
-                } else {
-                    let exe_dir = std::env::current_exe()
-                        .ok()
-                        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-                        .unwrap_or_else(|| std::env::current_dir().unwrap());
-                    exe_dir.join("models")
-                };
-
-                let mut llm_manager =
-                    shodh_rag::llm::LLMManager::new_with_cache_dir(config, model_dir);
+                let mut llm_manager = shodh_rag::llm::LLMManager::new(config);
                 if let Err(e) = llm_manager.initialize().await {
                     tracing::error!("Failed to initialize LLM manager: {}", e);
-                } else {
-                    *manager_clone.write().await = Some(llm_manager);
-                    tracing::info!("LLM manager initialized successfully");
+                    return;
+                }
+                let mut slot = manager_clone.write().await;
+                if slot.is_none() {
+                    *slot = Some(llm_manager);
+                    tracing::info!("LLM manager initialized");
                 }
             });
 
@@ -374,6 +393,9 @@ pub fn run() {
             rag_commands::link_folder,
             rag_commands::get_folder_stats,
             rag_commands::get_source_files,
+            // First-run search model setup
+            search_models_commands::search_models_status,
+            search_models_commands::install_search_models,
             // Enhanced RAG commands
             enhanced_rag_commands::preview_folder,
             enhanced_rag_commands::link_folder_enhanced,
@@ -583,13 +605,21 @@ pub fn run() {
             calendar_commands::update_event,
             calendar_commands::delete_event,
         ])
-        .build(tauri::generate_context!())
-        .expect("error while building tauri application")
-        .run(|app_handle, event| {
-            if let tauri::RunEvent::Exit = event {
-                // Stop every omp sidecar before the process exits.
-                let sessions = app_handle.state::<agent_session_commands::AgentSessions>();
-                tauri::async_runtime::block_on(sessions.shutdown_all());
-            }
-        });
+        .build(tauri::generate_context!());
+
+    let app = match app {
+        Ok(app) => app,
+        Err(e) => {
+            tracing::error!("Shodh could not start: {}", e);
+            eprintln!("Shodh could not start: {e}");
+            std::process::exit(1);
+        }
+    };
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            // Stop every omp sidecar before the process exits.
+            let sessions = app_handle.state::<agent_session_commands::AgentSessions>();
+            tauri::async_runtime::block_on(sessions.shutdown_all());
+        }
+    });
 }

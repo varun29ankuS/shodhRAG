@@ -4,8 +4,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
-use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,13 +41,11 @@ pub struct SearchHistoryManager {
 }
 
 impl SearchHistoryManager {
-    pub fn new(app_handle: &AppHandle) -> Result<Self, String> {
-        let app_dir = app_handle
-            .path()
-            .app_data_dir()
-            .map_err(|e| format!("Failed to get app data directory: {}", e))?;
-
-        let storage_path = app_dir.join("search_history.json");
+    /// Load the history stored under `app_data_dir`. An unreadable or corrupt
+    /// file never stops the app: it is moved aside (`*.corrupt-<time>`) and
+    /// the history starts empty.
+    pub fn new(app_data_dir: &Path) -> Self {
+        let storage_path = app_data_dir.join("search_history.json");
 
         let mut manager = Self {
             history: HashMap::new(),
@@ -58,9 +55,11 @@ impl SearchHistoryManager {
         };
 
         // Load existing history
-        manager.load_history()?;
+        if let Err(e) = manager.load_history() {
+            crate::chat_history::quarantine_corrupt_file(&manager.storage_path, "search history", &e);
+        }
 
-        Ok(manager)
+        manager
     }
 
     /// Add a search to history

@@ -12,6 +12,7 @@ import { PlanPanel } from '../agent/PlanPanel';
 import { pendingApproval, isLive } from '../agent/reducer';
 import type { TranscriptState } from '../agent/reducer';
 import { RuntimeCard } from '../agent/RuntimeCard';
+import { SearchSetupCard } from '../setup/SearchSetupCard';
 import { StatusLine } from '../agent/StatusLine';
 import { Transcript } from '../agent/Transcript';
 import { useChatSession } from './ChatSessionContext';
@@ -526,6 +527,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
             <h1 className="text-center text-[28px] font-semibold tracking-[-0.01em] text-shodh-text">
               Ask anything about your files
             </h1>
+            <SearchSetupCard />
             {runtimeCard}
             {composer(true)}
             {indexedCount === 0 ? (
@@ -615,6 +617,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
 
       <div className="absolute left-0 right-0 bottom-0 px-7 pt-10 pb-[22px] bg-gradient-to-b from-transparent via-shodh-ground via-[38%] to-shodh-ground pointer-events-none">
         <div className="max-w-[700px] mx-auto pointer-events-auto flex flex-col gap-2">
+          <SearchSetupCard compact />
           {runtimeCard}
           {composer(true)}
           <div className="min-h-[18px] px-2">

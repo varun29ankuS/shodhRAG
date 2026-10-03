@@ -56,27 +56,26 @@ use uuid::Uuid;
 
 /// Resolve the directory holding the search models (E5 + reranker).
 ///
-/// The first directory that already contains `multilingual-e5-base/` wins:
-/// 1. `MODEL_PATH` environment variable (explicit override)
+/// 1. `MODEL_PATH` environment variable: always used when set (explicit
+///    override, also the install target).
+///
+/// Otherwise the first directory that already contains `multilingual-e5-base/`:
 /// 2. Adjacent to the executable: `<exe_dir>/models/`
 /// 3. Two levels up from the executable: `<exe_dir>/../../models/`
 /// 4. Inside app data: `<app_data_dir>/models/`
 ///
 /// When none has the models yet (first run), this is where
 /// `install_search_models` downloads them:
-/// - debug builds: the repository's `models/` (from `CARGO_MANIFEST_DIR`), so
-///   every dev checkout shares one copy;
+/// - debug builds: the checkout's `models/` (from `CARGO_MANIFEST_DIR`);
 /// - release builds: `<app_data_dir>/models/` — never a build-machine path.
 fn resolve_model_dir(app_data_dir: &std::path::Path) -> PathBuf {
     let e5_subdir = shodh_rag::embeddings::model_store::E5_DIR;
 
     // 1. Explicit env var
-    if let Ok(env_path) = std::env::var("MODEL_PATH") {
-        let p = PathBuf::from(&env_path);
-        if p.join(e5_subdir).exists() {
-            tracing::info!("Model dir from MODEL_PATH env var: {:?}", p);
-            return p;
-        }
+    if let Some(env_path) = std::env::var_os("MODEL_PATH").filter(|p| !p.is_empty()) {
+        let p = PathBuf::from(env_path);
+        tracing::info!("Model dir from MODEL_PATH env var: {:?}", p);
+        return p;
     }
 
     // 2. Adjacent to executable

@@ -1,0 +1,568 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
+  <id>https://arxiv.org/api/owazN+E8aDldbJWxko4Y8L58500</id>
+  <title>arXiv Query: search_query=(ti:linear OR abs:linear) AND (ti:attention OR abs:attention) AND (ti:delta OR abs:delta) AND (ti:rule OR abs:rule)&amp;id_list=&amp;start=0&amp;max_results=12</title>
+  <updated>2026-10-03T17:07:10Z</updated>
+  <link href="https://arxiv.org/api/query?search_query=(ti:linear+OR+abs:linear)+AND+((ti:attention+OR+abs:attention)+AND+((ti:delta+OR+abs:delta)+AND+(ti:rule+OR+abs:rule)))&amp;start=0&amp;max_results=12&amp;id_list=" type="application/atom+xml"/>
+  <opensearch:itemsPerPage>12</opensearch:itemsPerPage>
+  <opensearch:totalResults>35</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <entry>
+    <id>http://arxiv.org/abs/2606.26560v1</id>
+    <title>Erase-then-Delta Attention: Decoupling Erase and Write Addresses in Delta-Rule Linear Attention</title>
+    <updated>2026-06-25T03:12:19Z</updated>
+    <link href="https://arxiv.org/abs/2606.26560v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2606.26560v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Delta-rule linear attention improves recurrent memory updates by correcting what is already stored at the current write address before writing new content. However, the active correction is still anchored to that same write address. As a result, stale information stored at a different address cannot be actively removed before new content is written elsewhere. We propose Erase-then-Delta Attention (EDA), a memory update rule that decouples where to erase from where to write. The key insight is that recurrent memory models should not only correct the current write, but also selectively suppress outdated memory at an independently chosen address. Concretely, our method first applies a targeted erase step along a learned erase direction, and then performs the standard delta-style corrective write along the current write direction. This preserves the corrective behavior of delta-rule updates while expanding their memory-management capacity. Language-model pretraining experiments across dense 2.5B and MoE 25B-A2.8B model families show that EDA performs best in both settings. The gain persists after 80B-token long-context midtraining of the MoE models, where EDA also performs best in long-context evaluations from 4k to 128k contexts. A compact update analysis and memory-state probes suggest why: EDA keeps the delta-rule corrective write intact while allocating an additional cleanup path most strongly when passive decay is weak. These results suggest that recurrent memory models should decide not only what to write, but also what stale information to erase and where.</summary>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-06-25T03:12:19Z</published>
+    <arxiv:primary_category term="cs.CL"/>
+    <author>
+      <name>Xiao Li</name>
+    </author>
+    <author>
+      <name>Chengruidong Zhang</name>
+    </author>
+    <author>
+      <name>Hao Luo</name>
+    </author>
+    <author>
+      <name>Xi Lin</name>
+    </author>
+    <author>
+      <name>Zekun Wang</name>
+    </author>
+    <author>
+      <name>Zihan Qiu</name>
+    </author>
+    <author>
+      <name>Yunfei Mao</name>
+    </author>
+    <author>
+      <name>Langshi Chen</name>
+    </author>
+    <author>
+      <name>Man Yuan</name>
+    </author>
+    <author>
+      <name>Minmin Sun</name>
+    </author>
+    <author>
+      <name>Huiqiang Jiang</name>
+    </author>
+    <author>
+      <name>Siqi Zhang</name>
+    </author>
+    <author>
+      <name>Rui Men</name>
+    </author>
+    <author>
+      <name>Wei Hu</name>
+    </author>
+    <author>
+      <name>Gong Cheng</name>
+    </author>
+    <author>
+      <name>Bo Zheng</name>
+    </author>
+    <author>
+      <name>Dayiheng Liu</name>
+    </author>
+    <author>
+      <name>Jingren Zhou</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2406.06484v6</id>
+    <title>Parallelizing Linear Transformers with the Delta Rule over Sequence Length</title>
+    <updated>2025-01-15T10:41:40Z</updated>
+    <link href="https://arxiv.org/abs/2406.06484v6" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2406.06484v6" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Transformers with linear attention (i.e., linear transformers) and state-space models have recently been suggested as a viable linear-time alternative to transformers with softmax attention. However, these models still underperform transformers especially on tasks that require in-context retrieval. While more expressive variants of linear transformers which replace the additive update in linear transformers with the delta rule (DeltaNet) have been found to be more effective at associative recall, existing algorithms for training such models do not parallelize over sequence length and are thus inefficient to train on modern hardware. This work describes a hardware-efficient algorithm for training linear transformers with the delta rule, which exploits a memory-efficient representation for computing products of Householder matrices. This algorithm allows us to scale up DeltaNet to standard language modeling settings. We train a 1.3B model for 100B tokens and find that it outperforms recent linear-time baselines such as Mamba and GLA in terms of perplexity and zero-shot performance on downstream tasks. We also experiment with two hybrid models which combine DeltaNet layers with (1) sliding-window attention layers every other layer or (2) two global attention layers, and find that these hybrids outperform strong transformer baselines.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2024-06-10T17:24:42Z</published>
+    <arxiv:comment>Final camera ready</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Songlin Yang</name>
+    </author>
+    <author>
+      <name>Bailin Wang</name>
+    </author>
+    <author>
+      <name>Yu Zhang</name>
+    </author>
+    <author>
+      <name>Yikang Shen</name>
+    </author>
+    <author>
+      <name>Yoon Kim</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2412.06464v3</id>
+    <title>Gated Delta Networks: Improving Mamba2 with Delta Rule</title>
+    <updated>2025-03-06T06:57:34Z</updated>
+    <link href="https://arxiv.org/abs/2412.06464v3" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2412.06464v3" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Linear Transformers have gained attention as efficient alternatives to standard Transformers, but their performance in retrieval and long-context tasks has been limited. To address these limitations, recent work has explored two distinct mechanisms: gating for adaptive memory control and the delta update rule for precise memory modifications. We observe that these mechanisms are complementary: gating enables rapid memory erasure while the delta rule facilitates targeted updates. Building on this insight, we introduce the gated delta rule and develop a parallel training algorithm optimized for modern hardware. Our proposed architecture, Gated DeltaNet, consistently surpasses existing models like Mamba2 and DeltaNet across multiple benchmarks, including language modeling, common-sense reasoning, in-context retrieval, length extrapolation, and long-context understanding. We further enhance performance by developing hybrid architectures that combine Gated DeltaNet layers with sliding window attention or Mamba2 layers, achieving both improved training efficiency and superior task performance.</summary>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2024-12-09T13:09:04Z</published>
+    <arxiv:comment>ICLR 2025 camera ready</arxiv:comment>
+    <arxiv:primary_category term="cs.CL"/>
+    <author>
+      <name>Songlin Yang</name>
+    </author>
+    <author>
+      <name>Jan Kautz</name>
+    </author>
+    <author>
+      <name>Ali Hatamizadeh</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2512.12602v5</id>
+    <title>Exact Flow Linear Attention: Exact Solution from Continuous-Time Dynamics</title>
+    <updated>2026-09-28T12:05:19Z</updated>
+    <link href="https://arxiv.org/abs/2512.12602v5" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2512.12602v5" rel="related" type="application/pdf" title="pdf"/>
+    <summary>In this paper, we introduce Exact Flow Linear Attention~(EFLA), an exact-flow formulation of delta-rule linear attention. We show that the delta-rule update can be interpreted as an explicit Euler discretization of an underlying continuous-time system. EFLA replaces this first-order update with the exact closed-form flow. By exploiting the rank-1 structure of the dynamics matrix, both the matrix exponential and the input integral collapse to a simple update that preserves delta-rule linear attention's algebraic structure, parameter count, linear-time complexity, and chunkwise parallelism. This attention mechanism removes the Euler discretization error of the delta-rule dynamics without introducing additional parameters. Experiments on robustness tests, language modeling benchmarks, and the MAD synthetic benchmark show that EFLA improves stability under corrupted and high-energy inputs, reduces perplexity, and achieves stronger downstream performance compared to SSM and Euler-style baselines. These results establish exact-flow integration as a principled and scalable update mechanism for delta-rule linear attention.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2025-12-14T08:51:02Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Jingdi Lei</name>
+    </author>
+    <author>
+      <name>Di Zhang</name>
+    </author>
+    <author>
+      <name>Soujanya Poria</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2605.13473v1</id>
+    <title>OSDN: Improving Delta Rule with Provable Online Preconditioning in Linear Attention</title>
+    <updated>2026-05-13T12:59:26Z</updated>
+    <link href="https://arxiv.org/abs/2605.13473v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2605.13473v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Linear attention and state-space models offer constant-memory alternatives to softmax attention, but often struggle with in-context associative recall. The Delta Rule mitigates this by writing each token via one step of online gradient descent. However, its step size relies on a single scalar gate that ignores the feature-wise curvature of the inner objective. We propose Online Scaled DeltaNet (OSDN), which augments the scalar gate with a diagonal preconditioner updated online via hypergradient feedback. Crucially, this right-preconditioning is algebraically equivalent to a per-feature scaling of the write-side key. This equivalence allows OSDN to strictly preserve the hardware-friendly chunkwise parallel pipeline of DeltaNet without incurring high-dimensional state overhead. Theoretically, by exploiting the exact-quadratic structure of the inner regression loss, we establish super-geometric convergence against a right-Newton comparator and prove an algorithm-aligned token-local residual contraction bound. To handle non-stationary contexts, we further introduce Adaptive Preconditioner Forgetting (APF) to dynamically refresh stale calibration. Empirically, OSDN demonstrates strong performance across scales. At the 340M-parameter scale, OSDN improves JRT-style in-context recall by 32% over DeltaNet. Scaling to 1.3B parameters, it achieves a 39% reduction in the recall residual ratio while maintaining parity on general downstream tasks (e.g., perplexity and LongBench) -- demonstrating that our online-preconditioning mechanism effectively transfers and amplifies at the billion-parameter scale.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-05-13T12:59:26Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Chenyu Zhou</name>
+    </author>
+    <author>
+      <name>Hongpei Li</name>
+    </author>
+    <author>
+      <name>Yuerou Liu</name>
+    </author>
+    <author>
+      <name>Jianghao Lin</name>
+    </author>
+    <author>
+      <name>Dongdong Ge</name>
+    </author>
+    <author>
+      <name>Yinyu Ye</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2509.25223v1</id>
+    <title>Enhancing Linear Attention with Residual Learning</title>
+    <updated>2025-09-24T07:36:08Z</updated>
+    <link href="https://arxiv.org/abs/2509.25223v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2509.25223v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Linear attention offers a linear-time alternative to self-attention but often struggles to capture long-range patterns. We revisit linear attention through a prediction-correction lens and show that prevalent variants can be written as a combination of a historical prediction and a single-token correction, which creates an expressivity bottleneck. To address this bottleneck, we introduce Residual Linear Attention (RLA), a framework that equips linear attention with an explicit residual-fitting mechanism. RLA maintains an auxiliary recurrent state that learns to accumulate residual errors over time and correct the base prediction. We further instantiate a delta-rule version, Residual Delta Net (RDN), incorporating adaptive gating and residual clipping for enhanced correction control and stability. Our implementation leverages highly optimized linear attention kernels and preserves linear time and memory. Across language modeling and recall-intensive evaluations, RLA and RDN consistently outperform their respective baselines and other modern linear-attention methods, narrowing the gap to standard Transformers while retaining linear scaling.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2025-09-24T07:36:08Z</published>
+    <arxiv:comment>15 pages, 4 figures</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Xunhao Lai</name>
+    </author>
+    <author>
+      <name>Jialiang Kang</name>
+    </author>
+    <author>
+      <name>Jianqiao Lu</name>
+    </author>
+    <author>
+      <name>Tong Lin</name>
+    </author>
+    <author>
+      <name>Pengyu Zhao</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2609.24797v1</id>
+    <title>Complex KDA: Understanding and Enhancing the Expressivity of Kimi Delta Attention</title>
+    <updated>2026-09-21T15:56:04Z</updated>
+    <link href="https://arxiv.org/abs/2609.24797v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2609.24797v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Linear RNNs based on the delta-rule enable efficient sequence modeling, but their linear updates with a low-rank correction constrain their expressivity. Prior work has shown that composing two delta-rule transitions in a single recurrent update can model a 2D rotation, but this increases the rank and the cost of the updates compared to a single transition. We show that Kimi Delta Attention (KDA) can realize 2D rotations by combining a single delta-rule transformation with a second reflection supplied by its channel-wise gate. This requires extending the parameter ranges of KDA by combining two existing range extensions: allowing gates in $[-1,1]$ and the delta-rule coefficient $β$ in $[0,2]$. We call the resulting model Complex KDA (CKDA). It preserves KDA's stability and efficiency, with transitions that remain diagonal-plus-rank-one and non-expansive, while reaching the state-tracking expressivity of DeltaProduct$_2$. We characterize the expressivity of CKDA and prove that every orthogonal diagonal-plus-rank-one matrix is exactly a CKDA transition matrix. A single CKDA layer can track every finite group isomorphic to a subgroup of $\mathrm{SO}(3)$, and many state-tracking results use one fewer layer for CKDA compared to other diagonal-plus-rank-one Linear RNNs. Empirically, combining both extensions yields the strongest length extrapolation among tested KDA range settings on $S_3$, $S_4$, and periodic audio continuation. In language modeling, CKDA outperforms Transformers and other linear RNNs, obtains similar results to a KDA baseline, and shows promising scaling behavior. Our code is open source at https://github.com/OpenEuroLLM/ComplexKDA and our models are available at https://huggingface.co/collections/openeurollm/complexkda.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-09-21T15:56:04Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Julien Siems</name>
+    </author>
+    <author>
+      <name>Riccardo Grazzi</name>
+    </author>
+    <author>
+      <name>Korbinian Pöppel</name>
+    </author>
+    <author>
+      <name>Jaisidh Singh</name>
+    </author>
+    <author>
+      <name>Arber Zela</name>
+    </author>
+    <author>
+      <name>Timur Carstensen</name>
+    </author>
+    <author>
+      <name>Jenia Jitsev</name>
+    </author>
+    <author>
+      <name>Frank Hutter</name>
+    </author>
+    <author>
+      <name>Volkan Cevher</name>
+    </author>
+    <author>
+      <name>Antonio Orvieto</name>
+    </author>
+    <author>
+      <name>Aaron Klein</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2605.21325v1</id>
+    <title>Fast and Stable Triangular Inversion for Delta-Rule Linear Transformers</title>
+    <updated>2026-05-20T15:51:32Z</updated>
+    <link href="https://arxiv.org/abs/2605.21325v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2605.21325v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Linear attention has emerged as a cornerstone for efficient long-context architectures, as evidenced by its integration into state-of-the-art open-source models including Qwen3.5/3.6, Kimi Linear, and RWKV-7. Models that incorporate linear attention layers with the so-called Delta-Rule involve the inversion of triangular matrices as a core sub-routine. This operation often forms a performance bottleneck, and, due to its high-sensitivity to numerical errors, it can significantly deteriorate end-to-end model accuracy if it is not carefully implemented. This work provides a systematic analysis of both direct and iterative triangular inversion algorithms, targeting methods that are rich in matrix products, and, therefore, have the potential to efficiently utilize modern hardware. To that end, our analysis covers a broad spectrum of mathematical and practical aspects, with a heavy focus on numerical stability, computational complexity, and, ultimately, hardware efficiency and practical considerations. We provide a rigorous experimental evaluation to verify these properties in practical scenarios, and in low-precision floating-point representations, highlighting the strengths and limitations of each method. Performance benchmarks on NPUs reveal up to $4.3\times$ speed-up against the state-of-the-art implementations of SGLang for triangular matrix inversion, leading to significant performance improvements on the entire layer level, while maintaining full end-to-end model accuracy.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-05-20T15:51:32Z</published>
+    <arxiv:comment>Preprint</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Aleksandros Sobczyk</name>
+    </author>
+    <author>
+      <name>Gioele Gottardo</name>
+    </author>
+    <author>
+      <name>Christos K. Matzoros</name>
+    </author>
+    <author>
+      <name>Mirko De Vita</name>
+    </author>
+    <author>
+      <name>Filip Skogh</name>
+    </author>
+    <author>
+      <name>Anastasios Zouzias</name>
+    </author>
+    <author>
+      <name>Jiawei Zhuang</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2605.08587v1</id>
+    <title>Kaczmarz Linear Attention</title>
+    <updated>2026-05-09T01:07:01Z</updated>
+    <link href="https://arxiv.org/abs/2605.08587v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2605.08587v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Long-context language modeling remains central to modern sequence modeling, but the quadratic cost of Transformer attention makes scaling computationally prohibitive. Linear recurrent models address this bottleneck by compressing the context into a fixed-size state, making the rule that forgets, writes, and edits information a central design problem. To address state maintenance, Gated DeltaNet (GDN) combines gated state decay with delta-rule residual writes, using a learnable coefficient to balance forgetting and update magnitude. However, this coefficient is learned empirically rather than derived from the underlying objective, which can lead to suboptimal update magnitudes. We revisit the online-regression objective underlying GDN and, inspired by the Kaczmarz projection method, derive the key-norm-normalized dynamic step size $β_t = η_t / (\|k_t\|_2^2 + ε)$ for residual updates. We propose Kaczmarz Linear Attention (KLA), a one-scalar modification of GDN that preserves the state shape, gates, linear recurrence, and chunkwise parallel algorithm. At the 0.4B scale with a 1B-token budget, KLA achieves the lowest validation perplexity among evaluated linear-time baselines, 8.09 versus 8.50 for GDN, and remains stable up to 65K tokens. On controlled tasks, KLA reaches 100% on single-needle-in-a-haystack retrieval, improves 8x multi-query associative recall by 7.03 points over GDN, and delivers 2.1x higher decode throughput at 32K context. These results suggest that the key-norm-normalized Kaczmarz coefficient is a first-order design axis for delta-rule sequence models: it improves accuracy, extrapolation, and decoding efficiency without changing the recurrent state or hardware kernel.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-05-09T01:07:01Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Jiaxuan Zou</name>
+    </author>
+    <author>
+      <name>Ruifeng Ren</name>
+    </author>
+    <author>
+      <name>Yong Liu</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2510.26692v2</id>
+    <title>Kimi Linear: An Expressive, Efficient Attention Architecture</title>
+    <updated>2025-11-01T12:05:18Z</updated>
+    <link href="https://arxiv.org/abs/2510.26692v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2510.26692v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>We introduce Kimi Linear, a hybrid linear attention architecture that, for the first time, outperforms full attention under fair comparisons across various scenarios -- including short-context, long-context, and reinforcement learning (RL) scaling regimes. At its core lies Kimi Delta Attention (KDA), an expressive linear attention module that extends Gated DeltaNet with a finer-grained gating mechanism, enabling more effective use of limited finite-state RNN memory. Our bespoke chunkwise algorithm achieves high hardware efficiency through a specialized variant of the Diagonal-Plus-Low-Rank (DPLR) transition matrices, which substantially reduces computation compared to the general DPLR formulation while remaining more consistent with the classical delta rule.
+  We pretrain a Kimi Linear model with 3B activated parameters and 48B total parameters, based on a layerwise hybrid of KDA and Multi-Head Latent Attention (MLA). Our experiments show that with an identical training recipe, Kimi Linear outperforms full MLA with a sizeable margin across all evaluated tasks, while reducing KV cache usage by up to 75% and achieving up to 6 times decoding throughput for a 1M context. These results demonstrate that Kimi Linear can be a drop-in replacement for full attention architectures with superior performance and efficiency, including tasks with longer input and output lengths.
+  To support further research, we open-source the KDA kernel and vLLM implementations, and release the pre-trained and instruction-tuned model checkpoints.</summary>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2025-10-30T16:59:43Z</published>
+    <arxiv:comment>Kimi Linear tech report</arxiv:comment>
+    <arxiv:primary_category term="cs.CL"/>
+    <author>
+      <name> Kimi Team</name>
+    </author>
+    <author>
+      <name>Yu Zhang</name>
+    </author>
+    <author>
+      <name>Zongyu Lin</name>
+    </author>
+    <author>
+      <name>Xingcheng Yao</name>
+    </author>
+    <author>
+      <name>Jiaxi Hu</name>
+    </author>
+    <author>
+      <name>Fanqing Meng</name>
+    </author>
+    <author>
+      <name>Chengyin Liu</name>
+    </author>
+    <author>
+      <name>Xin Men</name>
+    </author>
+    <author>
+      <name>Songlin Yang</name>
+    </author>
+    <author>
+      <name>Zhiyuan Li</name>
+    </author>
+    <author>
+      <name>Wentao Li</name>
+    </author>
+    <author>
+      <name>Enzhe Lu</name>
+    </author>
+    <author>
+      <name>Weizhou Liu</name>
+    </author>
+    <author>
+      <name>Yanru Chen</name>
+    </author>
+    <author>
+      <name>Weixin Xu</name>
+    </author>
+    <author>
+      <name>Longhui Yu</name>
+    </author>
+    <author>
+      <name>Yejie Wang</name>
+    </author>
+    <author>
+      <name>Yu Fan</name>
+    </author>
+    <author>
+      <name>Longguang Zhong</name>
+    </author>
+    <author>
+      <name>Enming Yuan</name>
+    </author>
+    <author>
+      <name>Dehao Zhang</name>
+    </author>
+    <author>
+      <name>Yizhi Zhang</name>
+    </author>
+    <author>
+      <name>T. Y. Liu</name>
+    </author>
+    <author>
+      <name>Haiming Wang</name>
+    </author>
+    <author>
+      <name>Shengjun Fang</name>
+    </author>
+    <author>
+      <name>Weiran He</name>
+    </author>
+    <author>
+      <name>Shaowei Liu</name>
+    </author>
+    <author>
+      <name>Yiwei Li</name>
+    </author>
+    <author>
+      <name>Jianlin Su</name>
+    </author>
+    <author>
+      <name>Jiezhong Qiu</name>
+    </author>
+    <author>
+      <name>Bo Pang</name>
+    </author>
+    <author>
+      <name>Junjie Yan</name>
+    </author>
+    <author>
+      <name>Zhejun Jiang</name>
+    </author>
+    <author>
+      <name>Weixiao Huang</name>
+    </author>
+    <author>
+      <name>Bohong Yin</name>
+    </author>
+    <author>
+      <name>Jiacheng You</name>
+    </author>
+    <author>
+      <name>Chu Wei</name>
+    </author>
+    <author>
+      <name>Zhengtao Wang</name>
+    </author>
+    <author>
+      <name>Chao Hong</name>
+    </author>
+    <author>
+      <name>Yutian Chen</name>
+    </author>
+    <author>
+      <name>Guanduo Chen</name>
+    </author>
+    <author>
+      <name>Yucheng Wang</name>
+    </author>
+    <author>
+      <name>Huabin Zheng</name>
+    </author>
+    <author>
+      <name>Feng Wang</name>
+    </author>
+    <author>
+      <name>Yibo Liu</name>
+    </author>
+    <author>
+      <name>Mengnan Dong</name>
+    </author>
+    <author>
+      <name>Zheng Zhang</name>
+    </author>
+    <author>
+      <name>Siyuan Pan</name>
+    </author>
+    <author>
+      <name>Wenhao Wu</name>
+    </author>
+    <author>
+      <name>Yuhao Wu</name>
+    </author>
+    <author>
+      <name>Longyu Guan</name>
+    </author>
+    <author>
+      <name>Jiawen Tao</name>
+    </author>
+    <author>
+      <name>Guohong Fu</name>
+    </author>
+    <author>
+      <name>Xinran Xu</name>
+    </author>
+    <author>
+      <name>Yuzhi Wang</name>
+    </author>
+    <author>
+      <name>Guokun Lai</name>
+    </author>
+    <author>
+      <name>Yuxin Wu</name>
+    </author>
+    <author>
+      <name>Xinyu Zhou</name>
+    </author>
+    <author>
+      <name>Zhilin Yang</name>
+    </author>
+    <author>
+      <name>Yulun Du</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2605.05838v1</id>
+    <title>MDN: Parallelizing Stepwise Momentum for Delta Linear Attention</title>
+    <updated>2026-05-07T08:12:09Z</updated>
+    <link href="https://arxiv.org/abs/2605.05838v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2605.05838v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Linear Attention (LA) offers a promising paradigm for scaling large language models (LLMs) to long sequences by avoiding the quadratic complexity of self-attention. Recent LA models such as Mamba2 and GDN interpret linear recurrences as closed-form online stochastic gradient descent (SGD), but naive SGD updates suffer from rapid information decay and suboptimal convergence in optimization. While momentum-based optimizers provide a natural remedy, they pose challenges in simultaneously achieving training efficiency and effectiveness. To address this, we develop a chunkwise parallel algorithm for LA with a stepwise momentum rule by geometrically reordering the update coefficients. Further, from a dynamical systems perspective, we analyze the momentum-based recurrence as a second-order system that introduces complex conjugate eigenvalues. This analysis guides the design of stable gating constraints. The resulting model, Momentum DeltaNet (MDN), leverages Triton kernels to achieve comparable training throughput with competitive linear models such as Mamba2 and KDA. Extensive experiments on the 400M and 1.3B parameter models demonstrate consistent performance improvements over strong baselines, including Transformers, Mamba2 and GDN, across diverse downstream evaluation benchmarks. Code: https://github.com/HuuYuLong/MomentumDeltaNet .</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.NE" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-05-07T08:12:09Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Yulong Huang</name>
+    </author>
+    <author>
+      <name>Xiang Liu</name>
+    </author>
+    <author>
+      <name>Hongxiang Huang</name>
+    </author>
+    <author>
+      <name>Xiaopeng Lin</name>
+    </author>
+    <author>
+      <name>Zunchang Liu</name>
+    </author>
+    <author>
+      <name>Xiaowen Chu</name>
+    </author>
+    <author>
+      <name>Zeke Xie</name>
+    </author>
+    <author>
+      <name>Bojun Cheng</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2609.32453v2</id>
+    <title>DRAM: Delta-rule Recurrent Associative Memory for Robot Manipulation Policies</title>
+    <updated>2026-09-29T03:00:59Z</updated>
+    <link href="https://arxiv.org/abs/2609.32453v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2609.32453v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Robotic manipulation is inherently history-dependent, yet most pretrained robotic policies condition on only the current observation or a short temporal window. Equipping such policies with long-term memory remains challenging: existing approaches either feed the backbone multi-frame observation windows, which substantially increase inference cost, or rely on pre-defined semantic features, which limit task generality and may also require the retraining of the backbone to adapt to the memory. We introduce DRAM (Delta-rule Recurrent Associative Memory), a plug-and-play memory module that can be attached to a wide range of pretrained robotic policies, endowing them with long-horizon memory without architectural modification or backbone retraining, requiring only task-specific post-training of the memory module and action expert. DRAM maintains a fixed-size associative memory using gated delta-rule linear attention, with a modified update that incorporates all tokens within each frame in parallel. An architecture-agnostic readout integrates historical context into action prediction across different policy architectures. Experiments show that DRAM consistently improves frozen pretrained policies over short-context baselines and alternative compact memory designs, validating its effectiveness as a fixed-size, post-hoc memory module trained with the backbone frozen.</summary>
+    <category term="cs.RO" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-09-26T10:38:49Z</published>
+    <arxiv:primary_category term="cs.RO"/>
+    <author>
+      <name>Xinyu Zhao</name>
+    </author>
+    <author>
+      <name>Yixiang Shan</name>
+    </author>
+    <author>
+      <name>Tao Yang</name>
+    </author>
+    <author>
+      <name>Runyu Lei</name>
+    </author>
+    <author>
+      <name>Yiming Zhao</name>
+    </author>
+    <author>
+      <name>Jiaxin Fan</name>
+    </author>
+    <author>
+      <name>Zongbao Feng</name>
+    </author>
+    <author>
+      <name>Peng Jia</name>
+    </author>
+  </entry>
+</feed>

@@ -12,6 +12,9 @@ use serde_json::{json, Value};
 use url::Url;
 
 use super::client::{SafeClient, WebError};
+use super::relevance::{
+    canonical_url, rank, rank_prior, Candidate, RankMethod, SharedScorer, WEB_THRESHOLDS,
+};
 
 pub const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 pub const GEMINI_URL_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -109,11 +112,58 @@ fn char_slice(text: &str, start: usize, end: usize) -> String {
         .collect()
 }
 
-/// Add `result` unless its URL is already present.
+/// Add `result` unless a result with the same canonical URL is already
+/// present ([`canonical_url`]: `www.`, tracking parameters, fragments and
+/// trailing slashes do not make a page different).
 fn push_unique(results: &mut Vec<WebResult>, result: WebResult) {
-    if !result.url.is_empty() && !results.iter().any(|r| r.url == result.url) {
+    if result.url.is_empty() {
+        return;
+    }
+    let key = canonical_url(&result.url);
+    if !results.iter().any(|r| canonical_url(&r.url) == key) {
         results.push(result);
     }
+}
+
+/// Order web results by relevance to `query`, dropping weak ones.
+///
+/// With the cross-encoder each `title + snippet` is scored and results below
+/// [`WEB_THRESHOLDS`] are dropped. Without it the provider's order is kept:
+/// these providers are search engines that already ranked the results, and
+/// a keyword cut on short paraphrased snippets drops good sources. Returns
+/// the kept results with their relevance, the number dropped and the method.
+pub fn rank_results(
+    query: &str,
+    results: Vec<WebResult>,
+    scorer: Option<&SharedScorer>,
+) -> (Vec<(WebResult, f32)>, usize, RankMethod) {
+    let candidates = results
+        .into_iter()
+        .enumerate()
+        .map(|(i, r)| Candidate {
+            text: if r.snippet.is_empty() {
+                r.title.clone()
+            } else {
+                format!("{}. {}", r.title, r.snippet)
+            },
+            prior: rank_prior(i),
+            title_match: false,
+            item: r,
+        })
+        .collect();
+    let ranking = rank(
+        query,
+        candidates,
+        scorer.map(|s| s.as_ref()),
+        WEB_THRESHOLDS,
+        false,
+    );
+    let kept = ranking
+        .kept
+        .into_iter()
+        .map(|s| (s.item, s.relevance))
+        .collect();
+    (kept, ranking.dropped, ranking.method)
 }
 
 /// Parse an OpenRouter chat completion made with the `web` plugin: each
@@ -433,6 +483,48 @@ mod tests {
         assert_eq!(outcome.results.len(), 2);
         assert_eq!(outcome.results[1].title, "docs.rs");
         assert!(parse_searxng(&json("{}")).is_err());
+    }
+
+    #[test]
+    fn results_dedupe_by_canonical_url() {
+        let response = serde_json::json!({"results": [
+            {"url": "https://www.example.org/post/?utm_source=feed#intro", "title": "Post", "content": "first"},
+            {"url": "http://example.org/post", "title": "Post again", "content": "second"},
+            {"url": "https://example.org/other", "title": "Other", "content": "third"}
+        ]});
+        let outcome = parse_searxng(&response).unwrap();
+        let snippets: Vec<&str> = outcome.results.iter().map(|r| r.snippet.as_str()).collect();
+        assert_eq!(snippets, vec!["first", "third"]);
+    }
+
+    struct Fixed(Vec<f32>);
+    impl crate::harness::web::relevance::PassageScorer for Fixed {
+        fn score(&self, _: &str, passages: &[String]) -> Result<Vec<f32>, String> {
+            Ok(self.0.iter().copied().take(passages.len()).collect())
+        }
+    }
+
+    #[test]
+    fn web_results_are_reranked_and_cut_with_the_cross_encoder() {
+        let results = parse_searxng(&json(SEARXNG)).unwrap().results;
+        let scorer: SharedScorer = std::sync::Arc::new(Fixed(vec![-7.0, 3.0]));
+        let (kept, dropped, method) = rank_results("rust async closures", results, Some(&scorer));
+        assert_eq!(method, RankMethod::CrossEncoder);
+        assert_eq!(dropped, 1);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].0.url, "https://docs.rs/async-closure");
+        assert!(kept[0].1 > 0.9);
+    }
+
+    #[test]
+    fn without_the_cross_encoder_web_results_keep_the_providers_order() {
+        let results = parse_searxng(&json(SEARXNG)).unwrap().results;
+        let (kept, dropped, method) = rank_results("unrelated words", results.clone(), None);
+        assert_eq!(method, RankMethod::Lexical);
+        assert_eq!(dropped, 0);
+        let urls: Vec<&str> = kept.iter().map(|(r, _)| r.url.as_str()).collect();
+        let expected: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+        assert_eq!(urls, expected);
     }
 
     #[tokio::test]

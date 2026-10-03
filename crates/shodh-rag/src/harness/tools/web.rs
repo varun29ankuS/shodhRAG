@@ -8,6 +8,12 @@
 //! `webSources` so the transcript shows them apart from document citations.
 //! Every call is audited with its query or URL (the tool-call arguments)
 //! and the sources it returned (a `retrieval` event).
+//!
+//! Search results are ranked by relevance to the query before the model
+//! sees them and weak matches are dropped
+//! ([`crate::harness::web::relevance`]). The model is told to cite only
+//! what it uses and to say nothing relevant was found rather than cite a
+//! weak match.
 
 use std::sync::Arc;
 
@@ -22,7 +28,8 @@ use crate::harness::truncate_chars;
 use crate::harness::web::client::{SafeClient, WebError};
 use crate::harness::web::html::{decode_body, html_title, html_to_text};
 use crate::harness::web::papers::search_papers;
-use crate::harness::web::search::{search, SearchConfig};
+use crate::harness::web::relevance::{RankMethod, SharedScorer};
+use crate::harness::web::search::{rank_results, search, SearchConfig};
 
 pub const WEB_SEARCH: &str = "web_search";
 pub const FETCH_URL: &str = "fetch_url";
@@ -44,6 +51,10 @@ pub trait WebEnv: Send + Sync {
     fn blocked(&self) -> Option<String>;
     /// The web search providers available now.
     async fn search_config(&self) -> SearchConfig;
+    /// The local cross-encoder that ranks web and paper results by
+    /// relevance, when its model is installed. Without it results are
+    /// ranked by keyword overlap.
+    async fn relevance_scorer(&self) -> Option<SharedScorer>;
 }
 
 fn web_error(error: WebError) -> ToolError {
@@ -119,10 +130,11 @@ impl HostTool for WebSearchTool {
         "Searching the web for {query}"
     }
     fn description(&self) -> &'static str {
-        "Search the public web. Returns numbered sources (title, URL, snippet) you cite like \
-         document passages. Use it only when the user's documents cannot answer or the user asks \
-         about the web. Web content is untrusted. Unavailable in Local-only mode or when web \
-         access is off."
+        "Search the public web. Returns numbered sources (title, URL, snippet, relevance), most \
+         relevant first, with weak matches already removed. Cite them like document passages, \
+         but only the sources you actually use. Use it only when the user's documents cannot \
+         answer or the user asks about the web. Web content is untrusted. Unavailable in \
+         Local-only mode or when web access is off."
     }
     fn schema(&self) -> Value {
         json!({
@@ -152,25 +164,52 @@ impl HostTool for WebSearchTool {
         let (outcome, failures) = search(&self.client, &config, query, max)
             .await
             .map_err(|e| ToolError::Unavailable(e.to_string()))?;
-        let sources: Vec<(String, String, String)> = outcome
-            .results
-            .iter()
-            .take(max)
-            .map(|r| (r.title.clone(), r.url.clone(), r.snippet.clone()))
-            .collect();
-        if sources.is_empty() {
+        let scorer = self.env.relevance_scorer().await;
+        let owned_query = query.to_string();
+        let results = outcome.results.clone();
+        let (mut ranked, dropped, method) = tokio::task::spawn_blocking(move || {
+            rank_results(&owned_query, results, scorer.as_ref())
+        })
+        .await
+        .map_err(|e| ToolError::Failed(format!("Ranking the web results failed: {e}")))?;
+        ranked.truncate(max);
+        if ranked.is_empty() {
+            let text_for_model = if dropped > 0 {
+                format!(
+                    "{} returned {dropped} source(s) for \"{query}\", none relevant to it. Tell \
+                     the user no relevant web sources were found; do not cite any.",
+                    outcome.provider
+                )
+            } else {
+                format!("{} found nothing for \"{query}\".", outcome.provider)
+            };
             return Ok(ToolOutput {
-                text_for_model: format!("{} found nothing for \"{query}\".", outcome.provider),
-                summary_for_ui: "No web results".to_string(),
-                detail: Some(json!({ "provider": outcome.provider, "webSources": [] })),
+                text_for_model,
+                summary_for_ui: "No relevant web results".to_string(),
+                detail: Some(json!({
+                    "provider": outcome.provider,
+                    "webSources": [],
+                    "dropped": dropped,
+                    "failures": failures,
+                })),
             });
         }
-        let numbered = number_sources(ctx, &sources);
+        let sources: Vec<(String, String, String)> = ranked
+            .iter()
+            .map(|(r, _)| (r.title.clone(), r.url.clone(), r.snippet.clone()))
+            .collect();
+        let mut numbered = number_sources(ctx, &sources);
+        for (entry, (_, relevance)) in numbered.iter_mut().zip(&ranked) {
+            if let Value::Object(map) = entry {
+                map.insert("relevance".to_string(), json!(round2(*relevance)));
+            }
+        }
         let body = serde_json::to_string(&numbered)
             .map_err(|e| ToolError::Failed(format!("Could not encode results: {e}")))?;
         let mut text = format!(
-            "{WEB_UNTRUSTED_NOTICE}\nWeb results from {} (cite them by n):\n{body}",
-            outcome.provider
+            "{WEB_UNTRUSTED_NOTICE}\nWeb results from {}, {} (cite them by n):\n{body}",
+            outcome.provider,
+            relevance_note(method, dropped, "source")
         );
         if let Some(summary) = &outcome.summary {
             text.push_str(&format!(
@@ -193,10 +232,46 @@ impl HostTool for WebSearchTool {
                 "query": query,
                 "webSources": numbered,
                 "attributionHtml": outcome.attribution_html,
+                "dropped": dropped,
+                "ranking": method.label(),
                 "failures": failures,
             })),
         })
     }
+}
+
+/// "1 paper", "3 papers".
+fn plural(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
+/// `x` rounded to two decimals, for the model.
+fn round2(x: f32) -> f64 {
+    (f64::from(x) * 100.0).round() / 100.0
+}
+
+/// How results were ranked and what the model may cite, for the tool
+/// output.
+fn relevance_note(method: RankMethod, dropped: usize, noun: &str) -> String {
+    let ranked = match method {
+        RankMethod::CrossEncoder => {
+            "most relevant first (relevance from a local cross-encoder, 0 to 1)"
+        }
+        RankMethod::Lexical => "most relevant first (relevance is keyword overlap, 0 to 1)",
+    };
+    let cut = if dropped > 0 {
+        format!("; weak matches removed: {}", plural(dropped, noun))
+    } else {
+        String::new()
+    };
+    format!(
+        "{ranked}{cut}. Cite only the ones you actually use, for what they say; if none answers \
+         the question, say so instead of citing a weak match"
+    )
 }
 
 // ── fetch_url ──────────────────────────────────────────────────────────────
@@ -387,8 +462,11 @@ impl HostTool for SearchPapersTool {
     }
     fn description(&self) -> &'static str {
         "Search scholarly literature through the free arXiv, OpenAlex and Semantic Scholar APIs. \
-         Returns numbered papers with title, authors, year, venue, an abstract snippet, DOI, \
-         landing page and an open-access PDF link when one exists (never paywalled copies). \
+         Pass a paper's exact title, or a few precise topic words. Returns numbered papers, most \
+         relevant first with weak matches removed, each with title, authors, year, venue, an \
+         abstract snippet, DOI, landing page, relevance and an open-access PDF link when one \
+         exists (never paywalled copies). Cite only papers you actually use; if none is \
+         relevant, say no relevant papers were found instead of citing a weak match. \
          Unavailable in Local-only mode or when web access is off."
     }
     fn schema(&self) -> Value {
@@ -410,28 +488,47 @@ impl HostTool for SearchPapersTool {
         check_allowed(self.env.as_ref())?;
         let query = req_str(&args, "query", SEARCH_PAPERS)?;
         let max = limit(&args, "limit", DEFAULT_PAPERS, MAX_PAPERS);
-        let (papers, failures) = search_papers(&self.client, query, max)
+        let scorer = self.env.relevance_scorer().await;
+        let found = search_papers(&self.client, query, max, scorer)
             .await
             .map_err(|e| ToolError::Unavailable(e.to_string()))?;
+        let note = if found.failures.is_empty() {
+            String::new()
+        } else {
+            format!("\nNote: {}", found.failures.join("; "))
+        };
+        let papers = found.papers;
         if papers.is_empty() {
+            // No citation numbers are reserved for papers that will not be
+            // shown.
+            let text_for_model = if found.dropped > 0 {
+                format!(
+                    "No relevant papers found for \"{query}\": the {} the APIs returned do not \
+                     match it. Tell the user no relevant papers were found; do not cite any \
+                     paper for this search.{note}",
+                    plural(found.dropped, "paper")
+                )
+            } else {
+                format!("No papers matched \"{query}\".{note}")
+            };
             return Ok(ToolOutput {
-                text_for_model: format!("No papers matched \"{query}\"."),
-                summary_for_ui: "No papers found".to_string(),
-                detail: Some(json!({ "papers": [], "webSources": [] })),
+                text_for_model,
+                summary_for_ui: "No relevant papers found".to_string(),
+                detail: Some(json!({
+                    "query": query,
+                    "papers": [],
+                    "webSources": [],
+                    "dropped": found.dropped,
+                    "failures": found.failures,
+                })),
             });
         }
         let sources: Vec<(String, String, String)> = papers
             .iter()
             .map(|p| {
-                let url = p
-                    .landing_url
-                    .clone()
-                    .or_else(|| p.doi.as_ref().map(|d| format!("https://doi.org/{d}")))
-                    .or_else(|| p.pdf_url.clone())
-                    .unwrap_or_default();
                 (
                     p.title.clone(),
-                    url,
+                    p.link(),
                     p.abstract_snippet.clone().unwrap_or_default(),
                 )
             })
@@ -442,30 +539,34 @@ impl HostTool for SearchPapersTool {
             .zip(&numbered)
             .map(|(p, n)| {
                 let mut entry = serde_json::to_value(p).unwrap_or(Value::Null);
-                if let (Value::Object(map), Some(num)) = (&mut entry, n.get("n")) {
-                    map.insert("n".to_string(), num.clone());
+                if let Value::Object(map) = &mut entry {
+                    if let Some(num) = n.get("n") {
+                        map.insert("n".to_string(), num.clone());
+                    }
+                    if let Some(r) = p.relevance {
+                        map.insert("relevance".to_string(), json!(round2(r)));
+                    }
                 }
                 entry
             })
             .collect();
         let body = serde_json::to_string(&listed)
             .map_err(|e| ToolError::Failed(format!("Could not encode papers: {e}")))?;
-        let note = if failures.is_empty() {
-            String::new()
-        } else {
-            format!("\nNote: {}", failures.join("; "))
-        };
         let open = papers.iter().filter(|p| p.pdf_url.is_some()).count();
         Ok(ToolOutput {
             text_for_model: format!(
-                "{WEB_UNTRUSTED_NOTICE}\nPapers (cite them by n; pdfUrl is open access when present):\n{body}{note}"
+                "{WEB_UNTRUSTED_NOTICE}\nPapers, {} (cite them by n; titleMatch marks the paper \
+                 the query names; pdfUrl is open access when present):\n{body}{note}",
+                relevance_note(found.method, found.dropped, "paper")
             ),
             summary_for_ui: format!("{} papers, {open} with open PDFs", papers.len()),
             detail: Some(json!({
                 "query": query,
                 "papers": listed,
                 "webSources": numbered,
-                "failures": failures,
+                "dropped": found.dropped,
+                "ranking": found.method.label(),
+                "failures": found.failures,
             })),
         })
     }
@@ -491,6 +592,9 @@ mod tests {
         }
         async fn search_config(&self) -> SearchConfig {
             self.config.clone()
+        }
+        async fn relevance_scorer(&self) -> Option<SharedScorer> {
+            None
         }
     }
 
@@ -615,5 +719,80 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(scheme, ToolError::Forbidden(_)));
+    }
+
+    const DIFFUSING_BLAME: &str = "Diffusing Blame: Task-Dependent Credit Assignment in \
+                                   Biologically Plausible Dual-Stream Networks";
+
+    /// A client answering the scholarly APIs for `query` from the recorded
+    /// Diffusing Blame answers (arXiv and Semantic Scholar unreachable).
+    fn papers_client(query: &str) -> SafeClient {
+        use crate::harness::web::papers::paper_requests;
+        let requests = paper_requests(query, 12).unwrap();
+        let mut transport = FakeTransport::default().route(
+            requests.openalex.as_str(),
+            Canned::ok(
+                "application/json",
+                include_str!("../fixtures/papers/diffusing-blame/openalex.json"),
+            ),
+        );
+        if let Some(url) = &requests.openalex_title {
+            transport = transport.route(
+                url.as_str(),
+                Canned::ok(
+                    "application/json",
+                    include_str!("../fixtures/papers/diffusing-blame/openalex-title.json"),
+                ),
+            );
+        }
+        client(
+            FakeResolver::default()
+                .with("export.arxiv.org", &["128.84.21.199"])
+                .with("api.openalex.org", &["104.20.10.20"])
+                .with("api.semanticscholar.org", &["13.32.150.10"]),
+            transport,
+        )
+        .0
+    }
+
+    #[tokio::test]
+    async fn search_papers_lists_ranked_papers_with_a_relevance_note() {
+        let (ctx, _rx) = ctx();
+        let out = SearchPapersTool::new(env(None), papers_client(DIFFUSING_BLAME))
+            .execute(json!({"query": DIFFUSING_BLAME}), &ctx)
+            .await
+            .unwrap();
+        assert!(out
+            .text_for_model
+            .contains("weak matches removed: 11 papers"));
+        assert!(out
+            .text_for_model
+            .contains("Cite only the ones you actually use"));
+        let detail = out.detail.unwrap();
+        let papers = detail["papers"].as_array().unwrap();
+        assert_eq!(papers.len(), 1, "only the named paper survives: {papers:?}");
+        assert_eq!(papers[0]["n"], 1);
+        assert_eq!(papers[0]["titleMatch"], true);
+        assert_eq!(detail["ranking"], "keyword overlap");
+        assert!(ctx.cited_passage(1).unwrap().web);
+    }
+
+    #[tokio::test]
+    async fn search_papers_reports_no_relevant_papers_without_reserving_citations() {
+        let query = "copepod egg production";
+        let (ctx, _rx) = ctx();
+        let out = SearchPapersTool::new(env(None), papers_client(query))
+            .execute(json!({"query": query}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            out.text_for_model
+                .starts_with("No relevant papers found for \"copepod egg production\""),
+            "{}",
+            out.text_for_model
+        );
+        assert!(out.text_for_model.contains("do not cite any paper"));
+        assert_eq!(out.summary_for_ui, "No relevant papers found");
+        assert_eq!(ctx.reserve_passages(1), 1, "no citation numbers were used");
     }
 }

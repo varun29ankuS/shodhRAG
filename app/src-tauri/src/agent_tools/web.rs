@@ -7,8 +7,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use shodh_rag::harness::tools::web::{FetchUrlTool, SearchPapersTool, WebEnv, WebSearchTool};
 use shodh_rag::harness::tools::{RegistryError, ToolRegistry};
+use shodh_rag::harness::web::relevance::SharedScorer;
 use shodh_rag::harness::web::search::{ApiKey, SearchConfig};
 use shodh_rag::harness::web::SafeClient;
+use shodh_rag::rag_engine::{RAGEngine, SharedReranker};
+use tokio::sync::{OnceCell, RwLock};
 use url::Url;
 
 use super::{AgentHost, HostEffects};
@@ -24,6 +27,10 @@ pub const SEARXNG_URL_ENV: &str = "SHODH_SEARXNG_URL";
 pub struct AppWebEnv {
     data_dir: PathBuf,
     effects: Arc<dyn HostEffects>,
+    rag: Arc<RwLock<RAGEngine>>,
+    /// The engine's cross-encoder slot, fetched once: the engine lock is
+    /// held for long stretches while indexing, the slot's is not.
+    reranker: OnceCell<SharedReranker>,
 }
 
 impl AppWebEnv {
@@ -31,6 +38,8 @@ impl AppWebEnv {
         Self {
             data_dir: host.data_dir.clone(),
             effects: host.effects.clone(),
+            rag: host.rag.clone(),
+            reranker: OnceCell::new(),
         }
     }
 }
@@ -58,6 +67,15 @@ pub fn web_block_reason(data_dir: &std::path::Path) -> Option<String> {
 impl WebEnv for AppWebEnv {
     fn blocked(&self) -> Option<String> {
         web_block_reason(&self.data_dir)
+    }
+
+    async fn relevance_scorer(&self) -> Option<SharedScorer> {
+        let slot = self
+            .reranker
+            .get_or_init(|| async { self.rag.read().await.reranker_handle() })
+            .await;
+        let reranker = slot.read().clone()?;
+        Some(Arc::new(reranker))
     }
 
     async fn search_config(&self) -> SearchConfig {

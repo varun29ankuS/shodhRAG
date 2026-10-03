@@ -40,6 +40,8 @@ function thread(id: string, parent: string | null = 'm1', conversationId = 'c1')
 
 class MemoryStorage implements KeyValueStorage {
   map = new Map<string, string>();
+  get length() { return this.map.size; }
+  key(i: number) { return Array.from(this.map.keys())[i] ?? null; }
   getItem(key: string) { return this.map.has(key) ? this.map.get(key)! : null; }
   setItem(key: string, value: string) { this.map.set(key, value); }
   removeItem(key: string) { this.map.delete(key); }
@@ -173,4 +175,18 @@ test('summary: last question and an excerpt of its answer', () => {
   const long = threadSummary(t);
   assert.ok(long.endsWith('…'));
   assert.ok(long.length < SUMMARY_ANSWER_CHARS + 100);
+});
+
+test('local store: prune drops threads of deleted conversations only', () => {
+  const storage = new MemoryStorage();
+  storage.setItem('unrelated', 'x');
+  const store = createLocalThreadStore(storage);
+  store.save('c1', [thread('a', null, 'c1')]);
+  store.save('c2', [thread('b', null, 'c2')]);
+  assert.equal(store.prune(new Set(['c1'])), 1);
+  assert.equal(store.list('c1').length, 1);
+  assert.equal(store.list('c2').length, 0);
+  assert.equal(storage.getItem('unrelated'), 'x');
+  const noKeys = createLocalThreadStore({ getItem: () => null, setItem() {}, removeItem() {} });
+  assert.equal(noKeys.prune(new Set()), 0);
 });

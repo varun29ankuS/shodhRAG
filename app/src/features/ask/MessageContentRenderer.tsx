@@ -287,7 +287,7 @@ export function MessageContentRenderer({
       const tex = typeof node?.properties?.dataTex === 'string' ? node.properties.dataTex : '';
       if (!tex) return <>{children}</>;
       return (
-        <FocusFrame noun="equation" getTarget={() => equationTarget(tex)} className="my-2">
+        <FocusFrame noun="equation" getTarget={() => equationTarget(tex)}>
           {children}
         </FocusFrame>
       );

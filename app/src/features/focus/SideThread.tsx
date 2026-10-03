@@ -47,7 +47,7 @@ function UserTurn({ turn }: { turn: ThreadTurn }) {
   );
 }
 
-function AnswerTurn({
+const AnswerTurn = React.memo(function AnswerTurn({
   transcript,
   content,
   onOpenCitation,
@@ -78,7 +78,7 @@ function AnswerTurn({
       onOpenSettings={onOpenSettings}
     />
   );
-}
+});
 
 export interface SideThreadProps {
   open: OpenFocus;
@@ -112,7 +112,9 @@ export function SideThread({ open, thread, extras, onClearSelection, onOpenCitat
   const live = focus?.sideLive?.threadId === open.threadId ? focus.sideLive.transcript : null;
   const running = live !== null;
   const waitingStep = live ? pendingApproval(live) : null;
-  const turns = thread?.turns ?? [];
+  const turns = useMemo(() => thread?.turns ?? [], [thread]);
+  // Restored once per thread change, not on every keystroke in the composer.
+  const restored = useMemo(() => new Map(turns.map(t => [t.id, fromPersisted(t.transcript)])), [turns]);
   const label = open.target.label;
 
   const mainRunning = session.streamingConversationId !== null;
@@ -179,7 +181,8 @@ export function SideThread({ open, thread, extras, onClearSelection, onOpenCitat
     }
   }, [summary, canPost, session, onDone]);
 
-  const markInstalled = useCallback(() => session.setRuntimeInstalled(true), [session]);
+  const { setRuntimeInstalled } = session;
+  const markInstalled = useCallback(() => setRuntimeInstalled(true), [setRuntimeInstalled]);
   const openSettings = useCallback(() => {
     window.dispatchEvent(new CustomEvent('switchTab', { detail: 'settings' }));
     onDone();
@@ -278,7 +281,7 @@ export function SideThread({ open, thread, extras, onClearSelection, onOpenCitat
           ) : (
             <div key={turn.id} className="ask-rise">
               <AnswerTurn
-                transcript={fromPersisted(turn.transcript)}
+                transcript={restored.get(turn.id) ?? null}
                 content={turn.content}
                 onOpenCitation={onOpenCitation}
                 onRuntimeInstalled={markInstalled}

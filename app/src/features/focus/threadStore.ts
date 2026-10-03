@@ -207,6 +207,9 @@ export interface KeyValueStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
   removeItem(key: string): void;
+  /** Key enumeration, used to drop threads of deleted conversations. */
+  readonly length?: number;
+  key?(index: number): string | null;
 }
 
 export interface LocalThreadStore {
@@ -216,6 +219,11 @@ export interface LocalThreadStore {
   save(conversationId: string, threads: readonly FocusThread[]): boolean;
   /** Forget the conversation's threads. */
   clear(conversationId: string): void;
+  /**
+   * Drop threads of conversations that no longer exist. Returns how many
+   * conversations' threads were removed.
+   */
+  prune(keepConversationIds: ReadonlySet<string>): number;
 }
 
 /**
@@ -259,6 +267,21 @@ export function createLocalThreadStore(storage: KeyValueStorage | null): LocalTh
       } catch {
         // Storage unavailable: nothing to clear.
       }
+    },
+    prune(keep) {
+      if (!storage || typeof storage.key !== 'function') return 0;
+      const stale: string[] = [];
+      try {
+        const count = storage.length ?? 0;
+        for (let i = 0; i < count; i++) {
+          const k = storage.key(i);
+          if (k && k.startsWith(LOCAL_KEY_PREFIX) && !keep.has(k.slice(LOCAL_KEY_PREFIX.length))) stale.push(k);
+        }
+        for (const k of stale) storage.removeItem(k);
+      } catch {
+        return 0;
+      }
+      return stale.length;
     },
   };
 }

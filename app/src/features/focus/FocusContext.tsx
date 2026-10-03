@@ -166,6 +166,15 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     [local, readLocal],
   );
 
+  // Once per launch, after conversations load: drop device-kept threads of
+  // conversations deleted since (not at delete time, so Undo keeps them).
+  const prunedRef = useRef(false);
+  useEffect(() => {
+    if (prunedRef.current || conversations.length === 0) return;
+    prunedRef.current = true;
+    storeRef.current?.prune(new Set(conversations.map(c => c.id)));
+  }, [conversations]);
+
   // Load a conversation's local threads into state once it is looked at.
   useEffect(() => {
     if (!activeConversationId || local[activeConversationId]) return;

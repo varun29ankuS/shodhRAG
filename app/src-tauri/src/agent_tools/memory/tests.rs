@@ -266,7 +266,8 @@ async fn recall_update_and_forget_respect_the_workspace() {
     let (outcome, _) = h
         .call(
             "recall",
-            json!({"query": "invoices"}),
+            // The default floor is tuned for E5; the test embedder scores identical words 1.
+            json!({"query": "Invoices are due on the 5th?"}),
             ctx,
             rx,
             AgentProfile::assistant(),
@@ -277,6 +278,41 @@ async fn recall_update_and_forget_respect_the_workspace() {
     assert!(outcome.text_for_model.contains("due on the 5th"));
     assert!(!outcome.text_for_model.contains("Priya"));
     assert_eq!(h.events(AuditEventType::MemoryUse).len(), 1);
+    // Even alpha's exact words find nothing from beta.
+    let (ctx, rx) = h.ctx("s3b", Some("beta"));
+    let (outcome, _) = h
+        .call(
+            "recall",
+            json!({"query": "Alpha invoices go to Priya"}),
+            ctx,
+            rx,
+            AgentProfile::assistant(),
+            true,
+        )
+        .await;
+    assert!(outcome.ok);
+    assert!(
+        outcome.text_for_model.starts_with("No memories match"),
+        "{}",
+        outcome.text_for_model
+    );
+    // ...and are recalled from alpha itself.
+    let (ctx, rx) = h.ctx("s3c", Some("alpha"));
+    let (outcome, _) = h
+        .call(
+            "recall",
+            json!({"query": "Alpha invoices go to Priya"}),
+            ctx,
+            rx,
+            AgentProfile::assistant(),
+            true,
+        )
+        .await;
+    assert!(
+        outcome.text_for_model.contains("Priya"),
+        "{}",
+        outcome.text_for_model
+    );
 
     let all = h
         .service()

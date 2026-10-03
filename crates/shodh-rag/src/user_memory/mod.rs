@@ -43,8 +43,8 @@ pub use guard::{
     SETTINGS_SOURCE,
 };
 pub use recall::{
-    render_injection, RecallMode, RecallRequest, RecalledMemory, DEFAULT_MIN_SIMILARITY,
-    MAX_INJECTION_CHARS, MEMORY_BLOCK_TITLE,
+    render_injection, render_injection_counted, RecallMode, RecallRequest, RecalledMemory,
+    DEFAULT_MIN_SIMILARITY, MAX_INJECTION_CHARS, MEMORY_BLOCK_TITLE,
 };
 
 /// Provenance source prefixes of memories (as opposed to statements extracted from
@@ -542,21 +542,38 @@ impl MemoryService {
         actor: &Actor,
     ) -> MemoryResult<Vec<RecalledMemory>> {
         let recalled = recall::rank(self, request).await?;
-        if request.mode == RecallMode::Use && !recalled.is_empty() {
-            recall::record_use(self, &recalled).await?;
-            self.audit(
-                actor,
-                AuditEventType::MemoryUse,
-                json!({
-                    "action": "recall",
-                    "ids": recalled.iter().map(|m| m.memory.id.clone()).collect::<Vec<_>>(),
-                    "query": snippet(&request.query),
-                    "scope": request.scope.as_key(),
-                    "via": actor.via,
-                }),
-            );
+        if request.mode == RecallMode::Use {
+            self.record_use(&recalled, request, actor).await?;
         }
         Ok(recalled)
+    }
+
+    /// Records that `recalled` (from a [`RecallMode::Inspect`] recall for `request`) was
+    /// used: reinforces each memory, strengthens links between them and audits
+    /// `memory_use`. Lets a caller bound the read-only ranking with a timeout without ever
+    /// cancelling a half-recorded use.
+    pub async fn record_use(
+        &self,
+        recalled: &[RecalledMemory],
+        request: &RecallRequest,
+        actor: &Actor,
+    ) -> MemoryResult<()> {
+        if recalled.is_empty() {
+            return Ok(());
+        }
+        recall::record_use(self, recalled).await?;
+        self.audit(
+            actor,
+            AuditEventType::MemoryUse,
+            json!({
+                "action": "recall",
+                "ids": recalled.iter().map(|m| m.memory.id.clone()).collect::<Vec<_>>(),
+                "query": snippet(&request.query),
+                "scope": request.scope.as_key(),
+                "via": actor.via,
+            }),
+        );
+        Ok(())
     }
 
     async fn after_write(

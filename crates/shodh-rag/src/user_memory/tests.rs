@@ -8,7 +8,7 @@ use shodh_ontology::{ExtractorKind, RawValue};
 
 use super::*;
 use crate::audit::{AuditEventType, AuditLog, AuditQuery, AuditRecord};
-use crate::statements::testing::{fixture, statement, t0, Fixture};
+use crate::statements::testing::{fixture, fixture_with, statement, t0, Fixture};
 use crate::statements::Clock;
 
 struct Mem {
@@ -18,7 +18,10 @@ struct Mem {
 }
 
 async fn mem() -> Mem {
-    let f = fixture().await;
+    with_fixture(fixture().await)
+}
+
+fn with_fixture(f: Fixture) -> Mem {
     let audit = Arc::new(AuditLog::open(f.dir.path().join("shodh.db"), None).unwrap());
     let service = MemoryService::new(f.store.clone(), Some(audit.clone()), "test");
     Mem { f, audit, service }
@@ -491,4 +494,157 @@ async fn injection_is_delimited_and_capped_and_export_lists_everything() {
     let export = m.service.export().await.unwrap();
     assert_eq!(export["format"], "shodh.memory.export");
     assert_eq!(export["memories"].as_array().unwrap().len(), 40);
+}
+
+#[tokio::test]
+async fn label_words_do_not_recall_unrelated_facts() {
+    let m = mem().await;
+    m.service
+        .remember(
+            preference("coffee", "black"),
+            Scope::Global,
+            &Origin::user_interface("t"),
+            &Actor::ui(),
+        )
+        .await
+        .unwrap();
+    // "user" appears in every rendered preference about the user but not in its values,
+    // so it must not make the preference relevant.
+    for query in ["How do I add a new user account?"] {
+        let mut request = RecallRequest::new(query, Scope::Global, 5, RecallMode::Use);
+        request.min_similarity = 0.3;
+        let recalled = m.service.recall(&request, &Actor::ui()).await.unwrap();
+        assert!(recalled.is_empty(), "{query}: {recalled:?}");
+    }
+    assert!(m.events(&[AuditEventType::MemoryUse]).is_empty());
+    // Full-text search still matches the values (it lifts rank; similarity admits).
+    let hits =
+        m.f.store
+            .search(
+                "black coffee",
+                &crate::statements::StatementQuery::default(),
+                5,
+            )
+            .await
+            .unwrap();
+    assert!(hits.first().is_some_and(|h| h.lexical));
+    let hits =
+        m.f.store
+            .search(
+                "user account",
+                &crate::statements::StatementQuery::default(),
+                5,
+            )
+            .await
+            .unwrap();
+    assert!(hits.iter().all(|h| !h.lexical), "labels are not indexed");
+}
+
+/// The default similarity floor against the real E5 model: related questions recall the
+/// memory they are about, unrelated ones recall nothing.
+#[tokio::test]
+#[cfg_attr(
+    not(shodh_test_models),
+    ignore = "requires SHODH_TEST_MODELS containing multilingual-e5-base/"
+)]
+async fn the_default_floor_separates_related_from_unrelated_questions_with_e5() {
+    let root = std::env::var_os("SHODH_TEST_MODELS")
+        .expect("SHODH_TEST_MODELS must point at the models directory to run this test");
+    let config = crate::embeddings::e5::E5Config::auto_detect(std::path::Path::new(&root))
+        .expect("multilingual-e5-base under SHODH_TEST_MODELS");
+    let e5: Arc<dyn crate::embeddings::EmbeddingModel> =
+        Arc::new(crate::embeddings::e5::E5Embeddings::new(config).expect("load E5"));
+    let m = with_fixture(fixture_with(e5.clone()).await);
+    let origin = Origin::user_interface("t");
+    let remember = |content: MemoryContent| {
+        let service = &m.service;
+        let origin = origin.clone();
+        async move {
+            service
+                .remember(content, Scope::Global, &origin, &Actor::ui())
+                .await
+                .unwrap()
+                .memory
+                .unwrap()
+                .id
+        }
+    };
+    let coffee = remember(preference("coffee", "with oat milk")).await;
+    let accountant = remember(MemoryContent::Note {
+        text: "Priya Sharma is my accountant and files my GST returns".into(),
+    })
+    .await;
+    let apollo = remember(MemoryContent::Note {
+        text: "The Apollo project deadline is 14 November".into(),
+    })
+    .await;
+    let reports = remember(preference("report format", "PDF")).await;
+
+    // Similarity of every question to every memory, printed when an assertion fails.
+    let texts: Vec<String> = m
+        .service
+        .list(&ListRequest::default())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.text)
+        .collect();
+    let questions = [
+        "How do I take my coffee?",
+        "Who files my GST returns?",
+        "When is the Apollo deadline?",
+        "What format should reports be in?",
+        "How do I add a new user account?",
+        "What is the capital of France?",
+        "Summarise the termination clause of this contract",
+        "Explain gradient descent with an example",
+    ];
+    for q in questions {
+        let qv = e5.embed_query(q).unwrap();
+        let sims: Vec<String> = texts
+            .iter()
+            .map(|t| {
+                let dv = e5.embed_document(t).unwrap();
+                let sim: f32 = qv.iter().zip(&dv).map(|(a, b)| a * b).sum();
+                format!("{sim:.3}")
+            })
+            .collect();
+        eprintln!("{q:55} {}", sims.join(" "));
+    }
+    let recall = |query: &'static str| {
+        let service = &m.service;
+        async move {
+            let request = RecallRequest::new(query, Scope::Global, 5, RecallMode::Inspect);
+            service.recall(&request, &Actor::ui()).await.unwrap()
+        }
+    };
+    for (query, expected) in [
+        ("How do I take my coffee?", &coffee),
+        ("Who files my GST returns?", &accountant),
+        ("When is the Apollo deadline?", &apollo),
+        ("What format should reports be in?", &reports),
+    ] {
+        let recalled = recall(query).await;
+        assert!(
+            recalled.first().is_some_and(|r| &r.memory.id == expected),
+            "{query}: {:?}",
+            recalled
+                .iter()
+                .map(|r| (&r.memory.text, r.relevance))
+                .collect::<Vec<_>>()
+        );
+    }
+    for query in [
+        "How do I add a new user account?",
+        "What is the capital of France?",
+        "Summarise the termination clause of this contract",
+        "Explain gradient descent with an example",
+    ] {
+        let recalled = recall(query).await;
+        assert!(
+            recalled.is_empty(),
+            "{query}: {:?}",
+            recalled.iter().map(|r| &r.memory.text).collect::<Vec<_>>()
+        );
+    }
 }

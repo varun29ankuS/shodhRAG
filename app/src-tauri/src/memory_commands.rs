@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::Serialize;
 use shodh_rag::audit::{AuditKey, AuditLog};
@@ -17,8 +18,8 @@ use shodh_rag::statements::{
     SystemClock,
 };
 use shodh_rag::user_memory::{
-    render_injection, Actor, ListRequest, MemoryContent, MemoryError, MemoryRecord, MemoryService,
-    Origin, RecallMode, RecallRequest, RememberOutcome, MAX_INJECTION_CHARS,
+    render_injection_counted, Actor, ListRequest, MemoryContent, MemoryError, MemoryRecord,
+    MemoryService, Origin, RecallMode, RecallRequest, RememberOutcome, MAX_INJECTION_CHARS,
 };
 use shodh_rag::RAGEngine;
 use tauri::State;
@@ -146,8 +147,13 @@ pub fn error_text(error: MemoryError) -> String {
     error.to_string()
 }
 
-/// The memory block for the start of an agent run: memories relevant to `text`, recalled
-/// as use (reinforced, linked, audited as `memory_use`). `None` when there is nothing
+/// Longest the memory recall may delay the start of an answer (it waits for the engine
+/// while indexing holds it). On timeout the answer starts without memories.
+pub const RECALL_TIMEOUT: Duration = Duration::from_millis(1_500);
+
+/// The memory block for the start of an agent run: memories relevant to `text`. The
+/// read-only ranking is bounded by [`RECALL_TIMEOUT`]; the memories it returns are then
+/// recorded as used (reinforced, linked, audited as `memory_use`). `None` when nothing is
 /// relevant or memory is unavailable; failures never block the answer.
 pub async fn recall_for_run(
     memory: &MemoryState,
@@ -155,30 +161,55 @@ pub async fn recall_for_run(
     workspace: Option<&str>,
     actor: &Actor,
 ) -> Option<String> {
-    let service = match memory.service().await {
-        Ok(service) => service,
-        Err(e) => {
-            tracing::debug!(target: "shodh::memory", error = %e, "memory unavailable; nothing injected");
-            return None;
-        }
-    };
     let request = RecallRequest::new(
         text,
         Scope::for_workspace(workspace),
         INJECTED_MEMORIES,
-        RecallMode::Use,
+        RecallMode::Inspect,
     );
-    match service.recall(&request, actor).await {
-        Ok(recalled) => render_injection(&recalled, MAX_INJECTION_CHARS),
-        Err(MemoryError::Statement(StatementError::EmbeddingUnavailable(_))) => {
+    let ranked = tokio::time::timeout(RECALL_TIMEOUT, async {
+        let service = memory.service().await.map_err(RecallFailure::Unavailable)?;
+        let recalled = service
+            .recall(&request, actor)
+            .await
+            .map_err(RecallFailure::Memory)?;
+        Ok::<_, RecallFailure>((service, recalled))
+    })
+    .await;
+    let (service, recalled) = match ranked {
+        Ok(Ok(ranked)) => ranked,
+        Ok(Err(RecallFailure::Unavailable(e))) => {
+            tracing::debug!(target: "shodh::memory", error = %e, "memory unavailable; nothing injected");
+            return None;
+        }
+        Ok(Err(RecallFailure::Memory(MemoryError::Statement(
+            StatementError::EmbeddingUnavailable(_),
+        )))) => {
             tracing::debug!(target: "shodh::memory", "search models not installed; no memories recalled");
-            None
+            return None;
         }
-        Err(e) => {
+        Ok(Err(RecallFailure::Memory(e))) => {
             tracing::warn!(target: "shodh::memory", error = %e, "memory recall failed; nothing injected");
-            None
+            return None;
         }
+        Err(_) => {
+            tracing::warn!(target: "shodh::memory", timeout_ms = RECALL_TIMEOUT.as_millis(), "memory recall timed out; nothing injected");
+            return None;
+        }
+    };
+    let (block, injected) = render_injection_counted(&recalled, MAX_INJECTION_CHARS)?;
+    if let Err(e) = service
+        .record_use(&recalled[..injected], &request, actor)
+        .await
+    {
+        tracing::warn!(target: "shodh::memory", error = %e, "recording memory use failed");
     }
+    Some(block)
+}
+
+enum RecallFailure {
+    Unavailable(String),
+    Memory(MemoryError),
 }
 
 /// `message` with the memory block in front of it, delimited from the user's words.
@@ -344,6 +375,64 @@ mod tests {
                 .to_string()
         )
         .is_err());
+    }
+
+    #[tokio::test]
+    async fn a_run_gets_relevant_memories_and_records_only_their_use() {
+        use shodh_rag::audit::{AuditEventType, AuditQuery, AuditRecord};
+        let dir = tempfile::tempdir().unwrap();
+        let audit = Arc::new(AuditLog::open(dir.path().join("shodh.db"), None).unwrap());
+        let memory =
+            crate::agent_tools::testing::memory_state(dir.path(), Some(audit.clone())).await;
+        let service = memory.service().await.unwrap();
+        for text in ["Invoices go to Priya", "Gym on Tuesdays"] {
+            service
+                .remember(
+                    MemoryContent::Note { text: text.into() },
+                    Scope::Global,
+                    &Origin::user_interface("t"),
+                    &Actor::ui(),
+                )
+                .await
+                .unwrap();
+        }
+        let actor = Actor::agent("local-owner", "conv-1", "assistant", "run-1");
+        // The default floor is tuned for E5; the test embedder scores identical words 1.
+        let block = recall_for_run(&memory, "Invoices go to Priya?", None, &actor)
+            .await
+            .unwrap();
+        assert!(block.contains("Invoices go to Priya"));
+        assert!(!block.contains("Gym"));
+        let listed = service.list(&ListRequest::default()).await.unwrap();
+        let uses = |needle: &str| {
+            listed
+                .iter()
+                .find(|m| m.text.contains(needle))
+                .unwrap()
+                .use_count
+        };
+        assert_eq!(uses("Priya"), 1);
+        assert_eq!(uses("Gym"), 0);
+        assert!(
+            recall_for_run(&memory, "Explain gradient descent", None, &actor)
+                .await
+                .is_none()
+        );
+        audit
+            .append(AuditRecord::new(
+                AuditEventType::Question,
+                serde_json::json!({}),
+            ))
+            .unwrap();
+        let used = audit
+            .query(&AuditQuery {
+                types: vec![AuditEventType::MemoryUse],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(used.len(), 1);
+        assert_eq!(used[0].conversation_id.as_deref(), Some("conv-1"));
+        assert_eq!(used[0].run_id.as_deref(), Some("run-1"));
     }
 
     #[test]

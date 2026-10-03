@@ -13,7 +13,7 @@ use shodh_ontology::{
 use super::dynamics::{self, DynamicsState};
 use super::identity::identity_tokens;
 use super::lance::{from_micros, identity_like, micros, quote, Row, StatementTable};
-use super::render::render_text;
+use super::render::{render_terms, render_text};
 use super::sqlite::DynamicsStore;
 use super::{
     Clock, HistoryEntry, PutIntent, PutOutcome, Scope, StatementError, StatementHit,
@@ -400,6 +400,7 @@ impl StatementStore {
             },
             scope: scope.as_key(),
             text: text.clone(),
+            terms: render_terms(&self.ontology, valid),
             statement_json: encode(&statement.id, statement)?,
             properties_json: encode(&statement.id, valid.properties())?,
             provenance_json: encode(&statement.id, provenance)?,
@@ -550,9 +551,9 @@ impl StatementStore {
         Ok(out)
     }
 
-    /// Hybrid search: vector (cosine) and full-text (BM25) rankings over the text
-    /// renderings, fused by reciprocal rank. Only statements matching `query` (current
-    /// ones by default) are searched. Best first, at most `k`.
+    /// Hybrid search: vector (cosine) ranking over the text renderings and full-text (BM25)
+    /// ranking over the values (`terms`), fused by reciprocal rank. Only statements matching
+    /// `query` (current ones by default) are searched. Best first, at most `k`.
     pub async fn search(
         &self,
         text: &str,

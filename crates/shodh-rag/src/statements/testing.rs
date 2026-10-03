@@ -99,15 +99,21 @@ pub(crate) struct Fixture {
 }
 
 pub(crate) async fn fixture() -> Fixture {
+    fixture_with(Arc::new(WordEmbedder::default())).await
+}
+
+/// A fixture embedding with `embedder` (a real model in model-backed tests).
+pub(crate) async fn fixture_with(embedder: Arc<dyn EmbeddingModel>) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let clock = TestClock::at(t0());
     let dynamics = Arc::new(DynamicsStore::open(&dir.path().join("shodh.db"), None).unwrap());
+    let dimension = embedder.dimension();
     let store = StatementStore::open(
         &dir.path().join("lance_data"),
-        DIM,
+        dimension,
         ontology(),
         dynamics,
-        Arc::new(FixedEmbedder(Arc::new(WordEmbedder::default()))),
+        Arc::new(FixedEmbedder(embedder)),
         clock.clone(),
     )
     .await

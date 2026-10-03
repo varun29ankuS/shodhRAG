@@ -6,7 +6,8 @@
 //!
 //! Storage uses the stores the app already has, nothing new:
 //! - **LanceDB** table `statements` (next to the document index): content, a text rendering
-//!   with its embedding and a full-text index, provenance and the validity interval
+//!   with its embedding, the values as plain words with a full-text index, provenance and
+//!   the validity interval
 //!   (`valid_from`, `valid_to`, `expires_at`, `forgotten_at`). Rows are appended; only the
 //!   validity columns are ever updated (supersede and forget), never the content.
 //! - **SQLite** `shodh.db` (schema version 2, next to the audit log): `statement_dynamics`
@@ -40,7 +41,7 @@ use shodh_ontology::{PropertyChange, Statement, Violation};
 
 pub use dynamics::{DynamicsState, LinkState};
 pub use identity::identity_tokens;
-pub use render::{render_text, SELF_ENTITY_ID};
+pub use render::{render_terms, render_text, SELF_ENTITY_ID};
 pub use sqlite::DynamicsStore;
 pub use store::{EmbedderSource, StatementStore, STATEMENTS_TABLE};
 

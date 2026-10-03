@@ -55,3 +55,25 @@ pub fn render_text(ontology: &Ontology, statement: &ValidStatement) -> String {
     }
     text
 }
+
+/// The values of a statement as plain words, for full-text search: no class or property
+/// labels (every preference would otherwise match "preference"), and no reference to the
+/// user (every fact about the user would match "user"). A note is its text.
+pub fn render_terms(ontology: &Ontology, statement: &ValidStatement) -> String {
+    let mut terms = Vec::new();
+    if let Some(subject) = statement.subject() {
+        if subject.id != SELF_ENTITY_ID {
+            terms.push(subject.id.clone());
+        }
+    }
+    for property in ontology.properties_of(statement.class()) {
+        for value in statement.values(&property.id) {
+            match value {
+                Value::Entity(entity) if entity.id == SELF_ENTITY_ID => {}
+                Value::Entity(entity) => terms.push(entity.id.clone()),
+                other => terms.push(other.to_string()),
+            }
+        }
+    }
+    terms.join(" ")
+}

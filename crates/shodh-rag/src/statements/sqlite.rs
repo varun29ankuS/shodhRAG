@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, TransactionBehavior};
 
 use super::dynamics::{DynamicsState, LinkState, LINK_PRUNE_FLOOR, MAX_LINKS_PER_STATEMENT};
 use super::StatementResult;
@@ -18,6 +18,10 @@ use crate::audit::{open_shared_connection, AuditKey};
 const LOOKUP_CHUNK: usize = 400;
 
 /// Dynamics and links of statements, in the shared `shodh.db`.
+///
+/// Transactions that read before they write are `IMMEDIATE`: the audit writer commits to
+/// the same database, and a deferred transaction upgraded after its commit would fail with
+/// `SQLITE_BUSY_SNAPSHOT`, which the busy timeout does not retry.
 pub struct DynamicsStore {
     conn: Mutex<Connection>,
 }
@@ -121,7 +125,7 @@ impl DynamicsStore {
         now: DateTime<Utc>,
     ) -> StatementResult<()> {
         let mut conn = self.lock();
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         for (id, scope, class, state) in rows {
             write_state(&tx, id, scope, class, state, now)?;
         }
@@ -168,7 +172,7 @@ impl DynamicsStore {
             return Ok(());
         }
         let mut conn = self.lock();
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut touched = BTreeSet::new();
         for (from, to) in pairs {
             if from == to {

@@ -26,6 +26,8 @@ pub(crate) struct Row {
     pub identity: String,
     pub scope: String,
     pub text: String,
+    /// The values as plain words (full-text indexed).
+    pub terms: String,
     pub statement_json: String,
     pub properties_json: String,
     pub provenance_json: String,
@@ -98,18 +100,18 @@ impl StatementTable {
         self.dimension
     }
 
-    /// Creates the full-text index on `text` if it does not exist. Rows appended after the
+    /// Creates the full-text index on `terms` if it does not exist. Rows appended after the
     /// index was built are still searched (LanceDB flat-searches unindexed fragments).
     async fn ensure_fts_index(&self) -> StatementResult<()> {
         let indices = self.table.list_indices().await?;
         if indices
             .iter()
-            .any(|i| i.columns.iter().any(|c| c == "text"))
+            .any(|i| i.columns.iter().any(|c| c == "terms"))
         {
             return Ok(());
         }
         self.table
-            .create_index(&["text"], Index::FTS(Default::default()))
+            .create_index(&["terms"], Index::FTS(Default::default()))
             .replace(true)
             .execute()
             .await?;
@@ -145,6 +147,7 @@ impl StatementTable {
                 text(&row.identity),
                 text(&row.scope),
                 text(&row.text),
+                text(&row.terms),
                 text(&row.statement_json),
                 text(&row.properties_json),
                 text(&row.provenance_json),
@@ -234,7 +237,7 @@ impl StatementTable {
             .collect())
     }
 
-    /// Full-text (BM25) matches on the rendering, prefiltered, best first.
+    /// Full-text (BM25) matches on the values (`terms`), prefiltered, best first.
     pub(crate) async fn text_search(
         &self,
         text: &str,
@@ -247,13 +250,13 @@ impl StatementTable {
         let indices = self.table.list_indices().await?;
         if !indices
             .iter()
-            .any(|i| i.columns.iter().any(|c| c == "text"))
+            .any(|i| i.columns.iter().any(|c| c == "terms"))
         {
             // Nothing was ever written: no index, no rows.
             return Ok(Vec::new());
         }
         let fts = FullTextSearchQuery::new(text.to_string())
-            .with_column("text".to_string())
+            .with_column("terms".to_string())
             .map_err(|e| StatementError::Lance(e.to_string()))?;
         let mut query = self.table.query().full_text_search(fts).limit(k);
         if let Some(predicate) = predicate {
@@ -276,6 +279,7 @@ fn schema(dimension: usize) -> SchemaRef {
         text("identity"),
         text("scope"),
         text("text"),
+        text("terms"),
         text("statement_json"),
         text("properties_json"),
         text("provenance_json"),
@@ -329,6 +333,7 @@ fn rows(batches: &[RecordBatch]) -> StatementResult<Vec<(Row, Option<f64>)>> {
         let identities = text("identity")?;
         let scopes = text("scope")?;
         let texts = text("text")?;
+        let terms = text("terms")?;
         let statements = text("statement_json")?;
         let properties = text("properties_json")?;
         let provenances = text("provenance_json")?;
@@ -356,6 +361,7 @@ fn rows(batches: &[RecordBatch]) -> StatementResult<Vec<(Row, Option<f64>)>> {
                     identity: identities.value(i).to_string(),
                     scope: scopes.value(i).to_string(),
                     text: texts.value(i).to_string(),
+                    terms: terms.value(i).to_string(),
                     statement_json: statements.value(i).to_string(),
                     properties_json: properties.value(i).to_string(),
                     provenance_json: provenances.value(i).to_string(),

@@ -14,7 +14,10 @@
 //! ```
 //!
 //! The relevance gate keeps irrelevant memories out of an answer: a candidate counts only
-//! if its cosine similarity reaches `min_similarity` or the full-text search matched it.
+//! if its cosine similarity reaches `min_similarity`. A full-text match (over the values,
+//! not the class and property labels) raises a memory's rank but never admits it: a shared
+//! word — or a shared stem, "account" and "accountant" — is not relevance, and every
+//! admitted memory is reinforced and linked, so a loose gate would stop memories fading.
 //! Memories that only spreading activation reaches (not search) are included when
 //! `S ≥ 0.05` — the associations that make recall more than search. When two current
 //! memories state the same fact (same identity) in different scopes, the workspace one
@@ -35,8 +38,10 @@ pub const ASSOCIATION_WEIGHT: f64 = 0.3;
 /// Minimum spread activation for a memory reached only through links.
 pub const MIN_ASSOCIATION: f64 = 0.05;
 
-/// Default cosine-similarity gate. E5 embeddings are L2-normalised and place unrelated
-/// short texts around 0.70–0.78 and paraphrases above 0.82; 0.80 keeps the former out.
+/// Default cosine-similarity gate (query vs. memory text). Measured with
+/// multilingual-e5-base: questions about a memory scored 0.81–0.86, unrelated questions
+/// 0.70–0.77 (`the_default_floor_separates_related_from_unrelated_questions_with_e5`).
+/// The margin is narrow; re-measure when the embedding model changes.
 pub const DEFAULT_MIN_SIMILARITY: f64 = 0.80;
 
 /// Most characters of the memory block injected into an agent run (≈ 500 tokens).
@@ -128,7 +133,7 @@ pub(super) async fn rank(
     }
     let mut candidates: BTreeMap<String, Candidate> = BTreeMap::new();
     for hit in hits {
-        let relevant = hit.lexical || hit.similarity.is_some_and(|s| s >= request.min_similarity);
+        let relevant = hit.similarity.is_some_and(|s| s >= request.min_similarity);
         if !relevant {
             continue;
         }
@@ -361,6 +366,15 @@ pub(super) async fn record_use(
 /// The block injected into an agent run: clearly delimited, marked as possibly outdated
 /// and as data, capped at `max_chars`. `None` when there is nothing to inject.
 pub fn render_injection(memories: &[RecalledMemory], max_chars: usize) -> Option<String> {
+    render_injection_counted(memories, max_chars).map(|(block, _)| block)
+}
+
+/// [`render_injection`] plus how many of `memories` (from the front) the block holds, so
+/// only those are recorded as used.
+pub fn render_injection_counted(
+    memories: &[RecalledMemory],
+    max_chars: usize,
+) -> Option<(String, usize)> {
     if memories.is_empty() {
         return None;
     }
@@ -384,5 +398,5 @@ pub fn render_injection(memories: &[RecalledMemory], max_chars: usize) -> Option
         body.push_str(&line);
         included += 1;
     }
-    (included > 0).then(|| format!("{header}{body}{footer}"))
+    (included > 0).then(|| (format!("{header}{body}{footer}"), included))
 }

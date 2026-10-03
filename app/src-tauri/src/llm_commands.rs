@@ -11,6 +11,9 @@ use tauri::{Emitter, State};
 use tokio::sync::RwLock as AsyncRwLock;
 
 use crate::api_key_store;
+use crate::audit_commands::AuditState;
+use serde_json::{json, Value};
+use shodh_rag::audit::{payload as audit_payload, AuditEventType, AuditRecord};
 
 /// LLM state managed by Tauri
 pub struct LLMState {
@@ -179,8 +182,20 @@ pub async fn browse_tokenizer_file(app_handle: tauri::AppHandle) -> Result<Strin
 #[tauri::command]
 pub fn set_custom_model_path(
     state: State<'_, LLMState>,
+    audit: State<'_, AuditState>,
     model_path: String,
 ) -> Result<String, String> {
+    let result = set_custom_model_path_inner(&state, &model_path);
+    if result.is_ok() {
+        audit.record(AuditRecord::new(
+            AuditEventType::SettingsChange,
+            json!({"action": "custom_model_path", "path": model_path}),
+        ));
+    }
+    result
+}
+
+fn set_custom_model_path_inner(state: &LLMState, model_path: &str) -> Result<String, String> {
     let path = PathBuf::from(&model_path);
 
     // Verify the file exists
@@ -232,7 +247,22 @@ pub fn set_custom_model_path(
 #[tauri::command]
 pub fn set_custom_tokenizer_path(
     state: State<'_, LLMState>,
+    audit: State<'_, AuditState>,
     tokenizer_path: String,
+) -> Result<String, String> {
+    let result = set_custom_tokenizer_path_inner(&state, &tokenizer_path);
+    if result.is_ok() {
+        audit.record(AuditRecord::new(
+            AuditEventType::SettingsChange,
+            json!({"action": "custom_tokenizer_path", "path": tokenizer_path}),
+        ));
+    }
+    result
+}
+
+fn set_custom_tokenizer_path_inner(
+    state: &LLMState,
+    tokenizer_path: &str,
 ) -> Result<String, String> {
     let path = PathBuf::from(&tokenizer_path);
 
@@ -347,6 +377,7 @@ pub async fn initialize_llm(state: State<'_, LLMState>, mode: String) -> Result<
 #[tauri::command]
 pub async fn switch_llm_mode(
     state: State<'_, LLMState>,
+    audit: State<'_, AuditState>,
     mode: String,
     model: Option<String>,
     provider: Option<String>,
@@ -361,7 +392,12 @@ pub async fn switch_llm_mode(
         if custom_path.is_none() {
             return Err("Please select a model file first using the Browse button".to_string());
         }
-        return initialize_llm_with_custom_path(state).await;
+        let result = initialize_llm_with_custom_path(state).await;
+        audit.record(model_switch_record(
+            json!({"action": "model_switch", "mode": "custom", "provider": "local", "model": null, "cloud": false}),
+            &result,
+        ));
+        return result;
     }
 
     let llm_mode = if mode == "local" {
@@ -484,6 +520,8 @@ pub async fn switch_llm_mode(
         .clone();
     config.mode = llm_mode.clone();
     *state.config.lock().unwrap_or_else(|e| e.into_inner()) = config.clone();
+    // Provider and model only; the mode's API key is never read.
+    let switch_payload = audit_payload::model_switch(&llm_mode);
 
     // Switch mode or create new manager
     let model_dir = state.model_dir.as_ref().clone();
@@ -494,7 +532,7 @@ pub async fn switch_llm_mode(
     );
     let mut manager_lock = state.manager.write().await;
 
-    if let Some(manager) = manager_lock.as_mut() {
+    let result = if let Some(manager) = manager_lock.as_mut() {
         // Try to switch existing manager
         match manager.switch_mode(llm_mode).await {
             Ok(_) => {
@@ -532,7 +570,21 @@ pub async fn switch_llm_mode(
                 Err(format!("Failed to initialize LLM: {}", e))
             }
         }
+    };
+    drop(manager_lock);
+    audit.record(model_switch_record(switch_payload, &result));
+    result
+}
+
+/// `settings_change` for a model switch, with its outcome.
+fn model_switch_record(mut payload: Value, result: &Result<String, String>) -> AuditRecord {
+    if let Value::Object(map) = &mut payload {
+        map.insert("ok".to_string(), Value::Bool(result.is_ok()));
+        if let Err(e) = result {
+            map.insert("error".to_string(), Value::String(e.clone()));
+        }
     }
+    AuditRecord::new(AuditEventType::SettingsChange, payload)
 }
 
 /// Simple token estimator (words * 1.3 ≈ tokens)
@@ -1034,6 +1086,7 @@ pub async fn get_llm_info(state: State<'_, LLMState>) -> Result<LLMInfo, String>
 #[tauri::command]
 pub async fn set_api_key(
     state: State<'_, LLMState>,
+    audit: State<'_, AuditState>,
     provider: String,
     api_key: String,
 ) -> Result<(), String> {
@@ -1053,16 +1106,27 @@ pub async fn set_api_key(
         .await
         .map_err(|e| format!("Credential store task failed: {e}"))??;
 
-    let mut api_keys = state.api_keys.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(slot) = api_keys.slot_mut(&provider) {
-        *slot = Some(api_key);
+    {
+        let mut api_keys = state.api_keys.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(slot) = api_keys.slot_mut(&provider) {
+            *slot = Some(api_key);
+        }
     }
+    // The provider id only; the key value is never passed to the audit log.
+    audit.record(AuditRecord::new(
+        AuditEventType::SettingsChange,
+        audit_payload::api_key_change(&provider, audit_payload::KeyAction::Set),
+    ));
     Ok(())
 }
 
 /// Remove a provider API key from the OS credential store and this session.
 #[tauri::command]
-pub async fn delete_api_key(state: State<'_, LLMState>, provider: String) -> Result<(), String> {
+pub async fn delete_api_key(
+    state: State<'_, LLMState>,
+    audit: State<'_, AuditState>,
+    provider: String,
+) -> Result<(), String> {
     if !api_key_store::is_known_provider(&provider) {
         return Err(format!("Unknown provider: {provider}"));
     }
@@ -1072,10 +1136,16 @@ pub async fn delete_api_key(state: State<'_, LLMState>, provider: String) -> Res
         .await
         .map_err(|e| format!("Credential store task failed: {e}"))??;
 
-    let mut api_keys = state.api_keys.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(slot) = api_keys.slot_mut(&provider) {
-        *slot = None;
+    {
+        let mut api_keys = state.api_keys.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(slot) = api_keys.slot_mut(&provider) {
+            *slot = None;
+        }
     }
+    audit.record(AuditRecord::new(
+        AuditEventType::SettingsChange,
+        audit_payload::api_key_change(&provider, audit_payload::KeyAction::Deleted),
+    ));
     Ok(())
 }
 

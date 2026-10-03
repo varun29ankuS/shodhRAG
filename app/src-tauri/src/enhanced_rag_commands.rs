@@ -1,8 +1,11 @@
 //! Thin Tauri wrappers for indexing commands.
 //! Business logic (folder preview, batch indexing, file processing) lives in shodh_rag::indexing.
 
+use crate::audit_commands::AuditState;
 use crate::event_emitter::TauriEventEmitter;
 use crate::rag_commands::RagState;
+use shodh_rag::audit::payload::{indexing_outcome, source_change, ChangeOrigin};
+use shodh_rag::audit::{AuditEventType, AuditRecord};
 use tauri::{AppHandle, State};
 
 // Re-export backend types so existing callers don't break
@@ -21,11 +24,12 @@ pub async fn link_folder_enhanced(
     options: IndexingOptions,
     state: State<'_, RagState>,
     indexing_state: State<'_, IndexingState>,
+    audit: State<'_, AuditState>,
 ) -> Result<IndexingResult, String> {
     let emitter = TauriEventEmitter::new(app);
     let mut rag_guard = state.rag.write().await;
 
-    shodh_rag::indexing::index_folder(
+    let result = shodh_rag::indexing::index_folder(
         &folder_path,
         &space_id,
         &options,
@@ -33,7 +37,19 @@ pub async fn link_folder_enhanced(
         &indexing_state,
         Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
     )
-    .await
+    .await;
+    drop(rag_guard);
+    audit.record(AuditRecord::new(
+        AuditEventType::SourceChange,
+        source_change(
+            "index_folder",
+            ChangeOrigin::Ui,
+            Some(&space_id),
+            Some(&folder_path),
+            indexing_outcome(&result),
+        ),
+    ));
+    result
 }
 
 #[tauri::command]
@@ -75,15 +91,28 @@ pub async fn index_single_file(
     file_path: String,
     space_id: String,
     state: State<'_, RagState>,
+    audit: State<'_, AuditState>,
 ) -> Result<IndexingResult, String> {
     let emitter = TauriEventEmitter::new(app);
     let mut rag_guard = state.rag.write().await;
 
-    shodh_rag::indexing::index_single_file(
+    let result = shodh_rag::indexing::index_single_file(
         &file_path,
         &space_id,
         &mut *rag_guard,
         Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
     )
-    .await
+    .await;
+    drop(rag_guard);
+    audit.record(AuditRecord::new(
+        AuditEventType::SourceChange,
+        source_change(
+            "add_file",
+            ChangeOrigin::Ui,
+            Some(&space_id),
+            Some(&file_path),
+            indexing_outcome(&result),
+        ),
+    ));
+    result
 }

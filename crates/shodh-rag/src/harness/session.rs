@@ -32,7 +32,7 @@ use super::protocol::{
 };
 use super::sidecar::{self, LaunchSpec};
 use super::tools::plan::UPDATE_PLAN;
-use super::tools::{ApprovalGate, ToolCall, ToolContext, ToolRegistry};
+use super::tools::{ApprovalGate, ToolAudit, ToolCall, ToolContext, ToolRegistry};
 use super::{truncate_chars, AgentHarness};
 
 /// Longest stdout line accepted. omp's v1 frames are capped at 1 MiB.
@@ -56,6 +56,9 @@ pub struct SessionConfig {
     pub launch: LaunchSpec,
     pub profile: AgentProfile,
     pub registry: Arc<ToolRegistry>,
+    /// Audit log and scope for this conversation's tool calls, approvals and
+    /// retrievals. `None` disables auditing (e.g. the log failed to open).
+    pub audit: Option<ToolAudit>,
 }
 
 struct Inner {
@@ -63,6 +66,7 @@ struct Inner {
     model: String,
     profile: AgentProfile,
     registry: Arc<ToolRegistry>,
+    audit: Option<ToolAudit>,
     approvals: ApprovalGate,
     state: Mutex<NormaliserState>,
     outbound: mpsc::UnboundedSender<OutboundFrame>,
@@ -243,7 +247,8 @@ impl Inner {
         };
         let ctx = ToolContext::new(run_id, call.tool_call_id.clone(), self.events.clone())
             .with_host_call(call.id.clone(), self.outbound.clone())
-            .with_passage_counter(Arc::clone(&self.passages_in_run));
+            .with_passage_counter(Arc::clone(&self.passages_in_run))
+            .with_audit(self.audit.clone());
         let host_id = call.id.clone();
         let step_id = call.tool_call_id.clone();
         let tool_call = ToolCall {
@@ -484,6 +489,7 @@ impl OmpSession {
             launch,
             profile,
             registry,
+            audit,
         } = config;
         let started = std::time::Instant::now();
         let process = sidecar::spawn(&launch).await?;
@@ -513,6 +519,7 @@ impl OmpSession {
             }),
             profile,
             registry,
+            audit,
             approvals: ApprovalGate::default(),
             outbound: out_tx,
             events: events_tx,

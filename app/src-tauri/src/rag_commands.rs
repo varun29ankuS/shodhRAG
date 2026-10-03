@@ -13,6 +13,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::State;
+
+use crate::audit_commands::AuditState;
+use serde_json::json;
+use shodh_rag::audit::payload::{source_change, ChangeOrigin};
+use shodh_rag::audit::{AuditEventType, AuditRecord};
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::RwLock as TokioRwLock;
 
@@ -544,8 +549,7 @@ pub async fn get_statistics(state: State<'_, RagState>) -> Result<HashMap<String
 }
 
 /// Clear all data
-#[tauri::command]
-pub async fn clear_all_data(state: State<'_, RagState>) -> Result<String, String> {
+async fn clear_all_data_inner(state: State<'_, RagState>) -> Result<String, String> {
     tracing::info!("\n\n=== CRITICAL: clear_all_data() was called ===");
     tracing::info!("Stack trace would be helpful here to find caller");
     tracing::info!("This should ONLY be called when user explicitly deletes a space!");
@@ -588,8 +592,7 @@ pub async fn clear_all_data(state: State<'_, RagState>) -> Result<String, String
 }
 
 /// Delete all documents from a specific folder path
-#[tauri::command]
-pub async fn delete_folder_source(
+async fn delete_folder_source_inner(
     folder_path: String,
     state: State<'_, RagState>,
 ) -> Result<String, String> {
@@ -879,8 +882,7 @@ fn is_supported_file(filename: &str) -> bool {
 }
 
 /// Link a folder and index all files within it
-#[tauri::command]
-pub async fn link_folder(
+async fn link_folder_inner(
     folder_path: String,
     metadata: HashMap<String, String>,
     state: State<'_, RagState>,
@@ -2241,4 +2243,65 @@ fn dir_size_recursive(path: &std::path::Path) -> u64 {
         }
     }
     size
+}
+
+/// `source_change` record with the command's outcome.
+fn source_change_record(
+    action: &str,
+    source_id: Option<&str>,
+    path: Option<&str>,
+    result: &Result<String, String>,
+) -> AuditRecord {
+    let outcome = match result {
+        Ok(message) => json!({"ok": true, "result": message}),
+        Err(e) => json!({"ok": false, "error": e}),
+    };
+    AuditRecord::new(
+        AuditEventType::SourceChange,
+        source_change(action, ChangeOrigin::Ui, source_id, path, outcome),
+    )
+}
+
+/// Clear all data (audited).
+#[tauri::command]
+pub async fn clear_all_data(
+    state: State<'_, RagState>,
+    audit: State<'_, AuditState>,
+) -> Result<String, String> {
+    let result = clear_all_data_inner(state).await;
+    audit.record(source_change_record("clear_all", None, None, &result));
+    result
+}
+
+/// Delete all documents from a folder (audited).
+#[tauri::command]
+pub async fn delete_folder_source(
+    folder_path: String,
+    state: State<'_, RagState>,
+    audit: State<'_, AuditState>,
+) -> Result<String, String> {
+    let path = folder_path.clone();
+    let result = delete_folder_source_inner(folder_path, state).await;
+    audit.record(source_change_record("remove", None, Some(&path), &result));
+    result
+}
+
+/// Link a folder and index every file in it (audited).
+#[tauri::command]
+pub async fn link_folder(
+    folder_path: String,
+    metadata: HashMap<String, String>,
+    state: State<'_, RagState>,
+    audit: State<'_, AuditState>,
+) -> Result<String, String> {
+    let path = folder_path.clone();
+    let source_id = metadata.get("space_id").cloned();
+    let result = link_folder_inner(folder_path, metadata, state).await;
+    audit.record(source_change_record(
+        "index_folder",
+        source_id.as_deref(),
+        Some(&path),
+        &result,
+    ));
+    result
 }

@@ -56,7 +56,11 @@ impl SearchHistoryManager {
 
         // Load existing history
         if let Err(e) = manager.load_history() {
-            crate::chat_history::quarantine_corrupt_file(&manager.storage_path, "search history", &e);
+            crate::chat_history::quarantine_corrupt_file(
+                &manager.storage_path,
+                "search history",
+                &e,
+            );
         }
 
         manager

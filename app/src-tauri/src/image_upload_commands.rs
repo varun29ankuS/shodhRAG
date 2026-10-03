@@ -105,6 +105,45 @@ async fn run_ocr(_image_bytes: &[u8]) -> Result<(String, f32), String> {
 // ─── Commands ───────────────────────────────────────────────────────────────
 
 /// Process an image from base64 data (paste/screenshot)
+/// Encode raw RGBA pixels as a `data:image/png;base64,...` URI.
+fn rgba_to_png_data_uri(rgba: Vec<u8>, width: u32, height: u32) -> Result<String, String> {
+    use base64::Engine as _;
+
+    let image = image::RgbaImage::from_raw(width, height, rgba)
+        .ok_or_else(|| format!("Clipboard image data does not match {width}x{height}"))?;
+    let mut png = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut png, image::ImageFormat::Png)
+        .map_err(|e| format!("Failed to encode clipboard image: {e}"))?;
+    Ok(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png.into_inner())
+    ))
+}
+
+/// The image on the system clipboard as a PNG data URI, or `None` when the
+/// clipboard holds no image (e.g. text). Used by the Ctrl+V image paste.
+#[tauri::command]
+pub async fn read_clipboard_image(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+
+    let (rgba, width, height) = match app.clipboard().read_image() {
+        Ok(image) => (image.rgba().to_vec(), image.width(), image.height()),
+        Err(e) => {
+            // Also the normal result for a text paste: nothing to process.
+            tracing::debug!("No image on the clipboard: {}", e);
+            return Ok(None);
+        }
+    };
+    if width == 0 || height == 0 {
+        return Ok(None);
+    }
+    tokio::task::spawn_blocking(move || rgba_to_png_data_uri(rgba, width, height))
+        .await
+        .map_err(|e| format!("Clipboard image task failed: {e}"))?
+        .map(Some)
+}
+
 #[tauri::command]
 pub async fn process_image_from_base64(
     image_data: String,
@@ -241,4 +280,28 @@ pub async fn export_form_json(
 ) -> Result<String, String> {
     export_form_as_json_schema(&title, description.as_deref(), &fields)
         .map_err(|e| format!("Failed to export form as JSON: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rgba_to_png_data_uri;
+    use base64::Engine as _;
+
+    #[test]
+    fn clipboard_pixels_become_a_png_data_uri() {
+        let rgba = vec![255u8, 0, 0, 255, 0, 255, 0, 255];
+        let uri = rgba_to_png_data_uri(rgba, 2, 1).unwrap();
+        let b64 = uri.strip_prefix("data:image/png;base64,").unwrap();
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap();
+        let decoded = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!(decoded.dimensions(), (2, 1));
+        assert_eq!(decoded.get_pixel(1, 0).0, [0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn mismatched_dimensions_are_an_error() {
+        assert!(rgba_to_png_data_uri(vec![0; 4], 2, 2).is_err());
+    }
 }

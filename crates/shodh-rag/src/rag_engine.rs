@@ -184,8 +184,7 @@ impl SearchModels {
         let embeddings: Box<dyn EmbeddingModel> =
             Box::new(E5Embeddings::new(e5_config).context("Failed to load E5 embeddings")?);
 
-        let reranker = if config.features.enable_reranking || config.features.enable_cross_encoder
-        {
+        let reranker = if config.features.enable_reranking || config.features.enable_cross_encoder {
             let reranker_dir = config.embedding.model_dir.join("ms-marco-MiniLM-L6-v2");
             match CrossEncoderReranker::new(&reranker_dir) {
                 Ok(r) => {

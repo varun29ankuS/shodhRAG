@@ -17,7 +17,6 @@ tantivy = "0.22"
 
 # Embeddings (ONNX)
 ort = "2.0.0-rc.10"
-ndarray = "0.16"
 # default-features = false drops `esaxx_fast`, whose esaxx-rs build script hardcodes
 # `static_crt(true)` (/MT). Every other native dep (llama.cpp, onnxruntime, onig) is
 # built against the dynamic CRT (/MD), so the static esaxx object caused LNK2038
@@ -26,9 +25,6 @@ ndarray = "0.16"
 # pure-Rust fallback is used if it ever is. `onig` is kept: it backs SysRegex used by
 # tokenizer.json pre-tokenizers/normalizers.
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
-
-# Knowledge graph
-petgraph = "0.6"
 
 # Core
 tokio = { version = "1", features = ["full"] }
@@ -39,20 +35,16 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 thiserror = "1"
 parking_lot = "0.12"
-rayon = "1.8"
 tracing = "0.1"
 lru = "0.12"
 futures = "0.3"
 futures-util = "0.3"
 
-# LLM module dependencies
+# LLM providers (llama.cpp GGUF, external APIs) and the search model downloader
 llama-cpp-2 = "0.1"
 async-trait = "0.1"
 reqwest = { version = "0.11", features = ["json", "stream"] }
-indicatif = "0.17"
 bytes = "1"
-dashmap = "5.5"
-sysinfo = "0.30"
 
 # Document parsing
 pdf-extract = "0.7"

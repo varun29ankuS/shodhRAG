@@ -367,9 +367,7 @@ impl ModelStore {
                 present_bytes,
             });
         }
-        let complete = artifacts
-            .iter()
-            .all(|a| a.state == ArtifactState::Verified);
+        let complete = artifacts.iter().all(|a| a.state == ArtifactState::Verified);
         Ok(StoreStatus {
             artifacts,
             total_bytes: self.total_bytes(),
@@ -434,7 +432,11 @@ impl ModelStore {
                 emit(InstallPhase::Downloading, bytes, overall_done + bytes)
             })
             .await?;
-            emit(InstallPhase::Verifying, artifact.size, overall_done + artifact.size);
+            emit(
+                InstallPhase::Verifying,
+                artifact.size,
+                overall_done + artifact.size,
+            );
             write_stamp(&path, artifact)?;
             overall_done += artifact.size;
             emit(InstallPhase::Verified, artifact.size, overall_done);
@@ -473,14 +475,13 @@ impl ModelStore {
         };
 
         if offset < artifact.size {
-            let opened =
-                source
-                    .open(&artifact.url, offset)
-                    .await
-                    .map_err(|message| ModelStoreError::Download {
-                        artifact: artifact.name.clone(),
-                        message,
-                    })?;
+            let opened = source
+                .open(&artifact.url, offset)
+                .await
+                .map_err(|message| ModelStoreError::Download {
+                    artifact: artifact.name.clone(),
+                    message,
+                })?;
             let mut file = if opened.start == offset && offset > 0 {
                 tokio::fs::OpenOptions::new()
                     .append(true)
@@ -620,7 +621,9 @@ fn resume_state(part: &Path, size: u64) -> Result<(Sha256, u64), ModelStoreError
     let mut file = std::fs::File::open(part).map_err(|e| ModelStoreError::io(part, e))?;
     let mut buf = vec![0u8; HASH_BUFFER];
     loop {
-        let n = file.read(&mut buf).map_err(|e| ModelStoreError::io(part, e))?;
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| ModelStoreError::io(part, e))?;
         if n == 0 {
             break;
         }
@@ -634,7 +637,9 @@ fn hash_file(path: &Path) -> Result<String, ModelStoreError> {
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; HASH_BUFFER];
     loop {
-        let n = file.read(&mut buf).map_err(|e| ModelStoreError::io(path, e))?;
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| ModelStoreError::io(path, e))?;
         if n == 0 {
             break;
         }
@@ -668,7 +673,10 @@ fn write_stamp(path: &Path, artifact: &ModelArtifact) -> Result<(), ModelStoreEr
     let stamp_path = with_suffix(path, STAMP_SUFFIX);
     let tmp = with_suffix(&stamp_path, PART_SUFFIX);
     let body = serde_json::to_vec(&stamp).map_err(|e| {
-        ModelStoreError::io(&stamp_path, std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        ModelStoreError::io(
+            &stamp_path,
+            std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+        )
     })?;
     {
         let mut file = std::fs::File::create(&tmp).map_err(|e| ModelStoreError::io(&tmp, e))?;
@@ -742,9 +750,17 @@ mod tests {
             self.opens.fetch_add(1, Ordering::SeqCst);
             self.offsets.lock().unwrap().push(offset);
             let body = self.files.get(url).ok_or("404")?.clone();
-            let start = if self.honour_range { offset as usize } else { 0 };
+            let start = if self.honour_range {
+                offset as usize
+            } else {
+                0
+            };
             let end = self.cut_at.unwrap_or(body.len()).min(body.len());
-            let slice = if start < end { body[start..end].to_vec() } else { Vec::new() };
+            let slice = if start < end {
+                body[start..end].to_vec()
+            } else {
+                Vec::new()
+            };
             let chunks: Vec<Result<Bytes, String>> = slice
                 .chunks(self.chunk)
                 .map(|c| Ok(Bytes::copy_from_slice(c)))
@@ -783,10 +799,20 @@ mod tests {
         assert_eq!(artifacts.len(), 4);
         for a in &artifacts {
             assert_eq!(a.sha256.len(), 64, "{}", a.name);
-            assert!(a.sha256.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+            assert!(a
+                .sha256
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
             assert!(a.url.starts_with("https://huggingface.co/"));
             // Revision-pinned: a 40-hex commit id follows /resolve/.
-            let rev = a.url.split("/resolve/").nth(1).unwrap().split('/').next().unwrap();
+            let rev = a
+                .url
+                .split("/resolve/")
+                .nth(1)
+                .unwrap()
+                .split('/')
+                .next()
+                .unwrap();
             assert_eq!(rev.len(), 40, "{}", a.url);
             assert!(a.size > 0);
         }
@@ -923,7 +949,10 @@ mod tests {
 
         let source = MemorySource::new(&[("mem://a", BODY_A)]);
         let err = store.install(&source, &no_progress()).await.unwrap_err();
-        assert!(matches!(err, ModelStoreError::ChecksumMismatch { .. }), "{err}");
+        assert!(
+            matches!(err, ModelStoreError::ChecksumMismatch { .. }),
+            "{err}"
+        );
         assert!(!dir.join("a.bin.part").exists());
         // The retry starts clean and succeeds.
         store.install(&source, &no_progress()).await.unwrap();

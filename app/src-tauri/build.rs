@@ -25,7 +25,10 @@ fn copy_onnxruntime_dlls() {
         println!("cargo:warning=Could not determine the target directory from OUT_DIR");
         return;
     };
-    let Some(libs_dir) = manifest_dir.parent().and_then(Path::parent).map(|p| p.join("libs"))
+    let Some(libs_dir) = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .map(|p| p.join("libs"))
     else {
         return;
     };

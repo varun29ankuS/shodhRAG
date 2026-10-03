@@ -9,7 +9,6 @@ import DailyBriefWindow from "./DailyBrief";
 import MapViewWindow from "./MapView";
 import { ThemeProvider, useTheme } from "./contexts/ThemeContext";
 import { SidebarProvider } from "./contexts/SidebarContext";
-import { PermissionProvider } from "./contexts/PermissionContext";
 import { SearchModelsProvider } from "./features/setup/SearchModelsContext";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { Toaster } from "sonner";
@@ -62,7 +61,6 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <ErrorBoundary>
       <ThemeProvider>
         <SidebarProvider>
-        <PermissionProvider>
           {Component === App ? (
             <SearchModelsProvider>
               <App />
@@ -71,7 +69,6 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
             <Component />
           )}
           <ThemedToaster />
-        </PermissionProvider>
         </SidebarProvider>
       </ThemeProvider>
     </ErrorBoundary>

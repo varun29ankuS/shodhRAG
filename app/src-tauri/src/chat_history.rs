@@ -290,7 +290,10 @@ pub enum ExportFormat {
 /// Move an unreadable history file out of the way so the app starts with an
 /// empty history instead of failing, and keep the file for inspection.
 pub(crate) fn quarantine_corrupt_file(path: &Path, what: &str, error: &str) {
-    let aside = path.with_extension(format!("json.corrupt-{}", Utc::now().format("%Y%m%dT%H%M%S")));
+    let aside = path.with_extension(format!(
+        "json.corrupt-{}",
+        Utc::now().format("%Y%m%dT%H%M%S")
+    ));
     match fs::rename(path, &aside) {
         Ok(()) => tracing::error!(
             "Could not load {what} ({error}); moved {} to {} and starting empty",
@@ -301,5 +304,27 @@ pub(crate) fn quarantine_corrupt_file(path: &Path, what: &str, error: &str) {
             "Could not load {what} ({error}) and could not move {} aside ({rename_error}); starting empty",
             path.display()
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn corrupt_history_is_moved_aside_and_starts_empty() {
+        let dir = std::env::temp_dir().join(format!("shodh-chat-history-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("chat_history.json"), "{ not json").unwrap();
+
+        let manager = ChatHistoryManager::new(&dir);
+        assert!(manager.get_chat_history(None).is_empty());
+        assert!(!dir.join("chat_history.json").exists());
+        let quarantined = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| e.file_name().to_string_lossy().contains(".corrupt-"));
+        assert!(quarantined);
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -17,9 +17,7 @@ mod llm_commands;
 mod llm_response;
 mod mcp;
 mod mcp_commands;
-mod query_rewriter;
 mod rag_commands;
-mod retrieval_commands;
 mod search_history;
 mod search_models_commands;
 mod smart_templates;
@@ -119,10 +117,7 @@ fn resolve_model_dir(app_data_dir: &std::path::Path) -> PathBuf {
             return dev;
         }
     }
-    tracing::info!(
-        "Search models not installed; install dir: {:?}",
-        candidate
-    );
+    tracing::info!("Search models not installed; install dir: {:?}", candidate);
     candidate
 }
 
@@ -510,11 +505,6 @@ pub fn run() {
             storage_commands::optimize_storage,
             storage_commands::create_backup,
             storage_commands::restore_backup,
-            // Query rewriting command
-            query_rewriter::search_with_query_rewriting,
-            // Retrieval decision commands
-            retrieval_commands::analyze_query,
-            retrieval_commands::get_corpus_stats,
             // Context accumulator commands
             context_commands::update_context,
             context_commands::track_user_message,
@@ -538,6 +528,7 @@ pub fn run() {
             source_viewer_commands::read_source_table,
             rag_commands::parse_llm_response,
             // Image upload commands
+            image_upload_commands::read_clipboard_image,
             image_upload_commands::process_image_from_base64,
             image_upload_commands::process_image_from_file,
             image_upload_commands::search_images,

@@ -209,7 +209,9 @@ pub async fn switch_llm_mode(
             .clone();
         let payload = match &config_mode {
             LLMMode::Local { .. } => audit_payload::model_switch(&config_mode),
-            _ => json!({"action": "model_switch", "mode": "local", "provider": "local", "model": null, "cloud": false}),
+            _ => {
+                json!({"action": "model_switch", "mode": "local", "provider": "local", "model": null, "cloud": false})
+            }
         };
         audit.record(model_switch_record(payload, &result));
         return result;

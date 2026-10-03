@@ -19,7 +19,10 @@ import {
 const IS_MAC = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
 
 // Core components
-import { SearchSetupCard } from './features/setup/SearchSetupCard';
+import { LibraryView } from './features/library/LibraryView';
+import { parseStoredSources, readIndexingResult, serializeSources, SOURCES_STORAGE_KEY } from './features/library/sources';
+import type { LibrarySource } from './features/library/sources';
+import type { FileNode } from './features/library/fileTree';
 import { errorMessage as searchErrorMessage } from './features/setup/searchModels';
 import Sidebar from './components/shell/Sidebar';
 import SettingsView from './components/shell/SettingsView';
@@ -34,7 +37,6 @@ import { AskView } from './features/ask/AskView';
 import { useCommandPalette } from './hooks/useCommandPalette';
 import CommandPalette from './components/CommandPalette';
 import type { PaletteAction } from './components/CommandPalette';
-import DocumentPreviewPanel from './components/DocumentPreviewPanel';
 import TasksView from './features/tasks/TasksView';
 import ActivityView from './features/activity/ActivityView';
 import { useSearchConfig } from './components/SearchSettings';
@@ -56,22 +58,8 @@ const debugLog = (...args: any[]) => { if (DEBUG) console.log(...args); };
 /** Unique id for OCR / indexing notices appended to the conversation. */
 const newNoticeId = () => `notice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-// Types
-interface Source {
-  id: string;
-  name: string;
-  path: string;
-  type: 'documents';
-  fileCount: number;
-  indexedAt: string;
-  status: 'ready' | 'indexing' | 'error';
-  selected: boolean;
-  language?: string;
-  size?: string;
-  progress?: number;
-  currentFile?: string;
-  processedCount?: number;
-}
+/** A Library source (see features/library/sources). */
+type Source = LibrarySource;
 
 
 function AppSplitView() {
@@ -126,10 +114,27 @@ function AppSplitView() {
   const [isFirstTime, setIsFirstTime] = useState(false);
   const [activeTab, setActiveTab] = useState<ViewTab>('ask');
   const prefersReducedMotion = useReducedMotion();
-  const [sources, setSources] = useState<Source[]>([]);
-  const [docsExpandedSources, setDocsExpandedSources] = useState<Set<string>>(new Set());
-  const [sourceFiles, setSourceFiles] = useState<Record<string, any[]>>({});
+  // Restored synchronously so the Library and sidebar render with the first frame.
+  const [sources, setSources] = useState<Source[]>(() => {
+    try {
+      return parseStoredSources(localStorage.getItem(SOURCES_STORAGE_KEY));
+    } catch {
+      return [];
+    }
+  });
   const [currentlyIndexing, setCurrentlyIndexing] = useState<string | null>(null);
+  // Text placed in the Ask composer by another view ("Ask about this file").
+  const [askDraft, setAskDraft] = useState<{ text: string; seq: number } | null>(null);
+  const clearAskDraft = useCallback(() => setAskDraft(null), []);
+
+  // Persist sources on every change (live progress fields are not stored).
+  useEffect(() => {
+    try {
+      localStorage.setItem(SOURCES_STORAGE_KEY, serializeSources(sources));
+    } catch {
+      // Storage unavailable: sources last for this session only.
+    }
+  }, [sources]);
   const [isDraggingImage, setIsDraggingImage] = useState(false);
   const lastProcessedImageTimeRef = useRef(0);
 
@@ -184,8 +189,6 @@ function AppSplitView() {
     setActiveTab(lastContentTabRef.current);
   }, [refreshLlmStatus]);
 
-  // Document preview
-  const [previewFile, setPreviewFile] = useState<{ path: string; name: string; page?: number } | null>(null);
 
   const [showSystemPromptEditor, setShowSystemPromptEditor] = useState(false);
   const [newInstructionText, setNewInstructionText] = useState('');
@@ -543,7 +546,6 @@ function AppSplitView() {
 
                   setSources(prev => {
                     const updated = [...prev, newSource];
-                    localStorage.setItem('indexedSources', JSON.stringify(updated));
                     return updated;
                   });
 
@@ -863,35 +865,9 @@ function AppSplitView() {
         }, 2000);
       }
 
-      // Load saved sources
-      const savedSources = localStorage.getItem('indexedSources');
-      if (savedSources) {
-        const parsed = JSON.parse(savedSources);
-        setSources(parsed);
-        setIsFirstTime(parsed.length === 0);
-
-        // Fetch file counts for all sources
-        if (parsed.length > 0) {
-          parsed.forEach(async (source: Source) => {
-            if (source.status === 'ready') {
-              try {
-                const files = await invoke<any[]>('get_source_files', { sourceId: source.id });
-                setSources(prevSources =>
-                  prevSources.map(s =>
-                    s.id === source.id
-                      ? { ...s, fileCount: files.length }
-                      : s
-                  )
-                );
-              } catch (error) {
-                console.error(`Failed to fetch file count for source ${source.id}:`, error);
-              }
-            }
-          });
-        }
-      } else {
-        setIsFirstTime(true);
-      }
+      // Sources were restored from storage on the first render; file
+      // counts come from the last indexing run, not a scan at startup.
+      setIsFirstTime(parseStoredSources(localStorage.getItem(SOURCES_STORAGE_KEY)).length === 0);
 
       await updateStats();
 
@@ -955,156 +931,110 @@ function AppSplitView() {
     }
   };
 
-  const handleAddSource = async () => {
-    debugLog("=== handleAddSource START ===");
-
+  /**
+   * Index `source.path` into `source.id` and record the outcome on the
+   * source: file count, completion time and per-file failures, or the error.
+   * Re-indexing is idempotent (each file's previous chunks are replaced).
+   */
+  const indexFolder = async (source: Source) => {
+    setCurrentlyIndexing(source.id);
+    setSources(prev => prev.map(s => s.id === source.id
+      ? { ...s, status: 'indexing' as const, progress: 0, processedCount: 0, currentFile: undefined, lastError: undefined }
+      : s));
     try {
-      debugLog("Opening folder dialog...");
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: "Select documents folder"
+      const raw = await invoke('link_folder_enhanced', {
+        folderPath: source.path,
+        spaceId: source.id,
+        // Nested struct fields are snake_case. An empty file_types list means
+        // every type the indexer supports.
+        options: { skip_indexed: false, watch_changes: false, process_subdirs: true, priority: 'normal', file_types: [] },
       });
-
-      debugLog("Folder selected:", selected);
-
-      if (selected) {
-        debugLog("Processing selected folder...");
-        const newSource: Source = {
-          id: newNoticeId(),
-          name: (selected as string).split(/[\\\/]/).pop() || 'Folder',
-          path: selected as string,
-          type: 'documents',
-          fileCount: 0,
-          indexedAt: new Date().toISOString(),
-          status: 'indexing',
-          selected: true,
-        };
-
-        setSources(prev => {
-          const updated = [...prev, newSource];
-          localStorage.setItem('indexedSources', JSON.stringify(updated));
-          return updated;
-        });
-
-        // Set this source as currently indexing
-        setCurrentlyIndexing(newSource.id);
-
-        // Index the folder with enhanced progress
-        // Note: Top-level params in camelCase, nested struct fields in snake_case
-        debugLog("=== Calling link_folder_enhanced ===");
-        debugLog("Parameters:", {
-          folderPath: selected as string,
-          spaceId: newSource.id,
-          options: {
-            skip_indexed: false,
-            watch_changes: false,
-            process_subdirs: true,
-            priority: 'normal',
-            file_types: ['txt', 'md', 'pdf', 'rs', 'js', 'ts', 'py', 'java', 'cpp', 'c', 'html', 'json', 'docx']
+      const outcome = readIndexingResult(raw);
+      setSources(prev => prev.map(s => s.id === source.id
+        ? {
+            ...s,
+            status: 'ready' as const,
+            fileCount: outcome.filesProcessed,
+            indexedAt: new Date().toISOString(),
+            failures: outcome.failures.length > 0 ? outcome.failures : undefined,
+            progress: undefined,
+            currentFile: undefined,
+            processedCount: undefined,
           }
-        });
-
-        // Try both methods to see which one works
-        let result;
-        try {
-          debugLog("=== TRYING ENHANCED link_folder_enhanced METHOD ===");
-          result = await invoke("link_folder_enhanced", {
-            folderPath: selected as string,
-            spaceId: newSource.id,
-            options: {
-              skip_indexed: false,
-              watch_changes: false,
-              process_subdirs: true,
-              priority: 'normal',
-              file_types: ['txt', 'md', 'pdf', 'rs', 'js', 'ts', 'py', 'java', 'cpp', 'c', 'html', 'json', 'docx', 'xlsx', 'xls', 'xlsm', 'xlsb', 'ods', 'csv', 'tsv']
-            }
-          });
-          debugLog('Enhanced indexing succeeded:', result);
-        } catch (enhancedError) {
-          console.error("Enhanced method failed:", enhancedError);
-
-          // Fall back to old method
-          debugLog("=== FALLING BACK TO OLD link_folder METHOD ===");
-          result = await invoke("link_folder", {
-            folderPath: selected as string,
-            metadata: {
-              space_id: newSource.id,
-              source_type: 'documents'
-            }
-          });
-          debugLog('Old indexing succeeded:', result);
-        }
-
-        debugLog('Final indexing result:', result);
-        debugLog('Result type:', typeof result);
-        debugLog('Result keys:', Object.keys(result as any));
-
-        // Extract file count from result
-        const filesProcessed = (result as any).files_processed ||
-                              (result as any).filesProcessed ||
-                              (result as any).file_count ||
-                              (result as any).fileCount ||
-                              0;
-
-        debugLog('Files processed extracted:', filesProcessed);
-
-        // Update status with file count from result
-        let updatedSources: Source[] = [];
-        setSources(prev => {
-          updatedSources = prev.map(s =>
-            s.id === newSource.id ? {
-              ...s,
-              status: 'ready' as const,
-              fileCount: filesProcessed,
-              progress: undefined,
-              currentFile: undefined,
-              processedCount: undefined
-            } : s
-          );
-          localStorage.setItem('indexedSources', JSON.stringify(updatedSources));
-          return updatedSources;
-        });
-
-        setCurrentlyIndexing(null);
-        await updateStats(updatedSources);
-
-        // Get actual file count from backend
-        let actualFileCount = filesProcessed;
-        try {
-          const files = await invoke<any[]>('get_source_files', { sourceId: newSource.id });
-          actualFileCount = files.length;
-        } catch (e) {
-          console.error('Failed to get actual file count:', e);
-        }
-
-        notify.success(`Indexed ${actualFileCount} files`, { description: newSource.name });
-      }
+        : s));
+      await updateStats();
+      const failed = outcome.failures.length;
+      notify.success(`Indexed ${outcome.filesProcessed.toLocaleString()} file${outcome.filesProcessed === 1 ? '' : 's'}`, {
+        description: failed > 0 ? `${source.name} · ${failed} could not be indexed` : source.name,
+      });
     } catch (error) {
-      console.error("Failed to add source:", error);
-      notify.error('Indexing failed', { description: searchErrorMessage(error) });
-
-      // Reset indexing status on error
-      if (currentlyIndexing) {
-        setSources(prev => {
-          const updated = prev.map(s =>
-            s.id === currentlyIndexing ? { ...s, status: 'error' as const, progress: undefined } : s
-          );
-          localStorage.setItem('indexedSources', JSON.stringify(updated));
-          return updated;
-        });
-        setCurrentlyIndexing(null);
-      }
+      console.error('Indexing failed:', error);
+      const message = searchErrorMessage(error);
+      setSources(prev => prev.map(s => s.id === source.id
+        ? { ...s, status: 'error' as const, lastError: message, progress: undefined, currentFile: undefined, processedCount: undefined }
+        : s));
+      notify.error('Indexing failed', { description: message });
+    } finally {
+      setCurrentlyIndexing(null);
     }
+  };
+
+  /** Progress events carry no source id, so one index runs at a time. */
+  const indexingBusy = () => {
+    if (!sources.some(s => s.status === 'indexing')) return false;
+    notify.info('Indexing is already running', { description: 'Add or re-index another folder once it finishes.' });
+    return true;
+  };
+
+  const handleAddSource = async () => {
+    if (indexingBusy()) return;
+    let selected: string | string[] | null;
+    try {
+      selected = await open({ directory: true, multiple: false, title: 'Add a folder to the Library' });
+    } catch (error) {
+      notify.error('Could not open the folder picker', { description: String(error) });
+      return;
+    }
+    if (typeof selected !== 'string' || !selected) return;
+    const picked = selected;
+    const existing = sources.find(s => s.path.toLowerCase() === picked.toLowerCase());
+    if (existing) {
+      notify.info(`${existing.name} is already in the Library`, { description: 'Indexing it again to pick up changes.' });
+      await indexFolder(existing);
+      return;
+    }
+    const newSource: Source = {
+      id: `folder-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: picked.split(/[\\/]/).filter(Boolean).pop() || picked,
+      path: picked,
+      type: 'documents',
+      fileCount: 0,
+      indexedAt: new Date().toISOString(),
+      status: 'indexing',
+      selected: true,
+    };
+    setSources(prev => [...prev, newSource]);
+    await indexFolder(newSource);
+  };
+
+  const handleReindex = async (id: string) => {
+    const source = sources.find(s => s.id === id);
+    if (!source || indexingBusy()) return;
+    await indexFolder(source);
+  };
+
+  /** Start a chat about a Library file: a new conversation with the file named in the composer. */
+  const handleAskAboutFile = (file: FileNode, source: LibrarySource) => {
+    createConversation({ spaceId: source.id, spaceName: source.name });
+    setAskDraft(prev => ({ text: `About ${file.name} (${file.path}): `, seq: (prev?.seq ?? 0) + 1 }));
+    setActiveTab('ask');
   };
 
   const toggleSource = useCallback((id: string) => {
     setSources(prev => {
-      const updated = prev.map(s =>
+      return prev.map(s =>
         s.id === id ? { ...s, selected: !s.selected } : s
       );
-      localStorage.setItem('indexedSources', JSON.stringify(updated));
-      return updated;
     });
   }, []);
 
@@ -1129,7 +1059,6 @@ function AppSplitView() {
     // Optimistically remove from UI
     setSources(prev => {
       const updated = prev.filter(s => s.id !== id);
-      localStorage.setItem('indexedSources', JSON.stringify(updated));
       return updated;
     });
 
@@ -1154,7 +1083,6 @@ function AppSplitView() {
             // Restore source to UI
             setSources(prev => {
               const restored = [...prev, pending.source];
-              localStorage.setItem('indexedSources', JSON.stringify(restored));
               return restored;
             });
             notify.success('Source restored');
@@ -1165,80 +1093,6 @@ function AppSplitView() {
     });
   };
 
-
-  // Toggle source file list expansion in the Library view
-  const toggleDocsSourceExpansion = async (sourceId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-
-    const newExpanded = new Set(docsExpandedSources);
-
-    if (newExpanded.has(sourceId)) {
-      newExpanded.delete(sourceId);
-    } else {
-      newExpanded.add(sourceId);
-
-      if (!sourceFiles[sourceId]) {
-        try {
-          const files = await invoke<any[]>('get_source_files', { sourceId });
-          setSourceFiles(prev => ({ ...prev, [sourceId]: files || [] }));
-          setSources(prevSources =>
-            prevSources.map(s =>
-              s.id === sourceId ? { ...s, fileCount: files.length } : s
-            )
-          );
-        } catch (error) {
-          console.error('Failed to fetch source files:', error);
-          setSourceFiles(prev => ({ ...prev, [sourceId]: [] }));
-        }
-      }
-    }
-
-    setDocsExpandedSources(newExpanded);
-  };
-
-  // Get file icon, color, and badge based on file type — stable reference
-  const getFileIconInfo = useCallback((fileType: string): { Icon: any; color: string; badge: string } => {
-    const type = fileType.toLowerCase();
-
-    // Programming languages
-    if (type.includes('rust')) return { Icon: Settings, color: '#f74c00', badge: 'RS' };
-    if (type.includes('python')) return { Icon: FileCode, color: '#3776ab', badge: 'PY' };
-    if (type.includes('javascript')) return { Icon: Braces, color: '#f7df1e', badge: 'JS' };
-    if (type.includes('typescript')) return { Icon: Braces, color: '#3178c6', badge: 'TS' };
-    if (type.includes('java')) return { Icon: Coffee, color: '#f89820', badge: 'JAVA' };
-    if (type.includes('cpp') || type.includes('c_code') || type === 'c' || type === 'h') return { Icon: Terminal, color: '#00599c', badge: 'C++' };
-    if (type.includes('csharp')) return { Icon: Code, color: '#239120', badge: 'C#' };
-    if (type.includes('go')) return { Icon: FileCode, color: '#00add8', badge: 'GO' };
-    if (type.includes('ruby')) return { Icon: FileCode, color: '#cc342d', badge: 'RB' };
-    if (type.includes('php')) return { Icon: Code, color: '#777bb4', badge: 'PHP' };
-    if (type.includes('swift')) return { Icon: Code, color: '#f05138', badge: 'SWIFT' };
-    if (type.includes('kotlin')) return { Icon: Code, color: '#7f52ff', badge: 'KT' };
-    if (type === 'sh' || type === 'bash' || type === 'zsh') return { Icon: Terminal, color: '#4eaa25', badge: 'SH' };
-
-    // Web files
-    if (type === 'html') return { Icon: Code, color: '#e34c26', badge: 'HTML' };
-    if (type === 'css' || type === 'scss' || type === 'sass') return { Icon: FileCode, color: '#264de4', badge: 'CSS' };
-    if (type === 'vue') return { Icon: Code, color: '#42b883', badge: 'VUE' };
-    if (type === 'svelte') return { Icon: Code, color: '#ff3e00', badge: 'SVELTE' };
-
-    // Data/Config files
-    if (type === 'json') return { Icon: Braces, color: '#000000', badge: 'JSON' };
-    if (type === 'yaml' || type === 'yml') return { Icon: FileCode, color: '#cb171e', badge: 'YAML' };
-    if (type === 'toml') return { Icon: FileCode, color: '#9c4221', badge: 'TOML' };
-    if (type === 'xml') return { Icon: Code, color: '#0060ac', badge: 'XML' };
-    if (type === 'sql') return { Icon: Database, color: '#f29111', badge: 'SQL' };
-
-    // Documents
-    if (type === 'pdf') return { Icon: FileText, color: '#ef4444', badge: 'PDF' };
-    if (type === 'docx' || type === 'doc') return { Icon: FileText, color: '#2b579a', badge: 'DOCX' };
-    if (type === 'xlsx' || type === 'xls') return { Icon: FileSpreadsheet, color: '#217346', badge: 'XLSX' };
-    if (type === 'pptx' || type === 'ppt') return { Icon: Presentation, color: '#d24726', badge: 'PPTX' };
-    if (type === 'md' || type === 'markdown' || type.includes('documentation')) return { Icon: BookOpen, color: '#8b5cf6', badge: 'MD' };
-    if (type === 'txt') return { Icon: FileText, color: '#6b7280', badge: 'TXT' };
-
-    // Default for unknown types
-    return { Icon: FileText, color: '#9ca3af', badge: type.toUpperCase().slice(0, 4) };
-  }, []);
 
   // Loading Screen with animations
   if (isLoading) {
@@ -1673,6 +1527,8 @@ function AppSplitView() {
               llmStatus={llmStatus}
               onNavigate={setActiveTab}
               onPickImage={handlePickImage}
+              draftRequest={askDraft}
+              onDraftApplied={clearAskDraft}
               isDraggingFile={isDraggingImage}
               dropHandlers={{
                 onDrop: handleImageDrop,
@@ -1701,200 +1557,27 @@ function AppSplitView() {
               onRemoveSource={removeSource}
               onSourcesCleared={() => {
                 setSources([]);
-                localStorage.setItem('indexedSources', JSON.stringify([]));
               }}
             />
           )}
 
-          {/* Library Tab — shows indexed sources with file lists */}
+          {/* Library: folders, indexing progress and the file browser */}
           {activeTab === 'library' && (
-            <div className="h-full overflow-y-auto p-6">
-              <div className="max-w-4xl mx-auto">
-                <div className="flex items-center justify-between mb-6">
-                  <div>
-                    <h1 className="text-lg font-bold" style={{ color: colors.text }}>Library</h1>
-                    <p className="text-xs mt-0.5" style={{ color: colors.textMuted }}>
-                      {stats.totalDocs} documents indexed across {sources.length} sources
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => handleAddSource()}
-                    className="px-3 py-1.5 text-xs font-medium rounded-md text-white transition-colors"
-                    style={{ backgroundColor: colors.primary }}
-                  >
-                    Add Source
-                  </button>
-                </div>
-
-                <SearchSetupCard className="mb-6" />
-
-                {sources.length === 0 ? (
-                  <EmptyState
-                    icon={FileText}
-                    title="No document sources"
-                    description="Add a document folder to start indexing and searching your files."
-                    actions={[
-                      { label: 'Add Workspace', onClick: () => handleAddSource(), variant: 'default', icon: FileText },
-                    ]}
-                    size="md"
-                    variant="info"
-                  />
-                ) : (
-                  <div className="space-y-4">
-                    {sources.map(source => (
-                      <div
-                        key={source.id}
-                        className="rounded-lg border p-4"
-                        style={{ borderColor: colors.border, backgroundColor: colors.cardBg }}
-                      >
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-2">
-                            <FileText className="w-4 h-4" style={{ color: colors.primary }} />
-                            <span className="text-sm font-semibold" style={{ color: colors.text }}>
-                              {source.name}
-                            </span>
-                            <span
-                              className="text-[10px] px-1.5 py-0.5 rounded-full font-medium"
-                              style={{
-                                backgroundColor: source.status === 'ready' ? `${colors.success}18` : `${colors.warning}18`,
-                                color: source.status === 'ready' ? colors.success : colors.warning,
-                              }}
-                            >
-                              {source.status}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2 text-xs" style={{ color: colors.textMuted }}>
-                            <span>{source.fileCount || 0} files</span>
-                            {source.indexedAt && (
-                              <span>Indexed {new Date(source.indexedAt).toLocaleDateString()}</span>
-                            )}
-                            <label
-                              className="flex items-center gap-1.5 px-2 py-1 rounded-md border cursor-pointer select-none focus-within:ring-2 focus-within:ring-ring"
-                              style={{ borderColor: colors.border, color: colors.textSecondary }}
-                              title="Include this source when answering in Ask"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={source.selected}
-                                onChange={() => toggleSource(source.id)}
-                                className="w-3.5 h-3.5 focus:outline-none"
-                                style={{ accentColor: colors.primary }}
-                              />
-                              Use in Ask
-                            </label>
-                            <button
-                              type="button"
-                              onClick={(e) => removeSource(source.id, e)}
-                              aria-label={`Remove source ${source.name}`}
-                              title="Remove source"
-                              className="w-7 h-7 rounded-md inline-flex items-center justify-center transition-colors hover:bg-shodh-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                              style={{ color: colors.error }}
-                            >
-                              <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-                            </button>
-                          </div>
-                        </div>
-                        {source.path && (
-                          <p className="text-[11px] truncate mb-3" style={{ color: colors.textMuted }}>
-                            {source.path}
-                          </p>
-                        )}
-
-                        {/* File list toggle */}
-                        {source.status === 'ready' && (
-                          <div>
-                            <button
-                              onClick={(e) => toggleDocsSourceExpansion(source.id, e)}
-                              className="flex items-center gap-1.5 text-xs font-medium mb-2 transition-colors"
-                              style={{ color: colors.textTertiary }}
-                            >
-                              {docsExpandedSources.has(source.id) ? (
-                                <ChevronUp className="w-3.5 h-3.5" />
-                              ) : (
-                                <ChevronDown className="w-3.5 h-3.5" />
-                              )}
-                              {docsExpandedSources.has(source.id) ? 'Hide files' : 'Show files'}
-                            </button>
-
-                            <AnimatePresence>
-                              {docsExpandedSources.has(source.id) && sourceFiles[source.id] && sourceFiles[source.id].length > 0 && (
-                                <motion.div
-                                  initial={{ height: 0, opacity: 0 }}
-                                  animate={{ height: 'auto', opacity: 1 }}
-                                  exit={{ height: 0, opacity: 0 }}
-                                  transition={{ duration: 0.2 }}
-                                  className="overflow-hidden"
-                                >
-                                  <div
-                                    className="rounded-md overflow-hidden"
-                                    style={{ backgroundColor: colors.bgTertiary }}
-                                  >
-                                    {sourceFiles[source.id].slice(0, 20).map((file: any, idx: number) => {
-                                      const { Icon, color, badge } = getFileIconInfo(file.file_type);
-                                      return (
-                                        <div
-                                          key={idx}
-                                          className="flex items-center gap-2 px-3 py-1.5 text-xs transition-colors cursor-pointer"
-                                          style={{ color: colors.textSecondary, borderBottom: `1px solid ${colors.border}` }}
-                                          onClick={() => setPreviewFile({ path: file.file_path, name: file.name || file.file_path?.split(/[\\/]/).pop() })}
-                                          onMouseEnter={e => (e.currentTarget.style.backgroundColor = `${colors.primary}08`)}
-                                          onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
-                                        >
-                                          <Icon className="w-3.5 h-3.5 shrink-0" style={{ color }} />
-                                          <span
-                                            className="text-[9px] font-bold px-1 rounded shrink-0"
-                                            style={{ backgroundColor: `${color}20`, color }}
-                                          >
-                                            {badge}
-                                          </span>
-                                          <span className="flex-1 truncate">
-                                            {file.name || file.file_path?.split(/[\\/]/).pop()}
-                                          </span>
-                                          {file.status === 'indexed' && (
-                                            <Check className="w-3 h-3 shrink-0" style={{ color: colors.success }} />
-                                          )}
-                                        </div>
-                                      );
-                                    })}
-                                    {sourceFiles[source.id].length > 20 && (
-                                      <div className="px-3 py-2 text-[10px] text-center" style={{ color: colors.textMuted }}>
-                                        +{sourceFiles[source.id].length - 20} more files
-                                      </div>
-                                    )}
-                                  </div>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
-
-                            {/* Loading state */}
-                            {docsExpandedSources.has(source.id) && !sourceFiles[source.id] && (
-                              <div className="flex items-center gap-2 py-2">
-                                <Loader2 className="w-3 h-3 animate-spin" style={{ color: colors.primary }} />
-                                <span className="text-xs" style={{ color: colors.textMuted }}>Loading files...</span>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
+            <LibraryView
+              sources={sources}
+              totalDocs={stats.totalDocs}
+              indexReady={!isLoading}
+              onAddFolder={() => void handleAddSource()}
+              onReindex={id => void handleReindex(id)}
+              onToggleSource={toggleSource}
+              onRemoveSource={removeSource}
+              onAskAboutFile={handleAskAboutFile}
+            />
           )}
 
         </motion.div>
       </div>
 
-      {/* Document Preview Panel */}
-      <AnimatePresence>
-        {previewFile && (
-          <DocumentPreviewPanel
-            file={previewFile}
-            onClose={() => setPreviewFile(null)}
-          />
-        )}
-      </AnimatePresence>
 
       {/* Command Palette */}
       <CommandPalette

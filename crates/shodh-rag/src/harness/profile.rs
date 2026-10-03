@@ -23,13 +23,14 @@ pub mod app_tools {
     pub const REMOVE_SOURCE: &str = "remove_source";
     pub const SEARCH_CONVERSATIONS: &str = "search_conversations";
     pub const OPEN_CONVERSATION: &str = "open_conversation";
+    pub const ORGANIZE_CONVERSATION: &str = "organize_conversation";
     pub const AUDIT_QUERY: &str = "audit_query";
     pub const GET_SETTINGS: &str = "get_settings";
     pub const UPDATE_SETTING: &str = "update_setting";
     pub const EXPORT_DOCUMENT: &str = "export_document";
 
     /// Every app-layer tool, in registration order.
-    pub const ALL: [&str; 13] = [
+    pub const ALL: [&str; 17] = [
         CREATE_TASK,
         CREATE_EVENT,
         LIST_TASKS,
@@ -43,6 +44,10 @@ pub mod app_tools {
         ADD_FOLDER,
         REINDEX_SOURCE,
         REMOVE_SOURCE,
+        SEARCH_CONVERSATIONS,
+        OPEN_CONVERSATION,
+        ORGANIZE_CONVERSATION,
+        AUDIT_QUERY,
     ];
 }
 

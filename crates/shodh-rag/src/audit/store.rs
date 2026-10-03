@@ -436,6 +436,10 @@ fn filter_sql(q: &AuditQuery) -> (String, Vec<SqlValue>) {
         clauses.push("conversation_id = ?".to_string());
         params.push(SqlValue::Text(conversation.to_string()));
     }
+    if let Some(tool) = q.tool.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        clauses.push("json_extract(payload_json, '$.tool') = ?".to_string());
+        params.push(SqlValue::Text(tool.to_string()));
+    }
     if let Some(text) = q.text.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         let escaped = text
             .replace('\\', "\\\\")
@@ -1232,6 +1236,24 @@ mod tests {
             })
             .unwrap();
         assert_eq!(page.iter().map(|r| r.id).collect::<Vec<_>>(), vec![5, 4]);
+
+        log.append(AuditRecord::new(
+            AuditEventType::ToolCall,
+            json!({"tool": "web_search", "args": {"query": "list_tasks"}}),
+        ))
+        .unwrap();
+        log.append(AuditRecord::new(
+            AuditEventType::ToolCall,
+            json!({"tool": "list_tasks", "args": {}}),
+        ))
+        .unwrap();
+        let by_tool = AuditQuery {
+            tool: Some("list_tasks".into()),
+            ..AuditQuery::default()
+        };
+        let rows = log.query(&by_tool).unwrap();
+        assert_eq!(rows.len(), 1, "matches the tool, not a mention in the args");
+        assert_eq!(rows[0].payload["tool"], "list_tasks");
     }
 
     #[test]

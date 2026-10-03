@@ -6,7 +6,7 @@ use shodh_rag::harness::tools::ToolContext;
 use shodh_rag::indexing::{IndexingOptions, IndexingState};
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::{CalendarChange, HostEffects, IndexJob};
+use super::{CalendarChange, ConversationChange, HostEffects, IndexJob};
 use crate::calendar_commands::{spawn_reindex, CALENDAR_CHANGED_EVENT};
 use crate::event_emitter::TauriEventEmitter;
 use crate::rag_commands::RagState;
@@ -32,7 +32,17 @@ fn agent_indexing_options() -> IndexingOptions {
     }
 }
 
+/// Emitted when the agent renames or pins a saved conversation; the UI
+/// patches its in-memory list so its next save keeps the change.
+pub const CONVERSATION_UPDATED_EVENT: &str = "conversation-updated";
+
 impl HostEffects for TauriEffects {
+    fn conversation_changed(&self, change: ConversationChange) {
+        if let Err(e) = self.app.emit(CONVERSATION_UPDATED_EVENT, &change) {
+            tracing::warn!("Failed to emit {}: {}", CONVERSATION_UPDATED_EVENT, e);
+        }
+    }
+
     fn calendar_changed(&self, change: CalendarChange) {
         spawn_reindex(&self.app, &change);
         // Every task/event change (UI, agent tools, subtasks) goes through

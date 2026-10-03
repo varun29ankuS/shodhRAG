@@ -9,7 +9,9 @@
 //! tests use a recording implementation against temporary storage, so the
 //! whole registry can be built and exercised without a window.
 
+mod audit;
 mod calendar;
+mod history;
 mod sources;
 mod tauri_host;
 
@@ -68,6 +70,16 @@ pub enum CalendarChange {
     EventRemoved(String),
 }
 
+/// A saved conversation the agent renamed or pinned.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationChange {
+    pub conversation_id: String,
+    pub title: String,
+    pub pinned: bool,
+    pub updated_at: String,
+}
+
 /// A background indexing job started by a tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexJob {
@@ -84,6 +96,8 @@ pub trait HostEffects: Send + Sync {
     /// Index a folder in the background and audit the outcome in `ctx`'s
     /// run scope.
     fn start_indexing(&self, ctx: &ToolContext, job: IndexJob);
+    /// A saved conversation was renamed or pinned: update the open list.
+    fn conversation_changed(&self, change: ConversationChange);
 }
 
 /// Everything an app tool can reach.
@@ -108,6 +122,8 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     registry.register(Arc::new(ShowAuditTool))?;
     registry.register(Arc::new(ShowSourceTool::new(rag)))?;
     calendar::register(&mut registry, &host)?;
+    history::register(&mut registry, &host)?;
+    audit::register(&mut registry, &host)?;
     sources::register(&mut registry, &host)?;
     Ok(registry)
 }
@@ -146,6 +162,7 @@ pub(crate) mod testing {
     pub struct Recorder {
         pub calendar: Mutex<Vec<CalendarChange>>,
         pub indexing: Mutex<Vec<IndexJob>>,
+        pub conversations: Mutex<Vec<ConversationChange>>,
     }
 
     impl HostEffects for Recorder {
@@ -160,6 +177,12 @@ pub(crate) mod testing {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push(job);
+        }
+        fn conversation_changed(&self, change: ConversationChange) {
+            self.conversations
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(change);
         }
     }
 

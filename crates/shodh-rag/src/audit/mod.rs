@@ -239,6 +239,9 @@ pub struct AuditQuery {
     /// Inclusive upper bound on `ts`.
     pub to: Option<DateTime<Utc>>,
     pub conversation_id: Option<String>,
+    /// Events whose payload names this tool (`tool_call`, `approval`,
+    /// `retrieval`).
+    pub tool: Option<String>,
     /// Case-insensitive substring of the payload, type or principal.
     pub text: Option<String>,
     pub limit: Option<u32>,

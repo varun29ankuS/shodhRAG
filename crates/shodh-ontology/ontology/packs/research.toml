@@ -1,0 +1,327 @@
+# Research pack: papers, authors, methods, datasets, metrics, results and snippets.
+#
+# A Result is an n-ary statement {method, dataset, metric, value, setting} reported in a
+# paper; its source span is the statement's provenance (page + character span), and it may
+# point at a Snippet (a cropped figure/table region with its text).
+
+[pack]
+id = "shodh.research"
+version = "1.0.0"
+label = "Shodh research pack"
+prefix = "research"
+namespace = "urn:shodh:ontology:research#"
+requires = { "shodh.core" = "^1.0" }
+
+[[class]]
+id = "Paper"
+label = "Paper"
+parent = "Document"
+description = "A scholarly article, preprint or technical report."
+identity_keys = [["doi"], ["arxivId"]]
+cue_terms = ["abstract", "arxiv", "doi", "et al", "proceedings", "preprint", "we propose", "related work", "references"]
+equivalent_to = ["https://schema.org/ScholarlyArticle", "http://purl.org/spar/fabio/ResearchPaper"]
+[class.dynamics]
+reinforcement = 0.0
+
+[[class]]
+id = "Author"
+label = "Author"
+parent = "Person"
+description = "A person who authored a paper."
+identity_keys = [["orcid"]]
+cue_terms = ["et al", "corresponding author", "affiliation", "university", "institute"]
+[class.dynamics]
+decay_half_life_days = 3650
+reinforcement = 0.05
+
+[[class]]
+id = "Venue"
+label = "Venue"
+description = "A conference, workshop or journal where papers are published."
+cue_terms = ["conference", "journal", "workshop", "proceedings", "neurips", "icml", "iclr", "acl", "emnlp", "cvpr", "sigir"]
+equivalent_to = ["https://schema.org/Periodical"]
+[class.dynamics]
+reinforcement = 0.0
+
+[[class]]
+id = "Method"
+label = "Method"
+description = "A model, algorithm or technique proposed or used in papers."
+cue_terms = ["our method", "our approach", "we propose", "algorithm", "architecture", "baseline", "model"]
+[class.dynamics]
+decay_half_life_days = 1095
+reinforcement = 0.15
+
+[[class]]
+id = "Dataset"
+label = "Dataset"
+description = "A dataset or benchmark methods are trained or evaluated on."
+cue_terms = ["dataset", "benchmark", "corpus", "train set", "test set", "validation set", "split"]
+equivalent_to = ["https://schema.org/Dataset"]
+[class.dynamics]
+decay_half_life_days = 1095
+reinforcement = 0.15
+
+[[class]]
+id = "Metric"
+label = "Metric"
+description = "An evaluation measure such as accuracy, F1, BLEU or nDCG."
+cue_terms = ["accuracy", "f1", "bleu", "rouge", "precision", "recall", "ndcg", "mrr", "perplexity", "auc", "exact match"]
+[class.dynamics]
+decay_half_life_days = 1095
+reinforcement = 0.15
+
+[[class]]
+id = "Result"
+label = "Result"
+description = "A reported measurement: a method's value on a metric for a dataset under a setting, as stated in a paper."
+identity_keys = [["reportedIn", "resultMethod", "resultDataset", "resultMetric", "resultSetting"]]
+cue_terms = ["results", "outperforms", "state of the art", "state-of-the-art", "sota", "achieves", "improves"]
+cue_patterns = ['[0-9]{1,3}\.[0-9]+\s?%']
+[class.dynamics]
+reinforcement = 0.0
+
+[[class]]
+id = "Snippet"
+label = "Snippet"
+description = "A saved region of a document page (figure, table or passage): an image reference, its text, the page and the rectangle."
+cue_terms = ["figure", "fig.", "table", "excerpt", "snippet"]
+[class.dynamics]
+reinforcement = 0.0
+
+# Paper -------------------------------------------------------------------
+
+[[property]]
+id = "doi"
+label = "DOI"
+description = "Digital Object Identifier."
+domain = "Paper"
+range = "String"
+cardinality = "one"
+pattern = '10\.[0-9]{4,9}/[^\s]+'
+equivalent_to = ["http://prismstandard.org/namespaces/basic/2.0/doi"]
+
+[[property]]
+id = "arxivId"
+label = "arXiv id"
+description = "arXiv identifier (new style, optional version)."
+domain = "Paper"
+range = "String"
+cardinality = "one"
+pattern = '[0-9]{4}\.[0-9]{4,5}(?:v[0-9]+)?'
+
+[[property]]
+id = "publicationYear"
+label = "publication year"
+description = "Year of publication."
+domain = "Paper"
+range = "Integer"
+cardinality = "one"
+
+[[property]]
+id = "abstractText"
+label = "abstract"
+description = "The paper's abstract."
+domain = "Paper"
+range = "String"
+cardinality = "one"
+equivalent_to = ["https://schema.org/abstract"]
+
+[[property]]
+id = "authoredBy"
+label = "authored by"
+description = "An author of the paper."
+domain = "Paper"
+range = "Author"
+cardinality = "many"
+equivalent_to = ["https://schema.org/author"]
+
+[[property]]
+id = "publishedIn"
+label = "published in"
+description = "Venue where the paper appeared."
+domain = "Paper"
+range = "Venue"
+cardinality = "one"
+equivalent_to = ["https://schema.org/isPartOf"]
+
+[[property]]
+id = "cites"
+label = "cites"
+description = "A paper this paper cites."
+domain = "Paper"
+range = "Paper"
+cardinality = "many"
+equivalent_to = ["http://purl.org/spar/cito/cites"]
+
+[[property]]
+id = "usesMethod"
+label = "uses method"
+description = "A method the paper uses or evaluates."
+domain = "Paper"
+range = "Method"
+cardinality = "many"
+
+[[property]]
+id = "evaluatedOn"
+label = "evaluated on"
+description = "A dataset the paper or method is evaluated on."
+domain = ["Paper", "Method"]
+range = "Dataset"
+cardinality = "many"
+
+# Author ------------------------------------------------------------------
+
+[[property]]
+id = "orcid"
+label = "ORCID"
+description = "ORCID iD (xxxx-xxxx-xxxx-xxxx, last character may be X)."
+domain = "Author"
+range = "String"
+cardinality = "one"
+pattern = '[0-9]{4}-[0-9]{4}-[0-9]{4}-[0-9]{3}[0-9X]'
+
+[[property]]
+id = "affiliation"
+label = "affiliation"
+description = "Current institution. A newer affiliation supersedes the old one."
+domain = "Author"
+range = "Organization"
+cardinality = "one"
+temporal = true
+equivalent_to = ["https://schema.org/affiliation"]
+
+# Method / Dataset / Metric -----------------------------------------------
+
+[[property]]
+id = "proposedIn"
+label = "proposed in"
+description = "The paper that introduced the method."
+domain = "Method"
+range = "Paper"
+cardinality = "one"
+
+[[property]]
+id = "datasetUrl"
+label = "dataset URL"
+description = "Where the dataset can be obtained."
+domain = "Dataset"
+range = "Url"
+cardinality = "one"
+equivalent_to = ["https://schema.org/url"]
+
+[[property]]
+id = "higherIsBetter"
+label = "higher is better"
+description = "Whether larger values of the metric are better."
+domain = "Metric"
+range = "Boolean"
+cardinality = "one"
+
+# Result (n-ary) ----------------------------------------------------------
+
+[[property]]
+id = "resultMethod"
+label = "method"
+description = "The method that was measured."
+domain = "Result"
+range = "Method"
+cardinality = "one"
+required = true
+
+[[property]]
+id = "resultDataset"
+label = "dataset"
+description = "The dataset it was measured on."
+domain = "Result"
+range = "Dataset"
+cardinality = "one"
+required = true
+
+[[property]]
+id = "resultMetric"
+label = "metric"
+description = "The metric that was reported."
+domain = "Result"
+range = "Metric"
+cardinality = "one"
+required = true
+
+[[property]]
+id = "resultValue"
+label = "value"
+description = "The reported value, exactly as a decimal (percentages as printed, without the % sign)."
+domain = "Result"
+range = "Decimal"
+cardinality = "one"
+required = true
+
+[[property]]
+id = "resultSetting"
+label = "setting"
+description = "Conditions of the measurement (split, shots, model size, seed)."
+domain = "Result"
+range = "String"
+cardinality = "one"
+
+[[property]]
+id = "reportedIn"
+label = "reported in"
+description = "The paper that reports the result."
+domain = "Result"
+range = "Paper"
+cardinality = "one"
+
+[[property]]
+id = "resultSnippet"
+label = "snippet"
+description = "The table or figure region the result was read from."
+domain = "Result"
+range = "Snippet"
+cardinality = "one"
+
+# Snippet -----------------------------------------------------------------
+
+[[property]]
+id = "snippetOf"
+label = "snippet of"
+description = "The document the snippet was taken from."
+domain = "Snippet"
+range = "Document"
+cardinality = "one"
+required = true
+
+[[property]]
+id = "snippetImage"
+label = "image"
+description = "Reference to the stored image of the region (content-addressed path or URI)."
+domain = "Snippet"
+range = "String"
+cardinality = "one"
+
+[[property]]
+id = "snippetText"
+label = "text"
+description = "Text inside the region (OCR or text layer)."
+domain = "Snippet"
+range = "String"
+cardinality = "one"
+
+[[property]]
+id = "snippetPage"
+label = "page"
+description = "1-based page number of the region."
+domain = "Snippet"
+range = "Integer"
+cardinality = "one"
+required = true
+
+[[property]]
+id = "snippetRect"
+label = "rectangle"
+description = "Region on the page in PDF points: \"x,y,width,height\" from the top-left corner."
+domain = "Snippet"
+range = "String"
+cardinality = "one"
+required = true
+pattern = '[0-9]+(?:\.[0-9]+)?(?:,[0-9]+(?:\.[0-9]+)?){3}'

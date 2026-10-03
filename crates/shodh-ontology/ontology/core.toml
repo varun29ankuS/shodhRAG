@@ -1,0 +1,1083 @@
+# Shodh core ontology.
+#
+# Authoring rules (enforced by the loader, errors name file:line):
+# - Class ids are UpperCamelCase, property ids lowerCamelCase; ids are global across
+#   classes and properties of every layer.
+# - `parent` defaults to `Thing`. Single inheritance only.
+# - `range` is a class id or a datatype: String, Boolean, Integer, Decimal, Money, Date,
+#   DateTime, Url, Email, Enum (with `values`). A regex-constrained value is
+#   `range = "String"` plus `pattern` (whole-value match; also used to slice text).
+# - `cardinality` is "one" or "many". `temporal = true` (only with "one") means a newer
+#   value supersedes the older one, which is kept as history with valid_to.
+# - `[class.dynamics]` replaces the inherited dynamics as a whole; omitted fields mean
+#   no decay, zero reinforcement, no expiry.
+# - `identity_keys` is a list of keys; each key is a list of properties that together
+#   identify an entity.
+
+[core]
+id = "shodh.core"
+version = "1.0.0"
+label = "Shodh core ontology"
+prefix = "shodh"
+namespace = "urn:shodh:ontology:core#"
+
+# ---------------------------------------------------------------------------
+# Root and parties
+# ---------------------------------------------------------------------------
+
+[[class]]
+id = "Thing"
+label = "Thing"
+description = "Root of every class. Carries the name and aliases shared by all entities."
+equivalent_to = ["https://schema.org/Thing"]
+
+[[class]]
+id = "Party"
+label = "Party"
+description = "A person or organization that can hold rights and obligations, sign, pay or be billed."
+identity_keys = [["hasTaxId"]]
+equivalent_to = ["http://www.w3.org/ns/prov#Agent"]
+[class.dynamics]
+decay_half_life_days = 3650
+reinforcement = 0.05
+
+[[class]]
+id = "Organization"
+label = "Organization"
+parent = "Party"
+description = "A company, firm, government body or other organization."
+cue_terms = ["company", "pvt ltd", "private limited", "limited", "llp", "inc", "corporation", "firm", "vendor", "supplier", "customer", "client"]
+equivalent_to = ["https://schema.org/Organization"]
+[class.dynamics]
+decay_half_life_days = 3650
+reinforcement = 0.05
+
+[[class]]
+id = "Person"
+label = "Person"
+parent = "Party"
+description = "An individual human being, including the user."
+identity_keys = [["email"]]
+cue_terms = ["mr", "mrs", "ms", "dr", "signatory", "director", "advisor", "colleague", "my manager"]
+equivalent_to = ["https://schema.org/Person", "http://xmlns.com/foaf/0.1/Person"]
+[class.dynamics]
+decay_half_life_days = 3650
+reinforcement = 0.05
+
+[[class]]
+id = "TaxId"
+label = "Tax identifier"
+description = "An Indian tax registration: GSTIN (15 characters) and/or PAN (10 characters). A tax id identifies its party."
+identity_keys = [["gstin"], ["pan"]]
+cue_terms = ["gstin", "gst no", "gst number", "pan", "pan no", "tax id"]
+
+[[class]]
+id = "Place"
+label = "Place"
+description = "A city, region, country or other location."
+cue_terms = ["city", "lives in", "based in", "located in", "moved to"]
+equivalent_to = ["https://schema.org/Place"]
+[class.dynamics]
+decay_half_life_days = 1825
+reinforcement = 0.1
+
+[[class]]
+id = "Address"
+label = "Address"
+parent = "Place"
+description = "A postal address."
+cue_terms = ["address", "registered office", "bill to", "ship to", "pin code", "pincode"]
+equivalent_to = ["https://schema.org/PostalAddress"]
+[class.dynamics]
+decay_half_life_days = 1825
+reinforcement = 0.1
+
+# ---------------------------------------------------------------------------
+# Documents and records
+# ---------------------------------------------------------------------------
+
+[[class]]
+id = "Document"
+label = "Document"
+description = "A source document: a file, page set or message that statements are extracted from."
+cue_terms = ["document", "attached", "enclosed", "report", "memo", "letter"]
+equivalent_to = ["https://schema.org/CreativeWork", "http://xmlns.com/foaf/0.1/Document"]
+[class.dynamics]
+reinforcement = 0.0
+
+[[class]]
+id = "Invoice"
+label = "Invoice"
+parent = "Document"
+description = "A bill issued by a seller to a buyer for goods or services, with a number, date, parties and amounts."
+identity_keys = [["invoiceNumber", "issuedBy"]]
+cue_terms = ["invoice", "tax invoice", "bill no", "invoice no", "invoice number", "proforma", "amount due", "grand total"]
+equivalent_to = ["https://schema.org/Invoice"]
+[class.dynamics]
+reinforcement = 0.0
+
+[[class]]
+id = "LineItem"
+label = "Line item"
+description = "One line of an invoice: description, quantity, unit price and line total."
+cue_terms = ["qty", "quantity", "unit price", "rate", "hsn", "sac", "line total"]
+equivalent_to = ["https://schema.org/OrderItem"]
+[class.dynamics]
+reinforcement = 0.0
+
+[[class]]
+id = "Contract"
+label = "Contract"
+parent = "Document"
+description = "A legally binding agreement between parties, with effective, expiry and renewal dates and clauses."
+cue_terms = ["agreement", "contract", "memorandum of understanding", "mou", "nda", "non-disclosure", "lease", "master services", "statement of work", "hereinafter"]
+equivalent_to = ["https://spec.edmcouncil.org/fibo/ontology/FND/Agreements/Contracts/Contract"]
+[class.dynamics]
+reinforcement = 0.0
+
+[[class]]
+id = "Clause"
+label = "Clause"
+description = "A numbered provision of a contract."
+cue_terms = ["clause", "section", "article", "termination", "indemnity", "indemnify", "confidentiality", "governing law", "force majeure", "liability"]
+equivalent_to = ["https://spec.edmcouncil.org/fibo/ontology/FND/Agreements/Contracts/ContractualElement"]
+[class.dynamics]
+reinforcement = 0.0
+
+[[class]]
+id = "Obligation"
+label = "Obligation"
+description = "A duty a party must perform, usually created by a contract clause, often with a due date."
+cue_terms = ["shall", "is obliged to", "undertakes to", "obligation", "no later than"]
+equivalent_to = ["https://spec.edmcouncil.org/fibo/ontology/FND/Agreements/Contracts/ContractualCommitment"]
+[class.dynamics]
+reinforcement = 0.0
+expires_after = { property = "dueOn", grace_days = 90 }
+
+[[class]]
+id = "Payment"
+label = "Payment"
+description = "A transfer of money from a payer to a payee, possibly settling invoices."
+cue_terms = ["payment", "paid", "remittance", "receipt", "utr", "neft", "rtgs", "imps", "upi", "transaction id"]
+equivalent_to = ["https://schema.org/PayAction"]
+[class.dynamics]
+reinforcement = 0.0
+
+[[class]]
+id = "Amount"
+label = "Amount"
+description = "A monetary amount that is itself a subject (for example a fee or penalty for a period)."
+cue_terms = ["amount", "fee", "penalty", "charges", "total"]
+cue_patterns = ['(?:₹|Rs\.?|INR|USD|EUR|\$)\s?[0-9][0-9,]*(?:\.[0-9]+)?']
+equivalent_to = ["https://schema.org/MonetaryAmount"]
+[class.dynamics]
+reinforcement = 0.0
+
+[[class]]
+id = "Period"
+label = "Period"
+description = "A time interval with a start and end date (billing period, term, financial year)."
+cue_terms = ["period", "billing period", "financial year", "fy", "quarter", "tenure"]
+equivalent_to = ["http://www.w3.org/2006/time#Interval"]
+[class.dynamics]
+reinforcement = 0.0
+
+# ---------------------------------------------------------------------------
+# Activity, work and memory
+# ---------------------------------------------------------------------------
+
+[[class]]
+id = "Event"
+label = "Event"
+description = "Something scheduled or happening at a time: a meeting, call, deadline or appointment."
+cue_terms = ["meeting", "call", "appointment", "conference", "webinar", "scheduled", "calendar"]
+equivalent_to = ["https://schema.org/Event"]
+[class.dynamics]
+decay_half_life_days = 30
+reinforcement = 0.1
+expires_after = { property = "endsAt", grace_days = 30 }
+
+[[class]]
+id = "Task"
+label = "Task"
+description = "A piece of work to be done, with a status and usually a due date."
+cue_terms = ["todo", "to-do", "task", "remind me", "follow up", "deadline", "action item"]
+equivalent_to = ["https://schema.org/Action"]
+[class.dynamics]
+decay_half_life_days = 90
+reinforcement = 0.1
+expires_after = { property = "dueOn", grace_days = 30 }
+
+[[class]]
+id = "Project"
+label = "Project"
+description = "A named body of work with participants and a status."
+cue_terms = ["project", "initiative", "workstream", "engagement"]
+equivalent_to = ["https://schema.org/Project"]
+[class.dynamics]
+decay_half_life_days = 365
+reinforcement = 0.15
+
+[[class]]
+id = "Preference"
+label = "Preference"
+description = "Something a person likes, dislikes, requires or avoids, about a topic. The latest value for a holder and topic is current."
+identity_keys = [["preferenceHolder", "preferenceTopic"]]
+cue_terms = ["prefer", "prefers", "i like", "i love", "i hate", "i don't like", "always use", "never use", "favourite", "favorite"]
+[class.dynamics]
+decay_half_life_days = 730
+reinforcement = 0.2
+
+[[class]]
+id = "Decision"
+label = "Decision"
+description = "A choice that was made or proposed, with its rationale and who decided."
+cue_terms = ["decided", "decision", "we will go with", "agreed to", "approved", "resolved"]
+equivalent_to = ["https://schema.org/ChooseAction"]
+[class.dynamics]
+decay_half_life_days = 1825
+reinforcement = 0.1
+
+[[class]]
+id = "Episode"
+label = "Episode"
+description = "A remembered occurrence: what happened in a conversation or session, when and with whom."
+cue_terms = ["yesterday", "last week", "earlier today", "we discussed", "we talked about", "remember when"]
+[class.dynamics]
+decay_half_life_days = 14
+reinforcement = 0.1
+
+[[class]]
+id = "Procedure"
+label = "Procedure"
+description = "A reusable way of doing something: ordered steps that worked before. Strengthened each time it is used."
+cue_terms = ["how to", "steps", "procedure", "process", "workflow", "recipe", "playbook"]
+equivalent_to = ["https://schema.org/HowTo"]
+[class.dynamics]
+decay_half_life_days = 365
+reinforcement = 0.3
+
+[[class]]
+id = "Concept"
+label = "Concept"
+description = "A topic, idea or term of interest with a definition."
+cue_terms = ["concept", "topic", "definition", "means", "refers to", "interested in"]
+equivalent_to = ["http://www.w3.org/2004/02/skos/core#Concept"]
+[class.dynamics]
+decay_half_life_days = 1095
+reinforcement = 0.15
+
+[[class]]
+id = "Note"
+label = "Note"
+description = "Escape hatch: free text the user wants kept that fits no other class. Searchable, untyped."
+cue_terms = ["note", "remember that", "jot down"]
+equivalent_to = ["https://schema.org/NoteDigitalDocument"]
+[class.dynamics]
+decay_half_life_days = 180
+reinforcement = 0.1
+
+# ---------------------------------------------------------------------------
+# Shared properties
+# ---------------------------------------------------------------------------
+
+[[property]]
+id = "name"
+label = "name"
+description = "Primary name of the entity as written in the source."
+domain = "Thing"
+range = "String"
+cardinality = "one"
+equivalent_to = ["https://schema.org/name"]
+
+[[property]]
+id = "alias"
+label = "alias"
+description = "Other names, abbreviations or defined terms (\"the Company\") used for the entity."
+domain = "Thing"
+range = "String"
+cardinality = "many"
+equivalent_to = ["https://schema.org/alternateName"]
+
+# ---------------------------------------------------------------------------
+# Parties
+# ---------------------------------------------------------------------------
+
+[[property]]
+id = "hasTaxId"
+label = "has tax id"
+description = "Tax registration of the party."
+domain = "Party"
+range = "TaxId"
+cardinality = "many"
+
+[[property]]
+id = "hasAddress"
+label = "has address"
+description = "Postal address of the party."
+domain = "Party"
+range = "Address"
+cardinality = "many"
+equivalent_to = ["https://schema.org/address"]
+
+[[property]]
+id = "email"
+label = "e-mail"
+description = "E-mail address."
+domain = "Party"
+range = "Email"
+cardinality = "many"
+equivalent_to = ["https://schema.org/email"]
+
+[[property]]
+id = "website"
+label = "website"
+description = "Web site of the organization."
+domain = "Organization"
+range = "Url"
+cardinality = "one"
+equivalent_to = ["https://schema.org/url"]
+
+[[property]]
+id = "gstin"
+label = "GSTIN"
+description = "15-character GST identification number: 2-digit state code, PAN, entity code, 'Z', check character."
+domain = "TaxId"
+range = "String"
+cardinality = "one"
+pattern = '[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]'
+
+[[property]]
+id = "pan"
+label = "PAN"
+description = "10-character permanent account number: 5 letters, 4 digits, 1 letter."
+domain = "TaxId"
+range = "String"
+cardinality = "one"
+pattern = '[A-Z]{3}[ABCFGHJLPT][A-Z][0-9]{4}[A-Z]'
+
+[[property]]
+id = "livesIn"
+label = "lives in"
+description = "Where the person currently lives. A newer value supersedes the old one, which is kept as history."
+domain = "Person"
+range = "Place"
+cardinality = "one"
+temporal = true
+equivalent_to = ["https://schema.org/homeLocation"]
+
+[[property]]
+id = "worksFor"
+label = "works for"
+description = "The organization the person currently works for."
+domain = "Person"
+range = "Organization"
+cardinality = "one"
+temporal = true
+equivalent_to = ["https://schema.org/worksFor"]
+
+[[property]]
+id = "jobTitle"
+label = "job title"
+description = "Current role or designation."
+domain = "Person"
+range = "String"
+cardinality = "one"
+temporal = true
+equivalent_to = ["https://schema.org/jobTitle"]
+
+[[property]]
+id = "advisorOf"
+label = "advisor of"
+description = "This person advises or mentors the other person."
+domain = "Person"
+range = "Person"
+cardinality = "many"
+
+[[property]]
+id = "interestedIn"
+label = "interested in"
+description = "Topics the person is interested in."
+domain = "Person"
+range = "Concept"
+cardinality = "many"
+
+[[property]]
+id = "prefers"
+label = "prefers"
+description = "A preference held by the person."
+domain = "Person"
+range = "Preference"
+cardinality = "many"
+
+[[property]]
+id = "worksOn"
+label = "works on"
+description = "Projects the person works on."
+domain = "Person"
+range = "Project"
+cardinality = "many"
+
+[[property]]
+id = "partyTo"
+label = "party to"
+description = "The party is a party to the contract."
+domain = "Party"
+range = "Contract"
+cardinality = "many"
+
+# ---------------------------------------------------------------------------
+# Places
+# ---------------------------------------------------------------------------
+
+[[property]]
+id = "streetAddress"
+label = "street address"
+description = "Building, street and area lines."
+domain = "Address"
+range = "String"
+cardinality = "one"
+equivalent_to = ["https://schema.org/streetAddress"]
+
+[[property]]
+id = "locality"
+label = "city"
+description = "City, town or village."
+domain = "Place"
+range = "String"
+cardinality = "one"
+equivalent_to = ["https://schema.org/addressLocality"]
+
+[[property]]
+id = "region"
+label = "state or region"
+description = "State, province or region."
+domain = "Place"
+range = "String"
+cardinality = "one"
+equivalent_to = ["https://schema.org/addressRegion"]
+
+[[property]]
+id = "postalCode"
+label = "postal code"
+description = "Postal code as printed (an Indian PIN is 6 digits)."
+domain = "Address"
+range = "String"
+cardinality = "one"
+pattern = '[A-Za-z0-9][A-Za-z0-9 -]{2,9}'
+equivalent_to = ["https://schema.org/postalCode"]
+
+[[property]]
+id = "country"
+label = "country"
+description = "Country name or ISO 3166 code."
+domain = "Place"
+range = "String"
+cardinality = "one"
+equivalent_to = ["https://schema.org/addressCountry"]
+
+# ---------------------------------------------------------------------------
+# Documents
+# ---------------------------------------------------------------------------
+
+[[property]]
+id = "title"
+label = "title"
+description = "Title of the document."
+domain = "Document"
+range = "String"
+cardinality = "one"
+equivalent_to = ["http://purl.org/dc/terms/title"]
+
+[[property]]
+id = "documentDate"
+label = "document date"
+description = "Date the document was issued or dated."
+domain = "Document"
+range = "Date"
+cardinality = "one"
+equivalent_to = ["http://purl.org/dc/terms/date"]
+
+[[property]]
+id = "language"
+label = "language"
+description = "BCP 47 language tag of the document (en, hi, ta-IN)."
+domain = "Document"
+range = "String"
+cardinality = "many"
+pattern = '[a-z]{2,3}(?:-[A-Z]{2})?'
+equivalent_to = ["http://purl.org/dc/terms/language"]
+
+[[property]]
+id = "references"
+label = "references"
+description = "Another document this document refers to."
+domain = "Document"
+range = "Document"
+cardinality = "many"
+equivalent_to = ["http://purl.org/dc/terms/references"]
+
+[[property]]
+id = "supersedes"
+label = "supersedes"
+description = "An earlier version or document this one replaces."
+domain = "Document"
+range = "Document"
+cardinality = "many"
+equivalent_to = ["http://purl.org/dc/terms/replaces"]
+
+[[property]]
+id = "signedBy"
+label = "signed by"
+description = "A person who signed the document."
+domain = "Document"
+range = "Person"
+cardinality = "many"
+
+# ---------------------------------------------------------------------------
+# Invoices and payments
+# ---------------------------------------------------------------------------
+
+[[property]]
+id = "invoiceNumber"
+label = "invoice number"
+description = "Invoice number exactly as printed."
+domain = "Invoice"
+range = "String"
+cardinality = "one"
+required = true
+equivalent_to = ["https://schema.org/confirmationNumber"]
+
+[[property]]
+id = "invoiceDate"
+label = "invoice date"
+description = "Date of issue of the invoice."
+domain = "Invoice"
+range = "Date"
+cardinality = "one"
+
+[[property]]
+id = "issuedBy"
+label = "issued by"
+description = "The seller that issued the invoice."
+domain = "Invoice"
+range = "Organization"
+cardinality = "one"
+required = true
+equivalent_to = ["https://schema.org/provider"]
+
+[[property]]
+id = "billedTo"
+label = "billed to"
+description = "The buyer the invoice is addressed to."
+domain = "Invoice"
+range = "Party"
+cardinality = "one"
+equivalent_to = ["https://schema.org/customer"]
+
+[[property]]
+id = "totalAmount"
+label = "total amount"
+description = "Grand total payable, including taxes."
+domain = "Invoice"
+range = "Money"
+cardinality = "one"
+equivalent_to = ["https://schema.org/totalPaymentDue"]
+
+[[property]]
+id = "taxAmount"
+label = "tax amount"
+description = "Total tax (GST: CGST + SGST or IGST)."
+domain = "Invoice"
+range = "Money"
+cardinality = "one"
+
+[[property]]
+id = "hasLineItem"
+label = "has line item"
+description = "A line of the invoice."
+domain = "Invoice"
+range = "LineItem"
+cardinality = "many"
+
+[[property]]
+id = "itemDescription"
+label = "item description"
+description = "Description of goods or services on the line."
+domain = "LineItem"
+range = "String"
+cardinality = "one"
+
+[[property]]
+id = "quantity"
+label = "quantity"
+description = "Quantity on the line."
+domain = "LineItem"
+range = "Decimal"
+cardinality = "one"
+equivalent_to = ["https://schema.org/orderQuantity"]
+
+[[property]]
+id = "unitPrice"
+label = "unit price"
+description = "Price per unit."
+domain = "LineItem"
+range = "Money"
+cardinality = "one"
+
+[[property]]
+id = "lineTotal"
+label = "line total"
+description = "Total for the line."
+domain = "LineItem"
+range = "Money"
+cardinality = "one"
+
+[[property]]
+id = "hsnCode"
+label = "HSN/SAC code"
+description = "Harmonized System of Nomenclature or Services Accounting Code (4 to 8 digits)."
+domain = "LineItem"
+range = "String"
+cardinality = "one"
+pattern = '[0-9]{4,8}'
+
+[[property]]
+id = "amountOf"
+label = "amount of"
+description = "The amount paid or owed."
+domain = ["Payment", "Obligation"]
+range = "Money"
+cardinality = "one"
+equivalent_to = ["https://schema.org/price"]
+
+[[property]]
+id = "paidBy"
+label = "paid by"
+description = "The payer."
+domain = "Payment"
+range = "Party"
+cardinality = "one"
+equivalent_to = ["https://schema.org/agent"]
+
+[[property]]
+id = "paidTo"
+label = "paid to"
+description = "The payee."
+domain = "Payment"
+range = "Party"
+cardinality = "one"
+equivalent_to = ["https://schema.org/recipient"]
+
+[[property]]
+id = "paymentDate"
+label = "payment date"
+description = "Date the payment was made."
+domain = "Payment"
+range = "Date"
+cardinality = "one"
+
+[[property]]
+id = "paymentReference"
+label = "payment reference"
+description = "Bank or UPI transaction reference (UTR, transaction id)."
+domain = "Payment"
+range = "String"
+cardinality = "one"
+
+[[property]]
+id = "settles"
+label = "settles"
+description = "Invoices this payment settles."
+domain = "Payment"
+range = "Invoice"
+cardinality = "many"
+
+[[property]]
+id = "amountValue"
+label = "amount value"
+description = "The value of the amount."
+domain = "Amount"
+range = "Money"
+cardinality = "one"
+required = true
+equivalent_to = ["https://schema.org/value"]
+
+[[property]]
+id = "amountKind"
+label = "amount kind"
+description = "What the amount is."
+domain = "Amount"
+range = "Enum"
+values = ["total", "subtotal", "tax", "fee", "penalty", "deposit", "discount", "other"]
+cardinality = "one"
+
+[[property]]
+id = "amountPeriod"
+label = "amount period"
+description = "Period the amount applies to."
+domain = "Amount"
+range = "Period"
+cardinality = "one"
+
+[[property]]
+id = "periodStart"
+label = "period start"
+description = "First day of the period."
+domain = "Period"
+range = "Date"
+cardinality = "one"
+equivalent_to = ["https://schema.org/startDate"]
+
+[[property]]
+id = "periodEnd"
+label = "period end"
+description = "Last day of the period."
+domain = "Period"
+range = "Date"
+cardinality = "one"
+equivalent_to = ["https://schema.org/endDate"]
+
+# ---------------------------------------------------------------------------
+# Contracts
+# ---------------------------------------------------------------------------
+
+[[property]]
+id = "effectiveOn"
+label = "effective on"
+description = "Date the contract takes effect."
+domain = "Contract"
+range = "Date"
+cardinality = "one"
+temporal = true
+
+[[property]]
+id = "expiresOn"
+label = "expires on"
+description = "Date the contract expires. Amendments supersede the old date."
+domain = "Contract"
+range = "Date"
+cardinality = "one"
+temporal = true
+
+[[property]]
+id = "renewsOn"
+label = "renews on"
+description = "Next renewal date."
+domain = "Contract"
+range = "Date"
+cardinality = "one"
+temporal = true
+
+[[property]]
+id = "governingLaw"
+label = "governing law"
+description = "Jurisdiction whose law governs the contract."
+domain = "Contract"
+range = "String"
+cardinality = "one"
+
+[[property]]
+id = "hasClause"
+label = "has clause"
+description = "A clause of the contract."
+domain = "Contract"
+range = "Clause"
+cardinality = "many"
+
+[[property]]
+id = "clauseNumber"
+label = "clause number"
+description = "Clause number as printed (\"12.3\")."
+domain = "Clause"
+range = "String"
+cardinality = "one"
+
+[[property]]
+id = "clauseType"
+label = "clause type"
+description = "Kind of clause."
+domain = "Clause"
+range = "Enum"
+values = ["payment", "termination", "renewal", "confidentiality", "liability", "indemnity", "governing_law", "dispute_resolution", "force_majeure", "intellectual_property", "other"]
+cardinality = "one"
+
+[[property]]
+id = "clauseText"
+label = "clause text"
+description = "Verbatim text of the clause."
+domain = "Clause"
+range = "String"
+cardinality = "one"
+
+[[property]]
+id = "imposesObligation"
+label = "imposes obligation"
+description = "An obligation created by the clause."
+domain = "Clause"
+range = "Obligation"
+cardinality = "many"
+
+[[property]]
+id = "obligationText"
+label = "obligation text"
+description = "What must be done."
+domain = "Obligation"
+range = "String"
+cardinality = "one"
+required = true
+
+[[property]]
+id = "obligor"
+label = "obligor"
+description = "The party that must perform."
+domain = "Obligation"
+range = "Party"
+cardinality = "one"
+
+[[property]]
+id = "dueOn"
+label = "due on"
+description = "Deadline. A rescheduled deadline supersedes the old one."
+domain = ["Task", "Obligation", "Invoice"]
+range = "Date"
+cardinality = "one"
+temporal = true
+
+# ---------------------------------------------------------------------------
+# Events, tasks, projects
+# ---------------------------------------------------------------------------
+
+[[property]]
+id = "startsAt"
+label = "starts at"
+description = "Start time with UTC offset."
+domain = "Event"
+range = "DateTime"
+cardinality = "one"
+temporal = true
+equivalent_to = ["https://schema.org/startDate"]
+
+[[property]]
+id = "endsAt"
+label = "ends at"
+description = "End time with UTC offset."
+domain = "Event"
+range = "DateTime"
+cardinality = "one"
+temporal = true
+equivalent_to = ["https://schema.org/endDate"]
+
+[[property]]
+id = "location"
+label = "location"
+description = "Where the event takes place."
+domain = "Event"
+range = "Place"
+cardinality = "one"
+temporal = true
+equivalent_to = ["https://schema.org/location"]
+
+[[property]]
+id = "attendee"
+label = "attendee"
+description = "A person attending the event."
+domain = "Event"
+range = "Person"
+cardinality = "many"
+equivalent_to = ["https://schema.org/attendee"]
+
+[[property]]
+id = "taskStatus"
+label = "task status"
+description = "Current status of the task."
+domain = "Task"
+range = "Enum"
+values = ["open", "in_progress", "blocked", "done", "cancelled"]
+cardinality = "one"
+temporal = true
+equivalent_to = ["https://schema.org/actionStatus"]
+
+[[property]]
+id = "assignedTo"
+label = "assigned to"
+description = "Person responsible for the task."
+domain = "Task"
+range = "Person"
+cardinality = "many"
+equivalent_to = ["https://schema.org/agent"]
+
+[[property]]
+id = "partOfProject"
+label = "part of project"
+description = "Project the task belongs to."
+domain = "Task"
+range = "Project"
+cardinality = "one"
+
+[[property]]
+id = "projectStatus"
+label = "project status"
+description = "Current status of the project."
+domain = "Project"
+range = "Enum"
+values = ["planned", "active", "on_hold", "completed", "cancelled"]
+cardinality = "one"
+temporal = true
+
+# ---------------------------------------------------------------------------
+# Memory classes
+# ---------------------------------------------------------------------------
+
+[[property]]
+id = "preferenceHolder"
+label = "preference holder"
+description = "Person who holds the preference."
+domain = "Preference"
+range = "Person"
+cardinality = "one"
+required = true
+
+[[property]]
+id = "preferenceTopic"
+label = "preference topic"
+description = "What the preference is about (\"coffee\", \"report format\", \"meeting time\")."
+domain = "Preference"
+range = "String"
+cardinality = "one"
+required = true
+
+[[property]]
+id = "preferenceValue"
+label = "preference value"
+description = "The preferred option. A newer value for the same holder and topic supersedes the old one."
+domain = "Preference"
+range = "String"
+cardinality = "one"
+required = true
+temporal = true
+
+[[property]]
+id = "preferenceStance"
+label = "preference stance"
+description = "Whether the holder likes, dislikes, requires or avoids the value."
+domain = "Preference"
+range = "Enum"
+values = ["likes", "dislikes", "requires", "avoids"]
+cardinality = "one"
+temporal = true
+
+[[property]]
+id = "decisionText"
+label = "decision"
+description = "What was decided."
+domain = "Decision"
+range = "String"
+cardinality = "one"
+required = true
+
+[[property]]
+id = "decisionStatus"
+label = "decision status"
+description = "Whether the decision is proposed, made or reversed."
+domain = "Decision"
+range = "Enum"
+values = ["proposed", "made", "reversed"]
+cardinality = "one"
+temporal = true
+
+[[property]]
+id = "decidedOn"
+label = "decided on"
+description = "Date of the decision."
+domain = "Decision"
+range = "Date"
+cardinality = "one"
+
+[[property]]
+id = "decidedBy"
+label = "decided by"
+description = "Who made the decision."
+domain = "Decision"
+range = "Party"
+cardinality = "many"
+equivalent_to = ["https://schema.org/agent"]
+
+[[property]]
+id = "rationale"
+label = "rationale"
+description = "Why the decision was made."
+domain = "Decision"
+range = "String"
+cardinality = "one"
+
+[[property]]
+id = "episodeSummary"
+label = "episode summary"
+description = "What happened, in one or two sentences."
+domain = "Episode"
+range = "String"
+cardinality = "one"
+required = true
+
+[[property]]
+id = "occurredAt"
+label = "occurred at"
+description = "When the episode happened."
+domain = "Episode"
+range = "DateTime"
+cardinality = "one"
+
+[[property]]
+id = "participant"
+label = "participant"
+description = "Someone involved in the episode."
+domain = "Episode"
+range = "Person"
+cardinality = "many"
+
+[[property]]
+id = "procedureSteps"
+label = "steps"
+description = "The steps, in order, as one text."
+domain = "Procedure"
+range = "String"
+cardinality = "one"
+required = true
+equivalent_to = ["https://schema.org/step"]
+
+[[property]]
+id = "appliesTo"
+label = "applies to"
+description = "Topics the procedure is used for."
+domain = "Procedure"
+range = "Concept"
+cardinality = "many"
+
+[[property]]
+id = "definition"
+label = "definition"
+description = "What the concept means."
+domain = "Concept"
+range = "String"
+cardinality = "one"
+equivalent_to = ["http://www.w3.org/2004/02/skos/core#definition"]
+
+[[property]]
+id = "noteText"
+label = "note text"
+description = "Free text of the note."
+domain = "Note"
+range = "String"
+cardinality = "one"
+required = true
+equivalent_to = ["https://schema.org/text"]
+
+[[property]]
+id = "about"
+label = "about"
+description = "Entities a note or episode is about."
+domain = ["Note", "Episode"]
+range = "Thing"
+cardinality = "many"
+equivalent_to = ["https://schema.org/about"]

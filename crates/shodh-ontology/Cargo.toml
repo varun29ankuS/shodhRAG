@@ -1,0 +1,24 @@
+[package]
+name = "shodh-ontology"
+version = "0.1.0"
+edition = "2021"
+description = "Versioned ontology for Shodh: TOML authoring, typed statement validation, supersede semantics, slicing and OWL/Turtle export"
+authors = ["Roshera Team"]
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+toml = { version = "0.9.12", default-features = false, features = ["std", "serde", "parse"] }
+thiserror = "2.0.18"
+regex = "1.12.3"
+semver = { version = "1.0.27", features = ["serde"] }
+chrono = { version = "0.4.44", default-features = false, features = ["std", "serde"] }
+
+[lints.rust]
+missing_docs = "deny"
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+

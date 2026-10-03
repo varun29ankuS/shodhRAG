@@ -18,7 +18,14 @@ tantivy = "0.22"
 # Embeddings (ONNX)
 ort = "2.0.0-rc.10"
 ndarray = "0.16"
-tokenizers = "0.20"
+# default-features = false drops `esaxx_fast`, whose esaxx-rs build script hardcodes
+# `static_crt(true)` (/MT). Every other native dep (llama.cpp, onnxruntime, onig) is
+# built against the dynamic CRT (/MD), so the static esaxx object caused LNK2038
+# RuntimeLibrary mismatches + LNK2005 duplicate STL symbols when linking test
+# binaries. esaxx is only used by the Unigram *trainer*, which we never call; the
+# pure-Rust fallback is used if it ever is. `onig` is kept: it backs SysRegex used by
+# tokenizer.json pre-tokenizers/normalizers.
+tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
 
 # Knowledge graph
 petgraph = "0.6"

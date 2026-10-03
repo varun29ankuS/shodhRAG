@@ -19,6 +19,12 @@ static ENUMERATED_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?m)^\s*(?:\d+[.)]\s*|[-•]\s+)(.+)$").expect("enumerated regex is valid")
 });
 
+/// Inline enumeration marker: "1. " / "2) " at the start of the query or after
+/// whitespace. Requiring trailing whitespace keeps decimals ("1.5") from matching.
+static INLINE_ENUM_MARKER_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?:^|\s)(\d{1,2})[.)]\s+").expect("inline enumeration regex is valid")
+});
+
 static COMPARATIVE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?i)\b(?:compare|difference between|versus|vs\.?|differ from)\b")
         .expect("comparative regex is valid")
@@ -115,7 +121,49 @@ fn extract_enumerated(query: &str) -> Vec<String> {
         .filter(|s| s.split_whitespace().count() >= 2)
         .collect();
 
-    items
+    if items.len() >= 2 {
+        return items;
+    }
+
+    extract_inline_enumerated(query)
+}
+
+/// Split "1. what is X 2. what is Y" typed on a single line.
+///
+/// Only markers forming the consecutive sequence 1, 2, 3, ... are treated as item
+/// boundaries, so stray numbers inside an item ("section 4. of the policy") do not
+/// split it.
+fn extract_inline_enumerated(query: &str) -> Vec<String> {
+    // (marker_start, content_start) for each accepted marker
+    let mut markers: Vec<(usize, usize)> = Vec::new();
+    let mut expected: u32 = 1;
+
+    for cap in INLINE_ENUM_MARKER_RE.captures_iter(query) {
+        let (Some(number), Some(whole)) = (cap.get(1), cap.get(0)) else {
+            continue;
+        };
+        if number.as_str().parse::<u32>().ok() == Some(expected) {
+            markers.push((number.start(), whole.end()));
+            expected += 1;
+        }
+    }
+
+    if markers.len() < 2 {
+        return Vec::new();
+    }
+
+    markers
+        .iter()
+        .enumerate()
+        .map(|(i, &(_, content_start))| {
+            let end = markers
+                .get(i + 1)
+                .map(|&(next_start, _)| next_start)
+                .unwrap_or(query.len());
+            query[content_start..end].trim().to_string()
+        })
+        .filter(|s| s.split_whitespace().count() >= 2)
+        .collect()
 }
 
 fn split_on_question_marks(query: &str) -> Vec<String> {
@@ -323,5 +371,34 @@ mod tests {
         );
         assert_eq!(result.strategy, DecompositionStrategy::Enumerated);
         assert_eq!(result.sub_queries.len(), 3);
+    }
+
+    #[test]
+    fn test_inline_enumeration_items_are_split_at_markers() {
+        let result = decompose_query(
+            "1. What is the account number 2. What is the IFSC code 3. What is the balance",
+        );
+        assert_eq!(
+            result.sub_queries,
+            vec![
+                "What is the account number".to_string(),
+                "What is the IFSC code".to_string(),
+                "What is the balance".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_multiline_enumeration_still_supported() {
+        let result = decompose_query("1. What is the account number\n2. What is the IFSC code");
+        assert_eq!(result.strategy, DecompositionStrategy::Enumerated);
+        assert_eq!(result.sub_queries.len(), 2);
+    }
+
+    #[test]
+    fn test_non_sequential_numbers_are_not_enumeration() {
+        // "4." and "1.5" do not form a 1, 2, ... marker sequence
+        let result = decompose_query("what does section 4. say about the 1.5 percent fee");
+        assert_ne!(result.strategy, DecompositionStrategy::Enumerated);
     }
 }

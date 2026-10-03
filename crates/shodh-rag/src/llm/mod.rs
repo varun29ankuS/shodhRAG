@@ -83,7 +83,8 @@ impl LocalModel {
 
     pub fn size_gb(&self) -> f32 {
         match self {
-            Self::Phi3Mini => 2.0,
+            // int4 cpu ONNX weights (.onnx.data) are 2,722,861,056 bytes
+            Self::Phi3Mini => 2.54,
             Self::Phi4 => 8.0,
             Self::Mistral7B => 4.0,
             Self::Orca2_7B => 4.0,
@@ -908,13 +909,15 @@ mod tests {
     fn test_llm_config_default() {
         let config = LLMConfig::default();
         assert!(matches!(config.mode, LLMMode::Disabled));
-        assert_eq!(config.max_tokens, 1024);
+        assert_eq!(config.max_tokens, 8192);
     }
 
     #[test]
     fn test_local_model_info() {
         let model = LocalModel::Phi3Mini;
-        assert_eq!(model.model_id(), "microsoft/Phi-3-mini-4k-instruct");
-        assert_eq!(model.size_gb(), 3.8);
+        // model_id doubles as the on-disk cache directory name for the ONNX repo
+        assert_eq!(model.model_id(), "microsoft/Phi-3-mini-4k-instruct-onnx");
+        // size_gb is the download size in GiB (int4 weights), not the 3.8B parameter count
+        assert_eq!(model.size_gb(), 2.54);
     }
 }

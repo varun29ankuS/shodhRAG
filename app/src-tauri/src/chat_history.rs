@@ -209,11 +209,7 @@ impl ChatHistoryManager {
                         MessageRole::System => "⚙️",
                     };
 
-                    markdown.push_str(&format!(
-                        "## {} {}\n",
-                        role_emoji,
-                        format!("{:?}", message.role)
-                    ));
+                    markdown.push_str(&format!("## {} {:?}\n", role_emoji, message.role));
                     markdown.push_str(&format!("*{}*\n\n", message.timestamp));
                     markdown.push_str(&format!("{}\n\n---\n\n", message.content));
                 }

@@ -477,27 +477,25 @@ Rewritten Query:"#,
             return variants;
         }
 
-        // Strategy 1: Keyword extraction — strip question words and filler
+        // Entity-focused variant goes right after the original: it carries conversation
+        // context the other strategies cannot recover, so it must survive the cap below.
+        if let Some(entity) = context.entities.first() {
+            let entity_lower = entity.to_lowercase();
+            if !query_lower.contains(&entity_lower) {
+                // Add entity-scoped variant: "salary details" → "anushree salary details"
+                variants.push(format!("{} {}", entity, query.trim()));
+            }
+        }
+
+        // Keyword extraction — strip question words and filler
         let keyword_query = Self::extract_keywords_for_search(&query_lower);
         if !keyword_query.is_empty() && keyword_query != query_lower {
             variants.push(keyword_query);
         }
 
-        // Strategy 2: Synonym expansion for common document terms
-        let synonym_query = Self::apply_synonyms(&query_lower);
-        if let Some(syn) = synonym_query {
+        // Synonym expansion for common document terms
+        if let Some(syn) = Self::apply_synonyms(&query_lower) {
             variants.push(syn);
-        }
-
-        // Strategy 3: If context has entities, create entity-focused variant
-        if !context.entities.is_empty() {
-            let entity = &context.entities[0];
-            let entity_lower = entity.to_lowercase();
-            if !query_lower.contains(&entity_lower) {
-                // Add entity-scoped variant: "salary details" → "anushree salary details"
-                let entity_variant = format!("{} {}", entity, query.trim());
-                variants.push(entity_variant);
-            }
         }
 
         // Deduplicate

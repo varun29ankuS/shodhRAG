@@ -3,9 +3,10 @@ import LLMSettings from '../../LLMSettings';
 import SearchSettings from '../SearchSettings';
 import DataManagement from '../DataManagement';
 import PrivacySettings from '../PrivacySettings';
+import BackgroundSettings from '../BackgroundSettings';
 import { cn } from '../../lib/utils';
 
-export type SettingsSection = 'models' | 'search' | 'privacy' | 'data';
+export type SettingsSection = 'models' | 'search' | 'general' | 'privacy' | 'data';
 
 const SECTIONS: { id: SettingsSection; label: string; description: string }[] = [
   {
@@ -16,7 +17,12 @@ const SECTIONS: { id: SettingsSection; label: string; description: string }[] = 
   {
     id: 'search',
     label: 'Search',
-    description: 'Choose the retrieval mode, how many passages are retrieved, and the minimum relevance a passage needs to be used.',
+    description: 'Choose how many passages each document search retrieves.',
+  },
+  {
+    id: 'general',
+    label: 'General',
+    description: 'How Shodh runs when its window is closed, so task reminders keep ringing.',
   },
   {
     id: 'privacy',
@@ -123,6 +129,8 @@ export default function SettingsView({
                   onUpdate={onUpdateSearchConfig}
                   onReset={onResetSearchConfig}
                 />
+              ) : section === 'general' ? (
+                <BackgroundSettings />
               ) : section === 'privacy' ? (
                 <PrivacySettings />
               ) : (

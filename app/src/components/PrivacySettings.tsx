@@ -15,7 +15,7 @@ interface SwitchRowProps {
   onChange: (checked: boolean) => void;
 }
 
-function SwitchRow({ label, description, checked, disabled = false, onChange }: SwitchRowProps) {
+export function SwitchRow({ label, description, checked, disabled = false, onChange }: SwitchRowProps) {
   const labelId = useId();
   const descriptionId = useId();
   return (

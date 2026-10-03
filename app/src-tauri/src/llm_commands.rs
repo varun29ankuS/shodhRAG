@@ -182,8 +182,20 @@ pub async fn browse_tokenizer_file(app_handle: tauri::AppHandle) -> Result<Strin
 #[tauri::command]
 pub fn set_custom_model_path(
     state: State<'_, LLMState>,
+    audit: State<'_, AuditState>,
     model_path: String,
 ) -> Result<String, String> {
+    let result = set_custom_model_path_inner(&state, &model_path);
+    if result.is_ok() {
+        audit.record(AuditRecord::new(
+            AuditEventType::SettingsChange,
+            json!({"action": "custom_model_path", "path": model_path}),
+        ));
+    }
+    result
+}
+
+fn set_custom_model_path_inner(state: &LLMState, model_path: &str) -> Result<String, String> {
     let path = PathBuf::from(&model_path);
 
     // Verify the file exists
@@ -235,7 +247,22 @@ pub fn set_custom_model_path(
 #[tauri::command]
 pub fn set_custom_tokenizer_path(
     state: State<'_, LLMState>,
+    audit: State<'_, AuditState>,
     tokenizer_path: String,
+) -> Result<String, String> {
+    let result = set_custom_tokenizer_path_inner(&state, &tokenizer_path);
+    if result.is_ok() {
+        audit.record(AuditRecord::new(
+            AuditEventType::SettingsChange,
+            json!({"action": "custom_tokenizer_path", "path": tokenizer_path}),
+        ));
+    }
+    result
+}
+
+fn set_custom_tokenizer_path_inner(
+    state: &LLMState,
+    tokenizer_path: &str,
 ) -> Result<String, String> {
     let path = PathBuf::from(&tokenizer_path);
 

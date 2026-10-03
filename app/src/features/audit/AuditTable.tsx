@@ -64,7 +64,10 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
       return;
     }
     setDetailHeight(el.offsetHeight);
-    const observer = new ResizeObserver(() => setDetailHeight(el.offsetHeight));
+    // A detached node reports 0; keep the last real height.
+    const observer = new ResizeObserver(() => {
+      if (el.offsetHeight > 0) setDetailHeight(el.offsetHeight);
+    });
     observer.observe(el);
     return () => observer.disconnect();
   }, [expandedId, expandedIndex]);
@@ -93,7 +96,12 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
     if (!loading && rows.length < total && last >= rows.length - LOAD_AHEAD) onLoadMore();
   }, [last, rows.length, total, loading, onLoadMore]);
 
-  const visible: AuditRow[] = rows.slice(first, last + 1);
+  // The expanded row stays mounted even when scrolled out of the window, so
+  // its measured detail height (which offsets the rows below) stays valid.
+  const visibleIndexes: number[] = [];
+  if (expandedIndex >= 0 && expandedIndex < first) visibleIndexes.push(expandedIndex);
+  for (let i = first; i <= last; i++) visibleIndexes.push(i);
+  if (expandedIndex > last) visibleIndexes.push(expandedIndex);
 
   return (
     <div
@@ -132,8 +140,8 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
           </p>
         ) : (
           <div style={{ height: totalHeight }} className="relative">
-            {visible.map((row, i) => {
-              const index = first + i;
+            {visibleIndexes.map(index => {
+              const row = rows[index];
               const expanded = row.id === expandedId;
               const detailId = `audit-detail-${row.id}`;
               return (

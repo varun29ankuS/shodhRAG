@@ -25,9 +25,16 @@ export interface Policy {
   webAccess: boolean;
 }
 
+/** Long-term memory. User-only: the assistant has no tool to change it. */
+export interface MemoryPrefs {
+  /** Recall relevant memories into each answer. */
+  injectMemories: boolean;
+}
+
 export interface AppSettings {
   preferences: Preferences;
   policy: Policy;
+  memory: MemoryPrefs;
   seeded: boolean;
 }
 
@@ -42,9 +49,16 @@ export function parseAppSettings(value: unknown): AppSettings | null {
   if (preferences.theme !== 'light' && preferences.theme !== 'dark') return null;
   if (typeof preferences.searchMaxResults !== 'number') return null;
   if (typeof policy.localOnly !== 'boolean' || typeof policy.webAccess !== 'boolean') return null;
+  // Settings written before memory existed have no `memory` section: the default is on.
+  let injectMemories = true;
+  if (value.memory !== undefined) {
+    if (!isRecord(value.memory) || typeof value.memory.injectMemories !== 'boolean') return null;
+    injectMemories = value.memory.injectMemories;
+  }
   return {
     preferences: { theme: preferences.theme, searchMaxResults: preferences.searchMaxResults },
     policy: { localOnly: policy.localOnly, webAccess: policy.webAccess },
+    memory: { injectMemories },
     seeded: value.seeded === true,
   };
 }
@@ -65,6 +79,10 @@ export async function updatePreferences(patch: Partial<Preferences>, seed = fals
 
 export async function setPolicy(policy: Policy): Promise<AppSettings | null> {
   return parseAppSettings(await invoke<unknown>('set_app_policy', { policy }));
+}
+
+export async function setMemoryPreferences(memory: MemoryPrefs): Promise<AppSettings | null> {
+  return parseAppSettings(await invoke<unknown>('set_memory_preferences', { memory }));
 }
 
 /** Listen for settings changes (from the UI or the agent). Returns the unsubscribe function. */

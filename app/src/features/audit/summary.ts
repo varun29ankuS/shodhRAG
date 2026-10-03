@@ -111,6 +111,30 @@ export function summarise(row: AuditRow): string {
       const sha = str(p.sha256);
       return `Agent runtime ${version} installed${sha ? ` · sha256 ${sha.slice(0, 12)}…` : ''}`;
     }
+    case 'memory_write': {
+      const actions: Record<string, string> = {
+        remember: 'Remembered',
+        update: 'Memory edited',
+        pin: 'Memory pinned',
+        unpin: 'Memory unpinned',
+      };
+      const action = str(p.action) ?? 'remember';
+      const outcome = str(p.outcome);
+      const label = outcome === 'unchanged' ? 'Already remembered' : actions[action] ?? 'Memory changed';
+      const via = p.via === 'agent' ? ' (agent, approved)' : '';
+      const text = str(p.text);
+      return `${label}${via}${text ? `: “${clip(text, 90)}”` : ''}`;
+    }
+    case 'memory_forget': {
+      const versions = Array.isArray(p.ids) ? p.ids.length : 1;
+      const text = str(p.text);
+      return `Forgot ${versions} ${versions === 1 ? 'version' : 'versions'}${text ? ` of “${clip(text, 90)}”` : ''}`;
+    }
+    case 'memory_use': {
+      const count = Array.isArray(p.ids) ? p.ids.length : 0;
+      const query = str(p.query);
+      return `${count} ${count === 1 ? 'memory' : 'memories'} recalled${query ? ` for “${clip(query, 80)}”` : ''}`;
+    }
     case 'retention_checkpoint': {
       const deleted = num(p.deleted) ?? 0;
       return `Retention removed ${deleted} ${deleted === 1 ? 'event' : 'events'} (through #${num(p.last_deleted_id) ?? '?'})`;

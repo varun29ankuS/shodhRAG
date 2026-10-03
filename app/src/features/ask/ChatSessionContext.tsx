@@ -230,11 +230,16 @@ function isPersistable(m: ChatMessage): boolean {
   return !(m.transcript && isLive(m.transcript));
 }
 
-/** The answer's search limit from the send options, or null for everything. */
-function scopeOf(options: SendOptions | null): AnswerScope | null {
+/**
+ * The answer's search limit from the send options, plus the conversation's workspace
+ * (which scopes memories); null when neither applies.
+ */
+function scopeOf(options: SendOptions | null, workspaceId: string | null): AnswerScope | null {
   const sourceIds = options?.sourceIds?.filter(id => id.trim().length > 0) ?? [];
   const sourceFiles = options?.sourceFiles?.filter(f => f.trim().length > 0) ?? [];
-  return sourceIds.length > 0 || sourceFiles.length > 0 ? { sourceIds, sourceFiles } : null;
+  const workspace = workspaceId?.trim() || null;
+  if (sourceIds.length === 0 && sourceFiles.length === 0 && !workspace) return null;
+  return workspace ? { sourceIds, sourceFiles, workspaceId: workspace } : { sourceIds, sourceFiles };
 }
 
 function historyOf(messages: readonly ChatMessage[]): HistoryTurn[] {
@@ -459,7 +464,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       if (live.settled) return;
       live.sessionId = sessionId;
       setRuntimeInstalled(true);
-      await api.send(sessionId, prompt, runId, historyOf(history), scopeOf(options));
+      const workspaceId = conversation?.spaceId ?? options?.spaceId ?? null;
+      await api.send(sessionId, prompt, runId, historyOf(history), scopeOf(options, workspaceId));
     } catch (error) {
       const failure = toAgentError(error);
       if (failure.code === 'runtime_missing') setRuntimeInstalled(false);

@@ -1443,6 +1443,8 @@ function AppSplitView() {
               onSourcesCleared={() => {
                 setSources([]);
               }}
+              conversations={conversations}
+              onOpenConversation={(id: string) => { switchConversation(id); setActiveTab('ask'); }}
             />
           )}
 

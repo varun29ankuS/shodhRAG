@@ -4,9 +4,10 @@ import SearchSettings from '../SearchSettings';
 import DataManagement from '../DataManagement';
 import PrivacySettings from '../PrivacySettings';
 import BackgroundSettings from '../BackgroundSettings';
+import MemorySettings from '../MemorySettings';
 import { cn } from '../../lib/utils';
 
-export type SettingsSection = 'models' | 'search' | 'general' | 'privacy' | 'data';
+export type SettingsSection = 'models' | 'search' | 'general' | 'privacy' | 'memory' | 'data';
 
 const SECTIONS: { id: SettingsSection; label: string; description: string }[] = [
   {
@@ -30,6 +31,11 @@ const SECTIONS: { id: SettingsSection; label: string; description: string }[] = 
     description: 'Decide whether anything may leave this computer, and whether the assistant may use the web.',
   },
   {
+    id: 'memory',
+    label: 'Memory',
+    description: 'What Shodh remembers about you: how strong each memory is, where it came from and how it changed. Edit, pin, forget or export them.',
+  },
+  {
     id: 'data',
     label: 'Data',
     description: 'Inspect the local index, remove sources, or reset stored data on this computer.',
@@ -50,6 +56,10 @@ interface SettingsViewProps {
   sources: DataManagementProps['sources'];
   onRemoveSource: DataManagementProps['onRemoveSource'];
   onSourcesCleared: DataManagementProps['onSourcesCleared'];
+  /** Saved conversations (titles for memory sources). */
+  conversations: readonly { id: string; title: string }[];
+  /** Open a conversation in Ask. */
+  onOpenConversation: (id: string) => void;
 }
 
 const FOCUS_RING =
@@ -64,6 +74,8 @@ export default function SettingsView({
   sources,
   onRemoveSource,
   onSourcesCleared,
+  conversations,
+  onOpenConversation,
 }: SettingsViewProps) {
   const [section, setSection] = useState<SettingsSection>('models');
   const active = SECTIONS.find(s => s.id === section) ?? SECTIONS[0];
@@ -133,6 +145,12 @@ export default function SettingsView({
                 <BackgroundSettings />
               ) : section === 'privacy' ? (
                 <PrivacySettings />
+              ) : section === 'memory' ? (
+                <MemorySettings
+                  conversationTitle={id => conversations.find(c => c.id === id)?.title}
+                  onOpenConversation={onOpenConversation}
+                  sourceName={id => sources.find(s => s.id === id)?.name}
+                />
               ) : (
                 <DataManagement
                   sources={sources}

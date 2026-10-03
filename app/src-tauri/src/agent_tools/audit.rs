@@ -105,6 +105,24 @@ pub(crate) fn summarize(row: &AuditRow) -> String {
         }
         "runtime_install" => format!("Agent runtime {} installed", s(p, "version")),
         "retention_checkpoint" => "Older events removed by retention".to_string(),
+        "memory_write" => format!(
+            "Memory {} ({}) via {}: {}",
+            s(p, "action"),
+            p.get("outcome")
+                .and_then(Value::as_str)
+                .unwrap_or("changed"),
+            s(p, "via"),
+            s(p, "text")
+        ),
+        "memory_forget" => format!("Memory forgotten via {}: {}", s(p, "via"), s(p, "text")),
+        "memory_use" => {
+            let count = p
+                .get("ids")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            format!("{count} memories recalled for \"{}\"", s(p, "query"))
+        }
         other => other.to_string(),
     };
     truncate(text.trim(), MAX_SUMMARY_CHARS)

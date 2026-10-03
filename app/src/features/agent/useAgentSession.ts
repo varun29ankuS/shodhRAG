@@ -49,6 +49,8 @@ export interface AnswerScope {
   sourceFiles: string[];
   /** 1-based pages of `sourceFiles` (only with files); absent means every page. */
   pages?: number[];
+  /** The conversation's source (workspace): scopes which memories are recalled. Never limits search. */
+  workspaceId?: string;
 }
 
 export interface HistoryTurn {

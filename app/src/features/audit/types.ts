@@ -13,7 +13,10 @@ export type AuditEventType =
   | 'source_change'
   | 'settings_change'
   | 'runtime_install'
-  | 'retention_checkpoint';
+  | 'retention_checkpoint'
+  | 'memory_write'
+  | 'memory_forget'
+  | 'memory_use';
 
 export const EVENT_TYPES: readonly { id: AuditEventType; label: string }[] = [
   { id: 'question', label: 'Questions' },
@@ -23,6 +26,9 @@ export const EVENT_TYPES: readonly { id: AuditEventType; label: string }[] = [
   { id: 'approval', label: 'Approvals' },
   { id: 'source_change', label: 'Sources' },
   { id: 'settings_change', label: 'Settings' },
+  { id: 'memory_write', label: 'Memory saved' },
+  { id: 'memory_forget', label: 'Memory forgotten' },
+  { id: 'memory_use', label: 'Memory used' },
   { id: 'runtime_install', label: 'Runtime' },
   { id: 'retention_checkpoint', label: 'Retention' },
 ];
@@ -47,6 +53,12 @@ export function eventLabel(type: string): string {
       return 'Runtime';
     case 'retention_checkpoint':
       return 'Retention';
+    case 'memory_write':
+      return 'Memory saved';
+    case 'memory_forget':
+      return 'Memory forgotten';
+    case 'memory_use':
+      return 'Memory used';
     default:
       return type;
   }

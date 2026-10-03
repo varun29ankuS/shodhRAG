@@ -30,11 +30,27 @@ function assetDir(dir: string): string {
   return new URL(`${import.meta.env.BASE_URL}pdfjs/${dir}/`, window.location.href).href;
 }
 
+type PdfWorker = InstanceType<PdfJs['PDFWorker']>;
+
+let sharedWorker: PdfWorker | null = null;
+
+/**
+ * One pdf.js worker for every document. Without it each `getDocument` spawns
+ * (and on destroy terminates) its own Web Worker, so every file open paid
+ * worker start-up and every cached document held a thread. Destroying a
+ * document opened on a supplied worker leaves the worker running.
+ */
+function workerFor(pdfjs: PdfJs): PdfWorker {
+  if (!sharedWorker || sharedWorker.destroyed) sharedWorker = new pdfjs.PDFWorker();
+  return sharedWorker;
+}
+
 /** Open a PDF from bytes. The buffer is transferred to the worker. */
 export async function openPdf(data: Uint8Array): Promise<PDFDocumentLoadingTask> {
   const pdfjs = await loadPdfJs();
   return pdfjs.getDocument({
     data,
+    worker: workerFor(pdfjs),
     cMapUrl: assetDir('cmaps'),
     cMapPacked: true,
     standardFontDataUrl: assetDir('standard_fonts'),

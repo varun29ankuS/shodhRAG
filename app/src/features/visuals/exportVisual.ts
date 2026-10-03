@@ -115,6 +115,15 @@ export function standaloneSvg(svg: SVGSVGElement, background: string | null): st
   return new XMLSerializer().serializeToString(clone);
 }
 
+/** The background colour behind `el`: its nearest ancestor with an opaque one. */
+function paintedBackground(el: Element): string | null {
+  for (let node: Element | null = el; node; node = node.parentElement) {
+    const color = window.getComputedStyle(node).backgroundColor;
+    if (color && color !== 'transparent' && !/rgba\([^)]*,\s*0\)$/.test(color)) return color;
+  }
+  return null;
+}
+
 /** Width and height of SVG markup (its width/height, else its viewBox). */
 function svgSize(markup: string): { width: number; height: number } {
   const doc = new DOMParser().parseFromString(markup, 'image/svg+xml');
@@ -203,8 +212,7 @@ async function render(request: ExportRequest): Promise<{ bytes?: Uint8Array; tex
   } else {
     const svg = request.container ? mainSvg(request.container) : null;
     if (!svg) throw new Error('Open the visual first, then export it.');
-    const surface = request.container ? window.getComputedStyle(request.container).backgroundColor : '';
-    const background = format === 'png' && surface && surface !== 'rgba(0, 0, 0, 0)' ? surface : null;
+    const background = format === 'png' ? paintedBackground(svg) : null;
     markup = standaloneSvg(svg, background);
   }
   if (format === 'svg') return { text: markup };

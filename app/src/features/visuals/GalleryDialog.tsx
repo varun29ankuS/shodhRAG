@@ -10,6 +10,11 @@ import { VisualGallery } from './VisualGallery';
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
 
+/** Whether an event target is inside a notice (e.g. its Undo button). */
+function isInToast(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest('[data-sonner-toaster]') !== null;
+}
+
 /** How many visuals a conversation has; follows changes. Null until known. */
 export function useVisualCount(conversationId: string | null): number | null {
   const [count, setCount] = useState<number | null>(null);
@@ -72,7 +77,11 @@ export function VisualsButton({ conversationId, conversationTitle }: { conversat
         <Dialog.Content
           aria-describedby={descriptionId}
           // The focus pop-out opens above the gallery; using it must not close the gallery.
-          onInteractOutside={e => { if (isInFocusOverlay(e.target)) e.preventDefault(); }}
+          onInteractOutside={e => { if (isInFocusOverlay(e.target) || isInToast(e.target)) e.preventDefault(); }}
+          // Menus inside the gallery close themselves on Esc.
+          onEscapeKeyDown={e => {
+            if (e.target instanceof Element && e.target.closest('[data-esc-local]')) e.preventDefault();
+          }}
           className="ask-fade-in fixed z-[55] inset-0 m-auto flex flex-col w-[min(1100px,calc(100vw-48px))] h-[min(820px,calc(100vh-48px))] rounded-[18px] border border-shodh-border-strong bg-shodh-surface text-shodh-text shadow-[0_24px_80px_rgba(0,0,0,0.45)] focus:outline-none"
         >
           <header className="shrink-0 flex items-center gap-3 px-5 py-3 border-b border-shodh-border-subtle">

@@ -209,6 +209,7 @@ export function VisualBar({
               ref={exportRef}
               role="menu"
               aria-label="Export as"
+              data-esc-local=""
               onKeyDown={onExportKeyDown}
               className="absolute right-0 top-8 z-30 min-w-[190px] rounded-xl border border-shodh-border-strong bg-shodh-surface p-1 shadow-[0_12px_36px_rgba(0,0,0,0.32)] shell-pop"
             >

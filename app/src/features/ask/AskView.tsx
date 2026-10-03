@@ -550,27 +550,49 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
 
   // "Go to message" from the gallery: scroll to that answer once it is shown.
   const [reveal, setReveal] = useState<MessageReveal | null>(() => pendingReveal());
+  const revealTimerRef = useRef<{ timer: number; target: HTMLElement } | null>(null);
   useEffect(() => subscribeReveal(setReveal), []);
+  useEffect(() => () => {
+    const shown = revealTimerRef.current;
+    if (shown) {
+      window.clearTimeout(shown.timer);
+      delete shown.target.dataset.revealed;
+    }
+  }, []);
   useEffect(() => {
-    if (!reveal || reveal.conversationId !== conversationId || messages.length === 0) return;
+    if (!reveal || reveal.conversationId !== conversationId) return;
     const scroller = scrollerRef.current;
     if (!scroller) return;
-    clearReveal(reveal);
-    setReveal(null);
     const target = scroller.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(reveal.messageId)}"]`);
     if (!target) {
+      // The view may still show the previous conversation's messages: wait
+      // while the stored conversation has the answer.
+      const stored = session.activeConversation?.id === reveal.conversationId ? session.activeConversation.messages : null;
+      if (!stored || stored.some(m => m.id === reveal.messageId)) return;
+      clearReveal(reveal);
+      setReveal(null);
       notify.info('That answer is no longer in this conversation');
       return;
     }
+    clearReveal(reveal);
+    setReveal(null);
     target.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
     target.setAttribute('tabindex', '-1');
     target.focus({ preventScroll: true });
+    const previous = revealTimerRef.current;
+    if (previous) {
+      window.clearTimeout(previous.timer);
+      delete previous.target.dataset.revealed;
+    }
     target.dataset.revealed = 'true';
-    const timer = window.setTimeout(() => {
-      delete target.dataset.revealed;
-    }, REVEAL_HIGHLIGHT_MS);
-    return () => window.clearTimeout(timer);
-  }, [reveal, conversationId, messages]);
+    revealTimerRef.current = {
+      target,
+      timer: window.setTimeout(() => {
+        delete target.dataset.revealed;
+        revealTimerRef.current = null;
+      }, REVEAL_HIGHLIGHT_MS),
+    };
+  }, [reveal, conversationId, messages, session.activeConversation]);
 
   const latest = useMemo(() => latestTranscript(messages), [messages]);
   const liveTranscript = isStreaming && latest && isLive(latest) ? latest : null;

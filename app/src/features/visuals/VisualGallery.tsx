@@ -90,6 +90,8 @@ function CardMenu({
       ref={ref}
       role="menu"
       aria-label={`Actions for ${card.title}`}
+      // Esc closes this menu only (dialogs around the gallery skip it).
+      data-esc-local=""
       onKeyDown={onKeyDown}
       className="absolute right-2 top-10 z-20 min-w-[200px] rounded-xl border border-shodh-border-strong bg-shodh-surface p-1 shadow-[0_12px_36px_rgba(0,0,0,0.32)] shell-pop"
     >

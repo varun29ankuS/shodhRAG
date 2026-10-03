@@ -41,8 +41,7 @@ export function renderDiagram(id: string, source: string, dark: boolean, textLab
       securityLevel: 'strict',
       theme: dark ? 'dark' : 'default',
       fontFamily: '"Geist Variable", system-ui, sans-serif',
-      htmlLabels: !textLabels,
-      flowchart: { htmlLabels: !textLabels },
+      ...(textLabels ? { htmlLabels: false, flowchart: { htmlLabels: false } } : {}),
     });
     await mermaid.parse(source);
     const { svg } = await mermaid.render(id, source);

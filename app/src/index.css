@@ -497,3 +497,8 @@
   border-radius: 2px;
   scroll-margin: 96px;
 }
+
+/* Notices stay clickable (e.g. Undo) while a modal dialog has made the rest of the page inert to the pointer. */
+[data-sonner-toast][data-visible='true'] {
+  pointer-events: auto;
+}

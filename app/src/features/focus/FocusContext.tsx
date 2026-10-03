@@ -298,8 +298,10 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
   const locationThreads = useCallback(
     (conversationId: string, parentMessageId: string | null): FocusThread[] =>
       parentMessageId ? messageThreads(conversationId, parentMessageId) : localThreads(conversationId),
-    // `messages` and `conversations` re-create the reader when message threads change.
-    [messageThreads, localThreads, messages, conversations],
+    // Message threads are read through refs: the reader keeps its identity
+    // while an answer streams, so answers' visuals do not re-render per token.
+    // The pop-out re-renders with this provider and always reads fresh threads.
+    [messageThreads, localThreads],
   );
 
   const findThread = useCallback((conversationId: string, parentMessageId: string | null, threadId: string): FocusThread | null =>

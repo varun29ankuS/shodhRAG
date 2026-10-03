@@ -10,13 +10,18 @@ import type { Artifact } from '../../components/EnhancedArtifactPanel';
 import { parseChartBlock } from '../ask/visual/chartSpec';
 import { tryParseChartSpec } from '../../utils/artifactExtractor';
 import { renderDiagram } from '../ask/visual/VisualBlocks';
+import { SketchSurface, useSvgSketch } from '../ask/visual/SvgSketch';
+import { InteractivePlot } from '../ask/visual/PlotView';
+import { SimulationPlayer } from '../ask/visual/SimulationView';
+import { initialValues, parsePlotSpec } from '../ask/visual/plotSpec';
+import { parseSimulationSpec } from '../ask/visual/simulationSpec';
 import { useSourceDocument } from '../ask/useSourceDocument';
 import type { SearchHit } from '../ask/types';
 import { momentToDate, parseMoment } from '../tasks/dueDate';
 import { PRIORITY_LABELS, STATUS_LABELS } from '../tasks/types';
 import type { FocusCommand } from './focusKeys';
 import { panDelta } from './focusKeys';
-import type { FocusTarget, FocusTaskSnapshot } from './focusTypes';
+import type { FocusParamValue, FocusTarget, FocusTaskSnapshot } from './focusTypes';
 import {
   MAX_ZOOM,
   MIN_ZOOM,
@@ -466,6 +471,57 @@ function ChartStage({ source, label, theme, commandRef }: { source: string; labe
   );
 }
 
+function SvgStage({ source, label, commandRef }: { source: string; label: string; commandRef: StageCommandRef }) {
+  const { result, markup, seed } = useSvgSketch(source);
+  if ('error' in result) return <StageError message={`Sketch not drawn: ${result.error}`} detail={source} />;
+  return (
+    <CanvasStage natural={{ width: result.width, height: result.height }} label={label} commandRef={commandRef}>
+      {() => (
+        <SketchSurface
+          markup={markup}
+          sketch={result.sketch}
+          seed={seed}
+          label={label}
+          className="w-full h-full rounded-lg bg-shodh-surface [&>svg]:!w-full [&>svg]:!h-full [&>svg]:!max-w-none"
+        />
+      )}
+    </CanvasStage>
+  );
+}
+
+/** Interactive visuals are not zoomed: they are laid out large, sliders included. */
+function InteractiveStage({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex-1 min-h-0 min-w-0 overflow-y-auto scrollbar-thin bg-shodh-raised-2 p-6 flex justify-center">
+      <div className="w-full max-w-[960px] h-fit rounded-2xl border border-shodh-border bg-shodh-surface p-5">{children}</div>
+    </div>
+  );
+}
+
+function PlotStage({ source, values }: { source: string; values: FocusParamValue[] }) {
+  const result = useMemo(() => parsePlotSpec(source), [source]);
+  const spec = result.ok ? result.spec : null;
+  const [current, setCurrent] = useState<number[]>(() => (spec ? initialValues(spec.params, values) : []));
+  if ('error' in result) return <StageError message={`Plot not drawn: ${result.error}`} detail={source} />;
+  if (!spec) return null;
+  return (
+    <InteractiveStage>
+      <InteractivePlot spec={spec} values={current} onValues={setCurrent} maxHeight={560} />
+    </InteractiveStage>
+  );
+}
+
+function SimulationStage({ source, values }: { source: string; values: FocusParamValue[] }) {
+  const result = useMemo(() => parseSimulationSpec(source), [source]);
+  if ('error' in result) return <StageError message={`Simulation not run: ${result.error}`} detail={source} />;
+  if (!result.ok) return null;
+  return (
+    <InteractiveStage>
+      <SimulationPlayer model={result.model} initial={values} maxHeight={560} autoPlay preempt />
+    </InteractiveStage>
+  );
+}
+
 function ImageStage({ src, alt, label, commandRef }: { src: string | null; alt: string; label: string; commandRef: StageCommandRef }) {
   const [size, setSize] = useState<Size | null>(null);
   const [broken, setBroken] = useState(false);
@@ -621,12 +677,21 @@ export interface FocusStageProps {
 /** The focused object, drawn for close reading. */
 export function FocusStage({ target, theme, commandRef, onPageChange }: FocusStageProps) {
   // Documents and tasks have no stage zoom (PDF pages zoom in their own viewer).
-  if (target.kind === 'source' || target.kind === 'task' || target.kind === 'selection') commandRef.current = null;
+  // Interactive visuals have sliders and controls instead of zoom.
+  if (target.kind === 'source' || target.kind === 'task' || target.kind === 'selection' || target.kind === 'plot' || target.kind === 'simulation') {
+    commandRef.current = null;
+  }
   switch (target.kind) {
     case 'mermaid':
       return <MermaidStage source={target.source} label={target.label} dark={theme === 'dark'} commandRef={commandRef} />;
     case 'chart':
       return <ChartStage source={target.source} label={target.label} theme={theme} commandRef={commandRef} />;
+    case 'svg':
+      return <SvgStage source={target.source} label={target.label} commandRef={commandRef} />;
+    case 'plot':
+      return <PlotStage source={target.source} values={target.values} />;
+    case 'simulation':
+      return <SimulationStage source={target.source} values={target.values} />;
     case 'image':
       return <ImageStage src={target.src} alt={target.alt} label={target.label} commandRef={commandRef} />;
     case 'equation':

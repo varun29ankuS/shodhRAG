@@ -25,6 +25,9 @@ const FOCUS_RING =
 const KIND_LABEL: Record<FocusKind, string> = {
   mermaid: 'Diagram',
   chart: 'Chart',
+  svg: 'Sketch',
+  plot: 'Plot',
+  simulation: 'Simulation',
   equation: 'Equation',
   table: 'Table',
   image: 'Image',
@@ -363,7 +366,9 @@ export function FocusOverlay({ session, onClose }: FocusOverlayProps) {
     FOCUS_RING,
   );
 
-  const description = target.kind === 'source' || target.kind === 'task' || target.kind === 'selection'
+  const description = target.kind === 'plot' || target.kind === 'simulation'
+    ? 'Shown large with its sliders, with a side discussion about it.'
+    : target.kind === 'source' || target.kind === 'task' || target.kind === 'selection'
     ? 'Shown large, with a side discussion about it.'
     : 'Zoom with plus, minus or Control and the mouse wheel; 0 fits, 1 shows actual size; drag or use the arrow keys to pan. M maximises.';
   const levelHelp = multiLevel ? ' Alt and the left or right arrow move between levels; Escape goes up a level.' : ' Escape closes.';

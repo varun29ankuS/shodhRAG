@@ -46,7 +46,7 @@ export function renderDiagram(id: string, source: string, dark: boolean): Promis
   return job;
 }
 
-function BlockError({ title, message, source }: { title: string; message: string; source: string }) {
+export function BlockError({ title, message, source }: { title: string; message: string; source: string }) {
   return (
     <figure className="my-4 rounded-xl border border-shodh-border bg-shodh-surface overflow-hidden">
       <figcaption className="flex items-start gap-2 px-3 py-2 text-[12.5px] text-shodh-text-secondary border-b border-shodh-border-subtle">

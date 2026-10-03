@@ -4,8 +4,11 @@
  * small. Pure module, unit-tested with Node (`app/tests/focusContext.test.ts`).
  */
 
-import type { FocusDocumentRef, FocusSourceHit, FocusTarget, FocusTaskSnapshot } from './focusTypes.ts';
-import { MAX_TARGET_CHARS } from './threadStore.ts';
+import type { FocusDocumentRef, FocusParamValue, FocusSourceHit, FocusTarget, FocusTaskSnapshot } from './focusTypes.ts';
+import { MAX_TARGET_CHARS, readParamValues } from './threadStore.ts';
+import { SVG_MAX_CHARS } from '../ask/visual/svgSanitize.ts';
+import { PLOT_MAX_CHARS } from '../ask/visual/plotSpec.ts';
+import { SIMULATION_MAX_CHARS } from '../ask/visual/simulationSpec.ts';
 
 const LABEL_CHARS = 60;
 /** Rows and columns of a table kept with a thread. */
@@ -59,6 +62,45 @@ export function chartTarget(source: string, title?: string | null): FocusTarget 
     }
   }
   return { kind: 'chart', label: label ? short(label) : 'Chart', source: cap(source) };
+}
+
+/** The <title> of an SVG, if it has one. */
+function svgTitle(source: string): string {
+  const m = /<title(?:\s[^>]*)?>([\s\S]*?)<\/title>/i.exec(source);
+  return m ? m[1].replace(/<[^>]*>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').trim() : '';
+}
+
+function specTitle(source: string): string {
+  try {
+    const parsed = JSON.parse(source) as { title?: unknown };
+    return typeof parsed.title === 'string' ? parsed.title.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * A ```svg sketch. Sources over the render cap are never drawn, so they never
+ * become targets; null keeps a truncated (invalid) SVG out of a thread.
+ */
+export function svgTarget(source: string, title?: string | null): FocusTarget | null {
+  if (source.length > SVG_MAX_CHARS) return null;
+  const label = title?.trim() || svgTitle(source);
+  return { kind: 'svg', label: label ? short(label) : 'Sketch', source };
+}
+
+/** A ```plot with the slider positions the reader had when opening it. */
+export function plotTarget(source: string, title: string | null | undefined, values: readonly FocusParamValue[]): FocusTarget | null {
+  if (source.length > PLOT_MAX_CHARS) return null;
+  const label = title?.trim() || specTitle(source);
+  return { kind: 'plot', label: label ? short(label) : 'Interactive plot', source, values: readParamValues(values) };
+}
+
+/** A ```simulation with the slider positions the reader had when opening it. */
+export function simulationTarget(source: string, title: string | null | undefined, values: readonly FocusParamValue[]): FocusTarget | null {
+  if (source.length > SIMULATION_MAX_CHARS) return null;
+  const label = title?.trim() || specTitle(source);
+  return { kind: 'simulation', label: label ? short(label) : 'Simulation', source, values: readParamValues(values) };
 }
 
 export function equationTarget(tex: string): FocusTarget {

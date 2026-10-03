@@ -27,6 +27,9 @@ const STICK_TO_BOTTOM_PX = 120;
 const SUGGESTIONS: Record<FocusKind, string[]> = {
   mermaid: ['Explain this diagram step by step', 'What is missing or ambiguous here?'],
   chart: ['What stands out in this chart?', 'Which values are outliers?'],
+  svg: ['Walk me through this sketch', 'Is anything in this drawing physically wrong or missing?'],
+  plot: ['How do the sliders change the curve, and why?', 'Derive the plotted formula step by step'],
+  simulation: ['Explain the physics this simulation shows', 'What happens at the extremes of the sliders?'],
   equation: ['Explain each term of this equation', 'Where does this come from?'],
   table: ['Summarize this table', 'Which rows stand out, and why?'],
   image: ['Describe what this image shows'],

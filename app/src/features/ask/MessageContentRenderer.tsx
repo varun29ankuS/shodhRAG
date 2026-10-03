@@ -17,6 +17,9 @@ import { ArtifactPreviewCard } from '../../components/ArtifactPreviewCard';
 import type { SearchHit } from './types';
 import { sourceLabel, webHost } from './searchResults';
 import { ChartBlock, MermaidBlock } from './visual/VisualBlocks';
+import { SvgBlock } from './visual/SvgSketch';
+import { PlotBlock } from './visual/PlotView';
+import { SimulationBlock } from './visual/SimulationView';
 import { FocusFrame } from '../focus/FocusFrame';
 import { tableRows } from '../focus/focusDom';
 import rehypeFocusEquations, { FOCUS_EQUATION_TAG } from '../focus/rehypeFocusEquations';
@@ -29,6 +32,9 @@ const CITE_CLOSE = 'XESHODH';
 const CITE_PATTERN = new RegExp(`${CITE_OPEN}(\\d+)${CITE_CLOSE}`, 'g');
 
 const REHYPE_PLUGINS = [rehypeKatex, rehypeFocusEquations];
+
+/** Fenced languages drawn as visuals, which draw their own frame. */
+const VISUAL_LANGUAGES = new Set(['chart', 'svg', 'plot', 'simulation']);
 
 /** Target of a rendered table (header row first). */
 function tableFromElement(el: HTMLElement) {
@@ -225,34 +231,17 @@ export function MessageContentRenderer({
       return child;
     }), [renderWithCitations]);
 
-  const markdownComponents = useMemo<Record<string, React.FC<any>>>(() => ({
-    h1: ({ children }) => <h2 className="text-[20px] font-semibold leading-snug text-shodh-text mt-6 mb-2 first:mt-0">{processChildren(children)}</h2>,
-    h2: ({ children }) => <h3 className="text-[17px] font-semibold leading-snug text-shodh-text mt-5 mb-1.5 first:mt-0">{processChildren(children)}</h3>,
-    h3: ({ children }) => <h4 className="text-[16px] font-semibold text-shodh-text mt-4 mb-1 first:mt-0">{processChildren(children)}</h4>,
-    h4: ({ children }) => <h5 className="text-[15px] font-semibold text-shodh-text-secondary mt-3 mb-1 first:mt-0">{processChildren(children)}</h5>,
-    p: ({ children }) => <p className="my-3 first:mt-0 last:mb-0">{processChildren(children)}</p>,
-    ul: ({ children }) => <ul className="my-3 pl-6 list-disc space-y-1 marker:text-shodh-text-faint">{children}</ul>,
-    ol: ({ children }) => <ol className="my-3 pl-6 list-decimal space-y-1 marker:text-shodh-text-faint">{children}</ol>,
-    li: ({ children }) => <li className="pl-1">{processChildren(children)}</li>,
-    strong: ({ children }) => <strong className="font-semibold text-shodh-text">{processChildren(children)}</strong>,
-    em: ({ children }) => <em className="italic">{processChildren(children)}</em>,
-    a: ({ href, children }) => (
-      <a
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        className={cn('text-shodh-accent-text underline underline-offset-2 decoration-shodh-accent-text/40 hover:decoration-shodh-accent-text rounded-sm', FOCUS_RING)}
-      >
-        {children}
-      </a>
-    ),
+  // Fenced blocks get their own memo keyed on the theme only: a new `code`
+  // component would remount every visual below it (plot sliders, running
+  // simulations) whenever citations or hits change.
+  const codeComponents = useMemo<Record<string, React.FC<any>>>(() => ({
     pre: ({ children }) => {
       // Diagrams and charts draw their own frame.
       const child = React.Children.toArray(children)[0];
       const lang = React.isValidElement<{ className?: string }>(child)
         ? /language-([\w-]+)/.exec(child.props.className || '')?.[1] ?? ''
         : '';
-      if (lang === 'chart' || isMermaidLanguage(lang)) return <>{children}</>;
+      if (VISUAL_LANGUAGES.has(lang) || isMermaidLanguage(lang)) return <>{children}</>;
       return <div className="my-4 rounded-xl overflow-hidden border border-shodh-border bg-shodh-surface">{children}</div>;
     },
     code: ({ children, className }) => {
@@ -261,6 +250,9 @@ export function MessageContentRenderer({
         const codeString = String(children).replace(/\n$/, '');
         if (isMermaidLanguage(match[1])) return <MermaidBlock source={mermaidSource(match[1], codeString)} dark={isDark} />;
         if (match[1] === 'chart') return <ChartBlock source={codeString} theme={theme} />;
+        if (match[1] === 'svg') return <SvgBlock source={codeString} />;
+        if (match[1] === 'plot') return <PlotBlock source={codeString} />;
+        if (match[1] === 'simulation') return <SimulationBlock source={codeString} />;
         return (
           <div>
             <div className="flex items-center justify-between pl-3 pr-1.5 h-8 border-b border-shodh-border-subtle bg-shodh-raised">
@@ -282,6 +274,30 @@ export function MessageContentRenderer({
         <code className="px-1.5 py-0.5 rounded-md bg-shodh-raised-2 font-mono text-[0.875em] text-shodh-text">{children}</code>
       );
     },
+  }), [isDark, theme]);
+
+  const markdownComponents = useMemo<Record<string, React.FC<any>>>(() => ({
+    h1: ({ children }) => <h2 className="text-[20px] font-semibold leading-snug text-shodh-text mt-6 mb-2 first:mt-0">{processChildren(children)}</h2>,
+    h2: ({ children }) => <h3 className="text-[17px] font-semibold leading-snug text-shodh-text mt-5 mb-1.5 first:mt-0">{processChildren(children)}</h3>,
+    h3: ({ children }) => <h4 className="text-[16px] font-semibold text-shodh-text mt-4 mb-1 first:mt-0">{processChildren(children)}</h4>,
+    h4: ({ children }) => <h5 className="text-[15px] font-semibold text-shodh-text-secondary mt-3 mb-1 first:mt-0">{processChildren(children)}</h5>,
+    p: ({ children }) => <p className="my-3 first:mt-0 last:mb-0">{processChildren(children)}</p>,
+    ul: ({ children }) => <ul className="my-3 pl-6 list-disc space-y-1 marker:text-shodh-text-faint">{children}</ul>,
+    ol: ({ children }) => <ol className="my-3 pl-6 list-decimal space-y-1 marker:text-shodh-text-faint">{children}</ol>,
+    li: ({ children }) => <li className="pl-1">{processChildren(children)}</li>,
+    strong: ({ children }) => <strong className="font-semibold text-shodh-text">{processChildren(children)}</strong>,
+    em: ({ children }) => <em className="italic">{processChildren(children)}</em>,
+    a: ({ href, children }) => (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={cn('text-shodh-accent-text underline underline-offset-2 decoration-shodh-accent-text/40 hover:decoration-shodh-accent-text rounded-sm', FOCUS_RING)}
+      >
+        {children}
+      </a>
+    ),
+    ...codeComponents,
     blockquote: ({ children }) => (
       <blockquote className="my-4 pl-4 border-l-2 border-shodh-border-strong text-shodh-text-tertiary">{children}</blockquote>
     ),
@@ -315,7 +331,7 @@ export function MessageContentRenderer({
     ),
     tr: ({ children }) => <tr>{children}</tr>,
     hr: () => <hr className="my-6 border-shodh-border" />,
-  }), [isDark, theme, processChildren]);
+  }), [codeComponents, processChildren]);
 
   const { charts, tables, others } = useMemo(() => {
     const list = artifacts ?? [];

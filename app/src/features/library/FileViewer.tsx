@@ -156,7 +156,7 @@ export function FileViewer({ path }: FileViewerProps) {
           {note}
         </p>
       )}
-      <div className="flex-1 min-h-0">
+      <div className="flex-1 min-h-0 flex flex-col">
         <ViewerBoundary key={`${info.path}-${viewer}`} fallback={error => <Unavailable message={`The viewer failed: ${error.message}`} />}>
           {body}
         </ViewerBoundary>

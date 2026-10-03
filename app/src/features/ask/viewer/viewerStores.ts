@@ -47,12 +47,6 @@ export function getPdfMeta(path: string): PdfMeta | null {
   return pdfMetaStore.get(pathKey(path));
 }
 
-/** Remembered metadata of a PDF, only if read from a file of `size` bytes. */
-export function getPdfMetaForSize(path: string, size: number): PdfMeta | null {
-  const meta = getPdfMeta(path);
-  return meta && meta.size === size ? meta : null;
-}
-
 export function rememberPdfMeta(path: string, meta: PdfMeta): void {
   const previous = getPdfMeta(path);
   if (

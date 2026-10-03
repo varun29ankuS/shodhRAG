@@ -5,7 +5,7 @@ import { cn } from '../../../lib/utils';
 import { pathKey } from '../../library/fileTree';
 import type { PageSpan } from '../types';
 import { findPassage, matchScore, prepareHaystack, type PassageMatch, type PreparedHaystack, type TextRange } from './passageMatch';
-import { acquirePdf, readPdfMeta, type PdfDocLease } from './pdfDocCache';
+import { acquirePdf, holdForeground, readPdfMeta, type PdfDocLease } from './pdfDocCache';
 import { isRenderCancelled, loadPdfJs } from './pdfjs';
 import { scrollBehavior } from './sourceAccess';
 import { findInText, viewerCommand } from './viewerKeys';
@@ -436,6 +436,8 @@ export function PdfViewer({
   const firstPaintedRef = useRef(false);
   const sharpMeasured = useRef(false);
   const openMark = useRef(`shodh:pdf-open:${Math.random().toString(36).slice(2)}`);
+  /** Background reads wait from mount until the first sharp page is drawn. */
+  const releaseForeground = useRef<(() => void) | null>(null);
   const pendingSave = useRef<PdfViewState | null>(null);
   const saveTimer = useRef<number | null>(null);
 
@@ -467,7 +469,13 @@ export function PdfViewer({
   useLayoutEffect(() => {
     const mark = openMark.current;
     performance.mark(mark);
-    return () => performance.clearMarks(mark);
+    const release = holdForeground();
+    releaseForeground.current = release;
+    return () => {
+      performance.clearMarks(mark);
+      release();
+      releaseForeground.current = null;
+    };
   }, []);
 
   // Load the document (once per file), from the shared cache when possible.
@@ -553,6 +561,8 @@ export function PdfViewer({
       if (sharp && !sharpMeasured.current) {
         sharpMeasured.current = true;
         measureFrom(MEASURE_SHARP, openMark.current, detail);
+        releaseForeground.current?.();
+        releaseForeground.current = null;
       }
     },
     [filePath],

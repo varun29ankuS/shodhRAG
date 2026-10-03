@@ -6,9 +6,10 @@
  * a full byte read and a pdf.js open. To keep that from slowing browsing:
  * only rows on screen are requested (and dropped when scrolled away), one at
  * a time, after a short settle delay, never while a document is being opened
- * for display, and never for files above `META_MAX_BYTES` (those get their
- * metadata when the reader opens them). Documents already open in the cache
- * are read for free, and each file is checked once per session.
+ * or its first page drawn, and never for files above `META_MAX_BYTES` (those
+ * get their metadata when the reader opens them). Parsing runs on pdf.js's background
+ * worker, so it never queues ahead of a page render. Documents already open
+ * in the cache are read for free, and each file is checked once per session.
  */
 import { useSyncExternalStore } from 'react';
 import { acquireCachedPdf, readPdfMeta, whenForegroundIdle } from '../ask/viewer/pdfDocCache';
@@ -54,7 +55,7 @@ async function loadMeta(path: string, signal: PrefetchSignal): Promise<void> {
     if (signal.cancelled) return;
     const bytes = await readSourceBytes(path);
     if (signal.cancelled) return;
-    const task = await openPdf(bytes);
+    const task = await openPdf(bytes, { background: true });
     try {
       meta = await readPdfMeta(await task.promise, info.sizeBytes);
     } finally {

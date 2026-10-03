@@ -57,6 +57,8 @@ export interface MessageContentRendererProps {
   activeCitation?: number | null;
   onOpenCitation: (hit: SearchHit, trigger: HTMLElement) => void;
   onOpenArtifact?: (artifactId: string) => void;
+  /** Smaller type for dense surfaces such as the conversation dock. */
+  compact?: boolean;
 }
 
 /**
@@ -77,6 +79,7 @@ export function MessageContentRenderer({
   activeCitation = null,
   onOpenCitation,
   onOpenArtifact,
+  compact = false,
 }: MessageContentRendererProps) {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
@@ -256,7 +259,7 @@ export function MessageContentRenderer({
   return (
     <div className="flex flex-col gap-4">
       {preprocessed.trim().length > 0 && (
-        <div className="text-[16px] leading-[1.75] text-shodh-text-secondary break-words">
+        <div className={cn('text-shodh-text-secondary break-words', compact ? 'text-[13.5px] leading-[1.6]' : 'text-[16px] leading-[1.75]')}>
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
             {preprocessed}
           </ReactMarkdown>

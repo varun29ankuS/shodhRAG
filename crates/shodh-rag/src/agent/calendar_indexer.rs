@@ -10,7 +10,7 @@
 use anyhow::Result;
 use std::collections::HashMap;
 
-use super::calendar_tools::{CalendarEvent, TodoItem};
+use super::calendar::{CalendarEvent, TodoItem};
 use crate::rag_engine::RAGEngine;
 use crate::types::{Citation, DocumentFormat};
 

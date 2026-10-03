@@ -39,7 +39,6 @@ pub struct SearchConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureFlags {
     pub enable_reranking: bool,
-    pub enable_knowledge_graph: bool,
     pub enable_cross_encoder: bool,
 }
 
@@ -118,7 +117,6 @@ impl Default for RAGConfig {
             },
             features: FeatureFlags {
                 enable_reranking: true,
-                enable_knowledge_graph: false,
                 enable_cross_encoder: true,
             },
         }

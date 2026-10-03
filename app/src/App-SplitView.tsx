@@ -19,6 +19,9 @@ import {
 import { ImageUpload } from './components/ImageUpload';
 import Sidebar from './components/shell/Sidebar';
 import SettingsView from './components/shell/SettingsView';
+import { ConversationDock } from './components/shell/ConversationDock';
+import type { DockMode } from './components/shell/ConversationDock';
+import { useMediaQuery } from './hooks/useMediaQuery';
 import { normalizeViewTab, VIEW_TAB_LABELS } from './lib/viewTabs';
 import type { ViewTab } from './lib/viewTabs';
 import { useTheme } from './contexts/ThemeContext';
@@ -38,6 +41,7 @@ import { EmptyState } from './components/EmptyState';
 import { UpdateNotification } from './components/UpdateNotification';
 import { toast } from 'sonner';
 import { notify, setNotificationHandler } from './lib/notify';
+import { migrateLegacyApiKeys } from './lib/apiKeyMigration';
 import { useNotifications } from './hooks/useNotifications';
 import NotificationCenter from './components/NotificationCenter';
 import { intelligentSearch, trackUserMessage, trackAssistantMessage } from './utils/intelligentRetrieval';
@@ -106,6 +110,11 @@ function AppSplitView() {
     return () => setNotificationHandler(null);
   }, [addNotification]);
 
+  // Move API keys saved by older builds out of localStorage into the OS keychain.
+  useEffect(() => {
+    void migrateLegacyApiKeys();
+  }, []);
+
   // Command palette
   const { open: cmdPaletteOpen, openPalette, closePalette } = useCommandPalette();
 
@@ -116,6 +125,14 @@ function AppSplitView() {
   const [isLoading, setIsLoading] = useState(true);
   const [isFirstTime, setIsFirstTime] = useState(false);
   const [activeTab, setActiveTab] = useState<ViewTab>('ask');
+  const [dockMode, setDockMode] = useState<DockMode>('hidden');
+  // On wide windows the open dock gets its own column, so it never covers
+  // the view's primary actions; the minimised pill reserves a bottom strip.
+  const dockColumn = useMediaQuery('(min-width: 1200px)');
+  const dockReserve: React.CSSProperties | undefined =
+    dockMode === 'open' && dockColumn ? { paddingRight: 404 }
+      : dockMode === 'minimized' ? { paddingBottom: 56 }
+        : undefined;
   const prefersReducedMotion = useReducedMotion();
   const [sources, setSources] = useState<Source[]>([]);
   const [docsExpandedSources, setDocsExpandedSources] = useState<Set<string>>(new Set());
@@ -128,38 +145,9 @@ function AppSplitView() {
   const [showOnboarding, setShowOnboarding] = useState(!localStorage.getItem('onboarding_completed'));
   const [showFeedback, setShowFeedback] = useState(false);
 
-  // Search System Status
   // Ref to prevent double initialization (React Strict Mode protection)
   const initializationRef = useRef(false);
   const initializationPromiseRef = useRef<Promise<void> | null>(null);
-
-  const [searchSystemStatus] = useState({
-    bm25: {
-      enabled: true,
-      name: "BM25 Keyword Search",
-      description: "Fast keyword matching for exact terms"
-    },
-    diskann: {
-      enabled: true,
-      name: "DiskANN Vector Search",
-      description: "Semantic understanding using dense vectors"
-    },
-    vamana: {
-      enabled: true,
-      name: "Vamana Graph Search",
-      description: "Graph-based navigation for related concepts"
-    },
-    reranking: {
-      enabled: true,
-      name: "Neural Reranking",
-      description: "AI-powered relevance scoring with attention"
-    },
-    knowledgeGraph: {
-      enabled: true,
-      name: "Knowledge Graph",
-      description: "Entity relationships and concept mapping"
-    }
-  });
 
   // LLM State
   const [llmStatus, setLlmStatus] = useState<{
@@ -1719,6 +1707,7 @@ function AppSplitView() {
         <motion.div
           key={activeTab}
           className="flex-1 overflow-hidden"
+          style={dockReserve}
           initial={prefersReducedMotion ? false : { opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: prefersReducedMotion ? 0 : 0.2, ease: [0.2, 0.7, 0.2, 1] }}
@@ -1976,6 +1965,9 @@ function AppSplitView() {
 
       {/* Update Notification */}
       <UpdateNotification />
+
+      {/* Active conversation while another view is open */}
+      <ConversationDock activeTab={activeTab} onExpand={() => setActiveTab('ask')} onModeChange={setDockMode} />
 
     </div>
   );

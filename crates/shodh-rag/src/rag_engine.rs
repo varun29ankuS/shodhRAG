@@ -29,12 +29,60 @@ struct PreparedDocument {
     chunk_ids: Vec<Uuid>,
 }
 
-/// Normalize a file path for consistent storage and lookup across Windows/Unix.
-/// Converts backslashes to forward slashes and lowercases on Windows so that
-/// `delete_by_source` predicates always match regardless of how the path was
-/// originally formatted.
+/// One native spelling of a path, applied where paths enter the indexer
+/// (folder walks, single files, uploads): the platform separator throughout
+/// (a folder typed as `C:/Papers` and walked to `C:/Papers\a.pdf` becomes
+/// `C:\Papers\a.pdf`), no verbatim `\\?\` prefix, no `.` components,
+/// `..` resolved lexically, no trailing separator. Case is preserved; the
+/// file system is not consulted.
+pub fn canonical_path(path: &Path) -> std::path::PathBuf {
+    let raw = path.to_string_lossy();
+    let mut text = raw.to_string();
+    for (verbatim, replacement) in [
+        ("\\\\?\\UNC\\", "\\\\"),
+        ("//?/UNC/", "//"),
+        ("\\\\?\\", ""),
+        ("//?/", ""),
+    ] {
+        if let Some(rest) = text.strip_prefix(verbatim) {
+            text = format!("{replacement}{rest}");
+            break;
+        }
+    }
+    if cfg!(windows) {
+        text = text.replace('/', "\\");
+    }
+    let mut out = std::path::PathBuf::new();
+    for component in Path::new(&text).components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                let ends_in_name = matches!(
+                    out.components().next_back(),
+                    Some(std::path::Component::Normal(_))
+                );
+                if ends_in_name {
+                    out.pop();
+                } else {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// The identity of an indexed file: its [`canonical_path`] with forward
+/// slashes, lowercased on Windows (whose file systems are case-insensitive).
+/// Stored as each chunk's `source`, so `delete_by_source` and re-indexing
+/// match however the path was spelled. Rows written by older versions under
+/// another spelling are removed on re-index (see `legacy_source_spellings`).
 pub fn normalize_source_path(path: &Path) -> String {
-    let s = path.display().to_string().replace('\\', "/");
+    let s = canonical_path(path)
+        .display()
+        .to_string()
+        .replace('\\', "/");
     if cfg!(windows) {
         s.to_lowercase()
     } else {
@@ -108,6 +156,18 @@ fn insert_layout_metadata(
     }
     meta.insert("block_kinds".to_string(), layout.block_kinds.join(","));
     meta.insert("unit_kind".to_string(), layout.unit.to_string());
+}
+
+/// Other spellings under which older versions of the indexer may have stored
+/// `path`: the verbatim string and its forward-slash form without
+/// lowercasing. Excludes `canonical` itself.
+fn legacy_source_spellings(path: &Path, canonical: &str) -> Vec<String> {
+    let verbatim = path.display().to_string();
+    let mut out = vec![verbatim.clone(), verbatim.replace('\\', "/")];
+    out.retain(|s| s != canonical);
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Human-readable page label (`"3"` or `"3-5"`) from chunk metadata written by
@@ -500,8 +560,13 @@ impl RAGEngine {
         let embed_ms = embed_started.elapsed().as_millis();
 
         // Replacement is fully prepared — now drop the previous version of this file.
+        // Rows written before paths were canonicalized may carry another
+        // spelling of the same file; remove those too so nothing duplicates.
         let store_started = std::time::Instant::now();
         self.remove_source_chunks(&source).await?;
+        for legacy in legacy_source_spellings(path, &source) {
+            self.remove_source_chunks(&legacy).await?;
+        }
 
         let ids = self.store_prepared(prepared).await?;
         tracing::info!(
@@ -1418,6 +1483,45 @@ impl RAGEngine {
 #[cfg(test)]
 mod page_metadata_tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn mixed_separators_resolve_to_one_identity() {
+        let a = normalize_source_path(Path::new(
+            "C:/Users/V/Research Papers\\Test-Time Learning\\RoboTTT.pdf",
+        ));
+        let b = normalize_source_path(Path::new(
+            "C:\\Users\\V\\Research Papers\\Test-Time Learning\\RoboTTT.pdf",
+        ));
+        let c = normalize_source_path(Path::new(
+            "\\\\?\\C:\\Users\\V\\Research Papers\\.\\x\\..\\Test-Time Learning\\RoboTTT.pdf",
+        ));
+        assert_eq!(
+            a,
+            "c:/users/v/research papers/test-time learning/robottt.pdf"
+        );
+        assert_eq!(a, b);
+        assert_eq!(a, c);
+        assert_eq!(
+            canonical_path(Path::new("C:/Users/V/Research Papers\\a.pdf")),
+            std::path::PathBuf::from("C:\\Users\\V\\Research Papers\\a.pdf")
+        );
+        assert_eq!(
+            canonical_path(Path::new("\\\\?\\UNC\\server\\share\\a.pdf")),
+            std::path::PathBuf::from("\\\\server\\share\\a.pdf")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn legacy_spellings_cover_verbatim_and_forward_slash_forms() {
+        let path = Path::new("C:\\Papers\\A.pdf");
+        let canonical = normalize_source_path(path);
+        let legacy = legacy_source_spellings(path, &canonical);
+        assert!(legacy.contains(&"C:\\Papers\\A.pdf".to_string()));
+        assert!(legacy.contains(&"C:/Papers/A.pdf".to_string()));
+        assert!(!legacy.contains(&canonical));
+    }
 
     #[test]
     fn layout_metadata_round_trips_to_citation_pages() {

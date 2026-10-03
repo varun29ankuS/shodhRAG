@@ -216,7 +216,7 @@ pub async fn index_single_file(
         return Err(SearchModelsMissing.to_string());
     }
     let start_time = Instant::now();
-    let path = PathBuf::from(file_path);
+    let path = crate::rag_engine::canonical_path(Path::new(file_path));
 
     if !path.exists() {
         return Err(format!("File does not exist: {}", file_path));
@@ -287,7 +287,9 @@ pub async fn index_folder(
         return Err(SearchModelsMissing.to_string());
     }
     let start_time = Instant::now();
-    let path = PathBuf::from(folder_path);
+    // One spelling for every path that leaves this function (progress,
+    // failures, metadata), however the folder was typed.
+    let path = crate::rag_engine::canonical_path(Path::new(folder_path));
 
     if !path.exists() {
         return Err(format!("Path does not exist: {}", folder_path));

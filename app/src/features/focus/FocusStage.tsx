@@ -517,7 +517,7 @@ function SimulationStage({ source, values }: { source: string; values: FocusPara
   if (!result.ok) return null;
   return (
     <InteractiveStage>
-      <SimulationPlayer model={result.model} initial={values} maxHeight={560} autoPlay />
+      <SimulationPlayer model={result.model} initial={values} maxHeight={560} autoPlay preempt />
     </InteractiveStage>
   );
 }

@@ -156,12 +156,15 @@ export function SimulationPlayer({
   initial,
   maxHeight,
   autoPlay,
+  preempt = false,
   onValues,
 }: {
   model: SimModel;
   initial?: readonly FocusParamValue[];
   maxHeight: number;
   autoPlay: boolean;
+  /** Its first automatic start takes over from a running simulation (the enlarged copy of it). */
+  preempt?: boolean;
   onValues?: (values: FocusParamValue[]) => void;
 }) {
   const playerId = useId();
@@ -271,7 +274,9 @@ export function SimulationPlayer({
         }
         return;
       }
-      if (otherIsPlaying(playerId) || prefersReducedMotion()) return;
+      if (prefersReducedMotion()) return;
+      const takeOver = preempt && autoPlay && !startedRef.current;
+      if (otherIsPlaying(playerId) && !takeOver) return;
       if (autoPausedRef.current && statusRef.current === 'paused') {
         autoPausedRef.current = false;
         setStatus('running');
@@ -282,7 +287,7 @@ export function SimulationPlayer({
     }, { threshold: [0, 0.4] });
     observer.observe(el);
     return () => observer.disconnect();
-  }, [autoPlay, playerId]);
+  }, [autoPlay, preempt, playerId]);
 
   // Reduced motion switched on mid-run: pause.
   useEffect(() => {

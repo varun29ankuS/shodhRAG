@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --test tests/reducer.test.ts tests/searchModels.test.ts tests/searchResults.test.ts tests/viewTabs.test.ts tests/conversationGroups.test.ts tests/calendarGrid.test.ts tests/paletteFilter.test.ts tests/fileTree.test.ts tests/librarySources.test.ts tests/firstRun.test.ts",
+    "test": "node --experimental-strip-types --test tests/reducer.test.ts tests/searchModels.test.ts tests/searchResults.test.ts tests/viewTabs.test.ts tests/conversationGroups.test.ts tests/calendarGrid.test.ts tests/paletteFilter.test.ts tests/fileTree.test.ts tests/librarySources.test.ts tests/firstRun.test.ts tests/contrast.test.ts tests/motion.test.ts",
     "tauri": "tauri"
   },
   "dependencies": {

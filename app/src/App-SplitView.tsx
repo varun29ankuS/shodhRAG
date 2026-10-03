@@ -1133,6 +1133,13 @@ function AppSplitView() {
       className="h-screen flex transition-colors duration-200"
       style={{ backgroundColor: colors.bg, color: colors.text }}
     >
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[10000] focus:px-3 focus:py-2 focus:rounded-lg focus:bg-shodh-raised focus:text-shodh-text focus:ring-2 focus:ring-ring"
+      >
+        Skip to content
+      </a>
+
       {/* Left Sidebar */}
       <Sidebar
         activeView={activeTab}
@@ -1439,9 +1446,10 @@ function AppSplitView() {
         {/* Content: each view enters with the shared motion tokens (opacity and a small rise, no layout shift). */}
         <main
           id="main-content"
+          tabIndex={-1}
           aria-label={VIEW_TAB_LABELS[activeTab]}
           key={activeTab}
-          className="shell-view-enter flex-1 min-h-0 overflow-hidden"
+          className="shell-view-enter flex-1 min-h-0 overflow-hidden focus:outline-none"
         >
           <Suspense fallback={<ViewSkeleton view={activeTab} />}>
           {/* Ask Tab */}

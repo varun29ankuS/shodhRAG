@@ -74,7 +74,12 @@ export function ConversationHistory({
         Chats
       </h2>
       {groups.length === 0 ? (
-        <p className="px-5 py-2 text-[12px] text-shodh-text-faint">No conversations yet</p>
+        // The list always holds at least one conversation once loaded, so empty means loading.
+        <div className="px-5 py-2 flex flex-col gap-2.5" role="status" aria-label="Loading conversations">
+          {[72, 54, 64].map(w => (
+            <span key={w} className="shell-skeleton h-3.5 rounded" style={{ width: `${w}%` }} aria-hidden="true" />
+          ))}
+        </div>
       ) : (
         <div
           ref={listRef}

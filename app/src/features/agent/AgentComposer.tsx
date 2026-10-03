@@ -48,6 +48,8 @@ interface AgentComposerProps {
   autoFocus?: boolean;
   /** Dense variant for the conversation dock: no chips, smaller type. */
   compact?: boolean;
+  /** Placeholder while an answer runs and cannot be steered from here. */
+  runningPlaceholder?: string;
 }
 
 /**
@@ -78,6 +80,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     onPickImage,
     autoFocus = false,
     compact = false,
+    runningPlaceholder,
   },
   ref,
 ) {
@@ -121,7 +124,9 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
       ? onApprove
         ? 'Enter to approve · Esc to deny · or type to steer…'
         : 'Approve or deny above · Esc to deny…'
-      : 'Steer the agent…'
+      : !canSteer && runningPlaceholder
+        ? runningPlaceholder
+        : 'Steer the agent…'
     : placeholder;
 
   const iconButton = cn(

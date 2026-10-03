@@ -58,7 +58,7 @@ interface ConversationDockProps {
  */
 export function ConversationDock({ activeTab, onExpand }: ConversationDockProps) {
   const session = useChatSession();
-  const { messages, isStreaming, navigation, steer, send, cancel, approve, setRuntimeInstalled, streamingConversationId } = session;
+  const { messages, isStreaming, navigation, steer, send, cancel, approve, setRuntimeInstalled, streamingConversationId, sideRun } = session;
   const [mode, setMode] = useState<DockMode>(readStoredMode);
   const [draft, setDraft] = useState('');
   const [unreadBase, setUnreadBase] = useState<number | null>(null);
@@ -147,7 +147,7 @@ export function ConversationDock({ activeTab, onExpand }: ConversationDockProps)
     }
   };
 
-  const busyElsewhere = streamingConversationId !== null && !isStreaming;
+  const busyElsewhere = (streamingConversationId !== null && !isStreaming) || sideRun !== null;
 
   const submit = () => {
     const text = draft.trim();
@@ -273,7 +273,7 @@ export function ConversationDock({ activeTab, onExpand }: ConversationDockProps)
           running={isStreaming}
           canSteer={transcript?.status === 'running'}
           approvalPending={waiting !== null}
-          blockedReason={busyElsewhere ? 'An answer is running in another conversation.' : null}
+          blockedReason={sideRun ? `Answering your side question about “${sideRun.label}”.` : busyElsewhere ? 'An answer is running in another conversation.' : null}
           placeholder="Reply…"
           compact
         />

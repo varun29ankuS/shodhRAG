@@ -9,6 +9,7 @@
  */
 
 import type { TranscriptState } from '../agent/reducer';
+import type { FocusThread } from '../focus/focusTypes';
 
 export type ChatRole = 'user' | 'assistant' | 'system';
 
@@ -114,6 +115,11 @@ export interface ChatMessage {
   transcript?: TranscriptState;
   /** Base64 image attached to OCR notices. Not persisted. */
   image?: string;
+  /**
+   * Side threads ("Ask about this") anchored to this message. Persisted in
+   * the message's opaque `metadata` under `focusThreads`.
+   */
+  threads?: FocusThread[];
 }
 
 /** Options that scope a request; supplied by the caller at send time. */

@@ -136,6 +136,26 @@ How answers are displayed (the chat renders all of these inline):
 4. Charts in ```chart code blocks holding JSON: {\"type\": \"line\" | \"bar\" | \"area\" | \"scatter\" \
 | \"pie\", \"title\": \"...\", \"xKey\": \"year\", \"series\": [{\"key\": \"score\", \"label\": \
 \"Score\"}], \"data\": [{\"year\": 2023, \"score\": 71.2}]}.
+5. Sketches in ```svg code blocks: one <svg> with a viewBox; shapes, text and markers in \
+currentColor; no scripts, styles or links. A first line <!-- sketch --> makes it hand-drawn.
+6. Interactive plots in ```plot code blocks holding JSON: {\"title\": \"...\", \"x\": {\"min\": 0, \
+\"max\": 4, \"label\": \"t (s)\"}, \"y\": {...}, \"params\": [{\"name\": \"v0\", \"min\": 1, \"max\": \
+30, \"value\": 20, \"label\": \"v0 (m/s)\"}], \"items\": [{\"type\": \"function\", \"expr\": \
+\"v0*x - g*x^2/2\"}]}. Items: function (of x), parametric (\"x\", \"y\" of t, \"t\": [0, \"2*pi\"]), \
+point (\"x\", \"y\"; \"draggable\": true if they are param names), vector or segment (\"from\", \
+\"to\"), label (\"at\", \"text\").
+7. Live simulations in ```simulation code blocks holding JSON: {\"title\": \"...\", \"params\": \
+[...], \"state\": {\"y\": \"10\", \"vy\": \"0\"}, \"derivatives\": {\"y\": \"vy\", \"vy\": \"-g\"}, \
+\"events\": [{\"when\": \"y < 0\", \"set\": {\"y\": \"0\", \"vy\": \"-0.8*vy\"}}], \"view\": {\"x\": \
+[-5, 5], \"y\": [0, 12]}, \"draw\": [{\"type\": \"circle\", \"at\": [0, \"y\"], \"r\": 0.3}], \
+\"readouts\": [{\"label\": \"Height\", \"expr\": \"y\", \"unit\": \"m\"}]}. Draw types: circle, \
+rect, line, rod, spring, vector, trail, label.
+Formulas use + - * / ^ ( ), sin cos tan asin acos atan atan2 sqrt abs exp ln log min max floor \
+ceil, pi, e and g = 9.81.
+For physics, kinematics, mechanics and geometry: free-body diagrams and figures as ```svg, \
+relations and trajectories as ```plot with sliders for the parameters, motion as ```simulation. \
+Always give the governing equations in LaTeX alongside, keep visuals physically correct (units, \
+signs, directions, scale), and cite any number taken from the documents.
 Use them when they make an explanation clearer, especially for papers, methods, architectures, \
 algorithms and comparisons: a flowchart of a method or pipeline, the key equations typeset and \
 explained term by term, a table comparing options, a chart of reported results. Build charts and \

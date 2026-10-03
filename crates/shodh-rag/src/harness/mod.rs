@@ -4,6 +4,9 @@
 //!
 //! Decision record: `docs/adr/0001-agent-harness-omp.md`.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+// CI runs clippy on this module with every warning (rustc + default clippy set) denied.
+// Gated on `clippy` so a new compiler lint never breaks a normal build.
+#![cfg_attr(clippy, deny(warnings))]
 
 pub mod error;
 pub mod events;

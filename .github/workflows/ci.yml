@@ -39,9 +39,10 @@ jobs:
       - name: Cargo check
         run: cargo check --workspace
 
+      # Blocking at the strongest level the workspace passes today. The harness and
+      # audit modules additionally deny every warning via #![cfg_attr(clippy, deny(warnings))].
       - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
-        continue-on-error: true
+        run: cargo clippy --workspace -- -D clippy::correctness -D clippy::suspicious -D clippy::perf
 
   test:
     name: Tests
@@ -57,12 +58,15 @@ jobs:
       - name: Install Protobuf compiler
         run: choco install protoc -y
 
-      - name: Compile tests
-        run: cargo test --package shodh-rag --lib --no-run
-        continue-on-error: true  # CRT linker mismatch (ort-sys vs esaxx-rs) — tracked for fix
+      # Model-backed tests stay ignored here: SHODH_TEST_MODELS is not set in CI.
+      - name: Library tests (shodh-rag)
+        run: cargo test --package shodh-rag --lib
+
+      - name: Library tests (shodh-rag-app)
+        run: cargo test --package shodh-rag-app --lib
 
   frontend:
-    name: Frontend Typecheck
+    name: Frontend Typecheck + Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,3 +84,7 @@ jobs:
       - name: Typecheck
         working-directory: app
         run: npx tsc --noEmit
+
+      - name: Unit tests
+        working-directory: app
+        run: npm test

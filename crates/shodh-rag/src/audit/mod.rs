@@ -12,6 +12,9 @@
 //! All writes go through one writer thread; callers on async or UI paths use
 //! [`AuditLog::submit`], which never blocks on disk.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+// CI runs clippy on this module with every warning (rustc + default clippy set) denied.
+// Gated on `clippy` so a new compiler lint never breaks a normal build.
+#![cfg_attr(clippy, deny(warnings))]
 
 mod canonical;
 pub mod payload;

@@ -35,6 +35,7 @@ use crate::app_settings::SettingsStore;
 use crate::audit_commands::AuditState;
 use crate::llm_commands::LLMState;
 use crate::memory_commands::{recall_for_run, with_memories, MemoryState};
+use crate::memory_learn::{LearnState, TextOrigin};
 use crate::rag_commands::RagState;
 use crate::visual_commands::VisualState;
 use shodh_rag::audit::payload::is_cloud;
@@ -465,7 +466,7 @@ fn non_empty(value: Option<String>) -> Option<String> {
 /// Resolve the provider key: environment first, then the configured mode,
 /// then the in-memory keys (loaded from the OS credential store at startup),
 /// then the credential store itself (startup loading may not have finished).
-async fn resolve_key(llm: &LLMState, mode: &LLMMode) -> Option<String> {
+pub(crate) async fn resolve_key(llm: &LLMState, mode: &LLMMode) -> Option<String> {
     let LLMMode::External {
         provider, api_key, ..
     } = mode
@@ -531,6 +532,7 @@ pub async fn agent_start(
     audit: State<'_, AuditState>,
     memory: State<'_, MemoryState>,
     visuals: State<'_, VisualState>,
+    learn: State<'_, LearnState>,
 ) -> CommandResult<String> {
     let started = Instant::now();
     check_id("conversation id", &conversation_id)?;
@@ -686,10 +688,13 @@ pub async fn agent_start(
 
     let forward_app = app.clone();
     let forward_id = session_id.clone();
+    let forward_learn = learn.inner().clone();
     tauri::async_runtime::spawn(async move {
         // Builds each run's `answer` audit event from the stream.
         let mut tap = RunAuditTap::new();
         while let Some(event) = events.recv().await {
+            // Learning sees only runs `agent_send` registered (the user's own words).
+            forward_learn.observe(&event);
             if let (Some(answer), Some(audit)) = (tap.observe(&event), &tool_audit) {
                 audit.log.submit(audit.scope.record(
                     &answer.run_id,
@@ -741,6 +746,10 @@ pub async fn agent_start(
 /// When memory injection is on (Settings → Memory, default on), memories relevant to
 /// `text` are recalled and put in front of the message in a delimited block; the
 /// `question` audit event keeps the user's own words only.
+///
+/// `text_origin` is `typed` when `text` is exactly what the user typed in the main
+/// conversation; only such turns are learned from (Settings → Memory → "Learn from
+/// conversations"). Side-thread sessions are never learned from.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri injects each managed state as an argument.
 pub async fn agent_send(
@@ -750,9 +759,11 @@ pub async fn agent_send(
     request_id: String,
     history: Option<Vec<HistoryTurn>>,
     scope: Option<SendScope>,
+    text_origin: Option<TextOrigin>,
     sessions: State<'_, AgentSessions>,
     audit: State<'_, AuditState>,
     memory: State<'_, MemoryState>,
+    learn: State<'_, LearnState>,
 ) -> CommandResult<String> {
     check_id("request id", &request_id)?;
     let scope = scope
@@ -792,10 +803,24 @@ pub async fn agent_send(
         _ => with_memories(memories.as_deref(), &text),
     };
     let scoped = !scope.is_empty();
-    let run_id = entry
+    // Registered before prompting: the run id is `request_id`, and the first events may
+    // arrive before `prompt_scoped` returns.
+    let learnable =
+        text_origin == Some(TextOrigin::Typed) && entry.parent_conversation_id.is_none();
+    if learnable {
+        learn.record_question(&entry.conversation_id, &request_id, &text);
+    }
+    let run_id = match entry
         .session
-        .prompt_scoped(&message, Some(request_id), scope.clone())
-        .await?;
+        .prompt_scoped(&message, Some(request_id.clone()), scope.clone())
+        .await
+    {
+        Ok(run_id) => run_id,
+        Err(e) => {
+            learn.forget_run(&request_id);
+            return Err(e.into());
+        }
+    };
     entry.primed.store(true, Ordering::SeqCst);
     if scoped {
         tracing::info!(target: "shodh::harness", run_id = %run_id, sources = scope.source_ids.len(), files = scope.files.len(), pages = scope.pages.len(), "answer limited to a scope");

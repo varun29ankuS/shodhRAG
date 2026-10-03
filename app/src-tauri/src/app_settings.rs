@@ -19,6 +19,10 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use shodh_rag::audit::{AuditEventType, AuditRecord};
+use shodh_rag::user_memory::learn::{
+    LearnCaps, LearnMode, DEFAULT_AUTO_MIN_CONFIDENCE, MAX_CALLS_PER_DAY_LIMIT,
+    MAX_INPUT_CHARS_LIMIT, MAX_PROPOSALS_LIMIT,
+};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::audit_commands::AuditState;
@@ -129,23 +133,79 @@ impl Default for BackgroundPrefs {
 }
 
 /// Long-term memory. User-only: it decides what the model is told about the user.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct MemoryPrefs {
     /// At the start of each answer, recall memories relevant to the question and give
     /// them to the model.
     pub inject_memories: bool,
+    /// Learn from conversations: off, ask (suggestions wait for the user) or auto.
+    pub learn_mode: LearnMode,
+    /// Model used for learning (a cheaper one of the configured provider); `None` uses the
+    /// configured model.
+    pub learn_model: Option<String>,
+    /// Lowest confidence applied automatically in auto mode.
+    pub auto_min_confidence: f64,
+    /// Daily caps on the learning model's use.
+    pub learn_caps: LearnCaps,
 }
 
 impl Default for MemoryPrefs {
     fn default() -> Self {
         Self {
             inject_memories: true,
+            learn_mode: LearnMode::Ask,
+            learn_model: None,
+            auto_min_confidence: DEFAULT_AUTO_MIN_CONFIDENCE,
+            learn_caps: LearnCaps::default(),
         }
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+impl MemoryPrefs {
+    /// Checks the learning settings' bounds.
+    pub fn validate(&self) -> Result<(), SettingsError> {
+        let invalid = |key: &str, reason: &str| SettingsError::InvalidValue {
+            key: key.to_string(),
+            reason: reason.to_string(),
+        };
+        if !self.auto_min_confidence.is_finite() || !(0.5..=1.0).contains(&self.auto_min_confidence)
+        {
+            return Err(invalid("auto_min_confidence", "must be between 0.5 and 1"));
+        }
+        let caps = &self.learn_caps;
+        if !(1..=MAX_CALLS_PER_DAY_LIMIT).contains(&caps.max_calls_per_day) {
+            return Err(invalid(
+                "learn_caps.max_calls_per_day",
+                &format!("must be between 1 and {MAX_CALLS_PER_DAY_LIMIT}"),
+            ));
+        }
+        if !(1_000..=MAX_INPUT_CHARS_LIMIT).contains(&caps.max_input_chars_per_day) {
+            return Err(invalid(
+                "learn_caps.max_input_chars_per_day",
+                &format!("must be between 1000 and {MAX_INPUT_CHARS_LIMIT}"),
+            ));
+        }
+        if !(1..=MAX_PROPOSALS_LIMIT).contains(&caps.max_proposals_per_day) {
+            return Err(invalid(
+                "learn_caps.max_proposals_per_day",
+                &format!("must be between 1 and {MAX_PROPOSALS_LIMIT}"),
+            ));
+        }
+        if let Some(model) = &self.learn_model {
+            let ok = !model.trim().is_empty()
+                && model.len() <= 200
+                && !model.starts_with('-')
+                && !model.chars().any(|c| c.is_whitespace() || c.is_control());
+            if !ok {
+                return Err(invalid("learn_model", "is not a valid model id"));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
     pub preferences: Preferences,
@@ -194,7 +254,7 @@ pub const AGENT_WRITABLE: [SettingKey; 2] = [SettingKey::Theme, SettingKey::Sear
 /// these by name (in addition to its schema only listing [`AGENT_WRITABLE`]),
 /// so a prompt-injected request gets a clear refusal rather than a
 /// best-effort match.
-pub const AGENT_DENIED: [(&str, &str); 13] = [
+pub const AGENT_DENIED: [(&str, &str); 17] = [
     ("api_keys", "API keys are secrets; a manipulated agent could leak or replace them."),
     ("provider", "Switching the model provider changes who receives the user's documents."),
     ("model", "Switching the model changes who receives the user's documents and what it costs."),
@@ -208,6 +268,10 @@ pub const AGENT_DENIED: [(&str, &str); 13] = [
     ("close_to_tray", "Whether Shodh keeps running after its window closes is the user's call about their computer."),
     ("start_with_windows", "Adding a program to Windows startup changes the user's system; only the user may do that."),
     ("inject_memories", "Whether remembered facts about the user are given to the model is the user's privacy decision."),
+    ("learn_mode", "Whether the assistant learns memories from conversations, and whether it may store them without asking, is the user's decision."),
+    ("learn_model", "The learning model receives what the user says; choosing who receives it is the user's decision."),
+    ("auto_min_confidence", "Lowering the bar for storing memories without asking weakens the user's approval."),
+    ("learn_caps", "The daily limits bound what learning costs; only the user may raise them."),
 ];
 
 /// Why `key` is withheld from the agent, if it is.
@@ -447,6 +511,14 @@ pub async fn set_memory_preferences(
     memory: MemoryPrefs,
     audit: State<'_, AuditState>,
 ) -> Result<AppSettings, String> {
+    let memory = MemoryPrefs {
+        learn_model: memory
+            .learn_model
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty()),
+        ..memory
+    };
+    memory.validate().map_err(|e| e.to_string())?;
     let (settings, before) = store(&app)?
         .update(|s| Ok(std::mem::replace(&mut s.memory, memory)))
         .map_err(|e| e.to_string())?;
@@ -527,6 +599,26 @@ mod tests {
             AppSettings::default(),
             "nothing saved"
         );
+    }
+
+    #[test]
+    fn memory_preferences_default_to_asking_and_validate_their_bounds() {
+        let old: AppSettings =
+            serde_json::from_str(r#"{"memory": {"injectMemories": false}}"#).unwrap();
+        assert!(!old.memory.inject_memories);
+        assert_eq!(old.memory.learn_mode, LearnMode::Ask);
+        assert!(old.memory.validate().is_ok());
+        let mut prefs = MemoryPrefs::default();
+        prefs.auto_min_confidence = 0.2;
+        assert!(prefs.validate().is_err());
+        prefs.auto_min_confidence = 0.9;
+        prefs.learn_caps.max_calls_per_day = 0;
+        assert!(prefs.validate().is_err());
+        prefs.learn_caps = LearnCaps::default();
+        prefs.learn_model = Some("bad model".into());
+        assert!(prefs.validate().is_err());
+        prefs.learn_model = Some("claude-haiku-4-5".into());
+        assert!(prefs.validate().is_ok());
     }
 
     #[test]

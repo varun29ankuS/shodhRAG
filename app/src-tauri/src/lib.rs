@@ -21,6 +21,7 @@ mod llm_response;
 mod mcp;
 mod mcp_commands;
 mod memory_commands;
+mod memory_learn;
 mod rag_commands;
 mod reminders;
 mod search_history;
@@ -269,6 +270,8 @@ pub fn run() {
             let visual_state =
                 visual_commands::VisualState::new(&app.state::<audit_commands::AuditState>());
             app.manage(visual_state);
+            // Learning from conversations (needs the memory, LLM and audit states).
+            memory_learn::manage(app, &app_data_dir);
 
             app.manage(RagState {
                 rag: rag_engine,
@@ -637,6 +640,14 @@ pub fn run() {
             memory_commands::memory_set_pinned,
             memory_commands::memory_forget,
             memory_commands::memory_export,
+            memory_learn::memory_learn_status,
+            memory_learn::memory_suggestions_list,
+            memory_learn::memory_suggestion_accept,
+            memory_learn::memory_suggestions_accept_many,
+            memory_learn::memory_suggestion_reject,
+            memory_learn::memory_suggestion_undo,
+            memory_learn::memory_learning_stop,
+            memory_learn::memory_consolidate_now,
             // Generated visuals (the gallery and the focus pop-out)
             visual_commands::visuals_capture,
             visual_commands::visuals_backfill_status,

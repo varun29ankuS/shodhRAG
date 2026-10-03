@@ -14,6 +14,7 @@ mod calendar;
 mod export;
 mod files;
 mod history;
+mod memory;
 mod research;
 mod settings;
 mod sources;
@@ -39,6 +40,7 @@ use tokio::sync::RwLock;
 
 use crate::app_settings::{AppSettings, SettingsStore};
 use crate::calendar_store::{CalendarEvent, TodoItem};
+use crate::memory_commands::MemoryState;
 
 pub use files::{IndexedRoots, SourceRoot, SourceRoots};
 pub use research::{list_directory_in, DirEntry, Listing};
@@ -149,6 +151,8 @@ pub struct AgentHost {
     pub web: SafeClient,
     /// The indexed source folders (where file-creating tools may write).
     pub roots: Arc<dyn SourceRoots>,
+    /// Long-term memory (opened on first use).
+    pub memory: MemoryState,
 }
 
 /// Build the registry with every agent tool. Fails if two tools share a
@@ -185,6 +189,7 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     export::register(&mut registry, &host)?;
     research::register(&mut registry, &host)?;
     sources::register(&mut registry, &host)?;
+    memory::register(&mut registry, &host)?;
     Ok(registry)
 }
 
@@ -294,7 +299,8 @@ pub(crate) mod testing {
         };
         config.embedding.model_dir = dir.path().join("no-models");
         let rag = RAGEngine::new(config).await.unwrap();
-        let audit = AuditLog::open(dir.path().join("shodh.db"), None).unwrap();
+        let audit = Arc::new(AuditLog::open(dir.path().join("shodh.db"), None).unwrap());
+        let memory = memory_state(dir.path(), Some(audit.clone())).await;
         let effects = Arc::new(Recorder {
             documents: dir.path().join("Documents"),
             calendar: Mutex::default(),
@@ -309,10 +315,11 @@ pub(crate) mod testing {
         let host = Arc::new(AgentHost {
             data_dir: dir.path().to_path_buf(),
             rag: Arc::new(RwLock::new(rag)),
-            audit: Some(Arc::new(audit)),
+            audit: Some(audit),
             effects: effects.clone(),
             web: SafeClient::system(),
             roots: roots.clone(),
+            memory,
         });
         TestHost {
             dir,
@@ -357,7 +364,85 @@ pub(crate) mod testing {
             effects: t.host.effects.clone(),
             web,
             roots: t.host.roots.clone(),
+            memory: t.host.memory.clone(),
         })
+    }
+
+    /// Gives each distinct lower-cased word its own dimension: texts sharing words are
+    /// similar, texts sharing none are orthogonal. Deterministic, no model files.
+    #[derive(Default)]
+    pub struct WordEmbedder {
+        vocabulary: Mutex<std::collections::HashMap<String, usize>>,
+    }
+
+    pub const WORD_DIM: usize = 256;
+
+    impl WordEmbedder {
+        fn embed(&self, text: &str) -> Vec<f32> {
+            let mut v = vec![0.0f32; WORD_DIM];
+            let mut vocabulary = self.vocabulary.lock().unwrap_or_else(|e| e.into_inner());
+            for word in text
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|w| w.len() > 1)
+            {
+                let next = vocabulary.len() % WORD_DIM;
+                let index = *vocabulary.entry(word.to_lowercase()).or_insert(next);
+                v[index] += 1.0;
+            }
+            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm == 0.0 {
+                v[WORD_DIM - 1] = 1.0;
+            } else {
+                v.iter_mut().for_each(|x| *x /= norm);
+            }
+            v
+        }
+    }
+
+    impl shodh_rag::embeddings::EmbeddingModel for WordEmbedder {
+        fn embed_query(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+            Ok(self.embed(text))
+        }
+        fn embed_document(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+            Ok(self.embed(text))
+        }
+        fn dimension(&self) -> usize {
+            WORD_DIM
+        }
+    }
+
+    struct FixedEmbedder(Arc<dyn shodh_rag::embeddings::EmbeddingModel>);
+
+    #[async_trait::async_trait]
+    impl shodh_rag::statements::EmbedderSource for FixedEmbedder {
+        async fn embedder(
+            &self,
+        ) -> shodh_rag::statements::StatementResult<Arc<dyn shodh_rag::embeddings::EmbeddingModel>>
+        {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// A memory service over `dir` (its own LanceDB folder and `dir/shodh.db`).
+    pub async fn memory_state(
+        dir: &std::path::Path,
+        audit: Option<Arc<AuditLog>>,
+    ) -> crate::memory_commands::MemoryState {
+        use shodh_rag::statements::{DynamicsStore, StatementStore, SystemClock};
+        let dynamics = DynamicsStore::open(&dir.join("shodh.db"), None).unwrap();
+        let store = StatementStore::open(
+            &dir.join("memory_lance"),
+            WORD_DIM,
+            Arc::new(crate::memory_commands::memory_ontology().unwrap()),
+            Arc::new(dynamics),
+            Arc::new(FixedEmbedder(Arc::new(WordEmbedder::default()))),
+            Arc::new(SystemClock),
+        )
+        .await
+        .unwrap();
+        crate::memory_commands::MemoryState::ready(Arc::new(
+            shodh_rag::user_memory::MemoryService::new(Arc::new(store), audit, "test"),
+        ))
     }
 
     /// A tool context whose events land in the returned receiver.

@@ -122,6 +122,10 @@ pub struct RunScope {
     /// Pages of `files` to search (1-based); empty means every page. Only
     /// meaningful with `files`.
     pub pages: Vec<u32>,
+    /// The workspace (source / space id) the conversation belongs to. It does
+    /// not limit search; it scopes memories (a workspace sees its own and
+    /// global ones). `None` means global.
+    pub workspace: Option<String>,
 }
 
 impl RunScope {
@@ -288,6 +292,18 @@ impl ToolContext {
                 .log
                 .submit(audit.scope.record(&self.run_id, event_type, payload));
         }
+    }
+
+    /// The audit scope of this call's session (conversation, profile,
+    /// principal), when the session is audited.
+    pub fn audit_scope(&self) -> Option<&AuditScope> {
+        self.audit.as_ref().map(|a| &a.scope)
+    }
+
+    /// Citation numbers issued so far in this run: non-zero once the run has
+    /// read documents or web pages, whose content may try to steer the model.
+    pub fn passages_issued(&self) -> u32 {
+        self.passages.issued()
     }
 
     fn audit_principal(&self) -> &str {

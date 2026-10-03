@@ -20,6 +20,7 @@ mod llm_commands;
 mod llm_response;
 mod mcp;
 mod mcp_commands;
+mod memory_commands;
 mod rag_commands;
 mod reminders;
 mod search_history;
@@ -254,8 +255,18 @@ pub fn run() {
                 tracing::warn!("Search models are not installed; search needs first-run setup");
             }
 
+            let rag_engine = Arc::new(AsyncRwLock::new(default_rag));
+            // Long-term memory: typed statements next to the document index, dynamics in
+            // shodh.db. Opens on first use (it needs the search models' embedder).
+            let memory_state = memory_commands::MemoryState::new(
+                &app_data_dir,
+                rag_engine.clone(),
+                &app.state::<audit_commands::AuditState>(),
+            );
+            app.manage(memory_state);
+
             app.manage(RagState {
-                rag: Arc::new(AsyncRwLock::new(default_rag)),
+                rag: rag_engine,
                 notes: Mutex::new(Vec::new()),
                 space_manager: Mutex::new(space_manager),
                 conversation_manager: Arc::new(AsyncRwLock::new(None)),
@@ -613,6 +624,14 @@ pub fn run() {
             app_settings::get_app_settings,
             app_settings::update_app_preferences,
             app_settings::set_app_policy,
+            app_settings::set_memory_preferences,
+            // Long-term memory (Settings → Memory)
+            memory_commands::memory_list,
+            memory_commands::memory_history,
+            memory_commands::memory_update,
+            memory_commands::memory_set_pinned,
+            memory_commands::memory_forget,
+            memory_commands::memory_export,
             // Calendar/Todo commands
             calendar_commands::load_tasks,
             calendar_commands::create_task,

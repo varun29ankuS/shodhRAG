@@ -34,9 +34,12 @@ use crate::api_key_store;
 use crate::app_settings::SettingsStore;
 use crate::audit_commands::AuditState;
 use crate::llm_commands::LLMState;
+use crate::memory_commands::{recall_for_run, with_memories, MemoryState};
 use crate::rag_commands::RagState;
 use shodh_rag::audit::payload::is_cloud;
+use shodh_rag::audit::LOCAL_OWNER;
 use shodh_rag::harness::web::SafeClient;
+use shodh_rag::user_memory::Actor;
 
 /// Tauri event name for agent events.
 pub const AGENT_EVENT: &str = "agent_event";
@@ -341,6 +344,8 @@ pub struct SendScope {
     pub source_files: Vec<String>,
     /// 1-based pages of `source_files`; absent or empty means every page.
     pub pages: Option<Vec<u32>>,
+    /// The conversation's workspace (source / space id). Scopes memories, not search.
+    pub workspace_id: Option<String>,
 }
 
 impl SendScope {
@@ -380,10 +385,18 @@ impl SendScope {
                 "At most {MAX_SCOPE_PAGES} pages can limit one answer"
             )));
         }
+        let workspace = self
+            .workspace_id
+            .map(|w| w.trim().to_string())
+            .filter(|w| !w.is_empty());
+        if workspace.as_ref().is_some_and(|w| w.len() > MAX_ID_LEN) {
+            return Err(AgentCommandError::invalid("The workspace id is too long"));
+        }
         Ok(RunScope {
             source_ids: clean(self.source_ids, "sources")?,
             files,
             pages,
+            workspace,
         })
     }
 }
@@ -515,6 +528,7 @@ pub async fn agent_start(
     rag: State<'_, RagState>,
     llm: State<'_, LLMState>,
     audit: State<'_, AuditState>,
+    memory: State<'_, MemoryState>,
 ) -> CommandResult<String> {
     let started = Instant::now();
     check_id("conversation id", &conversation_id)?;
@@ -614,6 +628,7 @@ pub async fn agent_start(
                 roots: Arc::new(IndexedRoots {
                     rag: rag.rag.clone(),
                 }),
+                memory: memory.inner().clone(),
             });
             build_registry(host)
                 .map(Arc::new)
@@ -719,8 +734,14 @@ pub async fn agent_start(
 ///
 /// `history` holds the conversation's earlier turns. It is replayed only into
 /// a session that has not answered anything yet, e.g. after an app restart.
+///
+/// When memory injection is on (Settings → Memory, default on), memories relevant to
+/// `text` are recalled and put in front of the message in a delimited block; the
+/// `question` audit event keeps the user's own words only.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri injects each managed state as an argument.
 pub async fn agent_send(
+    app: AppHandle,
     session_id: String,
     text: String,
     request_id: String,
@@ -728,6 +749,7 @@ pub async fn agent_send(
     scope: Option<SendScope>,
     sessions: State<'_, AgentSessions>,
     audit: State<'_, AuditState>,
+    memory: State<'_, MemoryState>,
 ) -> CommandResult<String> {
     check_id("request id", &request_id)?;
     let scope = scope
@@ -741,9 +763,30 @@ pub async fn agent_send(
         return Err(HarnessError::SlashCommand.into());
     }
     let replay = !entry.primed.load(Ordering::SeqCst);
+    let memories = if inject_memories(&app) {
+        let actor = Actor::agent(
+            LOCAL_OWNER,
+            entry.audit_conversation(),
+            &entry.profile_id,
+            &request_id,
+        );
+        recall_for_run(&memory, &text, scope.workspace.as_deref(), &actor).await
+    } else {
+        None
+    };
     let message = match &history {
-        Some(history) if replay => with_history(&text, history),
-        _ => text.clone(),
+        Some(history) if replay => {
+            let with_turns = with_history(&text, history);
+            match &memories {
+                Some(block) => format!(
+                    "{block}
+
+{with_turns}"
+                ),
+                None => with_turns,
+            }
+        }
+        _ => with_memories(memories.as_deref(), &text),
     };
     let scoped = !scope.is_empty();
     let run_id = entry
@@ -762,6 +805,22 @@ pub async fn agent_send(
         replay && history.as_ref().is_some_and(|h| !h.is_empty()),
     ));
     Ok(run_id)
+}
+
+/// Whether memories are recalled into answers (Settings → Memory). Unreadable settings
+/// leave them out: sharing memories with the model needs the user's setting.
+fn inject_memories(app: &AppHandle) -> bool {
+    let settings = app_data_dir(app)
+        .ok()
+        .map(|dir| SettingsStore::in_dir(&dir).load());
+    match settings {
+        Some(Ok(settings)) => settings.memory.inject_memories,
+        Some(Err(e)) => {
+            tracing::warn!(target: "shodh::memory", error = %e, "settings unreadable; memories not injected");
+            false
+        }
+        None => false,
+    }
 }
 
 /// The `question` audit event: the user's own words (never the replayed

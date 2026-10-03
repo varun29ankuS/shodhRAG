@@ -295,7 +295,6 @@ impl MemoryService {
     /// (the Settings editor). Notes are replaced by the new text. `visible_from` limits
     /// which memories the caller may edit (`None`: any, for the UI). Audited as
     /// `memory_write`.
-    #[allow(clippy::too_many_arguments)]
     pub async fn update(
         &self,
         id: &str,
@@ -305,6 +304,58 @@ impl MemoryService {
         origin: &Origin,
         actor: &Actor,
     ) -> MemoryResult<RememberOutcome> {
+        let (target, statement) = self
+            .prepare_update(id, content, merge, visible_from, origin)
+            .await?;
+        let scope = target.scope.clone();
+        let outcome = self
+            .store
+            .put(
+                statement,
+                scope.clone(),
+                PutIntent::Supersede {
+                    target: id.to_string(),
+                },
+            )
+            .await?;
+        self.after_write("update", &outcome, &scope, origin, actor)
+            .await
+    }
+
+    /// Checks and validates a write without storing it; returns the text that would be
+    /// remembered (for an approval prompt).
+    pub fn preview(&self, content: MemoryContent, origin: &Origin) -> MemoryResult<String> {
+        check_write_origin(origin)?;
+        let statement = self.build_statement(content, origin)?;
+        self.render(&statement)
+    }
+
+    /// Checks and validates an edit without storing it; returns the memory as it is now
+    /// and the text it would have after the edit (for an approval prompt).
+    pub async fn preview_update(
+        &self,
+        id: &str,
+        content: MemoryContent,
+        merge: bool,
+        visible_from: Option<&Scope>,
+        origin: &Origin,
+    ) -> MemoryResult<(MemoryRecord, String)> {
+        let (target, statement) = self
+            .prepare_update(id, content, merge, visible_from, origin)
+            .await?;
+        let state = self.state_of(&target).await?;
+        let after = self.render(&statement)?;
+        Ok((self.record(&target, &state), after))
+    }
+
+    async fn prepare_update(
+        &self,
+        id: &str,
+        content: MemoryContent,
+        merge: bool,
+        visible_from: Option<&Scope>,
+        origin: &Origin,
+    ) -> MemoryResult<(StoredStatement, Statement)> {
         check_write_origin(origin)?;
         let target = self.memory_statement(id).await?;
         self.check_visible(&target, visible_from)?;
@@ -335,19 +386,15 @@ impl MemoryService {
             other => other,
         };
         let statement = self.build_statement(content, origin)?;
-        let scope = target.scope.clone();
-        let outcome = self
-            .store
-            .put(
-                statement,
-                scope.clone(),
-                PutIntent::Supersede {
-                    target: id.to_string(),
-                },
-            )
-            .await?;
-        self.after_write("update", &outcome, &scope, origin, actor)
-            .await
+        Ok((target, statement))
+    }
+
+    fn render(&self, statement: &Statement) -> MemoryResult<String> {
+        let ontology = self.store.ontology();
+        let valid = ontology
+            .validate(statement)
+            .map_err(|v| MemoryError::Statement(StatementError::Invalid(v)))?;
+        Ok(crate::statements::render_text(ontology, &valid))
     }
 
     /// Forgets memory `id` and every earlier or later version of the same fact (soft

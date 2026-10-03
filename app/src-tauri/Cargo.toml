@@ -60,6 +60,7 @@ rust_xlsxwriter = "0.60"  # For Excel files
 
 # Include our RAG system
 shodh-rag = { path = "../../crates/shodh-rag" }
+shodh-ontology = { path = "../../crates/shodh-ontology" }
 
 # File watching
 notify = { version = "6.1", features = ["serde"] }

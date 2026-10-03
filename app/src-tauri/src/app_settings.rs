@@ -128,12 +128,30 @@ impl Default for BackgroundPrefs {
     }
 }
 
+/// Long-term memory. User-only: it decides what the model is told about the user.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MemoryPrefs {
+    /// At the start of each answer, recall memories relevant to the question and give
+    /// them to the model.
+    pub inject_memories: bool,
+}
+
+impl Default for MemoryPrefs {
+    fn default() -> Self {
+        Self {
+            inject_memories: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
     pub preferences: Preferences,
     pub policy: Policy,
     pub background: BackgroundPrefs,
+    pub memory: MemoryPrefs,
     /// The UI has copied its earlier local-storage preferences here.
     pub seeded: bool,
 }
@@ -176,7 +194,7 @@ pub const AGENT_WRITABLE: [SettingKey; 2] = [SettingKey::Theme, SettingKey::Sear
 /// these by name (in addition to its schema only listing [`AGENT_WRITABLE`]),
 /// so a prompt-injected request gets a clear refusal rather than a
 /// best-effort match.
-pub const AGENT_DENIED: [(&str, &str); 12] = [
+pub const AGENT_DENIED: [(&str, &str); 13] = [
     ("api_keys", "API keys are secrets; a manipulated agent could leak or replace them."),
     ("provider", "Switching the model provider changes who receives the user's documents."),
     ("model", "Switching the model changes who receives the user's documents and what it costs."),
@@ -189,6 +207,7 @@ pub const AGENT_DENIED: [(&str, &str); 12] = [
     ("web_access", "Web access decides whether the agent may contact the internet; only the user may grant it."),
     ("close_to_tray", "Whether Shodh keeps running after its window closes is the user's call about their computer."),
     ("start_with_windows", "Adding a program to Windows startup changes the user's system; only the user may do that."),
+    ("inject_memories", "Whether remembered facts about the user are given to the model is the user's privacy decision."),
 ];
 
 /// Why `key` is withheld from the agent, if it is.
@@ -412,6 +431,32 @@ pub async fn set_app_policy(
                 "action": "policy_change",
                 "old": before,
                 "new": settings.policy,
+                "via": "ui",
+            }),
+        ));
+    }
+    broadcast(&app, &settings);
+    Ok(settings)
+}
+
+/// Change the memory preferences. User-only: no agent tool calls this, and the
+/// agent's settings tools refuse `inject_memories`.
+#[tauri::command]
+pub async fn set_memory_preferences(
+    app: AppHandle,
+    memory: MemoryPrefs,
+    audit: State<'_, AuditState>,
+) -> Result<AppSettings, String> {
+    let (settings, before) = store(&app)?
+        .update(|s| Ok(std::mem::replace(&mut s.memory, memory)))
+        .map_err(|e| e.to_string())?;
+    if before != settings.memory {
+        audit.record(AuditRecord::new(
+            AuditEventType::SettingsChange,
+            json!({
+                "action": "memory_preferences_change",
+                "old": before,
+                "new": settings.memory,
                 "via": "ui",
             }),
         ));

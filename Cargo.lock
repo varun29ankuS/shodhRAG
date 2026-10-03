@@ -8631,6 +8631,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shodh-ontology",
  "shodh-rag",
  "tauri",
  "tauri-build",

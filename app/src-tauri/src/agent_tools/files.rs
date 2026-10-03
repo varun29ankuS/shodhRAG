@@ -111,9 +111,7 @@ pub fn create_exact(path: &Path) -> io::Result<File> {
 /// symlinks and `..`), without the Windows verbatim prefix, with forward
 /// slashes, no trailing slash, and lower-cased on Windows.
 pub fn comparable(path: &Path) -> String {
-    let resolved = std::fs::canonicalize(path)
-        .map(|p| strip_verbatim(&p))
-        .unwrap_or_else(|_| path.to_path_buf());
+    let resolved = canonical_or_planned(path);
     let mut text = resolved.display().to_string().replace('\\', "/");
     while text.len() > 1 && text.ends_with('/') && !text.ends_with(":/") {
         text.pop();
@@ -122,6 +120,30 @@ pub fn comparable(path: &Path) -> String {
         text = text.to_lowercase();
     }
     text
+}
+
+/// `path` canonicalized; for a path that does not exist yet, its deepest
+/// existing ancestor canonicalized with the missing names appended, so a
+/// folder about to be created compares like its parent (OneDrive
+/// redirection, junctions and short names resolved).
+fn canonical_or_planned(path: &Path) -> PathBuf {
+    let mut missing = Vec::new();
+    let mut current = path;
+    loop {
+        if let Ok(canonical) = std::fs::canonicalize(current) {
+            return missing
+                .iter()
+                .rev()
+                .fold(strip_verbatim(&canonical), |p, name| p.join(name));
+        }
+        match (current.parent(), current.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name.to_os_string());
+                current = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
 }
 
 /// Whether `path` is `root` or inside it.
@@ -269,6 +291,10 @@ mod tests {
         );
         assert!(is_within(&root.join("Sub").join("..").join("Sub"), &root));
         assert!(!is_within(&root.join("..").join("Docs2"), &root));
+        assert!(
+            is_within(&root.join("Sub").join("Not yet").join("Created"), &root),
+            "a folder still to be created compares like its existing parent"
+        );
         if cfg!(windows) {
             let upper = PathBuf::from(root.display().to_string().to_uppercase());
             assert!(is_within(&upper.join("SUB"), &root));

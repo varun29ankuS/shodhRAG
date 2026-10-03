@@ -40,6 +40,8 @@ use super::sources::strip_verbatim;
 use super::web::web_block_reason;
 use super::{invalid, limit_arg, str_arg, AgentHost, FileIndexJob};
 
+/// Deadline for one download, body included.
+const DOWNLOAD_TIMEOUT_SECS: u64 = 600;
 /// Largest download.
 pub const MAX_DOWNLOAD_BYTES: u64 = 100 * 1024 * 1024;
 /// Entries `list_directory` returns at most.
@@ -512,8 +514,13 @@ pub struct DownloadFileTool {
 }
 
 impl DownloadFileTool {
-    fn client(&self) -> &SafeClient {
-        &self.host.web
+    /// The web client with a deadline long enough to stream a large file
+    /// (the default deadline covers the whole response, body included).
+    fn client(&self) -> SafeClient {
+        self.host
+            .web
+            .clone()
+            .with_timeout(std::time::Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
     }
 
     fn check_web(&self) -> Result<(), ToolError> {

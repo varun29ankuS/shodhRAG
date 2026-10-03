@@ -19,7 +19,8 @@ import { useChatSession } from './ChatSessionContext';
 import { MessageContentRenderer } from './MessageContentRenderer';
 import { RunChip } from './RunChip';
 import { SourcePreview } from './SourcePreview';
-import { appRecordKind, citedNumbers, fileExtensionOf, formatLocation, groupSources, sourceLabel, toSearchHits } from './searchResults';
+import { useNavigationTarget } from '../agent/useNavigationTarget';
+import { appRecordKind, citedNumbers, documentHit, fileExtensionOf, formatLocation, groupSources, sourceLabel, toSearchHits } from './searchResults';
 import type { SourceGroup } from './searchResults';
 import type { ChatMessage, SearchHit, SendOptions } from './types';
 
@@ -77,6 +78,9 @@ interface PreviewTarget {
   messageId: string;
   hit: SearchHit;
 }
+
+/** Preview key for documents the agent opened (not tied to a message). */
+const AGENT_DOCUMENT_PREVIEW = 'agent-document';
 
 const FILE_BADGE_CLASS: Record<string, string> = {
   pdf: 'bg-shodh-raised-2 text-shodh-error',
@@ -354,10 +358,18 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
   const lastCountRef = useRef(0);
 
   const selectedSource = sources.find(s => s.selected) ?? null;
-  const sendOptions: SendOptions = useMemo(
-    () => ({ spaceId: selectedSource?.id ?? null, spaceName: selectedSource?.name ?? null }),
-    [selectedSource?.id, selectedSource?.name],
-  );
+  // "Include this source when answering in Ask": when only some sources
+  // are included, answers search just those.
+  const includedKey = sources.filter(s => s.selected).map(s => s.id).join(String.fromCharCode(31));
+  const sendOptions: SendOptions = useMemo(() => {
+    const included = includedKey ? includedKey.split(String.fromCharCode(31)) : [];
+    const limited = included.length > 0 && included.length < sources.length;
+    return {
+      spaceId: selectedSource?.id ?? null,
+      spaceName: selectedSource?.name ?? null,
+      sourceIds: limited ? included : [],
+    };
+  }, [selectedSource?.id, selectedSource?.name, includedKey, sources.length]);
 
   const busyElsewhere = streamingConversationId !== null && !isStreaming;
   const blockedReason = busyElsewhere
@@ -454,6 +466,12 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     previewTriggerRef.current = trigger;
     setPreview({ messageId, hit });
   }, []);
+
+  // The agent asked to show a document (show_document).
+  useNavigationTarget('document', target => {
+    previewTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setPreview({ messageId: AGENT_DOCUMENT_PREVIEW, hit: documentHit(target.path, target.page, target.passage) });
+  });
 
   const closePreview = useCallback(() => {
     setPreview(null);

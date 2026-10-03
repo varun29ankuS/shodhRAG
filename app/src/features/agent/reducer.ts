@@ -40,7 +40,11 @@ export interface TranscriptStep {
   children: string[];
 }
 
-/** One passage returned by `search_documents`; the model cites it as `[n]`. */
+/**
+ * One numbered source the model cites as `[n]`: a passage from the user's
+ * documents (`search_documents`) or, with `web` set, a web page or paper
+ * (`web_search`, `fetch_url`, `search_papers`) whose `path` is its URL.
+ */
 export interface Passage {
   n: number;
   file: string;
@@ -49,6 +53,16 @@ export interface Passage {
   heading: string | null;
   score: number;
   text: string;
+  /** Untrusted web content; `path` is an http(s) URL. Absent in older transcripts. */
+  web?: boolean;
+}
+
+/** A web source as returned in a web tool's `detail.webSources`. */
+export interface WebSource {
+  n: number;
+  title: string;
+  url: string;
+  snippet: string;
 }
 
 export type TranscriptBlock =
@@ -143,10 +157,43 @@ function str(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-/** Passages carried by a `search_documents` step's detail. */
+function isHttpUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value);
+}
+
+/** Web sources carried by a web tool step's detail (only http(s) URLs). */
+export function webSourcesFromDetail(detail: unknown): WebSource[] {
+  if (!isRecord(detail) || !Array.isArray(detail.webSources)) return [];
+  const out: WebSource[] = [];
+  for (const entry of detail.webSources) {
+    if (!isRecord(entry)) continue;
+    const n = entry.n;
+    const url = str(entry.url);
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < 1 || !url || !isHttpUrl(url)) continue;
+    out.push({
+      n,
+      title: str(entry.title) ?? url,
+      url,
+      snippet: typeof entry.snippet === 'string' ? entry.snippet : '',
+    });
+  }
+  return out;
+}
+
+/** Numbered sources carried by a step's detail: document passages and web sources. */
 export function passagesFromDetail(detail: unknown): Passage[] {
-  if (!isRecord(detail) || !Array.isArray(detail.passages)) return [];
-  const out: Passage[] = [];
+  const web: Passage[] = webSourcesFromDetail(detail).map(s => ({
+    n: s.n,
+    file: s.title,
+    path: s.url,
+    page: null,
+    heading: null,
+    score: 0,
+    text: s.snippet,
+    web: true,
+  }));
+  if (!isRecord(detail) || !Array.isArray(detail.passages)) return web;
+  const out: Passage[] = web;
   for (const entry of detail.passages) {
     if (!isRecord(entry)) continue;
     const n = entry.n;

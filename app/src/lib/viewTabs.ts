@@ -11,10 +11,17 @@ export const VIEW_TAB_LABELS: Record<ViewTab, string> = {
   settings: 'Settings',
 };
 
-/** Ids used before the Ask/Library rename, still emitted by older callers. */
+/**
+ * Other ids for a view: names used before the Ask/Library rename, and the
+ * agent's view ids `tasks` (the calendar) and `activity` (the audit log,
+ * under Settings here).
+ */
 const LEGACY_TAB_ALIASES: Readonly<Record<string, ViewTab>> = {
   chat: 'ask',
   documents: 'library',
+  tasks: 'calendar',
+  activity: 'settings',
+  audit: 'settings',
 };
 
 export function isViewTab(value: unknown): value is ViewTab {

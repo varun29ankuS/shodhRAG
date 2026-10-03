@@ -5,7 +5,8 @@ import { notify } from '../../lib/notify';
 import { extractArtifacts } from '../../utils/artifactExtractor';
 import { normalizeViewTab } from '../../lib/viewTabs';
 import type { ViewTab } from '../../lib/viewTabs';
-import type { AgentEventEnvelope } from '../agent/events';
+import type { AgentEventEnvelope, NavigationTarget } from '../agent/events';
+import { navigationFromEvent, publishTarget } from '../agent/navigation';
 import {
   answerText,
   fromPersisted,
@@ -16,7 +17,7 @@ import {
 } from '../agent/reducer';
 import type { TranscriptAction, TranscriptState } from '../agent/reducer';
 import { toAgentError, useAgentSession } from '../agent/useAgentSession';
-import type { HistoryTurn } from '../agent/useAgentSession';
+import type { AnswerScope, HistoryTurn } from '../agent/useAgentSession';
 import type {
   ChatMessage,
   RawSearchResult,
@@ -72,6 +73,8 @@ export interface LiveRunInfo {
 export interface AgentNavigation {
   view: ViewTab;
   focus: string | null;
+  /** What to show inside the view, if the event said. */
+  target: NavigationTarget | null;
   /** Increases with every navigation, so repeats are distinguishable. */
   seq: number;
 }
@@ -189,6 +192,13 @@ function isPersistable(m: ChatMessage): boolean {
   return !(m.transcript && isLive(m.transcript));
 }
 
+/** The answer's search limit from the send options, or null for everything. */
+function scopeOf(options: SendOptions | null): AnswerScope | null {
+  const sourceIds = options?.sourceIds?.filter(id => id.trim().length > 0) ?? [];
+  const sourceFiles = options?.sourceFiles?.filter(f => f.trim().length > 0) ?? [];
+  return sourceIds.length > 0 || sourceFiles.length > 0 ? { sourceIds, sourceFiles } : null;
+}
+
 function historyOf(messages: readonly ChatMessage[]): HistoryTurn[] {
   return messages
     .filter((m): m is ChatMessage & { role: 'user' | 'assistant' } => m.role === 'user' || m.role === 'assistant')
@@ -219,6 +229,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const dirtyRef = useRef(false);
   const loadedConvIdRef = useRef<string | null>(null);
   const navSeqRef = useRef(0);
+  const switchConversationRef = useRef(conv.switchConversation);
+  switchConversationRef.current = conv.switchConversation;
 
   // Load messages when the active conversation changes. A running answer for
   // that conversation is re-attached so it stays visible.
@@ -326,10 +338,17 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     if (event.runId !== live.runId) return;
     if (live.sessionId !== null && envelope.sessionId !== live.sessionId) return;
     if (event.type === 'navigated') {
-      const tab = normalizeViewTab(event.view);
+      const nav = navigationFromEvent(event);
+      const tab = normalizeViewTab(nav.view);
       if (tab) {
         navSeqRef.current += 1;
-        setNavigation({ view: tab, focus: event.focus, seq: navSeqRef.current });
+        setNavigation({ view: tab, focus: nav.focus, target: nav.target, seq: navSeqRef.current });
+        if (nav.target?.kind === 'conversation') {
+          // The run keeps streaming into its own conversation.
+          switchConversationRef.current(nav.target.conversationId);
+        } else if (nav.target) {
+          publishTarget(nav.target);
+        }
         window.dispatchEvent(new CustomEvent('switchTab', { detail: tab }));
       }
     }
@@ -371,7 +390,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     return () => window.clearTimeout(timer);
   }, [api, activeConversationId, instructions, runtimeInstalled]);
 
-  const runAgent = useCallback(async (conversationId: string, prompt: string, history: ChatMessage[]) => {
+  const runAgent = useCallback(async (conversationId: string, prompt: string, history: ChatMessage[], options: SendOptions | null) => {
     const runId = newId('run');
     const startedAtMs = Date.now();
     const transcript = initialTranscript(runId, startedAtMs);
@@ -403,7 +422,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       if (live.settled) return;
       live.sessionId = sessionId;
       setRuntimeInstalled(true);
-      await api.send(sessionId, prompt, runId, historyOf(history));
+      await api.send(sessionId, prompt, runId, historyOf(history), scopeOf(options));
     } catch (error) {
       const failure = toAgentError(error);
       if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
@@ -430,7 +449,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       updateConversationMeta(conversationId, { spaceId: options.spaceId, spaceName: options.spaceName });
     }
 
-    await runAgent(conversationId, prompt, history);
+    await runAgent(conversationId, prompt, history, options);
   }, [publish, runAgent, updateConversationMeta]);
 
   const retry = useCallback((assistantMessageId: string, options: SendOptions) => {
@@ -454,7 +473,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       setView(v => (v.conversationId === conversationId
         ? { ...v, messages: v.messages.filter(m => m.id !== assistantMessageId) }
         : v));
-      void runAgent(conversationId, prompt, messages.slice(0, userIndex));
+      void runAgent(conversationId, prompt, messages.slice(0, userIndex), options);
     } else {
       void send(prompt, options);
     }

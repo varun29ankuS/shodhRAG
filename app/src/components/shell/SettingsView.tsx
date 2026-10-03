@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
+import { useNavigationTarget } from '../../features/agent/useNavigationTarget';
 import LLMSettings from '../../LLMSettings';
 import SearchSettings from '../SearchSettings';
 import DataManagement from '../DataManagement';
+import PrivacySettings from '../PrivacySettings';
 import AuditView from '../../features/audit/AuditView';
 import { cn } from '../../lib/utils';
 
-export type SettingsSection = 'models' | 'search' | 'data' | 'audit';
+export type SettingsSection = 'models' | 'search' | 'privacy' | 'data' | 'audit';
 
 const SECTIONS: { id: SettingsSection; label: string; description: string }[] = [
   {
@@ -17,6 +19,11 @@ const SECTIONS: { id: SettingsSection; label: string; description: string }[] = 
     id: 'search',
     label: 'Search',
     description: 'Choose the retrieval mode, how many passages are retrieved, and the minimum relevance a passage needs to be used.',
+  },
+  {
+    id: 'privacy',
+    label: 'Privacy',
+    description: 'Decide whether anything may leave this computer, and whether the assistant may use the web.',
   },
   {
     id: 'data',
@@ -60,6 +67,9 @@ export default function SettingsView({
   onSourcesCleared,
 }: SettingsViewProps) {
   const [section, setSection] = useState<SettingsSection>('models');
+  // The agent opened the audit log: show that section and leave the target
+  // for the audit view, which applies its filters.
+  useNavigationTarget('audit', () => setSection('audit'), { consume: false });
   const active = SECTIONS.find(s => s.id === section) ?? SECTIONS[0];
 
   return (
@@ -135,6 +145,8 @@ export default function SettingsView({
                   onUpdate={onUpdateSearchConfig}
                   onReset={onResetSearchConfig}
                 />
+              ) : section === 'privacy' ? (
+                <PrivacySettings />
               ) : (
                 <DataManagement
                   sources={sources}

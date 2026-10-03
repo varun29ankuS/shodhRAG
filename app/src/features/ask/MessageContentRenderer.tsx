@@ -140,19 +140,24 @@ export function MessageContentRenderer({
       const hit = hitsByNumber.get(number);
       if (hit) {
         const isActive = activeCitation === number;
+        // Web sources are untrusted and outside the user's documents: they
+        // get an outlined badge and say so to screen readers.
+        const isWeb = hit.url !== null;
         parts.push(
           <button
             key={`cite-${index}-${number}`}
             type="button"
             onClick={e => onOpenCitation(hit, e.currentTarget)}
-            aria-label={`Source ${number}, ${sourceLabel(hit)}`}
+            aria-label={`${isWeb ? 'Web source' : 'Source'} ${number}, ${sourceLabel(hit)}`}
             aria-pressed={isActive}
-            title={sourceLabel(hit)}
+            title={isWeb ? `Web: ${hit.fileName} — ${hit.url}` : sourceLabel(hit)}
             className={cn(
               'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 ml-[3px] rounded-[5px] align-[3px] text-[10.5px] font-bold leading-none tabular-nums transition-colors duration-micro',
               isActive
                 ? 'bg-shodh-accent text-shodh-on-accent'
-                : 'bg-shodh-pressed text-shodh-text-secondary hover:bg-shodh-border-strong hover:text-shodh-text',
+                : isWeb
+                  ? 'border border-dashed border-shodh-info text-shodh-info hover:bg-shodh-raised-2'
+                  : 'bg-shodh-pressed text-shodh-text-secondary hover:bg-shodh-border-strong hover:text-shodh-text',
               FOCUS_RING,
             )}
           >

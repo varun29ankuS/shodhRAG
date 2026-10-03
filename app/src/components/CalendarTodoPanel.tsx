@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -9,6 +9,7 @@ import {
   ListTodo, ChevronDown, ChevronUp, X,
 } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
+import { useNavigationTarget } from '../features/agent/useNavigationTarget';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -132,6 +133,11 @@ function MiniCalendar({
 }) {
   const { colors } = useTheme();
   const [viewDate, setViewDate] = useState(new Date());
+
+  // Show the month of a date selected from outside (e.g. by the agent).
+  useEffect(() => {
+    if (selectedDate) setViewDate(new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
+  }, [selectedDate]);
 
   const year = viewDate.getFullYear();
   const month = viewDate.getMonth();
@@ -476,17 +482,26 @@ function AddTaskForm({
 
 function TaskRow({
   task,
+  focused = false,
   onToggle,
   onDelete,
   onUpdate,
 }: {
   task: TodoItem;
+  /** The agent pointed at this task: expand it and bring it into view. */
+  focused?: boolean;
   onToggle: (id: string, status: string) => void;
   onDelete: (id: string) => void;
   onUpdate: (updated: TodoItem) => void;
 }) {
   const { colors, theme } = useTheme();
   const [expanded, setExpanded] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!focused) return;
+    setExpanded(true);
+    rowRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [focused]);
   const [addingSubtask, setAddingSubtask] = useState(false);
   const [subtaskTitle, setSubtaskTitle] = useState('');
   const isDone = task.status === 'completed';
@@ -536,14 +551,17 @@ function TaskRow({
 
   return (
     <motion.div
+      ref={rowRef}
       layout
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, x: -20 }}
       className="group rounded-lg transition-colors"
+      aria-current={focused ? 'true' : undefined}
       style={{
         backgroundColor: 'transparent',
         borderLeft: overdue ? `3px solid ${PRIORITY_COLORS.high}` : `3px solid transparent`,
+        boxShadow: focused ? `0 0 0 2px ${colors.primary}` : undefined,
       }}
       onMouseEnter={e => (e.currentTarget.style.backgroundColor = theme === 'dark' ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.02)')}
       onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
@@ -791,6 +809,20 @@ export default function CalendarTodoPanel() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
+  /** Task or event the agent pointed at (show_calendar). */
+  const [focusId, setFocusId] = useState<string | null>(null);
+
+  useNavigationTarget('calendar', target => {
+    setFilter('all');
+    setProjectFilter(null);
+    if (target.date) {
+      const [y, m, d] = target.date.split('-').map(Number);
+      setSelectedDate(new Date(y, m - 1, d));
+    } else {
+      setSelectedDate(null);
+    }
+    setFocusId(target.taskId ?? target.eventId);
+  });
 
   const fetchData = useCallback(async () => {
     try {
@@ -1053,6 +1085,7 @@ export default function CalendarTodoPanel() {
                   <TaskRow
                     key={task.id}
                     task={task}
+                    focused={task.id === focusId}
                     onToggle={handleToggle}
                     onDelete={handleDelete}
                     onUpdate={handleUpdate}
@@ -1124,14 +1157,16 @@ export default function CalendarTodoPanel() {
               <div className="space-y-1.5">
                 {events
                   .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())
-                  .slice(0, 8)
+                  .filter((event, i) => i < 8 || event.id === focusId)
                   .map(event => (
                     <div
                       key={event.id}
                       className="flex items-start gap-2 px-2.5 py-2 rounded-md"
+                      aria-current={event.id === focusId ? 'true' : undefined}
                       style={{
                         backgroundColor: `${event.color || colors.primary}08`,
                         borderLeft: `2px solid ${event.color || colors.primary}`,
+                        boxShadow: event.id === focusId ? `0 0 0 2px ${colors.primary}` : undefined,
                       }}
                     >
                       <div className="flex-1 min-w-0">

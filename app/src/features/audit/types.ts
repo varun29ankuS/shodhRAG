@@ -76,6 +76,8 @@ export interface AuditQuery {
   from?: string;
   to?: string;
   conversationId?: string;
+  /** Events whose payload names this tool (tool calls, approvals, retrievals). */
+  tool?: string;
   text?: string;
   limit?: number;
   offset?: number;

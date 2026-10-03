@@ -43,6 +43,12 @@ export function toAgentError(error: unknown): AgentError {
   return { code: 'runtime_error', message: 'The agent did not respond.' };
 }
 
+/** What one answer may search; empty lists mean everything indexed. */
+export interface AnswerScope {
+  sourceIds: string[];
+  sourceFiles: string[];
+}
+
 export interface HistoryTurn {
   role: 'user' | 'assistant';
   content: string;
@@ -77,8 +83,9 @@ export const agentApi = {
   /** Start or reuse the conversation's session. Rejects with `AgentError`. */
   start: (conversationId: string, instructions: string | null) =>
     call<string>('agent_start', { conversationId, profileId: null, instructions }),
-  send: (sessionId: string, text: string, requestId: string, history: HistoryTurn[]) =>
-    call<string>('agent_send', { sessionId, text, requestId, history }),
+  /** `scope` limits what the answer may search (selected sources, or files for "Ask about this file"). */
+  send: (sessionId: string, text: string, requestId: string, history: HistoryTurn[], scope: AnswerScope | null = null) =>
+    call<string>('agent_send', { sessionId, text, requestId, history, scope }),
   steer: (sessionId: string, text: string) => call<string>('agent_steer', { sessionId, text }),
   abort: (sessionId: string) => call<void>('agent_abort', { sessionId }),
   approve: (sessionId: string, stepId: string, approved: boolean) =>

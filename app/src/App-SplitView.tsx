@@ -42,6 +42,7 @@ import { notify, setNotificationHandler } from './lib/notify';
 import { migrateLegacyApiKeys } from './lib/apiKeyMigration';
 import { useNotifications } from './hooks/useNotifications';
 import NotificationCenter from './components/NotificationCenter';
+import { useNavigationTarget } from './features/agent/useNavigationTarget';
 
 // Debug logging — set to true during development, false for demo/production
 const DEBUG = false;
@@ -119,6 +120,14 @@ function AppSplitView() {
   const [isLoading, setIsLoading] = useState(true);
   const [isFirstTime, setIsFirstTime] = useState(false);
   const [activeTab, setActiveTab] = useState<ViewTab>('ask');
+  /** Library source the agent pointed at (show_source). */
+  const [focusedSourceId, setFocusedSourceId] = useState<string | null>(null);
+  useNavigationTarget('source', target => setFocusedSourceId(target.sourceId));
+  useEffect(() => {
+    if (!focusedSourceId) return;
+    const card = document.getElementById(`library-source-${focusedSourceId}`);
+    card?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [focusedSourceId, activeTab]);
   const prefersReducedMotion = useReducedMotion();
   const [sources, setSources] = useState<Source[]>([]);
   const [docsExpandedSources, setDocsExpandedSources] = useState<Set<string>>(new Set());
@@ -1723,8 +1732,14 @@ function AppSplitView() {
                     {sources.map(source => (
                       <div
                         key={source.id}
+                        id={`library-source-${source.id}`}
+                        aria-current={source.id === focusedSourceId ? 'true' : undefined}
                         className="rounded-lg border p-4"
-                        style={{ borderColor: colors.border, backgroundColor: colors.cardBg }}
+                        style={{
+                          borderColor: source.id === focusedSourceId ? colors.primary : colors.border,
+                          backgroundColor: colors.cardBg,
+                          boxShadow: source.id === focusedSourceId ? `0 0 0 1px ${colors.primary}` : undefined,
+                        }}
                       >
                         <div className="flex items-center justify-between mb-2">
                           <div className="flex items-center gap-2">

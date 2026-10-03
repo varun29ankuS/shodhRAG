@@ -63,6 +63,28 @@ export function isWebUrl(path: string): boolean {
   return /^https?:\/\//i.test(path);
 }
 
+/**
+ * A viewer target for a document the agent asked to show: the file at
+ * `page`, with `passage` highlighted when given. Not a citation, so it has
+ * no number.
+ */
+export function documentHit(path: string, page: number | null, passage: string | null): SearchHit {
+  const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  const text = passage ?? '';
+  return {
+    number: 0,
+    sourceFile: path,
+    fileName: name,
+    title: name,
+    text,
+    snippet: text.slice(0, 200),
+    score: 0,
+    page: page !== null && Number.isInteger(page) && page > 0 ? { start: page, end: page } : null,
+    lineRange: null,
+    url: isWebUrl(path) ? path : null,
+  };
+}
+
 export type AppRecordKind = 'task' | 'event' | 'calendar' | 'note';
 
 /** In-app records are indexed under pseudo-sources (`calendar://task/<id>`, `note://<id>`), not files. */

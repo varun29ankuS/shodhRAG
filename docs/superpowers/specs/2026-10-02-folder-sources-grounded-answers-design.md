@@ -114,6 +114,89 @@ Sub-project 0 is a hard prerequisite, for two reasons:
 - **Dependency conflict.** docling.rs and the GLiNER2 Rust runtimes require `ort ^2.0.0-rc.13`, while shodh currently resolves rc.11. `ort-sys` declares `links = "onnxruntime"`, so only one version can be linked.
 - **Unverifiable CI.** CI must execute tests before any change in this spec can be verified.
 
+### 3b. Roadmap update (2026-10-03)
+
+**First workflow: research papers.** The first workflow to make excellent is the founder's own daily use, reading research papers. Everything stays vertical-neutral through domain packs; CA/GST and legal packs follow on the same engine. The **research pack** comes next after the in-flight app-control work. It contains:
+- **Paper-aware parsing:** two-column layout, LaTeX equations, tables, figure captions, and a split reference list. This pulls the docling.rs bake-off forward.
+- **Research ontology:** Paper, Author, Method, Dataset, Metric, and an n-ary Result statement (section 6a).
+- **Citation graph:** a deterministic graph resolved through OpenAlex/DOI, with method and paper pages. This is Graph v1.
+- **arXiv/OpenAlex search and download** into indexed subfolders.
+- **A visual explainer** for a selected paper:
+  - typeset equations explained term by term;
+  - Mermaid flowcharts and architecture diagrams, each node linked to its source passage;
+  - charts rebuilt only from numbers cited in the paper;
+  - sandboxed interactive widgets;
+  - glossary and quiz;
+  - export.
+- **Evaluation:** M1 adds QASPER and the user's own question set.
+
+**Navigation (approved).** Ask (with conversation history) · Workspaces · Library (all sources: folders and connectors, plus entity pages and the graph view) · Tasks (list first, calendar view) · Automations · Activity (audit) · Settings. No placeholder entries: Workspaces and Automations appear when their backends exist. Graph is not a top-level tab, and connectors are sources, not a tab.
+
+**Agent.**
+- **Full app control:**
+  - **Calendar:** read, update and delete.
+  - **History and audit:** conversation and audit search.
+  - **Settings:** only an allowlisted subset, with a fixed denylist covering secrets, self-approval, audit and policy, and model switching.
+  - **UI navigation targets.**
+  - **Document export.**
+  - **Web:** `web_search` (the OpenRouter web plugin on the configured key; Gemini grounding and SearXNG optional; never scraping) and an SSRF-safe `fetch_url`.
+  - **Downloads:** `create_folder` and `download_file` inside indexed roots.
+  - **Coverage:** a CI gate requires every UI command to have an agent tool or a written exclusion.
+- **Screen context:** a structured snapshot of the current view (open document and page, selection, selected task, filters), attached to each turn, plus a `get_screen_context` tool. A visible, removable chip shows what is attached. It is not screenshots.
+- **Memory:** v1 is plain Markdown memory files (the Claude memory-tool pattern) with `memory_view`, `memory_write`, `memory_edit` and `memory_delete`. Memories are written only from user turns or with approval, never from document or web content. They are scoped per workspace, and visible and editable in Settings. shodh-memory (Rust) is phase 2, ingesting the same files. Saved workflows become Automations.
+
+**Tasks and reminders.** Full task and event editing (UI shipped in its own PR). The backend gaps are:
+- `rename_subtask`;
+- clearing optional fields;
+- event location.
+
+Reminders ship as a unit: a scheduler in the app, native notifications (Open / Snooze / Done), missed reminders surfaced on the next launch, an agent-settable reminder, and a picker. No reminder UI ships before the scheduler. A tray/background mode lets them fire with the window closed.
+
+**Team collaboration.** Shodh does not become a general messaging app; teams already use Slack, Teams or WhatsApp. The differentiator is **people and the agent working together over a shared, permissioned library**. Every phase requires server mode (a self-hosted Shodh Server holding identity, shared workspaces and sync), because a desktop app alone cannot reach colleagues.
+
+1. **Share an answer.** Share a conversation or answer as a snapshot with its citations. The server re-checks every citation against the recipient's permissions: passages the recipient may not read are withheld and marked as such, never shown.
+2. **Shodh inside the team's chat.** Add @Shodh in Slack, Microsoft Teams (and WhatsApp/Telegram through the Hermes gateway). It answers from the team library with citations, under the asking user's permissions; channel access is deny-by-default, paired and audited.
+3. **Shared workspaces with threads.** People and the agent work in one thread per workspace: @mentions, @shodh to ask, comments anchored to a document passage or an answer, task assignment into Tasks, and notifications. Presence and live co-editing are out of scope.
+
+Security rules for all three phases:
+- Every message, share and agent action is in the audit log.
+- Transport is TLS, and the self-hosted store is encrypted at rest.
+- End-to-end encryption (MLS) applies only if a vendor-hosted relay is ever offered.
+- Retention follows the workspace policy.
+
+**Licensing and distribution (new milestone, ships with signed installers and auto-update).** The code stays open source (Apache-2.0). What is sold is the signed official builds, updates, hosted model downloads, verified connector OAuth apps and support. Paid modules may later become closed plugins on the open core.
+
+- **Device-bound licenses:**
+  - **Key pair:** on activation the app creates a non-exportable key pair in the platform's hardware store. Windows uses TPM 2.0 (NCrypt). macOS uses the Secure Enclave (security-framework). Linux uses TPM 2.0 (tss-esapi). Where there is no TPM, the fallback is a salted hash of MachineGuid, IOPlatformUUID or /etc/machine-id.
+  - **Certificate:** the license server checks seats and returns a signed device certificate (Ed25519): license, device public key, expiry.
+  - **Launch check:** on every launch the app verifies the certificate offline against an embedded public key, and proves possession by having the hardware key sign a challenge.
+  - **Renewal:** about every 30 days, with a grace period. There is no per-query phone-home.
+  - **Copying:** copying the app or license files to another machine fails the possession check.
+- **Seats, not operating systems:** a personal license is one active device on any OS. There are also team seats and floating seats.
+- **Device moves:** in-app "Deactivate this device", plus a self-service transfer portal with a monthly cap.
+- **Air-gapped machines:** offline activation by request and certificate files.
+- **Trial and lapse:** a 14-day trial. When a license lapses the library becomes read-only; users are never locked out of their own data.
+- **Vendors:**
+  - Keygen.sh for licenses, machines and offline certificates. It can be self-hosted, and the hardware key fingerprint serves as the machine id.
+  - Paddle or Lemon Squeezy as merchant of record, handling GST and VAT; a payment issues a license.
+- **In the app:**
+  - a `licensing` module;
+  - a Settings → License page (plan, devices, transfer).
+- **Server mode:** a seat is an SSO user (SCIM-provisioned) rather than a device.
+- **Compliance before selling:**
+  - a third-party notices screen generated by `cargo-about` and an npm license report. The 1,054 Rust crates audited on 2026-10-03 are all permissive; MPL-2.0 crates are used unmodified, and there is no GPL or AGPL;
+  - a `license` field on every workspace crate;
+  - customers bring their own LLM keys, and stealth or preview models are not part of the paid product.
+
+**Observability (privacy-first).**
+- **No content leaves:** queries, file names and document text are never sent.
+- **Who is using:** active seats and versions from the license server.
+- **Product analytics:** PostHog (self-hosted or EU cloud). Opt-in for individuals, admin-controlled for organisations, off in Local-only mode.
+- **Crashes:** Sentry, opt-in, with errors scrubbed.
+- **Server mode:** OpenTelemetry into Grafana.
+- **Enterprise admins:** aggregated usage from the audit log.
+- **Privacy policy:** a plain-language policy meeting DPDP Act 2023 and GDPR.
+
 ## 4. Architecture
 
 ```

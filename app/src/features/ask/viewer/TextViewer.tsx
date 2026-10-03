@@ -1,10 +1,15 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
+import { pathKey } from '../../library/fileTree';
 import { findPassage, prepareHaystack, type TextRange } from './passageMatch';
 import { readSourceText, scrollBehavior, type SourceText } from './sourceAccess';
 import type { LocateResult } from './viewerTypes';
 import { VIEWER_FOCUS_RING } from './viewerTypes';
+import { textViewStates } from './viewerStores';
+
+/** The reading position is written to storage at most this often. */
+const SAVE_DELAY_MS = 400;
 
 interface Block {
   start: number;
@@ -54,13 +59,15 @@ interface TextViewerProps {
   code: boolean;
   onLocate: (result: LocateResult) => void;
   onError: (error: unknown) => void;
+  /** Restore and remember the scroll position for this file (no passage). */
+  rememberView?: boolean;
 }
 
 /**
  * Full extracted text of a document (same parser as the indexer) with the
  * cited passage highlighted and scrolled into view.
  */
-export function TextViewer({ filePath, passage, code, onLocate, onError }: TextViewerProps) {
+export function TextViewer({ filePath, passage, code, onLocate, onError, rememberView = false }: TextViewerProps) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const firstMarkRef = useRef<HTMLElement | null>(null);
   const [source, setSource] = useState<SourceText | null>(null);
@@ -89,6 +96,33 @@ export function TextViewer({ filePath, passage, code, onLocate, onError }: TextV
       cancelled = true;
     };
   }, [filePath]);
+
+  // Remembered scroll position: restored once the text is laid out, saved
+  // (debounced) while scrolling. Only for browsing, never over a citation.
+  const remember = rememberView && !passage.trim();
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!remember || !source || !scroller) return;
+    const saved = textViewStates.get(pathKey(filePath));
+    if (saved) scroller.scrollTop = saved.ratio * Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    let timer: number | null = null;
+    const save = () => {
+      timer = null;
+      const range = scroller.scrollHeight - scroller.clientHeight;
+      textViewStates.set(pathKey(filePath), { ratio: range > 0 ? scroller.scrollTop / range : 0 });
+    };
+    const onScroll = () => {
+      if (timer === null) timer = window.setTimeout(save, SAVE_DELAY_MS);
+    };
+    scroller.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      scroller.removeEventListener('scroll', onScroll);
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        save();
+      }
+    };
+  }, [remember, source, filePath]);
 
   const text = source?.text ?? '';
   const haystack = useMemo(() => (source ? prepareHaystack(source.text) : null), [source]);
@@ -169,7 +203,8 @@ export function TextViewer({ filePath, passage, code, onLocate, onError }: TextV
       ref={scrollerRef}
       tabIndex={0}
       aria-label="Document text"
-      className={cn('flex-1 min-h-0 overflow-y-auto scrollbar-thin px-6 py-5', VIEWER_FOCUS_RING)}
+      data-viewer-scroller=""
+      className={cn('flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-6 py-5', VIEWER_FOCUS_RING)}
     >
       {text.trim().length === 0 ? (
         <p className="text-[13.5px] text-shodh-text-muted">No text could be extracted from this document.</p>

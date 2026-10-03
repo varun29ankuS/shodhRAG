@@ -760,6 +760,126 @@ impl StatementStore {
         Ok(before)
     }
 
+    /// Undoes the write that stored `id`: soft-forgets it and reopens every statement it
+    /// superseded, so the fact is as it was before. Refused when `id` has since been
+    /// superseded by a newer version (an edit after the write): undoing it would silently
+    /// drop that edit. Returns the reopened ids.
+    pub async fn revert(&self, id: &str) -> StatementResult<Vec<String>> {
+        let _guard = self.write_lock.lock().await;
+        let row = self
+            .row(id)
+            .await?
+            .filter(|r| r.forgotten_at.is_none())
+            .ok_or_else(|| StatementError::NotFound(id.to_string()))?;
+        if let Some(successor) = &row.superseded_by {
+            // A historical write points at the older current statement; a later edit
+            // points at a newer one.
+            let later = self
+                .row(successor)
+                .await?
+                .is_some_and(|s| s.forgotten_at.is_none() && s.created_at > row.created_at);
+            if later {
+                return Err(StatementError::InvalidSupersede {
+                    target: id.to_string(),
+                    reason: format!("it was changed again since (by `{successor}`)"),
+                });
+            }
+        }
+        let predicate = format!(
+            "superseded_by = {} AND forgotten_at IS NULL",
+            quote(&row.id)
+        );
+        let superseded = self.table.scan(Some(&predicate), CANDIDATE_LIMIT).await?;
+        self.table.forget(&row.id, micros(self.clock.now())).await?;
+        self.dynamics.remove_links(&row.id)?;
+        let mut reopened = Vec::new();
+        for old in superseded {
+            self.table.reopen(&old.id).await?;
+            reopened.push(old.id);
+        }
+        Ok(reopened)
+    }
+
+    /// Ends a current statement now, without a successor (an archived memory). It stays as
+    /// history and [`StatementStore::unarchive`] reopens it.
+    pub async fn archive(&self, id: &str) -> StatementResult<StoredStatement> {
+        let _guard = self.write_lock.lock().await;
+        let now = self.clock.now();
+        let row = self.live_row(id).await?;
+        if row.valid_to.is_some() {
+            return Err(StatementError::InvalidSupersede {
+                target: id.to_string(),
+                reason: "it is no longer current".to_string(),
+            });
+        }
+        let from = from_micros(row.valid_from).unwrap_or(now);
+        let end = now.max(from + Duration::microseconds(1));
+        self.table.close(&row.id, micros(end), None).await?;
+        stored(&row)
+    }
+
+    /// Reopens a statement [`StatementStore::archive`] ended. Statements superseded by a
+    /// newer version are not reopened (that is [`StatementStore::revert`] of the newer one).
+    pub async fn unarchive(&self, id: &str) -> StatementResult<StoredStatement> {
+        let _guard = self.write_lock.lock().await;
+        let row = self.live_row(id).await?;
+        if row.valid_to.is_none() || row.superseded_by.is_some() {
+            return Err(StatementError::InvalidSupersede {
+                target: id.to_string(),
+                reason: "it is not archived".to_string(),
+            });
+        }
+        self.table.reopen(&row.id).await?;
+        stored(&row)
+    }
+
+    /// Resolves a contradiction between two current statements: `retire` is closed as
+    /// superseded by `keep` (kept as history). The classes must be related.
+    pub async fn retire(&self, retire: &str, keep: &str) -> StatementResult<()> {
+        let _guard = self.write_lock.lock().await;
+        let old = self.live_row(retire).await?;
+        let new = self.live_row(keep).await?;
+        let invalid = |reason: &str| StatementError::InvalidSupersede {
+            target: retire.to_string(),
+            reason: reason.to_string(),
+        };
+        if old.valid_to.is_some() || new.valid_to.is_some() {
+            return Err(invalid("one of the two is no longer current"));
+        }
+        if retire == keep {
+            return Err(invalid("a statement cannot supersede itself"));
+        }
+        if !self.related(&old.class, &new.class) {
+            return Err(invalid("the classes are unrelated"));
+        }
+        let now = self.clock.now();
+        let from = from_micros(old.valid_from).unwrap_or(now);
+        let at = from_micros(new.valid_from)
+            .unwrap_or(now)
+            .max(from + Duration::microseconds(1));
+        self.table.close(&old.id, micros(at), Some(&new.id)).await
+    }
+
+    /// Reopens `id` after [`StatementStore::retire`] closed it in favour of `keep`.
+    pub async fn unretire(&self, id: &str, keep: &str) -> StatementResult<()> {
+        let _guard = self.write_lock.lock().await;
+        let row = self.live_row(id).await?;
+        if row.superseded_by.as_deref() != Some(keep) {
+            return Err(StatementError::InvalidSupersede {
+                target: id.to_string(),
+                reason: format!("it is not superseded by `{keep}`"),
+            });
+        }
+        self.table.reopen(&row.id).await
+    }
+
+    async fn live_row(&self, id: &str) -> StatementResult<Row> {
+        self.row(id)
+            .await?
+            .filter(|r| r.forgotten_at.is_none())
+            .ok_or_else(|| StatementError::NotFound(id.to_string()))
+    }
+
     fn predicate(&self, query: &StatementQuery) -> String {
         let mut parts = vec!["forgotten_at IS NULL".to_string()];
         if !query.include_history {

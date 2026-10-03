@@ -38,8 +38,8 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 
 /// Ordered schema migrations of `shodh.db`. Never edit an applied entry; append a new one.
-/// The database is shared: the audit chain (1), the dynamics of typed statements (2) and the
-/// generated-visuals gallery (3) use one version sequence, so every component that opens it
+/// The database is shared: the audit chain (1), the dynamics of typed statements (2), the
+/// generated-visuals gallery (3) and learned-memory suggestions (4) use one version sequence, so every component that opens it
 /// sees the same schema.
 const MIGRATIONS: &[(i64, &str)] = &[
     (
@@ -153,6 +153,50 @@ const MIGRATIONS: &[(i64, &str)] = &[
             VALUES (new.seq, new.title, new.note, new.source);
         END;
         CREATE TABLE visual_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );",
+    ),
+    (
+        4,
+        // Learning from conversations: memories an LLM suggests from the user's turns (and
+        // from consolidation), waiting for the user's decision or applied by the user's
+        // automatic-learning policy. A suggestion is never edited after it is decided;
+        // `fingerprint` (class + rendered text) suppresses duplicates and re-suggesting what
+        // the user rejected. `memory_learn_usage` counts the learning model's calls per UTC
+        // day for the cost caps; `memory_learn_state` keeps small values such as the time of
+        // the last consolidation.
+        "CREATE TABLE memory_proposals (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK (kind IN
+                ('remember', 'revise', 'link', 'resolve', 'archive')),
+            origin TEXT NOT NULL CHECK (origin IN ('turn', 'evolve', 'consolidate')),
+            status TEXT NOT NULL CHECK (status IN
+                ('pending', 'accepted', 'rejected', 'learned', 'undone', 'stale', 'failed')),
+            fingerprint TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            conversation_id TEXT NULL,
+            turn_id TEXT NULL,
+            payload_json TEXT NOT NULL,
+            confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+            sensitive_json TEXT NOT NULL DEFAULT '[]',
+            outcome_json TEXT NULL,
+            error TEXT NULL,
+            created_at TEXT NOT NULL,
+            decided_at TEXT NULL
+        );
+        CREATE INDEX memory_proposals_status ON memory_proposals(status, created_at);
+        CREATE INDEX memory_proposals_fingerprint ON memory_proposals(fingerprint, status);
+        CREATE TABLE memory_learn_usage (
+            day TEXT PRIMARY KEY,
+            llm_calls INTEGER NOT NULL DEFAULT 0,
+            input_chars INTEGER NOT NULL DEFAULT 0,
+            output_chars INTEGER NOT NULL DEFAULT 0,
+            proposals INTEGER NOT NULL DEFAULT 0,
+            invalid INTEGER NOT NULL DEFAULT 0,
+            refused INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE memory_learn_state (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );",
@@ -1474,6 +1518,9 @@ mod tests {
                  DROP TABLE generated_visuals_fts;
                  DROP TABLE generated_visuals;
                  DROP TABLE visual_settings;
+                 DROP TABLE memory_proposals;
+                 DROP TABLE memory_learn_usage;
+                 DROP TABLE memory_learn_state;
                  DELETE FROM schema_version WHERE version > 1;",
             )
             .unwrap();
@@ -1492,6 +1539,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!(tables, 2);
+        let learning: i64 = shared
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table'
+                 AND name IN ('memory_proposals', 'memory_learn_usage', 'memory_learn_state')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(learning, 3);
         // Opening again (the audit log after the statement store) applies nothing twice.
         let log = AuditLog::open(&path, None).unwrap();
         let versions: i64 = raw(&dir)

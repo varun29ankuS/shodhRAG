@@ -189,6 +189,19 @@ impl StatementTable {
         Ok(())
     }
 
+    /// Reopens a closed statement: clears `valid_to` and `superseded_by` (undoing a
+    /// supersede or an archive). Content is never rewritten.
+    pub(crate) async fn reopen(&self, id: &str) -> StatementResult<()> {
+        self.table
+            .update()
+            .only_if(format!("id = {}", quote(id)))
+            .column("valid_to", "CAST(NULL AS BIGINT)")
+            .column("superseded_by", "CAST(NULL AS STRING)")
+            .execute()
+            .await?;
+        Ok(())
+    }
+
     /// Soft-deletes a statement.
     pub(crate) async fn forget(&self, id: &str, at: i64) -> StatementResult<u64> {
         let result = self

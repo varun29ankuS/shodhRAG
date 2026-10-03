@@ -621,7 +621,8 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        // Version 3 added the gallery; later versions add other components' tables.
+        assert!(version >= 3, "{version}");
     }
 
     #[test]

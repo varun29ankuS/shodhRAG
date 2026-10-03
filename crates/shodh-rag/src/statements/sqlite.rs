@@ -236,6 +236,57 @@ impl DynamicsStore {
         Ok(())
     }
 
+    /// The link between `a` and `b`, if any.
+    pub fn link(&self, a: &str, b: &str) -> StatementResult<Option<LinkState>> {
+        let (from, to) = super::dynamics::ordered_pair(a, b);
+        let conn = self.lock();
+        Ok(conn
+            .query_row(
+                "SELECT from_id, to_id, weight, co_activations, updated_at
+                 FROM statement_links WHERE from_id = ?1 AND to_id = ?2",
+                params![from, to],
+                read_link,
+            )
+            .optional()?
+            .map(|(_, _, link)| link))
+    }
+
+    /// Sets the link between `a` and `b` exactly (`None` removes it). Used to undo a
+    /// learned link change; ordinary use goes through [`DynamicsStore::strengthen_links`].
+    pub fn set_link(&self, a: &str, b: &str, link: Option<&LinkState>) -> StatementResult<()> {
+        if a == b {
+            return Ok(());
+        }
+        let (from, to) = super::dynamics::ordered_pair(a, b);
+        let conn = self.lock();
+        match link {
+            None => {
+                conn.execute(
+                    "DELETE FROM statement_links WHERE from_id = ?1 AND to_id = ?2",
+                    params![from, to],
+                )?;
+            }
+            Some(link) => {
+                conn.execute(
+                    "INSERT INTO statement_links(from_id, to_id, weight, co_activations, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(from_id, to_id) DO UPDATE SET
+                        weight = excluded.weight,
+                        co_activations = excluded.co_activations,
+                        updated_at = excluded.updated_at",
+                    params![
+                        from,
+                        to,
+                        link.weight.clamp(0.0, 1.0),
+                        link.co_activations,
+                        format_ts(link.updated_at)
+                    ],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// Removes every link of a statement (it was forgotten).
     pub fn remove_links(&self, id: &str) -> StatementResult<usize> {
         let conn = self.lock();

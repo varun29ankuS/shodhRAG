@@ -61,6 +61,11 @@ pub enum E5Mode {
     Passage,
 }
 
+/// Most sequences per inference batch.
+const MAX_BATCH_ITEMS: usize = 64;
+/// Most padded tokens per inference batch (sequences x longest length).
+const MAX_BATCH_TOKENS: usize = 8192;
+
 pub struct E5Embeddings {
     session: Arc<Mutex<Session>>,
     tokenizer: Arc<SentencePieceTokenizer>,
@@ -131,99 +136,19 @@ impl E5Embeddings {
             return Ok(cached.clone());
         }
 
+        // The sequence is embedded unpadded, like passages (which are batched
+        // with texts of similar length): the int8 model quantizes
+        // activations per batch, so padding changes the vector.
         let mut token_ids = self.tokenizer.encode(&prefixed, true)?;
-        if token_ids.len() > 512 {
-            token_ids.truncate(512);
-        }
-
-        let max_len = self.config.max_length.min(512);
-        let (ids_vec, mask_vec) = self.tokenizer.prepare_for_model(&token_ids, max_len);
-
-        let shape = vec![1, max_len];
-        let input_ids = Value::from_array((shape.clone(), ids_vec))
-            .map_err(|e| anyhow!("input_ids tensor: {:?}", e))?;
-        let attention_mask = Value::from_array((shape, mask_vec.clone()))
-            .map_err(|e| anyhow!("attention_mask tensor: {:?}", e))?;
-
-        let inputs = ort::inputs![
-            "input_ids" => input_ids,
-            "attention_mask" => attention_mask,
-        ];
-
-        let mut session = self.session.lock();
-        let outputs = session
-            .run(inputs)
-            .map_err(|e| anyhow!("Inference failed: {:?}", e))?;
-
-        let embedding = self.extract_embedding(&outputs, &mask_vec)?;
+        token_ids.truncate(self.config.max_length.min(512));
+        let embedding = self
+            .embed_token_batch(&[token_ids.as_slice()])?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("embedding model returned no vector"))?;
 
         self.cache.write().put(cache_key, embedding.clone());
         Ok(embedding)
-    }
-
-    fn extract_embedding(
-        &self,
-        outputs: &ort::session::SessionOutputs,
-        attention_mask: &[i64],
-    ) -> Result<Vec<f32>> {
-        // Check available output names and try "sentence_embedding" if present (already pooled)
-        let has_sentence_embedding = outputs.iter().any(|(name, _)| name == "sentence_embedding");
-
-        if has_sentence_embedding {
-            if let Ok((shape, data)) = outputs["sentence_embedding"].try_extract_tensor::<f32>() {
-                if shape.len() == 2 {
-                    let embedding: Vec<f32> = data.to_vec();
-                    return self.normalize_vec(embedding);
-                }
-            }
-        }
-
-        // Fall back to "last_hidden_state" with mean pooling (3D: [batch, seq, dim])
-        let output_name = outputs
-            .iter()
-            .find(|(name, _)| *name == "last_hidden_state" || *name == "token_embeddings")
-            .map(|(name, _)| name.to_string())
-            .unwrap_or_else(|| {
-                // Use the first available output as fallback
-                outputs
-                    .iter()
-                    .next()
-                    .map(|(name, _)| name.to_string())
-                    .unwrap_or_else(|| "last_hidden_state".to_string())
-            });
-
-        let (shape, data) = outputs[output_name.as_str()]
-            .try_extract_tensor::<f32>()
-            .map_err(|e| anyhow!("Failed to extract output '{}': {:?}", output_name, e))?;
-
-        let seq_len = shape[1] as usize;
-        let hidden_dim = shape[2] as usize;
-
-        let mut pooled = vec![0.0f32; hidden_dim];
-        let mut mask_sum = 0.0f32;
-
-        for pos in 0..seq_len {
-            let mask_val = if pos < attention_mask.len() {
-                attention_mask[pos] as f32
-            } else {
-                0.0
-            };
-            if mask_val > 0.0 {
-                mask_sum += mask_val;
-                let offset = pos * hidden_dim; // batch=0, so offset = pos * dim
-                for dim in 0..hidden_dim {
-                    pooled[dim] += data[offset + dim] * mask_val;
-                }
-            }
-        }
-
-        if mask_sum > 0.0 {
-            for dim in 0..hidden_dim {
-                pooled[dim] /= mask_sum;
-            }
-        }
-
-        self.normalize_vec(pooled)
     }
 
     fn normalize_vec(&self, mut vec: Vec<f32>) -> Result<Vec<f32>> {
@@ -243,43 +168,76 @@ impl E5Embeddings {
             return Ok(Vec::new());
         }
 
-        const MAX_BATCH_SIZE: usize = 8;
-        let mut all_embeddings = Vec::with_capacity(texts.len());
+        // Tokenize everything first, then batch texts of similar length:
+        // a batch is padded to its longest member, so mixing a 20-token
+        // bibliography entry with a 500-token section wastes most of the
+        // compute. Batches are capped by padded token volume, not count.
+        let mut tokenized: Vec<(usize, Vec<u32>)> = Vec::with_capacity(texts.len());
+        for (index, text) in texts.iter().enumerate() {
+            let prefixed = match mode {
+                E5Mode::Query => format!("query: {}", text),
+                E5Mode::Passage => format!("passage: {}", text),
+            };
+            let mut token_ids = self.tokenizer.encode(&prefixed, true)?;
+            token_ids.truncate(512);
+            tokenized.push((index, token_ids));
+        }
+        tokenized.sort_by_key(|(_, ids)| ids.len());
 
-        for batch in texts.chunks(MAX_BATCH_SIZE) {
-            let prefixed: Vec<String> = batch
-                .iter()
-                .map(|text| match mode {
-                    E5Mode::Query => format!("query: {}", text),
-                    E5Mode::Passage => format!("passage: {}", text),
-                })
-                .collect();
-
-            let mut all_token_ids = Vec::new();
-            let mut max_len = 0;
-
-            for text in &prefixed {
-                let mut token_ids = self.tokenizer.encode(text, true)?;
-                if token_ids.len() > 512 {
-                    token_ids.truncate(512);
+        let mut results: Vec<Option<Vec<f32>>> = vec![None; texts.len()];
+        let mut start = 0;
+        while start < tokenized.len() {
+            let mut end = start;
+            while end < tokenized.len() {
+                let candidate = end + 1 - start;
+                let padded = tokenized[end].1.len().max(1) * candidate;
+                if candidate > MAX_BATCH_ITEMS || (padded > MAX_BATCH_TOKENS && end > start) {
+                    break;
                 }
-                max_len = max_len.max(token_ids.len());
-                all_token_ids.push(token_ids);
+                end += 1;
             }
+            let batch: Vec<&[u32]> = tokenized[start..end]
+                .iter()
+                .map(|(_, ids)| ids.as_slice())
+                .collect();
+            let embeddings = self.embed_token_batch(&batch)?;
+            if embeddings.len() != batch.len() {
+                return Err(anyhow!(
+                    "embedding model returned {} vectors for {} inputs",
+                    embeddings.len(),
+                    batch.len()
+                ));
+            }
+            for ((index, _), embedding) in tokenized[start..end].iter().zip(embeddings) {
+                results[*index] = Some(embedding);
+            }
+            start = end;
+        }
+        results
+            .into_iter()
+            .map(|r| r.ok_or_else(|| anyhow!("missing embedding for a batch input")))
+            .collect()
+    }
 
-            let padded_len = max_len.min(512);
+    /// Run one padded batch of token sequences through the model and pool.
+    fn embed_token_batch(&self, all_token_ids: &[&[u32]]) -> Result<Vec<Vec<f32>>> {
+        let mut all_embeddings = Vec::with_capacity(all_token_ids.len());
+        {
+            let max_len = all_token_ids.iter().map(|ids| ids.len()).max().unwrap_or(0);
+            let padded_len = max_len.clamp(1, 512);
             let batch_size = all_token_ids.len();
 
+            let pad_id = i64::from(self.tokenizer.pad_id());
             let mut input_ids_flat = Vec::with_capacity(batch_size * padded_len);
             let mut attention_mask_flat = Vec::with_capacity(batch_size * padded_len);
 
-            for token_ids in &all_token_ids {
-                for &id in token_ids {
+            for token_ids in all_token_ids {
+                for &id in token_ids.iter() {
                     input_ids_flat.push(id as i64);
                     attention_mask_flat.push(1i64);
                 }
                 for _ in token_ids.len()..padded_len {
-                    input_ids_flat.push(0i64);
+                    input_ids_flat.push(pad_id);
                     attention_mask_flat.push(0i64);
                 }
             }
@@ -372,5 +330,67 @@ impl EmbeddingModel for E5Embeddings {
 
     fn dimension(&self) -> usize {
         self.config.dimension
+    }
+
+    fn count_tokens(&self, text: &str) -> Option<usize> {
+        self.tokenizer
+            .encode(&format!("passage: {}", text), true)
+            .ok()
+            .map(|ids| ids.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Length-sorted, token-budgeted batching returns vectors in input order:
+    /// each batched vector matches its own single embedding, and matches it
+    /// better than any other text's.
+    #[test]
+    #[cfg_attr(
+        not(shodh_test_models),
+        ignore = "requires SHODH_TEST_MODELS containing multilingual-e5-base/"
+    )]
+    fn batched_embeddings_match_single_embeddings_in_input_order() {
+        let root = std::env::var_os("SHODH_TEST_MODELS")
+            .expect("SHODH_TEST_MODELS must point at the models directory");
+        let config = E5Config::auto_detect(Path::new(&root)).expect("E5 model files");
+        let model = E5Embeddings::new(config).expect("load E5");
+        let long = "Linear attention replaces softmax with a kernel feature map. ".repeat(30);
+        let texts = [
+            long.as_str(),
+            "[12] S. Hochreiter and J. Schmidhuber. Long short-term memory. 1997.",
+            "Negative eigenvalues let linear RNNs track parity.",
+            "The delta rule updates the state with a rank-one correction.",
+        ];
+        let batched = model
+            .embed_batch_with_mode(&texts, E5Mode::Passage)
+            .expect("batch");
+        assert_eq!(batched.len(), texts.len());
+        let mut singles: Vec<Vec<f32>> = Vec::new();
+        for (text, vector) in texts.iter().zip(&batched) {
+            let single = model
+                .embed_batch_with_mode(&[*text], E5Mode::Passage)
+                .expect("single")
+                .remove(0);
+            let cosine: f32 = single.iter().zip(vector).map(|(a, b)| a * b).sum();
+            singles.push(single);
+            // The int8 model quantizes activations per batch, so batch
+            // composition moves vectors slightly; never by this much.
+            assert!(
+                cosine > 0.97,
+                "batched vector differs for {text:?}: cos={cosine}"
+            );
+        }
+        for (i, vector) in batched.iter().enumerate() {
+            let best = singles
+                .iter()
+                .enumerate()
+                .map(|(j, s)| (j, s.iter().zip(vector).map(|(a, b)| a * b).sum::<f32>()))
+                .max_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(j, _)| j);
+            assert_eq!(best, Some(i), "vector {i} is closest to another text");
+        }
     }
 }

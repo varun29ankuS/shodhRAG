@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Check, Copy, CornerLeftUp, FolderPlus, MessagesSquare, RotateCcw } from 'lucide-react';
+import { ArrowUpRight, Check, Copy, CornerLeftUp, FolderPlus, Globe, MessagesSquare, RotateCcw } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { cn } from '../../lib/utils';
 import type { ViewTab } from '../../lib/viewTabs';
@@ -26,8 +26,9 @@ import { MessageContentRenderer } from './MessageContentRenderer';
 import { RunChip } from './RunChip';
 import { SourcePreview } from './SourcePreview';
 import { useNavigationTarget } from '../agent/useNavigationTarget';
-import { appRecordKind, citedNumbers, documentHit, fileExtensionOf, formatLocation, groupSources, sourceLabel, toSearchHits } from './searchResults';
+import { appRecordKind, citedNumbers, documentHit, fileExtensionOf, formatLocation, groupSources, sourceLabel, toSearchHits, webHost } from './searchResults';
 import type { SourceGroup } from './searchResults';
+import { openExternal } from '../agent/WebSources';
 import type { ChatMessage, SearchHit, SendOptions } from './types';
 
 const FOCUS_RING =
@@ -146,7 +147,7 @@ function SourceChips({
               type="button"
               onClick={e => onOpen(group.primary, e.currentTarget)}
               aria-pressed={isActive}
-              title={appRecordKind(group.sourceFile) ? sourceLabel(group.primary) : group.sourceFile}
+              title={group.primary.url ? `${sourceLabel(group.primary)} — ${group.primary.url} (opens in your browser)` : appRecordKind(group.sourceFile) ? sourceLabel(group.primary) : group.sourceFile}
               className={cn(
                 'inline-flex items-center gap-2 h-8 max-w-full pl-2 pr-3 rounded-[10px] border text-shodh-text transition-colors duration-micro',
                 isActive
@@ -155,8 +156,18 @@ function SourceChips({
                 FOCUS_RING,
               )}
             >
-              <FileBadge path={group.sourceFile} />
+              {group.primary.url ? (
+                <Globe className="w-3.5 h-3.5 shrink-0 text-shodh-info" aria-hidden="true" />
+              ) : (
+                <FileBadge path={group.sourceFile} />
+              )}
               <span className="text-[12.5px] truncate">{sourceLabel(group.primary)}</span>
+              {group.primary.url && (
+                <span className="text-[11.5px] text-shodh-text-faint whitespace-nowrap inline-flex items-center gap-0.5">
+                  {webHost(group.primary.url)}
+                  <ArrowUpRight className="w-3 h-3" aria-hidden="true" />
+                </span>
+              )}
               {where && <span className="text-[11.5px] text-shodh-text-faint whitespace-nowrap">{where}</span>}
               {group.hits.length > 1 && (
                 <span className="text-[11.5px] text-shodh-text-faint whitespace-nowrap">{`· ${group.hits.length} passages`}</span>
@@ -291,8 +302,15 @@ function AssistantMessage({
   // Depend on the id only: the message object changes on every streamed
   // frame, and a new callback would rebuild the markdown component map.
   const messageId = message.id;
+  // Web sources open in the browser; documents open in the source viewer.
   const handleOpen = useCallback(
-    (hit: SearchHit, trigger: HTMLElement) => onOpenSource(messageId, hit, trigger),
+    (hit: SearchHit, trigger: HTMLElement) => {
+      if (hit.url) {
+        void openExternal(hit.url);
+        return;
+      }
+      onOpenSource(messageId, hit, trigger);
+    },
     [messageId, onOpenSource],
   );
 

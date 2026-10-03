@@ -124,7 +124,7 @@ export function readParams(value: unknown, reserved: ReadonlySet<string> = CURVE
 
 function compile(value: unknown, names: readonly string[], where: string): Compiled | string {
   const r = tryCompile(value, names);
-  return r.ok ? r.fn : `${where}: ${r.error}`;
+  return 'error' in r ? `${where}: ${r.error}` : r.fn;
 }
 
 function readPair(value: unknown, names: readonly string[], where: string): Pair | string {
@@ -343,4 +343,90 @@ export function formatNumber(value: number, digits = 3): string {
   const abs = Math.abs(value);
   if (abs >= 1e5 || abs < 1e-3) return value.toExponential(Math.max(0, digits - 1)).replace('e+', 'e');
   return String(Number(value.toPrecision(digits + 1)));
+}
+
+/** Pixel layout of a plotting frame: margins, inner area and the data-to-pixel maps. */
+export interface FrameLayout {
+  width: number;
+  height: number;
+  left: number;
+  top: number;
+  innerWidth: number;
+  innerHeight: number;
+  sx: (x: number) => number;
+  sy: (y: number) => number;
+  /** Pixel position (relative to the frame) back to data coordinates. */
+  invert: (px: number, py: number) => Point;
+}
+
+export const FRAME_MARGIN = { left: 48, right: 16, top: 12, bottom: 38 };
+
+/**
+ * Lay out a frame in `available` px of width. With `equal`, one unit is the
+ * same length on both axes (the frame narrows rather than exceed
+ * `maxHeight`); otherwise the height follows the width within bounds.
+ */
+export function frameLayout(
+  available: number,
+  x: readonly [number, number],
+  y: readonly [number, number],
+  options: { equal: boolean; maxHeight: number; minHeight?: number },
+): FrameLayout {
+  const m = FRAME_MARGIN;
+  const minInner = Math.max(40, (options.minHeight ?? 180) - m.top - m.bottom);
+  const maxInner = Math.max(minInner, options.maxHeight - m.top - m.bottom);
+  let innerWidth = Math.max(80, available - m.left - m.right);
+  let innerHeight: number;
+  const xs = x[1] - x[0];
+  const ys = y[1] - y[0];
+  if (options.equal) {
+    innerHeight = (innerWidth * ys) / xs;
+    if (innerHeight > maxInner) {
+      innerHeight = maxInner;
+      innerWidth = (innerHeight * xs) / ys;
+    } else if (innerHeight < minInner) {
+      innerHeight = minInner;
+    }
+  } else {
+    innerHeight = Math.min(maxInner, Math.max(minInner, innerWidth * 0.6));
+  }
+  const left = m.left;
+  const top = m.top;
+  const sx = (v: number) => left + ((v - x[0]) / xs) * innerWidth;
+  const sy = (v: number) => top + innerHeight - ((v - y[0]) / ys) * innerHeight;
+  return {
+    width: innerWidth + m.left + m.right,
+    height: innerHeight + m.top + m.bottom,
+    left,
+    top,
+    innerWidth,
+    innerHeight,
+    sx,
+    sy,
+    invert: (px, py) => [x[0] + ((px - left) / innerWidth) * xs, y[0] + ((top + innerHeight - py) / innerHeight) * ys],
+  };
+}
+
+/** SVG path data of sampled runs in pixel space. */
+export function segmentsPath(segments: Segments, layout: Pick<FrameLayout, 'sx' | 'sy'>): string {
+  const parts: string[] = [];
+  for (const run of segments) {
+    run.forEach(([x, y], i) => parts.push(`${i === 0 ? 'M' : 'L'}${layout.sx(x).toFixed(2)} ${layout.sy(y).toFixed(2)}`));
+  }
+  return parts.join('');
+}
+
+/** Points of an arrowhead (triangle) at `to`, pointing away from `from`, in pixel space. */
+export function arrowHead(from: Point, to: Point, size = 9): Point[] | null {
+  const dx = to[0] - from[0];
+  const dy = to[1] - from[1];
+  const len = Math.hypot(dx, dy);
+  if (!(len > 1e-6)) return null;
+  const ux = dx / len;
+  const uy = dy / len;
+  const s = Math.min(size, len);
+  const bx = to[0] - ux * s;
+  const by = to[1] - uy * s;
+  const w = s * 0.45;
+  return [to, [bx - uy * w, by + ux * w], [bx + uy * w, by - ux * w]];
 }

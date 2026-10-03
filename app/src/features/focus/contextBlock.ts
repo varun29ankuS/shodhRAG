@@ -11,6 +11,7 @@
 
 import type { FocusExtras, FocusTarget, FocusTaskSnapshot } from './focusTypes.ts';
 import { FOLLOWUPS_INSTRUCTION, stripFollowups } from './followups.ts';
+import { compactSvg } from '../ask/visual/svgSanitize.ts';
 
 /** Most characters of the object itself placed in one question. */
 export const MAX_CONTEXT_CHARS = 6_000;
@@ -28,6 +29,9 @@ export const MAX_ANCESTOR_CHARS = 2_400;
 export const ANCESTOR_OBJECT_CHARS = 280;
 export const ANCESTOR_QUESTION_CHARS = 200;
 export const ANCESTOR_ANSWER_CHARS = 420;
+
+/** Characters of a sketch, plot or simulation source placed in one question (slider values are kept apart). */
+export const MAX_VISUAL_SOURCE_CHARS = 5_000;
 
 /** Cut to at most `max` code points, never splitting a surrogate pair. */
 export function capText(text: string, max: number): { text: string; omitted: number } {
@@ -96,6 +100,22 @@ function taskJson(task: FocusTaskSnapshot): string {
   );
 }
 
+function visualSource(source: string): string {
+  const cut = capText(source.trim(), MAX_VISUAL_SOURCE_CHARS);
+  return cut.omitted > 0 ? `${cut.text}\n(${cut.omitted} more characters not included)` : cut.text;
+}
+
+/** Slider positions as `name = value` lines. */
+export function sliderLines(values: readonly { name: string; value: number }[]): string {
+  return values.map(v => `${v.name} = ${Number(v.value.toPrecision(6))}`).join('\n');
+}
+
+function interactiveSections(heading: string, target: Extract<FocusTarget, { kind: 'plot' | 'simulation' }>): Section[] {
+  const sections: Section[] = [{ heading, payload: visualSource(target.source), info: 'json' }];
+  if (target.values.length > 0) sections.push({ heading: 'slider values when the reader opened it', payload: sliderLines(target.values), info: 'text' });
+  return sections;
+}
+
 function pageLabel(target: Extract<FocusTarget, { kind: 'source' }>, extras: FocusExtras): string {
   const page = extras.page ?? target.hit.page?.start ?? null;
   if (page === null) return '';
@@ -116,6 +136,12 @@ function sectionsFor(target: FocusTarget, extras: FocusExtras): Section[] {
       return [{ heading: 'diagram (mermaid source)', payload: target.source.trim(), info: 'mermaid' }];
     case 'chart':
       return [{ heading: 'chart data (JSON)', payload: target.source.trim(), info: 'json' }];
+    case 'svg':
+      return [{ heading: 'sketch (SVG source; long path data shortened)', payload: visualSource(compactSvg(target.source)), info: 'svg' }];
+    case 'plot':
+      return interactiveSections('interactive plot (JSON spec; formulas use x and the slider parameters)', target);
+    case 'simulation':
+      return interactiveSections('simulation (JSON spec: state, derivatives, events, drawing)', target);
     case 'equation':
       return [{ heading: 'equation (LaTeX)', payload: target.tex.trim(), info: 'latex' }];
     case 'table': {
@@ -282,6 +308,12 @@ export function contextLabel(target: FocusTarget, extras: FocusExtras = {}): str
       return 'diagram source';
     case 'chart':
       return 'chart data';
+    case 'svg':
+      return 'sketch source';
+    case 'plot':
+      return target.values.length > 0 ? 'plot spec and slider values' : 'plot spec';
+    case 'simulation':
+      return target.values.length > 0 ? 'simulation spec and slider values' : 'simulation spec';
     case 'equation':
       return 'equation';
     case 'table':

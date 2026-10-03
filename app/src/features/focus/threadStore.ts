@@ -19,6 +19,7 @@ import type {
   FocusDocumentRef,
   FocusExtras,
   FocusPageSpan,
+  FocusParamValue,
   FocusSourceHit,
   FocusTarget,
   FocusTaskSnapshot,
@@ -29,6 +30,9 @@ import type {
 import type { AnswerScope } from '../agent/useAgentSession.ts';
 import { readFollowups, stripFollowups } from './followups.ts';
 import { safeTruncate } from './markdownSafe.ts';
+import { SVG_MAX_CHARS } from '../ask/visual/svgSanitize.ts';
+import { PLOT_MAX_CHARS } from '../ask/visual/plotSpec.ts';
+import { SIMULATION_MAX_CHARS } from '../ask/visual/simulationSpec.ts';
 
 /** Key of the side threads inside a message's `metadata`. */
 export const METADATA_KEY = 'focusThreads';
@@ -101,6 +105,31 @@ function readDocument(value: unknown): FocusDocumentRef | null {
   return { sourceFile: value.sourceFile, fileName: str(value.fileName) ? value.fileName : '', page };
 }
 
+/** Slider positions kept with a plot or simulation target. */
+export const MAX_PARAM_VALUES = 8;
+
+/** Valid slider positions (well-formed names, finite values, no duplicates), capped. */
+export function readParamValues(value: unknown): FocusParamValue[] {
+  if (!Array.isArray(value)) return [];
+  const out: FocusParamValue[] = [];
+  for (const v of value) {
+    if (out.length >= MAX_PARAM_VALUES) break;
+    if (!isRecord(v) || !str(v.name) || !/^[A-Za-z][A-Za-z0-9_]{0,23}$/.test(v.name)) continue;
+    if (typeof v.value !== 'number' || !Number.isFinite(v.value)) continue;
+    if (out.some(o => o.name === v.name)) continue;
+    out.push({ name: v.name, value: v.value });
+  }
+  return out;
+}
+
+/**
+ * Source of a drawn visual, or null when it is over the render cap: cutting
+ * it would leave markup or JSON that cannot be drawn again.
+ */
+function visualSource(value: unknown, max: number): string | null {
+  return str(value) && value.trim() && value.length <= max ? value : null;
+}
+
 /** Characters of a selected text and of its paragraph kept with a thread. */
 export const MAX_SELECTION_TARGET_CHARS = 4_000;
 export const MAX_PARAGRAPH_TARGET_CHARS = 3_000;
@@ -114,6 +143,15 @@ export function readTarget(value: unknown): FocusTarget | null {
     case 'mermaid':
     case 'chart':
       return str(value.source) ? { kind: value.kind, label, source: capped(value.source) } : null;
+    case 'svg': {
+      const source = visualSource(value.source, SVG_MAX_CHARS);
+      return source ? { kind: 'svg', label, source } : null;
+    }
+    case 'plot':
+    case 'simulation': {
+      const source = visualSource(value.source, value.kind === 'plot' ? PLOT_MAX_CHARS : SIMULATION_MAX_CHARS);
+      return source ? { kind: value.kind, label, source, values: readParamValues(value.values) } : null;
+    }
     case 'equation':
       return str(value.tex) ? { kind: 'equation', label, tex: capped(value.tex) } : null;
     case 'table': {

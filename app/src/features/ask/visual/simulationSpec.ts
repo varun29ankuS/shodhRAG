@@ -113,7 +113,7 @@ function text(value: unknown, max = 80): string {
 
 function compile(value: unknown, names: readonly string[], where: string): Compiled | string {
   const r = tryCompile(value, names);
-  return r.ok ? r.fn : `${where}: ${r.error}`;
+  return 'error' in r ? `${where}: ${r.error}` : r.fn;
 }
 
 function readPair(value: unknown, names: readonly string[], where: string): Pair | string {

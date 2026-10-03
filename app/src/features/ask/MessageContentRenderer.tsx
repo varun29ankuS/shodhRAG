@@ -17,6 +17,9 @@ import { ArtifactPreviewCard } from '../../components/ArtifactPreviewCard';
 import type { SearchHit } from './types';
 import { sourceLabel } from './searchResults';
 import { ChartBlock, MermaidBlock } from './visual/VisualBlocks';
+import { SvgBlock } from './visual/SvgSketch';
+import { PlotBlock } from './visual/PlotView';
+import { SimulationBlock } from './visual/SimulationView';
 import { FocusFrame } from '../focus/FocusFrame';
 import { tableRows } from '../focus/focusDom';
 import rehypeFocusEquations, { FOCUS_EQUATION_TAG } from '../focus/rehypeFocusEquations';
@@ -29,6 +32,9 @@ const CITE_CLOSE = 'XESHODH';
 const CITE_PATTERN = new RegExp(`${CITE_OPEN}(\\d+)${CITE_CLOSE}`, 'g');
 
 const REHYPE_PLUGINS = [rehypeKatex, rehypeFocusEquations];
+
+/** Fenced languages drawn as visuals, which draw their own frame. */
+const VISUAL_LANGUAGES = new Set(['chart', 'svg', 'plot', 'simulation']);
 
 /** Target of a rendered table (header row first). */
 function tableFromElement(el: HTMLElement) {
@@ -251,7 +257,7 @@ export function MessageContentRenderer({
       const lang = React.isValidElement<{ className?: string }>(child)
         ? /language-([\w-]+)/.exec(child.props.className || '')?.[1] ?? ''
         : '';
-      if (lang === 'chart' || isMermaidLanguage(lang)) return <>{children}</>;
+      if (VISUAL_LANGUAGES.has(lang) || isMermaidLanguage(lang)) return <>{children}</>;
       return <div className="my-4 rounded-xl overflow-hidden border border-shodh-border bg-shodh-surface">{children}</div>;
     },
     code: ({ children, className }) => {
@@ -260,6 +266,9 @@ export function MessageContentRenderer({
         const codeString = String(children).replace(/\n$/, '');
         if (isMermaidLanguage(match[1])) return <MermaidBlock source={mermaidSource(match[1], codeString)} dark={isDark} />;
         if (match[1] === 'chart') return <ChartBlock source={codeString} theme={theme} />;
+        if (match[1] === 'svg') return <SvgBlock source={codeString} />;
+        if (match[1] === 'plot') return <PlotBlock source={codeString} />;
+        if (match[1] === 'simulation') return <SimulationBlock source={codeString} />;
         return (
           <div>
             <div className="flex items-center justify-between pl-3 pr-1.5 h-8 border-b border-shodh-border-subtle bg-shodh-raised">

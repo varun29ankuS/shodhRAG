@@ -45,10 +45,22 @@ export interface FocusDocumentRef {
   page: number | null;
 }
 
+/** A slider position of an interactive visual (plot or simulation). */
+export interface FocusParamValue {
+  name: string;
+  value: number;
+}
+
 /** The object shown in the pop-out. Everything needed to draw it again. */
 export type FocusTarget =
   | { kind: 'mermaid'; label: string; source: string }
   | { kind: 'chart'; label: string; source: string }
+  /** A ```svg sketch (source as written; sanitized again whenever drawn). */
+  | { kind: 'svg'; label: string; source: string }
+  /** A ```plot spec with the slider positions when it was opened. */
+  | { kind: 'plot'; label: string; source: string; values: FocusParamValue[] }
+  /** A ```simulation spec with the slider positions when it was opened. */
+  | { kind: 'simulation'; label: string; source: string; values: FocusParamValue[] }
   | { kind: 'equation'; label: string; tex: string }
   | { kind: 'table'; label: string; rows: string[][] }
   | { kind: 'image'; label: string; src: string | null; alt: string }

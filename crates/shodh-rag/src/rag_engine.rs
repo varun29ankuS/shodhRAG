@@ -10,6 +10,7 @@ use crate::embeddings::e5::{E5Config, E5Embeddings};
 use crate::embeddings::{EmbeddingModel, SearchModelsMissing};
 use crate::processing::chunker::{ContextualChunkResult, TextChunker};
 use crate::processing::parser::DocumentParser;
+use crate::processing::structure_chunker::{StructureChunker, STRUCTURE_CHUNKER_VERSION};
 use crate::reranking::CrossEncoderReranker;
 use crate::search::hybrid::{score_aware_rrf, HybridSource};
 use crate::search::TextSearch;
@@ -74,6 +75,39 @@ fn insert_page_metadata(meta: &mut HashMap<String, String>, page: Option<usize>)
         meta.insert("page_start".to_string(), page.clone());
         meta.insert("page_end".to_string(), page);
     }
+}
+
+/// Record a structured chunk's provenance: page range, bounding boxes (JSON
+/// `[{"page":3,"x0":..,"y0":..,"x1":..,"y1":..}]`, PDF points, bottom-left
+/// origin), section path (`" > "`-joined), block kinds and unit kind.
+fn insert_layout_metadata(
+    meta: &mut HashMap<String, String>,
+    layout: &crate::processing::structure_chunker::ChunkLayout,
+) {
+    if let Some(start) = layout.page_start {
+        let end = layout.page_end.unwrap_or(start);
+        meta.insert("page".to_string(), start.to_string());
+        meta.insert("page_start".to_string(), start.to_string());
+        meta.insert("page_end".to_string(), end.to_string());
+    }
+    if !layout.regions.is_empty() {
+        let regions: Vec<_> = layout
+            .regions
+            .iter()
+            .map(|r| crate::processing::structure_chunker::ChunkRegion {
+                page: r.page,
+                bbox: r.bbox.rounded(),
+            })
+            .collect();
+        if let Ok(json) = serde_json::to_string(&regions) {
+            meta.insert("bboxes".to_string(), json);
+        }
+    }
+    if !layout.section_path.is_empty() {
+        meta.insert("section_path".to_string(), layout.section_path.join(" > "));
+    }
+    meta.insert("block_kinds".to_string(), layout.block_kinds.join(","));
+    meta.insert("unit_kind".to_string(), layout.unit.to_string());
 }
 
 /// Human-readable page label (`"3"` or `"3-5"`) from chunk metadata written by
@@ -234,6 +268,7 @@ pub struct RAGEngine {
     /// model without holding the engine lock during inference.
     embeddings: Option<Arc<dyn EmbeddingModel>>,
     chunker: TextChunker,
+    structure_chunker: StructureChunker,
     parser: DocumentParser,
     config: RAGConfig,
     /// The cross-encoder, shared with other rankers (web and paper results)
@@ -288,11 +323,13 @@ impl RAGEngine {
             config.chunking.min_chunk_size,
         );
 
+        let structure_chunker = StructureChunker::new(config.chunking.max_tokens);
         let mut engine = Self {
             store,
             text_search,
             embeddings: None,
             chunker,
+            structure_chunker,
             parser: DocumentParser::new(),
             config,
             reranker: SharedReranker::default(),
@@ -400,7 +437,9 @@ impl RAGEngine {
         self.require_embeddings()?;
         let source = normalize_source_path(path);
 
+        let parse_started = std::time::Instant::now();
         let parsed = self.parser.parse_file(path)?;
+        let parse_ms = parse_started.elapsed().as_millis();
 
         let mut merged_metadata = parsed.metadata;
         for (k, v) in metadata {
@@ -421,23 +460,60 @@ impl RAGEngine {
             .cloned()
             .unwrap_or_else(|| parsed.title.clone());
 
-        // Use structure-aware chunking for documents with structured data (PDF forms,
-        // spreadsheet tables, relationships). Keeps related data together as atomic units
-        // instead of scattering them across naive sliding-window chunks.
-        let chunks = if parsed.structured_sections.is_empty() {
-            self.chunker
-                .chunk_with_context(&parsed.content, &title, &source)
-        } else {
-            self.chunker
-                .chunk_structured(&parsed.structured_sections, &title, &source)
-        };
+        // Documents parsed into semantic blocks (PDF, LaTeX, Markdown) are
+        // chunked by unit: sections, tables with headers, theorems with their
+        // proofs, single references. Form fields and relationships extracted
+        // from PDFs, and spreadsheet tables, use the section chunker; other
+        // formats fall back to sliding windows.
+        let chunk_started = std::time::Instant::now();
+        let mut chunks = Vec::new();
+        if let Some(doc) = parsed.document.as_ref().filter(|d| !d.blocks.is_empty()) {
+            let embedder = self.require_embeddings()?;
+            let count = |text: &str| {
+                embedder
+                    .count_tokens(text)
+                    .unwrap_or_else(|| crate::embeddings::estimate_tokens(text))
+            };
+            chunks = self.structure_chunker.chunk(doc, &title, &count);
+            merged_metadata.insert("chunker".to_string(), STRUCTURE_CHUNKER_VERSION.to_string());
+        }
+        if !parsed.structured_sections.is_empty() {
+            chunks.extend(self.chunker.chunk_structured(
+                &parsed.structured_sections,
+                &title,
+                &source,
+            ));
+        }
+        if chunks.is_empty() && parsed.document.is_none() {
+            chunks = self
+                .chunker
+                .chunk_with_context(&parsed.content, &title, &source);
+        }
+        for (index, chunk) in chunks.iter_mut().enumerate() {
+            chunk.index = index;
+        }
+        let chunk_ms = chunk_started.elapsed().as_millis();
+
+        let embed_started = std::time::Instant::now();
         let prepared =
             self.prepare_chunks(chunks, title, source.clone(), &merged_metadata, &citation)?;
+        let embed_ms = embed_started.elapsed().as_millis();
 
         // Replacement is fully prepared — now drop the previous version of this file.
+        let store_started = std::time::Instant::now();
         self.remove_source_chunks(&source).await?;
 
-        self.store_prepared(prepared).await
+        let ids = self.store_prepared(prepared).await?;
+        tracing::info!(
+            source = %source,
+            chunks = ids.len(),
+            parse_ms,
+            chunk_ms,
+            embed_ms,
+            store_ms = store_started.elapsed().as_millis(),
+            "Indexed file"
+        );
+        Ok(ids)
     }
 
     /// Remove every stored chunk for `source` from both LanceDB and Tantivy.
@@ -500,7 +576,10 @@ impl RAGEngine {
                 per_chunk_meta.insert("chunk_type".to_string(), heading.clone());
                 per_chunk_meta.insert("heading".to_string(), heading.clone());
             }
-            insert_page_metadata(&mut per_chunk_meta, chunk.page);
+            match &chunk.layout {
+                Some(layout) => insert_layout_metadata(&mut per_chunk_meta, layout),
+                None => insert_page_metadata(&mut per_chunk_meta, chunk.page),
+            }
             // Extract structured fields (emails, phones, etc.) at ingest time
             for (k, v) in extract_structured_fields(&chunk.text) {
                 per_chunk_meta.insert(k, v);
@@ -510,7 +589,7 @@ impl RAGEngine {
 
             // Citation is stored per chunk so its page survives into search results.
             let chunk_citation = Citation {
-                page_numbers: chunk.page.map(|p| p.to_string()),
+                page_numbers: page_numbers_from_metadata(&per_chunk_meta),
                 ..citation.clone()
             };
             let citation_json =
@@ -870,6 +949,7 @@ impl RAGEngine {
         // Each additional chunk from the same source gets score *= lambda^count.
         // This naturally balances depth vs diversity without an artificial hard cap.
         Self::apply_mmr_diversity(&mut results, 0.5);
+        Self::demote_reference_entries(&mut results);
 
         // Log final diversity before truncation
         {
@@ -1283,6 +1363,29 @@ impl RAGEngine {
         });
     }
 
+    /// Bibliography entries are indexed one per chunk. Short and dense in
+    /// names and topics, they score moderately on almost any query; they are
+    /// kept below content chunks unless one outscores every content chunk
+    /// (a query about a cited work). Order is otherwise unchanged.
+    fn demote_reference_entries(results: &mut Vec<ComprehensiveResult>) {
+        let is_reference = |r: &ComprehensiveResult| {
+            r.metadata.get("unit_kind").map(String::as_str) == Some("reference_entry")
+        };
+        let best_content = results
+            .iter()
+            .filter(|r| !is_reference(r))
+            .map(|r| r.score)
+            .fold(f32::NEG_INFINITY, f32::max);
+        if best_content == f32::NEG_INFINITY {
+            return;
+        }
+        let (mut head, tail): (Vec<_>, Vec<_>) = std::mem::take(results)
+            .into_iter()
+            .partition(|r| !is_reference(r) || r.score > best_content);
+        head.extend(tail);
+        *results = head;
+    }
+
     /// Hard cap on results per source file to guarantee diversity across documents.
     /// After scoring and MMR, retain at most `max_per_source` chunks from any single file.
     /// Maximal Marginal Relevance — diminishing returns per source file.
@@ -1315,6 +1418,79 @@ impl RAGEngine {
 #[cfg(test)]
 mod page_metadata_tests {
     use super::*;
+
+    #[test]
+    fn layout_metadata_round_trips_to_citation_pages() {
+        use crate::processing::document_model::BBox;
+        use crate::processing::structure_chunker::{ChunkLayout, ChunkRegion};
+        let layout = ChunkLayout {
+            page_start: Some(3),
+            page_end: Some(4),
+            regions: vec![
+                ChunkRegion {
+                    page: 3,
+                    bbox: BBox::new(72.04, 400.0, 300.0, 700.0),
+                },
+                ChunkRegion {
+                    page: 4,
+                    bbox: BBox::new(72.0, 600.0, 300.0, 720.0),
+                },
+            ],
+            section_path: vec!["3 Method".to_string(), "3.2 Chunkwise form".to_string()],
+            block_kinds: vec!["paragraph", "equation"],
+            unit: "text",
+        };
+        let mut meta = HashMap::new();
+        insert_layout_metadata(&mut meta, &layout);
+        assert_eq!(page_numbers_from_metadata(&meta).as_deref(), Some("3-4"));
+        assert_eq!(meta["section_path"], "3 Method > 3.2 Chunkwise form");
+        assert_eq!(meta["block_kinds"], "paragraph,equation");
+        assert_eq!(meta["unit_kind"], "text");
+        let regions: Vec<ChunkRegion> = serde_json::from_str(&meta["bboxes"]).expect("bbox json");
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[0].page, 3);
+        assert_eq!(regions[0].bbox.x0, 72.0);
+        assert!(meta["bboxes"].contains("\"page\":3,\"x0\":72.0"));
+    }
+
+    fn result(score: f32, unit: &str) -> ComprehensiveResult {
+        let mut metadata = HashMap::new();
+        metadata.insert("unit_kind".to_string(), unit.to_string());
+        ComprehensiveResult {
+            id: Uuid::new_v4(),
+            score,
+            metadata,
+            citation: Citation::default(),
+            snippet: unit.to_string(),
+            source_index: "hybrid".to_string(),
+        }
+    }
+
+    #[test]
+    fn reference_entries_rank_below_content_unless_they_beat_it() {
+        // Input is score-sorted, as after reranking and MMR.
+        let mut results = vec![
+            result(0.95, "reference_entry"),
+            result(0.9, "text"),
+            result(0.5, "reference_entry"),
+            result(0.4, "text"),
+        ];
+        RAGEngine::demote_reference_entries(&mut results);
+        let order: Vec<(f32, String)> = results
+            .iter()
+            .map(|r| (r.score, r.metadata["unit_kind"].clone()))
+            .collect();
+        let expected: Vec<(f32, String)> = [
+            (0.95, "reference_entry"),
+            (0.9, "text"),
+            (0.4, "text"),
+            (0.5, "reference_entry"),
+        ]
+        .iter()
+        .map(|(s, k)| (*s, k.to_string()))
+        .collect();
+        assert_eq!(order, expected);
+    }
 
     #[test]
     fn paged_chunk_metadata_round_trips_to_page_label() {

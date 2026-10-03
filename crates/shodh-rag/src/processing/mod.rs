@@ -6,6 +6,7 @@ pub mod parser;
 pub(crate) mod pdf_fixtures;
 pub mod pdf_info;
 pub mod pdf_layout;
+pub mod structure_chunker;
 pub mod tabular;
 pub mod text_structure;
 

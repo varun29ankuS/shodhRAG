@@ -166,6 +166,9 @@ pub struct ContextualChunkResult {
     /// 1-based source page for chunks produced from a paged section (PDF page).
     /// `None` for unpaged content (plain text, spreadsheets, CSV, document-level data).
     pub page: Option<usize>,
+    /// Pages, boxes, section path and block kinds for chunks made from a
+    /// structured document; `None` for window and section chunks.
+    pub layout: Option<super::structure_chunker::ChunkLayout>,
 }
 
 /// Map a section's page number to an optional page: 0 means "not paged".
@@ -217,6 +220,7 @@ impl TextChunker {
                     start_offset: chunk.start_offset,
                     end_offset: chunk.end_offset,
                     page: None,
+                    layout: None,
                 }
             })
             .collect()
@@ -272,6 +276,7 @@ impl TextChunker {
                             start_offset: 0,
                             end_offset: body.len(),
                             page: form_page,
+                            layout: None,
                         });
                         global_index += 1;
                     } else {
@@ -307,6 +312,7 @@ impl TextChunker {
                                 start_offset: 0,
                                 end_offset: chunk_text.len(),
                                 page: form_page,
+                                layout: None,
                             });
                             global_index += 1;
                             chunk_start = chunk_end;
@@ -357,6 +363,7 @@ impl TextChunker {
                             start_offset: 0,
                             end_offset: content.len(),
                             page: None,
+                            layout: None,
                         });
                         global_index += 1;
                     } else {
@@ -469,6 +476,7 @@ impl TextChunker {
             end_offset: text.len(),
             text,
             page: table_page,
+            layout: None,
         };
 
         let row_chars: Vec<usize> = row_lines.iter().map(|l| l.chars().count()).collect();

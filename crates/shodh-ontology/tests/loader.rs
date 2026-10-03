@@ -265,7 +265,9 @@ fn extension_cannot_redefine_core_class_and_error_names_both_locations() {
     }
     let rendered = error.to_string();
     assert!(
-        rendered.starts_with("workspace/ext.toml:8:"),
+        rendered.starts_with(
+            "workspace/ext.toml:8:6: `Invoice` is already defined at ontology/core.toml:"
+        ),
         "rendered: {rendered}"
     );
     assert!(rendered.contains(&format!(

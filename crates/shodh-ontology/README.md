@@ -83,7 +83,12 @@ A **regex-constrained value** is written as `range = "String"` (or `Url`/`Email`
 - Sources merge in this order: core, then packs, then extensions. Within each layer they
   merge in the order they were added.
 - Packs and extensions can only **add**. Redefining any existing class or property is an
-  error, for example: `workspace/ext.toml:8:6: ``Invoice`` is already defined at ontology/core.toml:111:6`.
+  error, for example:
+
+  ```text
+  workspace/ext.toml:8:6: `Invoice` is already defined at ontology/core.toml:111:6; packs and extensions may only add terms, never redefine them
+  ```
+
 - A term may only reference terms from its own source or an earlier one.
 - An extension may add optional properties to core classes. It may **not** add a
   *required* property to a class it does not own, because that would retroactively

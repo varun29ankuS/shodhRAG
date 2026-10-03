@@ -18,6 +18,7 @@ import {
   SUMMARY_ANSWER_CHARS,
   removeThread,
   sameTarget,
+  scopeForLevels,
   sideScope,
   threadSummary,
   repliesLabel,
@@ -170,10 +171,12 @@ test('same target: by content, by file passage, by task id', () => {
 
 test('summary: last question and an excerpt of its answer', () => {
   let t = thread('a');
-  assert.equal(threadSummary(t), 'About "Flow": ');
+  assert.equal(threadSummary(t), '', 'nothing to summarise before the first answer');
   t = appendTurn(t, { id: 'u1', role: 'user', content: 'What does A do?', timestamp: '1' });
   t = appendTurn(t, { id: 'r1', role: 'assistant', content: 'A starts the flow.', timestamp: '2' });
-  assert.equal(threadSummary(t), 'From a side discussion about "Flow":\nQ: What does A do?\nA: A starts the flow.');
+  // No "From a side discussion" header: the card and the agent prompt add it once.
+  assert.equal(threadSummary(t), '**Asked:** What does A do?\n\nA starts the flow.');
+  assert.ok(!threadSummary(t).includes('side discussion'));
   t = appendTurn(t, { id: 'r2', role: 'assistant', content: 'x'.repeat(SUMMARY_ANSWER_CHARS + 10), timestamp: '3' });
   const long = threadSummary(t);
   assert.ok(long.endsWith('…'));
@@ -229,4 +232,65 @@ test('side questions about a document passage search that file around its pages'
   assert.deepEqual(sideScope({ ...target, hit: { ...hit, page: null } }, {}), { sourceIds: [], sourceFiles: ['C:/docs/report.pdf'] });
   assert.equal(sideScope({ ...target, hit: { ...hit, url: 'https://example.com/a.pdf' } }, {}), null, 'web results are not indexed files');
   assert.equal(sideScope({ kind: 'mermaid', label: 'Flow', source: 'graph TD; A-->B' }, {}), null);
+});
+
+test('text selected in a document viewer searches that file; text selected in an answer does not', () => {
+  const selection = {
+    kind: 'selection' as const,
+    label: '"operating margin"',
+    text: 'operating margin',
+    paragraph: 'The operating margin rose.',
+    origin: 'document' as const,
+    document: { sourceFile: 'C:/docs/report.pdf', fileName: 'report.pdf', page: 7 },
+  };
+  assert.deepEqual(sideScope(selection, {}), { sourceIds: [], sourceFiles: ['C:/docs/report.pdf'], pages: [6, 7, 8] });
+  assert.deepEqual(sideScope(selection, { page: 9 }).pages, [8, 9, 10], 'the page being viewed wins');
+  assert.deepEqual(
+    sideScope({ ...selection, document: { ...selection.document, page: null } }, {}),
+    { sourceIds: [], sourceFiles: ['C:/docs/report.pdf'] },
+  );
+  assert.equal(sideScope({ ...selection, document: { ...selection.document, sourceFile: 'note://n1' } }, {}), null, 'virtual sources are not indexed files');
+  assert.equal(sideScope({ ...selection, origin: 'answer', document: null }, {}), null);
+});
+
+test('nested levels search the nearest document level, at its own pages', () => {
+  const hit = {
+    number: 1,
+    sourceFile: 'C:/docs/report.pdf',
+    fileName: 'report.pdf',
+    title: 'Report',
+    text: 'Revenue grew',
+    snippet: 'Revenue grew',
+    score: 0.4,
+    page: { start: 4, end: 4 },
+    lineRange: null,
+    url: null,
+  };
+  const doc = { kind: 'source' as const, label: 'report.pdf, p. 4', hit };
+  const chart = { kind: 'chart' as const, label: 'Revenue', source: '{}' };
+  const inAnswer = { kind: 'selection' as const, label: '"grew"', text: 'grew', paragraph: '', origin: 'answer' as const, document: null };
+  assert.deepEqual(scopeForLevels([doc, chart], { page: 20 }), { sourceIds: [], sourceFiles: ['C:/docs/report.pdf'], pages: [3, 4, 5] },
+    'the viewed page belongs to the inner level, not the document level');
+  assert.deepEqual(scopeForLevels([doc, chart, inAnswer], {}), scopeForLevels([doc], {}), 'skips every level without a document');
+  assert.deepEqual(scopeForLevels([chart, doc], { page: 9 }).pages, [8, 9, 10], 'the innermost document level uses the viewed page');
+  assert.equal(scopeForLevels([chart, inAnswer], {}), null);
+  assert.equal(scopeForLevels([], {}), null);
+});
+
+test('drill-down links survive the conversation-level merge and a stored round trip', () => {
+  const root = { ...thread('root', null), updatedAt: '2026-10-03T10:00:00.000Z' };
+  const nested: FocusThread = {
+    ...thread('nested', null),
+    parentThreadId: 'root',
+    parentTurnId: 'turn-a',
+    updatedAt: '2026-10-03T11:00:00.000Z',
+  };
+  const merged = mergeThreads([root], [nested]);
+  const back = readThreads(JSON.parse(JSON.stringify(merged)));
+  const kept = back.find(t => t.id === 'nested');
+  assert.equal(kept?.parentThreadId, 'root');
+  assert.equal(kept?.parentTurnId, 'turn-a');
+  const inMessage = threadsFromMetadata(metadataWithThreads({}, [{ ...nested, anchor: { ...nested.anchor, parentMessageId: 'm1' } }]));
+  assert.equal(inMessage[0].parentThreadId, 'root');
+  assert.equal(inMessage[0].parentTurnId, 'turn-a');
 });

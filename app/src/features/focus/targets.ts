@@ -4,7 +4,7 @@
  * small. Pure module, unit-tested with Node (`app/tests/focusContext.test.ts`).
  */
 
-import type { FocusSourceHit, FocusTarget, FocusTaskSnapshot } from './focusTypes.ts';
+import type { FocusDocumentRef, FocusSourceHit, FocusTarget, FocusTaskSnapshot } from './focusTypes.ts';
 import { MAX_TARGET_CHARS } from './threadStore.ts';
 
 const LABEL_CHARS = 60;
@@ -91,4 +91,93 @@ export function sourceTarget(hit: FocusSourceHit, label: string): FocusTarget {
 
 export function taskTarget(task: FocusTaskSnapshot): FocusTarget {
   return { kind: 'task', label: short(task.title) || 'Task', task: { ...task, notes: cap(task.notes) } };
+}
+
+/** Characters of a selection, and of the text around it, kept with a thread. */
+export const MAX_SELECTED_CHARS = 4_000;
+export const MAX_SURROUNDING_CHARS = 3_000;
+/** Characters on each side of a selection taken from a long block (a PDF page). */
+export const SURROUNDING_RADIUS = 600;
+
+function flat(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * The text around `selected` inside `full`: the whole block when it is
+ * short, else a window of `radius` characters on each side of the first
+ * occurrence (whitespace-insensitive). The block's start when not found.
+ */
+export function surroundingText(full: string, selected: string, radius = SURROUNDING_RADIUS): string {
+  const block = flat(full);
+  const needle = flat(selected);
+  if (Array.from(block).length <= radius * 2 + Array.from(needle).length) return cap(block, MAX_SURROUNDING_CHARS);
+  const at = needle ? block.indexOf(needle) : -1;
+  if (at < 0) return `${cap(block, radius * 2).trimEnd()}…`;
+  const start = Math.max(0, at - radius);
+  const end = Math.min(block.length, at + needle.length + radius);
+  const window = block.slice(start, end);
+  return cap(`${start > 0 ? '…' : ''}${window}${end < block.length ? '…' : ''}`, MAX_SURROUNDING_CHARS);
+}
+
+export interface SelectionInput {
+  text: string;
+  /** The paragraph (or page text) the selection was made in. */
+  context: string;
+  origin: 'answer' | 'document';
+  document?: FocusDocumentRef | null;
+}
+
+/** A target for "Ask about this" on selected text; null for an empty selection. */
+export function selectionTarget(input: SelectionInput): FocusTarget | null {
+  const text = input.text.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  if (!flat(text)) return null;
+  const doc = input.document && input.document.sourceFile ? input.document : null;
+  return {
+    kind: 'selection',
+    label: `“${short(text, 48)}”`,
+    text: cap(text, MAX_SELECTED_CHARS),
+    paragraph: surroundingText(input.context, text),
+    origin: input.origin,
+    document: doc
+      ? { sourceFile: doc.sourceFile, fileName: doc.fileName, page: doc.page !== null && Number.isInteger(doc.page) && doc.page > 0 ? doc.page : null }
+      : null,
+  };
+}
+
+/** A place in a document to show next to the discussion ("Show in paper"). */
+export interface PaperRef {
+  sourceFile: string;
+  fileName: string;
+  page: number | null;
+  /** Text to find and highlight on the page. */
+  passage: string;
+}
+
+/** The document place of one target, if it has one. */
+export function paperOf(target: FocusTarget): PaperRef | null {
+  if (target.kind === 'selection' && target.document) {
+    return { sourceFile: target.document.sourceFile, fileName: target.document.fileName, page: target.document.page, passage: target.text };
+  }
+  if (target.kind === 'source' && !target.hit.url) {
+    return {
+      sourceFile: target.hit.sourceFile,
+      fileName: target.hit.fileName || target.hit.title,
+      page: target.hit.page?.start ?? null,
+      passage: target.hit.text || target.hit.snippet,
+    };
+  }
+  return null;
+}
+
+/**
+ * The nearest document place for a level: its own target first, then its
+ * outer levels from the nearest outwards. `targets` runs outermost first.
+ */
+export function nearestPaper(targets: readonly FocusTarget[]): PaperRef | null {
+  for (let i = targets.length - 1; i >= 0; i--) {
+    const ref = paperOf(targets[i]);
+    if (ref) return ref;
+  }
+  return null;
 }

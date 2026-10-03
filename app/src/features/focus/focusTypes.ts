@@ -37,6 +37,14 @@ export interface FocusTaskSnapshot {
   project: string | null;
 }
 
+/** Where a selection inside a document was made. */
+export interface FocusDocumentRef {
+  sourceFile: string;
+  fileName: string;
+  /** 1-based page of a paged document (PDF), when known. */
+  page: number | null;
+}
+
 /** The object shown in the pop-out. Everything needed to draw it again. */
 export type FocusTarget =
   | { kind: 'mermaid'; label: string; source: string }
@@ -45,7 +53,19 @@ export type FocusTarget =
   | { kind: 'table'; label: string; rows: string[][] }
   | { kind: 'image'; label: string; src: string | null; alt: string }
   | { kind: 'source'; label: string; hit: FocusSourceHit }
-  | { kind: 'task'; label: string; task: FocusTaskSnapshot };
+  | { kind: 'task'; label: string; task: FocusTaskSnapshot }
+  /**
+   * Text the reader selected in an answer or a document, with the paragraph
+   * around it. `document` is set when it was selected in a document viewer.
+   */
+  | {
+      kind: 'selection';
+      label: string;
+      text: string;
+      paragraph: string;
+      origin: 'answer' | 'document';
+      document: FocusDocumentRef | null;
+    };
 
 export type FocusKind = FocusTarget['kind'];
 
@@ -77,11 +97,22 @@ export interface ThreadTurn {
   page?: number;
   /** Persisted agent transcript of an answer (see features/agent/reducer). */
   transcript?: Record<string, unknown>;
+  /** Suggested next questions the answer ended with (side answers only). */
+  followups?: string[];
+  /** This user turn is a summary brought up from a nested discussion. */
+  summaryOf?: { threadId: string; label: string };
 }
 
 export interface FocusThread {
   id: string;
   anchor: ThreadAnchor;
+  /**
+   * Thread this one was opened from (drill-down inside a side answer).
+   * Absent for a thread opened from the conversation itself.
+   */
+  parentThreadId?: string;
+  /** Answer turn of the parent thread the object was found in. */
+  parentTurnId?: string;
   turns: ThreadTurn[];
   createdAt: string;
   updatedAt: string;

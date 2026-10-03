@@ -83,6 +83,11 @@ export interface MessageContentRendererProps {
   onOpenArtifact?: (artifactId: string) => void;
   /** Smaller type for dense surfaces such as the conversation dock. */
   compact?: boolean;
+  /**
+   * Turn `[N]` into citation pills (answers). Off for text the reader
+   * wrote, where `[1]` stays literal.
+   */
+  citations?: boolean;
 }
 
 /**
@@ -106,6 +111,7 @@ export function MessageContentRenderer({
   onOpenCitation,
   onOpenArtifact,
   compact = false,
+  citations = true,
 }: MessageContentRendererProps) {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
@@ -136,30 +142,32 @@ export function MessageContentRenderer({
     const math = protectMath(text);
     text = math.text;
 
-    const lines = text.split('\n');
-    const merged: string[] = [];
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (/^(\[(?:Document\s+)?\d+(?:\s*,\s*(?:Document\s+)?\d+)*\]\s*)+$/.test(trimmed) && merged.length > 0) {
-        merged[merged.length - 1] = `${merged[merged.length - 1].trimEnd()} ${trimmed}`;
-      } else {
-        merged.push(line);
+    if (citations) {
+      const lines = text.split('\n');
+      const merged: string[] = [];
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (/^(\[(?:Document\s+)?\d+(?:\s*,\s*(?:Document\s+)?\d+)*\]\s*)+$/.test(trimmed) && merged.length > 0) {
+          merged[merged.length - 1] = `${merged[merged.length - 1].trimEnd()} ${trimmed}`;
+        } else {
+          merged.push(line);
+        }
       }
-    }
-    text = merged.join('\n');
+      text = merged.join('\n');
 
-    text = text.replace(/【(\d+)†[^】]*】/g, `${CITE_OPEN}$1${CITE_CLOSE}`);
-    text = text.replace(/\[(?:Document\s+)?(\d+(?:\s*,\s*(?:Document\s+)?\d+)*)\]/gi, (_, nums: string) =>
-      nums
-        .split(',')
-        .map(n => `${CITE_OPEN}${n.replace(/Document\s+/gi, '').trim()}${CITE_CLOSE}`)
-        .join(''),
-    );
+      text = text.replace(/【(\d+)†[^】]*】/g, `${CITE_OPEN}$1${CITE_CLOSE}`);
+      text = text.replace(/\[(?:Document\s+)?(\d+(?:\s*,\s*(?:Document\s+)?\d+)*)\]/gi, (_, nums: string) =>
+        nums
+          .split(',')
+          .map(n => `${CITE_OPEN}${n.replace(/Document\s+/gi, '').trim()}${CITE_CLOSE}`)
+          .join(''),
+      );
+    }
 
     text = math.restore(text);
     text = text.replace(/\x01CODE(\d+)\x01/g, (_, idx: string) => codeBlocks[Number(idx)] ?? '');
     return text.replace(/\n{3,}/g, '\n\n');
-  }, [content, hasArtifacts]);
+  }, [content, hasArtifacts, citations]);
 
   const renderWithCitations = useCallback((text: string): React.ReactNode => {
     if (hitsByNumber.size === 0) {

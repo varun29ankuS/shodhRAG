@@ -15,8 +15,20 @@
  * (`app/tests/focusThreads.test.ts`).
  */
 
-import type { FocusExtras, FocusPageSpan, FocusSourceHit, FocusTarget, FocusTaskSnapshot, FocusThread, ThreadAnchor, ThreadTurn } from './focusTypes.ts';
+import type {
+  FocusDocumentRef,
+  FocusExtras,
+  FocusPageSpan,
+  FocusSourceHit,
+  FocusTarget,
+  FocusTaskSnapshot,
+  FocusThread,
+  ThreadAnchor,
+  ThreadTurn,
+} from './focusTypes.ts';
 import type { AnswerScope } from '../agent/useAgentSession.ts';
+import { readFollowups, stripFollowups } from './followups.ts';
+import { safeTruncate } from './markdownSafe.ts';
 
 /** Key of the side threads inside a message's `metadata`. */
 export const METADATA_KEY = 'focusThreads';
@@ -83,6 +95,16 @@ function readTask(value: unknown): FocusTaskSnapshot | null {
   };
 }
 
+function readDocument(value: unknown): FocusDocumentRef | null {
+  if (!isRecord(value) || !str(value.sourceFile) || !value.sourceFile) return null;
+  const page = typeof value.page === 'number' && Number.isInteger(value.page) && value.page > 0 ? value.page : null;
+  return { sourceFile: value.sourceFile, fileName: str(value.fileName) ? value.fileName : '', page };
+}
+
+/** Characters of a selected text and of its paragraph kept with a thread. */
+export const MAX_SELECTION_TARGET_CHARS = 4_000;
+export const MAX_PARAGRAPH_TARGET_CHARS = 3_000;
+
 /** A stored target, or null when it is not a valid one. */
 export function readTarget(value: unknown): FocusTarget | null {
   if (!isRecord(value) || !str(value.kind)) return null;
@@ -109,6 +131,17 @@ export function readTarget(value: unknown): FocusTarget | null {
       const task = readTask(value.task);
       return task ? { kind: 'task', label, task } : null;
     }
+    case 'selection': {
+      if (!str(value.text) || !value.text.trim()) return null;
+      return {
+        kind: 'selection',
+        label,
+        text: capped(value.text, MAX_SELECTION_TARGET_CHARS),
+        paragraph: str(value.paragraph) ? capped(value.paragraph, MAX_PARAGRAPH_TARGET_CHARS) : '',
+        origin: value.origin === 'document' ? 'document' : 'answer',
+        document: readDocument(value.document),
+      };
+    }
     default:
       return null;
   }
@@ -121,6 +154,12 @@ function readTurn(value: unknown): ThreadTurn | null {
   if (str(value.selection) && value.selection) turn.selection = value.selection;
   if (typeof value.page === 'number' && Number.isFinite(value.page)) turn.page = value.page;
   if (isRecord(value.transcript)) turn.transcript = value.transcript;
+  const followups = readFollowups(value.followups);
+  if (followups && turn.role === 'assistant') turn.followups = followups;
+  const from = value.summaryOf;
+  if (turn.role === 'user' && isRecord(from) && str(from.threadId) && from.threadId && str(from.label)) {
+    turn.summaryOf = { threadId: from.threadId, label: from.label };
+  }
   return turn;
 }
 
@@ -139,13 +178,19 @@ export function readThread(value: unknown): FocusThread | null {
   if (!anchor) return null;
   const turns = Array.isArray(value.turns) ? value.turns.map(readTurn).filter((t): t is ThreadTurn => t !== null) : [];
   const createdAt = str(value.createdAt) ? value.createdAt : new Date(0).toISOString();
-  return {
+  const thread: FocusThread = {
     id: value.id,
     anchor,
     turns: turns.slice(-MAX_TURNS),
     createdAt,
     updatedAt: str(value.updatedAt) ? value.updatedAt : createdAt,
   };
+  // Threads saved before drill-down existed have no parent: they are roots.
+  if (str(value.parentThreadId) && value.parentThreadId && value.parentThreadId !== value.id) {
+    thread.parentThreadId = value.parentThreadId;
+    if (str(value.parentTurnId) && value.parentTurnId) thread.parentTurnId = value.parentTurnId;
+  }
+  return thread;
 }
 
 /** Valid threads of a stored list; anything malformed is dropped, never thrown. */
@@ -195,7 +240,10 @@ export function removeThread(list: readonly FocusThread[], threadId: string): Fo
   return list.filter(t => t.id !== threadId);
 }
 
-/** Threads of one parent message, oldest first. */
+/**
+ * Threads of one parent message, oldest first. Includes nested
+ * (drill-down) threads; see `threadTree` for the hierarchy.
+ */
 export function threadsForMessage(list: readonly FocusThread[], messageId: string): FocusThread[] {
   return list.filter(t => t.anchor.parentMessageId === messageId);
 }
@@ -316,10 +364,28 @@ export interface HistoryTurnLike {
  */
 export function threadHistory(main: readonly HistoryTurnLike[], thread: readonly HistoryTurnLike[], limit = 10): HistoryTurnLike[] {
   const usable = (t: HistoryTurnLike) => t.content.trim().length > 0;
-  const own = thread.filter(usable).slice(-limit);
+  const own = thread
+    .map(t => (t.role === 'assistant' ? { role: t.role, content: stripFollowups(t.content) } : t))
+    .filter(usable)
+    .slice(-limit);
   const room = Math.max(0, limit - own.length);
   const lead = room > 0 ? main.filter(usable).slice(-room) : [];
   return [...lead, ...own];
+}
+
+/**
+ * Adjacent turns of the same role joined into one, so replayed history
+ * alternates (a summary brought back from a nested discussion is a user
+ * turn that was never answered).
+ */
+export function alternateTurns(turns: readonly HistoryTurnLike[]): HistoryTurnLike[] {
+  const merged: HistoryTurnLike[] = [];
+  for (const turn of turns) {
+    const last = merged[merged.length - 1];
+    if (last && last.role === turn.role) merged[merged.length - 1] = { role: last.role, content: `${last.content}\n\n${turn.content}` };
+    else merged.push({ role: turn.role, content: turn.content });
+  }
+  return merged;
 }
 
 /** "3 replies about Revenue by quarter" ("1 question about …" before the first answer). */
@@ -357,17 +423,17 @@ export function sameTarget(a: FocusTarget, b: FocusTarget): boolean {
 export const SUMMARY_ANSWER_CHARS = 700;
 
 /**
- * Default text offered when a side discussion is added to the main
- * conversation: what it was about, the last question and (an excerpt of)
- * its answer. The user edits it before it is posted.
+ * Fallback summary of a side discussion, used when the agent could not
+ * write one: the last question and (an excerpt of) its answer, as Markdown.
+ * It has no "From a side discussion about …" header: the card and the
+ * prompt that carry it already say so. Empty before the first answer.
  */
-export function threadSummary(thread: Pick<FocusThread, 'turns' | 'anchor'>): string {
+export function threadSummary(thread: Pick<FocusThread, 'turns'>): string {
   const lastAnswerIndex = (() => {
     for (let i = thread.turns.length - 1; i >= 0; i--) if (thread.turns[i].role === 'assistant' && thread.turns[i].content.trim()) return i;
     return -1;
   })();
-  const label = thread.anchor.target.label.replace(/\s+/g, ' ').trim();
-  if (lastAnswerIndex < 0) return `About "${label}": `;
+  if (lastAnswerIndex < 0) return '';
   let question = '';
   for (let i = lastAnswerIndex - 1; i >= 0; i--) {
     if (thread.turns[i].role === 'user') {
@@ -375,37 +441,69 @@ export function threadSummary(thread: Pick<FocusThread, 'turns' | 'anchor'>): st
       break;
     }
   }
-  const answer = thread.turns[lastAnswerIndex].content.trim();
-  const chars = Array.from(answer);
-  const excerpt = chars.length > SUMMARY_ANSWER_CHARS ? `${chars.slice(0, SUMMARY_ANSWER_CHARS).join('').trimEnd()}…` : answer;
-  return [
-    `From a side discussion about "${label}":`,
-    question ? `Q: ${question}` : '',
-    `A: ${excerpt}`,
-  ].filter(Boolean).join('\n');
+  const answer = stripFollowups(thread.turns[lastAnswerIndex].content).trim();
+  // Never cut inside an equation or a fenced block: they would render as raw source.
+  const excerpt = safeTruncate(answer, SUMMARY_ANSWER_CHARS);
+  return [question ? `**Asked:** ${question}` : '', excerpt].filter(Boolean).join('\n\n');
 }
 
 /** Pages either side of a passage a document side question also searches. */
 const SCOPE_PAGE_MARGIN = 1;
 
+/** An indexed file a side question can be limited to (web results and virtual sources are not). */
+function indexedFile(sourceFile: string, url: string | null): boolean {
+  return !url && Boolean(sourceFile) && !sourceFile.includes('://');
+}
+
 /**
- * What a side question may search. About a passage of an indexed file: that
- * file only, on the page being viewed (or the passage's pages), one page
- * either side so text running over a page break is found. Other targets
- * (tasks, charts, web results) search everything.
+ * What a side question may search. About a passage of an indexed file, or
+ * text selected in an indexed file's viewer: that file only, on the page
+ * being viewed (else the passage's pages, else the page the selection was
+ * made on), one page either side so text running over a page break is
+ * found. Other targets (tasks, charts, web results, text selected in an
+ * answer) search everything.
  */
 export function sideScope(target: FocusTarget, extras: FocusExtras): AnswerScope | null {
-  if (target.kind !== 'source') return null;
-  const { hit } = target;
-  if (hit.url || !hit.sourceFile || hit.sourceFile.includes('://')) return null;
+  let sourceFile: string;
+  let known: FocusPageSpan | null;
+  if (target.kind === 'source') {
+    const { hit } = target;
+    if (!indexedFile(hit.sourceFile, hit.url)) return null;
+    sourceFile = hit.sourceFile;
+    known = hit.page;
+  } else if (target.kind === 'selection' && target.origin === 'document' && target.document) {
+    const { document } = target;
+    if (!indexedFile(document.sourceFile, null)) return null;
+    sourceFile = document.sourceFile;
+    known = document.page !== null ? { start: document.page, end: document.page } : null;
+  } else {
+    return null;
+  }
   const span = typeof extras.page === 'number' && extras.page > 0
     ? { start: extras.page, end: extras.page }
-    : hit.page;
-  const scope: AnswerScope = { sourceIds: [], sourceFiles: [hit.sourceFile] };
+    : known;
+  const scope: AnswerScope = { sourceIds: [], sourceFiles: [sourceFile] };
   if (span && span.start > 0 && span.end >= span.start) {
     const first = Math.max(1, Math.floor(span.start) - SCOPE_PAGE_MARGIN);
     const last = Math.floor(span.end) + SCOPE_PAGE_MARGIN;
     scope.pages = Array.from({ length: last - first + 1 }, (_, i) => first + i);
   }
   return scope;
+}
+
+/**
+ * Scope of a question asked at the innermost of `targets` (outermost
+ * first: the pop-out's levels down to the one asked at). The innermost
+ * level's own scope when it is about a document, with the page being viewed
+ * (`extras`); otherwise the nearest outer level about a document (a chart
+ * or a selection opened from a document's discussion is still about that
+ * document), at that level's own passage pages since the viewed page
+ * belongs to the inner level. Null (search everything) when no level is.
+ */
+export function scopeForLevels(targets: readonly FocusTarget[], extras: FocusExtras): AnswerScope | null {
+  for (let i = targets.length - 1; i >= 0; i--) {
+    const scope = sideScope(targets[i], i === targets.length - 1 ? extras : {});
+    if (scope) return scope;
+  }
+  return null;
 }

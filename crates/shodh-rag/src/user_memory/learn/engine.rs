@@ -317,6 +317,10 @@ impl Learner {
         suppressed: &mut usize,
     ) -> LearnResult<()> {
         let policy = self.policy();
+        // Stopped while this was being worked out: file nothing.
+        if policy.mode == LearnMode::Off {
+            return Err(LearnError::Disabled);
+        }
         let Some(proposal) = self.inbox.insert(new, &policy.caps, self.now())? else {
             *suppressed += 1;
             return Ok(());
@@ -880,9 +884,10 @@ pub fn auto_eligible(proposal: &Proposal, policy: &LearnPolicy) -> bool {
                         }
                 )
         }
-        ProposalAction::Revise { .. } => proposal.confidence >= policy.auto_min_confidence,
         ProposalAction::Link { .. } | ProposalAction::Archive { .. } => true,
-        ProposalAction::Resolve { .. } => false,
+        // A revision rewrites an existing memory from the model's reading of a new one;
+        // a contradiction picks between two facts. Both always ask.
+        ProposalAction::Revise { .. } | ProposalAction::Resolve { .. } => false,
     }
 }
 

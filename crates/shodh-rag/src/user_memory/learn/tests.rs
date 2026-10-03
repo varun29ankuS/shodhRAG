@@ -572,6 +572,15 @@ async fn automatic_mode_applies_confident_suggestions_with_undo_and_audit() {
     let memory = learned.outcome.as_ref().unwrap().memory_id.clone().unwrap();
     e.learner.undo(&learned.id, &Actor::ui()).await.unwrap();
     assert!(e.service.get(&memory).await.is_err(), "undo forgets it");
+    // What the user undid is not learned again when it comes up again.
+    e.model
+        .answer(json!({"memories": [coffee("dark roast", "I prefer dark roast coffee", 0.95)]}));
+    let again = e.learn("I prefer dark roast coffee, really").await;
+    assert!(
+        again.proposed.is_empty() && again.learned.is_empty(),
+        "{again:?}"
+    );
+    assert_eq!(again.suppressed, 1);
 
     // Switching back to ask keeps new suggestions waiting.
     e.set(|p| p.mode = LearnMode::Ask);
@@ -700,6 +709,11 @@ async fn learning_off_calls_nothing_and_the_kill_switch_discards_waiting_suggest
     assert_eq!(e.model.calls(), 1);
     assert_eq!(e.learner.discard_pending().unwrap(), 1);
     assert!(e.pending().is_empty());
+    // Background consolidation does nothing once learning is off.
+    assert!(matches!(
+        e.learner.consolidate(true).await,
+        Err(LearnError::Disabled)
+    ));
     // A suggestion filed under automatic mode is not applied once the mode changed.
     let p = e.learner.list(&[], 10).unwrap();
     assert_eq!(p[0].status, ProposalStatus::Rejected);
@@ -765,6 +779,20 @@ async fn evolution_links_neighbours_and_proposes_revisions() {
     };
     assert_eq!(target, &apollo);
     assert!(text.contains("completed"));
+    // A revision never applies automatically, whatever its confidence.
+    let auto = LearnPolicy {
+        mode: LearnMode::Auto,
+        auto_min_confidence: 0.5,
+        ..LearnPolicy::default()
+    };
+    assert!(!auto_eligible(
+        &e.learner.inbox().get(&revise.id).unwrap(),
+        &auto
+    ));
+    assert!(auto_eligible(
+        &e.learner.inbox().get(&link.id).unwrap(),
+        &auto
+    ));
 
     e.learner
         .accept(&link.id, None, &Actor::ui())

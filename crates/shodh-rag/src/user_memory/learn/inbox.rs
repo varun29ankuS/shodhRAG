@@ -28,7 +28,7 @@ use crate::audit::{open_shared_connection, AuditKey};
 use crate::statements::{PutOutcome, Scope};
 use crate::user_memory::MemoryContent;
 
-/// How long a rejected suggestion suppresses the same suggestion.
+/// How long a rejected (or undone) suggestion suppresses the same suggestion.
 pub const REJECTION_MEMORY_DAYS: i64 = 180;
 
 /// What a suggestion changes.
@@ -602,7 +602,7 @@ impl Inbox {
     }
 
     /// Stores a suggestion unless the same one is already waiting or applied, or the user
-    /// rejected it recently. Counts it against today's suggestion cap. Returns the stored
+    /// rejected or undid it recently. Counts it against today's suggestion cap. Returns the stored
     /// suggestion, or `None` when it was suppressed.
     pub fn insert(
         &self,
@@ -616,7 +616,7 @@ impl Inbox {
         let duplicate: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM memory_proposals WHERE fingerprint = ?1 AND (
                 status IN ('pending', 'accepted', 'learned', 'failed')
-                OR (status = 'rejected' AND decided_at >= ?2)))",
+                OR (status IN ('rejected', 'undone') AND decided_at >= ?2)))",
             params![new.fingerprint, since],
             |r| r.get(0),
         )?;

@@ -42,10 +42,19 @@ fn invoice_text_slices_to_invoice_classes() {
 
     let prompt = slice.render_prompt();
     assert!(prompt.contains("Invoice (is-a Document):"), "{prompt}");
-    assert!(prompt.contains("  - invoiceNumber: String [one, required]"), "{prompt}");
-    assert!(prompt.contains("  - issuedBy: -> Organization [one, required]"), "{prompt}");
+    assert!(
+        prompt.contains("  - invoiceNumber: String [one, required]"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("  - issuedBy: -> Organization [one, required]"),
+        "{prompt}"
+    );
     assert!(prompt.contains("  - gstin: String /"), "{prompt}");
-    assert!(prompt.contains("  - dueOn: Date [one, changes over time]"), "{prompt}");
+    assert!(
+        prompt.contains("  - dueOn: Date [one, changes over time]"),
+        "{prompt}"
+    );
     assert!(prompt.contains("Referenced classes:"), "{prompt}");
     assert!(!prompt.contains("Episode"));
     assert_eq!(prompt, ontology.slice_for(text).render_prompt());
@@ -67,7 +76,9 @@ fn cue_terms_respect_word_boundaries() {
     let slice = ontology.slice_for("Japanese companies expand");
     assert!(!slice.contains("TaxId"), "{:?}", slice.matches);
     // Neutral text selects nothing.
-    assert!(ontology.slice_for("Blue skies over quiet hills.").is_empty());
+    assert!(ontology
+        .slice_for("Blue skies over quiet hills.")
+        .is_empty());
 }
 
 #[test]
@@ -81,7 +92,10 @@ fn research_text_slices_to_research_classes() {
         assert!(matched.contains(&class), "{class} not matched: {matched:?}");
     }
     let prompt = slice.render_prompt();
-    assert!(prompt.contains("  - resultValue: Decimal [one, required]"), "{prompt}");
+    assert!(
+        prompt.contains("  - resultValue: Decimal [one, required]"),
+        "{prompt}"
+    );
 }
 
 fn source(version: &str, body: &str) -> Ontology {
@@ -142,7 +156,10 @@ fn cosmetic_change() {
     let diff = OntologyDiff::between(&source("1.0.0", BASE), &source("1.0.1", &changed));
     assert_eq!(diff.compatibility, Compatibility::Cosmetic);
     assert_eq!(diff.changed_classes[0].id, "Person");
-    assert_eq!(diff.changed_classes[0].fields, vec![ClassField::Description]);
+    assert_eq!(
+        diff.changed_classes[0].fields,
+        vec![ClassField::Description]
+    );
     assert!(diff.affected_classes.is_empty());
     assert!(diff.version_bump_sufficient());
 }
@@ -156,7 +173,10 @@ fn additive_change_marks_domain_and_subclasses() {
     let diff = OntologyDiff::between(&old, &source("1.1.0", &added));
     assert_eq!(diff.compatibility, Compatibility::Additive);
     assert_eq!(diff.added_properties, vec!["subject".to_owned()]);
-    assert_eq!(diff.affected_classes, vec!["Doc".to_owned(), "Memo".to_owned()]);
+    assert_eq!(
+        diff.affected_classes,
+        vec!["Doc".to_owned(), "Memo".to_owned()]
+    );
     assert!(diff.version_bump_sufficient());
     // Same content under a patch bump is not enough.
     assert!(!OntologyDiff::between(&old, &source("1.0.1", &added)).version_bump_sufficient());
@@ -173,8 +193,14 @@ fn breaking_changes() {
     let diff = OntologyDiff::between(&old, &source("1.5.0", &many));
     assert_eq!(diff.compatibility, Compatibility::Breaking);
     assert_eq!(diff.changed_properties[0].id, "author");
-    assert_eq!(diff.changed_properties[0].fields, vec![PropertyField::Cardinality]);
-    assert_eq!(diff.affected_classes, vec!["Doc".to_owned(), "Memo".to_owned()]);
+    assert_eq!(
+        diff.changed_properties[0].fields,
+        vec![PropertyField::Cardinality]
+    );
+    assert_eq!(
+        diff.affected_classes,
+        vec!["Doc".to_owned(), "Memo".to_owned()]
+    );
     assert!(!diff.version_bump_sufficient());
     assert!(OntologyDiff::between(&old, &source("2.0.0", &many)).version_bump_sufficient());
 

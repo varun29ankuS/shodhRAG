@@ -165,9 +165,10 @@ impl OntologyBuilder {
         match builtin::pack(name) {
             Some((file, text)) => self.add_source(file, text),
             None => {
-                self.errors.push(LoadError::global(
-                    LoadErrorKind::UnknownBuiltinPack(name.to_owned()),
-                ));
+                self.errors
+                    .push(LoadError::global(LoadErrorKind::UnknownBuiltinPack(
+                        name.to_owned(),
+                    )));
                 self
             }
         }
@@ -341,7 +342,9 @@ fn is_prefix(prefix: &str) -> bool {
 fn is_namespace_iri(iri: &str) -> bool {
     (iri.starts_with("https://") || iri.starts_with("http://") || iri.starts_with("urn:"))
         && (iri.ends_with('#') || iri.ends_with('/'))
-        && !iri.chars().any(|c| c.is_whitespace() || "<>\"{}|^`\\".contains(c))
+        && !iri
+            .chars()
+            .any(|c| c.is_whitespace() || "<>\"{}|^`\\".contains(c))
 }
 
 /// Compiles a pattern so it must match the whole value.
@@ -405,7 +408,9 @@ fn parse_range(raw: &str, values: Option<&Vec<String>>) -> Option<Range> {
 fn check_days(value: f64, what: &str, allow_zero: bool) -> Result<(), String> {
     if !value.is_finite() || value < 0.0 || (!allow_zero && value == 0.0) {
         let bound = if allow_zero { ">= 0" } else { "> 0" };
-        return Err(format!("{what} must be a finite number {bound}, got {value}"));
+        return Err(format!(
+            "{what} must be a finite number {bound}, got {value}"
+        ));
     }
     Ok(())
 }
@@ -1107,7 +1112,9 @@ fn validate_dynamics_values(
         }) => {
             check_days(*grace_days, "expires_after.grace_days", true)?;
             let Some(p) = ontology.property(property) else {
-                return Err(format!("expires_after.property `{property}` is not defined"));
+                return Err(format!(
+                    "expires_after.property `{property}` is not defined"
+                ));
             };
             if !ontology.applies_to(p, class) {
                 return Err(format!(

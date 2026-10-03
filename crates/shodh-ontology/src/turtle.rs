@@ -221,7 +221,12 @@ impl Ontology {
         }
 
         for class in &self.classes {
-            write_class(&writer, &mut out, class, restrictions.get(class.id.as_str()));
+            write_class(
+                &writer,
+                &mut out,
+                class,
+                restrictions.get(class.id.as_str()),
+            );
         }
         for property in &self.properties {
             write_property(&writer, &mut out, property);
@@ -246,7 +251,12 @@ impl Ontology {
     }
 }
 
-fn write_class(writer: &Writer<'_>, out: &mut String, class: &Class, restrictions: Option<&Vec<String>>) {
+fn write_class(
+    writer: &Writer<'_>,
+    out: &mut String,
+    class: &Class,
+    restrictions: Option<&Vec<String>>,
+) {
     let mut lines = vec![
         "a owl:Class".to_owned(),
         format!("rdfs:label {}@en", literal(&class.label)),
@@ -309,7 +319,11 @@ fn write_property(writer: &Writer<'_>, out: &mut String, property: &Property) {
         (Range::Class(class), _) => writer.class(class),
         (Range::Datatype(Datatype::Enum(values)), _) => format!(
             "[ a rdfs:Datatype ; owl:oneOf ( {} ) ]",
-            values.iter().map(|v| literal(v)).collect::<Vec<_>>().join(" ")
+            values
+                .iter()
+                .map(|v| literal(v))
+                .collect::<Vec<_>>()
+                .join(" ")
         ),
         (Range::Datatype(datatype), Some(pattern)) => format!(
             "[ a rdfs:Datatype ; owl:onDatatype {} ; owl:withRestrictions ( [ xsd:pattern {} ] ) ]",
@@ -352,19 +366,17 @@ fn value_term(value: &Value, options: &StatementExportOptions) -> String {
 }
 
 fn source_iri(source: &str, options: &StatementExportOptions) -> String {
-    let has_scheme = source
-        .split_once(':')
-        .is_some_and(|(scheme, rest)| {
-            scheme.len() > 1
-                && scheme
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_ascii_alphabetic())
-                && scheme
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
-                && !rest.is_empty()
-        });
+    let has_scheme = source.split_once(':').is_some_and(|(scheme, rest)| {
+        scheme.len() > 1
+            && scheme
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
+            && !rest.is_empty()
+    });
     if has_scheme {
         iri(source)
     } else {

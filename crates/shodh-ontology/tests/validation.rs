@@ -4,14 +4,15 @@
 mod common;
 
 use common::{core, statement, valid, with_research};
-use shodh_ontology::{
-    EntityRef, Ontology, RawValue, Statement, Value, Violation,
-};
+use shodh_ontology::{EntityRef, Ontology, RawValue, Statement, Value, Violation};
 
 fn invoice(extra: Vec<(&str, RawValue)>) -> Statement {
     let mut properties = vec![
         ("invoiceNumber", RawValue::text("INV-1043")),
-        ("issuedBy", RawValue::Entity(EntityRef::typed("org-acme", "Organization"))),
+        (
+            "issuedBy",
+            RawValue::Entity(EntityRef::typed("org-acme", "Organization")),
+        ),
     ];
     properties.extend(extra);
     statement("inv-1043", "Invoice", properties)
@@ -44,8 +45,14 @@ fn valid_invoice_is_typed() {
         ("invoiceDate", RawValue::text("2026-09-30")),
         ("totalAmount", RawValue::money("0012500.50", "INR")),
         ("taxAmount", RawValue::text("1906.85 INR")),
-        ("billedTo", RawValue::Entity(EntityRef::typed("p-1", "Person"))),
-        ("alias", RawValue::List(vec!["Bill 1043".into(), "1043".into(), "1043".into()])),
+        (
+            "billedTo",
+            RawValue::Entity(EntityRef::typed("p-1", "Person")),
+        ),
+        (
+            "alias",
+            RawValue::List(vec!["Bill 1043".into(), "1043".into(), "1043".into()]),
+        ),
     ]);
     let valid = valid(&ontology, &statement);
     assert_eq!(valid.class(), "Invoice");
@@ -132,7 +139,10 @@ fn class_and_domain_checks() {
 
     let mut statement = invoice(vec![]);
     statement.subject = Some(EntityRef::typed("e1", "Person"));
-    assert_eq!(single(&ontology, &statement).code(), "subject_class_mismatch");
+    assert_eq!(
+        single(&ontology, &statement).code(),
+        "subject_class_mismatch"
+    );
     statement.subject = Some(EntityRef::typed("e1", "Document"));
     assert!(ontology.validate(&statement).is_ok());
 }
@@ -168,7 +178,10 @@ fn cardinality_and_required() {
         }
     );
     // A one-element list is fine for a One property.
-    let statement = invoice(vec![("invoiceDate", RawValue::List(vec!["2026-09-30".into()]))]);
+    let statement = invoice(vec![(
+        "invoiceDate",
+        RawValue::List(vec!["2026-09-30".into()]),
+    )]);
     valid(&ontology, &statement);
 
     let missing = statement_without(&["issuedBy"]);
@@ -193,7 +206,13 @@ fn statement_without(remove: &[&str]) -> Statement {
     statement
 }
 
-fn check(ontology: &Ontology, class: &str, base: Vec<(&str, RawValue)>, property: &str, value: RawValue) -> Result<Value, Violation> {
+fn check(
+    ontology: &Ontology,
+    class: &str,
+    base: Vec<(&str, RawValue)>,
+    property: &str,
+    value: RawValue,
+) -> Result<Value, Violation> {
     let mut properties = base;
     properties.push((property, value));
     let statement = statement("s", class, properties);
@@ -219,7 +238,12 @@ fn datatypes_parse_strictly() {
     let inv = |p: &str, v: RawValue| check(&o, "Invoice", invoice_base(), p, v);
     // Date: ISO 8601 calendar date only.
     assert!(inv("invoiceDate", "2024-02-29".into()).is_ok());
-    for bad in ["2024-1-5", "2024-02-30", "30/09/2026", "2026-09-30T00:00:00Z"] {
+    for bad in [
+        "2024-1-5",
+        "2024-02-30",
+        "30/09/2026",
+        "2026-09-30T00:00:00Z",
+    ] {
         assert_eq!(
             inv("invoiceDate", bad.into()).unwrap_err().code(),
             "invalid_value",
@@ -232,7 +256,9 @@ fn datatypes_parse_strictly() {
     assert!(inv("totalAmount", RawValue::money("10", "Rs")).is_err());
     assert!(inv("totalAmount", "₹1250".into()).is_err());
     assert_eq!(
-        inv("totalAmount", RawValue::Float(12.5)).unwrap_err().code(),
+        inv("totalAmount", RawValue::Float(12.5))
+            .unwrap_err()
+            .code(),
         "type_mismatch"
     );
     // Relation given as text.
@@ -242,9 +268,12 @@ fn datatypes_parse_strictly() {
     );
     // Relation range class.
     assert_eq!(
-        inv("issuedBy", RawValue::Entity(EntityRef::typed("x", "Person")))
-            .map(|_| ())
-            .unwrap_err(),
+        inv(
+            "issuedBy",
+            RawValue::Entity(EntityRef::typed("x", "Person"))
+        )
+        .map(|_| ())
+        .unwrap_err(),
         Violation::RangeClassMismatch {
             property: "issuedBy".to_owned(),
             expected: "Organization".to_owned(),
@@ -277,7 +306,10 @@ fn datatypes_parse_strictly() {
 
     let task = |p: &str, v: RawValue| check(&o, "Task", vec![], p, v);
     // Enum is exact.
-    assert_eq!(task("taskStatus", "done".into()).unwrap(), Value::Enum("done".to_owned()));
+    assert_eq!(
+        task("taskStatus", "done".into()).unwrap(),
+        Value::Enum("done".to_owned())
+    );
     assert_eq!(
         task("taskStatus", "Done".into()).unwrap_err().code(),
         "not_in_enum"
@@ -314,7 +346,11 @@ fn gstin_and_pan_patterns() {
         "29ABCPE1234F1Z55", // too long
         "AB29CPE1234F1Z5",  // state code must be digits
     ] {
-        assert_eq!(tax("gstin", bad).unwrap_err().code(), "pattern_mismatch", "{bad}");
+        assert_eq!(
+            tax("gstin", bad).unwrap_err().code(),
+            "pattern_mismatch",
+            "{bad}"
+        );
     }
     assert!(tax("pan", "ABCPE1234F").is_ok());
     for bad in [
@@ -324,7 +360,11 @@ fn gstin_and_pan_patterns() {
         "abcpe1234f",  // lower case
         " ABCPE1234F", // whitespace is not trimmed
     ] {
-        assert_eq!(tax("pan", bad).unwrap_err().code(), "pattern_mismatch", "{bad}");
+        assert_eq!(
+            tax("pan", bad).unwrap_err().code(),
+            "pattern_mismatch",
+            "{bad}"
+        );
     }
 }
 

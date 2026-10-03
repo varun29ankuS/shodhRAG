@@ -300,9 +300,7 @@ pub(crate) fn is_email(text: &str) -> bool {
     let clean = |s: &str| !s.is_empty() && !s.chars().any(|c| c.is_whitespace() || c == '@');
     clean(local)
         && clean(domain)
-        && domain
-            .split('.')
-            .all(|label| !label.is_empty())
+        && domain.split('.').all(|label| !label.is_empty())
         && domain.contains('.')
 }
 

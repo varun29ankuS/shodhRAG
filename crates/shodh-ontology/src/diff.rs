@@ -226,7 +226,12 @@ impl OntologyDiff {
         let roots: Vec<String> = affected.iter().cloned().collect();
         for root in roots {
             for ontology in [old, new] {
-                affected.extend(ontology.descendants(&root).into_iter().map(|c| c.id.clone()));
+                affected.extend(
+                    ontology
+                        .descendants(&root)
+                        .into_iter()
+                        .map(|c| c.id.clone()),
+                );
             }
         }
 
@@ -278,11 +283,20 @@ fn class_fields(old: &Class, new: &Class) -> Vec<ClassField> {
     check(old.label != new.label, ClassField::Label);
     check(old.description != new.description, ClassField::Description);
     check(old.parent != new.parent, ClassField::Parent);
-    check(old.identity_keys != new.identity_keys, ClassField::IdentityKeys);
+    check(
+        old.identity_keys != new.identity_keys,
+        ClassField::IdentityKeys,
+    );
     check(old.cue_terms != new.cue_terms, ClassField::CueTerms);
-    check(old.cue_patterns != new.cue_patterns, ClassField::CuePatterns);
+    check(
+        old.cue_patterns != new.cue_patterns,
+        ClassField::CuePatterns,
+    );
     check(old.dynamics != new.dynamics, ClassField::Dynamics);
-    check(old.equivalent_to != new.equivalent_to, ClassField::EquivalentTo);
+    check(
+        old.equivalent_to != new.equivalent_to,
+        ClassField::EquivalentTo,
+    );
     fields
 }
 
@@ -295,14 +309,26 @@ fn property_fields(old: &Property, new: &Property) -> Vec<PropertyField> {
     };
     let set = |v: &[String]| v.iter().cloned().collect::<BTreeSet<_>>();
     check(old.label != new.label, PropertyField::Label);
-    check(old.description != new.description, PropertyField::Description);
+    check(
+        old.description != new.description,
+        PropertyField::Description,
+    );
     check(set(&old.domain) != set(&new.domain), PropertyField::Domain);
     check(old.range != new.range, PropertyField::Range);
-    check(old.cardinality != new.cardinality, PropertyField::Cardinality);
+    check(
+        old.cardinality != new.cardinality,
+        PropertyField::Cardinality,
+    );
     check(old.temporal != new.temporal, PropertyField::Temporal);
     check(old.required != new.required, PropertyField::Required);
     check(old.pattern != new.pattern, PropertyField::Pattern);
-    check(old.pattern_is_cue != new.pattern_is_cue, PropertyField::PatternIsCue);
-    check(old.equivalent_to != new.equivalent_to, PropertyField::EquivalentTo);
+    check(
+        old.pattern_is_cue != new.pattern_is_cue,
+        PropertyField::PatternIsCue,
+    );
+    check(
+        old.equivalent_to != new.equivalent_to,
+        PropertyField::EquivalentTo,
+    );
     fields
 }

@@ -25,7 +25,10 @@ pub fn provenance(extracted_at: &str) -> Provenance {
         source: "docs/invoices/inv-1043.pdf".to_owned(),
         generation: 3,
         page: Some(1),
-        span: Some(TextSpan { start: 120, end: 180 }),
+        span: Some(TextSpan {
+            start: 120,
+            end: 180,
+        }),
         extractor: Extractor {
             kind: ExtractorKind::Rule,
             version: "invoice-rules/1.0.0".to_owned(),

@@ -432,9 +432,10 @@ impl Ontology {
         }
 
         for property in self.properties_of(&statement.class) {
-            let supplied = statement.properties.get(&property.id).is_some_and(|raw| {
-                !matches!(raw, RawValue::List(items) if items.is_empty())
-            });
+            let supplied = statement
+                .properties
+                .get(&property.id)
+                .is_some_and(|raw| !matches!(raw, RawValue::List(items) if items.is_empty()));
             if property.required && !supplied {
                 violations.push(Violation::MissingRequired {
                     property: property.id.clone(),
@@ -529,9 +530,7 @@ impl Ontology {
                 Value::DateTime(parse_datetime(text).ok_or_else(|| invalid(text))?)
             }
             (Datatype::Url, RawValue::Text(text)) if is_url(text) => Value::Url(text.clone()),
-            (Datatype::Email, RawValue::Text(text)) if is_email(text) => {
-                Value::Email(text.clone())
-            }
+            (Datatype::Email, RawValue::Text(text)) if is_email(text) => Value::Email(text.clone()),
             (Datatype::Url | Datatype::Email, RawValue::Text(text)) => return Err(invalid(text)),
             (Datatype::Enum(allowed), RawValue::Text(text)) => {
                 if !allowed.contains(text) {

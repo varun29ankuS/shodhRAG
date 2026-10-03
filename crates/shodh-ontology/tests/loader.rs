@@ -28,10 +28,31 @@ fn core_defines_every_required_class_and_relation() {
     assert_eq!(ontology.id(), "shodh.core");
     assert_eq!(ontology.version().to_string(), "1.0.0");
     for class in [
-        "Thing", "Party", "Organization", "Person", "Document", "Invoice", "LineItem",
-        "Contract", "Clause", "Obligation", "Payment", "Address", "Place", "TaxId", "Amount",
-        "Period", "Event", "Task", "Project", "Preference", "Decision", "Episode", "Procedure",
-        "Concept", "Note",
+        "Thing",
+        "Party",
+        "Organization",
+        "Person",
+        "Document",
+        "Invoice",
+        "LineItem",
+        "Contract",
+        "Clause",
+        "Obligation",
+        "Payment",
+        "Address",
+        "Place",
+        "TaxId",
+        "Amount",
+        "Period",
+        "Event",
+        "Task",
+        "Project",
+        "Preference",
+        "Decision",
+        "Episode",
+        "Procedure",
+        "Concept",
+        "Note",
     ] {
         assert!(ontology.class(class).is_some(), "missing class {class}");
     }
@@ -43,13 +64,25 @@ fn core_defines_every_required_class_and_relation() {
         assert_eq!(property.temporal, temporal, "{id} temporal");
     };
     for relation in [
-        "issuedBy", "billedTo", "effectiveOn", "expiresOn", "renewsOn", "amountOf", "paidBy",
+        "issuedBy",
+        "billedTo",
+        "effectiveOn",
+        "expiresOn",
+        "renewsOn",
+        "amountOf",
+        "paidBy",
     ] {
         expect(relation, Cardinality::One, relation.ends_with("On"));
     }
     for relation in [
-        "partyTo", "signedBy", "references", "supersedes", "worksOn", "advisorOf",
-        "interestedIn", "prefers",
+        "partyTo",
+        "signedBy",
+        "references",
+        "supersedes",
+        "worksOn",
+        "advisorOf",
+        "interestedIn",
+        "prefers",
     ] {
         expect(relation, Cardinality::Many, false);
     }
@@ -109,12 +142,20 @@ fn research_pack_loads_with_n_ary_result() {
     for class in [
         "Paper", "Author", "Venue", "Method", "Dataset", "Metric", "Result", "Snippet",
     ] {
-        let c = ontology.class(class).unwrap_or_else(|| panic!("missing {class}"));
+        let c = ontology
+            .class(class)
+            .unwrap_or_else(|| panic!("missing {class}"));
         assert_eq!(c.source, "shodh.research");
     }
     assert!(ontology.is_subclass_of("Paper", "Document"));
     assert!(ontology.is_subclass_of("Author", "Person"));
-    for relation in ["cites", "usesMethod", "evaluatedOn", "proposedIn", "authoredBy"] {
+    for relation in [
+        "cites",
+        "usesMethod",
+        "evaluatedOn",
+        "proposedIn",
+        "authoredBy",
+    ] {
         assert!(ontology.property(relation).unwrap().is_relation());
     }
     let required: Vec<&str> = ontology
@@ -125,14 +166,25 @@ fn research_pack_loads_with_n_ary_result() {
         .collect();
     assert_eq!(
         required,
-        vec!["resultMethod", "resultDataset", "resultMetric", "resultValue"]
+        vec![
+            "resultMethod",
+            "resultDataset",
+            "resultMetric",
+            "resultValue"
+        ]
     );
     let snippet: Vec<&str> = ontology
         .properties_of("Snippet")
         .into_iter()
         .map(|p| p.id.as_str())
         .collect();
-    for p in ["snippetImage", "snippetText", "snippetPage", "snippetRect", "snippetOf"] {
+    for p in [
+        "snippetImage",
+        "snippetText",
+        "snippetPage",
+        "snippetRect",
+        "snippetOf",
+    ] {
         assert!(snippet.contains(&p), "Snippet lacks {p}");
     }
 }
@@ -323,15 +375,21 @@ cardinality = "one"
         line_of(&text, "id = \"Date\"")
     );
     assert_eq!(
-        find(&|k| matches!(k, LoadErrorKind::InvalidProperty { property, reason } if property == "tags" && reason.contains("temporal"))),
+        find(
+            &|k| matches!(k, LoadErrorKind::InvalidProperty { property, reason } if property == "tags" && reason.contains("temporal"))
+        ),
         line_of(&text, "id = \"tags\"")
     );
     assert_eq!(
-        find(&|k| matches!(k, LoadErrorKind::InvalidProperty { property, .. } if property == "weight")),
+        find(
+            &|k| matches!(k, LoadErrorKind::InvalidProperty { property, .. } if property == "weight")
+        ),
         line_of(&text, "id = \"weight\"")
     );
     assert_eq!(
-        find(&|k| matches!(k, LoadErrorKind::InvalidProperty { property, .. } if property == "colour")),
+        find(
+            &|k| matches!(k, LoadErrorKind::InvalidProperty { property, .. } if property == "colour")
+        ),
         line_of(&text, "id = \"colour\"")
     );
     assert_eq!(
@@ -368,7 +426,10 @@ fn toml_syntax_and_schema_errors_have_lines() {
 fn structural_rules() {
     // No core.
     let errors = errors_of(OntologyBuilder::new().add_source("e.toml", ext("")).build());
-    assert!(matches!(errors.errors()[0].kind, LoadErrorKind::CoreCount(0)));
+    assert!(matches!(
+        errors.errors()[0].kind,
+        LoadErrorKind::CoreCount(0)
+    ));
 
     // Unknown built-in pack.
     let errors = errors_of(

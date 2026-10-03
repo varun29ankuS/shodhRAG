@@ -5,8 +5,8 @@ mod common;
 
 use common::{at, core, provenance, statement, valid};
 use shodh_ontology::{
-    EntityRef, IndependenceReason, Ontology, PropertyChange, RawValue, Statement,
-    SubjectMatch, SupersedeDecision, ValidStatement, Value,
+    EntityRef, IndependenceReason, Ontology, PropertyChange, RawValue, Statement, SubjectMatch,
+    SupersedeDecision, ValidStatement, Value,
 };
 
 fn person(id: &str, when: &str, properties: Vec<(&str, RawValue)>) -> Statement {
@@ -27,8 +27,22 @@ fn v(ontology: &Ontology, s: &Statement) -> ValidStatement {
 #[test]
 fn temporal_one_property_supersedes_with_history() {
     let o = core();
-    let old = v(&o, &person("s1", "2025-01-10T00:00:00Z", vec![("livesIn", place("pune"))]));
-    let new = v(&o, &person("s2", "2026-06-01T00:00:00Z", vec![("livesIn", place("bengaluru"))]));
+    let old = v(
+        &o,
+        &person(
+            "s1",
+            "2025-01-10T00:00:00Z",
+            vec![("livesIn", place("pune"))],
+        ),
+    );
+    let new = v(
+        &o,
+        &person(
+            "s2",
+            "2026-06-01T00:00:00Z",
+            vec![("livesIn", place("bengaluru"))],
+        ),
+    );
     let decision = o.supersedes(&old, &new);
     assert_eq!(
         decision,
@@ -52,8 +66,22 @@ fn temporal_one_property_supersedes_with_history() {
 #[test]
 fn older_incoming_value_becomes_history() {
     let o = core();
-    let current = v(&o, &person("s2", "2026-06-01T00:00:00Z", vec![("livesIn", place("bengaluru"))]));
-    let late_arrival = v(&o, &person("s1", "2025-01-10T00:00:00Z", vec![("livesIn", place("pune"))]));
+    let current = v(
+        &o,
+        &person(
+            "s2",
+            "2026-06-01T00:00:00Z",
+            vec![("livesIn", place("bengaluru"))],
+        ),
+    );
+    let late_arrival = v(
+        &o,
+        &person(
+            "s1",
+            "2025-01-10T00:00:00Z",
+            vec![("livesIn", place("pune"))],
+        ),
+    );
     assert_eq!(
         o.supersedes(&current, &late_arrival).changes(),
         &[PropertyChange::Historical {
@@ -68,9 +96,20 @@ fn older_incoming_value_becomes_history() {
 fn valid_from_takes_precedence_over_extraction_time() {
     let o = core();
     // Extracted later, but the fact itself is older.
-    let mut late = person("s3", "2026-09-01T00:00:00Z", vec![("livesIn", place("delhi"))]);
+    let mut late = person(
+        "s3",
+        "2026-09-01T00:00:00Z",
+        vec![("livesIn", place("delhi"))],
+    );
     late.valid_from = Some(at("2020-01-01T00:00:00Z"));
-    let current = v(&o, &person("s2", "2026-06-01T00:00:00Z", vec![("livesIn", place("bengaluru"))]));
+    let current = v(
+        &o,
+        &person(
+            "s2",
+            "2026-06-01T00:00:00Z",
+            vec![("livesIn", place("bengaluru"))],
+        ),
+    );
     assert!(matches!(
         o.supersedes(&current, &v(&o, &late)).changes(),
         [PropertyChange::Historical { .. }]
@@ -80,8 +119,18 @@ fn valid_from_takes_precedence_over_extraction_time() {
 #[test]
 fn time_ties_resolve_to_incoming() {
     let o = core();
-    let a = v(&o, &person("a", "2026-06-01T00:00:00Z", vec![("livesIn", place("pune"))]));
-    let b = v(&o, &person("b", "2026-06-01T00:00:00Z", vec![("livesIn", place("goa"))]));
+    let a = v(
+        &o,
+        &person(
+            "a",
+            "2026-06-01T00:00:00Z",
+            vec![("livesIn", place("pune"))],
+        ),
+    );
+    let b = v(
+        &o,
+        &person("b", "2026-06-01T00:00:00Z", vec![("livesIn", place("goa"))]),
+    );
     assert!(matches!(
         o.supersedes(&a, &b).changes(),
         [PropertyChange::Superseded { current: Value::Entity(e), .. }] if e.id == "goa"
@@ -96,13 +145,23 @@ fn time_ties_resolve_to_incoming() {
 fn many_property_accumulates() {
     let o = core();
     let concept = |id: &str| RawValue::Entity(EntityRef::typed(id, "Concept"));
-    let old = v(&o, &person("s1", "2026-01-01T00:00:00Z", vec![("interestedIn", concept("rust"))]));
+    let old = v(
+        &o,
+        &person(
+            "s1",
+            "2026-01-01T00:00:00Z",
+            vec![("interestedIn", concept("rust"))],
+        ),
+    );
     let new = v(
         &o,
         &person(
             "s2",
             "2026-02-01T00:00:00Z",
-            vec![("interestedIn", RawValue::List(vec![concept("rust"), concept("ontologies")]))],
+            vec![(
+                "interestedIn",
+                RawValue::List(vec![concept("rust"), concept("ontologies")]),
+            )],
         ),
     );
     assert_eq!(
@@ -112,7 +171,14 @@ fn many_property_accumulates() {
             values: vec![Value::Entity(EntityRef::typed("ontologies", "Concept"))],
         }]
     );
-    let same = v(&o, &person("s3", "2026-03-01T00:00:00Z", vec![("interestedIn", concept("rust"))]));
+    let same = v(
+        &o,
+        &person(
+            "s3",
+            "2026-03-01T00:00:00Z",
+            vec![("interestedIn", concept("rust"))],
+        ),
+    );
     assert_eq!(
         o.supersedes(&old, &same).changes(),
         &[PropertyChange::Unchanged {
@@ -203,7 +269,14 @@ fn identity_key_without_subject_supersedes_preference() {
 #[test]
 fn independence_reasons() {
     let o = core();
-    let a = v(&o, &person("a", "2026-01-01T00:00:00Z", vec![("livesIn", place("pune"))]));
+    let a = v(
+        &o,
+        &person(
+            "a",
+            "2026-01-01T00:00:00Z",
+            vec![("livesIn", place("pune"))],
+        ),
+    );
     let mut other = person("b", "2026-02-01T00:00:00Z", vec![("livesIn", place("goa"))]);
     other.subject = Some(EntityRef::new("person-someone-else"));
     assert_eq!(
@@ -241,7 +314,12 @@ fn subclass_statements_merge_with_superclass_statements() {
         v(&o, &s)
     };
     let a = party("Party", "a", "2026-01-01T00:00:00Z", "tax-29ABCPE1234F1Z5");
-    let b = party("Organization", "b", "2026-02-01T00:00:00Z", "tax-29ABCPE1234F1Z5");
+    let b = party(
+        "Organization",
+        "b",
+        "2026-02-01T00:00:00Z",
+        "tax-29ABCPE1234F1Z5",
+    );
     assert!(matches!(
         o.supersedes(&a, &b),
         SupersedeDecision::Merge {

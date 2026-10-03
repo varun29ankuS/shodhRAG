@@ -1,22 +1,33 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import React, { Suspense, lazy, useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
-import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 
 // UI Components
 import { Button } from "./components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
 import { Badge } from "./components/ui/badge";
 import { Input } from "./components/ui/input";
 import { Progress } from "./components/ui/progress";
 import {
   MessageSquare, Settings, Bot, FolderOpen, FileText, Code, Terminal, Plus, Check, X, Loader2, Pencil, Download, ChevronDown, ChevronUp, Database, FileCode, BookOpen, FileSpreadsheet, Presentation, Trash2, Braces, Coffee,
-  FolderPlus, PanelLeftOpen, PanelLeftClose, Sun, Moon, Bug
+  FolderPlus, PanelLeftOpen, PanelLeftClose, Sun, Moon, Bug, Search, Sparkles, AlertTriangle, RotateCcw
 } from 'lucide-react';
 
 const IS_MAC = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
+
+// Views opened less often load on first use, keeping them out of the startup bundle.
+const TasksView = lazy(() => import('./features/tasks/TasksView'));
+const ActivityView = lazy(() => import('./features/activity/ActivityView'));
+const SettingsView = lazy(() => import('./components/shell/SettingsView'));
+
+function safeStorage(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
 
 // Core components
 import { LibraryView } from './features/library/LibraryView';
@@ -25,7 +36,6 @@ import type { LibrarySource } from './features/library/sources';
 import type { FileNode } from './features/library/fileTree';
 import { errorMessage as searchErrorMessage } from './features/setup/searchModels';
 import Sidebar from './components/shell/Sidebar';
-import SettingsView from './components/shell/SettingsView';
 import { ConversationDock } from './components/shell/ConversationDock';
 import { normalizeViewTab, VIEW_TAB_LABELS } from './lib/viewTabs';
 import { isBlankConversation } from './lib/conversationGroups';
@@ -37,13 +47,14 @@ import { AskView } from './features/ask/AskView';
 import { useCommandPalette } from './hooks/useCommandPalette';
 import CommandPalette from './components/CommandPalette';
 import type { PaletteAction } from './components/CommandPalette';
-import TasksView from './features/tasks/TasksView';
-import ActivityView from './features/activity/ActivityView';
+import { ViewSkeleton } from './components/shell/ViewSkeleton';
 import { useSearchConfig } from './components/SearchSettings';
-import { OnboardingFlow } from './components/OnboardingFlow';
+import { FirstRunFlow } from './features/setup/FirstRunFlow';
+import { readFirstRun, resumeStep, writeFirstRun } from './features/setup/firstRun';
+import type { FirstRunState, FirstRunStep } from './features/setup/firstRun';
+import { useSearchModels } from './features/setup/SearchModelsContext';
+import { markStartup } from './lib/startupTiming';
 import { FeedbackDialog } from './components/FeedbackDialog';
-import { LoadingState } from './components/LoadingState';
-import { EmptyState } from './components/EmptyState';
 import { UpdateNotification } from './components/UpdateNotification';
 import { toast } from 'sonner';
 import { notify, setNotificationHandler } from './lib/notify';
@@ -110,10 +121,10 @@ function AppSplitView() {
   const { open: cmdPaletteOpen, openPalette, closePalette } = useCommandPalette();
 
   // Core state
+  // True until `initialize_rag` answers; the shell renders immediately regardless.
   const [isLoading, setIsLoading] = useState(true);
-  const [isFirstTime, setIsFirstTime] = useState(false);
+  const [initError, setInitError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ViewTab>('ask');
-  const prefersReducedMotion = useReducedMotion();
   // Restored synchronously so the Library and sidebar render with the first frame.
   const [sources, setSources] = useState<Source[]>(() => {
     try {
@@ -139,7 +150,10 @@ function AppSplitView() {
   const lastProcessedImageTimeRef = useRef(0);
 
   // Onboarding & Feedback
-  const [showOnboarding, setShowOnboarding] = useState(!localStorage.getItem('onboarding_completed'));
+  // First-run setup: shown over the shell until finished or skipped; resumable.
+  const [firstRun, setFirstRun] = useState<FirstRunState>(() => readFirstRun(safeStorage()));
+  const [firstRunOpen, setFirstRunOpen] = useState(() => firstRun.status === 'pending');
+  const { status: searchModelsStatus } = useSearchModels();
   const [showFeedback, setShowFeedback] = useState(false);
 
   // Ref to prevent double initialization (React Strict Mode protection)
@@ -252,6 +266,41 @@ function AppSplitView() {
     setActiveTab('ask');
   };
 
+  const saveFirstRun = useCallback((next: FirstRunState) => {
+    setFirstRun(next);
+    writeFirstRun(safeStorage(), next);
+  }, []);
+
+  const openFirstRun = useCallback((step?: FirstRunStep) => {
+    saveFirstRun({ status: 'pending', step: step ?? resumeStep(firstRun) });
+    setFirstRunOpen(true);
+  }, [firstRun, saveFirstRun]);
+
+  const changeFirstRunStep = useCallback((step: FirstRunStep) => {
+    saveFirstRun({ status: 'pending', step });
+  }, [saveFirstRun]);
+
+  const finishFirstRun = useCallback(() => {
+    saveFirstRun({ status: 'completed', step: 'done' });
+    setFirstRunOpen(false);
+    setActiveTab('ask');
+  }, [saveFirstRun]);
+
+  const skipFirstRun = useCallback(() => {
+    setFirstRunOpen(false);
+    setFirstRun(prev => {
+      const next: FirstRunState = { status: prev.status === 'completed' ? 'completed' : 'skipped', step: prev.step };
+      writeFirstRun(safeStorage(), next);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    markStartup('shell-mounted');
+  }, []);
+
+  const searchNeedsSetup = !!searchModelsStatus && !searchModelsStatus.ready;
+
   // Primary actions offered by the command palette.
   const paletteActions: PaletteAction[] = [
     { id: 'new-chat', label: 'New chat', icon: Plus, keywords: 'new chat conversation ask create', shortcut: IS_MAC ? '⌘N' : 'Ctrl+N', run: handleNewConversation },
@@ -260,6 +309,12 @@ function AppSplitView() {
     { id: 'toggle-sidebar', label: collapsed ? 'Expand sidebar' : 'Collapse sidebar', icon: collapsed ? PanelLeftOpen : PanelLeftClose, keywords: 'sidebar toggle hide show collapse expand', shortcut: IS_MAC ? '⌘B' : 'Ctrl+B', run: toggleSidebar },
     { id: 'toggle-theme', label: theme === 'dark' ? 'Use light theme' : 'Use dark theme', icon: theme === 'dark' ? Sun : Moon, keywords: 'theme dark light mode appearance', run: toggleTheme },
     { id: 'feedback', label: 'Send feedback', icon: Bug, keywords: 'feedback bug report problem', run: () => setShowFeedback(true) },
+    ...(searchNeedsSetup
+      ? [{ id: 'set-up-search', label: 'Set up search', description: 'Download the search models (one time)', icon: Search, keywords: 'search models download install embedding reranker setup', run: () => openFirstRun('search') }]
+      : []),
+    firstRun.status === 'completed'
+      ? { id: 'first-run', label: 'Run setup again', description: 'Search, model and first folder', icon: Sparkles, keywords: 'setup onboarding welcome first run guide', run: () => openFirstRun('welcome') }
+      : { id: 'first-run', label: 'Resume setup', description: 'Pick up where you left off', icon: Sparkles, keywords: 'setup onboarding welcome first run guide resume', run: () => openFirstRun() },
   ];
 
 
@@ -813,77 +868,56 @@ function AppSplitView() {
     // Store the initialization promise so concurrent calls can wait for it
     initializationPromiseRef.current = (async () => {
       try {
-        // Simulate minimum loading time for smooth UX
-        const startTime = Date.now();
+        setInitError(null);
+        await invoke("initialize_rag");
+        markStartup('index-ready');
+        // The shell is already on screen; this only unlocks index-backed views.
+        setIsLoading(false);
 
-        // Initialize RAG
-        debugLog("Initializing RAG system...");
-        const ragInitResult = await invoke("initialize_rag");
-        debugLog("RAG init result:", ragInitResult);
-
-      // Check LLM status
-      const checkLLMStatus = async () => {
-        try {
-          const info: any = await invoke("get_llm_info");
-          if (info) {
-            setLlmStatus({
-              connected: true,
-              model: info.model || 'Unknown',
-              provider: info.provider || 'Unknown'
-            });
-            return true; // LLM is connected
-          }
-        } catch (e) {
-          debugLog("LLM not configured:", e);
-          setLlmStatus({
-            connected: false,
-            model: 'Not configured',
-            provider: 'none'
-          });
-        }
-        return false; // LLM not connected
-      };
-
-      // Initial check
-      const isConnected = await checkLLMStatus();
-
-      // If not connected, poll every 2 seconds for up to 30 seconds
-      if (!isConnected) {
-        let attempts = 0;
-        const maxAttempts = 15; // 30 seconds total
-        const pollInterval = setInterval(async () => {
-          attempts++;
-          const connected = await checkLLMStatus();
-          if (connected || attempts >= maxAttempts) {
-            clearInterval(pollInterval);
-            if (connected) {
-              debugLog("✅ LLM connected after polling");
-            } else {
-              debugLog("⏰ LLM polling timeout - LLM may need manual configuration");
+        const checkLLMStatus = async () => {
+          try {
+            const info: any = await invoke("get_llm_info");
+            if (info) {
+              setLlmStatus({
+                connected: true,
+                model: info.model || 'Unknown',
+                provider: info.provider || 'Unknown'
+              });
+              return true;
             }
+          } catch (e) {
+            debugLog("LLM not configured:", e);
+            setLlmStatus({
+              connected: false,
+              model: 'Not configured',
+              provider: 'none'
+            });
           }
-        }, 2000);
-      }
+          return false;
+        };
 
-      // Sources were restored from storage on the first render; file
-      // counts come from the last indexing run, not a scan at startup.
-      setIsFirstTime(parseStoredSources(localStorage.getItem(SOURCES_STORAGE_KEY)).length === 0);
+        // Model status and index statistics are independent: load them together.
+        const [isConnected] = await Promise.all([
+          checkLLMStatus().finally(() => markStartup('model-checked')),
+          updateStats().finally(() => markStartup('stats-loaded')),
+        ]);
 
-      await updateStats();
-
-      // Ensure minimum loading time for smooth transition
-      const elapsed = Date.now() - startTime;
-      if (elapsed < 1500) {
-        await new Promise(resolve => setTimeout(resolve, 1500 - elapsed));
-      }
-
-      setIsLoading(false);
+        // A model that is still starting (e.g. a local server) is picked up
+        // without a restart: poll every 2 s for up to 30 s.
+        if (!isConnected) {
+          let attempts = 0;
+          const maxAttempts = 15;
+          const pollInterval = setInterval(async () => {
+            attempts++;
+            const connected = await checkLLMStatus();
+            if (connected || attempts >= maxAttempts) clearInterval(pollInterval);
+          }, 2000);
+        }
       } catch (error) {
         console.error("Initialization failed:", error);
-        setIsLoading(false);
-        // Reset flag on error so user can retry
+        setInitError(searchErrorMessage(error));
+        // Reset flag on error so the user can retry
         initializationRef.current = false;
-        throw error;
       }
     })();
 
@@ -1093,131 +1127,6 @@ function AppSplitView() {
     });
   };
 
-
-  // Loading Screen with animations
-  if (isLoading) {
-    return (
-      <div className="h-screen flex items-center justify-center transition-colors duration-200" style={{ backgroundColor: colors.bg }}>
-        <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.5 }}
-          className="text-center"
-        >
-          <motion.img
-            src="/shodh_logo_nobackground.svg"
-            alt="Shodh"
-            className="w-32 h-32 mx-auto mb-4"
-            animate={{
-              scale: [1, 1.1, 1],
-              opacity: [0.7, 1, 0.7]
-            }}
-            transition={{
-              duration: 2,
-              repeat: Infinity,
-              ease: "easeInOut"
-            }}
-          />
-          <motion.h1
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-            className="text-2xl font-bold mb-2"
-            style={{ color: colors.text }}
-          >
-            SHODH <span style={{ color: colors.textMuted }}>(शोध)</span>
-          </motion.h1>
-          <motion.p
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.3 }}
-            className="mb-6"
-            style={{ color: colors.textSecondary }}
-          >
-            Initializing your knowledge assistant...
-          </motion.p>
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.4 }}
-            className="flex items-center justify-center gap-2"
-          >
-            <Loader2 className="w-5 h-5 animate-spin" style={{ color: colors.primary }} />
-            <span style={{ color: colors.textMuted }}>Loading...</span>
-          </motion.div>
-        </motion.div>
-      </div>
-    );
-  }
-
-  // Welcome Screen for First Time Users
-  if (isFirstTime && sources.length === 0) {
-    return (
-      <div className="h-screen flex items-center justify-center p-8 transition-colors duration-200" style={{ backgroundColor: colors.bg }}>
-        <Card className="max-w-xl w-full card-elevated transition-colors duration-200" style={{ backgroundColor: colors.cardBg, borderColor: colors.cardBorder }}>
-          <CardHeader className="text-center pb-2">
-            <img src="/shodh_logo_nobackground.svg" alt="Shodh" className="w-14 h-14 mx-auto mb-3" />
-            <CardTitle className="text-2xl" style={{ color: colors.text }}>SHODH</CardTitle>
-            <CardDescription className="text-sm mt-1" style={{ color: colors.textSecondary }}>
-              AI-powered search and analysis for your documents
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-5 pt-2">
-            <div className="grid gap-3">
-              <div className="flex items-center gap-3 p-3 rounded-lg" style={{ backgroundColor: colors.bgSecondary }}>
-                <FolderOpen className="w-5 h-5 flex-shrink-0" style={{ color: colors.primary }} />
-                <div>
-                  <h3 className="font-medium text-sm" style={{ color: colors.text }}>Add a folder of documents</h3>
-                  <p className="text-xs" style={{ color: colors.textSecondary }}>PDF, DOCX, XLSX, PPTX, TXT, MD, CSV</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-3 p-3 rounded-lg" style={{ backgroundColor: colors.bgSecondary }}>
-                <MessageSquare className="w-5 h-5 flex-shrink-0" style={{ color: colors.primary }} />
-                <div>
-                  <h3 className="font-medium text-sm" style={{ color: colors.text }}>Ask questions in natural language</h3>
-                  <p className="text-xs" style={{ color: colors.textSecondary }}>Get answers with source citations</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-3 p-3 rounded-lg" style={{ backgroundColor: colors.bgSecondary }}>
-                <Bot className="w-5 h-5 flex-shrink-0" style={{ color: colors.primary }} />
-                <div>
-                  <h3 className="font-medium text-sm" style={{ color: colors.text }}>AI agents for deep analysis</h3>
-                  <p className="text-xs" style={{ color: colors.textSecondary }}>Build teams of agents to research and report</p>
-                </div>
-              </div>
-            </div>
-
-            <motion.button
-              className="w-full px-4 py-3 rounded-lg font-semibold flex items-center justify-center"
-              style={{ backgroundColor: colors.primary, color: colors.primaryText }}
-              onClick={() => {
-                setIsFirstTime(false);
-                handleAddSource();
-              }}
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-            >
-              <FolderOpen className="w-5 h-5 mr-2" />
-              Add Documents
-            </motion.button>
-            <motion.button
-              className="w-full px-4 py-2 rounded-lg font-medium"
-              style={{ color: colors.textSecondary }}
-              onClick={() => setIsFirstTime(false)}
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-            >
-              Skip — I'll explore first
-            </motion.button>
-
-            <p className="text-xs text-center" style={{ color: colors.textMuted }}>
-              100% local — your data never leaves your machine
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
 
   return (
     <div
@@ -1512,14 +1421,29 @@ function AppSplitView() {
           </div>
         </div>
 
-        {/* Content Area — screen enter transition keyed on the active view */}
-        <motion.div
+        {initError && (
+          <div role="alert" className="shrink-0 px-5 py-2 flex items-center gap-3 border-b border-shodh-border bg-shodh-warning-soft text-[12.5px] text-shodh-text">
+            <AlertTriangle className="w-4 h-4 shrink-0 text-shodh-warning" aria-hidden="true" />
+            <span className="flex-1 min-w-0 break-words">{`The local index could not be opened: ${initError}`}</span>
+            <button
+              type="button"
+              onClick={() => void initializeApp()}
+              className="h-7 px-2.5 inline-flex items-center gap-1.5 rounded-md border border-shodh-border bg-shodh-surface hover:bg-shodh-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+              Try again
+            </button>
+          </div>
+        )}
+
+        {/* Content: each view enters with the shared motion tokens (opacity and a small rise, no layout shift). */}
+        <main
+          id="main-content"
+          aria-label={VIEW_TAB_LABELS[activeTab]}
           key={activeTab}
-          className="flex-1 overflow-hidden"
-          initial={prefersReducedMotion ? false : { opacity: 0, y: 4 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: prefersReducedMotion ? 0 : 0.2, ease: [0.2, 0.7, 0.2, 1] }}
+          className="shell-view-enter flex-1 min-h-0 overflow-hidden"
         >
+          <Suspense fallback={<ViewSkeleton view={activeTab} />}>
           {/* Ask Tab */}
           {activeTab === 'ask' && (
             <AskView
@@ -1575,7 +1499,8 @@ function AppSplitView() {
             />
           )}
 
-        </motion.div>
+          </Suspense>
+        </main>
       </div>
 
 
@@ -1590,11 +1515,17 @@ function AppSplitView() {
         sources={sources.map(s => ({ id: s.id, name: s.name, path: s.path }))}
       />
 
-      {/* Onboarding Flow */}
-      <OnboardingFlow
-        isOpen={showOnboarding}
-        onComplete={() => setShowOnboarding(false)}
-        onSkip={() => setShowOnboarding(false)}
+      {/* First-run setup */}
+      <FirstRunFlow
+        open={firstRunOpen}
+        step={firstRun.step}
+        onStepChange={changeFirstRunStep}
+        onFinish={finishFirstRun}
+        onSkip={skipFirstRun}
+        llmStatus={llmStatus}
+        onModelStatusChange={refreshLlmStatus}
+        sources={sources}
+        onAddFolder={() => void handleAddSource()}
       />
 
       {/* Feedback Dialog */}

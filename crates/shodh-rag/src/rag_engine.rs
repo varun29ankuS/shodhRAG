@@ -159,11 +159,18 @@ fn insert_layout_metadata(
 }
 
 /// Other spellings under which older versions of the indexer may have stored
-/// `path`: the verbatim string and its forward-slash form without
-/// lowercasing. Excludes `canonical` itself.
+/// `path`: the verbatim string, its forward-slash form, and the previous
+/// normalization (forward slashes, lowercased on Windows, `\\?\` prefixes and
+/// `.` components left in place). Excludes `canonical` itself.
 fn legacy_source_spellings(path: &Path, canonical: &str) -> Vec<String> {
     let verbatim = path.display().to_string();
-    let mut out = vec![verbatim.clone(), verbatim.replace('\\', "/")];
+    let slashed = verbatim.replace('\\', "/");
+    let previous = if cfg!(windows) {
+        slashed.to_lowercase()
+    } else {
+        slashed.clone()
+    };
+    let mut out = vec![verbatim, slashed, previous];
     out.retain(|s| s != canonical);
     out.sort();
     out.dedup();
@@ -1521,6 +1528,13 @@ mod page_metadata_tests {
         assert!(legacy.contains(&"C:\\Papers\\A.pdf".to_string()));
         assert!(legacy.contains(&"C:/Papers/A.pdf".to_string()));
         assert!(!legacy.contains(&canonical));
+
+        // The previous normalization kept verbatim prefixes and `.` parts.
+        let verbatim = Path::new(r"\\?\C:\Papers\.\A.pdf");
+        let canonical = normalize_source_path(verbatim);
+        assert_eq!(canonical, "c:/papers/a.pdf");
+        assert!(legacy_source_spellings(verbatim, &canonical)
+            .contains(&"//?/c:/papers/./a.pdf".to_string()));
     }
 
     #[test]

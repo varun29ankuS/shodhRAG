@@ -45,6 +45,33 @@ impl HostEffects for TauriEffects {
         crate::app_settings::broadcast(&self.app, settings);
     }
 
+    fn openrouter_key(&self) -> Option<String> {
+        let non_empty =
+            |v: Option<String>| v.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
+        if let Some(key) = non_empty(std::env::var("OPENROUTER_API_KEY").ok()) {
+            return Some(key);
+        }
+        let llm = self.app.state::<LLMState>();
+        let stored = llm
+            .api_keys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .openrouter
+            .clone();
+        if let Some(key) = non_empty(stored) {
+            return Some(key);
+        }
+        let config = llm.config.lock().unwrap_or_else(|e| e.into_inner());
+        match &config.mode {
+            LLMMode::External {
+                provider: shodh_rag::llm::ApiProvider::OpenRouter,
+                api_key,
+                ..
+            } => non_empty(Some(api_key.clone())),
+            _ => None,
+        }
+    }
+
     fn model_info(&self) -> Option<ModelInfo> {
         let llm = self.app.state::<LLMState>();
         let mode = llm

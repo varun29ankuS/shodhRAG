@@ -44,6 +44,10 @@ futures-util = "0.3"
 llama-cpp-2 = "0.1"
 async-trait = "0.1"
 reqwest = { version = "0.11", features = ["json", "stream"] }
+# Agent web tools: URL parsing, HTML to text, arXiv Atom feeds.
+url = "2"
+html2text = "0.14"
+roxmltree = "0.20"
 bytes = "1"
 
 # Document parsing

@@ -17,6 +17,7 @@ pub mod protocol;
 pub mod session;
 pub mod sidecar;
 pub mod tools;
+pub mod web;
 
 pub use error::HarnessError;
 pub use events::{AgentEvent, PlanItem, PlanStatus, RiskTier, RunStatus};

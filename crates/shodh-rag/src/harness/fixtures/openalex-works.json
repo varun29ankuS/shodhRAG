@@ -1,0 +1,44 @@
+{
+  "meta": {"count": 2, "db_response_time_ms": 41, "page": 1, "per_page": 2},
+  "results": [
+    {
+      "id": "https://openalex.org/W2963403868",
+      "doi": "https://doi.org/10.48550/arxiv.1706.03762",
+      "title": "Attention Is All You Need",
+      "display_name": "Attention Is All You Need",
+      "publication_year": 2017,
+      "primary_location": {
+        "is_oa": true,
+        "landing_page_url": "https://arxiv.org/abs/1706.03762",
+        "pdf_url": "https://arxiv.org/pdf/1706.03762",
+        "source": {"display_name": "arXiv (Cornell University)"}
+      },
+      "open_access": {"is_oa": true, "oa_status": "green", "oa_url": "https://arxiv.org/abs/1706.03762"},
+      "best_oa_location": {"is_oa": true, "pdf_url": "https://arxiv.org/pdf/1706.03762", "landing_page_url": "https://arxiv.org/abs/1706.03762"},
+      "authorships": [
+        {"author_position": "first", "author": {"display_name": "Ashish Vaswani"}},
+        {"author_position": "middle", "author": {"display_name": "Noam Shazeer"}}
+      ],
+      "abstract_inverted_index": {"The": [0], "dominant": [1], "sequence": [2], "transduction": [3], "models": [4]}
+    },
+    {
+      "id": "https://openalex.org/W1000000001",
+      "doi": "https://doi.org/10.1038/nature14539",
+      "title": "Deep learning",
+      "display_name": "Deep learning",
+      "publication_year": 2015,
+      "primary_location": {
+        "is_oa": false,
+        "landing_page_url": "https://doi.org/10.1038/nature14539",
+        "pdf_url": null,
+        "source": {"display_name": "Nature"}
+      },
+      "open_access": {"is_oa": false, "oa_status": "closed", "oa_url": null},
+      "best_oa_location": null,
+      "authorships": [
+        {"author_position": "first", "author": {"display_name": "Yann LeCun"}}
+      ],
+      "abstract_inverted_index": null
+    }
+  ]
+}

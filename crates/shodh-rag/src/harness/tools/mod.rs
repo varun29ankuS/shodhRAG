@@ -17,6 +17,7 @@ pub mod navigate;
 pub mod plan;
 pub mod search;
 pub mod sources;
+pub mod web;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU32, Ordering};

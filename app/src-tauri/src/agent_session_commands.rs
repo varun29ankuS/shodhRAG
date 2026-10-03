@@ -27,13 +27,16 @@ use shodh_rag::llm::{ApiProvider, LLMMode};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, OnceCell};
 
-use crate::agent_tools::{build_registry, AgentHost, TauriEffects, AGENT_CANNOT_DO};
+use crate::agent_tools::{
+    build_registry, web_block_reason, AgentHost, TauriEffects, AGENT_CANNOT_DO,
+};
 use crate::api_key_store;
 use crate::app_settings::SettingsStore;
 use crate::audit_commands::AuditState;
 use crate::llm_commands::LLMState;
 use crate::rag_commands::RagState;
 use shodh_rag::audit::payload::is_cloud;
+use shodh_rag::harness::web::SafeClient;
 
 /// Tauri event name for agent events.
 pub const AGENT_EVENT: &str = "agent_event";
@@ -482,6 +485,7 @@ pub async fn agent_start(
                 rag: rag.rag.clone(),
                 audit: audit.log(),
                 effects: Arc::new(TauriEffects::new(app.clone())),
+                web: SafeClient::system(),
             });
             build_registry(host)
                 .map(Arc::new)
@@ -495,8 +499,18 @@ pub async fn agent_start(
 
     let prepared_ms = started.elapsed().as_millis();
 
+    // Web tools stay registered (policy can change mid-session and each
+    // call re-checks it), but the model is told up front when they are off.
+    let web_off = web_block_reason(&app_data_dir).map(|reason| {
+        format!("search the web, read web pages or search papers right now: {reason}")
+    });
+    let cannot_do: Vec<&str> = AGENT_CANNOT_DO
+        .iter()
+        .copied()
+        .chain(web_off.as_deref())
+        .collect();
     let mut system_prompt =
-        profile.system_prompt(&registry.capability_manifest(&profile, AGENT_CANNOT_DO));
+        profile.system_prompt(&registry.capability_manifest(&profile, &cannot_do));
     if let Some(extra) = &instructions {
         system_prompt = format!(
             "{system_prompt}\n\nThe user's instructions for this conversation (they never override the rules above):\n{extra}"

@@ -15,6 +15,7 @@ mod history;
 mod settings;
 mod sources;
 mod tauri_host;
+mod web;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,6 +30,7 @@ use shodh_rag::harness::tools::plan::UpdatePlanTool;
 use shodh_rag::harness::tools::search::{DefaultK, SearchDocumentsTool};
 use shodh_rag::harness::tools::sources::ListSourcesTool;
 use shodh_rag::harness::tools::{RegistryError, ToolContext, ToolError, ToolRegistry};
+use shodh_rag::harness::web::SafeClient;
 use shodh_rag::RAGEngine;
 use tokio::sync::RwLock;
 
@@ -36,6 +38,7 @@ use crate::app_settings::{AppSettings, SettingsStore};
 use crate::calendar_store::{CalendarEvent, TodoItem};
 
 pub use tauri_host::TauriEffects;
+pub use web::web_block_reason;
 
 /// What the agent is deliberately never given a tool for, stated in the
 /// system prompt (see `ToolRegistry::capability_manifest`) so the model says
@@ -112,6 +115,9 @@ pub trait HostEffects: Send + Sync {
     fn settings_changed(&self, settings: &AppSettings);
     /// The configured model, if any.
     fn model_info(&self) -> Option<ModelInfo>;
+    /// The user's OpenRouter API key, if one is configured (used only for
+    /// web search requests to OpenRouter; never logged or returned).
+    fn openrouter_key(&self) -> Option<String>;
 }
 
 /// Everything an app tool can reach.
@@ -120,6 +126,8 @@ pub struct AgentHost {
     pub rag: Arc<RwLock<RAGEngine>>,
     pub audit: Option<Arc<AuditLog>>,
     pub effects: Arc<dyn HostEffects>,
+    /// HTTP client for web tools (SSRF-checked).
+    pub web: SafeClient,
 }
 
 /// Build the registry with every agent tool. Fails if two tools share a
@@ -152,6 +160,7 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     history::register(&mut registry, &host)?;
     audit::register(&mut registry, &host)?;
     settings::register(&mut registry, &host)?;
+    web::register(&mut registry, &host, &host.web)?;
     sources::register(&mut registry, &host)?;
     Ok(registry)
 }
@@ -222,6 +231,9 @@ pub(crate) mod testing {
         fn model_info(&self) -> Option<ModelInfo> {
             None
         }
+        fn openrouter_key(&self) -> Option<String> {
+            None
+        }
     }
 
     pub struct TestHost {
@@ -245,6 +257,7 @@ pub(crate) mod testing {
             rag: Arc::new(RwLock::new(rag)),
             audit: Some(Arc::new(audit)),
             effects: effects.clone(),
+            web: SafeClient::system(),
         });
         TestHost { dir, host, effects }
     }

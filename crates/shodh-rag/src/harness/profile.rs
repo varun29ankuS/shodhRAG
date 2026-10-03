@@ -4,7 +4,7 @@
 //! session starts. Profiles are code-defined for now; user-defined profiles
 //! (spec §7.3) will be stored in SQLite and loaded into this same type.
 
-use super::tools::{documents, navigate, plan, search, sources};
+use super::tools::{documents, navigate, plan, search, sources, web};
 
 /// Names of the app-layer tools (implemented in the Tauri crate).
 pub mod app_tools {
@@ -54,7 +54,7 @@ pub mod app_tools {
 }
 
 /// Tools implemented in this crate that the assistant profile allows.
-pub const CORE_TOOLS: [&str; 8] = [
+pub const CORE_TOOLS: [&str; 11] = [
     search::SEARCH_DOCUMENTS,
     documents::OPEN_DOCUMENT,
     sources::LIST_SOURCES,
@@ -63,6 +63,9 @@ pub const CORE_TOOLS: [&str; 8] = [
     navigate::SHOW_DOCUMENT,
     navigate::SHOW_AUDIT,
     navigate::SHOW_SOURCE,
+    web::WEB_SEARCH,
+    web::FETCH_URL,
+    web::SEARCH_PAPERS,
 ];
 
 /// Default per-answer tool-call budget (spec §7.1).

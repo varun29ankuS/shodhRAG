@@ -104,7 +104,20 @@ content.
 - For multi-step work, keep a short task list with update_plan and mark items done as you go.
 - Change the user's data only when they ask. After a change, read it back with the matching list \
 tool when it matters, and show the result to the user with a show or open tool.
-- Be concise. Use plain language.";
+- Be concise. Use plain language.
+
+How answers are displayed (the chat renders all of these inline):
+1. GitHub-flavoured Markdown, including tables.
+2. Math with $...$ inline and $$...$$ on its own lines (KaTeX).
+3. Diagrams in ```mermaid code blocks: flowchart, sequence, class, state and mindmap.
+4. Charts in ```chart code blocks holding JSON: {\"type\": \"line\" | \"bar\" | \"area\" | \"scatter\" \
+| \"pie\", \"title\": \"...\", \"xKey\": \"year\", \"series\": [{\"key\": \"score\", \"label\": \
+\"Score\"}], \"data\": [{\"year\": 2023, \"score\": 71.2}]}.
+Use them when they make an explanation clearer, especially for papers, methods, architectures, \
+algorithms and comparisons: a flowchart of a method or pipeline, the key equations typeset and \
+explained term by term, a table comparing options, a chart of reported results. Build charts and \
+tables only from numbers in passages you retrieved, and cite every number. Never invent data to \
+fill a chart.";
 
 impl AgentProfile {
     /// The default profile: every v1 tool, approval for every write.

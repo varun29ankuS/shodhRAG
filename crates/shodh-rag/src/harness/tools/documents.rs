@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 use super::{req_str, HostTool, ToolContext, ToolError, ToolOutput, UNTRUSTED_NOTICE};
 use crate::harness::events::RiskTier;
 use crate::processing::parser::{DocumentParser, ParsedDocument};
-use crate::types::DocumentSection;
+use crate::types::{DocumentFormat, DocumentSection};
 use crate::RAGEngine;
 
 pub const OPEN_DOCUMENT: &str = "open_document";
@@ -37,38 +37,80 @@ impl OpenDocumentTool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Selection {
     Page(usize),
-    Range { start: usize, end: usize },
+    Range {
+        start: usize,
+        end: usize,
+    },
+    /// Both were given: the page when the document has page text, else the
+    /// range. The output says which was used.
+    PageOrRange {
+        page: usize,
+        start: usize,
+        end: usize,
+    },
     Beginning,
 }
 
-fn selection(args: &Value) -> Result<Selection, ToolError> {
-    let page = args.get("page").and_then(Value::as_u64);
-    let range = args.get("range");
-    match (page, range) {
-        (Some(_), Some(_)) => Err(ToolError::InvalidArguments {
-            tool: OPEN_DOCUMENT.to_string(),
-            reasons: "pass either page or range, not both".to_string(),
-        }),
-        (Some(page), None) => Ok(Selection::Page(usize::try_from(page).unwrap_or(usize::MAX))),
-        (None, Some(range)) => {
-            let start = range.get("start").and_then(Value::as_u64).unwrap_or(0);
-            let end = range
-                .get("end")
-                .and_then(Value::as_u64)
-                .unwrap_or(start + MAX_RANGE_CHARS as u64);
-            if end <= start {
-                return Err(ToolError::InvalidArguments {
-                    tool: OPEN_DOCUMENT.to_string(),
-                    reasons: "range.end must be greater than range.start".to_string(),
-                });
-            }
-            Ok(Selection::Range {
-                start: usize::try_from(start).unwrap_or(usize::MAX),
-                end: usize::try_from(end).unwrap_or(usize::MAX),
-            })
-        }
-        (None, None) => Ok(Selection::Beginning),
+impl Selection {
+    fn wants_page(self) -> bool {
+        matches!(self, Selection::Page(_) | Selection::PageOrRange { .. })
     }
+}
+
+fn range_bounds(range: &Value) -> Result<(usize, usize), ToolError> {
+    let start = range.get("start").and_then(Value::as_u64).unwrap_or(0);
+    let end = range
+        .get("end")
+        .and_then(Value::as_u64)
+        .unwrap_or(start + MAX_RANGE_CHARS as u64);
+    if end <= start {
+        return Err(ToolError::InvalidArguments {
+            tool: OPEN_DOCUMENT.to_string(),
+            reasons: "range.end must be greater than range.start".to_string(),
+        });
+    }
+    Ok((
+        usize::try_from(start).unwrap_or(usize::MAX),
+        usize::try_from(end).unwrap_or(usize::MAX),
+    ))
+}
+
+fn selection(args: &Value) -> Result<Selection, ToolError> {
+    let page = args
+        .get("page")
+        .and_then(Value::as_u64)
+        .map(|p| usize::try_from(p).unwrap_or(usize::MAX));
+    let range = args.get("range").map(range_bounds).transpose()?;
+    Ok(match (page, range) {
+        (Some(page), Some((start, end))) => Selection::PageOrRange { page, start, end },
+        (Some(page), None) => Selection::Page(page),
+        (None, Some((start, end))) => Selection::Range { start, end },
+        (None, None) => Selection::Beginning,
+    })
+}
+
+/// Page texts of a PDF read straight from the file with pdf-extract, used
+/// when the parser found no page structure (e.g. fonts lopdf cannot
+/// decode). Pages are numbered by position, from 1. `None` when the file
+/// cannot be split into pages.
+fn pdf_pages_from_file(path: &Path) -> Option<Vec<(usize, String)>> {
+    let bytes = std::fs::read(path).ok()?;
+    // pdf-extract can panic on malformed font tables; a panic means "no
+    // page text", not a crashed tool call.
+    let pages = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pdf_extract::extract_text_from_mem_by_pages(&bytes)
+    }))
+    .ok()?
+    .ok()?;
+    let numbered: Vec<(usize, String)> = pages
+        .into_iter()
+        .enumerate()
+        .map(|(i, text)| (i + 1, text))
+        .collect();
+    numbered
+        .iter()
+        .any(|(_, t)| !t.trim().is_empty())
+        .then_some(numbered)
 }
 
 /// Reject pseudo-sources and parent-directory traversal before any lookup.
@@ -101,17 +143,21 @@ fn slice_chars(text: &str, start: usize, end: usize) -> (String, usize) {
     (slice, total)
 }
 
-fn page_text(parsed: &ParsedDocument, page: usize) -> Result<String, ToolError> {
-    let pages: Vec<(usize, &str)> = parsed
+/// Page texts recorded by the parser (`page` > 0).
+fn parsed_pages(parsed: &ParsedDocument) -> Vec<(usize, String)> {
+    parsed
         .structured_sections
         .iter()
         .filter_map(|s| match s {
             DocumentSection::Text { content, page, .. } if *page > 0 => {
-                Some((*page, content.as_str()))
+                Some((*page, content.clone()))
             }
             _ => None,
         })
-        .collect();
+        .collect()
+}
+
+fn page_text(pages: &[(usize, String)], page: usize) -> Result<String, ToolError> {
     if pages.is_empty() {
         return Err(ToolError::NotFound(
             "This document has no page structure; request a character range instead".to_string(),
@@ -120,7 +166,7 @@ fn page_text(parsed: &ParsedDocument, page: usize) -> Result<String, ToolError> 
     let text: Vec<&str> = pages
         .iter()
         .filter(|(p, _)| *p == page)
-        .map(|(_, t)| *t)
+        .map(|(_, t)| t.as_str())
         .collect();
     if text.is_empty() {
         let last = pages.iter().map(|(p, _)| *p).max().unwrap_or(1);
@@ -131,15 +177,33 @@ fn page_text(parsed: &ParsedDocument, page: usize) -> Result<String, ToolError> 
     Ok(text.join("\n"))
 }
 
-/// Render the selected part of a parsed document for the model.
+/// Render the selected part of a parsed document for the model. `pages`
+/// are its page texts (from the parser, or read from the PDF directly).
 fn render(
     parsed: &ParsedDocument,
+    pages: &[(usize, String)],
     source: &str,
     selection: Selection,
 ) -> Result<ToolOutput, ToolError> {
+    let (selection, note) = match selection {
+        Selection::PageOrRange { page, start, end } => {
+            if pages.is_empty() {
+                (
+                    Selection::Range { start, end },
+                    Some("used the range: this document has no page text"),
+                )
+            } else {
+                (
+                    Selection::Page(page),
+                    Some("used the page; the range was ignored"),
+                )
+            }
+        }
+        other => (other, None),
+    };
     let (body, location, next_hint) = match selection {
         Selection::Page(page) => {
-            let text = page_text(parsed, page)?;
+            let text = page_text(pages, page)?;
             let (slice, total) = slice_chars(&text, 0, MAX_RANGE_CHARS);
             let hint = (total > MAX_RANGE_CHARS).then(|| {
                 format!(
@@ -175,6 +239,15 @@ fn render(
             });
             (slice, format!("characters 0–{shown} of {total}"), hint)
         }
+        Selection::PageOrRange { .. } => {
+            return Err(ToolError::Failed(
+                "internal error: page-or-range was not resolved".to_string(),
+            ))
+        }
+    };
+    let location = match note {
+        Some(note) => format!("{location} ({note})"),
+        None => location,
     };
     if body.trim().is_empty() {
         return Err(ToolError::NotFound(format!(
@@ -211,7 +284,9 @@ impl HostTool for OpenDocumentTool {
     fn description(&self) -> &'static str {
         "Read part of an indexed document: a page (PDFs) or a character range. Pass the path from \
          search_documents (or a unique file name). Without page or range, returns the beginning. \
-         Long sections are cut at 12,000 characters with a hint for the next range."
+         Long sections are cut at 12,000 characters with a hint for the next range. Examples: \
+         {\"path\":\"x.pdf\",\"page\":3} or {\"path\":\"x.pdf\",\"range\":{\"start\":0,\"end\":6000}}. \
+         If both are given, the page is used when the document has page text, else the range."
     }
     fn schema(&self) -> Value {
         json!({
@@ -270,22 +345,30 @@ impl HostTool for OpenDocumentTool {
         }
 
         let path = source.clone();
-        let parsed = tokio::task::spawn_blocking(move || DocumentParser::new().parse_file(Path::new(&path)))
-            .await
-            .map_err(|e| ToolError::Failed(format!("Reading the document was interrupted: {e}")))?
-            .map_err(|e| {
-                ToolError::Unavailable(format!(
-                    "{source} is indexed but could not be read from disk ({e}). It may have been moved or deleted; re-index its folder."
-                ))
-            })?;
-        render(&parsed, &source, selection)
+        let wants_page = selection.wants_page();
+        let (parsed, pages) = tokio::task::spawn_blocking(move || {
+            let file = Path::new(&path);
+            let parsed = DocumentParser::new().parse_file(file)?;
+            let mut pages = parsed_pages(&parsed);
+            if wants_page && pages.is_empty() && parsed.format == DocumentFormat::PDF {
+                pages = pdf_pages_from_file(file).unwrap_or_default();
+            }
+            Ok::<_, anyhow::Error>((parsed, pages))
+        })
+        .await
+        .map_err(|e| ToolError::Failed(format!("Reading the document was interrupted: {e}")))?
+        .map_err(|e| {
+            ToolError::Unavailable(format!(
+                "{source} is indexed but could not be read from disk ({e}). It may have been moved or deleted; re-index its folder."
+            ))
+        })?;
+        render(&parsed, &pages, &source, selection)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::DocumentFormat;
     use std::collections::HashMap;
 
     fn doc(content: &str, pages: &[(usize, &str)]) -> ParsedDocument {
@@ -326,23 +409,64 @@ mod tests {
             }
         );
         assert!(selection(&json!({"range": {"start": 10, "end": 5}})).is_err());
-        assert!(selection(&json!({"page": 1, "range": {"start": 0}})).is_err());
+        assert_eq!(
+            selection(&json!({"page": 1, "range": {"start": 0, "end": 6000}})).unwrap(),
+            Selection::PageOrRange {
+                page: 1,
+                start: 0,
+                end: 6000
+            }
+        );
+    }
+
+    #[test]
+    fn page_and_range_together_use_the_page_when_there_is_page_text() {
+        let paged = doc("abcdefghij", &[(1, "first page"), (2, "second page")]);
+        let both = Selection::PageOrRange {
+            page: 2,
+            start: 0,
+            end: 3,
+        };
+        let out = render(&paged, &parsed_pages(&paged), "c:/docs/acme.pdf", both).unwrap();
+        assert!(out.text_for_model.contains("second page"));
+        assert!(out
+            .summary_for_ui
+            .contains("page 2 (used the page; the range was ignored)"));
+
+        let unpaged = doc("abcdefghij", &[]);
+        let out = render(&unpaged, &[], "c:/docs/scan.pdf", both).unwrap();
+        assert!(out.text_for_model.contains("abc"));
+        assert!(!out.text_for_model.contains("abcd"));
+        assert!(out
+            .summary_for_ui
+            .contains("(used the range: this document has no page text)"));
+    }
+
+    #[test]
+    fn pages_read_from_the_pdf_replace_missing_page_structure() {
+        let unpaged = doc("whole text", &[]);
+        let from_file = vec![(1, "cover".to_string()), (2, "terms".to_string())];
+        let out = render(&unpaged, &from_file, "c:/docs/a.pdf", Selection::Page(2)).unwrap();
+        assert!(out.text_for_model.contains("terms"));
+        assert!(pdf_pages_from_file(Path::new("c:/definitely/missing.pdf")).is_none());
     }
 
     #[test]
     fn pages_and_ranges_render() {
         let parsed = doc("abcdefghij", &[(1, "first page"), (2, "second page")]);
-        let out = render(&parsed, "c:/docs/acme.pdf", Selection::Page(2)).unwrap();
+        let pages = parsed_pages(&parsed);
+        let out = render(&parsed, &pages, "c:/docs/acme.pdf", Selection::Page(2)).unwrap();
         assert!(out.text_for_model.contains("second page"));
         assert!(out.text_for_model.starts_with(UNTRUSTED_NOTICE));
         assert_eq!(out.summary_for_ui, "Read Acme MSA, page 2");
-        let missing = render(&parsed, "c:/docs/acme.pdf", Selection::Page(9)).unwrap_err();
+        let missing = render(&parsed, &pages, "c:/docs/acme.pdf", Selection::Page(9)).unwrap_err();
         assert_eq!(
             missing.to_string(),
             "Page 9 not found; the document has pages 1 to 2"
         );
         let range = render(
             &parsed,
+            &pages,
             "c:/docs/acme.pdf",
             Selection::Range { start: 2, end: 5 },
         )
@@ -350,6 +474,6 @@ mod tests {
         assert!(range.text_for_model.contains("cde"));
         assert!(range.text_for_model.contains("continue with range start=5"));
         let unpaged = doc("plain", &[]);
-        assert!(render(&unpaged, "a.txt", Selection::Page(1)).is_err());
+        assert!(render(&unpaged, &[], "a.txt", Selection::Page(1)).is_err());
     }
 }

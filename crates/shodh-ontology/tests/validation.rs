@@ -345,6 +345,7 @@ fn gstin_and_pan_patterns() {
         "29ABCPE1234F0Z5",  // entity code cannot be 0
         "29ABCPE1234F1Z55", // too long
         "AB29CPE1234F1Z5",  // state code must be digits
+        "29ABCDE1234F1Z5",  // embedded PAN has an invalid holder type
     ] {
         assert_eq!(
             tax("gstin", bad).unwrap_err().code(),

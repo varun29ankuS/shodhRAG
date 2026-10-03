@@ -112,7 +112,8 @@ A fact is an n-ary **statement**, not a bare triple. It has these fields:
 - `class`
 - `subject`: an optional resolved entity.
 - `properties`: a map of `RawValue`.
-- `ontology_version`
+- `ontology_version`: the version of the source (core, pack or extension) that defines
+  `class`.
 - `valid_from`: optional. If it is absent, the extraction time is used.
 - `provenance`: holds `source`, `generation`, `page`, `span`, the extractor (`rule`,
   `gliner`, `llm` or `user`, with its `version`), `confidence` and `extracted_at`.
@@ -124,8 +125,8 @@ addressability and supersede.
 following and reports **all** violations:
 
 - provenance is present and well formed;
-- the version is compatible (caret: a statement written under `1.2.0` is readable by
-  `1.x` with `x >= 2`);
+- the version is compatible with the loaded version of the source that defines the
+  class (caret: a statement written under `1.2.0` is readable by `1.x` with `x >= 2`);
 - the class exists;
 - every property exists and applies to the class (inheritance included);
 - relations are entity references whose class is within the range;
@@ -176,15 +177,15 @@ Core defaults:
 
 | Classes | Half-life | Reinforcement | Expiry |
 |---|---|---|---|
-| Parties and identity | 10 years | | |
+| Parties and identity | 10 years | 0.05 | |
 | Preferences | 2 years | 0.2 | |
-| Decisions | 5 years | | |
+| Decisions | 5 years | 0.1 | |
 | Procedures | 1 year | 0.3 (highest) | |
-| Episodes | 14 days | | |
-| Tasks | | | `dueOn` + 30 days |
-| Events | | | `endsAt` + 30 days |
-| Obligations | | | `dueOn` + 90 days |
-| Records (Document, Invoice, Contract, Payment) | No decay | | |
+| Episodes | 14 days | 0.1 | |
+| Tasks | 90 days | 0.1 | `dueOn` + 30 days |
+| Events | 30 days | 0.1 | `endsAt` + 30 days |
+| Obligations | No decay | 0 | `dueOn` + 90 days |
+| Records (Document, Invoice, Contract, Payment) | No decay | 0 | |
 
 ## Slicing
 
@@ -216,14 +217,18 @@ It also computes `affected_classes`, sorted and including subclasses. These are 
 classes whose documents must be re-extracted as a new generation. Changes to dynamics or
 documentation never trigger re-extraction.
 
-`version_bump_sufficient()` requires these bumps:
+Every source (core, each pack, each extension) is versioned independently. The diff
+attributes each change to the source that defines the term and reports a `SourceChange`
+per source. `version_bump_sufficient()` holds only if every source moved enough for its
+own changes:
 
 - cosmetic: a patch bump;
 - additive: a minor bump;
-- breaking: a major bump, or a minor bump for `0.x`.
+- breaking: a major bump, or a minor bump for `0.x`;
+- a newly added source is always sufficient; a removed source never is.
 
-Statements record the **core** version. Packs and extensions carry their own versions in
-`Ontology::sources()`.
+Statements record the version of the source that defines their class, so a breaking
+change to a pack class is caught at validation without touching the core version.
 
 ## Export
 

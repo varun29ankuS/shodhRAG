@@ -32,7 +32,7 @@ mod supersede;
 mod turtle;
 mod value;
 
-pub use diff::{ClassField, Compatibility, OntologyDiff, PropertyField, TermChange};
+pub use diff::{ClassField, Compatibility, OntologyDiff, PropertyField, SourceChange, TermChange};
 pub use error::{LoadError, LoadErrorKind, LoadErrors, SourceLocation};
 pub use loader::{OntologyBuilder, ROOT_CLASS};
 pub use model::{

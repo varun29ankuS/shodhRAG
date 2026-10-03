@@ -236,3 +236,76 @@ fn adding_a_pack_is_additive() {
     assert!(diff.added_classes.contains(&"Paper".to_owned()));
     assert!(diff.affected_classes.contains(&"Paper".to_owned()));
 }
+
+fn with_pack(version: &str, cardinality: &str) -> Ontology {
+    OntologyBuilder::new()
+        .with_core()
+        .add_source(
+            "pack.toml",
+            format!(
+                "[pack]\nid = \"acme.pack\"\nversion = \"{version}\"\nprefix = \"acme\"\nnamespace = \"urn:acme#\"\n\n[[class]]\nid = \"Gizmo\"\ndescription = \"g\"\n\n[[property]]\nid = \"gizmoPart\"\ndescription = \"p\"\ndomain = \"Gizmo\"\nrange = \"String\"\ncardinality = \"{cardinality}\"\n"
+            ),
+        )
+        .build()
+        .unwrap_or_else(|e| panic!("{e}"))
+}
+
+#[test]
+fn version_checks_are_per_source() {
+    // Adding a pack leaves the core untouched and is sufficient on its own.
+    let diff = OntologyDiff::between(&core(), &with_research());
+    assert!(diff.version_bump_sufficient());
+    let research = diff
+        .sources
+        .iter()
+        .find(|s| s.source == "shodh.research")
+        .unwrap();
+    assert_eq!(research.from, None);
+    assert_eq!(
+        diff.sources
+            .iter()
+            .find(|s| s.source == "shodh.core")
+            .unwrap()
+            .compatibility,
+        Compatibility::Identical
+    );
+
+    // A breaking change inside a pack needs a major bump of that pack, not of the core.
+    let old = with_pack("1.0.0", "one");
+    let diff = OntologyDiff::between(&old, &with_pack("1.1.0", "many"));
+    assert_eq!(diff.compatibility, Compatibility::Breaking);
+    assert!(!diff.version_bump_sufficient());
+    let diff = OntologyDiff::between(&old, &with_pack("2.0.0", "many"));
+    assert!(diff.version_bump_sufficient());
+    assert_eq!(diff.affected_classes, vec!["Gizmo".to_owned()]);
+
+    // Removing a pack is breaking and cannot be satisfied by any version.
+    let diff = OntologyDiff::between(&old, &core());
+    assert_eq!(diff.compatibility, Compatibility::Breaking);
+    assert!(!diff.version_bump_sufficient());
+}
+
+#[test]
+fn statements_record_the_version_of_the_defining_source() {
+    let ontology = with_pack("2.3.0", "one");
+    let mut provenance = common::provenance("2026-10-03T09:00:00Z");
+    provenance.page = None;
+    let mut statement = shodh_ontology::Statement {
+        id: "g1".to_owned(),
+        class: "Gizmo".to_owned(),
+        subject: None,
+        properties: Default::default(),
+        ontology_version: semver::Version::new(2, 1, 0),
+        valid_from: None,
+        provenance: Some(provenance),
+    };
+    assert!(ontology.validate(&statement).is_ok());
+    statement.ontology_version = semver::Version::new(1, 0, 0);
+    match ontology.validate(&statement) {
+        Err(violations) => assert!(matches!(
+            violations.as_slice(),
+            [shodh_ontology::Violation::IncompatibleVersion { defined_by, .. }] if defined_by == "acme.pack"
+        )),
+        Ok(_) => panic!("expected an incompatible version"),
+    }
+}

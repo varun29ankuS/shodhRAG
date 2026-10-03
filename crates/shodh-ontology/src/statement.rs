@@ -90,7 +90,8 @@ pub struct Statement {
     /// Property values. A `Many` property may carry a [`RawValue::List`].
     #[serde(default)]
     pub properties: BTreeMap<String, RawValue>,
-    /// Ontology version the statement was extracted under.
+    /// Version of the source (core, pack or extension) defining `class` that the statement
+    /// was extracted under. Checked with caret semantics against the loaded version.
     pub ontology_version: Version,
     /// When the fact became true. Defaults to the extraction time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -182,12 +183,15 @@ pub enum Violation {
         /// The id.
         id: String,
     },
-    /// The statement was extracted under an ontology version this ontology cannot read.
-    #[error("statement ontology version {statement} is not compatible with {ontology}")]
+    /// The statement was extracted under a version of the defining source that the loaded
+    /// version cannot read.
+    #[error("statement version {statement} is not compatible with `{defined_by}` {ontology}")]
     IncompatibleVersion {
+        /// Id of the source that defines the statement's class.
+        defined_by: String,
         /// Version on the statement.
         statement: String,
-        /// Version of the loaded ontology.
+        /// Loaded version of that source.
         ontology: String,
     },
     /// The class is not defined.
@@ -336,8 +340,9 @@ fn check_provenance(provenance: &Provenance) -> Option<String> {
 impl Ontology {
     /// Validates a statement against the ontology.
     ///
-    /// Checks provenance, ontology version compatibility (caret semantics: a statement
-    /// written under `1.2.0` is readable by `1.x` with `x >= 2`), class, property domains,
+    /// Checks provenance, version compatibility with the source that defines the class
+    /// (caret semantics: a statement written under `1.2.0` is readable by `1.x` with
+    /// `x >= 2`), class, property domains,
     /// value ranges and datatypes, patterns, enum membership, cardinality and required
     /// properties. All violations are reported, not just the first.
     pub fn validate(&self, statement: &Statement) -> Result<ValidStatement, Vec<Violation>> {
@@ -361,13 +366,23 @@ impl Ontology {
                 id: statement.id.clone(),
             });
         }
+        // Statements record the version of the source (core, pack or extension) that
+        // defines their class; each source is versioned independently.
+        let owner = self
+            .class(&statement.class)
+            .and_then(|class| self.source(&class.source));
+        let (owner_id, owner_version) = match owner {
+            Some(source) => (source.id.as_str(), &source.version),
+            None => (self.id.as_str(), &self.version),
+        };
         let compatible = VersionReq::parse(&format!("^{}", statement.ontology_version))
-            .map(|req| req.matches(&self.version))
+            .map(|req| req.matches(owner_version))
             .unwrap_or(false);
         if !compatible {
             violations.push(Violation::IncompatibleVersion {
+                defined_by: owner_id.to_owned(),
                 statement: statement.ontology_version.to_string(),
-                ontology: self.version.to_string(),
+                ontology: owner_version.to_string(),
             });
         }
 

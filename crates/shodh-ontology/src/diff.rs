@@ -1,6 +1,6 @@
 //! Version compatibility between two compiled ontologies.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use semver::Version;
 use serde::Serialize;
@@ -78,6 +78,46 @@ pub enum Compatibility {
     Breaking,
 }
 
+/// Version movement of one source (core, pack or extension) and the severity of the
+/// changes to the terms it defines.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SourceChange {
+    /// Source id.
+    pub source: String,
+    /// Version in the old ontology (`None` if the source was added).
+    pub from: Option<Version>,
+    /// Version in the new ontology (`None` if the source was removed).
+    pub to: Option<Version>,
+    /// Severity of the changes to this source's terms.
+    pub compatibility: Compatibility,
+}
+
+impl SourceChange {
+    /// Whether this source's version moved enough for its changes: cosmetic changes need a
+    /// higher version, additive changes a minor bump, breaking changes a major bump (a minor
+    /// bump for `0.x`, following semver caret rules). A newly added source is always
+    /// sufficient; a removed source never is (its statements can no longer be read).
+    pub fn bump_sufficient(&self) -> bool {
+        let (from, to) = match (&self.from, &self.to) {
+            (None, Some(_)) => return true,
+            (_, None) => return false,
+            (Some(from), Some(to)) => (from, to),
+        };
+        match self.compatibility {
+            Compatibility::Identical => to >= from,
+            Compatibility::Cosmetic => to > from,
+            Compatibility::Additive => (to.major, to.minor) > (from.major, from.minor),
+            Compatibility::Breaking => {
+                if from.major == 0 {
+                    to.major > 0 || to.minor > from.minor
+                } else {
+                    to.major > from.major
+                }
+            }
+        }
+    }
+}
+
 /// Differences between two ontology versions.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct OntologyDiff {
@@ -97,12 +137,43 @@ pub struct OntologyDiff {
     pub removed_properties: Vec<String>,
     /// Properties present in both with changed fields.
     pub changed_properties: Vec<TermChange<PropertyField>>,
-    /// Overall compatibility.
+    /// Per-source version movement and severity, sorted by source id. Every source of
+    /// either ontology is listed.
+    pub sources: Vec<SourceChange>,
+    /// Overall compatibility (the most severe source change).
     pub compatibility: Compatibility,
     /// Classes whose documents must be re-extracted (a new generation), sorted.
     /// Includes subclasses of affected classes. Dynamics, labels, descriptions and
     /// equivalences do not require re-extraction.
     pub affected_classes: Vec<String>,
+}
+
+fn class_severity(field: &ClassField) -> Compatibility {
+    match field {
+        ClassField::Parent => Compatibility::Breaking,
+        ClassField::IdentityKeys | ClassField::CueTerms | ClassField::CuePatterns => {
+            Compatibility::Additive
+        }
+        ClassField::Label
+        | ClassField::Description
+        | ClassField::Dynamics
+        | ClassField::EquivalentTo => Compatibility::Cosmetic,
+    }
+}
+
+fn property_severity(field: &PropertyField) -> Compatibility {
+    match field {
+        PropertyField::Domain
+        | PropertyField::Range
+        | PropertyField::Cardinality
+        | PropertyField::Temporal
+        | PropertyField::Required
+        | PropertyField::Pattern => Compatibility::Breaking,
+        PropertyField::PatternIsCue => Compatibility::Additive,
+        PropertyField::Label | PropertyField::Description | PropertyField::EquivalentTo => {
+            Compatibility::Cosmetic
+        }
+    }
 }
 
 impl OntologyDiff {
@@ -139,66 +210,98 @@ impl OntologyDiff {
             })
             .collect();
 
-        let breaking_class = |f: &ClassField| matches!(f, ClassField::Parent);
-        let additive_class = |f: &ClassField| {
-            matches!(
-                f,
-                ClassField::IdentityKeys | ClassField::CueTerms | ClassField::CuePatterns
-            )
+        // Severity per owning source: added and changed terms belong to their source in the
+        // new ontology, removed terms to their source in the old one.
+        let mut severity: BTreeMap<String, Compatibility> = BTreeMap::new();
+        let mut raise = |source: Option<&String>, level: Compatibility| {
+            if let Some(source) = source {
+                let entry = severity
+                    .entry(source.clone())
+                    .or_insert(Compatibility::Identical);
+                *entry = (*entry).max(level);
+            }
         };
-        let breaking_property = |f: &PropertyField| {
-            matches!(
-                f,
-                PropertyField::Domain
-                    | PropertyField::Range
-                    | PropertyField::Cardinality
-                    | PropertyField::Temporal
-                    | PropertyField::Required
-                    | PropertyField::Pattern
-            )
-        };
-        let added_required = added_properties
-            .iter()
-            .filter_map(|id| new.property(id))
-            .any(|p| p.required && p.domain.iter().any(|d| old.class(d).is_some()));
+        for id in &added_classes {
+            raise(new.class(id).map(|c| &c.source), Compatibility::Additive);
+        }
+        for id in &removed_classes {
+            raise(old.class(id).map(|c| &c.source), Compatibility::Breaking);
+        }
+        for change in &changed_classes {
+            let level = change
+                .fields
+                .iter()
+                .map(class_severity)
+                .max()
+                .unwrap_or(Compatibility::Identical);
+            raise(new.class(&change.id).map(|c| &c.source), level);
+        }
+        for id in &added_properties {
+            if let Some(property) = new.property(id) {
+                // A new required property invalidates existing statements of old classes.
+                let level = if property.required
+                    && property.domain.iter().any(|d| old.class(d).is_some())
+                {
+                    Compatibility::Breaking
+                } else {
+                    Compatibility::Additive
+                };
+                raise(Some(&property.source), level);
+            }
+        }
+        for id in &removed_properties {
+            raise(old.property(id).map(|p| &p.source), Compatibility::Breaking);
+        }
+        for change in &changed_properties {
+            let level = change
+                .fields
+                .iter()
+                .map(property_severity)
+                .max()
+                .unwrap_or(Compatibility::Identical);
+            raise(new.property(&change.id).map(|p| &p.source), level);
+        }
 
-        let breaking = !removed_classes.is_empty()
-            || !removed_properties.is_empty()
-            || added_required
-            || changed_classes
-                .iter()
-                .any(|c| c.fields.iter().any(breaking_class))
-            || changed_properties
-                .iter()
-                .any(|p| p.fields.iter().any(breaking_property));
-        let additive_property = |f: &PropertyField| matches!(f, PropertyField::PatternIsCue);
-        let additive = !added_classes.is_empty()
-            || !added_properties.is_empty()
-            || changed_classes
-                .iter()
-                .any(|c| c.fields.iter().any(additive_class))
-            || changed_properties
-                .iter()
-                .any(|p| p.fields.iter().any(additive_property));
-        let compatibility = if breaking {
-            Compatibility::Breaking
-        } else if additive {
-            Compatibility::Additive
-        } else if !changed_classes.is_empty() || !changed_properties.is_empty() {
-            Compatibility::Cosmetic
-        } else {
-            Compatibility::Identical
-        };
+        let source_ids: BTreeSet<&String> = old
+            .sources
+            .iter()
+            .chain(new.sources.iter())
+            .map(|s| &s.id)
+            .collect();
+        let sources: Vec<SourceChange> = source_ids
+            .into_iter()
+            .map(|id| {
+                let from = old.source(id).map(|s| s.version.clone());
+                let to = new.source(id).map(|s| s.version.clone());
+                let compatibility = if to.is_none() {
+                    Compatibility::Breaking
+                } else {
+                    severity
+                        .get(id)
+                        .copied()
+                        .unwrap_or(Compatibility::Identical)
+                };
+                SourceChange {
+                    source: id.clone(),
+                    from,
+                    to,
+                    compatibility,
+                }
+            })
+            .collect();
+        let compatibility = sources
+            .iter()
+            .map(|s| s.compatibility)
+            .max()
+            .unwrap_or(Compatibility::Identical);
 
         // Classes whose extraction output can change.
+        let reextract_class = |f: &ClassField| class_severity(f) > Compatibility::Cosmetic;
+        let reextract_property = |f: &PropertyField| property_severity(f) > Compatibility::Cosmetic;
         let mut affected: BTreeSet<String> = BTreeSet::new();
         affected.extend(removed_classes.iter().cloned());
         for change in &changed_classes {
-            if change
-                .fields
-                .iter()
-                .any(|f| breaking_class(f) || additive_class(f))
-            {
+            if change.fields.iter().any(reextract_class) {
                 affected.insert(change.id.clone());
             }
         }
@@ -214,11 +317,7 @@ impl OntologyDiff {
             property_domains(new.property(id));
         }
         for change in &changed_properties {
-            if change
-                .fields
-                .iter()
-                .any(|f| breaking_property(f) || additive_property(f))
-            {
+            if change.fields.iter().any(reextract_property) {
                 property_domains(old.property(&change.id));
                 property_domains(new.property(&change.id));
             }
@@ -244,28 +343,17 @@ impl OntologyDiff {
             added_properties,
             removed_properties,
             changed_properties,
+            sources,
             compatibility,
             affected_classes: affected.into_iter().collect(),
         }
     }
 
-    /// Whether the new version number is large enough for the changes: any change needs a
-    /// higher version, additive changes a minor bump, breaking changes a major bump
-    /// (a minor bump for `0.x`, following semver caret rules).
+    /// Whether every source's version moved enough for the changes to the terms it defines
+    /// (see [`SourceChange::bump_sufficient`]). Statements record the version of the source
+    /// that defines their class, so each source is versioned independently.
     pub fn version_bump_sufficient(&self) -> bool {
-        let (from, to) = (&self.from, &self.to);
-        match self.compatibility {
-            Compatibility::Identical => to >= from,
-            Compatibility::Cosmetic => to > from,
-            Compatibility::Additive => (to.major, to.minor) > (from.major, from.minor),
-            Compatibility::Breaking => {
-                if from.major == 0 {
-                    to.major > 0 || to.minor > from.minor
-                } else {
-                    to.major > from.major
-                }
-            }
-        }
+        self.sources.iter().all(SourceChange::bump_sufficient)
     }
 }
 

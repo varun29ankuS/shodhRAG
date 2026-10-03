@@ -2,9 +2,10 @@ import React, { useState } from 'react';
 import LLMSettings from '../../LLMSettings';
 import SearchSettings from '../SearchSettings';
 import DataManagement from '../DataManagement';
+import AuditView from '../../features/audit/AuditView';
 import { cn } from '../../lib/utils';
 
-export type SettingsSection = 'models' | 'search' | 'data';
+export type SettingsSection = 'models' | 'search' | 'data' | 'audit';
 
 const SECTIONS: { id: SettingsSection; label: string; description: string }[] = [
   {
@@ -21,6 +22,11 @@ const SECTIONS: { id: SettingsSection; label: string; description: string }[] = 
     id: 'data',
     label: 'Data',
     description: 'Inspect the local index, remove sources, or reset stored data on this computer.',
+  },
+  {
+    id: 'audit',
+    label: 'Usage & Audit',
+    description: 'What was asked, which tools ran, what was retrieved and what changed, in a tamper-evident log on this computer.',
   },
 ];
 
@@ -98,6 +104,18 @@ export default function SettingsView({
               <p className="text-sm text-shodh-text-muted">{active.description}</p>
             </header>
             <LLMSettings embedded onClose={onCloseModelSettings} onStatusChange={onModelStatusChange} />
+          </div>
+        </main>
+      ) : section === 'audit' ? (
+        <main aria-labelledby="settings-section-heading" className="flex-1 min-w-0 overflow-y-auto">
+          <div className="max-w-[1080px] px-10 py-8 flex flex-col gap-7">
+            <header className="flex flex-col gap-1.5">
+              <h2 id="settings-section-heading" className="m-0 text-2xl font-bold">
+                {active.label}
+              </h2>
+              <p className="text-sm text-shodh-text-muted">{active.description}</p>
+            </header>
+            <AuditView />
           </div>
         </main>
       ) : (

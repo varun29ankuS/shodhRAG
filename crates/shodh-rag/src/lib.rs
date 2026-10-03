@@ -3,6 +3,7 @@
 #![cfg_attr(not(feature = "strict"), allow(unused_variables))]
 #![cfg_attr(not(feature = "strict"), allow(unused_imports))]
 
+pub mod audit;
 pub mod chat;
 pub mod config;
 pub mod context;

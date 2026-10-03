@@ -6,7 +6,8 @@
 //! 3. validates the arguments against the tool's JSON schema,
 //! 4. applies the risk-tier gate (write/destructive calls wait for approval),
 //! 5. executes the tool and caps its output,
-//! 6. writes an audit record through `tracing` (target `shodh::audit`).
+//! 6. records the call (and, for document tools, what was retrieved) in the
+//!    audit log when the context carries one.
 //!
 //! Failures at any step become a structured error result for the model; the
 //! tool does not run.
@@ -31,6 +32,9 @@ use super::omp::{render_label, StepMeta};
 use super::profile::AgentProfile;
 use super::protocol::{HostToolDefinition, OutboundFrame, ToolLoadMode, ToolResultPayload};
 use super::truncate_chars;
+use crate::audit::{
+    payload as audit_payload, AuditEventType, AuditLog, AuditScope, SYSTEM_PRINCIPAL,
+};
 
 /// How long an approval prompt waits before it counts as declined.
 pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -138,6 +142,14 @@ pub struct ToolContext {
     events: mpsc::UnboundedSender<AgentEvent>,
     outbound: Option<mpsc::UnboundedSender<OutboundFrame>>,
     passages: Arc<AtomicU32>,
+    audit: Option<ToolAudit>,
+}
+
+/// Where a tool call's audit events go.
+#[derive(Clone, Debug)]
+pub struct ToolAudit {
+    pub log: Arc<AuditLog>,
+    pub scope: AuditScope,
 }
 
 impl ToolContext {
@@ -153,7 +165,31 @@ impl ToolContext {
             events,
             outbound: None,
             passages: Arc::new(AtomicU32::new(0)),
+            audit: None,
         }
+    }
+
+    /// Record this call's events in `audit`.
+    pub fn with_audit(mut self, audit: Option<ToolAudit>) -> Self {
+        self.audit = audit;
+        self
+    }
+
+    /// Queue an audit event for this call's run, in the session's scope
+    /// (no-op without an audit log). Never blocks.
+    pub fn audit(&self, event_type: AuditEventType, payload: Value) {
+        if let Some(audit) = &self.audit {
+            audit
+                .log
+                .submit(audit.scope.record(&self.run_id, event_type, payload));
+        }
+    }
+
+    fn audit_principal(&self) -> &str {
+        self.audit
+            .as_ref()
+            .map(|a| a.scope.principal.as_str())
+            .unwrap_or(crate::audit::LOCAL_OWNER)
     }
 
     /// Share the run's passage counter, so citation numbers continue across
@@ -315,6 +351,64 @@ impl ApprovalGate {
     }
 }
 
+/// Records an interrupted call: if the dispatch future is dropped (the call
+/// was cancelled or the run aborted) before the call finished, the drop
+/// still writes a `tool_call` event. Disarmed on normal completion.
+struct InterruptedCallGuard<'a> {
+    ctx: &'a ToolContext,
+    tool: &'a str,
+    tier: Option<RiskTier>,
+    args: &'a Value,
+    started: Instant,
+    armed: bool,
+}
+
+impl Drop for InterruptedCallGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let duration_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            self.ctx.audit(
+                AuditEventType::ToolCall,
+                audit_payload::tool_call(
+                    self.tool,
+                    self.tier,
+                    self.args,
+                    false,
+                    "Interrupted",
+                    duration_ms,
+                ),
+            );
+        }
+    }
+}
+
+/// Records an approval prompt that was abandoned (the call was cancelled
+/// while waiting) as `cancelled` by the system.
+struct PendingApprovalGuard<'a> {
+    ctx: &'a ToolContext,
+    tool: &'a str,
+    label: &'a str,
+    tier: RiskTier,
+    armed: bool,
+}
+
+impl Drop for PendingApprovalGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.ctx.audit(
+                AuditEventType::Approval,
+                audit_payload::approval(
+                    self.tool,
+                    self.label,
+                    self.tier,
+                    ApprovalDecision::Cancelled,
+                    SYSTEM_PRINCIPAL,
+                ),
+            );
+        }
+    }
+}
+
 struct Registered {
     tool: Arc<dyn HostTool>,
     validator: jsonschema::Validator,
@@ -416,6 +510,14 @@ impl ToolRegistry {
         let started = Instant::now();
         let args = strip_intent(call.args);
         let tier = self.get(&call.tool).map(|r| r.tool.tier());
+        let mut interrupted = InterruptedCallGuard {
+            ctx,
+            tool: &call.tool,
+            tier,
+            args: &args,
+            started,
+            armed: true,
+        };
         let result = self
             .authorise_and_run(
                 &call.tool,
@@ -443,6 +545,26 @@ impl ToolRegistry {
             },
         };
 
+        interrupted.armed = false;
+        drop(interrupted);
+        ctx.audit(
+            AuditEventType::ToolCall,
+            audit_payload::tool_call(
+                &call.tool,
+                tier,
+                &args,
+                outcome.ok,
+                &outcome.summary,
+                duration_ms,
+            ),
+        );
+        if outcome.ok {
+            if let Some(retrieval) =
+                audit_payload::retrieval(&call.tool, &args, outcome.detail.as_ref())
+            {
+                ctx.audit(AuditEventType::Retrieval, retrieval);
+            }
+        }
         tracing::info!(
             target: "shodh::audit",
             event = "tool_call",
@@ -524,7 +646,25 @@ impl ToolRegistry {
                 tier: tool.tier(),
                 preview: preview.details,
             });
-            match approvals.wait(&ctx.step_id).await {
+            let mut abandoned = PendingApprovalGuard {
+                ctx,
+                tool: name,
+                label: &label,
+                tier: tool.tier(),
+                armed: true,
+            };
+            let decision = approvals.wait(&ctx.step_id).await;
+            abandoned.armed = false;
+            drop(abandoned);
+            let who = match decision {
+                ApprovalDecision::Approved | ApprovalDecision::Denied => ctx.audit_principal(),
+                ApprovalDecision::TimedOut | ApprovalDecision::Cancelled => SYSTEM_PRINCIPAL,
+            };
+            ctx.audit(
+                AuditEventType::Approval,
+                audit_payload::approval(name, &label, tool.tier(), decision, who),
+            );
+            match decision {
                 ApprovalDecision::Approved => {}
                 ApprovalDecision::Denied => return Err(ToolError::Declined(label)),
                 ApprovalDecision::TimedOut => {
@@ -954,6 +1094,100 @@ mod tests {
             .await;
         assert!(!bad.ok);
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn interrupted_calls_and_abandoned_approvals_are_audited() {
+        use crate::audit::{AuditLog, AuditQuery, AuditRecord, AuditScope};
+        let dir = tempfile::tempdir().unwrap();
+        let log = Arc::new(AuditLog::open(dir.path().join("shodh.db"), None).unwrap());
+        let (reg, runs) = registry(RiskTier::Destructive);
+        let (ctx, mut rx) = ctx();
+        let ctx = ctx.with_audit(Some(ToolAudit {
+            log: log.clone(),
+            scope: AuditScope {
+                principal: "local-owner".into(),
+                conversation_id: "conv-1".into(),
+                profile_id: "assistant".into(),
+            },
+        }));
+        let gate = Arc::new(ApprovalGate::default());
+        let task = {
+            let gate = gate.clone();
+            let ctx = ctx.clone();
+            tokio::spawn(async move {
+                reg.dispatch(
+                    call("probe", json!({"target": "x"})),
+                    &profile(&["probe"]),
+                    &gate,
+                    &ctx,
+                )
+                .await
+            })
+        };
+        assert!(matches!(
+            rx.recv().await,
+            Some(AgentEvent::ApprovalRequested { .. })
+        ));
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+
+        // A blocking append is queued behind the submitted events.
+        log.append(AuditRecord::new(
+            crate::audit::AuditEventType::Question,
+            json!({}),
+        ))
+        .unwrap();
+        let rows = log.query(&AuditQuery::default()).unwrap();
+        let approval = rows.iter().find(|r| r.event_type == "approval").unwrap();
+        assert_eq!(approval.payload["decision"], "cancelled");
+        assert_eq!(approval.payload["who"], "system");
+        assert_eq!(approval.conversation_id.as_deref(), Some("conv-1"));
+        let tool_call = rows.iter().find(|r| r.event_type == "tool_call").unwrap();
+        assert_eq!(tool_call.payload["ok"], false);
+        assert_eq!(tool_call.payload["summary"], "Interrupted");
+        assert_eq!(tool_call.run_id.as_deref(), Some("run-1"));
+        assert!(log.verify().unwrap().ok);
+    }
+
+    #[tokio::test]
+    async fn completed_calls_record_one_tool_call_and_retrieval_only_for_documents() {
+        use crate::audit::{AuditLog, AuditQuery, AuditRecord, AuditScope};
+        let dir = tempfile::tempdir().unwrap();
+        let log = Arc::new(AuditLog::open(dir.path().join("shodh.db"), None).unwrap());
+        let (reg, _) = registry(RiskTier::Read);
+        let (ctx, _rx) = ctx();
+        let ctx = ctx.with_audit(Some(ToolAudit {
+            log: log.clone(),
+            scope: AuditScope {
+                principal: "local-owner".into(),
+                conversation_id: "conv-1".into(),
+                profile_id: "assistant".into(),
+            },
+        }));
+        let outcome = reg
+            .dispatch(
+                call("probe", json!({"target": "x"})),
+                &profile(&["probe"]),
+                &ApprovalGate::default(),
+                &ctx,
+            )
+            .await;
+        assert!(outcome.ok);
+        log.append(AuditRecord::new(
+            crate::audit::AuditEventType::Question,
+            json!({}),
+        ))
+        .unwrap();
+        let rows = log.query(&AuditQuery::default()).unwrap();
+        let calls: Vec<_> = rows
+            .iter()
+            .filter(|r| r.event_type == "tool_call")
+            .collect();
+        assert_eq!(calls.len(), 1, "the disarmed guard records nothing");
+        assert_eq!(calls[0].payload["ok"], true);
+        assert!(rows.iter().all(|r| r.event_type != "retrieval"));
     }
 
     #[test]

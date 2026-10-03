@@ -13,6 +13,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use serde_json::{json, Value};
+use shodh_rag::audit::payload::{indexing_outcome, source_change, ChangeOrigin};
+use shodh_rag::audit::AuditEventType;
 use shodh_rag::harness::profile::app_tools;
 use shodh_rag::harness::tools::documents::OpenDocumentTool;
 use shodh_rag::harness::tools::navigate::OpenViewTool;
@@ -287,14 +289,23 @@ fn agent_indexing_options() -> IndexingOptions {
 }
 
 /// Start indexing `folder` into `space_id` in the background.
-fn spawn_index_job(app: &AppHandle, folder: String, space_id: String) {
+/// Index `folder` as `space_id` in the background and audit the outcome
+/// (`action` is `add` or `reindex`) in the calling run's scope.
+fn spawn_index_job(
+    app: &AppHandle,
+    ctx: &ToolContext,
+    action: &'static str,
+    folder: String,
+    space_id: String,
+) {
     let app = app.clone();
+    let ctx = ctx.clone();
     tokio::spawn(async move {
         let rag = app.state::<RagState>().rag.clone();
         let indexing_state = app.state::<IndexingState>();
         let emitter = TauriEventEmitter::new(app.clone());
         let mut engine = rag.write().await;
-        match shodh_rag::indexing::index_folder(
+        let result = shodh_rag::indexing::index_folder(
             &folder,
             &space_id,
             &agent_indexing_options(),
@@ -302,26 +313,21 @@ fn spawn_index_job(app: &AppHandle, folder: String, space_id: String) {
             &indexing_state,
             Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
         )
-        .await
-        {
-            Ok(result) => tracing::info!(
-                target: "shodh::audit",
-                event = "source_change",
-                action = "index",
-                source_id = %space_id,
-                files = result.files_processed,
-                failed = result.failed_files.len(),
-                "agent-started indexing finished"
-            ),
-            Err(e) => tracing::warn!(
-                target: "shodh::audit",
-                event = "source_change",
-                action = "index",
-                source_id = %space_id,
-                error = %e,
-                "agent-started indexing failed"
-            ),
+        .await;
+        drop(engine);
+        if let Err(e) = &result {
+            tracing::warn!(target: "shodh::harness", source_id = %space_id, error = %e, "agent-started indexing failed");
         }
+        ctx.audit(
+            AuditEventType::SourceChange,
+            source_change(
+                action,
+                ChangeOrigin::Agent,
+                Some(&space_id),
+                Some(&folder),
+                indexing_outcome(&result),
+            ),
+        );
     });
 }
 
@@ -417,14 +423,19 @@ impl HostTool for AddFolderTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::ADD_FOLDER;
         let raw = str_arg(&args, "path").ok_or_else(|| invalid(tool, "`path` is required"))?;
         let folder = validate_folder(tool, raw)?;
         let folder_text = folder.display().to_string();
         let source_id = uuid::Uuid::new_v4().to_string();
-        spawn_index_job(&self.app, folder_text.clone(), source_id.clone());
-        tracing::info!(target: "shodh::audit", event = "source_change", action = "add", source_id = %source_id, "agent added a folder");
+        spawn_index_job(
+            &self.app,
+            ctx,
+            "add",
+            folder_text.clone(),
+            source_id.clone(),
+        );
         Ok(ToolOutput {
             text_for_model: format!(
                 "Started indexing {folder_text} as source {source_id}. It runs in the background; \
@@ -480,7 +491,7 @@ impl HostTool for ReindexSourceTool {
         RiskTier::Write
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let source = resolve_source(&self.app, app_tools::REINDEX_SOURCE, &args).await?;
         let source_id = source.source_id.as_str();
         let folder = source.folder.ok_or_else(|| {
@@ -491,8 +502,13 @@ impl HostTool for ReindexSourceTool {
                 "{folder} no longer exists on disk"
             )));
         }
-        spawn_index_job(&self.app, folder.clone(), source_id.to_string());
-        tracing::info!(target: "shodh::audit", event = "source_change", action = "reindex", source_id = %source_id, "agent re-indexed a source");
+        spawn_index_job(
+            &self.app,
+            ctx,
+            "reindex",
+            folder.clone(),
+            source_id.to_string(),
+        );
         Ok(ToolOutput {
             text_for_model: format!(
                 "Started re-indexing {folder} (source {source_id}) in the background."
@@ -550,7 +566,7 @@ impl HostTool for RemoveSourceTool {
         RiskTier::Destructive
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let source = resolve_source(&self.app, app_tools::REMOVE_SOURCE, &args).await?;
         let source_id = source.source_id.as_str();
         let rag = self.app.state::<RagState>().rag.clone();
@@ -562,7 +578,16 @@ impl HostTool for RemoveSourceTool {
                 .map_err(|e| ToolError::Failed(format!("Removing the source failed: {e}")))?
         };
         let folder = source.folder.unwrap_or_else(|| source.source_id.clone());
-        tracing::info!(target: "shodh::audit", event = "source_change", action = "remove", source_id = %source_id, chunks = deleted, "agent removed a source");
+        ctx.audit(
+            AuditEventType::SourceChange,
+            source_change(
+                "remove",
+                ChangeOrigin::Agent,
+                Some(source_id),
+                Some(&folder),
+                json!({"ok": true, "files": source.files, "chunks": deleted}),
+            ),
+        );
         Ok(ToolOutput {
             text_for_model: format!(
                 "Removed {folder} (source {source_id}, {} files, {deleted} chunks) from the index. Files on disk were not touched.",

@@ -64,6 +64,31 @@ pub fn load(provider: &str) -> Result<Option<String>, String> {
     }
 }
 
+/// Credential-store user of the audit database key (hex-encoded 256-bit key).
+/// Not a provider id: `is_known_provider` rejects it, so the provider
+/// commands can never read, overwrite or delete it.
+pub const AUDIT_DB_KEY_USER: &str = "audit-db-key";
+
+/// Load a non-provider secret (e.g. [`AUDIT_DB_KEY_USER`]). `Ok(None)` means
+/// none is stored.
+pub fn load_secret(user: &str) -> Result<Option<String>, String> {
+    match entry(user)?.get_password() {
+        Ok(value) if value.trim().is_empty() => Ok(None),
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!(
+            "Failed to read {user} from the OS credential store: {e}"
+        )),
+    }
+}
+
+/// Store a non-provider secret, replacing any existing value.
+pub fn store_secret(user: &str, value: &str) -> Result<(), String> {
+    entry(user)?
+        .set_password(value)
+        .map_err(|e| format!("Failed to save {user} to the OS credential store: {e}"))
+}
+
 /// Load every stored provider key. Providers whose entry cannot be read are
 /// logged and skipped so one broken entry does not hide the others.
 pub fn load_all() -> Vec<(&'static str, String)> {
@@ -92,5 +117,6 @@ mod tests {
         }
         assert!(!is_known_provider("ollama"));
         assert!(!is_known_provider(""));
+        assert!(!is_known_provider(AUDIT_DB_KEY_USER));
     }
 }

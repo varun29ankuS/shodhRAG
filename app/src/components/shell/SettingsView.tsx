@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { OPEN_SETTINGS_SECTION, takeRequestedSection } from '../../features/memory/navigation';
 import LLMSettings from '../../LLMSettings';
 import SearchSettings from '../SearchSettings';
 import DataManagement from '../DataManagement';
@@ -77,7 +78,16 @@ export default function SettingsView({
   conversations,
   onOpenConversation,
 }: SettingsViewProps) {
-  const [section, setSection] = useState<SettingsSection>('models');
+  const [section, setSection] = useState<SettingsSection>(() => takeRequestedSection() ?? 'models');
+  // Another view (the suggested-memories badge) asks for a section.
+  useEffect(() => {
+    const open = () => {
+      const requested = takeRequestedSection();
+      if (requested) setSection(requested);
+    };
+    window.addEventListener(OPEN_SETTINGS_SECTION, open);
+    return () => window.removeEventListener(OPEN_SETTINGS_SECTION, open);
+  }, []);
   const active = SECTIONS.find(s => s.id === section) ?? SECTIONS[0];
 
   return (

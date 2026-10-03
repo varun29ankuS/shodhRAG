@@ -437,7 +437,9 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     return () => window.clearTimeout(timer);
   }, [api, activeConversationId, instructions, runtimeInstalled]);
 
-  const runAgent = useCallback(async (conversationId: string, prompt: string, history: ChatMessage[], options: SendOptions | null) => {
+  // `textOrigin`: `typed` when `prompt` is exactly what the user typed (learning may use it);
+  // `composed` for prompts the app builds (a side-thread summary request).
+  const runAgent = useCallback(async (conversationId: string, prompt: string, history: ChatMessage[], options: SendOptions | null, textOrigin: 'typed' | 'composed') => {
     const runId = newId('run');
     const startedAtMs = Date.now();
     const transcript = initialTranscript(runId, startedAtMs);
@@ -470,7 +472,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       live.sessionId = sessionId;
       setRuntimeInstalled(true);
       const workspaceId = conversation?.spaceId ?? options?.spaceId ?? null;
-      await api.send(sessionId, prompt, runId, historyOf(history), scopeOf(options, workspaceId));
+      await api.send(sessionId, prompt, runId, historyOf(history), scopeOf(options, workspaceId), textOrigin);
     } catch (error) {
       const failure = toAgentError(error);
       if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
@@ -500,7 +502,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       updateConversationMeta(conversationId, { spaceId: options.spaceId, spaceName: options.spaceName });
     }
 
-    await runAgent(conversationId, prompt, history, options);
+    await runAgent(conversationId, prompt, history, options, sideSummary ? 'composed' : 'typed');
   }, [publish, runAgent, updateConversationMeta]);
 
   const retry = useCallback((assistantMessageId: string, options: SendOptions) => {
@@ -525,7 +527,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       setView(v => (v.conversationId === conversationId
         ? { ...v, messages: v.messages.filter(m => m.id !== assistantMessageId) }
         : v));
-      void runAgent(conversationId, prompt, messages.slice(0, userIndex), options);
+      void runAgent(conversationId, prompt, messages.slice(0, userIndex), options, asked.sideSummary ? 'composed' : 'typed');
     } else {
       void send(asked.content, options, asked.sideSummary ? { sideSummary: asked.sideSummary } : undefined);
     }

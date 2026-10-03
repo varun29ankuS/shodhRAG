@@ -91,9 +91,19 @@ export const agentApi = {
    */
   start: (conversationId: string, instructions: string | null, parentConversationId: string | null = null) =>
     call<string>('agent_start', { conversationId, profileId: null, instructions, parentConversationId }),
-  /** `scope` limits what the answer may search (selected sources, or files for "Ask about this file"). */
-  send: (sessionId: string, text: string, requestId: string, history: HistoryTurn[], scope: AnswerScope | null = null) =>
-    call<string>('agent_send', { sessionId, text, requestId, history, scope }),
+  /**
+   * `scope` limits what the answer may search (selected sources, or files for "Ask about this file").
+   * `textOrigin` is `typed` only when `text` is exactly what the user typed in the main
+   * conversation: only such turns may be learned from (Settings → Memory).
+   */
+  send: (
+    sessionId: string,
+    text: string,
+    requestId: string,
+    history: HistoryTurn[],
+    scope: AnswerScope | null = null,
+    textOrigin: 'typed' | 'composed' = 'composed',
+  ) => call<string>('agent_send', { sessionId, text, requestId, history, scope, textOrigin }),
   steer: (sessionId: string, text: string) => call<string>('agent_steer', { sessionId, text }),
   abort: (sessionId: string) => call<void>('agent_abort', { sessionId }),
   approve: (sessionId: string, stepId: string, approved: boolean) =>

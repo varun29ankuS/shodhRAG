@@ -4,7 +4,9 @@ import { Download, History, Pencil, Pin, PinOff, RefreshCw, Search, Trash2 } fro
 import { cn } from '../lib/utils';
 import { notify } from '../lib/notify';
 import { getAppSettings, onAppSettingsChanged, setMemoryPreferences } from '../lib/appSettings';
+import type { MemoryPrefs } from '../lib/appSettings';
 import { SwitchRow } from './PrivacySettings';
+import SuggestedMemories from './SuggestedMemories';
 import {
   contentFromEdit,
   editableFields,
@@ -291,16 +293,18 @@ function MemoryItem({ memory, busy, onChanged, setBusy, conversationTitle, onOpe
 
 /**
  * Settings → Memory: what Shodh remembers about the user, grouped by kind, with how
- * strong each memory is now. Memories are created only by the user (asking Shodh to
- * remember, and approving it); here the user can edit, pin, forget and export them.
+ * strong each memory is now. Memories are created by the user (asking Shodh to remember
+ * and approving it), or learned from what the user says in conversations under the
+ * learning mode chosen here (suggestions to accept, or automatic with undo); here the
+ * user can also edit, pin, forget and export them.
  */
 export default function MemorySettings(props: MemorySettingsProps) {
   const [memories, setMemories] = useState<MemoryRecord[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
   const [busy, setBusy] = useState(false);
-  const [inject, setInject] = useState<boolean | null>(null);
-  const [savingInject, setSavingInject] = useState(false);
+  const [prefs, setPrefs] = useState<MemoryPrefs | null>(null);
+  const [savingPrefs, setSavingPrefs] = useState(false);
   const [exporting, setExporting] = useState(false);
   const searchId = useId();
 
@@ -318,25 +322,27 @@ export default function MemorySettings(props: MemorySettingsProps) {
     let cancelled = false;
     getAppSettings()
       .then(settings => {
-        if (!cancelled && settings) setInject(settings.memory.injectMemories);
+        if (!cancelled && settings) setPrefs(settings.memory);
       })
       .catch(err => notify.error('Memory settings could not be loaded', { description: errorText(err) }));
-    const unsubscribe = onAppSettingsChanged(settings => setInject(settings.memory.injectMemories));
+    const unsubscribe = onAppSettingsChanged(settings => setPrefs(settings.memory));
     return () => {
       cancelled = true;
       unsubscribe();
     };
   }, [refresh]);
 
-  const changeInject = async (next: boolean) => {
-    setSavingInject(true);
+  // The whole memory section is saved at once: every field is sent, so changing one
+  // never resets another.
+  const changePrefs = async (next: MemoryPrefs) => {
+    setSavingPrefs(true);
     try {
-      const saved = await setMemoryPreferences({ injectMemories: next });
-      if (saved) setInject(saved.memory.injectMemories);
+      const saved = await setMemoryPreferences(next);
+      if (saved) setPrefs(saved.memory);
     } catch (err) {
       notify.error('The memory setting was not saved', { description: errorText(err) });
     } finally {
-      setSavingInject(false);
+      setSavingPrefs(false);
     }
   };
 
@@ -369,10 +375,21 @@ export default function MemorySettings(props: MemorySettingsProps) {
       <SwitchRow
         label="Use memories in answers"
         description="Before each answer, Shodh recalls what it remembers that is relevant to your question and tells the model, marked as possibly outdated. Turn off to answer without them; your memories are kept."
-        checked={inject ?? true}
-        disabled={inject === null || savingInject}
-        onChange={next => void changeInject(next)}
+        checked={prefs?.injectMemories ?? true}
+        disabled={prefs === null || savingPrefs}
+        onChange={next => prefs && void changePrefs({ ...prefs, injectMemories: next })}
       />
+
+      {prefs && (
+        <SuggestedMemories
+          prefs={prefs}
+          savingPrefs={savingPrefs}
+          onChangePrefs={next => void changePrefs(next)}
+          onMemoriesChanged={() => void refresh()}
+          conversationTitle={props.conversationTitle}
+          onOpenConversation={props.onOpenConversation}
+        />
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[200px]">

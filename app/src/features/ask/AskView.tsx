@@ -14,6 +14,8 @@ import type { TranscriptState } from '../agent/reducer';
 import { RuntimeCard } from '../agent/RuntimeCard';
 import { SearchSetupCard } from '../setup/SearchSetupCard';
 import { StatusLine } from '../agent/StatusLine';
+import { SuggestionsBadge } from '../memory/SuggestionsBadge';
+import { requestSettingsSection } from '../memory/navigation';
 import { Transcript } from '../agent/Transcript';
 import { FocusAnchorProvider, useFocus } from '../focus/FocusContext';
 import type { FocusThread } from '../focus/focusTypes';
@@ -644,6 +646,10 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
 
   const markRuntimeInstalled = useCallback(() => setRuntimeInstalled(true), [setRuntimeInstalled]);
   const openSettings = useCallback(() => onNavigate('settings'), [onNavigate]);
+  const openMemorySettings = useCallback(() => {
+    requestSettingsSection('memory');
+    onNavigate('settings');
+  }, [onNavigate]);
 
   const applyStarter = useCallback((prompt: string) => {
     setDraft(prompt);
@@ -889,8 +895,11 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
           <SearchSetupCard compact />
           {runtimeCard}
           {composer(true)}
-          <div className="min-h-[18px] px-2">
-            {latest && <StatusLine transcript={latest} fallbackModel={llmStatus.connected ? llmStatus.model : null} />}
+          <div className="min-h-[18px] px-2 flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              {latest && <StatusLine transcript={latest} fallbackModel={llmStatus.connected ? llmStatus.model : null} />}
+            </div>
+            <SuggestionsBadge onOpen={openMemorySettings} />
           </div>
         </div>
       </div>

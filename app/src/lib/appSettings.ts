@@ -25,10 +25,67 @@ export interface Policy {
   webAccess: boolean;
 }
 
+export type LearnMode = 'off' | 'ask' | 'auto';
+
+/** Daily limits on the learning model (`LearnCaps`). */
+export interface LearnCaps {
+  maxCallsPerDay: number;
+  maxInputCharsPerDay: number;
+  maxProposalsPerDay: number;
+}
+
+export const DEFAULT_LEARN_CAPS: LearnCaps = { maxCallsPerDay: 60, maxInputCharsPerDay: 400_000, maxProposalsPerDay: 40 };
+export const DEFAULT_AUTO_MIN_CONFIDENCE = 0.85;
+
 /** Long-term memory. User-only: the assistant has no tool to change it. */
 export interface MemoryPrefs {
   /** Recall relevant memories into each answer. */
   injectMemories: boolean;
+  /** Learn from conversations: off, ask (suggestions wait for you) or auto. */
+  learnMode: LearnMode;
+  /** Cheaper model id of the configured provider for learning; `null` uses the configured model. */
+  learnModel: string | null;
+  /** Lowest confidence applied automatically in auto mode (0.5 to 1). */
+  autoMinConfidence: number;
+  learnCaps: LearnCaps;
+}
+
+export const DEFAULT_MEMORY_PREFS: MemoryPrefs = {
+  injectMemories: true,
+  learnMode: 'ask',
+  learnModel: null,
+  autoMinConfidence: DEFAULT_AUTO_MIN_CONFIDENCE,
+  learnCaps: DEFAULT_LEARN_CAPS,
+};
+
+function parseCaps(value: unknown): LearnCaps | null {
+  if (value === undefined) return DEFAULT_LEARN_CAPS;
+  if (!isRecord(value)) return null;
+  const n = (x: unknown, fallback: number) => (x === undefined ? fallback : typeof x === 'number' && Number.isFinite(x) ? x : NaN);
+  const caps = {
+    maxCallsPerDay: n(value.maxCallsPerDay, DEFAULT_LEARN_CAPS.maxCallsPerDay),
+    maxInputCharsPerDay: n(value.maxInputCharsPerDay, DEFAULT_LEARN_CAPS.maxInputCharsPerDay),
+    maxProposalsPerDay: n(value.maxProposalsPerDay, DEFAULT_LEARN_CAPS.maxProposalsPerDay),
+  };
+  return Object.values(caps).some(Number.isNaN) ? null : caps;
+}
+
+/** Parse the memory section; settings written before a field existed get its default. */
+export function parseMemoryPrefs(value: unknown): MemoryPrefs | null {
+  if (value === undefined) return DEFAULT_MEMORY_PREFS;
+  if (!isRecord(value)) return null;
+  const injectMemories = value.injectMemories === undefined ? true : value.injectMemories;
+  if (typeof injectMemories !== 'boolean') return null;
+  const learnMode = value.learnMode === undefined ? 'ask' : value.learnMode;
+  if (learnMode !== 'off' && learnMode !== 'ask' && learnMode !== 'auto') return null;
+  const rawModel = value.learnModel;
+  if (rawModel !== undefined && rawModel !== null && typeof rawModel !== 'string') return null;
+  const learnModel = typeof rawModel === 'string' ? rawModel : null;
+  const autoMinConfidence = value.autoMinConfidence === undefined ? DEFAULT_AUTO_MIN_CONFIDENCE : value.autoMinConfidence;
+  if (typeof autoMinConfidence !== 'number' || !Number.isFinite(autoMinConfidence)) return null;
+  const learnCaps = parseCaps(value.learnCaps);
+  if (!learnCaps) return null;
+  return { injectMemories, learnMode, learnModel, autoMinConfidence, learnCaps };
 }
 
 export interface AppSettings {
@@ -49,16 +106,13 @@ export function parseAppSettings(value: unknown): AppSettings | null {
   if (preferences.theme !== 'light' && preferences.theme !== 'dark') return null;
   if (typeof preferences.searchMaxResults !== 'number') return null;
   if (typeof policy.localOnly !== 'boolean' || typeof policy.webAccess !== 'boolean') return null;
-  // Settings written before memory existed have no `memory` section: the default is on.
-  let injectMemories = true;
-  if (value.memory !== undefined) {
-    if (!isRecord(value.memory) || typeof value.memory.injectMemories !== 'boolean') return null;
-    injectMemories = value.memory.injectMemories;
-  }
+  // Settings written before memory existed have no `memory` section: the defaults apply.
+  const memory = parseMemoryPrefs(value.memory);
+  if (!memory) return null;
   return {
     preferences: { theme: preferences.theme, searchMaxResults: preferences.searchMaxResults },
     policy: { localOnly: policy.localOnly, webAccess: policy.webAccess },
-    memory: { injectMemories },
+    memory,
     seeded: value.seeded === true,
   };
 }

@@ -254,10 +254,7 @@ impl Parser {
             return Err("The expression is nested too deeply.".to_string());
         }
         let mut left = self.prefix()?;
-        loop {
-            let Token::Op(op) = self.peek().0 else {
-                break;
-            };
+        while let Token::Op(op) = self.peek().0 {
             let Some(bp) = binding_power(op) else {
                 break;
             };

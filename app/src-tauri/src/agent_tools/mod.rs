@@ -15,6 +15,7 @@ mod export;
 mod files;
 mod history;
 mod memory;
+mod papers;
 mod research;
 mod settings;
 mod sources;
@@ -42,6 +43,7 @@ use tokio::sync::RwLock;
 use crate::app_settings::{AppSettings, SettingsStore};
 use crate::calendar_store::{CalendarEvent, TodoItem};
 use crate::memory_commands::MemoryState;
+use crate::research_commands::ResearchState;
 use crate::visual_commands::VisualState;
 
 pub use files::{IndexedRoots, SourceRoot, SourceRoots};
@@ -143,6 +145,9 @@ pub trait HostEffects: Send + Sync {
     fn library_changed(&self, source_id: &str);
     /// A gallery visual of `conversation_id` was revised or organised: refresh the gallery.
     fn visuals_changed(&self, conversation_id: &str);
+    /// Snippets or results (`kind` `snippet` or `result`) of `file_path` changed: refresh
+    /// the Library and the gallery.
+    fn research_changed(&self, kind: &str, file_path: &str);
 }
 
 /// Everything an app tool can reach.
@@ -159,6 +164,8 @@ pub struct AgentHost {
     pub memory: MemoryState,
     /// Generated visuals (the gallery; opened on first use).
     pub visuals: VisualState,
+    /// Snippets and Result statements (opened on first use).
+    pub research: ResearchState,
 }
 
 /// Build the registry with every agent tool. Fails if two tools share a
@@ -197,6 +204,7 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     sources::register(&mut registry, &host)?;
     memory::register(&mut registry, &host)?;
     visuals::register(&mut registry, &host)?;
+    papers::register(&mut registry, &host)?;
     Ok(registry)
 }
 
@@ -240,6 +248,7 @@ pub(crate) mod testing {
         pub indexed_files: Mutex<Vec<FileIndexJob>>,
         pub library: Mutex<Vec<String>>,
         pub visuals: Mutex<Vec<String>>,
+        pub research: Mutex<Vec<(String, String)>>,
     }
 
     impl HostEffects for Recorder {
@@ -294,6 +303,12 @@ pub(crate) mod testing {
                 .unwrap_or_else(|e| e.into_inner())
                 .push(conversation_id.to_string());
         }
+        fn research_changed(&self, kind: &str, file_path: &str) {
+            self.research
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((kind.to_string(), file_path.to_string()));
+        }
     }
 
     pub struct TestHost {
@@ -324,6 +339,7 @@ pub(crate) mod testing {
             indexed_files: Mutex::default(),
             library: Mutex::default(),
             visuals: Mutex::default(),
+            research: Mutex::default(),
         });
         std::fs::create_dir_all(&effects.documents).unwrap();
         let roots = Arc::new(FixedRoots::default());
@@ -334,6 +350,7 @@ pub(crate) mod testing {
             effects: effects.clone(),
             web: SafeClient::system(),
             roots: roots.clone(),
+            research: ResearchState::at(memory.clone(), Some((dir.path().join("shodh.db"), None))),
             memory,
             visuals: VisualState::at(Some((dir.path().join("shodh.db"), None))),
         });
@@ -382,6 +399,7 @@ pub(crate) mod testing {
             roots: t.host.roots.clone(),
             memory: t.host.memory.clone(),
             visuals: t.host.visuals.clone(),
+            research: t.host.research.clone(),
         })
     }
 

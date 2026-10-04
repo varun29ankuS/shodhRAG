@@ -253,6 +253,45 @@ impl LearnModel for AppModel {
     }
 }
 
+/// The model answers come from (without the learning override), for one-shot extraction
+/// tasks outside memory such as naming the columns of a results table. Honours Local-only
+/// mode like learning does: a cloud model is refused while it is on.
+pub(crate) fn configured_model(
+    data_dir: &Path,
+    llm: &LLMState,
+) -> Result<Arc<dyn shodh_rag::research::results::TextModel>, String> {
+    let settings = SettingsStore::in_dir(data_dir)
+        .load()
+        .map_err(|e| e.to_string())?;
+    let mode = llm
+        .config
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .mode
+        .clone();
+    let choice = choose_model(&mode, None, settings.policy.local_only)?;
+    Ok(Arc::new(AppModel {
+        data_dir: data_dir.to_path_buf(),
+        manager: llm.manager.clone(),
+        config: llm.config.clone(),
+        api_keys: llm.api_keys.clone(),
+        choice,
+    }))
+}
+
+#[async_trait::async_trait]
+impl shodh_rag::research::results::TextModel for AppModel {
+    fn model_id(&self) -> String {
+        LearnModel::model_id(self)
+    }
+
+    async fn complete(&self, prompt: &str, max_tokens: usize) -> Result<String, String> {
+        LearnModel::complete(self, prompt, max_tokens)
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
 struct AppModels {
     data_dir: PathBuf,
     manager: Arc<AsyncRwLock<Option<LLMManager>>>,

@@ -51,6 +51,10 @@ impl HostEffects for TauriEffects {
         crate::visual_commands::broadcast_change(&self.app, Some(conversation_id));
     }
 
+    fn research_changed(&self, kind: &str, file_path: &str) {
+        crate::research_commands::broadcast_change(&self.app, kind, Some(file_path));
+    }
+
     fn settings_changed(&self, settings: &AppSettings) {
         crate::app_settings::broadcast(&self.app, settings);
     }

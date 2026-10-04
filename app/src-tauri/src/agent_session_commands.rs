@@ -38,6 +38,7 @@ use crate::llm_commands::LLMState;
 use crate::memory_commands::{recall_for_run, with_memories, MemoryState};
 use crate::memory_learn::{LearnState, TextOrigin};
 use crate::rag_commands::RagState;
+use crate::research_commands::ResearchState;
 use crate::visual_commands::VisualState;
 use shodh_rag::audit::payload::is_cloud;
 use shodh_rag::audit::LOCAL_OWNER;
@@ -583,6 +584,7 @@ pub async fn agent_start(
     audit: State<'_, AuditState>,
     memory: State<'_, MemoryState>,
     visuals: State<'_, VisualState>,
+    research: State<'_, ResearchState>,
     learn: State<'_, LearnState>,
     answer_check: State<'_, AnswerCheckState>,
 ) -> CommandResult<String> {
@@ -686,6 +688,7 @@ pub async fn agent_start(
                 }),
                 memory: memory.inner().clone(),
                 visuals: visuals.inner().clone(),
+                research: research.inner().clone(),
             });
             build_registry(host)
                 .map(Arc::new)

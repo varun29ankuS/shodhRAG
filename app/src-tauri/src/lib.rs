@@ -25,6 +25,7 @@ mod memory_commands;
 mod memory_learn;
 mod rag_commands;
 mod reminders;
+mod research_commands;
 mod search_history;
 mod search_models_commands;
 mod smart_templates;
@@ -288,6 +289,12 @@ pub fn run() {
                 rag_engine.clone(),
                 &app.state::<audit_commands::AuditState>(),
             );
+            // Snippets and Result statements share the memory's statement store; images,
+            // extraction reports and rejections live in shodh.db. Opens on first use.
+            app.manage(research_commands::ResearchState::new(
+                memory_state.clone(),
+                &app.state::<audit_commands::AuditState>(),
+            ));
             app.manage(memory_state);
             // Generated visuals (the gallery), in shodh.db. Opens on first use.
             let visual_state =
@@ -687,6 +694,21 @@ pub fn run() {
             visual_commands::visuals_add_version,
             visual_commands::visuals_delete,
             visual_commands::visuals_restore,
+            research_commands::snippets_create,
+            research_commands::snippets_list,
+            research_commands::snippets_get,
+            research_commands::snippets_image,
+            research_commands::snippets_set_image,
+            research_commands::snippets_update,
+            research_commands::snippets_delete,
+            research_commands::snippets_table,
+            research_commands::snippets_transcribe_latex,
+            research_commands::vision_capability,
+            research_commands::results_extract,
+            research_commands::results_list,
+            research_commands::results_review,
+            research_commands::results_query,
+            research_commands::results_facets,
             // Calendar/Todo commands
             calendar_commands::load_tasks,
             calendar_commands::create_task,

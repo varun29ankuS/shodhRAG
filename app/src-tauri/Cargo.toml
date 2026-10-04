@@ -23,7 +23,8 @@ tauri-build = { version = "2.0", features = [] }
 audit-encryption = ["shodh-rag/sqlcipher"]
 
 [dependencies]
-tauri = { version = "2.0", features = ["tray-icon"] }
+# image-png: the clipboard plugin decodes PNG bytes for Copy image of a snippet
+tauri = { version = "2.0", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2.2"
 tauri-plugin-fs = "2.0"
 tauri-plugin-dialog = "2.0"

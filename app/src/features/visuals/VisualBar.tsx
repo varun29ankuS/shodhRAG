@@ -13,6 +13,7 @@ import { exportFormats, FORMAT_LABEL } from './exportVisual';
 import type { VisualDetail } from './model';
 import { paramsFor } from './model';
 import { MAX_REFINE_INSTRUCTION_CHARS } from './refine';
+import { currentValues } from '../focus/liveValues';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -117,7 +118,8 @@ export function VisualBar({
       return;
     }
     try {
-      const values = level.target.kind === 'plot' || level.target.kind === 'simulation' ? level.target.values : [];
+      // The sliders as the reader has them now, not as they were when the pop-out opened.
+      const values = currentValues(level.seq, level.target);
       const saved = await visualsApi.addVersion(record.id, outcome.source, paramsFor(values), text);
       setInstruction('');
       setRefineMessage({ tone: 'done', text: `Saved as version ${saved.visual.version}.${outcome.note ? ` ${outcome.note}` : ''}` });

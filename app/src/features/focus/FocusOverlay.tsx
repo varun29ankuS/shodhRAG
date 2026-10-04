@@ -10,7 +10,7 @@ import { MAX_SELECTION_CHARS } from './contextBlock';
 import { ExplorationMap } from './ExplorationMap';
 import { focusCommand } from './focusKeys';
 import { crumbs, stackKey } from './focusStack';
-import type { FocusKind, FocusTarget } from './focusTypes';
+import type { FocusKind, FocusParamValue, FocusTarget } from './focusTypes';
 import { useFocus } from './FocusContext';
 import type { FocusSession } from './FocusContext';
 import { FocusStage } from './FocusStage';
@@ -18,6 +18,7 @@ import type { StageCommandRef } from './FocusStage';
 import { PaperPane } from './PaperPane';
 import { SideThread } from './SideThread';
 import { nearestPaper } from './targets';
+import { setLiveValues } from './liveValues';
 import { VisualBar } from '../visuals/VisualBar';
 
 const FOCUS_RING =
@@ -349,6 +350,8 @@ export function FocusOverlay({ session, onClose }: FocusOverlayProps) {
 
   const clearSelection = useCallback(() => setSelection(null), []);
   const onPageChange = useCallback((p: number) => setPage(p), []);
+  const levelSeq = level.seq;
+  const onValues = useCallback((values: FocusParamValue[]) => setLiveValues(levelSeq, values), [levelSeq]);
   const stageTarget = peek ? hitTarget(peek) : target;
   const extras = { selection: peek ? null : selection, page: target.kind === 'source' ? page : null };
 
@@ -548,6 +551,7 @@ export function FocusOverlay({ session, onClose }: FocusOverlayProps) {
                   theme={theme}
                   commandRef={commandRef}
                   onPageChange={peek ? undefined : onPageChange}
+                  onValues={peek ? undefined : onValues}
                 />
               </div>
               {showPaper && paper && (

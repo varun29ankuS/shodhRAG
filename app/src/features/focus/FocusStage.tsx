@@ -11,7 +11,7 @@ import { parseChartBlock } from '../ask/visual/chartSpec';
 import { tryParseChartSpec } from '../../utils/artifactExtractor';
 import { renderDiagram } from '../ask/visual/VisualBlocks';
 import { SketchSurface, useSvgSketch } from '../ask/visual/SvgSketch';
-import { InteractivePlot } from '../ask/visual/PlotView';
+import { InteractivePlot, paramValues } from '../ask/visual/PlotView';
 import { SimulationPlayer } from '../ask/visual/SimulationView';
 import { initialValues, parsePlotSpec } from '../ask/visual/plotSpec';
 import { parseSimulationSpec } from '../ask/visual/simulationSpec';
@@ -499,10 +499,13 @@ function InteractiveStage({ children }: { children: React.ReactNode }) {
   );
 }
 
-function PlotStage({ source, values }: { source: string; values: FocusParamValue[] }) {
+function PlotStage({ source, values, onValues }: { source: string; values: FocusParamValue[]; onValues?: (values: FocusParamValue[]) => void }) {
   const result = useMemo(() => parsePlotSpec(source), [source]);
   const spec = result.ok ? result.spec : null;
   const [current, setCurrent] = useState<number[]>(() => (spec ? initialValues(spec.params, values) : []));
+  useEffect(() => {
+    if (spec) onValues?.(paramValues(spec, current));
+  }, [spec, current, onValues]);
   if ('error' in result) return <StageError message={`Plot not drawn: ${result.error}`} detail={source} />;
   if (!spec) return null;
   return (
@@ -512,13 +515,13 @@ function PlotStage({ source, values }: { source: string; values: FocusParamValue
   );
 }
 
-function SimulationStage({ source, values }: { source: string; values: FocusParamValue[] }) {
+function SimulationStage({ source, values, onValues }: { source: string; values: FocusParamValue[]; onValues?: (values: FocusParamValue[]) => void }) {
   const result = useMemo(() => parseSimulationSpec(source), [source]);
   if ('error' in result) return <StageError message={`Simulation not run: ${result.error}`} detail={source} />;
   if (!result.ok) return null;
   return (
     <InteractiveStage>
-      <SimulationPlayer model={result.model} initial={values} maxHeight={560} autoPlay preempt />
+      <SimulationPlayer model={result.model} initial={values} maxHeight={560} autoPlay preempt onValues={onValues} />
     </InteractiveStage>
   );
 }
@@ -673,10 +676,12 @@ export interface FocusStageProps {
   commandRef: StageCommandRef;
   /** A document's current page changed. */
   onPageChange?: (page: number) => void;
+  /** The sliders of a plot or simulation moved (every parameter, current positions). */
+  onValues?: (values: FocusParamValue[]) => void;
 }
 
 /** The focused object, drawn for close reading. */
-export function FocusStage({ target, theme, commandRef, onPageChange }: FocusStageProps) {
+export function FocusStage({ target, theme, commandRef, onPageChange, onValues }: FocusStageProps) {
   // Documents and tasks have no stage zoom (PDF pages zoom in their own viewer).
   // Interactive visuals have sliders and controls instead of zoom.
   if (target.kind === 'source' || target.kind === 'task' || target.kind === 'selection' || target.kind === 'snippet' || target.kind === 'plot' || target.kind === 'simulation') {
@@ -690,9 +695,9 @@ export function FocusStage({ target, theme, commandRef, onPageChange }: FocusSta
     case 'svg':
       return <SvgStage source={target.source} label={target.label} commandRef={commandRef} />;
     case 'plot':
-      return <PlotStage source={target.source} values={target.values} />;
+      return <PlotStage source={target.source} values={target.values} onValues={onValues} />;
     case 'simulation':
-      return <SimulationStage source={target.source} values={target.values} />;
+      return <SimulationStage source={target.source} values={target.values} onValues={onValues} />;
     case 'image':
       return <ImageStage src={target.src} alt={target.alt} label={target.label} commandRef={commandRef} />;
     case 'equation':

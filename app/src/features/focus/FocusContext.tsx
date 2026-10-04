@@ -35,6 +35,7 @@ import { recordTarget, visualRef } from '../visuals/model';
 import { recordAnswerVisuals } from '../visuals/recording';
 import { FocusOverlay } from './FocusOverlay';
 import { SelectionAsk } from './SelectionAsk';
+import { currentValues } from './liveValues';
 
 /** How long an interrupt may take before the side answer is closed locally. */
 const INTERRUPT_TIMEOUT_MS = 5_000;
@@ -634,7 +635,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         const target = level.target;
-        const values = target.kind === 'plot' || target.kind === 'simulation' ? target.values : [];
+        const values = currentValues(level.seq, target);
         const request = composeRefineRequest({ kind: record.kind, title: record.title, source: record.source, values, instruction: text });
         const instructions = conversationsRef.current.find(c => c.id === level.conversationId)?.systemPrompt?.trim() || null;
         // A session of its own: the request never enters the discussion's agent memory.

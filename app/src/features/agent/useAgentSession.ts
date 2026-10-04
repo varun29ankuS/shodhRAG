@@ -2,12 +2,14 @@
  * Thin client for the agent session commands (`agent_session_commands.rs`)
  * and the `agent_event` stream.
  */
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import type { AgentEventEnvelope } from './events';
 import type { FailureCode } from './reducer';
+import { AGENT_SESSIONS_EVENT, isSessionCounts } from './sessionCounts';
+import type { SessionCounts } from './sessionCounts';
 
 export const AGENT_EVENT = 'agent_event';
 export const RUNTIME_PROGRESS_EVENT = 'agent_runtime_progress';
@@ -108,6 +110,13 @@ export const agentApi = {
   abort: (sessionId: string) => call<void>('agent_abort', { sessionId }),
   approve: (sessionId: string, stepId: string, approved: boolean) =>
     call<void>('agent_approve', { sessionId, stepId, approved }),
+  /**
+   * Stop the session of a conversation (a closed pop-out's side threads). Resolves
+   * `false` when there was none or its answer is still running (it stops once idle).
+   */
+  closeSession: (conversationId: string) => call<boolean>('agent_close_session', { conversationId }),
+  /** Live sessions by kind, for the activity tray. */
+  sessionCounts: () => call<SessionCounts>('agent_session_counts'),
   runtimeStatus: () => call<RuntimeStatus>('agent_runtime_status'),
   installRuntime: () => call<RuntimeInstall>('agent_install_runtime'),
 };
@@ -156,6 +165,25 @@ function isProgress(value: unknown): value is RuntimeProgress {
 export function useAgentSession(onEvent: (envelope: AgentEventEnvelope) => void) {
   useTauriEvent(AGENT_EVENT, isEnvelope, onEvent);
   return useMemo(() => agentApi, []);
+}
+
+/** Live session counts: read once, then kept current from `agent_sessions_changed`. */
+export function useSessionCounts(): SessionCounts | null {
+  const [counts, setCounts] = useState<SessionCounts | null>(null);
+  useEffect(() => {
+    let active = true;
+    agentApi
+      .sessionCounts()
+      .then(value => {
+        if (active) setCounts(value);
+      })
+      .catch(error => console.error('Session counts unavailable:', error));
+    return () => {
+      active = false;
+    };
+  }, []);
+  useTauriEvent(AGENT_SESSIONS_EVENT, isSessionCounts, setCounts);
+  return counts;
 }
 
 /** Runtime download progress while `agentApi.installRuntime` runs. */

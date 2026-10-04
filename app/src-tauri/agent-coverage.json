@@ -128,6 +128,8 @@
     "agent_send": { "excluded": "Sends the user's message to the assistant; the assistant cannot prompt itself." },
     "agent_steer": { "excluded": "Redirects the assistant's run; only the user steers it." },
     "agent_abort": { "excluded": "Interrupts the assistant's run; only the user stops it." },
+    "agent_close_session": { "excluded": "Stops the assistant's own session process (a closed side discussion); it manages the assistant itself, not anything the assistant acts on." },
+    "agent_session_counts": { "excluded": "Counts the assistant's own live session processes for the activity tray; nothing the assistant acts on." },
     "agent_approve": { "excluded": "Approves the assistant's own actions; an assistant that could approve itself would make approvals meaningless." },
     "agent_runtime_status": { "excluded": "Reports whether the assistant's runtime is installed; it only matters before the assistant can run." },
     "agent_install_runtime": { "excluded": "Downloads and verifies the assistant's own runtime binary; installing code is user-only." },

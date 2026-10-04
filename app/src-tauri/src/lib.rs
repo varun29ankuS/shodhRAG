@@ -372,6 +372,7 @@ pub fn run() {
                 }
             }
             app.manage(agent_session_commands::AgentSessions::default());
+            agent_session_commands::start_idle_reaper(app.handle().clone());
             pdf_export::manage(app.handle());
             let analytics_path = app_data_dir.join("analytics.json");
             app.manage(AnalyticsState::load_or_default(&analytics_path));
@@ -696,6 +697,8 @@ pub fn run() {
             audit_commands::audit_set_retention_days,
             audit_commands::audit_stats,
             agent_session_commands::agent_runtime_status,
+            agent_session_commands::agent_close_session,
+            agent_session_commands::agent_session_counts,
             // Conversation persistence commands
             conversation_commands::load_conversations,
             conversation_commands::save_conversation,

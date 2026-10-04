@@ -21,6 +21,7 @@ import {
   readThreads,
   scopeForLevels,
   sideSessionKey,
+  sideSessionKeys,
   threadHistory,
   threadsFromMetadata,
   upsertThread,
@@ -825,7 +826,16 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     return true;
   }, [findThread, mutateThread]);
 
-  const closeFocus = useCallback(() => setSession(null), []);
+  const closeFocus = useCallback(() => {
+    // The pop-out's side sessions are stopped (each is one agent process). The
+    // backend keeps any session whose answer is still running and stops it once idle.
+    const levels = sessionRef.current?.stack.levels ?? [];
+    const keys = new Set(levels.flatMap(l => sideSessionKeys(l.conversationId, l.threadId)));
+    for (const key of keys) {
+      api.closeSession(key).catch(error => console.error('Side session not closed:', toAgentError(error).message));
+    }
+    setSession(null);
+  }, [api]);
 
   const value = useMemo<FocusContextValue>(() => ({
     openFocus,

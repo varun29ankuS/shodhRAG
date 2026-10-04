@@ -519,6 +519,14 @@ export function sideSessionKey(conversationId: string, threadId: string): string
   return `${safe(conversationId).slice(0, 90)}--focus--${safe(threadId).slice(0, 90)}`;
 }
 
+/**
+ * Every agent session a side thread may have started: its discussion, its summary
+ * and its visual refinement (each runs in a session of its own).
+ */
+export function sideSessionKeys(conversationId: string, threadId: string): string[] {
+  return [threadId, `${threadId}-summary`, `${threadId}-refine`].map(t => sideSessionKey(conversationId, t));
+}
+
 /** Whether two targets are the same object (same kind and content). */
 export function sameTarget(a: FocusTarget, b: FocusTarget): boolean {
   if (a.kind !== b.kind) return false;

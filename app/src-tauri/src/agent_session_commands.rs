@@ -59,6 +59,19 @@ const MAX_ID_LEN: usize = 200;
 /// Live sessions kept before idle ones are stopped (each is one process).
 const MAX_LIVE_SESSIONS: usize = 4;
 
+/// Live focus side-thread sessions kept before idle ones are stopped. Each omp
+/// process holds about 320 MB; side threads restart cheaply (history is replayed).
+const MAX_SIDE_SESSIONS: usize = 2;
+
+/// A side-thread session idle this long is stopped.
+const SIDE_IDLE_CLOSE: Duration = Duration::from_secs(5 * 60);
+
+/// How often idle side-thread sessions are looked for.
+const IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Tauri event carrying [`SessionCounts`] whenever sessions start or stop.
+pub const AGENT_SESSIONS_EVENT: &str = "agent_sessions_changed";
+
 /// Custom instructions appended to the profile's system prompt.
 const MAX_INSTRUCTIONS_CHARS: usize = 4_000;
 
@@ -153,12 +166,28 @@ struct SessionEntry {
     session: Arc<OmpSession>,
     /// Earlier turns have been replayed (or there were none to replay).
     primed: AtomicBool,
-    last_used_ms: AtomicU64,
+    /// Last command or agent event of the session (shared with its event forwarder,
+    /// so a long answer keeps it in use until its last event).
+    last_used_ms: Arc<AtomicU64>,
 }
 
 impl SessionEntry {
     fn touch(&self) {
         self.last_used_ms.store(now_ms(), Ordering::Relaxed);
+    }
+
+    fn is_side(&self) -> bool {
+        self.parent_conversation_id.is_some()
+    }
+
+    fn candidate(&self, session_id: &str) -> EvictionCandidate {
+        EvictionCandidate {
+            session_id: session_id.to_string(),
+            conversation_id: self.conversation_id.clone(),
+            focus: self.is_side(),
+            busy: self.session.active_run_id().is_some(),
+            last_used_ms: self.last_used_ms.load(Ordering::Relaxed),
+        }
     }
 
     /// The conversation the audit log attributes this session's work to.
@@ -203,6 +232,57 @@ fn eviction_order(candidates: &[EvictionCandidate], keep: &[&str], excess: usize
         .collect()
 }
 
+/// Idle side-thread sessions to stop so that, with `starting` side sessions being
+/// launched, at most `cap` remain: the least recently used first. Never one in `keep`
+/// or one with an answer running; when every side session is busy, the cap is
+/// exceeded rather than an answer interrupted.
+fn side_evictions(
+    candidates: &[EvictionCandidate],
+    keep: &[&str],
+    cap: usize,
+    starting: usize,
+) -> Vec<String> {
+    let live = candidates.iter().filter(|c| c.focus).count();
+    let excess = (live + starting).saturating_sub(cap);
+    let mut idle: Vec<&EvictionCandidate> = candidates
+        .iter()
+        .filter(|c| c.focus && !c.busy && !keep.contains(&c.conversation_id.as_str()))
+        .collect();
+    idle.sort_by(|a, b| {
+        a.last_used_ms
+            .cmp(&b.last_used_ms)
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
+    idle.into_iter()
+        .take(excess)
+        .map(|c| c.session_id.clone())
+        .collect()
+}
+
+/// Side-thread sessions idle for at least `timeout` at `now_ms` (never a busy one).
+fn expired_side_sessions(
+    candidates: &[EvictionCandidate],
+    now_ms: u64,
+    timeout: Duration,
+) -> Vec<String> {
+    let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+    candidates
+        .iter()
+        .filter(|c| c.focus && !c.busy && now_ms.saturating_sub(c.last_used_ms) >= timeout_ms)
+        .map(|c| c.session_id.clone())
+        .collect()
+}
+
+/// Live sessions by kind, for the activity tray.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCounts {
+    /// Conversation sessions.
+    pub main: usize,
+    /// Focus side-thread sessions (side questions, summaries, refinements).
+    pub side: usize,
+}
+
 /// Live agent sessions, managed as Tauri state.
 #[derive(Default)]
 pub struct AgentSessions {
@@ -216,6 +296,8 @@ pub struct AgentSessions {
     install_lock: AsyncMutex<()>,
     /// Sessions being launched right now (counted against the cap).
     starting: AtomicUsize,
+    /// Side-thread sessions being launched right now (counted against the side cap).
+    starting_side: AtomicUsize,
 }
 
 /// Counts a launch in progress for as long as it is alive.
@@ -263,31 +345,113 @@ impl AgentSessions {
             .clone()
     }
 
+    fn candidates(&self) -> Vec<EvictionCandidate> {
+        self.sessions
+            .iter()
+            .map(|e| e.value().candidate(e.key()))
+            .collect()
+    }
+
+    /// Live sessions by kind.
+    pub fn counts(&self) -> SessionCounts {
+        let side = self.sessions.iter().filter(|e| e.is_side()).count();
+        SessionCounts {
+            main: self.sessions.len() - side,
+            side,
+        }
+    }
+
     /// Stop idle sessions so that, with the ones being launched, at most
-    /// [`MAX_LIVE_SESSIONS`] remain (see [`eviction_order`]).
+    /// [`MAX_LIVE_SESSIONS`] remain (see [`eviction_order`]) and at most
+    /// [`MAX_SIDE_SESSIONS`] side-thread sessions (see [`side_evictions`]).
     async fn evict_idle(&self, keep: &[&str]) {
+        let side = side_evictions(
+            &self.candidates(),
+            keep,
+            MAX_SIDE_SESSIONS,
+            self.starting_side.load(Ordering::SeqCst),
+        );
+        for session_id in side {
+            self.stop_if_idle(&session_id, "side-thread session stopped (cap)", |_| true)
+                .await;
+        }
         let live = self.sessions.len() + self.starting.load(Ordering::SeqCst);
         let excess = live.saturating_sub(MAX_LIVE_SESSIONS);
         if excess == 0 {
             return;
         }
-        let candidates: Vec<EvictionCandidate> = self
+        for session_id in eviction_order(&self.candidates(), keep, excess) {
+            self.stop_if_idle(&session_id, "idle agent session stopped", |_| true)
+                .await;
+        }
+    }
+
+    /// Stop a session unless an answer is running in it or `still` no longer holds.
+    /// The check and the removal happen under its conversation's start lock, taken
+    /// without waiting: a conversation being started or reused is left alone, so a
+    /// session id `agent_start` just returned is never closed under it.
+    async fn stop_if_idle(
+        &self,
+        session_id: &str,
+        reason: &str,
+        still: impl Fn(&SessionEntry) -> bool,
+    ) -> bool {
+        let Some(conversation) = self
             .sessions
-            .iter()
-            .map(|e| EvictionCandidate {
-                session_id: e.key().clone(),
-                conversation_id: e.conversation_id.clone(),
-                focus: e.parent_conversation_id.is_some(),
-                busy: e.session.active_run_id().is_some(),
-                last_used_ms: e.last_used_ms.load(Ordering::Relaxed),
-            })
-            .collect();
-        for session_id in eviction_order(&candidates, keep, excess) {
-            if let Some(entry) = self.remove(&session_id) {
-                entry.session.shutdown().await;
-                tracing::info!(target: "shodh::harness", session = %session_id, "idle agent session stopped");
+            .get(session_id)
+            .map(|e| e.conversation_id.clone())
+        else {
+            return false;
+        };
+        let lock = self.start_lock(&conversation);
+        let Ok(_guard) = lock.try_lock() else {
+            return false;
+        };
+        let idle = self
+            .sessions
+            .get(session_id)
+            .is_some_and(|e| e.session.active_run_id().is_none() && still(e.value()));
+        if !idle {
+            return false;
+        }
+        let Some(entry) = self.remove(session_id) else {
+            return false;
+        };
+        entry.session.shutdown().await;
+        tracing::info!(target: "shodh::harness", session = %session_id, "{reason}");
+        true
+    }
+
+    /// Stop the session of `conversation_id` unless an answer is running in it.
+    /// Returns whether a session was stopped.
+    pub async fn close_conversation(&self, conversation_id: &str) -> bool {
+        let Some(session_id) = self
+            .by_conversation
+            .get(conversation_id)
+            .map(|sid| sid.value().clone())
+        else {
+            return false;
+        };
+        self.stop_if_idle(&session_id, "agent session closed", |_| true)
+            .await
+    }
+
+    /// Stop side-thread sessions idle for [`SIDE_IDLE_CLOSE`]. Returns how many.
+    pub async fn close_idle_side_sessions(&self) -> usize {
+        let timeout_ms = u64::try_from(SIDE_IDLE_CLOSE.as_millis()).unwrap_or(u64::MAX);
+        let mut closed = 0;
+        for session_id in expired_side_sessions(&self.candidates(), now_ms(), SIDE_IDLE_CLOSE) {
+            // Re-checked under the lock: a send in between makes it in use again.
+            let stopped = self
+                .stop_if_idle(&session_id, "idle side-thread session stopped", |e| {
+                    now_ms().saturating_sub(e.last_used_ms.load(Ordering::Relaxed)) >= timeout_ms
+                })
+                .await;
+            if stopped {
+                closed += 1;
             }
         }
+        closed
     }
 
     /// Stop every sidecar. Called when the app exits.
@@ -668,6 +832,9 @@ pub async fn agent_start(
         }
     }
     let _starting = StartingGuard::new(&sessions.starting);
+    let _starting_side = parent_conversation_id
+        .is_some()
+        .then(|| StartingGuard::new(&sessions.starting_side));
     let keep: Vec<&str> = std::iter::once(conversation_id.as_str())
         .chain(parent_conversation_id.as_deref())
         .collect();
@@ -757,10 +924,14 @@ pub async fn agent_start(
     let forward_app = app.clone();
     let forward_id = session_id.clone();
     let forward_learn = learn.inner().clone();
+    let last_used_ms = Arc::new(AtomicU64::new(now_ms()));
+    let forward_used = last_used_ms.clone();
     tauri::async_runtime::spawn(async move {
         // Builds each run's `answer` audit event from the stream.
         let mut tap = RunAuditTap::new();
         while let Some(event) = events.recv().await {
+            // An answer in progress keeps its session in use.
+            forward_used.store(now_ms(), Ordering::Relaxed);
             // Learning sees only runs `agent_send` registered (the user's own words).
             forward_learn.observe(&event);
             if let (Some(answer), Some(audit)) = (tap.observe(&event), &tool_audit) {
@@ -790,12 +961,13 @@ pub async fn agent_start(
             model_fingerprint: fingerprint,
             session,
             primed: AtomicBool::new(false),
-            last_used_ms: AtomicU64::new(now_ms()),
+            last_used_ms,
         }),
     );
     sessions
         .by_conversation
         .insert(conversation_id, session_id.clone());
+    emit_counts(&app, &sessions);
     tracing::info!(
         target: "shodh::harness",
         session = %session_id,
@@ -804,6 +976,52 @@ pub async fn agent_start(
         "agent_start: session ready"
     );
     Ok(session_id)
+}
+
+fn emit_counts(app: &AppHandle, sessions: &AgentSessions) {
+    if let Err(e) = app.emit(AGENT_SESSIONS_EVENT, sessions.counts()) {
+        tracing::debug!(target: "shodh::harness", error = %e, "emitting session counts failed");
+    }
+}
+
+/// Close the agent session of a conversation (a focus pop-out closing closes its
+/// side-thread sessions). A session with an answer running is kept; it is closed
+/// once idle (see [`start_idle_reaper`]). Returns whether a session was closed.
+#[tauri::command]
+pub async fn agent_close_session(
+    app: AppHandle,
+    conversation_id: String,
+    sessions: State<'_, AgentSessions>,
+) -> CommandResult<bool> {
+    check_id("conversation id", &conversation_id)?;
+    let closed = sessions.close_conversation(conversation_id.trim()).await;
+    if closed {
+        emit_counts(&app, &sessions);
+    }
+    Ok(closed)
+}
+
+/// Live agent sessions by kind, for the activity tray.
+#[tauri::command]
+pub async fn agent_session_counts(
+    sessions: State<'_, AgentSessions>,
+) -> CommandResult<SessionCounts> {
+    Ok(sessions.counts())
+}
+
+/// Stops side-thread sessions idle for five minutes, checking every 30 seconds.
+pub fn start_idle_reaper(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut tick = tokio::time::interval(IDLE_SWEEP_INTERVAL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            let sessions = app.state::<AgentSessions>();
+            if sessions.close_idle_side_sessions().await > 0 {
+                emit_counts(&app, &sessions);
+            }
+        }
+    });
 }
 
 /// Ask a question (the Ask path). Returns the run id, which is `request_id`.
@@ -1151,6 +1369,41 @@ mod tests {
             .iter()
             .any(|s| s == "s-parent" || s.starts_with("s-busy")));
         assert!(eviction_order(&live, &keep, 0).is_empty());
+    }
+
+    #[test]
+    fn side_sessions_are_capped_oldest_idle_first_and_never_a_running_answer() {
+        let live = [
+            candidate("s-main", "c-main", false, false, 1),
+            candidate("s-a", "c-1--focus--a", true, false, 30),
+            candidate("s-b", "c-1--focus--b", true, false, 10),
+            candidate("s-c", "c-1--focus--c", true, true, 5),
+        ];
+        // Three live side sessions, one starting, cap 2: two must go, but only the
+        // idle ones can, oldest first; the busy one stays (the cap is exceeded).
+        assert_eq!(side_evictions(&live, &[], 2, 1), vec!["s-b", "s-a"]);
+        assert_eq!(side_evictions(&live, &[], 2, 0), vec!["s-b"]);
+        // The side thread being started (and its parent) is kept.
+        assert_eq!(side_evictions(&live, &["c-1--focus--b"], 2, 0), vec!["s-a"]);
+        assert!(side_evictions(&live, &[], 3, 0).is_empty());
+        // Main sessions are never side evictions.
+        assert!(!side_evictions(&live, &[], 0, 0).contains(&"s-main".to_string()));
+    }
+
+    #[test]
+    fn only_idle_side_sessions_expire() {
+        let minute = 60_000;
+        let now = 100 * minute;
+        let live = [
+            candidate("s-main", "c-main", false, false, now - 60 * minute),
+            candidate("s-old", "c--focus--a", true, false, now - 6 * minute),
+            candidate("s-edge", "c--focus--b", true, false, now - 5 * minute),
+            candidate("s-recent", "c--focus--c", true, false, now - 4 * minute),
+            candidate("s-busy", "c--focus--d", true, true, now - 50 * minute),
+        ];
+        let mut expired = expired_side_sessions(&live, now, SIDE_IDLE_CLOSE);
+        expired.sort();
+        assert_eq!(expired, vec!["s-edge", "s-old"]);
     }
 
     #[test]

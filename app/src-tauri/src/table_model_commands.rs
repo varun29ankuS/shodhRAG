@@ -36,6 +36,9 @@ pub const TABLE_MODEL_PROGRESS_EVENT: &str = "table-model-progress";
 pub const TABLE_MODEL_READY_EVENT: &str = "table-model-ready";
 /// Emitted when a file's tables were refined (`{ filePath, chunks, modelTables }`).
 pub const TABLES_REFINED_EVENT: &str = "tables-refined";
+/// Emitted once per run of the app when a PDF with table-candidate pages is indexed
+/// while the table model is not installed (`{ filePath }`), so the UI can offer it.
+pub const TABLE_MODEL_SUGGESTED_EVENT: &str = "table-model-suggested";
 /// Error code returned when an install is already running.
 pub const INSTALL_IN_PROGRESS_CODE: &str = "install_in_progress";
 
@@ -55,6 +58,8 @@ pub struct TableModelState {
     pub model: SharedTableModel,
     queue: std::sync::Mutex<Option<UnboundedSender<PathBuf>>>,
     install_lock: tokio::sync::Mutex<()>,
+    /// The install has been suggested in this run (at most once).
+    suggested: std::sync::atomic::AtomicBool,
 }
 
 impl TableModelState {
@@ -64,6 +69,7 @@ impl TableModelState {
             model: SharedTableModel::default(),
             queue: std::sync::Mutex::new(None),
             install_lock: tokio::sync::Mutex::new(()),
+            suggested: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -91,6 +97,16 @@ impl TableModelState {
             .map_err(|e| e.to_string())?;
         *self.model.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(model));
         Ok(())
+    }
+
+    /// Whether to suggest installing the model now: on a supported system, while no
+    /// install runs, the first time in this run. Marks it suggested.
+    fn suggest_install(&self) -> bool {
+        cfg!(windows)
+            && self.install_lock.try_lock().is_ok()
+            && !self
+                .suggested
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
     }
 
     fn enqueue(&self, path: PathBuf) {
@@ -257,7 +273,15 @@ async fn refinement_worker(
     mut rx: UnboundedReceiver<PathBuf>,
 ) {
     while let Some(path) = rx.recv().await {
-        let Some(model) = loaded(&app.state::<TableModelState>().model) else {
+        let state = app.state::<TableModelState>();
+        let Some(model) = loaded(&state.model) else {
+            // A PDF with table-candidate pages and no model: offer the install once.
+            if state.suggest_install() {
+                let payload = json!({ "filePath": path.display().to_string() });
+                if let Err(e) = app.emit(TABLE_MODEL_SUGGESTED_EVENT, payload) {
+                    tracing::debug!(error = %e, "emitting table model suggestion failed");
+                }
+            }
             continue;
         };
         let file = path.clone();
@@ -320,5 +344,25 @@ async fn refinement_worker(
                 tracing::warn!(error = %e, "results not re-extracted after refinement: {file_path}")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_install_is_suggested_once_and_never_during_an_install() {
+        let state = TableModelState::new(PathBuf::from("models"));
+        if !cfg!(windows) {
+            assert!(!state.suggest_install(), "the model does not run here");
+            return;
+        }
+        {
+            let _installing = state.install_lock.try_lock().expect("free lock");
+            assert!(!state.suggest_install());
+        }
+        assert!(state.suggest_install());
+        assert!(!state.suggest_install(), "once per run");
     }
 }

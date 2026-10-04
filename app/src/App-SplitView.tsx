@@ -48,6 +48,7 @@ import { VisualsButton } from './features/visuals/GalleryDialog';
 import { VisualNavigator } from './features/visuals/VisualNavigator';
 import { SnippetHost } from './features/research/SnippetHost';
 import { ReminderAlerts } from './features/tasks/ReminderAlerts';
+import { TableModelPrompt } from './features/setup/TableModelPrompt';
 import { AskView } from './features/ask/AskView';
 import { useCommandPalette } from './hooks/useCommandPalette';
 import CommandPalette from './components/CommandPalette';
@@ -1508,6 +1509,7 @@ function AppSplitView() {
       {/* Update Notification */}
       <UpdateNotification />
       <ReminderAlerts />
+      <TableModelPrompt />
 
       {/* Active conversation while another view is open */}
       <ConversationDock activeTab={activeTab} onExpand={() => setActiveTab('ask')} />

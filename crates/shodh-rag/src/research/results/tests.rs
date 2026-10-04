@@ -432,7 +432,8 @@ async fn comparisons_cite_cells_and_say_what_is_missing() {
 // ── The user's paper corpus ─────────────────────────────────────────────────
 //
 // `fixtures/corpus_tables.json` is the extractor input the layout parser produced for every
-// table block of 15 papers (see `research::corpus_dump`). These tests pin what the rules do
+// table block of 14 published papers (see `research::corpus_dump`; the user's own unpublished paper
+// in the corpus was left out of the checked-in copy). These tests pin what the rules do
 // on real parser output: nothing is ever invented, every refusal has its reason, and where a
 // dataset is named the values, units, pages and cell boxes are exactly the parser's.
 
@@ -457,7 +458,7 @@ fn corpus_table(paper: &str, page: u32, index: usize) -> TableInput {
 #[test]
 fn corpus_tables_never_yield_an_invented_value() {
     let tables = corpus();
-    assert_eq!(tables.len(), 37);
+    assert_eq!(tables.len(), 35);
     let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
     for (name, table) in &tables {
         let reading = read_table(table, None);
@@ -492,7 +493,7 @@ fn corpus_tables_never_yield_an_invented_value() {
             7,
         ),
         ("no column holds method names", 9),
-        ("no body rows hold numbers", 4),
+        ("no body rows hold numbers", 2),
         ("no transposed value could be read", 2),
         ("no column holds numbers", 1),
     ]

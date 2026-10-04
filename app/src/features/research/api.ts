@@ -74,17 +74,17 @@ export const researchApi = {
 };
 
 export interface ResearchChange {
-  kind: 'snippet' | 'result' | null;
+  kind: 'snippet' | 'result' | 'graph' | null;
   filePath: string | null;
 }
 
-/** `research-changed`: snippets or results (of a file, when known) changed, including the agent's writes. */
+/** `research-changed`: snippets, results or the citation graph (of a file, when known) changed, including the agent's writes. */
 export function onResearchChanged(handler: (change: ResearchChange) => void): Promise<UnlistenFn> {
   return listen<{ kind?: unknown; filePath?: unknown }>(RESEARCH_CHANGED_EVENT, event => {
     const kind = event.payload?.kind;
     const filePath = event.payload?.filePath;
     handler({
-      kind: kind === 'snippet' || kind === 'result' ? kind : null,
+      kind: kind === 'snippet' || kind === 'result' || kind === 'graph' ? kind : null,
       filePath: typeof filePath === 'string' ? filePath : null,
     });
   });

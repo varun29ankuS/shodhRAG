@@ -7,6 +7,7 @@ import {
   FolderOpen,
   FolderPlus,
   FolderSearch,
+  Network,
   RotateCcw,
   Trash2,
 } from 'lucide-react';
@@ -16,6 +17,10 @@ import { SearchSetupCard } from '../setup/SearchSetupCard';
 import { VisualGallery } from '../visuals/VisualGallery';
 import { SnippetShelf } from '../research/SnippetShelf';
 import { CompareResults } from '../research/CompareResults';
+import { PaperGraphView } from '../research/PaperGraphView';
+import { PaperPage } from '../research/PaperPage';
+import { ConceptPage } from '../research/ConceptPage';
+import type { GraphPage } from '../research/graphTypes';
 import { scrollBehavior } from '../ask/viewer/sourceAccess';
 import { baseName } from './fileTree';
 import type { FileNode } from './fileTree';
@@ -77,6 +82,11 @@ export function LibraryView({
 }: LibraryViewProps) {
   const [browsingId, setBrowsingId] = useState<string | null>(null);
   const browsing = sources.find(s => s.id === browsingId) ?? null;
+  /** The graph area (graph, paper, method or dataset page) with its back stack. */
+  const [graphPages, setGraphPages] = useState<GraphPage[]>([]);
+  const graphPage = graphPages[graphPages.length - 1] ?? null;
+  const pushPage = useCallback((page: GraphPage) => setGraphPages(stack => [...stack, page]), []);
+  const popPage = useCallback(() => setGraphPages(stack => stack.slice(0, -1)), []);
 
   const reportCount = useCallback((count: number) => {
     if (browsingId) onFileCount(browsingId, count);
@@ -105,6 +115,33 @@ export function LibraryView({
     return (
       <div key={browsing.id} className="shell-view-enter h-full">
         <FileBrowser source={browsing} onExit={() => setBrowsingId(null)} onAskAboutFile={onAskAboutFile} onFileCount={reportCount} />
+      </div>
+    );
+  }
+
+  if (graphPage) {
+    const openPaper = (id: string) => pushPage({ kind: 'paper', id });
+    const openConcept = (kind: 'method' | 'dataset', id: string) => pushPage({ kind, id });
+    return (
+      <div className="h-full overflow-y-auto scrollbar-thin">
+        <div className="max-w-5xl mx-auto px-8 py-7 flex flex-col gap-4">
+          {graphPage.kind === 'graph' ? (
+            <>
+              <header className="flex items-start justify-between gap-4">
+                <div className="flex flex-col gap-1">
+                  <h1 className="m-0 text-2xl font-bold text-shodh-text">Paper graph</h1>
+                  <p className="text-sm text-shodh-text-muted">How your papers cite each other and the work they build on, read from their bibliographies.</p>
+                </div>
+                <button type="button" onClick={popPage} className={QUIET_BUTTON}>Back to Library</button>
+              </header>
+              <PaperGraphView onOpenPaper={openPaper} />
+            </>
+          ) : graphPage.kind === 'paper' ? (
+            <PaperPage key={graphPage.id} paperId={graphPage.id} onBack={popPage} onOpenPaper={openPaper} onOpenConcept={openConcept} />
+          ) : (
+            <ConceptPage key={`${graphPage.kind}:${graphPage.id}`} kind={graphPage.kind} conceptId={graphPage.id} onBack={popPage} onOpenPaper={openPaper} />
+          )}
+        </div>
       </div>
     );
   }
@@ -173,6 +210,25 @@ export function LibraryView({
               </p>
             </div>
             <SnippetShelf />
+          </section>
+        )}
+
+        {sources.length > 0 && (
+          <section aria-labelledby="library-graph" className="flex flex-col gap-3">
+            <div className="flex items-end justify-between gap-3">
+              <div className="flex flex-col gap-0.5">
+                <h2 id="library-graph" className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
+                  Graph
+                </h2>
+                <p className="text-[12.5px] text-shodh-text-muted">
+                  Which of your papers cite each other, what they build on, and a page for every paper, method and dataset.
+                </p>
+              </div>
+              <button type="button" onClick={() => pushPage({ kind: 'graph' })} className={cn(QUIET_BUTTON, 'text-shodh-text font-medium border border-shodh-border')}>
+                <Network className="w-3.5 h-3.5" aria-hidden="true" />
+                Open graph
+              </button>
+            </div>
           </section>
         )}
 

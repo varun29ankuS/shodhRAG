@@ -42,7 +42,17 @@ function CellValue({ cell, method, column }: { cell: ComparisonCell; method: str
  * with a chart. Every cell opens its source box in the paper; coverage
  * notes say which papers report the metric and which do not.
  */
-export function CompareResults({ workspace = null }: { workspace?: string | null }) {
+export function CompareResults({
+  workspace = null,
+  initialMethod = '',
+  initialDataset = '',
+}: {
+  workspace?: string | null;
+  /** Method id to start with (a method page compares its results). */
+  initialMethod?: string;
+  /** Dataset id to start with (a dataset page). */
+  initialDataset?: string;
+}) {
   const { theme } = useTheme();
   const metricId = useId();
   const datasetId = useId();
@@ -50,8 +60,8 @@ export function CompareResults({ workspace = null }: { workspace?: string | null
   const chartColumnId = useId();
   const [facets, setFacets] = useState<Load<ResultFacets>>({ status: 'loading' });
   const [metric, setMetric] = useState('');
-  const [dataset, setDataset] = useState('');
-  const [method, setMethod] = useState('');
+  const [dataset, setDataset] = useState(initialDataset);
+  const [method, setMethod] = useState(initialMethod);
   const [papers, setPapers] = useState<string[]>([]);
   const [result, setResult] = useState<Load<Comparison> | null>(null);
   const [chartColumn, setChartColumn] = useState('');

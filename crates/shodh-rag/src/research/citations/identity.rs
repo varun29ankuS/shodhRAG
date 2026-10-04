@@ -112,8 +112,7 @@ pub fn filename_arxiv_id(file_name: &str) -> Option<String> {
 fn plausible_info_title(title: &str) -> bool {
     let lower = title.to_lowercase();
     let words = title.split_whitespace().count();
-    words >= 3
-        && words <= 40
+    (3..=40).contains(&words)
         && ![
             "microsoft word",
             "untitled",

@@ -230,7 +230,7 @@ impl Pattern {
         self.get().and_then(|r| r.captures(text))
     }
 
-    fn captures_iter<'r, 't>(&'r self, text: &'t str) -> Vec<regex::Captures<'t>> {
+    fn captures_iter<'t>(&self, text: &'t str) -> Vec<regex::Captures<'t>> {
         self.get()
             .map(|r| r.captures_iter(text).collect())
             .unwrap_or_default()

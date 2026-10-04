@@ -199,6 +199,11 @@ pub fn retrieval(tool: &str, args: &Value, detail: Option<&Value>) -> Option<Val
             "tool": tool,
             "path": detail.get("path").cloned().unwrap_or(Value::Null),
             "location": detail.get("location").cloned().unwrap_or(Value::Null),
+            "passages": detail
+                .get("passages")
+                .and_then(Value::as_array)
+                .map(|items| items.iter().map(passage_entry).collect::<Vec<_>>())
+                .unwrap_or_default(),
         })),
         WEB_SEARCH | FETCH_URL | SEARCH_PAPERS => {
             let sources: Vec<Value> = detail
@@ -364,10 +369,14 @@ mod tests {
         let open = retrieval(
             OPEN_DOCUMENT,
             &json!({"path": "c:/d/a.pdf"}),
-            Some(&json!({"path": "c:/d/a.pdf", "location": "page 4 of 9"})),
+            Some(&json!({"path": "c:/d/a.pdf", "location": "page 4", "passages": [
+                {"n": 7, "file": "a.pdf", "path": "c:/d/a.pdf", "page": "4", "score": 1.0, "text": "Page four."}
+            ]})),
         )
         .unwrap();
-        assert_eq!(open["location"], "page 4 of 9");
+        assert_eq!(open["location"], "page 4");
+        assert_eq!(open["passages"][0]["n"], 7);
+        assert_eq!(open["passages"][0]["snippet"], "Page four.");
         assert!(retrieval("list_sources", &json!({}), Some(&json!({}))).is_none());
 
         let web = retrieval(

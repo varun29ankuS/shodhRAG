@@ -411,29 +411,66 @@ impl HostTool for CreateSnippetTool {
         self.host
             .effects
             .research_changed("snippet", &snippet.file_path);
-        let (text, _) = truncate(&snippet.text, SNIPPET_TEXT_CHARS);
-        Ok(ToolOutput {
-            text_for_model: format!(
-                "Saved snippet {} from {} page {}. Its image is rendered the first time the user \
-                 opens it. Text inside the region ({} characters): {}",
-                snippet.id,
-                snippet.file_name,
-                snippet.page,
-                snippet.text.chars().count(),
-                if text.is_empty() {
-                    "(none: the region holds no text)".to_string()
-                } else {
-                    text
-                }
-            ),
+        Ok(created_snippet_output(&snippet, ctx))
+    }
+}
+
+/// What `create_snippet` returns: the region's text, numbered as a citable
+/// passage of the run like every other document text a tool shows the model.
+fn created_snippet_output(snippet: &Snippet, ctx: &ToolContext) -> ToolOutput {
+    let (text, _) = truncate(&snippet.text, SNIPPET_TEXT_CHARS);
+    let saved = format!(
+        "Saved snippet {} from {} page {}. Its image is rendered the first time the user opens it.",
+        snippet.id, snippet.file_name, snippet.page
+    );
+    if text.trim().is_empty() {
+        return ToolOutput {
+            text_for_model: format!("{saved} The region holds no text."),
             summary_for_ui: format!(
                 "Saved a snippet of {}, page {}",
                 snippet.file_name, snippet.page
             ),
-            detail: Some(
-                json!({ "snippetId": snippet.id, "file": snippet.file_path, "page": snippet.page }),
-            ),
-        })
+            detail: Some(json!({
+                "snippetId": snippet.id,
+                "file": snippet.file_path,
+                "page": snippet.page,
+                "passages": [],
+            })),
+        };
+    }
+    let page = snippet.page.to_string();
+    let n = ctx.cite_passage(CitedPassage {
+        n: 0,
+        file: snippet.file_name.clone(),
+        path: snippet.file_path.clone(),
+        page: Some(page.clone()),
+        web: false,
+        text: text.clone(),
+        checkable: true,
+    });
+    ToolOutput {
+        text_for_model: format!(
+            "{saved}\n{UNTRUSTED_NOTICE}\nText inside the region ({} characters):\n[{n}] {}, p. {page}\n{text}",
+            snippet.text.chars().count(),
+            snippet.file_name,
+        ),
+        summary_for_ui: format!(
+            "Saved a snippet of {}, page {}",
+            snippet.file_name, snippet.page
+        ),
+        detail: Some(json!({
+            "snippetId": snippet.id,
+            "file": snippet.file_path,
+            "page": snippet.page,
+            "passages": [{
+                "n": n,
+                "file": snippet.file_name,
+                "path": snippet.file_path,
+                "page": page,
+                "score": 1.0,
+                "text": text,
+            }],
+        })),
     }
 }
 
@@ -773,5 +810,55 @@ mod tests {
         assert!(matches!(err, ToolError::InvalidArguments { .. }));
         assert_eq!(create.tier(), RiskTier::Write);
         assert_eq!(list.tier(), RiskTier::Read);
+    }
+
+    fn saved_snippet(text: &str) -> Snippet {
+        let now = chrono::Utc::now();
+        Snippet {
+            id: "snippet:1".into(),
+            statement_id: "s1".into(),
+            file_path: "c:/papers/attention.pdf".into(),
+            file_name: "attention.pdf".into(),
+            page: 3,
+            rect: PageRect {
+                x: 10.0,
+                y: 10.0,
+                width: 100.0,
+                height: 40.0,
+            },
+            text: text.into(),
+            title: String::new(),
+            note: String::new(),
+            tags: Vec::new(),
+            kind: SnippetKind::Passage,
+            has_image: false,
+            latex: None,
+            latex_model: None,
+            scope: Scope::Global,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn a_created_snippet_numbers_its_text_after_earlier_passages() {
+        let (ctx, _rx) = testing::ctx();
+        ctx.reserve_passages(2);
+        let out = created_snippet_output(&saved_snippet("The encoder has six layers."), &ctx);
+        assert!(out.text_for_model.contains(
+            "[3] attention.pdf, p. 3
+The encoder has six layers."
+        ));
+        let detail = out.detail.unwrap();
+        assert_eq!(detail["passages"][0]["n"], json!(3));
+        assert_eq!(detail["passages"][0]["page"], json!("3"));
+        assert_eq!(
+            ctx.cited_passage(3).unwrap().text,
+            "The encoder has six layers."
+        );
+
+        let empty = created_snippet_output(&saved_snippet("  "), &ctx);
+        assert!(empty.text_for_model.contains("holds no text"));
+        assert_eq!(ctx.passages_issued(), 3, "an empty region gets no number");
     }
 }

@@ -1,5 +1,11 @@
 //! `open_document`: the text of a page or character range of an indexed file.
 //!
+//! Every read is numbered like search results: the text is cut into
+//! page-level passages (longer pages and ranges into pieces of at most
+//! [`MAX_READ_PASSAGE_CHARS`]), each registered in the run's citation
+//! numbering with file, path, page, section and boxes, so an answer built
+//! only from reads cites passages the grounding check can resolve.
+//!
 //! Access rule: only files present in the index can be opened. The argument
 //! is normalised the same way the indexer normalises paths and matched
 //! against the stored `source`; the stored path (never the raw argument) is
@@ -12,7 +18,9 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
-use super::{req_str, HostTool, ToolContext, ToolError, ToolOutput, UNTRUSTED_NOTICE};
+use super::{
+    req_str, CitedPassage, HostTool, ToolContext, ToolError, ToolOutput, UNTRUSTED_NOTICE,
+};
 use crate::harness::events::RiskTier;
 use crate::processing::parser::{DocumentParser, ParsedDocument};
 use crate::types::{DocumentFormat, DocumentSection};
@@ -188,14 +196,251 @@ fn page_text(pages: &[(usize, String)], page: usize) -> Result<String, ToolError
     Ok(text.join("\n"))
 }
 
-/// Render the selected part of a parsed document for the model. `pages`
-/// are its page texts (from the parser, or read from the PDF directly).
+/// Longest numbered passage of a read. A page is usually one passage; a
+/// longer page or range is split (at paragraph, line or sentence breaks) so
+/// a citation points at a few paragraphs, not at 12 000 characters.
+pub const MAX_READ_PASSAGE_CHARS: usize = 4_000;
+
+/// Shortest text used to find which page a piece of a range read is on;
+/// shorter probes match too many pages to say.
+const PAGE_PROBE_MIN_CHARS: usize = 24;
+/// Characters of a piece's start (and end) looked up in the page texts.
+const PAGE_PROBE_CHARS: usize = 80;
+
+/// One numbered piece of a read: what the model sees for one `[n]`.
+#[derive(Debug, Clone, PartialEq)]
+struct Segment {
+    /// "4", or "4-5" for a piece of a range read that crosses a page break.
+    page: Option<String>,
+    /// Heading chain the piece starts under ("3 Method > 3.2 Chunkwise form").
+    section: Option<String>,
+    /// Boxes of the piece's blocks (`{"page":4,"x0":..}`), for the viewer only.
+    regions: Vec<Value>,
+    text: String,
+}
+
+/// The selected part of a document, cut into passages, before numbering.
+#[derive(Debug, Clone, PartialEq)]
+struct Read {
+    title: String,
+    /// "page 4" or "characters 0–12000 of 48000", plus a note when the
+    /// page-or-range choice was made for the model.
+    location: String,
+    segments: Vec<Segment>,
+    /// How to continue when the selection was cut.
+    hint: Option<String>,
+}
+
+/// A unit the packer never splits unless it alone exceeds the budget: a
+/// layout block or a paragraph.
+struct Unit {
+    text: String,
+    section: Option<String>,
+    region: Option<Value>,
+}
+
+/// `text` cut into pieces of at most `max` characters, preferring a line
+/// break, then a sentence end, then a space in the second half of a piece.
+fn split_hard(text: &str, max: usize) -> Vec<String> {
+    let max = max.max(1);
+    let mut out = Vec::new();
+    let mut rest: Vec<char> = text.chars().collect();
+    while rest.len() > max {
+        let window = &rest[..max];
+        let floor = max / 2;
+        let breaks: [&[char]; 3] = [&['\n'], &['.', '!', '?', ';'], &[' ', '\t']];
+        let cut = breaks
+            .iter()
+            .find_map(|set| {
+                (floor..max)
+                    .rev()
+                    .find(|&i| set.contains(&window[i]))
+                    .map(|i| i + 1)
+            })
+            .unwrap_or(max);
+        let piece: String = rest[..cut].iter().collect();
+        let piece = piece.trim();
+        if !piece.is_empty() {
+            out.push(piece.to_string());
+        }
+        rest.drain(..cut);
+    }
+    let piece: String = rest.into_iter().collect();
+    let piece = piece.trim();
+    if !piece.is_empty() {
+        out.push(piece.to_string());
+    }
+    out
+}
+
+/// Units packed into pieces of at most `max` characters, joined by `sep`.
+/// A piece takes the section of its first unit and the boxes of all of them.
+fn pack(units: Vec<Unit>, max: usize, sep: &str) -> Vec<Segment> {
+    let gap = sep.chars().count();
+    let mut out: Vec<Segment> = Vec::new();
+    let mut current: Option<(Segment, usize)> = None;
+    for unit in units {
+        let pieces = split_hard(&unit.text, max);
+        let whole = pieces.len() == 1;
+        for piece in pieces {
+            let len = piece.chars().count();
+            let region = if whole { unit.region.clone() } else { None };
+            match current.as_mut() {
+                Some((segment, used)) if *used + gap + len <= max => {
+                    segment.text.push_str(sep);
+                    segment.text.push_str(&piece);
+                    segment.regions.extend(region);
+                    *used += gap + len;
+                }
+                _ => {
+                    out.extend(current.take().map(|(s, _)| s));
+                    current = Some((
+                        Segment {
+                            page: None,
+                            section: unit.section.clone(),
+                            regions: region.into_iter().collect(),
+                            text: piece,
+                        },
+                        len,
+                    ));
+                }
+            }
+        }
+    }
+    out.extend(current.map(|(s, _)| s));
+    out
+}
+
+/// Units cut to `limit` characters in total (with separators), the last
+/// one shortened to fit.
+fn limit_units(units: Vec<Unit>, limit: usize, sep: &str) -> Vec<Unit> {
+    let gap = sep.chars().count();
+    let mut out = Vec::new();
+    let mut used = 0usize;
+    for mut unit in units {
+        let between = if out.is_empty() { 0 } else { gap };
+        let room = limit.saturating_sub(used + between);
+        if room == 0 {
+            break;
+        }
+        let len = unit.text.chars().count();
+        if len > room {
+            unit.text = unit.text.chars().take(room).collect();
+            unit.region = None;
+            out.push(unit);
+            break;
+        }
+        used += between + len;
+        out.push(unit);
+    }
+    out
+}
+
+/// Paragraphs of plain text as units.
+fn paragraph_units(text: &str) -> Vec<Unit> {
+    text.split("\n\n")
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(|p| Unit {
+            text: p.to_string(),
+            section: None,
+            region: None,
+        })
+        .collect()
+}
+
+/// The layout blocks of `page` as units (with their section and box), when
+/// the parser read the document's layout and the page text came from it.
+fn block_units(parsed: &ParsedDocument, page: usize, page_text: &str) -> Option<Vec<Unit>> {
+    let doc = parsed.document.as_ref()?;
+    let number = u32::try_from(page).ok()?;
+    if doc.page_text(number) != page_text {
+        return None;
+    }
+    let units: Vec<Unit> = doc
+        .blocks
+        .iter()
+        .filter(|b| b.page == Some(number))
+        .filter_map(|b| {
+            let text = b.render().trim().to_string();
+            if text.is_empty() {
+                return None;
+            }
+            let section = (!b.section_path.is_empty()).then(|| b.section_path.join(" > "));
+            let region = b.bbox.map(
+                |bb| json!({ "page": number, "x0": bb.x0, "y0": bb.y0, "x1": bb.x1, "y1": bb.y1 }),
+            );
+            Some(Unit {
+                text,
+                section,
+                region,
+            })
+        })
+        .collect();
+    (!units.is_empty()).then_some(units)
+}
+
+fn normalized(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The one page whose text contains `probe`; `None` when no page or
+/// several do (a wrong page is worse than none).
+fn page_of(pages: &[(usize, String)], probe: &str) -> Option<usize> {
+    if probe.chars().count() < PAGE_PROBE_MIN_CHARS {
+        return None;
+    }
+    let mut found = pages
+        .iter()
+        .filter(|(_, text)| text.contains(probe))
+        .map(|(p, _)| *p);
+    let first = found.next()?;
+    found.all(|p| p == first).then_some(first)
+}
+
+/// The page (or "start-end" pages) a piece of a range read lies on, found
+/// by looking the start of its first paragraph and the end of its last up
+/// in the page texts (a probe never spans two paragraphs, which a page
+/// break may separate).
+fn locate_pages(normalized_pages: &[(usize, String)], text: &str) -> Option<String> {
+    let mut paragraphs = text.split("\n\n").filter(|p| !p.trim().is_empty());
+    let first: Vec<char> = normalized(paragraphs.next()?).chars().collect();
+    let last: Vec<char> = paragraphs
+        .last()
+        .map(|p| normalized(p).chars().collect())
+        .unwrap_or_else(|| first.clone());
+    let head: String = first.iter().take(PAGE_PROBE_CHARS).collect();
+    let tail: String = last[last.len().saturating_sub(PAGE_PROBE_CHARS)..]
+        .iter()
+        .collect();
+    let start = page_of(normalized_pages, &head)?;
+    match page_of(normalized_pages, &tail) {
+        Some(end) if end > start => Some(format!("{start}-{end}")),
+        _ => Some(start.to_string()),
+    }
+}
+
+/// A character range cut into passages, each with the page(s) it was found
+/// on when the document has page text.
+fn range_segments(slice: &str, pages: &[(usize, String)]) -> Vec<Segment> {
+    let mut segments = pack(paragraph_units(slice), MAX_READ_PASSAGE_CHARS, "\n\n");
+    if !pages.is_empty() {
+        let normalized_pages: Vec<(usize, String)> =
+            pages.iter().map(|(p, t)| (*p, normalized(t))).collect();
+        for segment in &mut segments {
+            segment.page = locate_pages(&normalized_pages, &segment.text);
+        }
+    }
+    segments
+}
+
+/// Select and cut the requested part of a parsed document. `pages` are its
+/// page texts (from the parser, or read from the PDF directly).
 fn render(
     parsed: &ParsedDocument,
     pages: &[(usize, String)],
-    source: &str,
     selection: Selection,
-) -> Result<(ToolOutput, String), ToolError> {
+) -> Result<Read, ToolError> {
     let (selection, note) = match selection {
         Selection::PageOrRange { page, start, end } => {
             if pages.is_empty() {
@@ -212,17 +457,26 @@ fn render(
         }
         other => (other, None),
     };
-    let (body, location, next_hint) = match selection {
+    let (segments, location, hint) = match selection {
         Selection::Page(page) => {
             let text = page_text(pages, page)?;
-            let (slice, total) = slice_chars(&text, 0, MAX_RANGE_CHARS);
+            let total = text.chars().count();
             let hint = (total > MAX_RANGE_CHARS).then(|| {
                 format!(
                     "[page truncated: {} more characters]",
                     total - MAX_RANGE_CHARS
                 )
             });
-            (slice, format!("page {page}"), hint)
+            let units = block_units(parsed, page, &text).unwrap_or_else(|| paragraph_units(&text));
+            let mut segments = pack(
+                limit_units(units, MAX_RANGE_CHARS, "\n\n"),
+                MAX_READ_PASSAGE_CHARS,
+                "\n\n",
+            );
+            for segment in &mut segments {
+                segment.page = Some(page.to_string());
+            }
+            (segments, format!("page {page}"), hint)
         }
         Selection::Range { start, end } => {
             let (slice, total) = slice_chars(&parsed.content, start, end);
@@ -234,7 +488,7 @@ fn render(
                 )
             });
             (
-                slice,
+                range_segments(&slice, pages),
                 format!("characters {start}–{shown_end} of {total}"),
                 hint,
             )
@@ -248,7 +502,11 @@ fn render(
                     total - shown
                 )
             });
-            (slice, format!("characters 0–{shown} of {total}"), hint)
+            (
+                range_segments(&slice, pages),
+                format!("characters 0–{shown} of {total}"),
+                hint,
+            )
         }
         Selection::PageOrRange { .. } => {
             return Err(ToolError::Failed(
@@ -260,28 +518,89 @@ fn render(
         Some(note) => format!("{location} ({note})"),
         None => location,
     };
-    if body.trim().is_empty() {
+    if segments.is_empty() {
         return Err(ToolError::NotFound(format!(
             "No text found at {location} of {}",
             parsed.title
         )));
     }
+    Ok(Read {
+        title: parsed.title.clone(),
+        location,
+        segments,
+        hint,
+    })
+}
+
+/// What the user sees for a file: its name.
+fn file_name(source: &str) -> String {
+    source
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(source)
+        .to_string()
+}
+
+/// Number every piece of `read` in the run (a piece read before keeps its
+/// number) and build the tool output: the pieces with their numbers for the
+/// model, and the same passages in the step detail for the transcript.
+fn cite_read(read: &Read, source: &str, ctx: &ToolContext) -> ToolOutput {
+    let file = file_name(source);
     let mut text = format!(
-        "{UNTRUSTED_NOTICE}\nDocument: {} ({source}), {location}\n\n{body}",
-        parsed.title
+        "{UNTRUSTED_NOTICE}\nDocument: {} ({source}), {}\nCite what you use with the passage numbers below.\n",
+        read.title, read.location
     );
-    if let Some(hint) = next_hint {
+    let mut passages = Vec::with_capacity(read.segments.len());
+    for segment in &read.segments {
+        let n = ctx.cite_passage(CitedPassage {
+            n: 0,
+            file: file.clone(),
+            path: source.to_string(),
+            page: segment.page.clone(),
+            web: false,
+            text: segment.text.clone(),
+            checkable: true,
+        });
+        let mut heading = format!("[{n}] {file}");
+        if let Some(page) = &segment.page {
+            heading.push_str(&format!(", p. {page}"));
+        }
+        if let Some(section) = &segment.section {
+            heading.push_str(&format!(" — {section}"));
+        }
         text.push('\n');
-        text.push_str(&hint);
+        text.push_str(&heading);
+        text.push('\n');
+        text.push_str(&segment.text);
+        text.push('\n');
+        let mut passage = json!({
+            "n": n,
+            "file": file,
+            "path": source,
+            "page": segment.page,
+            "section": segment.section,
+            "score": 1.0,
+            "text": segment.text,
+        });
+        if let (false, Some(map)) = (segment.regions.is_empty(), passage.as_object_mut()) {
+            map.insert("regions".to_string(), Value::Array(segment.regions.clone()));
+        }
+        passages.push(passage);
     }
-    Ok((
-        ToolOutput {
-            text_for_model: text,
-            summary_for_ui: format!("Read {}, {location}", parsed.title),
-            detail: Some(json!({ "path": source, "location": location })),
-        },
-        body,
-    ))
+    if let Some(hint) = &read.hint {
+        text.push_str(hint);
+        text.push('\n');
+    }
+    ToolOutput {
+        text_for_model: text.trim_end().to_string(),
+        summary_for_ui: format!("Read {}, {}", read.title, read.location),
+        detail: Some(json!({
+            "path": source,
+            "location": read.location,
+            "passages": passages,
+        })),
+    }
 }
 
 #[async_trait]
@@ -376,11 +695,13 @@ impl HostTool for OpenDocumentTool {
                 "{source} is indexed but could not be read from disk ({e}). It may have been moved or deleted; re-index its folder."
             ))
         })?;
-        let (output, body) = render(&parsed, &pages, &source, selection)?;
-        // Claims citing a passage of this file are also checked against
-        // what the model read here.
-        ctx.record_opened(&source, &body);
-        Ok(output)
+        let read = render(&parsed, &pages, selection)?;
+        // Claims citing any passage of this file (a search hit too) are
+        // also checked against what the model read here.
+        for segment in &read.segments {
+            ctx.record_opened(&source, &segment.text);
+        }
+        Ok(cite_read(&read, &source, ctx))
     }
 }
 
@@ -438,6 +759,28 @@ mod tests {
         );
     }
 
+    fn ctx() -> ToolContext {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        ToolContext::new("run", "step", tx)
+    }
+
+    fn open(
+        ctx: &ToolContext,
+        parsed: &ParsedDocument,
+        pages: &[(usize, String)],
+        source: &str,
+        selection: Selection,
+    ) -> ToolOutput {
+        cite_read(&render(parsed, pages, selection).unwrap(), source, ctx)
+    }
+
+    fn passages_of(out: &ToolOutput) -> Vec<Value> {
+        out.detail.as_ref().unwrap()["passages"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    }
+
     #[test]
     fn page_and_range_together_use_the_page_when_there_is_page_text() {
         let paged = doc("abcdefghij", &[(1, "first page"), (2, "second page")]);
@@ -446,15 +789,28 @@ mod tests {
             start: 0,
             end: 3,
         };
-        let (out, body) = render(&paged, &parsed_pages(&paged), "c:/docs/acme.pdf", both).unwrap();
-        assert_eq!(body, "second page", "the text recorded for checking claims");
-        assert!(out.text_for_model.contains("second page"));
+        let ctx = ctx();
+        let out = open(
+            &ctx,
+            &paged,
+            &parsed_pages(&paged),
+            "c:/docs/acme.pdf",
+            both,
+        );
+        assert!(out
+            .text_for_model
+            .contains("[1] acme.pdf, p. 2\nsecond page"));
+        assert_eq!(
+            ctx.cited_passage(1).unwrap().text,
+            "second page",
+            "the text recorded for checking claims is the text shown"
+        );
         assert!(out
             .summary_for_ui
             .contains("page 2 (used the page; the range was ignored)"));
 
         let unpaged = doc("abcdefghij", &[]);
-        let (out, _) = render(&unpaged, &[], "c:/docs/scan.pdf", both).unwrap();
+        let out = open(&ctx, &unpaged, &[], "c:/docs/scan.pdf", both);
         assert!(out.text_for_model.contains("abc"));
         assert!(!out.text_for_model.contains("abcd"));
         assert!(out
@@ -466,8 +822,14 @@ mod tests {
     fn pages_read_from_the_pdf_replace_missing_page_structure() {
         let unpaged = doc("whole text", &[]);
         let from_file = vec![(1, "cover".to_string()), (2, "terms".to_string())];
-        let (out, _) = render(&unpaged, &from_file, "c:/docs/a.pdf", Selection::Page(2)).unwrap();
-        assert!(out.text_for_model.contains("terms"));
+        let out = open(
+            &ctx(),
+            &unpaged,
+            &from_file,
+            "c:/docs/a.pdf",
+            Selection::Page(2),
+        );
+        assert!(out.text_for_model.contains("[1] a.pdf, p. 2\nterms"));
         assert!(pdf_pages_from_file(Path::new("c:/definitely/missing.pdf")).is_none());
     }
 
@@ -475,25 +837,245 @@ mod tests {
     fn pages_and_ranges_render() {
         let parsed = doc("abcdefghij", &[(1, "first page"), (2, "second page")]);
         let pages = parsed_pages(&parsed);
-        let (out, _) = render(&parsed, &pages, "c:/docs/acme.pdf", Selection::Page(2)).unwrap();
+        let ctx = ctx();
+        let out = open(
+            &ctx,
+            &parsed,
+            &pages,
+            "c:/docs/acme.pdf",
+            Selection::Page(2),
+        );
         assert!(out.text_for_model.contains("second page"));
         assert!(out.text_for_model.starts_with(UNTRUSTED_NOTICE));
         assert_eq!(out.summary_for_ui, "Read Acme MSA, page 2");
-        let missing = render(&parsed, &pages, "c:/docs/acme.pdf", Selection::Page(9)).unwrap_err();
+        let missing = render(&parsed, &pages, Selection::Page(9)).unwrap_err();
         assert_eq!(
             missing.to_string(),
             "Page 9 not found; the document has pages 1 to 2"
         );
-        let (range, _) = render(
+        let range = open(
+            &ctx,
             &parsed,
             &pages,
             "c:/docs/acme.pdf",
             Selection::Range { start: 2, end: 5 },
-        )
-        .unwrap();
+        );
         assert!(range.text_for_model.contains("cde"));
         assert!(range.text_for_model.contains("continue with range start=5"));
         let unpaged = doc("plain", &[]);
-        assert!(render(&unpaged, &[], "a.txt", Selection::Page(1)).is_err());
+        assert!(render(&unpaged, &[], Selection::Page(1)).is_err());
+    }
+
+    #[test]
+    fn reads_are_numbered_after_earlier_search_passages() {
+        let parsed = doc("", &[(1, "first page"), (2, "second page")]);
+        let pages = parsed_pages(&parsed);
+        let ctx = ctx();
+        // A search earlier in the run numbered 1 to 3.
+        assert_eq!(ctx.reserve_passages(3), 1);
+        let out = open(
+            &ctx,
+            &parsed,
+            &pages,
+            "c:/docs/acme.pdf",
+            Selection::Page(2),
+        );
+        assert!(out.text_for_model.contains("[4] acme.pdf, p. 2"));
+        let passages = passages_of(&out);
+        assert_eq!(passages.len(), 1);
+        assert_eq!(passages[0]["n"], json!(4));
+        assert_eq!(passages[0]["file"], json!("acme.pdf"));
+        assert_eq!(passages[0]["path"], json!("c:/docs/acme.pdf"));
+        assert_eq!(passages[0]["page"], json!("2"));
+        assert_eq!(passages[0]["text"], json!("second page"));
+        let cited = ctx.cited_passage(4).unwrap();
+        assert_eq!(cited.file, "acme.pdf");
+        assert_eq!(cited.page.as_deref(), Some("2"));
+        assert!(!cited.web);
+        assert_eq!(ctx.passages_issued(), 4);
+    }
+
+    #[test]
+    fn rereading_a_span_reuses_its_number() {
+        let parsed = doc("", &[(1, "first page"), (2, "second page")]);
+        let pages = parsed_pages(&parsed);
+        let ctx = ctx();
+        let first = open(
+            &ctx,
+            &parsed,
+            &pages,
+            "c:/docs/acme.pdf",
+            Selection::Page(2),
+        );
+        let again = open(
+            &ctx,
+            &parsed,
+            &pages,
+            "c:/docs/acme.pdf",
+            Selection::Page(2),
+        );
+        assert_eq!(passages_of(&first)[0]["n"], json!(1));
+        assert_eq!(passages_of(&again)[0]["n"], json!(1));
+        let other = open(
+            &ctx,
+            &parsed,
+            &pages,
+            "c:/docs/acme.pdf",
+            Selection::Page(1),
+        );
+        assert_eq!(passages_of(&other)[0]["n"], json!(2));
+        assert_eq!(ctx.passages_issued(), 2);
+    }
+
+    #[test]
+    fn an_answer_built_only_from_reads_resolves_every_citation() {
+        use crate::harness::events::ClaimOutcome;
+        use crate::harness::grounding::{
+            verify_answer, AnswerMessage, Evidence, Scorers, VerifyInput, THRESHOLDS,
+        };
+        let parsed = doc(
+            "",
+            &[
+                (
+                    1,
+                    "Either party may terminate the agreement with 60 days written notice.",
+                ),
+                (
+                    2,
+                    "The renewal fee is 900 EUR per year, payable in advance.",
+                ),
+            ],
+        );
+        let pages = parsed_pages(&parsed);
+        let ctx = ctx();
+        open(&ctx, &parsed, &pages, "c:/docs/msa.pdf", Selection::Page(1));
+        open(&ctx, &parsed, &pages, "c:/docs/msa.pdf", Selection::Page(2));
+        let evidence: Vec<Evidence> = (1..=ctx.passages_issued())
+            .filter_map(|n| ctx.cited_passage(n))
+            .map(|p| Evidence {
+                n: p.n,
+                path: p.path,
+                text: p.text,
+                checkable: p.checkable,
+            })
+            .collect();
+        assert_eq!(evidence.len(), 2);
+        let messages = [AnswerMessage {
+            id: "m1".into(),
+            text: "Either party may terminate the agreement with 60 days written notice [1]. \
+                   The renewal fee is 900 EUR per year [2]."
+                .into(),
+        }];
+        let (checks, _) = verify_answer(
+            &VerifyInput {
+                messages: &messages,
+                passages: &evidence,
+                opened: &[],
+            },
+            Scorers {
+                relevance: None,
+                entailment: None,
+            },
+            &THRESHOLDS,
+        );
+        assert_eq!(checks.len(), 2);
+        for check in &checks {
+            assert_ne!(check.outcome, ClaimOutcome::InvalidCitation, "{check:?}");
+            assert_eq!(check.outcome, ClaimOutcome::Supported, "{check:?}");
+        }
+    }
+
+    #[test]
+    fn long_pages_are_split_into_bounded_passages_of_that_page() {
+        let paragraph = |c: char| format!("{} end.", c.to_string().repeat(2_500));
+        let page = [paragraph('a'), paragraph('b'), paragraph('c')].join("\n\n");
+        let parsed = doc("", &[(7, page.as_str())]);
+        let ctx = ctx();
+        let out = open(
+            &ctx,
+            &parsed,
+            &parsed_pages(&parsed),
+            "c:/x.pdf",
+            Selection::Page(7),
+        );
+        let passages = passages_of(&out);
+        assert_eq!(passages.len(), 3);
+        for (i, p) in passages.iter().enumerate() {
+            assert_eq!(p["page"], json!("7"));
+            assert_eq!(p["n"], json!(i + 1));
+            assert!(p["text"].as_str().unwrap().chars().count() <= MAX_READ_PASSAGE_CHARS);
+        }
+    }
+
+    #[test]
+    fn layout_pages_carry_section_and_boxes() {
+        use crate::processing::document_model::{
+            BBox, Block, BlockKind, PageInfo, StructuredDocument,
+        };
+        let mut heading = Block::new(BlockKind::Heading { level: 1 }, "3 Method")
+            .on_page(3, Some(BBox::new(72.0, 90.0, 300.0, 110.0)));
+        heading.section_path = vec!["3 Method".to_string()];
+        let mut body = Block::new(BlockKind::Paragraph, "We use the delta rule.")
+            .on_page(3, Some(BBox::new(72.0, 120.0, 520.0, 160.0)));
+        body.section_path = vec!["3 Method".to_string()];
+        let mut parsed = doc("", &[]);
+        parsed.document = Some(StructuredDocument {
+            pages: vec![PageInfo {
+                number: 3,
+                width: 612.0,
+                height: 792.0,
+            }],
+            blocks: vec![heading, body],
+        });
+        let ctx = ctx();
+        let out = open(
+            &ctx,
+            &parsed,
+            &parsed_pages(&parsed),
+            "c:/p.pdf",
+            Selection::Page(3),
+        );
+        assert!(out
+            .text_for_model
+            .contains("[1] p.pdf, p. 3 — 3 Method\n3 Method\n\nWe use the delta rule."));
+        let passages = passages_of(&out);
+        assert_eq!(passages[0]["section"], json!("3 Method"));
+        let regions = passages[0]["regions"].as_array().unwrap();
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[1]["page"], json!(3));
+        assert_eq!(regions[1]["x0"], json!(72.0));
+        assert_eq!(regions[1]["y1"], json!(160.0));
+    }
+
+    #[test]
+    fn range_reads_find_their_pages_only_when_unambiguous() {
+        let p1 = "Alpha section explains the setup of the experiment in detail.";
+        let p2 = "Beta section reports the results of the experiment in detail.";
+        let content = format!("{p1}\n\n{p2}");
+        let parsed = doc(&content, &[(1, p1), (2, p2)]);
+        let ctx = ctx();
+        let out = open(
+            &ctx,
+            &parsed,
+            &parsed_pages(&parsed),
+            "c:/r.pdf",
+            Selection::Beginning,
+        );
+        assert_eq!(passages_of(&out)[0]["page"], json!("1-2"));
+
+        let normalized_pages = vec![(1, p1.to_string()), (2, p1.to_string())];
+        assert_eq!(locate_pages(&normalized_pages, p1), None, "on two pages");
+        assert_eq!(locate_pages(&normalized_pages, "too short"), None);
+    }
+
+    #[test]
+    fn hard_splits_prefer_sentence_ends_and_stay_within_the_budget() {
+        let text = format!("{}. {}", "a".repeat(60), "b".repeat(60));
+        let pieces = split_hard(&text, 100);
+        assert_eq!(pieces, vec![format!("{}.", "a".repeat(60)), "b".repeat(60)]);
+        let unbroken = "x".repeat(250);
+        let pieces = split_hard(&unbroken, 100);
+        assert_eq!(pieces.len(), 3);
+        assert!(pieces.iter().all(|p| p.chars().count() <= 100));
     }
 }

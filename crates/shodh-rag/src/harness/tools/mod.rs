@@ -144,6 +144,24 @@ impl RunPassages {
         self.lock().insert(passage.n, passage);
     }
 
+    /// Number `passage` (its `n` is ignored) and return the number: the one
+    /// a passage with the same path, page and text already has in this run
+    /// (re-reading a span reuses its citation), else a new one. Atomic, so
+    /// concurrent reads of one span never get two numbers.
+    pub fn cite(&self, mut passage: CitedPassage) -> u32 {
+        let mut cited = self.lock();
+        if let Some(existing) = cited
+            .values()
+            .find(|p| p.path == passage.path && p.page == passage.page && p.text == passage.text)
+        {
+            return existing.n;
+        }
+        let n = self.reserve(1);
+        passage.n = n;
+        cited.insert(n, passage);
+        n
+    }
+
     pub fn get(&self, n: u32) -> Option<CitedPassage> {
         self.lock().get(&n).cloned()
     }
@@ -439,6 +457,12 @@ impl ToolContext {
     /// Remember what a citation number refers to.
     pub fn record_passage(&self, passage: CitedPassage) {
         self.passages.record(passage);
+    }
+
+    /// Number a passage of document text this call shows the model; an
+    /// identical passage already numbered in this run keeps its number.
+    pub fn cite_passage(&self, passage: CitedPassage) -> u32 {
+        self.passages.cite(passage)
     }
 
     /// Remember document text this call showed the model without a number
@@ -1587,6 +1611,39 @@ mod tests {
         assert!(manifest.contains("You cannot, and must not offer to:\n- Change API keys"));
         let none = reg.capability_manifest(&p, &[]);
         assert!(!none.contains("You cannot"));
+    }
+
+    #[test]
+    fn citing_the_same_span_twice_reuses_its_number() {
+        let passages = RunPassages::new();
+        assert_eq!(passages.reserve(3), 1);
+        let span = |page: &str, text: &str| CitedPassage {
+            n: 0,
+            file: "a.pdf".into(),
+            path: "c:/a.pdf".into(),
+            page: Some(page.into()),
+            web: false,
+            text: text.into(),
+            checkable: true,
+        };
+        assert_eq!(
+            passages.cite(span("4", "Page four.")),
+            4,
+            "numbers continue"
+        );
+        assert_eq!(passages.cite(span("5", "Page five.")), 5);
+        assert_eq!(
+            passages.cite(span("4", "Page four.")),
+            4,
+            "same span, same number"
+        );
+        assert_eq!(
+            passages.cite(span("5", "Page four.")),
+            6,
+            "another page is another span"
+        );
+        assert_eq!(passages.issued(), 6);
+        assert_eq!(passages.get(4).unwrap().n, 4);
     }
 
     #[test]

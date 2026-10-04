@@ -80,12 +80,17 @@ fn main() -> Result<()> {
                                     BlockKind::Heading { level } => level,
                                     _ => 0,
                                 };
+                                let coverage = match b.kind {
+                                    BlockKind::Table { cell_coverage, .. } => cell_coverage,
+                                    _ => None,
+                                };
                                 json!({
                                     "kind": b.kind.name(),
                                     "text": b.render(),
                                     "page": b.page.unwrap_or(0),
                                     "bbox": b.bbox.map(|x| [x.x0, x.y0, x.x1, x.y1]),
                                     "level": level,
+                                    "coverage": coverage,
                                     "section": b.section_path.join(" > "),
                                 })
                             })

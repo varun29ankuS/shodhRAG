@@ -17,6 +17,7 @@ use regex::Regex;
 
 use super::document_model::{
     is_references_heading, is_table_caption, BBox, Block, BlockKind, PageInfo, StructuredDocument,
+    TABLE_COVERAGE_THRESHOLD,
 };
 use super::form_layout::{self, LayoutLine};
 use super::pdf_forms::FieldKind;
@@ -325,6 +326,52 @@ fn line_cells(line: &Line) -> Vec<(String, f32)> {
         .into_iter()
         .map(|s| (s.text, s.bbox.x0))
         .collect()
+}
+
+/// The table whose region holds a line's centre.
+fn table_of(tables: &[RawTable], line: &Line) -> Option<usize> {
+    tables.iter().position(|t| {
+        t.bbox
+            .contains_point(line.bbox.center_x(), line.bbox.center_y())
+    })
+}
+
+/// Tokens of text compared by the completeness check: lower-cased words with
+/// surrounding punctuation removed (`(1,234)` and `1,234` match).
+fn coverage_tokens(text: &str) -> impl Iterator<Item = String> + '_ {
+    text.split(|c: char| c.is_whitespace() || c == '|')
+        .map(|t| {
+            t.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|t| !t.is_empty())
+}
+
+/// Share of the text-layer tokens in a table's region (the lines it replaces) that
+/// its header and cells hold. 1.0 for a region without tokens.
+fn cell_coverage(table: &RawTable, region: &[&Line]) -> f32 {
+    let mut cells: HashMap<String, usize> = HashMap::new();
+    for cell in table.header.iter().chain(table.rows.iter().flatten()) {
+        for token in coverage_tokens(cell) {
+            *cells.entry(token).or_default() += 1;
+        }
+    }
+    let mut total = 0usize;
+    let mut held = 0usize;
+    for line in region {
+        for token in coverage_tokens(&line.text) {
+            total += 1;
+            if let Some(n) = cells.get_mut(&token).filter(|n| **n > 0) {
+                *n -= 1;
+                held += 1;
+            }
+        }
+    }
+    if total == 0 {
+        1.0
+    } else {
+        held as f32 / total as f32
+    }
 }
 
 /// Lines as the form pairing reads them ([`form_layout`]).
@@ -1006,6 +1053,10 @@ static RE_ARXIV_STAMP: LazyLock<Regex> =
 /// A line in the top or bottom 8% of the page is furniture when the same
 /// text (digits ignored) recurs on at least a third of the pages, or when it
 /// is just a page number.
+///
+/// A recurring line that carries data (letters and digits, such as a return's
+/// `Acknowledgement Number: … Date of filing: …` header) is kept once, where it
+/// first appears: dropping it everywhere would lose the only copy of its values.
 fn remove_page_furniture(pages: &mut [PageLines]) {
     let key = |text: &str| -> String {
         text.chars()
@@ -1036,6 +1087,7 @@ fn remove_page_furniture(pages: &mut [PageLines]) {
     } else {
         usize::MAX
     };
+    let mut kept_once: std::collections::HashSet<String> = std::collections::HashSet::new();
     for page in pages.iter_mut() {
         let height = page.height;
         page.lines.retain(|line| {
@@ -1049,7 +1101,13 @@ fn remove_page_furniture(pages: &mut [PageLines]) {
             if RE_PAGE_NUMBER.is_match(text) {
                 return false;
             }
-            counts.get(&key(text)).copied().unwrap_or(0) < threshold
+            let k = key(text);
+            if counts.get(&k).copied().unwrap_or(0) < threshold {
+                return true;
+            }
+            let carries_data = text.chars().any(|c| c.is_ascii_digit())
+                && text.chars().filter(|c| c.is_alphabetic()).count() >= 3;
+            carries_data && kept_once.insert(k)
         });
     }
 }
@@ -1292,6 +1350,8 @@ enum RawKind {
     Table,
     /// A label–value row of a flattened form ([`super::form_layout`]).
     FormField,
+    /// The text of a table region its cells did not fully capture.
+    TableText,
 }
 
 struct RawBlock {
@@ -1305,6 +1365,8 @@ struct RawBlock {
     table: Option<RawTable>,
     /// Label and value of a [`RawKind::FormField`] block.
     field: Option<(String, String)>,
+    /// Share of the region's text-layer tokens a [`RawKind::Table`] block's cells hold.
+    coverage: Option<f32>,
 }
 
 impl RawBlock {
@@ -1319,6 +1381,7 @@ impl RawBlock {
             title: false,
             table: None,
             field: None,
+            coverage: None,
         }
     }
 
@@ -1342,7 +1405,10 @@ impl RawBlock {
     }
 
     fn joined_text(&self) -> String {
-        let separator_newline = matches!(self.kind, RawKind::Code | RawKind::Equation);
+        let separator_newline = matches!(
+            self.kind,
+            RawKind::Code | RawKind::Equation | RawKind::TableText
+        );
         let mut out = String::new();
         for line in &self.lines {
             let text = line.text.trim();
@@ -1387,13 +1453,14 @@ impl RawBlock {
             RawKind::Footnote => BlockKind::Footnote,
             // Without its pair (never built that way) the row is plain text.
             RawKind::FormField => BlockKind::Paragraph,
+            RawKind::TableText => BlockKind::TableText,
             RawKind::Table => match self.table {
                 Some(t) => BlockKind::Table {
                     header: t.header,
                     rows: t.rows,
                     caption: None,
                     cell_boxes: t.cell_boxes,
-                    cell_coverage: None,
+                    cell_coverage: self.coverage,
                 },
                 None => BlockKind::Paragraph,
             },
@@ -1497,16 +1564,42 @@ fn segment_page(
         }
         // Lines inside a detected table are replaced by the table block,
         // emitted where the first of them appeared.
-        if let Some(t_index) = page.tables.iter().position(|t| {
-            t.bbox
-                .contains_point(line.bbox.center_x(), line.bbox.center_y())
-        }) {
+        if let Some(t_index) = table_of(&page.tables, line) {
             if let Some(table) = pending_tables[t_index].take() {
                 flush(&mut current, out);
+                let region: Vec<&Line> = page
+                    .lines
+                    .iter()
+                    .filter(|l| table_of(&page.tables, l) == Some(t_index))
+                    .collect();
+                let coverage = cell_coverage(table, &region);
                 let mut block = RawBlock::new(RawKind::Table, line.clone(), page.number);
                 block.bbox = table.bbox;
                 block.table = Some(table.clone());
+                block.coverage = Some(coverage);
                 out.push(block);
+                if coverage < TABLE_COVERAGE_THRESHOLD {
+                    // Nothing in the region may be lost from search: its text as printed
+                    // follows the table.
+                    let mut rows = region.clone();
+                    rows.sort_by(|a, b| {
+                        let same_row = (a.bbox.center_y() - b.bbox.center_y()).abs()
+                            < 0.5 * a.size.min(b.size).max(1.0);
+                        if same_row {
+                            a.bbox.x0.total_cmp(&b.bbox.x0)
+                        } else {
+                            b.bbox.center_y().total_cmp(&a.bbox.center_y())
+                        }
+                    });
+                    let mut lines = rows.into_iter().cloned();
+                    if let Some(first) = lines.next() {
+                        let mut raw = RawBlock::new(RawKind::TableText, first, page.number);
+                        for l in lines {
+                            raw.push(l);
+                        }
+                        out.push(raw);
+                    }
+                }
             }
             continue;
         }
@@ -1765,6 +1858,93 @@ mod tests {
             body_size: 10.0,
             leading: 12.0,
         }
+    }
+
+    /// A page with one table region of four lines; the table holds `rows` of them.
+    fn bill_page(rows: Vec<Vec<String>>) -> PageLines {
+        PageLines {
+            number: 2,
+            width: 612.0,
+            height: 792.0,
+            lines: vec![
+                line(
+                    "Charges for the month follow.",
+                    72.0,
+                    700.0,
+                    300.0,
+                    10.0,
+                    false,
+                ),
+                line("Item Amount", 72.0, 660.0, 300.0, 9.0, false),
+                line("Rent 12,000", 72.0, 648.0, 300.0, 9.0, false),
+                line("Water 250", 72.0, 636.0, 300.0, 9.0, false),
+                line("Total 12,250", 72.0, 624.0, 300.0, 9.0, false),
+                line(
+                    "Payable within fifteen days.",
+                    72.0,
+                    590.0,
+                    300.0,
+                    10.0,
+                    false,
+                ),
+            ],
+            tables: vec![RawTable {
+                bbox: BBox::new(70.0, 622.0, 302.0, 671.0),
+                header: vec!["Item".into(), "Amount".into()],
+                rows,
+                cell_boxes: vec![],
+                from_model: false,
+            }],
+        }
+    }
+
+    fn row(a: &str, b: &str) -> Vec<String> {
+        vec![a.to_string(), b.to_string()]
+    }
+
+    #[test]
+    fn a_table_that_misses_region_text_is_flagged_and_its_text_kept() {
+        // The detector lost the "Water" row: 2 of the region's 8 tokens are missing.
+        let page = bill_page(vec![row("Rent", "12,000"), row("Total", "12,250")]);
+        let mut blocks = Vec::new();
+        segment_page(&page, &stats(), &mut false, &mut blocks);
+        let doc: Vec<Block> = blocks.into_iter().map(RawBlock::into_block).collect();
+        let table = doc
+            .iter()
+            .find(|b| matches!(b.kind, BlockKind::Table { .. }))
+            .expect("table");
+        assert!(table.table_incomplete());
+        let BlockKind::Table { cell_coverage, .. } = table.kind else {
+            unreachable!()
+        };
+        assert_eq!(cell_coverage, Some(0.75));
+        let at = doc
+            .iter()
+            .position(|b| b.kind == BlockKind::TableText)
+            .expect("region text");
+        assert!(
+            matches!(doc[at - 1].kind, BlockKind::Table { .. }),
+            "right after its table"
+        );
+        assert_eq!(
+            doc[at].text,
+            "Item Amount\nRent 12,000\nWater 250\nTotal 12,250"
+        );
+        assert_eq!(doc[at].page, Some(2));
+        // Text outside the region is untouched.
+        assert!(doc.iter().any(|b| b.text == "Payable within fifteen days."));
+
+        // A table holding its whole region is complete and has no extra block.
+        let page = bill_page(vec![
+            row("Rent", "12,000"),
+            row("Water", "250"),
+            row("Total", "12,250"),
+        ]);
+        let mut blocks = Vec::new();
+        segment_page(&page, &stats(), &mut false, &mut blocks);
+        let doc: Vec<Block> = blocks.into_iter().map(RawBlock::into_block).collect();
+        assert!(doc.iter().all(|b| !b.table_incomplete()));
+        assert!(!doc.iter().any(|b| b.kind == BlockKind::TableText));
     }
 
     #[test]
@@ -2150,6 +2330,32 @@ mod generated_pdf_tests {
         assert!(doc.blocks.iter().all(|b| b.text.trim() != "2"));
         assert_eq!(doc.pages.len(), 3);
         assert!(doc.blocks.iter().any(|b| b.page == Some(3)));
+    }
+
+    #[test]
+    fn a_running_header_that_carries_data_is_kept_once() {
+        let pages: Vec<Vec<Text>> = (1..=4)
+            .map(|n| {
+                let mut page = vec![text(
+                    40.0,
+                    770.0,
+                    8.0,
+                    "Acknowledgement Number: 990011223344556 Date of filing: 30-Jul-2026",
+                )];
+                page.extend(column(72.0, 700.0, &format!("page{n}"), 5));
+                page.push(text(300.0, 30.0, 9.0, &format!("Page {n} of 4")));
+                page
+            })
+            .collect();
+        let doc = parse(&pages);
+        let headers: Vec<&Block> = doc
+            .blocks
+            .iter()
+            .filter(|b| b.text.contains("990011223344556"))
+            .collect();
+        assert_eq!(headers.len(), 1, "kept exactly once");
+        assert_eq!(headers[0].page, Some(1));
+        assert!(!doc.plain_text().contains("Page 2 of 4"));
     }
 
     #[test]

@@ -185,7 +185,9 @@ fn decode_png(base64_png: &str) -> ResearchCommandResult<Vec<u8>> {
         .map_err(|_| ResearchCommandError::invalid("The snippet image is not valid base64."))
 }
 
-fn require_pdf(path: &str) -> ResearchCommandResult<()> {
+/// Checks `path` is an existing PDF and returns it as spelled on disk (citations carry
+/// the index's lower-cased form; snippets and results show the real file name).
+fn require_pdf(path: &str) -> ResearchCommandResult<String> {
     let p = Path::new(path.trim());
     let is_pdf = p
         .extension()
@@ -202,7 +204,14 @@ fn require_pdf(path: &str) -> ResearchCommandResult<()> {
             p.display()
         )));
     }
-    Ok(())
+    Ok(std::fs::canonicalize(p)
+        .map(|real| {
+            let text = real.display().to_string();
+            text.strip_prefix(r"\\?\")
+                .map(str::to_string)
+                .unwrap_or(text)
+        })
+        .unwrap_or_else(|_| path.trim().to_string()))
 }
 
 /// Input of [`snippets_create`].
@@ -248,13 +257,13 @@ pub async fn snippets_create(
     state: State<'_, ResearchState>,
     input: NewSnippetInput,
 ) -> ResearchCommandResult<Snippet> {
-    require_pdf(&input.file_path)?;
+    let file_path = require_pdf(&input.file_path)?;
     let image = input.image_png.as_deref().map(decode_png).transpose()?;
     let services = state.services().await?;
     let snippet = services
         .snippets
         .create(NewSnippet {
-            file_path: input.file_path,
+            file_path,
             page: input.page,
             rect: input.rect,
             text: input.text,
@@ -504,7 +513,7 @@ pub async fn results_extract(
     workspace: Option<String>,
     use_model: Option<bool>,
 ) -> ResearchCommandResult<ExtractionReport> {
-    require_pdf(&file_path)?;
+    let file_path = require_pdf(&file_path)?;
     let model = if use_model.unwrap_or(false) {
         let dir = app
             .path()

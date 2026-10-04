@@ -333,6 +333,8 @@ export function contextLabel(target: FocusTarget, extras: FocusExtras = {}): str
       return extras.selection?.trim() ? `selected text${pageLabel(target, extras)}` : `cited passage${pageLabel(target, extras)}`;
     case 'task':
       return 'task details';
+    case 'snippet':
+      return `snippet text (page ${target.page})`;
     case 'selection':
       return target.document?.page != null ? `selected text and its context (page ${target.document.page})` : 'selected text and its context';
   }

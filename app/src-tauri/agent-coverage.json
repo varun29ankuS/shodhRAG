@@ -127,6 +127,8 @@
     "install_search_models": { "excluded": "First-run download of about 600 MB of search models; user-started setup." },
     "answer_check_status": { "excluded": "Reports whether the model that checks the assistant's answers is installed; the assistant does not manage its own checker." },
     "install_answer_check_model": { "excluded": "Downloads the model that checks the assistant's answers (about 96 MB); user-started, and the assistant must not control what checks it." },
+    "table_model_status": { "excluded": "Reports whether the optional table structure model is installed (Settings); tables are refined with it automatically, so the assistant has nothing to act on." },
+    "install_table_model": { "excluded": "Downloads the table structure model (about 212 MB); a user-started install of a local model, like the other model downloads." },
     "set_answer_preferences": { "excluded": "Whether flagged statements are re-checked guards the assistant's own answers; user-only, and the settings tools refuse auto_repair." },
     "pause_indexing": { "excluded": "Resource control for the user over background indexing; indexing the assistant starts is audited and runs in the background." },
     "resume_indexing": { "excluded": "Resource control for the user over background indexing; indexing the assistant starts is audited and runs in the background." },

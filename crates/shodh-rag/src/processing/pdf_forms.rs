@@ -1,11 +1,10 @@
-//! Interactive form extraction: AcroForm fields and XFA data.
+//! Interactive form extraction: AcroForm fields and comment annotations.
 //!
 //! The text layer of a filled PDF form usually does not contain the filled-in
-//! values: they live in the form's field dictionaries (`/V`), in the widgets'
-//! appearance streams (`/AP /N`), or, for XFA forms, in the `datasets` XML packet.
-//! This module reads all three and returns one typed [`FormField`] per field, with
-//! the page and widget rectangle it is drawn at, so the parser can place it in the
-//! structured document as a citable block.
+//! values: they live in the form's field dictionaries (`/V`, `/AS`). This module
+//! reads them and returns one typed [`FormField`] per field, with the page and
+//! widget rectangle it is drawn at, so the parser can place it in the structured
+//! document as a citable block.
 //!
 //! - The field hierarchy is walked through `/Kids`; names are fully qualified through
 //!   the `/T` chain, and `/FT`, `/Ff`, `/V` and `/Opt` are inherited from ancestors.
@@ -13,10 +12,7 @@
 //! - Values are typed: text, choice (multi-select joined), checkbox (`/AS` against the
 //!   widget's on state, `/Opt` export values), radio group (the selected widget's
 //!   export value), signature (present or not); push buttons carry no value.
-//! - A text field with no `/V` falls back to the text drawn by its appearance stream.
-//! - XFA `datasets` values are read as leaf elements of `xfa:data`, labelled with the
-//!   template's field captions where the names match; values an AcroForm field
-//!   already carries are not repeated.
+//! - Comment annotations (notes, free text, markup) with `/Contents` are read too.
 //!
 //! Coordinates are PDF user space (points, bottom-left origin), as in
 //! [`super::document_model::BBox`].
@@ -86,10 +82,6 @@ impl FieldKind {
 pub enum ValueSource {
     /// The field's `/V` (or a widget's `/AS` state).
     Value,
-    /// Text drawn by the widget's appearance stream (`/V` was empty).
-    Appearance,
-    /// The XFA `datasets` packet.
-    Xfa,
     /// A comment annotation's `/Contents`.
     Annotation,
 }
@@ -97,9 +89,9 @@ pub enum ValueSource {
 /// One form field with its value.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FormField {
-    /// Fully qualified field name (`parent.child`), or the XFA data path.
+    /// Fully qualified field name (`parent.child`).
     pub name: String,
-    /// Human-readable label: the tooltip, the XFA caption, or the readable name.
+    /// Human-readable label: the tooltip, else the readable field name.
     pub label: String,
     pub kind: FieldKind,
     /// Display value. Checkboxes read `Yes`/`No` (or their export value when it is
@@ -117,20 +109,16 @@ pub struct FormField {
 #[serde(rename_all = "camelCase")]
 pub struct FormStats {
     pub acroform: bool,
-    pub xfa: bool,
     /// Field dictionaries in the `/Fields` tree, terminal and non-terminal.
     pub field_nodes: usize,
     /// Terminal fields (those that carry a value).
     pub terminal_fields: usize,
     /// Fields emitted with a non-empty value.
     pub with_value: usize,
-    /// Text fields whose value came from the appearance stream.
-    pub from_appearance: usize,
     pub checkboxes: usize,
     pub radios: usize,
     pub choices: usize,
     pub signatures: usize,
-    pub xfa_values: usize,
     pub comments: usize,
 }
 
@@ -233,10 +221,6 @@ impl<'a> Extractor<'a> {
                     }
                 }
             }
-            if let Some(xfa) = acroform.get(b"XFA").ok() {
-                self.out.stats.xfa = true;
-                self.read_xfa(xfa);
-            }
         }
         self.read_comments();
         self.out.stats.with_value = self
@@ -316,22 +300,12 @@ impl<'a> Extractor<'a> {
         };
         let (kind, value, source, widget) = match field_type {
             b"Tx" => {
-                let from_v = field.value.as_ref().and_then(|v| object_text(self.doc, v));
-                match from_v.filter(|v| !v.trim().is_empty()) {
-                    Some(v) => (FieldKind::Text, v, ValueSource::Value, first),
-                    None => {
-                        let drawn = widgets
-                            .iter()
-                            .find_map(|w| self.appearance_text(*w).map(|t| (t, *w)));
-                        match drawn {
-                            Some((text, w)) => {
-                                self.out.stats.from_appearance += 1;
-                                (FieldKind::Text, text, ValueSource::Appearance, Some(w))
-                            }
-                            None => (FieldKind::Text, String::new(), ValueSource::Value, first),
-                        }
-                    }
-                }
+                let value = field
+                    .value
+                    .as_ref()
+                    .and_then(|v| object_text(self.doc, v))
+                    .unwrap_or_default();
+                (FieldKind::Text, value, ValueSource::Value, first)
             }
             b"Ch" => {
                 self.out.stats.choices += 1;
@@ -398,18 +372,6 @@ impl<'a> Extractor<'a> {
             .and_then(|p| self.page_numbers.get(&p).copied())
             .or_else(|| self.annot_pages.get(&widget).copied());
         (page, rect_of(self.doc, dict))
-    }
-
-    /// Text drawn by a widget's normal appearance stream, decoded as far as the
-    /// strings allow (simple encodings and UTF-16; not CID fonts without a Unicode map).
-    fn appearance_text(&self, widget: ObjectId) -> Option<String> {
-        let dict = self.doc.get_dictionary(widget).ok()?;
-        let ap = resolve(self.doc, dict.get(b"AP").ok())?.as_dict().ok()?;
-        let normal = resolve(self.doc, ap.get(b"N").ok())?;
-        let stream = normal.as_stream().ok()?;
-        let bytes = stream_bytes(stream)?;
-        let text = content_text(&bytes);
-        (!text.trim().is_empty()).then_some(text)
     }
 
     fn choice_value(&self, value: &Object, options: Option<&Object>, flags: i64) -> String {
@@ -542,54 +504,6 @@ impl<'a> Extractor<'a> {
         out
     }
 
-    fn read_xfa(&mut self, xfa: &Object) {
-        let Some(packets) = xfa_packets(self.doc, xfa) else {
-            return;
-        };
-        let captions = packets
-            .iter()
-            .find(|(name, _)| name == "template")
-            .map(|(_, xml)| xfa_captions(xml))
-            .unwrap_or_default();
-        let Some((_, datasets)) = packets.iter().find(|(name, _)| name == "datasets") else {
-            return;
-        };
-        let known: HashSet<(String, String)> = self
-            .out
-            .fields
-            .iter()
-            .map(|f| {
-                (
-                    leaf_name(&f.name).to_lowercase(),
-                    f.value.trim().to_string(),
-                )
-            })
-            .collect();
-        for (path, value) in xfa_values(datasets) {
-            if self.out.fields.len() >= MAX_FIELDS {
-                break;
-            }
-            let leaf = leaf_name(&path).to_string();
-            if known.contains(&(leaf.to_lowercase(), value.trim().to_string())) {
-                continue;
-            }
-            let label = captions
-                .get(&leaf)
-                .cloned()
-                .unwrap_or_else(|| readable_name(&leaf));
-            self.out.stats.xfa_values += 1;
-            self.out.fields.push(FormField {
-                name: path,
-                label,
-                kind: FieldKind::Text,
-                value: clip(&collapse_value(&value)),
-                page: None,
-                bbox: None,
-                source: ValueSource::Xfa,
-            });
-        }
-    }
-
     /// Comment-like annotations (notes, free text, markup) with `/Contents`.
     fn read_comments(&mut self) {
         let mut annots: Vec<(ObjectId, u32)> =
@@ -686,159 +600,6 @@ fn stream_bytes(stream: &lopdf::Stream) -> Option<Vec<u8>> {
     }
 }
 
-/// Text shown by a content stream: the string operands of `Tj`, `TJ`, `'` and `"`,
-/// one line per text object or explicit line move.
-pub(crate) fn content_text(bytes: &[u8]) -> String {
-    let Ok(content) = lopdf::content::Content::decode(bytes) else {
-        return String::new();
-    };
-    let mut lines: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let flush = |current: &mut String, lines: &mut Vec<String>| {
-        let line = current.trim().to_string();
-        if !line.is_empty() {
-            lines.push(line);
-        }
-        current.clear();
-    };
-    for op in &content.operations {
-        match op.operator.as_str() {
-            "Tj" | "'" | "\"" => {
-                if matches!(op.operator.as_str(), "'" | "\"") {
-                    flush(&mut current, &mut lines);
-                }
-                if let Some(Object::String(bytes, _)) = op.operands.last() {
-                    current.push_str(&decode_pdf_string(bytes));
-                }
-            }
-            "TJ" => {
-                if let Some(Object::Array(items)) = op.operands.first() {
-                    for item in items {
-                        match item {
-                            Object::String(bytes, _) => current.push_str(&decode_pdf_string(bytes)),
-                            // A large negative kern is a word space.
-                            Object::Integer(k) if *k < -200 => current.push(' '),
-                            Object::Real(k) if *k < -200.0 => current.push(' '),
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            "Td" | "TD" | "T*" | "ET" => flush(&mut current, &mut lines),
-            _ => {}
-        }
-    }
-    flush(&mut current, &mut lines);
-    lines.retain(|l| l.chars().any(|c| !c.is_control()));
-    lines.join(" ")
-}
-
-/// The XFA packets of an AcroForm `/XFA` entry: a single stream (the whole XDP) or
-/// an array of `(name) stream` pairs. Returns `(packet name, xml)`.
-fn xfa_packets(doc: &Document, xfa: &Object) -> Option<Vec<(String, String)>> {
-    match resolve(doc, Some(xfa))? {
-        Object::Array(items) => {
-            let mut out = Vec::new();
-            for pair in items.chunks(2) {
-                let [name, stream] = pair else { continue };
-                let Some(name) = object_text(doc, name) else {
-                    continue;
-                };
-                let Some(stream) = resolve(doc, Some(stream)).and_then(|s| s.as_stream().ok())
-                else {
-                    continue;
-                };
-                if let Some(bytes) = stream_bytes(stream) {
-                    out.push((name, String::from_utf8_lossy(&bytes).into_owned()));
-                }
-            }
-            Some(out)
-        }
-        Object::Stream(stream) => {
-            let xml = String::from_utf8_lossy(&stream_bytes(stream)?).into_owned();
-            Some(split_xdp(&xml))
-        }
-        _ => None,
-    }
-}
-
-/// Split a whole XDP document into its top-level packets (`template`, `datasets`, ...).
-fn split_xdp(xml: &str) -> Vec<(String, String)> {
-    let Ok(doc) = roxmltree::Document::parse(xml) else {
-        return Vec::new();
-    };
-    doc.root_element()
-        .children()
-        .filter(|n| n.is_element())
-        .map(|n| (n.tag_name().name().to_string(), xml[n.range()].to_string()))
-        .collect()
-}
-
-/// Leaf values of the `data` element of an XFA `datasets` packet, as
-/// `(dotted path below data, value)` in document order.
-fn xfa_values(datasets: &str) -> Vec<(String, String)> {
-    let Ok(doc) = roxmltree::Document::parse(datasets) else {
-        return Vec::new();
-    };
-    let Some(data) = doc
-        .descendants()
-        .find(|n| n.is_element() && n.tag_name().name() == "data")
-    else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for node in data.descendants().filter(|n| n.is_element() && *n != data) {
-        if node.children().any(|c| c.is_element()) {
-            continue;
-        }
-        let value: String = node.text().unwrap_or("").trim().to_string();
-        if value.is_empty() {
-            continue;
-        }
-        let mut parts: Vec<&str> = node
-            .ancestors()
-            .take_while(|a| *a != data)
-            .filter(|a| a.is_element())
-            .map(|a| a.tag_name().name())
-            .collect();
-        parts.reverse();
-        out.push((parts.join("."), value));
-    }
-    out
-}
-
-/// Field name → caption text from an XFA `template` packet.
-fn xfa_captions(template: &str) -> HashMap<String, String> {
-    let Ok(doc) = roxmltree::Document::parse(template) else {
-        return HashMap::new();
-    };
-    let mut out = HashMap::new();
-    for field in doc
-        .descendants()
-        .filter(|n| n.is_element() && matches!(n.tag_name().name(), "field" | "exclGroup"))
-    {
-        let Some(name) = field.attribute("name") else {
-            continue;
-        };
-        let caption = field
-            .children()
-            .find(|c| c.is_element() && c.tag_name().name() == "caption")
-            .map(|c| {
-                c.descendants()
-                    .filter(|t| t.is_text())
-                    .filter_map(|t| t.text())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .map(|t| collapse_value(&t))
-            .filter(|t| !t.is_empty());
-        if let Some(caption) = caption {
-            out.entry(name.to_string()).or_insert(caption);
-        }
-    }
-    out
-}
-
 /// The last segment of a dotted field name, without array indices (`a[0].b[2]` → `b`).
 fn leaf_name(name: &str) -> &str {
     let last = name.rsplit('.').next().unwrap_or(name);
@@ -897,5 +658,279 @@ fn clip(text: &str) -> String {
         let mut out: String = text.chars().take(MAX_VALUE_CHARS - 1).collect();
         out.push('…');
         out
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::processing::pdf_fixtures::{build_pdf, text};
+    use lopdf::{dictionary, Stream};
+
+    fn rect(x0: f32, y0: f32, x1: f32, y1: f32) -> Object {
+        Object::Array(vec![x0.into(), y0.into(), x1.into(), y1.into()])
+    }
+
+    fn string(s: &str) -> Object {
+        Object::string_literal(s.as_bytes().to_vec())
+    }
+
+    /// Appearance stream dictionary with the given on state (and `Off`).
+    fn states(doc: &mut Document, on: &str) -> Object {
+        let on_id = doc.add_object(Stream::new(dictionary! {}, b"0 g".to_vec()));
+        let off_id = doc.add_object(Stream::new(dictionary! {}, Vec::new()));
+        let mut normal = Dictionary::new();
+        normal.set(on.as_bytes().to_vec(), on_id);
+        normal.set("Off", off_id);
+        Object::Dictionary(dictionary! { "N" => normal })
+    }
+
+    /// A two-page tax-return-like PDF with an AcroForm: a field hierarchy with
+    /// tooltips, a checkbox with an `/Opt` export value, an unchecked checkbox, a
+    /// radio group, a multi-select list, a push button, a field on page 2 known only
+    /// from the page's `/Annots`, a text widget with an appearance stream drawing its
+    /// value, an empty field and a comment.
+    pub(crate) fn form_pdf() -> Vec<u8> {
+        let base = build_pdf(
+            &[
+                vec![
+                    text(72.0, 740.0, 14.0, "Applicant details"),
+                    text(72.0, 700.0, 10.0, "Full name"),
+                    text(72.0, 670.0, 10.0, "Permanent account number"),
+                    text(72.0, 600.0, 10.0, "Choices made by the applicant follow."),
+                ],
+                vec![text(72.0, 740.0, 10.0, "Employment")],
+            ],
+            None,
+        );
+        let mut doc = Document::load_mem(&base).expect("base pdf");
+        let pages: Vec<ObjectId> = doc.get_pages().values().copied().collect();
+        let (p1, p2) = (pages[0], pages[1]);
+        let mut annots1: Vec<Object> = Vec::new();
+        let mut annots2: Vec<Object> = Vec::new();
+
+        let applicant = doc.new_object_id();
+        let name_ap = doc.add_object(Stream::new(
+            dictionary! {},
+            b"BT /F1 10 Tf 2 4 Td (Asha Verma) Tj ET".to_vec(),
+        ));
+        let name = doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Widget", "Parent" => applicant,
+            "T" => string("name[0]"), "TU" => string("Full name of the applicant"),
+            "FT" => "Tx", "V" => string("Asha Verma"), "Rect" => rect(250.0, 696.0, 450.0, 712.0),
+            "P" => p1, "AP" => dictionary! { "N" => name_ap },
+        });
+        let pan = doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Widget", "Parent" => applicant,
+            "T" => string("panNumber"), "FT" => "Tx", "V" => string("ABCDE1234F"),
+            "Rect" => rect(250.0, 666.0, 450.0, 682.0), "P" => p1,
+        });
+        doc.objects.insert(
+            applicant,
+            Object::Dictionary(dictionary! {
+                "T" => string("applicant"),
+                "Kids" => vec![name.into(), pan.into()],
+            }),
+        );
+        annots1.extend([name.into(), pan.into()]);
+
+        let resident_ap = states(&mut doc, "Choice1");
+        let resident = doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Widget", "T" => string("resident"),
+            "TU" => string("Resident of India"), "FT" => "Btn", "V" => "Choice1", "AS" => "Choice1",
+            "Opt" => vec![string("Resident")], "Rect" => rect(72.0, 630.0, 84.0, 642.0),
+            "P" => p1, "AP" => resident_ap,
+        });
+        let agree_ap = states(&mut doc, "Yes");
+        let agree = doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Widget", "T" => string("agree"),
+            "TU" => string("Declaration accepted"), "FT" => "Btn", "V" => "Off", "AS" => "Off",
+            "Rect" => rect(100.0, 630.0, 112.0, 642.0), "P" => p1, "AP" => agree_ap,
+        });
+        annots1.extend([resident.into(), agree.into()]);
+
+        let regime = doc.new_object_id();
+        let old_ap = states(&mut doc, "0");
+        let old = doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Widget", "Parent" => regime, "AS" => "Off",
+            "Rect" => rect(72.0, 580.0, 84.0, 592.0), "P" => p1, "AP" => old_ap,
+        });
+        let new_ap = states(&mut doc, "1");
+        let new = doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Widget", "Parent" => regime, "AS" => "1",
+            "Rect" => rect(150.0, 580.0, 162.0, 592.0), "P" => p1, "AP" => new_ap,
+        });
+        doc.objects.insert(
+            regime,
+            Object::Dictionary(dictionary! {
+                "T" => string("regime"), "TU" => string("Tax regime"), "FT" => "Btn",
+                "Ff" => FF_RADIO, "V" => "1",
+                "Opt" => vec![string("Old regime"), string("New regime")],
+                "Kids" => vec![old.into(), new.into()],
+            }),
+        );
+        annots1.extend([old.into(), new.into()]);
+
+        let states_field = doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Widget", "T" => string("states"),
+            "TU" => string("States of income"), "FT" => "Ch", "Ff" => FF_MULTISELECT,
+            "V" => vec![string("MH"), string("KA")],
+            "Opt" => vec![
+                Object::Array(vec![string("MH"), string("Maharashtra")]),
+                Object::Array(vec![string("KA"), string("Karnataka")]),
+                Object::Array(vec![string("DL"), string("Delhi")]),
+            ],
+            "Rect" => rect(72.0, 540.0, 300.0, 560.0), "P" => p1,
+        });
+        let submit = doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Widget", "T" => string("submit"),
+            "FT" => "Btn", "Ff" => FF_PUSHBUTTON, "Rect" => rect(400.0, 100.0, 480.0, 120.0), "P" => p1,
+        });
+        annots1.extend([states_field.into(), submit.into()]);
+
+        // Page 2: no /P on the widget; its page comes from the page's /Annots.
+        let employer = doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Widget", "T" => string("employer"),
+            "FT" => "Tx", "V" => string("Acme Tools Ltd"), "Rect" => rect(250.0, 736.0, 450.0, 752.0),
+        });
+        let empty = doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Widget", "T" => string("notes"),
+            "FT" => "Tx", "Rect" => rect(72.0, 600.0, 450.0, 640.0),
+        });
+        let comment = doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Text", "Contents" => string("Check the totals"),
+            "Rect" => rect(500.0, 700.0, 520.0, 720.0),
+        });
+        annots2.extend([employer.into(), empty.into(), comment.into()]);
+
+        for (page, annots) in [(p1, annots1), (p2, annots2)] {
+            if let Ok(Object::Dictionary(d)) = doc.get_object_mut(page) {
+                d.set("Annots", annots);
+            }
+        }
+        let fields: Vec<Object> = vec![
+            applicant.into(),
+            resident.into(),
+            agree.into(),
+            regime.into(),
+            states_field.into(),
+            submit.into(),
+            employer.into(),
+            empty.into(),
+        ];
+        let acroform = doc.add_object(dictionary! { "Fields" => fields });
+        let catalog = doc
+            .trailer
+            .get(b"Root")
+            .and_then(Object::as_reference)
+            .expect("root");
+        if let Ok(Object::Dictionary(d)) = doc.get_object_mut(catalog) {
+            d.set("AcroForm", acroform);
+        }
+        let mut out = Vec::new();
+        doc.save_to(&mut out).expect("save");
+        out
+    }
+
+    fn field<'a>(forms: &'a FormExtraction, name: &str) -> &'a FormField {
+        forms
+            .fields
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("no field {name}: {:#?}", forms.fields))
+    }
+
+    #[test]
+    fn acroform_fields_are_read_with_names_labels_types_pages_and_boxes() {
+        let forms = extract_forms(&form_pdf()).expect("forms");
+        let name = field(&forms, "applicant.name[0]");
+        assert_eq!(name.label, "Full name of the applicant");
+        assert_eq!(
+            (name.kind, name.value.as_str()),
+            (FieldKind::Text, "Asha Verma")
+        );
+        assert_eq!(name.page, Some(1));
+        assert_eq!(name.bbox, Some(BBox::new(250.0, 696.0, 450.0, 712.0)));
+        // No tooltip: the readable partial name.
+        assert_eq!(field(&forms, "applicant.panNumber").label, "pan Number");
+
+        let resident = field(&forms, "resident");
+        assert_eq!(
+            (resident.kind, resident.value.as_str()),
+            (FieldKind::Checkbox, "Yes (Resident)")
+        );
+        assert_eq!(field(&forms, "agree").value, "No");
+
+        let regime = field(&forms, "regime");
+        assert_eq!(
+            (regime.kind, regime.value.as_str()),
+            (FieldKind::Radio, "New regime")
+        );
+        // The selected widget's box.
+        assert_eq!(regime.bbox, Some(BBox::new(150.0, 580.0, 162.0, 592.0)));
+
+        let states = field(&forms, "states");
+        assert_eq!(
+            (states.kind, states.value.as_str()),
+            (FieldKind::Choice, "Maharashtra, Karnataka")
+        );
+
+        assert!(
+            forms.fields.iter().all(|f| f.name != "submit"),
+            "push buttons carry no value"
+        );
+        let employer = field(&forms, "employer");
+        assert_eq!(
+            (employer.page, employer.value.as_str()),
+            (Some(2), "Acme Tools Ltd")
+        );
+        assert_eq!(field(&forms, "notes").value, "");
+
+        let comment = forms
+            .fields
+            .iter()
+            .find(|f| f.kind == FieldKind::Comment)
+            .expect("comment");
+        assert_eq!(
+            (comment.value.as_str(), comment.page),
+            ("Check the totals", Some(2))
+        );
+
+        let stats = &forms.stats;
+        assert!(stats.acroform);
+        assert_eq!(stats.terminal_fields, 9);
+        assert_eq!((stats.checkboxes, stats.radios, stats.choices), (2, 1, 1));
+        assert_eq!(stats.comments, 1);
+    }
+
+    #[test]
+    fn a_pdf_wrapped_after_leading_bytes_and_one_without_a_form_are_read() {
+        let mut wrapped = b"\xac\xed\x00\x05ur\x00\x02[B".to_vec();
+        wrapped.extend(form_pdf());
+        let forms = extract_forms(&wrapped).expect("forms after leading bytes");
+        assert_eq!(field(&forms, "employer").value, "Acme Tools Ltd");
+
+        let plain = build_pdf(&[vec![text(72.0, 700.0, 10.0, "No form here.")]], None);
+        let forms = extract_forms(&plain).expect("plain pdf");
+        assert!(forms.fields.is_empty());
+        assert!(!forms.stats.acroform);
+        assert!(matches!(
+            extract_forms(b"not a pdf"),
+            Err(FormError::Open(_))
+        ));
+    }
+
+    #[test]
+    fn field_names_become_readable_labels() {
+        assert_eq!(
+            readable_name("form1[0].page1[0].grossSalary[0]"),
+            "gross Salary"
+        );
+        assert_eq!(readable_name("tax_paid"), "tax paid");
+        assert_eq!(
+            pdf_date("D:20240131120000+05'30'").as_deref(),
+            Some("2024-01-31")
+        );
+        assert_eq!(name_text(b"New#20regime"), "New regime");
     }
 }

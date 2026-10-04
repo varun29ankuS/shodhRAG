@@ -14,6 +14,8 @@ import { cn } from '../../lib/utils';
 import { relativeTime } from '../../utils/time';
 import { SearchSetupCard } from '../setup/SearchSetupCard';
 import { VisualGallery } from '../visuals/VisualGallery';
+import { SnippetShelf } from '../research/SnippetShelf';
+import { CompareResults } from '../research/CompareResults';
 import { scrollBehavior } from '../ask/viewer/sourceAccess';
 import { baseName } from './fileTree';
 import type { FileNode } from './fileTree';
@@ -160,13 +162,41 @@ export function LibraryView({
           ))
         )}
 
+        {sources.length > 0 && (
+          <section aria-labelledby="library-snippets" className="flex flex-col gap-3">
+            <div className="flex flex-col gap-0.5">
+              <h2 id="library-snippets" className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
+                Snippets
+              </h2>
+              <p className="text-[12.5px] text-shodh-text-muted">
+                Regions saved from papers: figures, tables, equations and passages. Drag one onto the chat to ask about it.
+              </p>
+            </div>
+            <SnippetShelf />
+          </section>
+        )}
+
+        {sources.length > 0 && (
+          <section aria-labelledby="library-compare" className="flex flex-col gap-3">
+            <div className="flex flex-col gap-0.5">
+              <h2 id="library-compare" className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
+                Compare results
+              </h2>
+              <p className="text-[12.5px] text-shodh-text-muted">
+                Results extracted from papers’ tables, side by side. Every value opens the cell it came from.
+              </p>
+            </div>
+            <CompareResults />
+          </section>
+        )}
+
         <section aria-labelledby="library-generated" className="flex flex-col gap-3">
           <div className="flex flex-col gap-0.5">
             <h2 id="library-generated" className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
               Generated
             </h2>
             <p className="text-[12.5px] text-shodh-text-muted">
-              Diagrams, charts, sketches, plots, simulations, equations and tables from every conversation.
+              Diagrams, charts, sketches, plots, simulations, equations and tables from every conversation, with your snippets.
             </p>
           </div>
           <VisualGallery conversationId={null} />

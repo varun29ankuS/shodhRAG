@@ -12,8 +12,12 @@ import { EditVisualDialog } from './EditVisualDialog';
 import { KIND_NOUN, VISUAL_KINDS } from './extract';
 import { exportFormats, FORMAT_LABEL } from './exportVisual';
 import type { ExportFormat } from './exportVisual';
-import { applyChange, filterVisuals, kindCounts, recordTarget, visualRef } from './model';
-import type { KindFilter, VisualSummary } from './model';
+import { applyChange, recordTarget, visualRef } from './model';
+import type { VisualSummary } from './model';
+import { entryCounts, filterEntries, mergeGallery } from '../research/galleryUnion';
+import type { GalleryFilter } from '../research/galleryUnion';
+import { SnippetCard } from '../research/SnippetCard';
+import { useSnippetList } from '../research/useSnippets';
 import { backfillOnce } from './recording';
 import { VisualThumb } from './VisualThumb';
 
@@ -267,7 +271,7 @@ export function VisualGallery({
   const [total, setTotal] = useState(0);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
-  const [kind, setKind] = useState<KindFilter>('all');
+  const [kind, setKind] = useState<GalleryFilter>('all');
   const [query, setQuery] = useState('');
   const [debounced, setDebounced] = useState('');
   const [reload, setReload] = useState(0);
@@ -321,8 +325,13 @@ export function VisualGallery({
     };
   }, [conversationId]);
 
-  const shown = useMemo(() => filterVisuals(items, kind), [items, kind]);
-  const counts = useMemo(() => kindCounts(items), [items]);
+  // Snippets join the gallery of every conversation (they belong to papers, not conversations).
+  const snippetQuery = useMemo(() => ({ text: debounced || null, limit: PAGE }), [debounced]);
+  const { state: snippetState, replace: replaceSnippet } = useSnippetList(snippetQuery, conversationId === null);
+  const snippets = conversationId === null && snippetState.status === 'ready' ? snippetState.items : [];
+  const entries = useMemo(() => mergeGallery(items, snippets), [items, snippets]);
+  const shown = useMemo(() => filterEntries(entries, kind), [entries, kind]);
+  const counts = useMemo(() => entryCounts(entries), [entries]);
   const titles = useMemo(() => new Map(conversations.map(c => [c.id, c.title])), [conversations]);
 
   const open = useCallback((card: VisualSummary, trigger: HTMLElement) => {
@@ -352,7 +361,7 @@ export function VisualGallery({
     window.dispatchEvent(new CustomEvent('switchTab', { detail: 'ask' }));
   }, [switchConversation]);
 
-  const chip = (value: KindFilter, label: string, count: number) => (
+  const chip = (value: GalleryFilter, label: string, count: number) => (
     <button
       key={value}
       type="button"
@@ -389,13 +398,14 @@ export function VisualGallery({
           />
         </div>
         <div role="radiogroup" aria-label="Kind" className="flex flex-wrap items-center gap-1.5">
-          {chip('all', 'All', items.length)}
+          {chip('all', 'All', entries.length)}
           {VISUAL_KINDS.filter(k => (counts[k] ?? 0) > 0).map(k => chip(k, `${KIND_NOUN[k]}s`, counts[k] ?? 0))}
+          {(counts.snippet ?? 0) > 0 && chip('snippet', 'Snippets', counts.snippet ?? 0)}
         </div>
       </div>
 
       <p className="sr-only" role="status" aria-live="polite">
-        {status === 'ready' ? `${shown.length} ${shown.length === 1 ? 'visual' : 'visuals'}` : ''}
+        {status === 'ready' ? `${shown.length} ${shown.length === 1 ? 'item' : 'items'}` : ''}
       </p>
 
       {status === 'loading' && items.length === 0 ? (
@@ -420,18 +430,22 @@ export function VisualGallery({
       ) : (
         <>
           <ul className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-3" aria-label="Visuals">
-            {shown.map(card => (
-              <VisualCard
-                key={card.rootId}
-                card={card}
-                theme={theme}
-                conversationTitle={titles.get(card.conversationId) ?? null}
-                showConversation={conversationId === null}
-                onOpen={open}
-                onChange={change(card)}
-                onOpenConversation={openConversation}
-              />
-            ))}
+            {shown.map(entry =>
+              entry.kind === 'snippet' ? (
+                <SnippetCard key={entry.key} snippet={entry.snippet} onChange={next => replaceSnippet(entry.snippet.id, next)} />
+              ) : (
+                <VisualCard
+                  key={entry.key}
+                  card={entry.visual}
+                  theme={theme}
+                  conversationTitle={titles.get(entry.visual.conversationId) ?? null}
+                  showConversation={conversationId === null}
+                  onOpen={open}
+                  onChange={change(entry.visual)}
+                  onOpenConversation={openConversation}
+                />
+              ),
+            )}
           </ul>
           {total > items.length && (
             <p className="text-[12px] text-shodh-text-muted">{`Showing the first ${items.length} of ${total}. Search to find others.`}</p>

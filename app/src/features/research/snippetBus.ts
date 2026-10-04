@@ -23,6 +23,11 @@ export interface SourceBoxRequest {
   rects?: { page: number; rect: SnippetRect }[] | null;
   /** What the box is (for the dialog title), e.g. "HNSW · recall@10". */
   label?: string | null;
+  /**
+   * Set by a view that shows the file itself (the Library's open file), so
+   * the app-wide dialog does not open as well.
+   */
+  claimed?: boolean;
 }
 
 export function openSnippet(snippet: Snippet): void {

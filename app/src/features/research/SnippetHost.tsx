@@ -50,7 +50,18 @@ export function SnippetHost() {
     [focus, activeConversationId],
   );
 
-  useEffect(() => onWindowEvent<SourceBoxRequest>(SHOW_SOURCE_EVENT, request => request && setSource(request)), []);
+  // Views showing the file themselves claim the request synchronously; the
+  // dialog opens only for unclaimed ones.
+  useEffect(
+    () =>
+      onWindowEvent<SourceBoxRequest>(SHOW_SOURCE_EVENT, request => {
+        if (!request) return;
+        window.setTimeout(() => {
+          if (!request.claimed) setSource(request);
+        }, 0);
+      }),
+    [],
+  );
 
   return (
     <>

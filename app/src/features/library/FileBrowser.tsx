@@ -29,6 +29,11 @@ import { buildFileTree, countTree, displayPath, findDir, folderEntries, pathKey,
 import type { DirNode, FileNode, IndexedFileRow, SortKey, TreeEntry, TypeFamily } from './fileTree';
 import { copyPath, joinPath, openInDefaultApp, showInFolder } from './fileActions';
 import { FileViewer } from './FileViewer';
+import type { FileHighlight } from './FileViewer';
+import { SnippetShelf } from '../research/SnippetShelf';
+import { ResultsView } from '../research/ResultsView';
+import { onWindowEvent, SHOW_SOURCE_EVENT } from '../research/snippetBus';
+import type { SourceBoxRequest } from '../research/snippetBus';
 import { browserTimers, requestPdfMeta, usePdfMeta } from './pdfListMeta';
 import { Prefetcher } from './prefetch';
 import type { LibrarySource } from './sources';
@@ -625,6 +630,7 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
             onClose={() => { closePreview(); focusRow(activeIndex, false); }}
             onAsk={() => onAskAboutFile(previewFile, source)}
             onFirstPageVisible={handleFirstPageVisible}
+            workspace={source.id}
           />
         )}
       </div>
@@ -954,15 +960,45 @@ interface OpenFilePaneProps {
   onClose: () => void;
   onAsk: () => void;
   onFirstPageVisible: () => void;
+  /** The source (workspace) the file belongs to. */
+  workspace: string;
 }
+
+type PaneTab = 'document' | 'snippets' | 'results';
+
+const PANE_TABS: { id: PaneTab; label: string }[] = [
+  { id: 'document', label: 'Document' },
+  { id: 'snippets', label: 'Snippets' },
+  { id: 'results', label: 'Results' },
+];
 
 /**
  * The previewed file. Mounted once while files are previewed (its entrance
  * animation plays when it first appears, not on every selection); only the
  * header text and the viewer swap when the selection moves.
  */
-function OpenFilePane({ paneRef, file, shownPath, focusMode, onToggleFocus, onClose, onAsk, onFirstPageVisible }: OpenFilePaneProps) {
+function OpenFilePane({ paneRef, file, shownPath, focusMode, onToggleFocus, onClose, onAsk, onFirstPageVisible, workspace }: OpenFilePaneProps) {
   const titleId = useId();
+  const tabsId = useId();
+  const isPdf = file.extension === 'pdf';
+  const [tab, setTab] = useState<PaneTab>('document');
+  const [highlight, setHighlight] = useState<FileHighlight | null>(null);
+  // Another file: back to its document, nothing outlined.
+  useEffect(() => {
+    setTab('document');
+    setHighlight(null);
+  }, [file.path]);
+  // A result cell or snippet of this file: show it here rather than in a dialog.
+  useEffect(
+    () =>
+      onWindowEvent<SourceBoxRequest>(SHOW_SOURCE_EVENT, request => {
+        if (!request || pathKey(request.filePath) !== pathKey(file.path)) return;
+        request.claimed = true;
+        setHighlight({ page: request.page, regions: request.regions ?? null, rects: request.rects ?? null });
+        setTab('document');
+      }),
+    [file.path],
+  );
   const meta = usePdfMeta(file.extension === 'pdf' ? file.path : null);
   const title = meta?.title ?? null;
   return (
@@ -1019,6 +1055,37 @@ function OpenFilePane({ paneRef, file, shownPath, focusMode, onToggleFocus, onCl
             Copy path
           </button>
         </div>
+        {isPdf && (
+          <div role="tablist" aria-label="File views" className="flex items-center gap-1 -mb-1">
+            {PANE_TABS.map(t => (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                id={`${tabsId}-${t.id}`}
+                aria-selected={tab === t.id}
+                aria-controls={`${tabsId}-panel`}
+                tabIndex={tab === t.id ? 0 : -1}
+                onClick={() => setTab(t.id)}
+                onKeyDown={e => {
+                  if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+                  e.preventDefault();
+                  const i = PANE_TABS.findIndex(x => x.id === tab);
+                  const next = PANE_TABS[(i + (e.key === 'ArrowRight' ? 1 : PANE_TABS.length - 1)) % PANE_TABS.length];
+                  setTab(next.id);
+                  document.getElementById(`${tabsId}-${next.id}`)?.focus();
+                }}
+                className={cn(
+                  'h-7 px-2.5 rounded-lg text-[12.5px] transition-colors duration-micro',
+                  tab === t.id ? 'bg-shodh-raised text-shodh-text font-medium' : 'text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text',
+                  FOCUS_RING,
+                )}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        )}
         {file.status === 'failed' && (
           <p role="note" className="text-[12px] text-shodh-error flex items-start gap-1.5">
             <AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0" aria-hidden="true" />
@@ -1026,8 +1093,23 @@ function OpenFilePane({ paneRef, file, shownPath, focusMode, onToggleFocus, onCl
           </p>
         )}
       </header>
-      <div className="flex-1 min-h-0">
-        <FileViewer path={file.path} onFirstPageVisible={onFirstPageVisible} />
+      <div
+        id={`${tabsId}-panel`}
+        role={isPdf ? 'tabpanel' : undefined}
+        aria-labelledby={isPdf ? `${tabsId}-${tab}` : undefined}
+        className="flex-1 min-h-0"
+      >
+        {tab === 'document' || !isPdf ? (
+          <FileViewer path={file.path} onFirstPageVisible={onFirstPageVisible} workspace={workspace} highlight={highlight} />
+        ) : (
+          <div className="h-full overflow-y-auto scrollbar-thin px-4 py-4">
+            {tab === 'snippets' ? (
+              <SnippetShelf filePath={file.path} emptyText="No snippets from this paper yet. In the document, press S (or the scissors button) and drag a rectangle." />
+            ) : (
+              <ResultsView filePath={file.path} workspace={workspace} />
+            )}
+          </div>
+        )}
       </div>
     </section>
   );

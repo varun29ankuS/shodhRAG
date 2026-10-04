@@ -119,6 +119,8 @@ export interface TranscriptState {
   passages: Passage[];
   /** Grounding checks of the answer, one per round; the final one describes the answer. */
   groundings: GroundingReport[];
+  /** The answer is being checked against its sources (not persisted). */
+  checking: boolean;
   /** Latest reasoning text (not persisted). */
   thinking: string;
   /** The user asked to interrupt; waiting for the run to stop. */
@@ -151,6 +153,7 @@ export function initialTranscript(runId: string, startedAtMs: number): Transcrip
     usage: null,
     passages: [],
     groundings: [],
+    checking: false,
     thinking: '',
     interrupting: false,
   };
@@ -387,12 +390,16 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
     case 'plan_updated':
       return { ...state, plan: action.items.length > 0 ? action.items.map(planItem) : null };
 
+    case 'grounding_started':
+      return { ...state, checking: true };
+
     case 'grounding':
-      return { ...state, groundings: [...state.groundings, action.report] };
+      return { ...state, groundings: [...state.groundings, action.report], checking: false };
 
     case 'revision_started':
       return {
         ...state,
+        checking: false,
         blocks: [
           ...state.blocks,
           {
@@ -433,6 +440,7 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
         steps: closeOpenSteps(state.steps, status === 'aborted' ? 'Interrupted' : 'Did not complete', endMs),
         thinking: '',
         interrupting: false,
+        checking: false,
       };
     }
 
@@ -522,7 +530,7 @@ export function pendingApproval(state: TranscriptState): TranscriptStep | null {
 
 /** Form stored with the conversation: no transient reasoning text. */
 export function toPersisted(state: TranscriptState): TranscriptState {
-  return { ...state, thinking: '', interrupting: false };
+  return { ...state, thinking: '', interrupting: false, checking: false };
 }
 
 const STATUSES: readonly TranscriptStatus[] = ['starting', 'running', 'completed', 'aborted', 'error'];
@@ -542,6 +550,7 @@ export function fromPersisted(value: unknown): TranscriptState | null {
     passages: Array.isArray(state.passages) ? state.passages : [],
     plan: Array.isArray(state.plan) ? state.plan.map(planItem) : null,
     groundings: Array.isArray(state.groundings) ? state.groundings : [],
+    checking: false,
     thinking: '',
     interrupting: false,
   };

@@ -2,10 +2,18 @@
 //! for one more turn.
 //!
 //! Two reasons for a follow-up turn, each bounded:
-//! * **repair** (setting, default on): claims flagged `unsupported`,
-//!   `uncited_factual` or `invalid_citation` are sent back once, with the
-//!   closest passage, to be re-grounded or removed. Never more than
-//!   [`MAX_REPAIR_ROUNDS`].
+//! * **repair** (setting, default on): claims that are wrong on evidence
+//!   the check can stand behind deterministically are sent back once, with
+//!   the closest passage, to be re-grounded or removed ([`needs_repair`]): a
+//!   citation number no source has, or a number the cited text does not
+//!   contain. Claims the models did not find support for, and uncited
+//!   statements, are flagged in the answer but not sent back. On the user's
+//!   11 stored sourced answers every answer had some of those, and reading
+//!   them showed the models' verdicts unreliable on that text (notation,
+//!   invoices, quotes from beyond a passage's length limit; a high
+//!   "contradiction" on a sentence the passage states almost word for word),
+//!   so a rewrite for them would have doubled the cost of every answer
+//!   without a verdict to stand behind. Never more than [`MAX_REPAIR_ROUNDS`].
 //! * **coverage**: information needs (task-list items marked as needs) that
 //!   no retrieved passage covers get targeted searches. At most
 //!   [`MAX_COVERAGE_ROUNDS`] extra rounds, and only while the answer's tool
@@ -46,12 +54,17 @@ pub enum Next {
     },
 }
 
-/// Whether a check outcome is flagged for repair.
-pub fn needs_repair(outcome: ClaimOutcome) -> bool {
-    matches!(
-        outcome,
-        ClaimOutcome::Unsupported | ClaimOutcome::UncitedFactual | ClaimOutcome::InvalidCitation
-    )
+/// Whether a checked claim is sent back for repair: a citation number no
+/// source has, or a number the cited text does not contain.
+pub fn needs_repair(check: &ClaimCheck) -> bool {
+    match check.outcome {
+        ClaimOutcome::InvalidCitation => true,
+        ClaimOutcome::Unsupported => !check.missing_numbers.is_empty(),
+        ClaimOutcome::Supported
+        | ClaimOutcome::Weak
+        | ClaimOutcome::UncitedFactual
+        | ClaimOutcome::Unchecked => false,
+    }
 }
 
 fn reason_text(check: &ClaimCheck) -> String {
@@ -87,7 +100,7 @@ pub fn decide(
         checks
             .iter()
             .enumerate()
-            .filter(|(_, c)| needs_repair(c.outcome))
+            .filter(|(_, c)| needs_repair(c))
             .map(|(i, _)| i)
             .collect()
     } else {
@@ -188,6 +201,7 @@ mod tests {
                 vec![]
             },
             support: Some(0.2),
+            contradiction: None,
             missing_numbers: if outcome == ClaimOutcome::Unsupported {
                 vec!["900".into()]
             } else {
@@ -205,6 +219,34 @@ mod tests {
             state,
             passages: vec![],
         }
+    }
+
+    #[test]
+    fn only_claims_the_check_can_stand_behind_are_sent_back() {
+        let mut not_found = check(ClaimOutcome::Unsupported);
+        not_found.missing_numbers.clear();
+        not_found.contradiction = Some(0.99);
+        assert!(
+            !needs_repair(&not_found),
+            "a model verdict alone is flagged, not repaired"
+        );
+        assert!(
+            needs_repair(&check(ClaimOutcome::Unsupported)),
+            "a missing number"
+        );
+        assert!(needs_repair(&check(ClaimOutcome::InvalidCitation)));
+        assert!(
+            !needs_repair(&check(ClaimOutcome::UncitedFactual)),
+            "uncited is flagged, not rewritten"
+        );
+        assert!(!needs_repair(&check(ClaimOutcome::Weak)));
+        let all_uncited: Vec<ClaimCheck> = (0..10)
+            .map(|_| check(ClaimOutcome::UncitedFactual))
+            .collect();
+        assert_eq!(
+            decide(&all_uncited, &[], Rounds::default(), true, 10),
+            Next::Finish
+        );
     }
 
     #[test]
@@ -233,7 +275,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(reason, RevisionReason::Repair);
-                assert_eq!(repair, vec![1, 2, 3]);
+                assert_eq!(repair, vec![1, 2], "uncited statements are flagged only");
                 assert!(prompt.contains("does not contain 900"));
                 assert!(prompt.contains("cites [9]"));
                 assert!(prompt.contains("Passage [4] comes closest"));

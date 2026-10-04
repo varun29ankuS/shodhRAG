@@ -94,6 +94,15 @@ export function Transcript({
     [transcript.blocks, superseded],
   );
   const answer = useMemo(() => answerReport(transcript.groundings), [transcript.groundings]);
+  // A replaced block after the answer is a follow-up reply that did not
+  // replace it (e.g. "nothing more found"); one before it is an earlier draft.
+  const answerBlockIndex = useMemo(() => {
+    for (let i = transcript.blocks.length - 1; i >= 0; i--) {
+      const b = transcript.blocks[i];
+      if (b.kind === 'text' && !superseded.has(b.id)) return i;
+    }
+    return -1;
+  }, [transcript.blocks, superseded]);
   let textSeen = 0;
   // A finished answer folds its working into one line so the answer starts at the top.
   const fold = useMemo(() => workFold(transcript), [transcript]);
@@ -102,6 +111,7 @@ export function Transcript({
   // working on its next move; say so instead of showing a frozen screen.
   let activity: string | null = null;
   if (transcript.status === 'starting') activity = 'Starting agent…';
+  else if (transcript.status === 'running' && transcript.checking) activity = 'Checking the answer against its sources…';
   else if (transcript.status === 'running' && !step && (!lastBlock || lastBlock.kind !== 'text')) {
     activity = transcript.thinking.trim() ? 'Thinking…' : transcript.blocks.length === 0 ? 'Reading your question…' : 'Working…';
   }
@@ -144,6 +154,7 @@ export function Transcript({
                   id={block.id}
                   text={block.text}
                   superseded={superseded.has(block.id)}
+                  afterAnswer={answerBlockIndex >= 0 && transcript.blocks.indexOf(block) > answerBlockIndex}
                   groundings={transcript.groundings}
                   answer={answer}
                   hits={hits}
@@ -187,6 +198,7 @@ export function Transcript({
             id={block.id}
             text={block.text}
             superseded={superseded.has(block.id)}
+            afterAnswer={answerBlockIndex >= 0 && index > answerBlockIndex}
             groundings={transcript.groundings}
             answer={answer}
             hits={hits}
@@ -249,6 +261,8 @@ interface TextBlockProps {
   text: string;
   /** Replaced by a revised answer: shown collapsed as an earlier draft. */
   superseded: boolean;
+  /** A replaced block after the answer: a follow-up reply that kept the answer. */
+  afterAnswer: boolean;
   groundings: readonly GroundingReport[];
   /** The report that describes the answer. */
   answer: GroundingReport | null;
@@ -265,6 +279,7 @@ function TextBlock({
   id,
   text,
   superseded,
+  afterAnswer,
   groundings,
   answer,
   hits,
@@ -299,7 +314,7 @@ function TextBlock({
         )}
       >
         <ChevronRight className="w-3.5 h-3.5 transition-transform duration-micro group-open/draft:rotate-90 motion-reduce:transition-none" aria-hidden="true" />
-        Earlier draft, replaced after the grounding check
+        {afterAnswer ? 'Follow-up reply; the answer above was kept' : 'Earlier draft, replaced after the grounding check'}
       </summary>
       <div className="mt-2 pl-3 border-l border-shodh-border-subtle opacity-80">{body}</div>
     </details>

@@ -311,6 +311,7 @@ fn grounding_config(
     data_dir: std::path::PathBuf,
     rag: Arc<tokio::sync::RwLock<RAGEngine>>,
     nli: SharedNli,
+    follow_ups: bool,
 ) -> GroundingConfig {
     // The engine lock is held for long stretches while indexing; its
     // reranker slot is fetched once, without waiting for the lock.
@@ -345,6 +346,7 @@ fn grounding_config(
                 true
             }
         }),
+        follow_ups,
     }
 }
 
@@ -727,10 +729,13 @@ pub async fn agent_start(
         .as_deref()
         .unwrap_or(&conversation_id);
     let tool_audit = audit.tool_audit(audit_conversation, &profile_id);
+    // Side threads (summaries, refinements, follow-up suggestions) are parsed
+    // in a fixed format that a rewrite could break: checked, never rewritten.
     let grounding = grounding_config(
         app_data_dir.clone(),
         rag.rag.clone(),
         answer_check.model.clone(),
+        parent_conversation_id.is_none(),
     );
     let (session, mut events) = OmpSession::start(SessionConfig {
         launch,

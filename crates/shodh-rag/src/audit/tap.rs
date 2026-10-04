@@ -195,6 +195,7 @@ impl RunAuditTap {
             | AgentEvent::ApprovalRequested { .. }
             | AgentEvent::PlanUpdated { .. }
             | AgentEvent::Navigated { .. }
+            | AgentEvent::GroundingStarted { .. }
             | AgentEvent::RevisionStarted { .. } => None,
         }
     }
@@ -304,6 +305,7 @@ mod tests {
                 cited: vec![2],
                 invalid: vec![],
                 support: Some(0.9),
+                contradiction: Some(0.01),
                 missing_numbers: vec![],
                 closest: None,
                 closest_score: None,

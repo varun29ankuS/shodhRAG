@@ -43,14 +43,20 @@ pub type RepairSetting = Arc<dyn Fn() -> bool + Send + Sync>;
 pub struct GroundingConfig {
     pub scorers: ScorerProvider,
     pub auto_repair: RepairSetting,
+    /// Whether the check may ask the model for follow-up turns (repair and
+    /// coverage). Off for sessions whose answers the app parses in a fixed
+    /// format (side threads), which a rewrite could break; their answers
+    /// are still checked and flagged.
+    pub follow_ups: bool,
 }
 
 impl GroundingConfig {
-    /// Word-overlap and number checks only, auto-repair on.
+    /// Word-overlap and number checks only, follow-ups and auto-repair on.
     pub fn lexical() -> Self {
         Self {
             scorers: Arc::new(ScorerSet::default),
             auto_repair: Arc::new(|| true),
+            follow_ups: true,
         }
     }
 }

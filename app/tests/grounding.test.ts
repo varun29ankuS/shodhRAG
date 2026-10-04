@@ -52,6 +52,7 @@ function check(partial: Partial<ClaimCheck>): ClaimCheck {
     cited: [2],
     invalid: [],
     support: 0.1,
+    contradiction: null,
     missingNumbers: [],
     closest: null,
     closestScore: null,

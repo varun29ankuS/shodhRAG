@@ -243,9 +243,48 @@ pub fn is_statement(text: &str) -> bool {
     content >= 2
 }
 
+/// Openings of sentences that propose, suppose or instruct rather than
+/// state: offers, hypotheticals, advice.
+const NON_ASSERTIVE_OPENINGS: &[&str] = &[
+    "ask", "check", "consider", "give me", "if", "once you", "tell me", "treat", "try", "verify",
+    "want me", "when you", "worth",
+];
+
+/// Words that make a sentence about the assistant itself ("I re-read the
+/// paper", "so I only have the academic APIs").
+const FIRST_PERSON: &[&str] = &["i", "me", "my", "myself"];
+
 /// Whether a sentence states a fact substantial enough to need a source.
+/// Statements about the assistant itself, offers, hypotheticals and advice,
+/// and lines that explain notation (starting with math) are not: they were
+/// most of the uncited sentences in the user's stored answers.
 pub fn is_factual(text: &str) -> bool {
     if !is_statement(text) {
+        return false;
+    }
+    let trimmed = text.trim();
+    if trimmed.starts_with('$') {
+        return false;
+    }
+    let lower = trimmed
+        .trim_start_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase();
+    if NON_ASSERTIVE_OPENINGS.iter().any(|m| {
+        lower
+            .strip_prefix(m)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(|c: char| !c.is_alphanumeric()))
+    }) {
+        return false;
+    }
+    let tokens: Vec<&str> = lower
+        .split(|c: char| !(c.is_alphanumeric() || c == '\''))
+        .filter(|t| !t.is_empty())
+        .collect();
+    if tokens.iter().any(|t| {
+        FIRST_PERSON.contains(t)
+            || t.strip_prefix("i'")
+                .is_some_and(|rest| matches!(rest, "m" | "ve" | "ll" | "d"))
+    }) {
         return false;
     }
     let has_number = !super::numbers::claim_numbers(text).is_empty();
@@ -743,6 +782,11 @@ mod tests {
             "Here is what the documents say.",
             "The documents do not mention a renewal fee anywhere in the agreement.",
             "Summary:",
+            "Web search was unavailable, so I only have the academic APIs for this question.",
+            "If the paper is a very recent preprint, that explains the missing results entirely.",
+            "Worth confirming whether the 18% rate is correct for these invoices.",
+            "$p_i$ is the activation of the excitatory units at layer $i$ in the forward pass.",
+            "Give me the corrected name, the field or an author and I will search again.",
         ] {
             assert!(!is_factual(s), "{s}");
         }

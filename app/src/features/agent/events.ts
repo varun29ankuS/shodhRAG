@@ -56,6 +56,8 @@ export interface ClaimCheck {
   invalid: number[];
   /** Best support score of the cited passages, 0..1. */
   support: number | null;
+  /** With the entailment model: the highest probability that a cited passage contradicts the claim. */
+  contradiction: number | null;
   /** Numbers the claim states that its cited passages do not contain. */
   missingNumbers: string[];
   /** For a flagged claim: the passage that comes closest to supporting it. */
@@ -241,6 +243,13 @@ export interface UsageEvent {
   costUsd: number;
 }
 
+/** The model finished a round of answering; the answer is being checked against its sources. */
+export interface GroundingStartedEvent {
+  type: "grounding_started";
+  runId: string;
+  round: number;
+}
+
 /** The grounding check of the answer so far; `report.isFinal` on the last one. */
 export interface GroundingEvent {
   type: "grounding";
@@ -277,6 +286,7 @@ export type AgentEvent =
   | PlanUpdatedEvent
   | NavigatedEvent
   | UsageEvent
+  | GroundingStartedEvent
   | GroundingEvent
   | RevisionStartedEvent
   | RunFinishedEvent;

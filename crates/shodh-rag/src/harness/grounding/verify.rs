@@ -123,19 +123,22 @@ pub struct Thresholds {
 /// Calibrated on the 88 labeled claims and 20 needs of
 /// `fixtures/grounding/claims.json` (`calibration.rs` sweeps every cut and
 /// asserts each shipped one is among the most accurate):
-/// * entailment: 93% of claims judged right at any support cut from 0.10 to
-///   0.35 (the top of that range is shipped) and any weak cut from 0.10 up;
-///   every reversed statement and 6 of 7 swapped ones are flagged;
-/// * cross-encoder fallback: 75% at best (support 0.45 to 0.80, weak band
-///   below that adds nothing for flagging); it flags 1 of 10 reversed and 1
-///   of 7 swapped statements, because relevance is not support;
+/// * entailment: 93% of claims judged right at support cuts 0.05 and 0.10
+///   (0.10 shipped); a weak band below it does not change flagging; every
+///   reversed statement and 6 of 7 swapped ones are flagged;
+/// * cross-encoder fallback: 76% at best, at 0.90 with no weak band; it
+///   flags 3 of 10 reversed and 1 of 7 swapped statements, because
+///   relevance is not support;
 /// * word overlap: 78% at 0.6, with no useful weak band;
-/// * needs: 18 of 20 at every cut; no missing need is ever judged covered.
+/// * needs: 19 of 20 at every cut; no missing need is ever judged covered.
+///
+/// In-sample on a small hand-labeled set: treat the percentages as a
+/// comparison between methods, not as accuracy on every corpus.
 pub const THRESHOLDS: Thresholds = Thresholds {
-    entail_support: 0.35,
-    entail_weak: 0.2,
-    support: 0.6,
-    weak: 0.45,
+    entail_support: 0.1,
+    entail_weak: 0.05,
+    support: 0.9,
+    weak: 0.9,
     lexical_support: 0.6,
     lexical_weak: 0.6,
     closest: 0.1,
@@ -151,6 +154,10 @@ const MAX_WINDOWS_PER_PATH: usize = 12;
 /// Passages scored by the cross-encoder when looking for the closest one
 /// (pre-selected by word overlap).
 const CLOSEST_CANDIDATES: usize = 8;
+/// Flagged claims per answer offered a closest passage (each costs up to
+/// [`CLOSEST_CANDIDATES`] cross-encoder pairs; an answer with dozens of
+/// uncited sentences would otherwise spend seconds here).
+const MAX_CLOSEST_SEARCHES: usize = 16;
 /// Sentences per window classified by the entailment model.
 const SENTENCES_PER_WINDOW: usize = 3;
 /// Windows classified per claim (those sharing most words with it).
@@ -169,6 +176,42 @@ pub struct VerifyInput<'a> {
     pub messages: &'a [AnswerMessage],
     pub passages: &'a [Evidence],
     pub opened: &'a [OpenedText],
+}
+
+/// Evidence text as a model should read it: words hyphenated across a line
+/// break joined ("neu-\nron" → "neuron", also the "neu- ron" left when the
+/// break became a space) and whitespace collapsed. Passages keep the line
+/// breaks of the PDF they came from.
+pub fn clean_evidence(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '-' && i > 0 && chars[i - 1].is_alphabetic() {
+            // A hyphen, then whitespace with a line break, then a
+            // lower-case letter: a word broken across lines.
+            let mut j = i + 1;
+            let mut newline = false;
+            while j < chars.len() && chars[j].is_whitespace() {
+                newline |= chars[j] == '\n';
+                j += 1;
+            }
+            if newline && chars.get(j).is_some_and(|n| n.is_lowercase()) {
+                i = j;
+                continue;
+            }
+        }
+        if c.is_whitespace() {
+            if !out.ends_with(' ') && !out.is_empty() {
+                out.push(' ');
+            }
+        } else {
+            out.push(c);
+        }
+        i += 1;
+    }
+    out.trim_end().to_string()
 }
 
 /// Share of the claim's significant words (stemmed) found in `evidence`.
@@ -284,17 +327,37 @@ fn neural_scores(
     }
 }
 
-/// How well `texts` support `claim`: the best score, and how it was scored
-/// (entailment model, else cross-encoder, else word overlap; a model that
-/// fails is logged and the next one is used).
-pub fn support(scorers: Scorers<'_>, claim: &str, texts: &[String]) -> (f32, ScoringMethod) {
+/// What the models found for one claim.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Support {
+    /// Best support score, 0..=1.
+    pub score: f32,
+    pub method: ScoringMethod,
+    /// With the entailment model: the highest contradiction probability of
+    /// the windows read.
+    pub contradiction: Option<f32>,
+}
+
+/// How well `texts` support `claim` (entailment model, else cross-encoder,
+/// else word overlap; a model that fails is logged and the next one is
+/// used). `texts` are cleaned with [`clean_evidence`] first.
+pub fn support(scorers: Scorers<'_>, claim: &str, texts: &[String]) -> Support {
+    let texts: Vec<String> = texts.iter().map(|t| clean_evidence(t)).collect();
     if let Some(nli) = scorers.entailment {
-        let windows = entailment_windows(claim, texts);
+        let windows = entailment_windows(claim, &texts);
         if !windows.is_empty() {
             match nli.entail(claim, &windows) {
                 Ok(results) if results.len() == windows.len() => {
                     let best = results.iter().map(|r| r.entailment).fold(0.0_f32, f32::max);
-                    return (best, ScoringMethod::Entailment);
+                    let contradiction = results
+                        .iter()
+                        .map(|r| r.contradiction)
+                        .fold(0.0_f32, f32::max);
+                    return Support {
+                        score: best,
+                        method: ScoringMethod::Entailment,
+                        contradiction: Some(contradiction),
+                    };
                 }
                 Ok(results) => {
                     tracing::warn!(target: "shodh::grounding", expected = windows.len(), got = results.len(), "entailment model returned the wrong number of results; using the reranker");
@@ -305,15 +368,17 @@ pub fn support(scorers: Scorers<'_>, claim: &str, texts: &[String]) -> (f32, Sco
             }
         }
     }
-    match neural_scores(scorers.relevance, claim, texts) {
-        Some(scores) => (
-            scores.into_iter().fold(0.0_f32, f32::max),
-            ScoringMethod::CrossEncoder,
-        ),
-        None => {
-            let joined = texts.join("\n");
-            (word_coverage(claim, &joined), ScoringMethod::Lexical)
-        }
+    match neural_scores(scorers.relevance, claim, &texts) {
+        Some(scores) => Support {
+            score: scores.into_iter().fold(0.0_f32, f32::max),
+            method: ScoringMethod::CrossEncoder,
+            contradiction: None,
+        },
+        None => Support {
+            score: word_coverage(claim, &texts.join(" ")),
+            method: ScoringMethod::Lexical,
+            contradiction: None,
+        },
     }
 }
 
@@ -332,7 +397,10 @@ fn closest_passage(
         .collect();
     candidates.sort_by(|a, b| b.1.total_cmp(&a.1));
     candidates.truncate(CLOSEST_CANDIDATES);
-    let texts: Vec<String> = candidates.iter().map(|(p, _)| p.text.clone()).collect();
+    let texts: Vec<String> = candidates
+        .iter()
+        .map(|(p, _)| clean_evidence(&p.text))
+        .collect();
     let (scores, cutoff) = match neural_scores(scorer, claim, &texts) {
         Some(scores) => (scores, thresholds.closest),
         None => (
@@ -373,6 +441,7 @@ fn check_claim(
     scorers: Scorers<'_>,
     thresholds: &Thresholds,
     methods: &mut HashSet<ScoringMethod>,
+    closest_budget: &mut usize,
 ) -> Option<ClaimCheck> {
     let sourced_answer = !input.passages.is_empty();
     let mut check = ClaimCheck {
@@ -384,6 +453,7 @@ fn check_claim(
         cited: claim.citations.clone(),
         invalid: Vec::new(),
         support: None,
+        contradiction: None,
         missing_numbers: Vec::new(),
         closest: None,
         closest_score: None,
@@ -440,24 +510,28 @@ fn check_claim(
                     ClaimOutcome::Unsupported
                 };
             } else {
-                let (score, method) = support(scorers, &claim.text, &texts);
-                methods.insert(method);
-                check.support = Some(score);
+                let found = support(scorers, &claim.text, &texts);
+                methods.insert(found.method);
+                check.support = Some(found.score);
+                check.contradiction = found.contradiction;
                 check.outcome = if check.missing_numbers.is_empty() {
-                    outcome_for(score, method, thresholds)
+                    outcome_for(found.score, found.method, thresholds)
                 } else {
                     ClaimOutcome::Unsupported
                 };
             }
         }
     }
-    if matches!(
-        check.outcome,
-        ClaimOutcome::Weak
-            | ClaimOutcome::Unsupported
-            | ClaimOutcome::UncitedFactual
-            | ClaimOutcome::InvalidCitation
-    ) {
+    if *closest_budget > 0
+        && matches!(
+            check.outcome,
+            ClaimOutcome::Weak
+                | ClaimOutcome::Unsupported
+                | ClaimOutcome::UncitedFactual
+                | ClaimOutcome::InvalidCitation
+        )
+    {
+        *closest_budget -= 1;
         if let Some((n, score)) =
             closest_passage(scorers.relevance, &claim.text, input.passages, thresholds)
         {
@@ -480,6 +554,7 @@ pub fn verify_answer(
 ) -> (Vec<ClaimCheck>, ScoringMethod) {
     let mut methods = HashSet::new();
     let mut checks = Vec::new();
+    let mut closest_budget = MAX_CLOSEST_SEARCHES;
     for message in input.messages {
         for claim in split_claims(&message.text) {
             if let Some(check) = check_claim(
@@ -489,6 +564,7 @@ pub fn verify_answer(
                 scorers,
                 thresholds,
                 &mut methods,
+                &mut closest_budget,
             ) {
                 checks.push(check);
             }
@@ -590,7 +666,7 @@ pub fn check_needs(
                     let mut whole: Vec<(&Evidence, f32)> = Vec::new();
                     let mut failed = false;
                     for (p, _) in &ranked {
-                        match need_coverage(scorer, text, &p.text, false) {
+                        match need_coverage(scorer, text, &clean_evidence(&p.text), false) {
                             Some(score) => whole.push((*p, score)),
                             None => {
                                 failed = true;
@@ -603,7 +679,9 @@ pub fn check_needs(
                     } else {
                         whole.sort_by(|a, b| b.1.total_cmp(&a.1));
                         for entry in whole.iter_mut().take(NEED_WINDOW_PASSAGES) {
-                            if let Some(score) = need_coverage(scorer, text, &entry.0.text, true) {
+                            if let Some(score) =
+                                need_coverage(scorer, text, &clean_evidence(&entry.0.text), true)
+                            {
                                 entry.1 = entry.1.max(score);
                             }
                         }
@@ -809,6 +887,26 @@ mod tests {
         );
         assert_eq!(checks[1].outcome, ClaimOutcome::Unchecked);
         assert_eq!(summarise(&checks).score, Some(0.0));
+    }
+
+    #[test]
+    fn evidence_is_read_without_line_break_hyphenation() {
+        assert_eq!(
+            clean_evidence("each neu-\nron's synapses obey Dale's princi-\n ple."),
+            "each neuron's synapses obey Dale's principle."
+        );
+        assert_eq!(
+            clean_evidence(
+                "the se-
+quence mixing"
+            ),
+            "the sequence mixing"
+        );
+        assert_eq!(
+            clean_evidence("pre- and post-processing"),
+            "pre- and post-processing"
+        );
+        assert_eq!(clean_evidence("Mamba-2\n\nwas  fast"), "Mamba-2 was fast");
     }
 
     #[test]

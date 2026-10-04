@@ -102,10 +102,16 @@ fn tokens(text: &str) -> Vec<Token> {
         // A comma is a thousands separator only before exactly three digits
         // ("1,000"); otherwise it separates numbers ("1,2"), which are read
         // one at a time.
-        let thousands = raw.split(',').skip(1).all(|group| {
-            let digits = group.split('.').next().unwrap_or_default();
-            digits.len() == 3
-        });
+        // Western grouping ("1,000,000") or Indian grouping ("2,97,390.43":
+        // pairs, then a final group of three).
+        let groups: Vec<usize> = raw
+            .split(',')
+            .skip(1)
+            .map(|group| group.split('.').next().unwrap_or_default().len())
+            .collect();
+        let thousands = groups.iter().all(|len| *len == 3)
+            || (groups.last() == Some(&3)
+                && groups[..groups.len() - 1].iter().all(|len| *len == 2));
         if !thousands {
             if let Some(comma) = raw.find(',') {
                 raw.truncate(comma);
@@ -129,6 +135,16 @@ fn tokens(text: &str) -> Vec<Token> {
             while j > 0 && !chars[j - 1].is_alphanumeric() {
                 j -= 1;
             }
+            // The end of a range ("pages 10-12", "equations (1)–(3)") takes
+            // the word before its start.
+            if j > 0 && chars[j - 1].is_ascii_digit() && start - j <= 3 {
+                while j > 0 && chars[j - 1].is_ascii_digit() {
+                    j -= 1;
+                }
+                while j > 0 && !chars[j - 1].is_alphanumeric() {
+                    j -= 1;
+                }
+            }
             let end = j;
             while j > 0 && chars[j - 1].is_alphabetic() {
                 j -= 1;
@@ -144,10 +160,33 @@ fn tokens(text: &str) -> Vec<Token> {
     out
 }
 
+/// `text` without inline math (`$…$`): its numbers are notation ("$C=10$",
+/// "$M_{ic}=1$"), not quantities a passage states in words.
+fn without_inline_math(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('$') {
+        let after = &rest[open + 1..];
+        match after.find('$') {
+            Some(close) if close > 0 => {
+                out.push_str(&rest[..open]);
+                out.push(' ');
+                rest = &after[close + 1..];
+            }
+            _ => {
+                out.push_str(&rest[..=open]);
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Quantities a claim states, normalised, in order, without duplicates.
 pub fn claim_numbers(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for token in tokens(text) {
+    for token in tokens(&without_inline_math(text)) {
         if token.attached_to_word || REFERENCE_WORDS.contains(&token.previous_word.as_str()) {
             continue;
         }
@@ -271,6 +310,12 @@ mod tests {
         );
         assert_eq!(claim_numbers("Layer 12 has 64 heads."), vec!["12", "64"]);
         assert_eq!(
+            claim_numbers(
+                "See equations (1)–(3) and pages 10-12; with $C=10$ classes it reached 61.7%."
+            ),
+            vec!["61.7"]
+        );
+        assert_eq!(
             claim_numbers("Models with 340M and 1.3B parameters, 32k context, 4x faster."),
             vec!["340", "1.3", "32", "4"]
         );
@@ -285,6 +330,10 @@ mod tests {
         assert!(found.contains("65"));
         assert!(found.contains("4"), "Q4 still counts as evidence");
         assert!(evidence_numbers("1,024 tokens").contains("1024"));
+        assert_eq!(
+            claim_numbers("Total ₹2,97,390.43 and 1,00,000"),
+            vec!["297390.43", "100000"]
+        );
         assert!(evidence_numbers("value 0.50").contains("0.5"));
     }
 

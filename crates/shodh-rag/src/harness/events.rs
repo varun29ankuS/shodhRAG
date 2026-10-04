@@ -137,6 +137,10 @@ pub struct ClaimCheck {
     pub invalid: Vec<u32>,
     /// Best support score of the cited passages, 0..=1.
     pub support: Option<f32>,
+    /// With the entailment model: the highest contradiction probability of
+    /// the cited text it read. Model output for evaluation, not a verdict
+    /// (it is unreliable on notation and on text cut off mid-passage).
+    pub contradiction: Option<f32>,
     /// Numbers it states that its cited passages do not contain.
     pub missing_numbers: Vec<String>,
     /// For a flagged claim: the passage that comes closest to supporting it.
@@ -326,6 +330,9 @@ pub enum AgentEvent {
         cache_read_tokens: u64,
         cost_usd: f64,
     },
+    /// The model finished a round of answering and the answer is being
+    /// checked against its sources (the run is not over yet).
+    GroundingStarted { run_id: String, round: u32 },
     /// The grounding check of the answer so far (after each round of
     /// answering; `report.is_final` on the last one, before `RunFinished`).
     Grounding {
@@ -365,6 +372,7 @@ impl AgentEvent {
             | AgentEvent::PlanUpdated { run_id, .. }
             | AgentEvent::Navigated { run_id, .. }
             | AgentEvent::Usage { run_id, .. }
+            | AgentEvent::GroundingStarted { run_id, .. }
             | AgentEvent::Grounding { run_id, .. }
             | AgentEvent::RevisionStarted { run_id, .. }
             | AgentEvent::RunFinished { run_id, .. } => run_id,
@@ -516,6 +524,14 @@ mod tests {
                 ],
             ),
             (
+                AgentEvent::GroundingStarted {
+                    run_id: "r".into(),
+                    round: 0,
+                },
+                "grounding_started",
+                vec!["runId", "round"],
+            ),
+            (
                 AgentEvent::Grounding {
                     run_id: "r".into(),
                     report: sample_report(),
@@ -571,6 +587,7 @@ mod tests {
                 cited: vec![7],
                 invalid: vec![7],
                 support: None,
+                contradiction: Some(0.8),
                 missing_numbers: vec!["90".into()],
                 closest: Some(2),
                 closest_score: Some(0.41),
@@ -587,7 +604,7 @@ mod tests {
     }
 
     /// Keys of the grounding report, at every level, as the TS mirror spells them.
-    const REPORT_KEYS: [&str; 27] = [
+    const REPORT_KEYS: [&str; 28] = [
         "round",
         "isFinal",
         "method",
@@ -615,6 +632,7 @@ mod tests {
         "closestScore",
         "passages",
         "state",
+        "contradiction",
     ];
 
     fn collect_keys(value: &Value, out: &mut std::collections::BTreeSet<String>) {

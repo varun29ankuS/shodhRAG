@@ -512,8 +512,14 @@ impl Inner {
             .filter(|i| i.need && !i.text.trim().is_empty())
             .map(|i| (i.id, i.text))
             .collect();
-        let auto_repair = (config.auto_repair)();
+        let auto_repair = config.follow_ups && (config.auto_repair)();
         let scorers = (config.scorers)();
+        if !messages.is_empty() || !needs.is_empty() {
+            self.emit(AgentEvent::GroundingStarted {
+                run_id: held.run_id.clone(),
+                round,
+            });
+        }
 
         let (checks, need_checks, method) = {
             let job = (
@@ -570,7 +576,11 @@ impl Inner {
             });
         }
         let calls_used = self.calls_in_run.load(Ordering::SeqCst);
-        let calls_left = self.profile.max_tool_calls.saturating_sub(calls_used);
+        let calls_left = if config.follow_ups {
+            self.profile.max_tool_calls.saturating_sub(calls_used)
+        } else {
+            0
+        };
         let next = followup::decide(
             &answer_checks,
             &need_checks,
@@ -615,31 +625,19 @@ impl Inner {
                 missing_needs,
                 prompt,
             } => {
+                let missing_texts: Vec<String> = need_checks
+                    .iter()
+                    .filter(|n| missing_needs.contains(&n.id))
+                    .map(|n| n.text.clone())
+                    .collect();
                 let prompt_id = self.next_id("p");
-                let resumed = {
-                    let mut state = lock(&self.state);
-                    let resumed = state.resume_held(&held.run_id, held.generation, &prompt_id);
-                    if resumed {
-                        // Sent under the state lock so the run cannot change in between.
-                        if self
-                            .send(OutboundFrame::Prompt {
-                                id: prompt_id,
-                                message: prompt,
-                                streaming_behavior: None,
-                            })
-                            .is_err()
-                        {
-                            let events = state.fail_run("The agent session has ended", now_ms());
-                            drop(state);
-                            for event in events {
-                                self.emit(event);
-                            }
-                            return;
-                        }
-                    }
-                    resumed
-                };
-                if !resumed {
+                // Under the state lock, in this order: the round is counted
+                // and the revision announced before the prompt goes out, so
+                // the follow-up turn can never be checked as an earlier
+                // round (which would allow a second repair) and its text
+                // never reaches the transcript before the revision row.
+                let mut state = lock(&self.state);
+                if !state.resume_held(&held.run_id, held.generation, &prompt_id) {
                     return;
                 }
                 {
@@ -653,11 +651,6 @@ impl Inner {
                         g.rounds.coverage += 1;
                     }
                 }
-                let missing_texts: Vec<String> = need_checks
-                    .iter()
-                    .filter(|n| missing_needs.contains(&n.id))
-                    .map(|n| n.text.clone())
-                    .collect();
                 tracing::info!(target: "shodh::grounding", run_id = %held.run_id, round = round + 1, ?reason, flagged = repair.len(), missing = missing_texts.len(), "answer follow-up turn");
                 self.emit(AgentEvent::Grounding {
                     run_id: held.run_id.clone(),
@@ -670,6 +663,18 @@ impl Inner {
                     flagged: u32::try_from(repair.len()).unwrap_or(u32::MAX),
                     missing_needs: missing_texts,
                 });
+                let sent = self.send(OutboundFrame::Prompt {
+                    id: prompt_id,
+                    message: prompt,
+                    streaming_behavior: None,
+                });
+                if sent.is_err() {
+                    let events = state.fail_run("The agent session has ended", now_ms());
+                    drop(state);
+                    for event in events {
+                        self.emit(event);
+                    }
+                }
             }
         }
     }

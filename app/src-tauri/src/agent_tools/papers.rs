@@ -698,6 +698,7 @@ mod tests {
                         vec!["IVF-PQ".into(), "71.4".into()],
                     ],
                     caption: Some("Table 2: Recall.".into()),
+                    cell_coverage: None,
                     cell_boxes: vec![
                         vec![b(100.0, 700.0, 150.0, 710.0), b(160.0, 700.0, 220.0, 710.0)],
                         vec![b(100.0, 688.0, 150.0, 698.0), b(160.0, 688.0, 220.0, 698.0)],

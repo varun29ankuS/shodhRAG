@@ -148,3 +148,25 @@ A spot check of 50 values from the arXiv papers against the rendered pages found
 - 3 method labels wrong: the label carries a `Figure 1(a)` cell from a neighbouring label column.
 
 **Not adopted:** docling.rs's full pipeline on every page. It is about 70× slower per page, and the heuristic parser is better on equations and reading order.
+
+## Forms (amendment, 2026-10-04)
+
+**Problem.** On a set of 46 real tax, receipt and invoice PDFs (103 pages), none had an AcroForm: every form was printed (flattened). Column-aware reading order put a label and its amount in different blocks, so a question about the label found no value. Only 57% of the same-baseline label/value pairs in the text layer ended up in one block (67% in one chunk). A header repeated on every page was dropped as furniture everywhere, together with the only copy of the values it carried.
+
+**Decision.**
+
+- **Printed forms** (`processing::form_layout`): on form-like pages, lines are grouped into baseline rows across columns. A row's label and code cells, followed by a value (an amount, date, identifier or flag, or any short text after a `Label:` cell), become one `FormField` block with the row's box. Pairs printed side by side split. A row with two values is a table row and is left alone. A page is form-like when it has at least three such rows covering a quarter of its lines and is not a contents page. On the research corpus no page qualifies, so its parse is unchanged.
+- **Interactive forms** (`processing::pdf_forms`): the AcroForm field tree is read with fully qualified names, tooltips as labels, and typed values: text, choice, checkbox and radio export values, and signature presence. Each field is placed as a `FormField` block with its widget's page and box. Comment annotations are read the same way. This replaces the single page-less form section.
+- **Chunks**: a section's fields on one page are packed as `label: value` lines into `form` chunks.
+- **Running headers**: a recurring margin line that carries data (letters and digits) is kept once, where it first appears.
+- **Tables**: each table records the share of its region's text-layer tokens that its cells hold. Below 0.9, the region's text as printed follows the table as a `TableText` block, and both carry the `table_incomplete` chunk flag.
+
+**Measured on the 46 files** (debug build, heuristics only; same-baseline pairs from the text layer):
+
+| | Before | After | Before, with the table model |
+|---|---|---|---|
+| Label/value pairs in one block | 0.569 | 0.756 | 0.925 |
+| Label/value pairs in one chunk | 0.668 | 0.810 | — |
+| Text-layer token recall | 0.968 | 0.976 | 0.978 |
+
+On the research corpus, block kinds and token recall are unchanged, apart from 18 `table_text` blocks after under-covered tables and 4 kept headers.

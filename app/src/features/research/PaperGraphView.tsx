@@ -1,28 +1,60 @@
-import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
-import { forceCenter, forceCollide, forceLink, forceManyBody, forceSimulation } from 'd3-force';
-import type { SimulationLinkDatum, SimulationNodeDatum } from 'd3-force';
-import { AlertTriangle, Globe, List, Loader2, Network, RefreshCw } from 'lucide-react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY } from 'd3-force';
+import type { Simulation, SimulationLinkDatum, SimulationNodeDatum } from 'd3-force';
+import { AlertTriangle, Globe, List, Loader2, Maximize2, Minus, Network, Plus, RefreshCw } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { onResearchChanged, toResearchError } from './api';
 import { graphApi, onGraphProgress } from './graphApi';
 import { DEFAULT_FILTERS, graphList, nodeRadius, progressLabel, shapeGraph, shortLabel, yearBounds } from './graphModel';
 import type { DrawnNode, GraphFilters } from './graphModel';
 import type { BuildProgress, GraphStatus, GraphViewData } from './graphTypes';
-import { BUTTON, FOCUS_RING, INPUT, PRIMARY_BUTTON, SECTION_TITLE } from './ui';
+import {
+  IDENTITY,
+  clampGraphView,
+  clientToViewBox,
+  fitGraph,
+  isDrag,
+  nodeBounds,
+  panGraph,
+  pinchGraph,
+  toGraph,
+  wheelZoomFactor,
+  zoomGraphAt,
+  zoomGraphStep,
+} from './graphViewport';
+import type { Bounds, Point, View } from './graphViewport';
+import { BUTTON, FOCUS_RING, ICON_BUTTON, INPUT, PRIMARY_BUTTON, SECTION_TITLE } from './ui';
 
 type Load<T> = { status: 'loading' } | { status: 'ready'; value: T } | { status: 'error'; message: string };
 
 const WIDTH = 880;
 const HEIGHT = 520;
-/** Ticks of the force layout, computed up front: the drawing is static (no motion). */
+const VIEWPORT = { width: WIDTH, height: HEIGHT };
+/** Ticks of the initial force layout, computed up front (no opening animation). */
 const LAYOUT_TICKS = 300;
+/** Ticks run at once when a dragged node is let go under reduced motion. */
+const SETTLE_TICKS = 60;
+/** How hot the layout runs while a node is dragged (d3's alphaTarget). */
+const DRAG_ALPHA = 0.2;
+/** Faster cooling after a drag than d3's default, so the graph settles in about a second. */
+const SETTLE_DECAY = 0.06;
 
 interface Placed extends SimulationNodeDatum {
   node: DrawnNode;
 }
 
-/** Positions for the drawn nodes (a static force layout). */
-function layout(nodes: DrawnNode[], edges: { source: string; target: string }[]): Map<string, { x: number; y: number }> {
+function prefersReducedMotion(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+interface GraphLayout {
+  simulation: Simulation<Placed, undefined>;
+  nodes: Placed[];
+  index: Map<string, Placed>;
+}
+
+/** A force layout computed up front (deterministic: same graph, same drawing). */
+function buildLayout(nodes: DrawnNode[], edges: { source: string; target: string }[]): GraphLayout {
   const placed: Placed[] = nodes.map((node, i) => ({
     node,
     // Deterministic start on a spiral, so the same graph lays out the same way.
@@ -37,19 +69,77 @@ function layout(nodes: DrawnNode[], edges: { source: string; target: string }[])
     .force('charge', forceManyBody<Placed>().strength(p => (p.node.kind === 'library' ? -260 : -60)))
     .force('link', forceLink<Placed, SimulationLinkDatum<Placed>>(links).distance(60).strength(0.4))
     .force('collide', forceCollide<Placed>(p => nodeRadius(p.node) + 3))
-    .force('center', forceCenter(WIDTH / 2, HEIGHT / 2))
+    // Gentle pull to the middle (unlike forceCenter it lets a dragged node stay put).
+    .force('x', forceX<Placed>(WIDTH / 2).strength(0.04))
+    .force('y', forceY<Placed>(HEIGHT / 2).strength(0.06))
     .stop();
   for (let i = 0; i < LAYOUT_TICKS; i++) simulation.tick();
-  const out = new Map<string, { x: number; y: number }>();
-  for (const p of placed) {
-    const r = nodeRadius(p.node);
-    out.set(p.node.id, {
-      x: Math.max(r + 4, Math.min(WIDTH - r - 4, p.x ?? WIDTH / 2)),
-      y: Math.max(r + 4, Math.min(HEIGHT - r - 4, p.y ?? HEIGHT / 2)),
-    });
-  }
-  return out;
+  return { simulation, nodes: placed, index };
 }
+
+/**
+ * The layout of the drawn graph, which the user can rearrange: a grabbed
+ * node is pinned under the pointer and the others make room; let go, it is
+ * released and the layout settles. Under reduced motion nothing animates:
+ * only the dragged node follows the pointer, and the settling runs at once.
+ */
+function useGraphLayout(shaped: { nodes: DrawnNode[]; edges: { source: string; target: string }[] } | null) {
+  const [, setFrame] = useState(0);
+  const redraw = useCallback(() => setFrame(f => f + 1), []);
+  const layout = useMemo(() => (shaped ? buildLayout(shaped.nodes, shaped.edges) : null), [shaped]);
+
+  useEffect(() => {
+    if (!layout) return;
+    layout.simulation.on('tick', redraw);
+    return () => {
+      layout.simulation.on('tick', null);
+      layout.simulation.stop();
+    };
+  }, [layout, redraw]);
+
+  const grab = useCallback((id: string) => {
+    const p = layout?.index.get(id);
+    if (!layout || !p) return;
+    p.fx = p.x;
+    p.fy = p.y;
+    if (!prefersReducedMotion()) layout.simulation.alphaDecay(SETTLE_DECAY).alphaTarget(DRAG_ALPHA).restart();
+  }, [layout]);
+
+  const move = useCallback((id: string, to: Point) => {
+    const p = layout?.index.get(id);
+    if (!p) return;
+    p.fx = to.x;
+    p.fy = to.y;
+    if (prefersReducedMotion()) {
+      p.x = to.x;
+      p.y = to.y;
+      redraw();
+    }
+  }, [layout, redraw]);
+
+  const release = useCallback((id: string) => {
+    const p = layout?.index.get(id);
+    if (!layout || !p) return;
+    p.fx = null;
+    p.fy = null;
+    if (prefersReducedMotion()) {
+      layout.simulation.alpha(0.1);
+      for (let i = 0; i < SETTLE_TICKS; i++) layout.simulation.tick();
+      redraw();
+    } else {
+      layout.simulation.alphaTarget(0);
+    }
+  }, [layout, redraw]);
+
+  return { layout, grab, move, release };
+}
+
+/** What the pointer is doing on the drawing. */
+type Gesture =
+  | { kind: 'press'; id: string; pointerId: number; start: Point; offset: Point }
+  | { kind: 'drag'; id: string; pointerId: number; offset: Point }
+  | { kind: 'pan'; pointerId: number; last: Point }
+  | { kind: 'pinch'; start: View; from: [Point, Point]; ids: [number, number] };
 
 const FILL: Record<DrawnNode['kind'], string> = {
   library: 'var(--c-accent)',
@@ -65,7 +155,7 @@ const FILL: Record<DrawnNode['kind'], string> = {
  * its page.
  */
 export function PaperGraphView({ onOpenPaper }: { onOpenPaper: (id: string) => void }) {
-  const ids = { library: useId(), from: useId(), to: useId(), method: useId(), online: useId(), title: useId() };
+  const ids = { library: useId(), from: useId(), to: useId(), method: useId(), online: useId(), title: useId(), help: useId() };
   const [status, setStatus] = useState<Load<GraphStatus>>({ status: 'loading' });
   const [data, setData] = useState<Load<GraphViewData>>({ status: 'loading' });
   const [filters, setFilters] = useState<GraphFilters>(DEFAULT_FILTERS);
@@ -125,7 +215,6 @@ export function PaperGraphView({ onOpenPaper }: { onOpenPaper: (id: string) => v
 
   const view = data.status === 'ready' ? data.value : null;
   const shaped = useMemo(() => (view ? shapeGraph(view, filters) : null), [view, filters]);
-  const positions = useMemo(() => (shaped ? layout(shaped.nodes, shaped.edges) : new Map()), [shaped]);
   const rows = useMemo(() => (view ? graphList(view, filters) : []), [view, filters]);
   const bounds = useMemo(() => (view ? yearBounds(view.nodes) : null), [view]);
 
@@ -133,6 +222,172 @@ export function PaperGraphView({ onOpenPaper }: { onOpenPaper: (id: string) => v
   const st = status.status === 'ready' ? status.value : null;
   const empty = view !== null && view.nodes.length === 0;
   const hoveredNode = shaped?.nodes.find(n => n.id === hovered) ?? null;
+
+  const { layout, grab, move, release } = useGraphLayout(shaped);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [camera, setCamera] = useState<View>(IDENTITY);
+  const cameraRef = useRef(camera);
+  cameraRef.current = camera;
+  const gesture = useRef<Gesture | null>(null);
+  const pointers = useRef(new Map<number, Point>());
+  /** Set when a press became a drag, so the click that ends it does not open the paper. */
+  const dragged = useRef(false);
+  const [grabbing, setGrabbing] = useState<'node' | 'pan' | null>(null);
+
+  const nodeExtent = useCallback((): Bounds | null => {
+    if (!layout) return null;
+    return nodeBounds(
+      layout.nodes.map(p => ({ x: p.x ?? WIDTH / 2, y: p.y ?? HEIGHT / 2 })),
+      i => nodeRadius(layout.nodes[i].node) + 14,
+    );
+  }, [layout]);
+  const showCamera = useCallback((next: View) => setCamera(clampGraphView(next, nodeExtent(), VIEWPORT)), [nodeExtent]);
+  const fit = useCallback(() => setCamera(fitGraph(nodeExtent(), VIEWPORT)), [nodeExtent]);
+  const zoomStep = useCallback((direction: 1 | -1) => showCamera(zoomGraphStep(cameraRef.current, direction, VIEWPORT)), [showCamera]);
+  const resetZoom = useCallback(() => {
+    const fitted = fitGraph(nodeExtent(), VIEWPORT);
+    showCamera(zoomGraphAt(fitted, 1, { x: WIDTH / 2, y: HEIGHT / 2 }));
+  }, [nodeExtent, showCamera]);
+
+  // A new drawing (other filters, a rebuilt graph) starts fitted.
+  useEffect(() => {
+    if (layout) setCamera(fitGraph(nodeExtent(), VIEWPORT));
+  }, [layout, nodeExtent]);
+
+  const pointAt = useCallback((e: { clientX: number; clientY: number }): Point => {
+    const svg = svgRef.current;
+    if (!svg) return { x: e.clientX, y: e.clientY };
+    return clientToViewBox({ x: e.clientX, y: e.clientY }, svg.getBoundingClientRect(), VIEWPORT);
+  }, []);
+
+  // Wheel zoom needs a non-passive listener to keep the page from scrolling.
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const factor = wheelZoomFactor(e.deltaY, e.deltaMode);
+      const at = pointAt(e);
+      showCamera(zoomGraphAt(cameraRef.current, cameraRef.current.scale * factor, at));
+    };
+    svg.addEventListener('wheel', onWheel, { passive: false });
+    return () => svg.removeEventListener('wheel', onWheel);
+  }, [pointAt, showCamera, mode, layout]);
+
+  const capture = (pointerId: number) => {
+    try {
+      svgRef.current?.setPointerCapture(pointerId);
+    } catch {
+      // The pointer is already gone (released before capture); nothing to keep.
+    }
+  };
+
+  const endDrag = (g: Gesture | null) => {
+    if (g && g.kind === 'drag') {
+      release(g.id);
+      dragged.current = true;
+    }
+  };
+
+  const onPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    const at = pointAt(e);
+    pointers.current.set(e.pointerId, at);
+    dragged.current = false;
+    if (pointers.current.size === 2) {
+      endDrag(gesture.current);
+      const [[idA, a], [idB, b]] = [...pointers.current.entries()];
+      gesture.current = { kind: 'pinch', start: cameraRef.current, from: [a, b], ids: [idA, idB] };
+      capture(e.pointerId);
+      setGrabbing('pan');
+      return;
+    }
+    if (pointers.current.size > 2) return;
+    const target = e.target instanceof Element ? e.target.closest('[data-node-id]') : null;
+    const id = target?.getAttribute('data-node-id');
+    const p = id ? layout?.index.get(id) : undefined;
+    if (id && p) {
+      const g = toGraph(cameraRef.current, at);
+      // Capture waits for real movement, so a plain press still clicks the node.
+      gesture.current = { kind: 'press', id, pointerId: e.pointerId, start: at, offset: { x: g.x - (p.x ?? 0), y: g.y - (p.y ?? 0) } };
+      return;
+    }
+    gesture.current = { kind: 'pan', pointerId: e.pointerId, last: at };
+    capture(e.pointerId);
+    setGrabbing('pan');
+  };
+
+  const onPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (!pointers.current.has(e.pointerId)) return;
+    const at = pointAt(e);
+    pointers.current.set(e.pointerId, at);
+    const g = gesture.current;
+    if (!g) return;
+    if (g.kind === 'pinch') {
+      const a = pointers.current.get(g.ids[0]);
+      const b = pointers.current.get(g.ids[1]);
+      if (a && b) showCamera(pinchGraph(g.start, g.from, [a, b]));
+      return;
+    }
+    if (g.pointerId !== e.pointerId) return;
+    if (g.kind === 'pan') {
+      showCamera(panGraph(cameraRef.current, at.x - g.last.x, at.y - g.last.y));
+      gesture.current = { ...g, last: at };
+      return;
+    }
+    if (g.kind === 'press') {
+      if (!isDrag(g.start, at)) return;
+      capture(e.pointerId);
+      grab(g.id);
+      setGrabbing('node');
+      gesture.current = { kind: 'drag', id: g.id, pointerId: g.pointerId, offset: g.offset };
+    }
+    const drag = gesture.current;
+    if (drag?.kind === 'drag') {
+      const point = toGraph(cameraRef.current, at);
+      move(drag.id, { x: point.x - drag.offset.x, y: point.y - drag.offset.y });
+    }
+  };
+
+  const onPointerEnd = (e: React.PointerEvent<SVGSVGElement>) => {
+    pointers.current.delete(e.pointerId);
+    const g = gesture.current;
+    if (g?.kind === 'pinch') {
+      // One finger stays: it pans from where it is.
+      const rest = [...pointers.current.entries()][0];
+      gesture.current = rest ? { kind: 'pan', pointerId: rest[0], last: rest[1] } : null;
+      if (!rest) setGrabbing(null);
+      return;
+    }
+    if (g && g.pointerId === e.pointerId) {
+      endDrag(g);
+      gesture.current = null;
+      setGrabbing(null);
+    }
+  };
+
+  const onDrawingKey = (e: React.KeyboardEvent<SVGSVGElement>) => {
+    if (e.target !== e.currentTarget) return;
+    const pan = e.shiftKey ? 120 : 40;
+    const keys: Record<string, () => void> = {
+      '+': () => zoomStep(1),
+      '=': () => zoomStep(1),
+      '-': () => zoomStep(-1),
+      '_': () => zoomStep(-1),
+      '0': resetZoom,
+      f: fit,
+      F: fit,
+      ArrowLeft: () => showCamera(panGraph(cameraRef.current, pan, 0)),
+      ArrowRight: () => showCamera(panGraph(cameraRef.current, -pan, 0)),
+      ArrowUp: () => showCamera(panGraph(cameraRef.current, 0, pan)),
+      ArrowDown: () => showCamera(panGraph(cameraRef.current, 0, -pan)),
+    };
+    const action = keys[e.key];
+    if (action) {
+      e.preventDefault();
+      action();
+    }
+  };
 
   const open = (node: DrawnNode) => {
     if (node.kind === 'cluster' && node.parent) onOpenPaper(node.parent);
@@ -242,52 +497,106 @@ export function PaperGraphView({ onOpenPaper }: { onOpenPaper: (id: string) => v
           {mode === 'map' ? (
             <figure className="flex flex-col gap-2 m-0">
               <div className="relative rounded-xl border border-shodh-border bg-shodh-surface overflow-hidden">
-                <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="w-full h-auto block" role="group" aria-labelledby={ids.title}>
+                <svg
+                  ref={svgRef}
+                  viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+                  className={cn(
+                    'w-full h-auto block select-none outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    grabbing ? 'cursor-grabbing' : 'cursor-grab',
+                  )}
+                  style={{ touchAction: 'none' }}
+                  role="group"
+                  tabIndex={0}
+                  aria-labelledby={ids.title}
+                  aria-describedby={ids.help}
+                  onPointerDown={onPointerDown}
+                  onPointerMove={onPointerMove}
+                  onPointerUp={onPointerEnd}
+                  onPointerCancel={onPointerEnd}
+                  onLostPointerCapture={e => {
+                    if (pointers.current.has(e.pointerId)) onPointerEnd(e);
+                  }}
+                  onKeyDown={onDrawingKey}
+                >
                   <title id={ids.title}>{`Citation graph: ${shaped.nodes.length} nodes drawn of ${shaped.matching} matching papers. Use the List view for a keyboard-friendly version.`}</title>
-                  <g stroke="var(--c-border-strong)" strokeWidth={1} strokeOpacity={0.6}>
-                    {shaped.edges.map(e => {
-                      const a = positions.get(e.source);
-                      const b = positions.get(e.target);
-                      if (!a || !b) return null;
-                      const active = hovered !== null && (e.source === hovered || e.target === hovered);
-                      return <line key={`${e.source}>${e.target}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={active ? 'var(--c-accent)' : undefined} strokeWidth={active ? 2 : 1} />;
+                  <rect width={WIDTH} height={HEIGHT} fill="transparent" />
+                  <g transform={`translate(${camera.x},${camera.y}) scale(${camera.scale})`}>
+                    <g stroke="var(--c-border-strong)" strokeWidth={1 / camera.scale} strokeOpacity={0.6}>
+                      {shaped.edges.map(e => {
+                        const a = layout?.index.get(e.source);
+                        const b = layout?.index.get(e.target);
+                        if (!a || !b) return null;
+                        const active = hovered !== null && (e.source === hovered || e.target === hovered);
+                        return (
+                          <line
+                            key={`${e.source}>${e.target}`}
+                            x1={a.x}
+                            y1={a.y}
+                            x2={b.x}
+                            y2={b.y}
+                            stroke={active ? 'var(--c-accent)' : undefined}
+                            strokeWidth={(active ? 2 : 1) / camera.scale}
+                          />
+                        );
+                      })}
+                    </g>
+                    {shaped.nodes.map(n => {
+                      const p = layout?.index.get(n.id);
+                      if (!p) return null;
+                      const r = nodeRadius(n);
+                      return (
+                        <g
+                          key={n.id}
+                          data-node-id={n.id}
+                          transform={`translate(${p.x ?? 0},${p.y ?? 0})`}
+                          role="button"
+                          tabIndex={n.kind === 'library' ? 0 : -1}
+                          aria-label={`${n.label}${n.year ? `, ${n.year}` : ''}${n.kind === 'library' ? ', in your library' : ''}`}
+                          className={cn(grabbing === 'node' ? 'cursor-grabbing' : 'cursor-pointer', 'outline-none [&:focus-visible>circle]:stroke-[var(--c-text)]')}
+                          onClick={() => {
+                            if (dragged.current) {
+                              dragged.current = false;
+                              return;
+                            }
+                            open(n);
+                          }}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              open(n);
+                            }
+                          }}
+                          onMouseEnter={() => setHovered(n.id)}
+                          onMouseLeave={() => setHovered(h => (h === n.id ? null : h))}
+                          onFocus={() => setHovered(n.id)}
+                          onBlur={() => setHovered(h => (h === n.id ? null : h))}
+                        >
+                          <circle r={r + 6} fill="transparent" />
+                          <circle r={r} fill={FILL[n.kind]} fillOpacity={n.kind === 'external' ? 0.55 : 1} stroke="var(--c-surface)" strokeWidth={2} />
+                          {n.kind !== 'external' && (
+                            <text y={r + 12} textAnchor="middle" className="fill-[var(--c-text-secondary)] text-[10px] pointer-events-none select-none">
+                              {shortLabel(n.label, 28)}
+                            </text>
+                          )}
+                        </g>
+                      );
                     })}
                   </g>
-                  {shaped.nodes.map(n => {
-                    const p = positions.get(n.id);
-                    if (!p) return null;
-                    const r = nodeRadius(n);
-                    return (
-                      <g
-                        key={n.id}
-                        transform={`translate(${p.x},${p.y})`}
-                        role="button"
-                        tabIndex={n.kind === 'library' ? 0 : -1}
-                        aria-label={`${n.label}${n.year ? `, ${n.year}` : ''}${n.kind === 'library' ? ', in your library' : ''}`}
-                        className={cn('cursor-pointer outline-none [&:focus-visible>circle]:stroke-[var(--c-text)]')}
-                        onClick={() => open(n)}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            open(n);
-                          }
-                        }}
-                        onMouseEnter={() => setHovered(n.id)}
-                        onMouseLeave={() => setHovered(h => (h === n.id ? null : h))}
-                        onFocus={() => setHovered(n.id)}
-                        onBlur={() => setHovered(h => (h === n.id ? null : h))}
-                      >
-                        <circle r={r + 6} fill="transparent" />
-                        <circle r={r} fill={FILL[n.kind]} fillOpacity={n.kind === 'external' ? 0.55 : 1} stroke="var(--c-surface)" strokeWidth={2} />
-                        {n.kind !== 'external' && (
-                          <text y={r + 12} textAnchor="middle" className="fill-[var(--c-text-secondary)] text-[10px] pointer-events-none select-none">
-                            {shortLabel(n.label, 28)}
-                          </text>
-                        )}
-                      </g>
-                    );
-                  })}
                 </svg>
+                <div role="toolbar" aria-label="Zoom" className="absolute right-3 top-3 flex flex-col gap-1 rounded-lg border border-shodh-border bg-shodh-surface/95 p-1 shadow-sm">
+                  <button type="button" onClick={() => zoomStep(1)} aria-label="Zoom in" title="Zoom in (+)" className={ICON_BUTTON}>
+                    <Plus className="w-4 h-4" aria-hidden="true" />
+                  </button>
+                  <button type="button" onClick={() => zoomStep(-1)} aria-label="Zoom out" title="Zoom out (−)" className={ICON_BUTTON}>
+                    <Minus className="w-4 h-4" aria-hidden="true" />
+                  </button>
+                  <button type="button" onClick={resetZoom} aria-label="Actual size" title="Actual size (0)" className={cn(ICON_BUTTON, 'text-[11px] font-semibold tabular-nums')}>
+                    1:1
+                  </button>
+                  <button type="button" onClick={fit} aria-label="Fit the graph in view" title="Fit to view (F)" className={ICON_BUTTON}>
+                    <Maximize2 className="w-4 h-4" aria-hidden="true" />
+                  </button>
+                </div>
                 {hoveredNode && (
                   <div role="tooltip" className="absolute left-3 top-3 max-w-[60%] rounded-lg border border-shodh-border bg-shodh-raised px-3 py-2 text-[12px] text-shodh-text shadow-sm pointer-events-none">
                     <p className="font-medium">{shortLabel(hoveredNode.label, 120)}</p>
@@ -300,6 +609,7 @@ export function PaperGraphView({ onOpenPaper }: { onOpenPaper: (id: string) => v
                 )}
               </div>
               <figcaption className="flex flex-wrap items-center gap-4 text-[11.5px] text-shodh-text-muted">
+                <span id={ids.help} className="basis-full">Drag a paper to move it, drag the background to pan, scroll or pinch to zoom. With the drawing focused: + and − zoom, 0 shows actual size, F fits, arrow keys pan.</span>
                 <span className="inline-flex items-center gap-1.5"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="var(--c-accent)" /></svg>In your library (labelled)</span>
                 <span className="inline-flex items-center gap-1.5"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="3" fill="var(--c-text-faint)" fillOpacity={0.55} /></svg>Cited work</span>
                 <span className="inline-flex items-center gap-1.5"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="var(--c-raised-2)" stroke="var(--c-border-strong)" /></svg>More references (not drawn)</span>

@@ -102,6 +102,44 @@ pub fn search_model_artifacts() -> Vec<ModelArtifact> {
     ]
 }
 
+/// Directory (under the model root) holding the answer-checking (NLI) model.
+pub const ANSWER_CHECK_DIR: &str = "nli-deberta-v3-xsmall";
+
+/// The pinned answer-checking model (≈96 MB): `cross-encoder/nli-deberta-v3-xsmall`,
+/// its quantised ONNX export, tokenizer and config (the config carries the
+/// label order the loader checks). Optional: without it, answers are checked
+/// with the reranker and number checks only.
+///
+/// The ONNX hash is Hugging Face's LFS object id at this revision; the
+/// tokenizer and config are plain git files, hashed after download from the
+/// same revision URLs.
+pub fn answer_check_artifacts() -> Vec<ModelArtifact> {
+    const REVISION: &str = "https://huggingface.co/cross-encoder/nli-deberta-v3-xsmall/resolve/a150876415327c80daeff35ca6f68f5ed8cf5c24";
+    vec![
+        ModelArtifact::new(
+            "Answer checking model",
+            &format!("{REVISION}/onnx/model_quint8_avx2.onnx"),
+            "21b14751a95520953bfcc607ceeb617de7cbeaeb6d60f4c8966716c743985337",
+            87_377_068,
+            "nli-deberta-v3-xsmall/model_quint8_avx2.onnx",
+        ),
+        ModelArtifact::new(
+            "Answer checking tokenizer",
+            &format!("{REVISION}/tokenizer.json"),
+            "5124ef2ead1a10a717703bc436de7f353da76d6340e4587719b42b1693707964",
+            8_656_624,
+            "nli-deberta-v3-xsmall/tokenizer.json",
+        ),
+        ModelArtifact::new(
+            "Answer checking config",
+            &format!("{REVISION}/config.json"),
+            "8d9f07bf7ba54a6fc3b1962483056f94c39dcf188db4cf61843e1c88f94b2342",
+            1_053,
+            "nli-deberta-v3-xsmall/config.json",
+        ),
+    ]
+}
+
 /// Errors from checking or installing the search models.
 #[derive(Debug, thiserror::Error)]
 pub enum ModelStoreError {
@@ -304,6 +342,11 @@ impl ModelStore {
     /// The pinned search models under `root`.
     pub fn search_models(root: impl Into<PathBuf>) -> Self {
         Self::with_artifacts(root, search_model_artifacts())
+    }
+
+    /// The pinned answer-checking model under `root`.
+    pub fn answer_check_model(root: impl Into<PathBuf>) -> Self {
+        Self::with_artifacts(root, answer_check_artifacts())
     }
 
     pub fn with_artifacts(root: impl Into<PathBuf>, artifacts: Vec<ModelArtifact>) -> Self {
@@ -797,7 +840,16 @@ mod tests {
     fn pinned_artifacts_are_well_formed() {
         let artifacts = search_model_artifacts();
         assert_eq!(artifacts.len(), 4);
-        for a in &artifacts {
+        let answer_check = answer_check_artifacts();
+        assert_eq!(answer_check.len(), 3);
+        assert!(answer_check
+            .iter()
+            .all(|a| a.relative_path.starts_with(&format!("{ANSWER_CHECK_DIR}/"))));
+        assert_eq!(
+            ModelStore::answer_check_model("x").total_bytes(),
+            96_034_745
+        );
+        for a in artifacts.iter().chain(&answer_check) {
             assert_eq!(a.sha256.len(), 64, "{}", a.name);
             assert!(a
                 .sha256

@@ -162,7 +162,9 @@ impl RunAuditTap {
             | AgentEvent::StepProgress { .. }
             | AgentEvent::ApprovalRequested { .. }
             | AgentEvent::PlanUpdated { .. }
-            | AgentEvent::Navigated { .. } => None,
+            | AgentEvent::Navigated { .. }
+            | AgentEvent::Grounding { .. }
+            | AgentEvent::RevisionStarted { .. } => None,
         }
     }
 }

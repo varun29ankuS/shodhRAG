@@ -307,7 +307,7 @@ pub fn words(text: &str) -> Vec<String> {
 }
 
 /// A light English stem so "networks" matches "network".
-fn stem(word: &str) -> String {
+pub(crate) fn stem(word: &str) -> String {
     let n = word.chars().count();
     if n > 4 && word.ends_with("ies") {
         return format!("{}y", &word[..word.len() - 3]);
@@ -412,7 +412,7 @@ pub fn title_jaccard(a: &str, b: &str) -> f32 {
     inter / union
 }
 
-fn sigmoid(x: f32) -> f32 {
+pub(crate) fn sigmoid(x: f32) -> f32 {
     if x.is_nan() || x == f32::NEG_INFINITY {
         return 0.0;
     }

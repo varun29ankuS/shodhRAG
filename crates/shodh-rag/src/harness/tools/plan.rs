@@ -48,7 +48,8 @@ impl HostTool for UpdatePlanTool {
                         "properties": {
                             "id": {"type": "string", "minLength": 1, "maxLength": 40},
                             "text": {"type": "string", "minLength": 1, "maxLength": 200},
-                            "status": {"type": "string", "enum": ["pending", "in_progress", "done"]}
+                            "status": {"type": "string", "enum": ["pending", "in_progress", "done"]},
+                            "need": {"type": "boolean"}
                         },
                         "required": ["text", "status"],
                         "additionalProperties": false
@@ -90,10 +91,10 @@ impl HostTool for UpdatePlanTool {
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .unwrap_or_else(|| (index + 1).to_string());
+            let need = item.get("need").and_then(Value::as_bool).unwrap_or(false);
             items.push(PlanItem {
-                id,
-                text: text.to_string(),
-                status,
+                need,
+                ..PlanItem::task(id, text, status)
             });
         }
         let done = items

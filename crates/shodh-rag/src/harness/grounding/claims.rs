@@ -349,7 +349,7 @@ fn sentence_spans(text: &str) -> Vec<(usize, usize)> {
                 None => break,
             }
         }
-        if text[start..end].trim().len() > 0 {
+        if !text[start..end].trim().is_empty() {
             spans.push((start, end));
         }
         start = end;
@@ -534,9 +534,9 @@ pub fn split_claims(message: &str) -> Vec<Claim> {
             });
             continue;
         }
-        if trimmed.starts_with("$$") {
+        if let Some(after) = trimmed.strip_prefix("$$") {
             flush(message, &mut block, &mut out);
-            if !(trimmed.len() > 4 && trimmed[2..].contains("$$")) {
+            if !after.contains("$$") {
                 math = Some("$$");
             }
             continue;

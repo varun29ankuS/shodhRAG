@@ -393,6 +393,8 @@ impl HostTool for SearchDocumentsTool {
                 path: p.path.clone(),
                 page: p.page.clone(),
                 web: false,
+                text: p.text.clone(),
+                checkable: true,
             });
         }
         let files: HashSet<&str> = passages.iter().map(|p| p.path.as_str()).collect();

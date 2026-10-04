@@ -195,7 +195,7 @@ fn render(
     pages: &[(usize, String)],
     source: &str,
     selection: Selection,
-) -> Result<ToolOutput, ToolError> {
+) -> Result<(ToolOutput, String), ToolError> {
     let (selection, note) = match selection {
         Selection::PageOrRange { page, start, end } => {
             if pages.is_empty() {
@@ -274,11 +274,14 @@ fn render(
         text.push('\n');
         text.push_str(&hint);
     }
-    Ok(ToolOutput {
-        text_for_model: text,
-        summary_for_ui: format!("Read {}, {location}", parsed.title),
-        detail: Some(json!({ "path": source, "location": location })),
-    })
+    Ok((
+        ToolOutput {
+            text_for_model: text,
+            summary_for_ui: format!("Read {}, {location}", parsed.title),
+            detail: Some(json!({ "path": source, "location": location })),
+        },
+        body,
+    ))
 }
 
 #[async_trait]
@@ -323,7 +326,7 @@ impl HostTool for OpenDocumentTool {
         RiskTier::Read
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let requested = req_str(&args, "path", OPEN_DOCUMENT)?;
         check_requested_path(requested)?;
         let selection = selection(&args)?;
@@ -373,7 +376,11 @@ impl HostTool for OpenDocumentTool {
                 "{source} is indexed but could not be read from disk ({e}). It may have been moved or deleted; re-index its folder."
             ))
         })?;
-        render(&parsed, &pages, &source, selection)
+        let (output, body) = render(&parsed, &pages, &source, selection)?;
+        // Claims citing a passage of this file are also checked against
+        // what the model read here.
+        ctx.record_opened(&source, &body);
+        Ok(output)
     }
 }
 
@@ -439,14 +446,15 @@ mod tests {
             start: 0,
             end: 3,
         };
-        let out = render(&paged, &parsed_pages(&paged), "c:/docs/acme.pdf", both).unwrap();
+        let (out, body) = render(&paged, &parsed_pages(&paged), "c:/docs/acme.pdf", both).unwrap();
+        assert_eq!(body, "second page", "the text recorded for checking claims");
         assert!(out.text_for_model.contains("second page"));
         assert!(out
             .summary_for_ui
             .contains("page 2 (used the page; the range was ignored)"));
 
         let unpaged = doc("abcdefghij", &[]);
-        let out = render(&unpaged, &[], "c:/docs/scan.pdf", both).unwrap();
+        let (out, _) = render(&unpaged, &[], "c:/docs/scan.pdf", both).unwrap();
         assert!(out.text_for_model.contains("abc"));
         assert!(!out.text_for_model.contains("abcd"));
         assert!(out
@@ -458,7 +466,7 @@ mod tests {
     fn pages_read_from_the_pdf_replace_missing_page_structure() {
         let unpaged = doc("whole text", &[]);
         let from_file = vec![(1, "cover".to_string()), (2, "terms".to_string())];
-        let out = render(&unpaged, &from_file, "c:/docs/a.pdf", Selection::Page(2)).unwrap();
+        let (out, _) = render(&unpaged, &from_file, "c:/docs/a.pdf", Selection::Page(2)).unwrap();
         assert!(out.text_for_model.contains("terms"));
         assert!(pdf_pages_from_file(Path::new("c:/definitely/missing.pdf")).is_none());
     }
@@ -467,7 +475,7 @@ mod tests {
     fn pages_and_ranges_render() {
         let parsed = doc("abcdefghij", &[(1, "first page"), (2, "second page")]);
         let pages = parsed_pages(&parsed);
-        let out = render(&parsed, &pages, "c:/docs/acme.pdf", Selection::Page(2)).unwrap();
+        let (out, _) = render(&parsed, &pages, "c:/docs/acme.pdf", Selection::Page(2)).unwrap();
         assert!(out.text_for_model.contains("second page"));
         assert!(out.text_for_model.starts_with(UNTRUSTED_NOTICE));
         assert_eq!(out.summary_for_ui, "Read Acme MSA, page 2");
@@ -476,7 +484,7 @@ mod tests {
             missing.to_string(),
             "Page 9 not found; the document has pages 1 to 2"
         );
-        let range = render(
+        let (range, _) = render(
             &parsed,
             &pages,
             "c:/docs/acme.pdf",

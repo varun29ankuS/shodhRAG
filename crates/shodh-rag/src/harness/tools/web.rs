@@ -85,22 +85,38 @@ fn limit(args: &Value, key: &str, default: usize, max: usize) -> usize {
         .clamp(1, max)
 }
 
+/// One web source to number.
+struct WebSource {
+    title: String,
+    url: String,
+    /// Shown in the transcript.
+    snippet: String,
+    /// What the model was shown for it (claims are checked against this).
+    evidence: String,
+    /// False for a search provider's answer fragments, which no model can
+    /// judge out of context.
+    checkable: bool,
+}
+
 /// Number `sources` with the run's citation numbers and record them.
-fn number_sources(ctx: &ToolContext, sources: &[(String, String, String)]) -> Vec<Value> {
+fn number_sources(ctx: &ToolContext, sources: Vec<WebSource>) -> Vec<Value> {
     let count = u32::try_from(sources.len()).unwrap_or(u32::MAX);
     let first = ctx.reserve_passages(count);
     sources
-        .iter()
+        .into_iter()
         .zip(first..)
-        .map(|((title, url, snippet), n)| {
+        .map(|(source, n)| {
+            let entry = json!({ "n": n, "title": source.title, "url": source.url, "snippet": source.snippet });
             ctx.record_passage(CitedPassage {
                 n,
-                file: title.clone(),
-                path: url.clone(),
+                file: source.title,
+                path: source.url,
                 page: None,
                 web: true,
+                text: source.evidence,
+                checkable: source.checkable,
             });
-            json!({ "n": n, "title": title, "url": url, "snippet": snippet })
+            entry
         })
         .collect()
 }
@@ -201,11 +217,17 @@ impl HostTool for WebSearchTool {
                 })),
             });
         }
-        let sources: Vec<(String, String, String)> = ranked
+        let sources: Vec<WebSource> = ranked
             .iter()
-            .map(|(r, _)| (r.title.clone(), r.url.clone(), r.snippet.clone()))
+            .map(|(r, _)| WebSource {
+                title: r.title.clone(),
+                url: r.url.clone(),
+                snippet: r.snippet.clone(),
+                evidence: format!("{}. {}", r.title, r.snippet),
+                checkable: !grounded,
+            })
             .collect();
-        let mut numbered = number_sources(ctx, &sources);
+        let mut numbered = number_sources(ctx, sources);
         for (entry, (_, relevance)) in numbered.iter_mut().zip(&ranked) {
             if let Value::Object(map) = entry {
                 map.insert("relevance".to_string(), json!(round2(*relevance)));
@@ -410,7 +432,16 @@ impl HostTool for FetchUrlTool {
         }
         let body = truncate_chars(&text, max_chars);
         let snippet = truncate_chars(&text, 300);
-        let numbered = number_sources(ctx, &[(title.clone(), final_url.clone(), snippet)]);
+        let numbered = number_sources(
+            ctx,
+            vec![WebSource {
+                title: title.clone(),
+                url: final_url.clone(),
+                snippet,
+                evidence: body.clone(),
+                checkable: true,
+            }],
+        );
         let n = numbered
             .first()
             .and_then(|v| v.get("n"))
@@ -530,17 +561,20 @@ impl HostTool for SearchPapersTool {
                 })),
             });
         }
-        let sources: Vec<(String, String, String)> = papers
+        let sources: Vec<WebSource> = papers
             .iter()
             .map(|p| {
-                (
-                    p.title.clone(),
-                    p.link(),
-                    p.abstract_snippet.clone().unwrap_or_default(),
-                )
+                let snippet = p.abstract_snippet.clone().unwrap_or_default();
+                WebSource {
+                    title: p.title.clone(),
+                    url: p.link(),
+                    evidence: format!("{}. {snippet}", p.title),
+                    snippet,
+                    checkable: true,
+                }
             })
             .collect();
-        let numbered = number_sources(ctx, &sources);
+        let numbered = number_sources(ctx, sources);
         let listed: Vec<Value> = papers
             .iter()
             .zip(&numbered)

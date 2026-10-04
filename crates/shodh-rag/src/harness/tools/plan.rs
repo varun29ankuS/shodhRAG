@@ -34,7 +34,11 @@ impl HostTool for UpdatePlanTool {
     }
     fn description(&self) -> &'static str {
         "Replace the task list shown to the user for this answer. Send the full list each time, \
-         with each item's status (pending, in_progress, done). Use it for work with three or more steps."
+         with each item's status (pending, in_progress, done). Use it for work with three or more \
+         steps. For a question with several parts, list each part the answer must find in the \
+         sources as an item with need: true (a short phrase naming the information, e.g. \"notice \
+         period of the Acme contract\"); the app checks each need against the passages you \
+         retrieve and shows whether it was covered."
     }
     fn schema(&self) -> Value {
         json!({
@@ -102,6 +106,8 @@ impl HostTool for UpdatePlanTool {
             .filter(|i| i.status == PlanStatus::Done)
             .count();
         let total = items.len();
+        // Stored for the harness's need check; coverage found earlier stays.
+        let items = ctx.record_plan(items);
         ctx.emit(AgentEvent::PlanUpdated {
             run_id: ctx.run_id.clone(),
             items,

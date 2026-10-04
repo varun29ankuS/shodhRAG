@@ -290,7 +290,9 @@ impl ModelSource for AppModels {
 struct PendingRun {
     conversation_id: String,
     user_text: String,
-    answer: String,
+    /// Answer text by text block (a revised answer drops the draft it replaced).
+    answer: Vec<(String, String)>,
+    answer_len: usize,
     at: DateTime<Utc>,
 }
 
@@ -403,7 +405,8 @@ impl LearnState {
             PendingRun {
                 conversation_id: conversation_id.to_string(),
                 user_text: user_text.trim().to_string(),
-                answer: String::new(),
+                answer: Vec::new(),
+                answer_len: 0,
                 at: Utc::now(),
             },
         );
@@ -412,11 +415,25 @@ impl LearnState {
     /// Observes the agent event stream: answer text, and the end of a run.
     pub fn observe(&self, event: &AgentEvent) {
         match event {
-            AgentEvent::TextDelta { run_id, delta, .. } => {
+            AgentEvent::TextDelta {
+                run_id,
+                message_id,
+                delta,
+            } => {
                 if let Some(mut run) = self.inner.runs.get_mut(run_id) {
-                    if run.answer.len() + delta.len() <= MAX_ANSWER_CONTEXT {
-                        run.answer.push_str(delta);
+                    if run.answer_len + delta.len() <= MAX_ANSWER_CONTEXT {
+                        run.answer_len += delta.len();
+                        match run.answer.iter_mut().rev().find(|(id, _)| id == message_id) {
+                            Some((_, text)) => text.push_str(delta),
+                            None => run.answer.push((message_id.clone(), delta.clone())),
+                        }
                     }
+                }
+            }
+            AgentEvent::Grounding { run_id, report } => {
+                if let Some(mut run) = self.inner.runs.get_mut(run_id) {
+                    run.answer
+                        .retain(|(id, _)| !report.superseded_message_ids.contains(id));
                 }
             }
             AgentEvent::RunFinished { run_id, status, .. } => {
@@ -431,7 +448,18 @@ impl LearnState {
                     conversation_id: run.conversation_id,
                     turn_id: run_id.clone(),
                     user_text: run.user_text,
-                    assistant_context: Some(run.answer).filter(|a| !a.trim().is_empty()),
+                    assistant_context: Some(
+                        run.answer
+                            .into_iter()
+                            .map(|(_, text)| text)
+                            .collect::<Vec<_>>()
+                            .join(
+                                "
+
+",
+                            ),
+                    )
+                    .filter(|a| !a.trim().is_empty()),
                     at: run.at,
                 });
             }

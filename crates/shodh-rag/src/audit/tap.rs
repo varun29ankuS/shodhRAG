@@ -1,18 +1,18 @@
 //! Builds the `answer` event of each run from the session's event stream:
-//! status, duration, model, token usage and cost, and which numbered
-//! passages the answer cites (`[n]` → file and page).
+//! status, duration, model, token usage and cost, which numbered passages
+//! the answer cites (`[n]` → file and page), and its grounding (counts and
+//! score of the final check; never claim text). Text blocks a revised answer
+//! replaced do not count as the answer.
 //!
 //! Usage totals are cumulative and are only emitted while the run is active,
 //! so they are final when `RunFinished` arrives.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::OnceLock;
 
-use regex::Regex;
 use serde_json::{json, Value};
 
 use super::payload::is_cloud;
-use crate::harness::events::{AgentEvent, RunStatus};
+use crate::harness::events::{AgentEvent, CoverageState, GroundingReport, RunStatus};
 
 /// Answer text kept per run for citation extraction.
 const MAX_ANSWER_CHARS: usize = 400_000;
@@ -27,7 +27,11 @@ struct CitedPassage {
 #[derive(Debug, Default)]
 struct RunState {
     model: String,
-    text: String,
+    /// Answer text by text block, in order.
+    messages: Vec<(String, String)>,
+    text_chars: usize,
+    /// The final grounding check, or the latest one.
+    grounding: Option<GroundingReport>,
     passages: HashMap<u64, CitedPassage>,
     input_tokens: u64,
     output_tokens: u64,
@@ -67,11 +71,32 @@ impl RunAuditTap {
                 );
                 None
             }
-            AgentEvent::TextDelta { run_id, delta, .. } => {
+            AgentEvent::TextDelta {
+                run_id,
+                message_id,
+                delta,
+            } => {
                 if let Some(run) = self.runs.get_mut(run_id) {
-                    if run.text.len() + delta.len() <= MAX_ANSWER_CHARS {
-                        run.text.push_str(delta);
+                    if run.text_chars + delta.len() <= MAX_ANSWER_CHARS {
+                        run.text_chars += delta.len();
+                        match run
+                            .messages
+                            .iter_mut()
+                            .rev()
+                            .find(|(id, _)| id == message_id)
+                        {
+                            Some((_, text)) => text.push_str(delta),
+                            None => run.messages.push((message_id.clone(), delta.clone())),
+                        }
                     }
+                }
+                None
+            }
+            AgentEvent::Grounding { run_id, report } => {
+                if let Some(run) = self.runs.get_mut(run_id) {
+                    run.messages
+                        .retain(|(id, _)| !report.superseded_message_ids.contains(id));
+                    run.grounding = Some(report.clone());
                 }
                 None
             }
@@ -121,7 +146,13 @@ impl RunAuditTap {
                 error,
             } => {
                 let run = self.runs.remove(run_id).unwrap_or_default();
-                let cited = cited_numbers(&run.text);
+                let text: String = run
+                    .messages
+                    .iter()
+                    .map(|(_, t)| t.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                let cited = cited_numbers(&text);
                 let citations: Vec<Value> = cited
                     .iter()
                     .map(|n| match run.passages.get(n) {
@@ -152,8 +183,9 @@ impl RunAuditTap {
                         "cache_read_tokens": run.cache_read_tokens,
                         "cost_usd": run.cost_usd,
                         "tool_steps": run.tool_steps,
-                        "answer_chars": run.text.chars().count(),
+                        "answer_chars": text.chars().count(),
                         "citations": citations,
+                        "grounding": run.grounding.as_ref().map(grounding_payload),
                     }),
                 })
             }
@@ -163,53 +195,44 @@ impl RunAuditTap {
             | AgentEvent::ApprovalRequested { .. }
             | AgentEvent::PlanUpdated { .. }
             | AgentEvent::Navigated { .. }
-            | AgentEvent::Grounding { .. }
             | AgentEvent::RevisionStarted { .. } => None,
         }
     }
 }
 
-/// Compile a literal pattern once. The patterns are constants covered by the
-/// unit tests; a failure disables that pattern instead of panicking.
-fn cached(cell: &'static OnceLock<Option<Regex>>, pattern: &str) -> Option<&'static Regex> {
-    cell.get_or_init(|| Regex::new(pattern).ok()).as_ref()
+/// The audited grounding of an answer: counts, score, method and rounds.
+/// The answer's text is not stored, so neither are its claims.
+pub fn grounding_payload(report: &GroundingReport) -> Value {
+    let s = &report.summary;
+    let covered = report
+        .needs
+        .iter()
+        .filter(|n| n.state == CoverageState::Covered)
+        .count();
+    json!({
+        "checked": s.checked,
+        "supported": s.supported,
+        "weak": s.weak,
+        "unsupported": s.unsupported,
+        "uncited": s.uncited,
+        "invalid": s.invalid,
+        "unchecked": s.unchecked,
+        "score": s.score,
+        "method": report.method,
+        "rounds": report.round,
+        "final": report.is_final,
+        "needs_total": report.needs.len(),
+        "needs_covered": covered,
+    })
 }
 
-static FENCED_CODE: OnceLock<Option<Regex>> = OnceLock::new();
-static BRACKET_CITATIONS: OnceLock<Option<Regex>> = OnceLock::new();
-static LENTICULAR_CITATIONS: OnceLock<Option<Regex>> = OnceLock::new();
-
-/// Citation numbers in `text`, as the transcript renders them: `[n]`,
-/// `[n, m]`, `[Document n]` and `【n†…】`, outside fenced code blocks.
+/// Citation numbers in `text`, as the transcript renders them (the grammar
+/// of [`crate::harness::grounding::citations`]), outside code.
 pub fn cited_numbers(text: &str) -> BTreeSet<u64> {
-    let prose = match cached(&FENCED_CODE, r"(?s)```.*?```") {
-        Some(re) => re.replace_all(text, " ").into_owned(),
-        None => text.to_string(),
-    };
-    let mut out = BTreeSet::new();
-    if let Some(re) = cached(
-        &BRACKET_CITATIONS,
-        r"(?i)\[(?:Document\s+)?(\d+(?:\s*,\s*(?:Document\s+)?\d+)*)\]",
-    ) {
-        for caps in re.captures_iter(&prose) {
-            if let Some(group) = caps.get(1) {
-                for part in group.as_str().split(',') {
-                    let digits: String = part.chars().filter(char::is_ascii_digit).collect();
-                    if let Ok(n) = digits.parse::<u64>() {
-                        out.insert(n);
-                    }
-                }
-            }
-        }
-    }
-    if let Some(re) = cached(&LENTICULAR_CITATIONS, r"【(\d+)†[^】]*】") {
-        for caps in re.captures_iter(&prose) {
-            if let Some(n) = caps.get(1).and_then(|m| m.as_str().parse::<u64>().ok()) {
-                out.insert(n);
-            }
-        }
-    }
-    out
+    crate::harness::grounding::citations::cited_numbers(text)
+        .into_iter()
+        .map(u64::from)
+        .collect()
 }
 
 /// Group cited passages by file for display: path → pages.
@@ -237,12 +260,81 @@ mod tests {
 
     #[test]
     fn citation_patterns_match_the_transcript() {
-        let text = "Sixty days [1]. See also [2, 3] and [Document 4][5]. 【6†source】\n\
-                    ```\nlet x = a[7];\n```\nNot a cite: [x].";
+        let text = "Sixty days [1]. See also [2, 3] and [Document 4][5]. 【6†source】 [7-8]\n\
+                    ```\nlet x = a[9];\n```\nNot a cite: [x] or the shape [4, 9, 1].";
         assert_eq!(
             cited_numbers(text).into_iter().collect::<Vec<_>>(),
-            vec![1, 2, 3, 4, 5, 6]
+            vec![1, 2, 3, 4, 5, 6, 7, 8]
         );
+    }
+
+    #[test]
+    fn revised_answers_audit_only_the_final_text_and_its_grounding() {
+        use crate::harness::events::{
+            ClaimCheck, ClaimKind, ClaimOutcome, GroundingSummary, ScoringMethod,
+        };
+        let mut tap = RunAuditTap::new();
+        tap.observe(&started("r1"));
+        for (message, delta) in [
+            ("m1", "Fee is 900 EUR [1]."),
+            ("m2", "Fee is 1,200 EUR [2]."),
+        ] {
+            tap.observe(&AgentEvent::TextDelta {
+                run_id: "r1".into(),
+                message_id: message.into(),
+                delta: delta.into(),
+            });
+        }
+        let report = GroundingReport {
+            round: 1,
+            is_final: true,
+            method: ScoringMethod::Entailment,
+            summary: GroundingSummary {
+                checked: 1,
+                supported: 1,
+                score: Some(1.0),
+                ..GroundingSummary::default()
+            },
+            claims: vec![ClaimCheck {
+                message_id: "m2".into(),
+                text: "Fee is 1,200 EUR.".into(),
+                anchor: "Fee is 1,200 EUR [2].".into(),
+                kind: ClaimKind::Sentence,
+                outcome: ClaimOutcome::Supported,
+                cited: vec![2],
+                invalid: vec![],
+                support: Some(0.9),
+                missing_numbers: vec![],
+                closest: None,
+                closest_score: None,
+            }],
+            needs: vec![],
+            message_ids: vec!["m2".into()],
+            superseded_message_ids: vec!["m1".into()],
+        };
+        tap.observe(&AgentEvent::Grounding {
+            run_id: "r1".into(),
+            report,
+        });
+        let answer = tap
+            .observe(&AgentEvent::RunFinished {
+                run_id: "r1".into(),
+                status: RunStatus::Completed,
+                duration_ms: 10,
+                error: None,
+            })
+            .unwrap();
+        let p = &answer.payload;
+        assert_eq!(p["citations"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            p["citations"][0]["n"], 2,
+            "the superseded draft's [1] is not the answer's"
+        );
+        assert_eq!(p["grounding"]["supported"], 1);
+        assert_eq!(p["grounding"]["score"], 1.0);
+        assert_eq!(p["grounding"]["method"], "entailment");
+        assert_eq!(p["grounding"]["rounds"], 1);
+        assert!(!p.to_string().contains("1,200"), "claim text is not stored");
     }
 
     fn started(run: &str) -> AgentEvent {

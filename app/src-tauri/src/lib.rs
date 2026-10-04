@@ -1,4 +1,5 @@
 mod analytics_commands;
+mod answer_check_commands;
 mod answer_validator;
 mod api_key_store;
 mod app_settings;
@@ -185,6 +186,28 @@ pub fn run() {
             app.manage(search_models_commands::SearchModelsState::new(
                 model_dir.clone(),
             ));
+            // The optional answer checking model: loaded in the background when
+            // its files are installed and verify, so startup does not wait.
+            app.manage(answer_check_commands::AnswerCheckState::new(
+                model_dir.clone(),
+            ));
+            let answer_check_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let loaded = tokio::task::spawn_blocking(move || {
+                    answer_check_handle
+                        .state::<answer_check_commands::AnswerCheckState>()
+                        .load_if_installed()
+                })
+                .await;
+                match loaded {
+                    Ok(Ok(true)) => tracing::info!("Answer checking model loaded"),
+                    Ok(Ok(false)) => tracing::info!(
+                        "Answer checking model not installed; answers are checked for topic and numbers only"
+                    ),
+                    Ok(Err(e)) => tracing::warn!("{e}"),
+                    Err(e) => tracing::warn!("Answer checking model load task failed: {e}"),
+                }
+            });
 
             // Initialize SpaceManager with persistent storage
             let space_manager = SpaceManager::with_data_dir(app_data_dir.clone());
@@ -440,6 +463,8 @@ pub fn run() {
             // First-run search model setup
             search_models_commands::search_models_status,
             search_models_commands::install_search_models,
+            answer_check_commands::answer_check_status,
+            answer_check_commands::install_answer_check_model,
             // Enhanced RAG commands
             enhanced_rag_commands::preview_folder,
             enhanced_rag_commands::link_folder_enhanced,
@@ -633,6 +658,7 @@ pub fn run() {
             app_settings::update_app_preferences,
             app_settings::set_app_policy,
             app_settings::set_memory_preferences,
+            app_settings::set_answer_preferences,
             // Long-term memory (Settings → Memory)
             memory_commands::memory_list,
             memory_commands::memory_history,

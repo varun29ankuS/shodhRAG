@@ -205,6 +205,22 @@ impl MemoryPrefs {
     }
 }
 
+/// How agent answers are grounded. User-only: the check exists to catch the
+/// assistant, so the assistant must not be able to weaken it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AnswerPrefs {
+    /// When the grounding check flags statements, ask the model once to
+    /// re-ground or remove them (one extra turn).
+    pub auto_repair: bool,
+}
+
+impl Default for AnswerPrefs {
+    fn default() -> Self {
+        Self { auto_repair: true }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
@@ -212,6 +228,7 @@ pub struct AppSettings {
     pub policy: Policy,
     pub background: BackgroundPrefs,
     pub memory: MemoryPrefs,
+    pub answers: AnswerPrefs,
     /// The UI has copied its earlier local-storage preferences here.
     pub seeded: bool,
 }
@@ -254,7 +271,7 @@ pub const AGENT_WRITABLE: [SettingKey; 2] = [SettingKey::Theme, SettingKey::Sear
 /// these by name (in addition to its schema only listing [`AGENT_WRITABLE`]),
 /// so a prompt-injected request gets a clear refusal rather than a
 /// best-effort match.
-pub const AGENT_DENIED: [(&str, &str); 17] = [
+pub const AGENT_DENIED: [(&str, &str); 18] = [
     ("api_keys", "API keys are secrets; a manipulated agent could leak or replace them."),
     ("provider", "Switching the model provider changes who receives the user's documents."),
     ("model", "Switching the model changes who receives the user's documents and what it costs."),
@@ -272,6 +289,7 @@ pub const AGENT_DENIED: [(&str, &str); 17] = [
     ("learn_model", "The learning model receives what the user says; choosing who receives it is the user's decision."),
     ("auto_min_confidence", "Lowering the bar for storing memories without asking weakens the user's approval."),
     ("learn_caps", "The daily limits bound what learning costs; only the user may raise them."),
+    ("auto_repair", "Re-checking flagged statements guards the assistant's own answers; only the user may turn it off."),
 ];
 
 /// Why `key` is withheld from the agent, if it is.
@@ -537,9 +555,49 @@ pub async fn set_memory_preferences(
     Ok(settings)
 }
 
+/// Change how answers are grounded. User-only: no agent tool calls this, and
+/// the agent's settings tools refuse `auto_repair`.
+#[tauri::command]
+pub async fn set_answer_preferences(
+    app: AppHandle,
+    answers: AnswerPrefs,
+    audit: State<'_, AuditState>,
+) -> Result<AppSettings, String> {
+    let (settings, before) = store(&app)?
+        .update(|s| Ok(std::mem::replace(&mut s.answers, answers)))
+        .map_err(|e| e.to_string())?;
+    if before != settings.answers {
+        audit.record(AuditRecord::new(
+            AuditEventType::SettingsChange,
+            json!({
+                "action": "answer_preferences_change",
+                "old": before,
+                "new": settings.answers,
+                "via": "ui",
+            }),
+        ));
+    }
+    broadcast(&app, &settings);
+    Ok(settings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn answer_preferences_default_to_auto_repair_and_are_user_only() {
+        assert!(AppSettings::default().answers.auto_repair);
+        let old: AppSettings = serde_json::from_str(r#"{"preferences":{"theme":"dark"}}"#).unwrap();
+        assert!(
+            old.answers.auto_repair,
+            "settings from before the field get the default"
+        );
+        let off: AppSettings = serde_json::from_str(r#"{"answers":{"autoRepair":false}}"#).unwrap();
+        assert!(!off.answers.auto_repair);
+        assert!(denied_reason("auto_repair").is_some());
+        assert!(SettingKey::parse("auto_repair").is_none());
+    }
 
     #[test]
     fn defaults_and_round_trip() {

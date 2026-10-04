@@ -29,7 +29,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
-use super::events::{AgentEvent, RiskTier};
+use super::events::{AgentEvent, NeedCheck, PlanItem, RiskTier};
 use super::omp::{render_label, StepMeta};
 use super::profile::AgentProfile;
 use super::protocol::{HostToolDefinition, OutboundFrame, ToolLoadMode, ToolResultPayload};
@@ -65,7 +65,20 @@ pub struct CitedPassage {
     pub page: Option<String>,
     /// The passage came from the web, not from the user's documents.
     pub web: bool,
+    /// The text the model was shown for this number (what its claims are
+    /// checked against).
+    #[serde(skip)]
+    pub text: String,
+    /// False for text a model cannot judge out of context (a search
+    /// provider's answer fragments); claims citing it are only checked for
+    /// numbers.
+    #[serde(skip)]
+    pub checkable: bool,
 }
+
+/// Most characters of opened document text kept per run for checking
+/// claims (`open_document` returns at most 12 000 per call).
+pub const MAX_OPENED_CHARS: usize = 120_000;
 
 /// Citation numbers of one run: the counter that hands them out and what
 /// each number refers to. Shared by every tool call of the run, so numbers
@@ -75,6 +88,8 @@ pub struct CitedPassage {
 pub struct RunPassages {
     issued: AtomicU32,
     cited: Mutex<BTreeMap<u32, CitedPassage>>,
+    /// Text read with `open_document` this run, by file path, in order.
+    opened: Mutex<Vec<(String, String)>>,
 }
 
 impl RunPassages {
@@ -86,10 +101,38 @@ impl RunPassages {
         self.cited.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    fn lock_opened(&self) -> std::sync::MutexGuard<'_, Vec<(String, String)>> {
+        self.opened.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Forget every number (a new run starts).
     pub fn reset(&self) {
         self.issued.store(0, Ordering::SeqCst);
         self.lock().clear();
+        self.lock_opened().clear();
+    }
+
+    /// Remember document text the run read (beyond numbered passages), up to
+    /// [`MAX_OPENED_CHARS`] per run.
+    pub fn record_opened(&self, path: &str, text: &str) {
+        let mut opened = self.lock_opened();
+        let used: usize = opened.iter().map(|(_, t)| t.chars().count()).sum();
+        let room = MAX_OPENED_CHARS.saturating_sub(used);
+        if room == 0 || text.trim().is_empty() {
+            return;
+        }
+        let kept: String = text.chars().take(room).collect();
+        opened.push((path.to_string(), kept));
+    }
+
+    /// Every passage of the run, by number.
+    pub fn all(&self) -> Vec<CitedPassage> {
+        self.lock().values().cloned().collect()
+    }
+
+    /// Document text the run read, as (path, text).
+    pub fn opened(&self) -> Vec<(String, String)> {
+        self.lock_opened().clone()
     }
 
     /// Reserve `count` consecutive numbers and return the first (1-based).
@@ -249,8 +292,63 @@ pub struct ToolContext {
     events: mpsc::UnboundedSender<AgentEvent>,
     outbound: Option<mpsc::UnboundedSender<OutboundFrame>>,
     passages: Arc<RunPassages>,
+    plan: Arc<RunPlan>,
     audit: Option<ToolAudit>,
     scope: Arc<RunScope>,
+}
+
+/// The task list of one run, as last sent by the model and annotated by the
+/// harness with need coverage. Shared like [`RunPassages`].
+#[derive(Debug, Default)]
+pub struct RunPlan {
+    items: Mutex<Vec<PlanItem>>,
+}
+
+impl RunPlan {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<PlanItem>> {
+        self.items.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Forget the list (a new run starts).
+    pub fn reset(&self) {
+        self.lock().clear();
+    }
+
+    /// Replace the list with the model's, keeping the coverage already
+    /// found for needs it still lists (matched by text). Returns the list as
+    /// stored.
+    pub fn replace(&self, mut items: Vec<PlanItem>) -> Vec<PlanItem> {
+        let mut current = self.lock();
+        for item in items.iter_mut().filter(|i| i.need) {
+            if let Some(old) = current.iter().find(|o| o.need && o.text == item.text) {
+                item.coverage = old.coverage;
+                item.evidence = old.evidence.clone();
+            }
+        }
+        *current = items.clone();
+        items
+    }
+
+    /// The current list.
+    pub fn items(&self) -> Vec<PlanItem> {
+        self.lock().clone()
+    }
+
+    /// Set the coverage of needs by item id; returns the updated list.
+    pub fn set_coverage(&self, checks: &[NeedCheck]) -> Vec<PlanItem> {
+        let mut current = self.lock();
+        for item in current.iter_mut() {
+            if let Some(check) = checks.iter().find(|c| c.id == item.id) {
+                item.coverage = Some(check.state);
+                item.evidence = check.passages.clone();
+            }
+        }
+        current.clone()
+    }
 }
 
 /// Where a tool call's audit events go.
@@ -273,6 +371,7 @@ impl ToolContext {
             events,
             outbound: None,
             passages: Arc::new(RunPassages::new()),
+            plan: Arc::new(RunPlan::new()),
             audit: None,
             scope: Arc::new(RunScope::default()),
         }
@@ -340,6 +439,23 @@ impl ToolContext {
     /// Remember what a citation number refers to.
     pub fn record_passage(&self, passage: CitedPassage) {
         self.passages.record(passage);
+    }
+
+    /// Remember document text this call showed the model without a number
+    /// (claims citing a passage of the same file are checked against it).
+    pub fn record_opened(&self, path: &str, text: &str) {
+        self.passages.record_opened(path, text);
+    }
+
+    /// Share the run's task list, so the harness can check its needs.
+    pub fn with_run_plan(mut self, plan: Arc<RunPlan>) -> Self {
+        self.plan = plan;
+        self
+    }
+
+    /// Replace the run's task list.
+    pub fn record_plan(&self, items: Vec<PlanItem>) -> Vec<PlanItem> {
+        self.plan.replace(items)
     }
 
     /// What `[n]` refers to in this run, if it was issued.
@@ -1483,13 +1599,62 @@ mod tests {
             path: "c:/a.pdf".into(),
             page: Some("4".into()),
             web: false,
+            text: "Notice is sixty days.".into(),
+            checkable: true,
         });
+        passages.record_opened("c:/a.pdf", "Page four text.");
         assert_eq!(passages.reserve(1), 4);
         assert_eq!(passages.get(2).unwrap().file, "a.pdf");
+        assert_eq!(passages.all().len(), 1);
+        assert_eq!(
+            passages.opened(),
+            vec![("c:/a.pdf".to_string(), "Page four text.".to_string())]
+        );
         assert_eq!(passages.issued(), 4);
         passages.reset();
         assert!(passages.get(2).is_none());
+        assert!(passages.opened().is_empty());
         assert_eq!(passages.reserve(1), 1);
+    }
+
+    #[test]
+    fn opened_text_is_capped_per_run() {
+        let passages = RunPassages::new();
+        passages.record_opened("a", &"x".repeat(MAX_OPENED_CHARS - 10));
+        passages.record_opened("b", &"y".repeat(100));
+        passages.record_opened("c", "z");
+        let opened = passages.opened();
+        assert_eq!(opened.len(), 2);
+        assert_eq!(opened[1].1.len(), 10);
+    }
+
+    #[test]
+    fn run_plan_keeps_need_coverage_across_model_updates() {
+        use crate::harness::events::{CoverageState, PlanStatus};
+        let plan = RunPlan::new();
+        let need = PlanItem {
+            need: true,
+            ..PlanItem::task("1", "Notice period", PlanStatus::Pending)
+        };
+        plan.replace(vec![
+            need.clone(),
+            PlanItem::task("2", "Write", PlanStatus::Pending),
+        ]);
+        let updated = plan.set_coverage(&[NeedCheck {
+            id: "1".into(),
+            text: "Notice period".into(),
+            state: CoverageState::Covered,
+            passages: vec![3],
+        }]);
+        assert_eq!(updated[0].coverage, Some(CoverageState::Covered));
+        let kept = plan.replace(vec![PlanItem {
+            status: PlanStatus::Done,
+            ..need
+        }]);
+        assert_eq!(kept[0].coverage, Some(CoverageState::Covered));
+        assert_eq!(kept[0].evidence, vec![3]);
+        plan.reset();
+        assert!(plan.items().is_empty());
     }
 
     #[test]

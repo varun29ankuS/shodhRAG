@@ -6,7 +6,11 @@
 //! - **reader** — parses stdout frames in order, answers command responses,
 //!   normalises frames into [`AgentEvent`]s and dispatches host tools;
 //! - **stderr drain** — keeps the pipe empty and the last lines for errors;
-//! - one task per in-flight host tool call (aborted on `host_tool_cancel`).
+//! - one task per in-flight host tool call (aborted on `host_tool_cancel`);
+//! - with grounding on, one check per completed answer: the run is held
+//!   ([`NormaliserState::set_hold_completion`]), the answer is verified
+//!   against its passages ([`super::grounding`]) and the run either
+//!   finishes or continues with one bounded follow-up prompt.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -22,9 +26,12 @@ use tokio::task::AbortHandle;
 use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 
 use super::error::HarnessError;
-use super::events::AgentEvent;
+use super::events::{AgentEvent, ClaimCheck, GroundingReport, NeedCheck, ScoringMethod};
+use super::grounding::followup::{self, Next, Rounds};
+use super::grounding::verify::{check_needs, summarise, verify_answer, Thresholds};
+use super::grounding::{AnswerMessage, Evidence, GroundingConfig, OpenedText, VerifyInput};
 use super::model::EnvValue;
-use super::omp::{normalise, NormaliserState, StepOutcome};
+use super::omp::{normalise, HeldRun, NormaliserState, StepOutcome};
 use super::profile::AgentProfile;
 use super::protocol::{
     parse_frame, HostToolCallFrame, InboundFrame, MessageUpdateMode, OutboundFrame, ResponseFrame,
@@ -33,7 +40,7 @@ use super::protocol::{
 use super::sidecar::{self, LaunchSpec};
 use super::tools::plan::UPDATE_PLAN;
 use super::tools::{
-    ApprovalGate, RunPassages, RunScope, ToolAudit, ToolCall, ToolContext, ToolRegistry,
+    ApprovalGate, RunPassages, RunPlan, RunScope, ToolAudit, ToolCall, ToolContext, ToolRegistry,
 };
 use super::{truncate_chars, AgentHarness};
 
@@ -45,6 +52,10 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 const STDERR_TAIL_LINES: usize = 20;
 /// Messages are sent as one JSONL frame; stay far below the frame limit.
 pub const MAX_MESSAGE_CHARS: usize = 200_000;
+/// Longest the model-backed answer check may take; after it, the check
+/// falls back to word and number checks (the models keep running on their
+/// blocking thread and their result is dropped).
+const CHECK_TIMEOUT: Duration = Duration::from_secs(45);
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -61,6 +72,25 @@ pub struct SessionConfig {
     /// Audit log and scope for this conversation's tool calls, approvals and
     /// retrievals. `None` disables auditing (e.g. the log failed to open).
     pub audit: Option<ToolAudit>,
+    /// Check every completed answer against its passages before the run
+    /// ends. `None` finishes runs as soon as the model does.
+    pub grounding: Option<GroundingConfig>,
+}
+
+/// The grounding state of the active run.
+#[derive(Debug, Default)]
+struct GroundingRun {
+    run_id: String,
+    rounds: Rounds,
+    /// Follow-up turns so far (the next report's round).
+    round: u32,
+    /// Messages of the run that earlier rounds consumed.
+    round_start: usize,
+    /// The text blocks that are the answer, and their checks.
+    answer_ids: Vec<String>,
+    answer_chars: usize,
+    answer_checks: Vec<ClaimCheck>,
+    method: Option<ScoringMethod>,
 }
 
 struct Inner {
@@ -79,6 +109,10 @@ struct Inner {
     calls_in_run: AtomicU32,
     /// Citation numbers handed out in the active run (see `search_documents`).
     passages_in_run: Arc<RunPassages>,
+    /// The active run's task list (information needs are checked).
+    plan_in_run: Arc<RunPlan>,
+    grounding: Option<GroundingConfig>,
+    grounding_run: Mutex<GroundingRun>,
     /// What the user limited the active run to.
     scope: Mutex<Arc<RunScope>>,
     next_id: AtomicU64,
@@ -211,9 +245,10 @@ impl Inner {
             _ => {}
         }
 
-        let events = {
+        let (events, settled) = {
             let mut state = lock(&self.state);
-            normalise(&frame, &mut state, now_ms())
+            let events = normalise(&frame, &mut state, now_ms());
+            (events, state.take_settled())
         };
         let run_ended = events
             .iter()
@@ -224,6 +259,10 @@ impl Inner {
         if run_ended {
             self.approvals.cancel_all();
             self.abort_inflight();
+        }
+        if let Some(held) = settled {
+            let inner = Arc::clone(self);
+            tokio::spawn(async move { inner.check_answer(held).await });
         }
 
         match frame {
@@ -252,6 +291,7 @@ impl Inner {
         let ctx = ToolContext::new(run_id, call.tool_call_id.clone(), self.events.clone())
             .with_host_call(call.id.clone(), self.outbound.clone())
             .with_run_passages(Arc::clone(&self.passages_in_run))
+            .with_run_plan(Arc::clone(&self.plan_in_run))
             .with_scope(Arc::clone(&lock(&self.scope)))
             .with_audit(self.audit.clone());
         let host_id = call.id.clone();
@@ -378,6 +418,11 @@ impl Inner {
                 state.begin_run(&run_id, &self.session_id, &self.model, &prompt_id, now_ms());
             self.calls_in_run.store(0, Ordering::SeqCst);
             self.passages_in_run.reset();
+            self.plan_in_run.reset();
+            *lock(&self.grounding_run) = GroundingRun {
+                run_id: run_id.clone(),
+                ..GroundingRun::default()
+            };
             *lock(&self.scope) = Arc::new(scope);
             self.emit(started);
         }
@@ -395,6 +440,264 @@ impl Inner {
         }
         Ok(run_id)
     }
+}
+
+impl Inner {
+    fn finish_held(&self, held: &HeldRun) {
+        let events = lock(&self.state).finish_held(&held.run_id, held.generation, now_ms());
+        let ended = !events.is_empty();
+        for event in events {
+            self.emit(event);
+        }
+        if ended {
+            self.approvals.cancel_all();
+            self.abort_inflight();
+        }
+    }
+
+    /// Check a completed answer, then finish the run or continue it with
+    /// one follow-up prompt (see [`followup::decide`]).
+    async fn check_answer(self: Arc<Self>, held: HeldRun) {
+        let Some(config) = self.grounding.clone() else {
+            self.finish_held(&held);
+            return;
+        };
+        let (round, round_start, previous_ids, previous_chars, previous_checks, rounds) = {
+            let g = lock(&self.grounding_run);
+            if g.run_id != held.run_id {
+                drop(g);
+                self.finish_held(&held);
+                return;
+            }
+            (
+                g.round,
+                g.round_start,
+                g.answer_ids.clone(),
+                g.answer_chars,
+                g.answer_checks.clone(),
+                g.rounds,
+            )
+        };
+        let messages: Vec<AnswerMessage> = held
+            .messages
+            .iter()
+            .skip(round_start)
+            .filter(|(_, text)| !text.trim().is_empty())
+            .map(|(id, text)| AnswerMessage {
+                id: id.clone(),
+                text: text.clone(),
+            })
+            .collect();
+        let passages: Vec<Evidence> = self
+            .passages_in_run
+            .all()
+            .into_iter()
+            .map(|p| Evidence {
+                n: p.n,
+                path: p.path,
+                text: p.text,
+                checkable: p.checkable,
+            })
+            .collect();
+        let opened: Vec<OpenedText> = self
+            .passages_in_run
+            .opened()
+            .into_iter()
+            .map(|(path, text)| OpenedText { path, text })
+            .collect();
+        let needs: Vec<(String, String)> = self
+            .plan_in_run
+            .items()
+            .into_iter()
+            .filter(|i| i.need && !i.text.trim().is_empty())
+            .map(|i| (i.id, i.text))
+            .collect();
+        let auto_repair = (config.auto_repair)();
+        let scorers = (config.scorers)();
+
+        let (checks, need_checks, method) = {
+            let job = (
+                messages.clone(),
+                passages.clone(),
+                opened.clone(),
+                needs.clone(),
+            );
+            let checked = tokio::time::timeout(
+                CHECK_TIMEOUT,
+                tokio::task::spawn_blocking(move || {
+                    let (messages, passages, opened, needs) = job;
+                    run_checks(&messages, &passages, &opened, &needs, Some(&scorers))
+                }),
+            )
+            .await;
+            match checked {
+                Ok(Ok(result)) => result,
+                Ok(Err(e)) => {
+                    tracing::warn!(target: "shodh::grounding", run_id = %held.run_id, error = %e, "answer check failed; using word and number checks");
+                    run_checks(&messages, &passages, &opened, &needs, None)
+                }
+                Err(_) => {
+                    tracing::warn!(target: "shodh::grounding", run_id = %held.run_id, "answer check timed out; using word and number checks");
+                    run_checks(&messages, &passages, &opened, &needs, None)
+                }
+            }
+        };
+
+        // A follow-up turn's text replaces the answer only when it is an
+        // answer in its own right.
+        let new_ids: Vec<String> = messages.iter().map(|m| m.id.clone()).collect();
+        let new_chars: usize = messages.iter().map(|m| m.text.chars().count()).sum();
+        let (answer_ids, answer_chars, answer_checks, superseded) =
+            if round == 0 || followup::replaces_previous(previous_chars, new_chars, checks.len()) {
+                (new_ids.clone(), new_chars, checks, previous_ids.clone())
+            } else {
+                (
+                    previous_ids.clone(),
+                    previous_chars,
+                    previous_checks,
+                    new_ids.clone(),
+                )
+            };
+
+        if !self.lock_still_held(&held) {
+            return;
+        }
+        if !need_checks.is_empty() {
+            let items = self.plan_in_run.set_coverage(&need_checks);
+            self.emit(AgentEvent::PlanUpdated {
+                run_id: held.run_id.clone(),
+                items,
+            });
+        }
+        let calls_used = self.calls_in_run.load(Ordering::SeqCst);
+        let calls_left = self.profile.max_tool_calls.saturating_sub(calls_used);
+        let next = followup::decide(
+            &answer_checks,
+            &need_checks,
+            rounds,
+            auto_repair,
+            calls_left,
+        );
+        let report = |is_final: bool| GroundingReport {
+            round,
+            is_final,
+            method,
+            summary: summarise(&answer_checks),
+            claims: answer_checks.clone(),
+            needs: need_checks.clone(),
+            message_ids: answer_ids.clone(),
+            superseded_message_ids: superseded.clone(),
+        };
+        {
+            let mut g = lock(&self.grounding_run);
+            g.answer_ids = answer_ids.clone();
+            g.answer_chars = answer_chars;
+            g.answer_checks = answer_checks.clone();
+            g.method = Some(method);
+        }
+        match next {
+            Next::Finish => {
+                let worth_reporting =
+                    !answer_checks.is_empty() || !need_checks.is_empty() || round > 0;
+                if worth_reporting {
+                    let report = report(true);
+                    tracing::info!(target: "shodh::grounding", run_id = %held.run_id, round, checked = report.summary.checked, supported = report.summary.supported, score = ?report.summary.score, "answer grounding");
+                    self.emit(AgentEvent::Grounding {
+                        run_id: held.run_id.clone(),
+                        report,
+                    });
+                }
+                self.finish_held(&held);
+            }
+            Next::FollowUp {
+                reason,
+                repair,
+                missing_needs,
+                prompt,
+            } => {
+                let prompt_id = self.next_id("p");
+                let resumed = {
+                    let mut state = lock(&self.state);
+                    let resumed = state.resume_held(&held.run_id, held.generation, &prompt_id);
+                    if resumed {
+                        // Sent under the state lock so the run cannot change in between.
+                        if self
+                            .send(OutboundFrame::Prompt {
+                                id: prompt_id,
+                                message: prompt,
+                                streaming_behavior: None,
+                            })
+                            .is_err()
+                        {
+                            let events = state.fail_run("The agent session has ended", now_ms());
+                            drop(state);
+                            for event in events {
+                                self.emit(event);
+                            }
+                            return;
+                        }
+                    }
+                    resumed
+                };
+                if !resumed {
+                    return;
+                }
+                {
+                    let mut g = lock(&self.grounding_run);
+                    g.round += 1;
+                    g.round_start = held.messages.len();
+                    if !repair.is_empty() {
+                        g.rounds.repair += 1;
+                    }
+                    if !missing_needs.is_empty() {
+                        g.rounds.coverage += 1;
+                    }
+                }
+                let missing_texts: Vec<String> = need_checks
+                    .iter()
+                    .filter(|n| missing_needs.contains(&n.id))
+                    .map(|n| n.text.clone())
+                    .collect();
+                tracing::info!(target: "shodh::grounding", run_id = %held.run_id, round = round + 1, ?reason, flagged = repair.len(), missing = missing_texts.len(), "answer follow-up turn");
+                self.emit(AgentEvent::Grounding {
+                    run_id: held.run_id.clone(),
+                    report: report(false),
+                });
+                self.emit(AgentEvent::RevisionStarted {
+                    run_id: held.run_id.clone(),
+                    round: round + 1,
+                    reason,
+                    flagged: u32::try_from(repair.len()).unwrap_or(u32::MAX),
+                    missing_needs: missing_texts,
+                });
+            }
+        }
+    }
+
+    fn lock_still_held(&self, held: &HeldRun) -> bool {
+        lock(&self.state).still_held(&held.run_id, held.generation)
+    }
+}
+
+/// Verify the answer and check the needs; without `scorers`, by words and
+/// numbers only.
+fn run_checks(
+    messages: &[AnswerMessage],
+    passages: &[Evidence],
+    opened: &[OpenedText],
+    needs: &[(String, String)],
+    scorers: Option<&super::grounding::ScorerSet>,
+) -> (Vec<ClaimCheck>, Vec<NeedCheck>, ScoringMethod) {
+    let thresholds: &Thresholds = &super::grounding::THRESHOLDS;
+    let input = VerifyInput {
+        messages,
+        passages,
+        opened,
+    };
+    let views = scorers.map(|s| s.scorers()).unwrap_or_default();
+    let (checks, method) = verify_answer(&input, views, thresholds);
+    let need_checks = check_needs(needs, passages, views.relevance, thresholds);
+    (checks, need_checks, method)
 }
 
 async fn write_loop(
@@ -501,6 +804,7 @@ impl OmpSession {
             profile,
             registry,
             audit,
+            grounding,
         } = config;
         let started = std::time::Instant::now();
         let process = sidecar::spawn(&launch).await?;
@@ -526,6 +830,7 @@ impl OmpSession {
             state: Mutex::new({
                 let mut state = NormaliserState::new(registry.catalog());
                 state.set_model_warning(launch.model.warning.clone());
+                state.set_hold_completion(grounding.is_some());
                 state
             }),
             profile,
@@ -538,6 +843,9 @@ impl OmpSession {
             inflight: Mutex::new(HashMap::new()),
             calls_in_run: AtomicU32::new(0),
             passages_in_run: Arc::new(RunPassages::new()),
+            plan_in_run: Arc::new(RunPlan::new()),
+            grounding,
+            grounding_run: Mutex::new(GroundingRun::default()),
             scope: Mutex::new(Arc::new(RunScope::default())),
             next_id: AtomicU64::new(0),
             closing: AtomicBool::new(false),
@@ -687,12 +995,19 @@ impl AgentHarness for OmpSession {
             let mut state = lock(&inner.state);
             match state.active_run_id().map(str::to_string) {
                 Some(run_id) => {
+                    // A held run has no turn in progress to steer: the message
+                    // starts the next turn of the same run.
+                    let behavior = if state.is_held() {
+                        None
+                    } else {
+                        Some(StreamingBehavior::Steer)
+                    };
                     state.attach_prompt(&prompt_id);
                     // Send under the state lock so the run cannot finish in between.
                     inner.send(OutboundFrame::Prompt {
                         id: prompt_id,
                         message: message.to_string(),
-                        streaming_behavior: Some(StreamingBehavior::Steer),
+                        streaming_behavior: behavior,
                     })?;
                     Some(run_id)
                 }
@@ -712,6 +1027,16 @@ impl AgentHarness for OmpSession {
         let inner = &self.inner;
         inner.ensure_open()?;
         inner.approvals.cancel_all();
+        // While its answer is being checked, omp has no turn running, so the
+        // run is stopped here.
+        let held_events = lock(&inner.state).abort_held(now_ms());
+        if !held_events.is_empty() {
+            for event in held_events {
+                inner.emit(event);
+            }
+            inner.abort_inflight();
+            return Ok(());
+        }
         inner
             .command(OutboundFrame::Abort {
                 id: inner.next_id("c"),
@@ -737,6 +1062,275 @@ impl AgentHarness for OmpSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::events::{ClaimOutcome, RevisionReason, RunStatus};
+    use crate::harness::grounding::GroundingConfig;
+    use crate::harness::tools::CitedPassage;
+
+    /// A session without an omp process: frames are fed to `handle_frame`
+    /// and what the session writes to omp is read from `outbound`.
+    fn offline_inner(
+        grounding: Option<GroundingConfig>,
+    ) -> (
+        Arc<Inner>,
+        mpsc::UnboundedReceiver<AgentEvent>,
+        mpsc::UnboundedReceiver<OutboundFrame>,
+    ) {
+        let (events_tx, events_rx) = mpsc::unbounded_channel();
+        let (out_tx, out_rx) = mpsc::unbounded_channel();
+        let registry = Arc::new(ToolRegistry::new());
+        let inner = Arc::new(Inner {
+            session_id: "s".into(),
+            model: "test/model".into(),
+            state: Mutex::new({
+                let mut state = NormaliserState::new(registry.catalog());
+                state.set_hold_completion(grounding.is_some());
+                state
+            }),
+            profile: AgentProfile::assistant(),
+            registry,
+            audit: None,
+            approvals: ApprovalGate::default(),
+            outbound: out_tx,
+            events: events_tx,
+            pending: Mutex::new(HashMap::new()),
+            inflight: Mutex::new(HashMap::new()),
+            calls_in_run: AtomicU32::new(0),
+            passages_in_run: Arc::new(RunPassages::new()),
+            plan_in_run: Arc::new(RunPlan::new()),
+            grounding,
+            grounding_run: Mutex::new(GroundingRun::default()),
+            scope: Mutex::new(Arc::new(RunScope::default())),
+            next_id: AtomicU64::new(0),
+            closing: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+            close_writer: Arc::new(Notify::new()),
+            child: tokio::sync::Mutex::new(None),
+            stderr_tail: Arc::new(Mutex::new(VecDeque::new())),
+            secrets: Vec::new(),
+        });
+        (inner, events_rx, out_rx)
+    }
+
+    fn feed(inner: &Arc<Inner>, line: &str) {
+        inner.handle_frame(parse_frame(line).unwrap(), &mut None);
+    }
+
+    fn say(inner: &Arc<Inner>, message: &str, text: &str) {
+        let frame = serde_json::json!({
+            "type": "message_update",
+            "messageId": message,
+            "assistantMessageEvent": {"type": "text_delta", "delta": text}
+        });
+        feed(inner, &frame.to_string());
+    }
+
+    fn complete(inner: &Arc<Inner>, prompt_id: &str) {
+        feed(
+            inner,
+            &format!(
+                r#"{{"type":"prompt_result","id":"{prompt_id}","agentInvoked":true,"status":"completed","sessionSettled":true}}"#
+            ),
+        );
+    }
+
+    fn sent_prompt(out: &mut mpsc::UnboundedReceiver<OutboundFrame>) -> (String, String) {
+        match out.try_recv() {
+            Ok(OutboundFrame::Prompt { id, message, .. }) => (id, message),
+            other => panic!("expected a prompt, got {other:?}"),
+        }
+    }
+
+    async fn next_event(events: &mut mpsc::UnboundedReceiver<AgentEvent>) -> AgentEvent {
+        tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .expect("an event within 10 s")
+            .expect("event channel open")
+    }
+
+    /// Events up to and including the next one `stop` accepts.
+    async fn events_until(
+        events: &mut mpsc::UnboundedReceiver<AgentEvent>,
+        stop: impl Fn(&AgentEvent) -> bool,
+    ) -> Vec<AgentEvent> {
+        let mut out = Vec::new();
+        loop {
+            let event = next_event(events).await;
+            let done = stop(&event);
+            out.push(event);
+            if done {
+                return out;
+            }
+        }
+    }
+
+    fn start(inner: &Arc<Inner>) -> String {
+        inner
+            .start_run(
+                "What is the notice period?",
+                Some("run-1".into()),
+                RunScope::default(),
+            )
+            .unwrap();
+        inner.passages_in_run.reserve(1);
+        inner.passages_in_run.record(CitedPassage {
+            n: 1,
+            file: "msa.pdf".into(),
+            path: "c:/docs/msa.pdf".into(),
+            page: Some("4".into()),
+            web: false,
+            text: "Either party may terminate the agreement with sixty days written notice.".into(),
+            checkable: true,
+        });
+        "run-1".into()
+    }
+
+    #[tokio::test]
+    async fn a_flagged_answer_is_repaired_once_within_the_same_run() {
+        let (inner, mut events, mut out) = offline_inner(Some(GroundingConfig::lexical()));
+        start(&inner);
+        let (first_prompt, _) = sent_prompt(&mut out);
+        say(
+            &inner,
+            "m1",
+            "Either party may terminate the agreement with 90 days written notice [1].",
+        );
+        complete(&inner, &first_prompt);
+
+        let round0 = events_until(&mut events, |e| {
+            matches!(e, AgentEvent::RevisionStarted { .. })
+        })
+        .await;
+        let report = round0
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::Grounding { report, .. } => Some(report.clone()),
+                _ => None,
+            })
+            .expect("a grounding report");
+        assert!(!report.is_final);
+        assert_eq!(report.claims[0].outcome, ClaimOutcome::Unsupported);
+        assert_eq!(report.claims[0].missing_numbers, vec!["90"]);
+        assert!(matches!(
+            round0.last(),
+            Some(AgentEvent::RevisionStarted {
+                round: 1,
+                reason: RevisionReason::Repair,
+                flagged: 1,
+                ..
+            })
+        ));
+        assert!(
+            !round0
+                .iter()
+                .any(|e| matches!(e, AgentEvent::RunFinished { .. })),
+            "the run stays open"
+        );
+        let (repair_prompt, message) = sent_prompt(&mut out);
+        assert!(message.contains("does not contain 90"), "{message}");
+
+        say(
+            &inner,
+            "m2",
+            "Either party may terminate the agreement with 60 days written notice [1].",
+        );
+        complete(&inner, &repair_prompt);
+        let round1 =
+            events_until(&mut events, |e| matches!(e, AgentEvent::RunFinished { .. })).await;
+        let last = round1
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::Grounding { report, .. } => Some(report.clone()),
+                _ => None,
+            })
+            .expect("a final report");
+        assert!(last.is_final);
+        assert_eq!(last.round, 1);
+        assert_eq!(last.message_ids, vec!["m2"]);
+        assert_eq!(
+            last.superseded_message_ids,
+            vec!["m1"],
+            "the draft is kept, replaced"
+        );
+        assert_eq!(last.summary.supported, 1);
+        assert!(matches!(
+            round1.last(),
+            Some(AgentEvent::RunFinished {
+                status: RunStatus::Completed,
+                ..
+            })
+        ));
+        assert!(out.try_recv().is_err(), "no further prompt");
+    }
+
+    #[tokio::test]
+    async fn a_second_failure_is_flagged_not_repaired_again() {
+        let (inner, mut events, mut out) = offline_inner(Some(GroundingConfig::lexical()));
+        start(&inner);
+        let (first_prompt, _) = sent_prompt(&mut out);
+        say(&inner, "m1", "The fee is 900 EUR per year [1].");
+        complete(&inner, &first_prompt);
+        events_until(&mut events, |e| {
+            matches!(e, AgentEvent::RevisionStarted { .. })
+        })
+        .await;
+        let (repair_prompt, _) = sent_prompt(&mut out);
+        say(&inner, "m2", "The fee is 950 EUR per year [1].");
+        complete(&inner, &repair_prompt);
+        let round1 =
+            events_until(&mut events, |e| matches!(e, AgentEvent::RunFinished { .. })).await;
+        let last = round1
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::Grounding { report, .. } => Some(report.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(last.is_final);
+        assert_eq!(last.claims[0].outcome, ClaimOutcome::Unsupported);
+        assert!(!round1
+            .iter()
+            .any(|e| matches!(e, AgentEvent::RevisionStarted { .. })));
+        assert!(out.try_recv().is_err(), "never a second repair turn");
+    }
+
+    #[tokio::test]
+    async fn stopping_during_the_check_ends_the_run() {
+        let (inner, _events, mut out) = offline_inner(Some(GroundingConfig::lexical()));
+        start(&inner);
+        let (first_prompt, _) = sent_prompt(&mut out);
+        say(&inner, "m1", "Hello.");
+        // Hold the run, then stop it before the check acts.
+        {
+            let mut state = lock(&inner.state);
+            let frame = parse_frame(&format!(
+                r#"{{"type":"prompt_result","id":"{first_prompt}","agentInvoked":true,"status":"completed"}}"#
+            ))
+            .unwrap();
+            normalise(&frame, &mut state, now_ms());
+            assert!(state.is_held());
+            let ended = state.abort_held(now_ms());
+            assert!(matches!(
+                ended.last(),
+                Some(AgentEvent::RunFinished {
+                    status: RunStatus::Aborted,
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn without_grounding_runs_finish_at_once() {
+        let (inner, mut events, mut out) = offline_inner(None);
+        start(&inner);
+        let (first_prompt, _) = sent_prompt(&mut out);
+        say(&inner, "m1", "The notice period is 90 days [1].");
+        complete(&inner, &first_prompt);
+        let all = events_until(&mut events, |e| matches!(e, AgentEvent::RunFinished { .. })).await;
+        assert!(!all
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Grounding { .. })));
+    }
 
     #[test]
     fn messages_are_validated() {

@@ -10,6 +10,11 @@
 //!   arrives before `host_tool_call`, whose arguments have the intent stripped.
 //! - `host_tool_call` arrives before `tool_execution_start` for the same call.
 //! - `tool_execution_end` arrives only after the host wrote `host_tool_result`.
+//!
+//! With [`NormaliserState::set_hold_completion`] a run that completes is not
+//! finished at once: it is *held* so the session can check the answer
+//! ([`super::grounding`]) and then either finish it or send one more prompt
+//! within the same run (same citation numbers, same tool budget).
 
 use std::collections::{HashMap, HashSet};
 
@@ -40,6 +45,8 @@ pub struct StepOutcome {
 }
 
 const MAX_PROGRESS_CHARS: usize = 400;
+/// Answer text kept per run for the grounding check.
+const MAX_ANSWER_CHARS: usize = 400_000;
 const MAX_SUMMARY_CHARS: usize = 160;
 const MAX_INTENTS_REMEMBERED: usize = 256;
 
@@ -66,6 +73,25 @@ struct ActiveRun {
     usage: UsageTotals,
     worst_status: RunStatus,
     error: Option<String>,
+    /// Answer text by assistant message, in order.
+    messages: Vec<(String, String)>,
+    answer_chars: usize,
+    /// Completed and waiting for the session to finish or continue it.
+    held: bool,
+    /// A hold the session has not yet picked up.
+    settle_pending: bool,
+    /// Changes whenever a hold starts or ends, so a check that finishes
+    /// after the run moved on is discarded.
+    generation: u64,
+}
+
+/// A held run, as handed to the session's check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldRun {
+    pub run_id: String,
+    pub generation: u64,
+    /// Answer text by assistant message, in order.
+    pub messages: Vec<(String, String)>,
 }
 
 /// State carried across frames of one omp session.
@@ -81,6 +107,8 @@ pub struct NormaliserState {
     host_calls: HashMap<String, String>,
     /// Attached to every `RunStarted`.
     model_warning: Option<String>,
+    /// Hold completed runs for the session's answer check.
+    hold_completion: bool,
 }
 
 impl NormaliserState {
@@ -94,6 +122,74 @@ impl NormaliserState {
     /// Set the warning carried by every `RunStarted` (see `OmpModel::warning`).
     pub fn set_model_warning(&mut self, warning: Option<String>) {
         self.model_warning = warning;
+    }
+
+    /// Hold completed runs instead of finishing them (see the module docs).
+    pub fn set_hold_completion(&mut self, hold: bool) {
+        self.hold_completion = hold;
+    }
+
+    /// Whether the active run is held.
+    pub fn is_held(&self) -> bool {
+        self.run.as_ref().is_some_and(|r| r.held)
+    }
+
+    /// The held run, once: the session's check picks it up here.
+    pub fn take_settled(&mut self) -> Option<HeldRun> {
+        let run = self.run.as_mut()?;
+        if !(run.held && run.settle_pending) {
+            return None;
+        }
+        run.settle_pending = false;
+        Some(HeldRun {
+            run_id: run.run_id.clone(),
+            generation: run.generation,
+            messages: run.messages.clone(),
+        })
+    }
+
+    fn held_matches(&self, run_id: &str, generation: u64) -> bool {
+        self.run
+            .as_ref()
+            .is_some_and(|r| r.held && r.run_id == run_id && r.generation == generation)
+    }
+
+    /// Whether `generation` of `run_id` is still held (the check may act).
+    pub fn still_held(&self, run_id: &str, generation: u64) -> bool {
+        self.held_matches(run_id, generation)
+    }
+
+    /// Finish a held run (the check is done). Empty when the run moved on.
+    pub fn finish_held(&mut self, run_id: &str, generation: u64, now_ms: u64) -> Vec<AgentEvent> {
+        if !self.held_matches(run_id, generation) {
+            return Vec::new();
+        }
+        self.finish_run(now_ms)
+    }
+
+    /// Continue a held run with one more prompt. False when the run moved on.
+    pub fn resume_held(&mut self, run_id: &str, generation: u64, prompt_id: &str) -> bool {
+        if !self.held_matches(run_id, generation) {
+            return false;
+        }
+        if let Some(run) = self.run.as_mut() {
+            run.held = false;
+            run.settle_pending = false;
+            run.generation += 1;
+            run.pending_prompts.insert(prompt_id.to_string());
+        }
+        true
+    }
+
+    /// End a held run as interrupted (the user stopped it during the check).
+    pub fn abort_held(&mut self, now_ms: u64) -> Vec<AgentEvent> {
+        match self.run.as_mut() {
+            Some(run) if run.held => {
+                run.worst_status = RunStatus::Aborted;
+                self.finish_run(now_ms)
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// Start a run for a freshly sent prompt and return its `RunStarted`.
@@ -114,6 +210,11 @@ impl NormaliserState {
             usage: UsageTotals::default(),
             worst_status: RunStatus::Completed,
             error: None,
+            messages: Vec::new(),
+            answer_chars: 0,
+            held: false,
+            settle_pending: false,
+            generation: 0,
         });
         self.steps.clear();
         self.host_calls.clear();
@@ -127,10 +228,16 @@ impl NormaliserState {
     }
 
     /// Attach a steering prompt to the active run. Its own `prompt_result`
-    /// is then absorbed instead of producing a separate run.
+    /// is then absorbed instead of producing a separate run. A held run
+    /// continues (its pending check is discarded).
     pub fn attach_prompt(&mut self, prompt_id: &str) -> bool {
         match self.run.as_mut() {
             Some(run) => {
+                if run.held {
+                    run.held = false;
+                    run.settle_pending = false;
+                    run.generation += 1;
+                }
                 run.pending_prompts.insert(prompt_id.to_string());
                 true
             }
@@ -286,10 +393,34 @@ impl NormaliserState {
         if error.is_some() {
             run.error = error;
         }
-        if run.pending_prompts.is_empty() {
-            self.finish_run(now_ms)
-        } else {
-            Vec::new()
+        if !run.pending_prompts.is_empty() {
+            return Vec::new();
+        }
+        if self.hold_completion && run.worst_status == RunStatus::Completed {
+            run.held = true;
+            run.settle_pending = true;
+            run.generation += 1;
+            return Vec::new();
+        }
+        self.finish_run(now_ms)
+    }
+
+    fn record_text(&mut self, message_id: &str, delta: &str) {
+        let Some(run) = self.run.as_mut() else {
+            return;
+        };
+        if run.answer_chars + delta.len() > MAX_ANSWER_CHARS {
+            return;
+        }
+        run.answer_chars += delta.len();
+        match run.messages.last_mut() {
+            Some((id, text)) if id == message_id => text.push_str(delta),
+            _ => match run.messages.iter_mut().find(|(id, _)| id == message_id) {
+                Some((_, text)) => text.push_str(delta),
+                None => run
+                    .messages
+                    .push((message_id.to_string(), delta.to_string())),
+            },
         }
     }
 
@@ -500,14 +631,19 @@ pub fn normalise(
                 }
                 Vec::new()
             }
-            AssistantMessageEvent::TextDelta { delta } => match state.active_run_id() {
-                Some(run_id) if !delta.is_empty() => vec![AgentEvent::TextDelta {
-                    run_id: run_id.to_string(),
-                    message_id: update.message_id.clone(),
-                    delta: delta.clone(),
-                }],
-                _ => Vec::new(),
-            },
+            AssistantMessageEvent::TextDelta { delta } => {
+                match state.active_run_id().map(str::to_string) {
+                    Some(run_id) if !delta.is_empty() => {
+                        state.record_text(&update.message_id, delta);
+                        vec![AgentEvent::TextDelta {
+                            run_id,
+                            message_id: update.message_id.clone(),
+                            delta: delta.clone(),
+                        }]
+                    }
+                    _ => Vec::new(),
+                }
+            }
             AssistantMessageEvent::ThinkingDelta { delta } => match state.active_run_id() {
                 Some(run_id) if !delta.is_empty() => vec![AgentEvent::Thinking {
                     run_id: run_id.to_string(),
@@ -934,6 +1070,113 @@ mod tests {
         assert!(matches!(
             normalise(&failed, &mut state, 12).last(),
             Some(AgentEvent::RunFinished { status: RunStatus::Error, error: Some(e), .. }) if e == "401 Unauthorized"
+        ));
+    }
+
+    fn completed(prompt: &str) -> InboundFrame {
+        parse_frame(&format!(
+            r#"{{"type":"prompt_result","id":"{prompt}","agentInvoked":true,"status":"completed","sessionSettled":true}}"#
+        ))
+        .unwrap()
+    }
+
+    fn text(message: &str, delta: &str) -> InboundFrame {
+        parse_frame(&format!(
+            r#"{{"type":"message_update","messageId":"{message}","assistantMessageEvent":{{"type":"text_delta","delta":"{delta}"}}}}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn held_runs_wait_for_the_check_and_then_finish() {
+        let mut state = NormaliserState::new(catalog());
+        state.set_hold_completion(true);
+        state.begin_run("r", "s", "m", "p1", 0);
+        normalise(&text("m1", "Sixty days [1]."), &mut state, 1);
+        assert!(
+            normalise(&completed("p1"), &mut state, 5).is_empty(),
+            "held, not finished"
+        );
+        assert!(state.is_held());
+        let held = state.take_settled().unwrap();
+        assert_eq!(
+            held.messages,
+            vec![("m1".to_string(), "Sixty days [1].".to_string())]
+        );
+        assert!(state.take_settled().is_none(), "picked up once");
+        assert!(
+            state.finish_held("r", held.generation + 1, 9).is_empty(),
+            "stale check"
+        );
+        let events = state.finish_held("r", held.generation, 9);
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::RunFinished {
+                status: RunStatus::Completed,
+                duration_ms: 9,
+                ..
+            })
+        ));
+        assert!(state.active_run_id().is_none());
+    }
+
+    #[test]
+    fn a_held_run_can_continue_with_one_more_prompt() {
+        let mut state = NormaliserState::new(catalog());
+        state.set_hold_completion(true);
+        state.begin_run("r", "s", "m", "p1", 0);
+        normalise(&completed("p1"), &mut state, 1);
+        let held = state.take_settled().unwrap();
+        assert!(state.resume_held("r", held.generation, "p2"));
+        assert!(!state.is_held());
+        assert!(
+            !state.resume_held("r", held.generation, "p3"),
+            "already resumed"
+        );
+        normalise(&text("m2", "Revised."), &mut state, 2);
+        assert!(normalise(&completed("p2"), &mut state, 3).is_empty());
+        let again = state.take_settled().unwrap();
+        assert_eq!(again.messages.len(), 1);
+        assert_ne!(again.generation, held.generation);
+    }
+
+    #[test]
+    fn steering_or_stopping_a_held_run_discards_its_check() {
+        let mut state = NormaliserState::new(catalog());
+        state.set_hold_completion(true);
+        state.begin_run("r", "s", "m", "p1", 0);
+        normalise(&completed("p1"), &mut state, 1);
+        let held = state.take_settled().unwrap();
+        assert!(state.attach_prompt("p2"));
+        assert!(!state.still_held("r", held.generation));
+        assert!(state.finish_held("r", held.generation, 4).is_empty());
+        normalise(&completed("p2"), &mut state, 5);
+        state.take_settled().unwrap();
+        let events = state.abort_held(6);
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::RunFinished {
+                status: RunStatus::Aborted,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn failed_runs_are_never_held() {
+        let mut state = NormaliserState::new(catalog());
+        state.set_hold_completion(true);
+        state.begin_run("r", "s", "m", "p1", 0);
+        let failed = parse_frame(
+            r#"{"type":"prompt_result","id":"p1","agentInvoked":true,"status":"aborted"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            normalise(&failed, &mut state, 2).last(),
+            Some(AgentEvent::RunFinished {
+                status: RunStatus::Aborted,
+                ..
+            })
         ));
     }
 

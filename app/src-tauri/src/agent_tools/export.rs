@@ -830,6 +830,8 @@ mod tests {
             path: path.into(),
             page: page.map(str::to_string),
             web,
+            text: String::new(),
+            checkable: true,
         }
     }
 

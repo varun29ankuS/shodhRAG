@@ -30,6 +30,7 @@ use tokio::sync::{Mutex as AsyncMutex, OnceCell};
 use crate::agent_tools::{
     build_registry, web_block_reason, AgentHost, IndexedRoots, TauriEffects, AGENT_CANNOT_DO,
 };
+use crate::answer_check_commands::{AnswerCheckState, SharedNli};
 use crate::api_key_store;
 use crate::app_settings::SettingsStore;
 use crate::audit_commands::AuditState;
@@ -40,7 +41,10 @@ use crate::rag_commands::RagState;
 use crate::visual_commands::VisualState;
 use shodh_rag::audit::payload::is_cloud;
 use shodh_rag::audit::LOCAL_OWNER;
+use shodh_rag::harness::grounding::{GroundingConfig, ScorerSet, SharedEntailment};
+use shodh_rag::harness::web::relevance::SharedScorer;
 use shodh_rag::harness::web::SafeClient;
+use shodh_rag::rag_engine::{RAGEngine, SharedReranker};
 use shodh_rag::user_memory::Actor;
 
 /// Tauri event name for agent events.
@@ -299,6 +303,51 @@ impl AgentSessions {
 /// In-memory fingerprint of the model id and its credentials, so a session
 /// is reused only while the model settings are unchanged. Never persisted or
 /// logged.
+/// How agent answers are checked: the search reranker and the answer checking
+/// model as installed at each check, and the user's auto-repair setting
+/// (read at each check; unreadable settings keep it on, the safer side for
+/// answers).
+fn grounding_config(
+    data_dir: std::path::PathBuf,
+    rag: Arc<tokio::sync::RwLock<RAGEngine>>,
+    nli: SharedNli,
+) -> GroundingConfig {
+    // The engine lock is held for long stretches while indexing; its
+    // reranker slot is fetched once, without waiting for the lock.
+    let reranker_slot: Arc<std::sync::OnceLock<SharedReranker>> =
+        Arc::new(std::sync::OnceLock::new());
+    GroundingConfig {
+        scorers: Arc::new(move || {
+            let slot = match reranker_slot.get() {
+                Some(slot) => Some(slot.clone()),
+                None => rag.try_read().ok().map(|engine| {
+                    let handle = engine.reranker_handle();
+                    reranker_slot.get_or_init(|| handle).clone()
+                }),
+            };
+            let relevance = slot
+                .and_then(|slot| slot.read().clone())
+                .map(|reranker| Arc::new(reranker) as SharedScorer);
+            let entailment = nli
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .map(|model| Arc::new(model) as SharedEntailment);
+            ScorerSet {
+                relevance,
+                entailment,
+            }
+        }),
+        auto_repair: Arc::new(move || match SettingsStore::in_dir(&data_dir).load() {
+            Ok(settings) => settings.answers.auto_repair,
+            Err(e) => {
+                tracing::warn!(target: "shodh::grounding", error = %e, "settings unreadable; flagged statements are re-checked");
+                true
+            }
+        }),
+    }
+}
+
 fn model_fingerprint(model: &OmpModel) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -533,6 +582,7 @@ pub async fn agent_start(
     memory: State<'_, MemoryState>,
     visuals: State<'_, VisualState>,
     learn: State<'_, LearnState>,
+    answer_check: State<'_, AnswerCheckState>,
 ) -> CommandResult<String> {
     let started = Instant::now();
     check_id("conversation id", &conversation_id)?;
@@ -677,11 +727,17 @@ pub async fn agent_start(
         .as_deref()
         .unwrap_or(&conversation_id);
     let tool_audit = audit.tool_audit(audit_conversation, &profile_id);
+    let grounding = grounding_config(
+        app_data_dir.clone(),
+        rag.rag.clone(),
+        answer_check.model.clone(),
+    );
     let (session, mut events) = OmpSession::start(SessionConfig {
         launch,
         profile,
         registry,
         audit: tool_audit.clone(),
+        grounding: Some(grounding),
     })
     .await?;
     let session = Arc::new(session);

@@ -33,6 +33,7 @@ import { safeTruncate } from './markdownSafe.ts';
 import { SVG_MAX_CHARS } from '../ask/visual/svgSanitize.ts';
 import { PLOT_MAX_CHARS } from '../ask/visual/plotSpec.ts';
 import { SIMULATION_MAX_CHARS } from '../ask/visual/simulationSpec.ts';
+import { parseRegions } from '../ask/viewer/regionGeometry.ts';
 
 /** Key of the side threads inside a message's `metadata`. */
 export const METADATA_KEY = 'focusThreads';
@@ -79,7 +80,21 @@ function readHit(value: unknown): FocusSourceHit | null {
     page: readSpan(value.page),
     lineRange: Array.isArray(lr) && lr.length === 2 && lr.every(n => typeof n === 'number') ? [lr[0], lr[1]] : null,
     url: str(value.url) ? value.url : null,
+    ...(value.regions !== undefined && value.regions !== null ? { regions: parseRegions(value.regions) } : {}),
   };
+}
+
+function finiteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+/** A stored snippet rectangle (PDF points, top-left origin), or null. */
+function readRect(value: unknown): { x: number; y: number; width: number; height: number } | null {
+  if (!isRecord(value)) return null;
+  const { x, y, width, height } = value;
+  if (!finiteNumber(x) || !finiteNumber(y) || !finiteNumber(width) || !finiteNumber(height)) return null;
+  if (x < 0 || y < 0 || width <= 0 || height <= 0) return null;
+  return { x, y, width, height };
 }
 
 function readTask(value: unknown): FocusTaskSnapshot | null {
@@ -168,6 +183,22 @@ export function readTarget(value: unknown): FocusTarget | null {
     case 'task': {
       const task = readTask(value.task);
       return task ? { kind: 'task', label, task } : null;
+    }
+    case 'snippet': {
+      if (!str(value.snippetId) || !value.snippetId || !str(value.filePath) || !value.filePath) return null;
+      const rect = readRect(value.rect);
+      const page = value.page;
+      if (!rect || typeof page !== 'number' || !Number.isInteger(page) || page < 1) return null;
+      return {
+        kind: 'snippet',
+        label,
+        snippetId: value.snippetId,
+        filePath: value.filePath,
+        fileName: str(value.fileName) ? value.fileName : '',
+        page,
+        rect,
+        text: str(value.text) ? capped(value.text, MAX_SELECTION_TARGET_CHARS * 2) : '',
+      };
     }
     case 'selection': {
       if (!str(value.text) || !value.text.trim()) return null;
@@ -452,6 +483,8 @@ export function sameTarget(a: FocusTarget, b: FocusTarget): boolean {
     }
     case 'task':
       return a.task.id === (b as typeof a).task.id;
+    case 'snippet':
+      return a.snippetId === (b as typeof a).snippetId;
     default:
       return JSON.stringify(a) === JSON.stringify(b);
   }
@@ -509,6 +542,10 @@ export function sideScope(target: FocusTarget, extras: FocusExtras): AnswerScope
     if (!indexedFile(hit.sourceFile, hit.url)) return null;
     sourceFile = hit.sourceFile;
     known = hit.page;
+  } else if (target.kind === 'snippet') {
+    if (!indexedFile(target.filePath, null)) return null;
+    sourceFile = target.filePath;
+    known = { start: target.page, end: target.page };
   } else if (target.kind === 'selection' && target.origin === 'document' && target.document) {
     const { document } = target;
     if (!indexedFile(document.sourceFile, null)) return null;

@@ -165,6 +165,15 @@ function sectionsFor(target: FocusTarget, extras: FocusExtras): Section[] {
     }
     case 'task':
       return [{ heading: 'task', payload: taskJson(target.task), info: 'json' }];
+    case 'snippet': {
+      const name = oneLine(target.fileName || target.filePath);
+      const where = `snippet from ${name} page ${extras.page ?? target.page}`;
+      const selection = extras.selection?.trim();
+      const sections: Section[] = [];
+      if (selection) sections.push({ heading: `${where}, selected text`, payload: capText(selection, MAX_SELECTION_CHARS).text, info: 'text' });
+      sections.push({ heading: `${where}, text of the region`, payload: target.text.trim() || '(the region has no text layer; it is an image)', info: 'text' });
+      return sections;
+    }
     case 'selection': {
       const where = selectionWhere(target);
       const sections: Section[] = [{ heading: `${where}, selected text`, payload: capText(target.text.trim(), MAX_SELECTION_CHARS).text, info: 'text' }];

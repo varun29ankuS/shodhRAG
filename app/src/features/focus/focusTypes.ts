@@ -22,6 +22,25 @@ export interface FocusSourceHit {
   page: FocusPageSpan | null;
   lineRange: [number, number] | null;
   url: string | null;
+  /** Where the passage sits on its pages (PDF points, bottom-left origin), when known. */
+  regions?: FocusRegion[] | null;
+}
+
+/** A box on a PDF page in points, bottom-left origin (the indexer's layout boxes). */
+export interface FocusRegion {
+  page: number;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+/** A rectangle on a PDF page in points from the top-left corner of its view box. */
+export interface FocusRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 /** A task as the side thread describes it to the agent. */
@@ -66,6 +85,11 @@ export type FocusTarget =
   | { kind: 'image'; label: string; src: string | null; alt: string }
   | { kind: 'source'; label: string; hit: FocusSourceHit }
   | { kind: 'task'; label: string; task: FocusTaskSnapshot }
+  /**
+   * A saved snippet (page region): its id, place and text. The image stays in
+   * the snippet store and is loaded by id when drawn.
+   */
+  | { kind: 'snippet'; label: string; snippetId: string; filePath: string; fileName: string; page: number; rect: FocusRect; text: string }
   /**
    * Text the reader selected in an answer or a document, with the paragraph
    * around it. `document` is set when it was selected in a document viewer.

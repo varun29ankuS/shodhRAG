@@ -34,6 +34,7 @@ const KIND_LABEL: Record<FocusKind, string> = {
   image: 'Image',
   source: 'Source',
   task: 'Task',
+  snippet: 'Snippet',
   selection: 'Selection',
 };
 

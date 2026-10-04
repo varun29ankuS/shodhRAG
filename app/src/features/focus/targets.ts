@@ -194,6 +194,10 @@ export interface PaperRef {
   page: number | null;
   /** Text to find and highlight on the page. */
   passage: string;
+  /** Rectangles to outline instead of finding the passage (a snippet's region). */
+  rects?: { page: number; rect: { x: number; y: number; width: number; height: number } }[];
+  /** Indexer boxes to outline instead of finding the passage. */
+  regions?: { page: number; x0: number; y0: number; x1: number; y1: number }[];
 }
 
 /** The document place of one target, if it has one. */
@@ -207,6 +211,16 @@ export function paperOf(target: FocusTarget): PaperRef | null {
       fileName: target.hit.fileName || target.hit.title,
       page: target.hit.page?.start ?? null,
       passage: target.hit.text || target.hit.snippet,
+      ...(target.hit.regions && target.hit.regions.length > 0 ? { regions: target.hit.regions } : {}),
+    };
+  }
+  if (target.kind === 'snippet') {
+    return {
+      sourceFile: target.filePath,
+      fileName: target.fileName,
+      page: target.page,
+      passage: target.text,
+      rects: [{ page: target.page, rect: target.rect }],
     };
   }
   return null;

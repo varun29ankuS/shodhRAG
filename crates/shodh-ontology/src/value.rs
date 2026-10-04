@@ -48,7 +48,13 @@ pub struct RawMoney {
 /// A property value as produced by an extractor. Text is a lexical form that is parsed
 /// according to the property's range; values are never coerced into a different meaning
 /// (for example `"1,250"` is not a valid decimal).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Serialized untagged: a boolean, a number, a string, an object (`{"amount", "currency"}`
+/// is money, `{"id", "class"?}` an entity reference) or an array (a list). Deserialization
+/// is written out by shape: a derived untagged decoder would read a two-element array of
+/// strings as money (serde lets a struct be read from a sequence), silently turning a
+/// two-value list into a different value.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum RawValue {
     /// Boolean literal.
@@ -95,6 +101,93 @@ impl RawValue {
             RawValue::Money(_) => "money",
             RawValue::Entity(_) => "entity reference",
             RawValue::List(_) => "list",
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RawValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(RawValueVisitor)
+    }
+}
+
+struct RawValueVisitor;
+
+impl<'de> serde::de::Visitor<'de> for RawValueVisitor {
+    type Value = RawValue;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a boolean, number, string, money or entity object, or a list of values")
+    }
+
+    fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<RawValue, E> {
+        Ok(RawValue::Boolean(v))
+    }
+
+    fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<RawValue, E> {
+        Ok(RawValue::Integer(v))
+    }
+
+    fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<RawValue, E> {
+        match i64::try_from(v) {
+            Ok(i) => Ok(RawValue::Integer(i)),
+            // Out of the integer range: kept as a float, like the derived decoder did.
+            Err(_) => Ok(RawValue::Float(v as f64)),
+        }
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<RawValue, E> {
+        Ok(RawValue::Float(v))
+    }
+
+    fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<RawValue, E> {
+        Ok(RawValue::Text(v.to_owned()))
+    }
+
+    fn visit_string<E: serde::de::Error>(self, v: String) -> Result<RawValue, E> {
+        Ok(RawValue::Text(v))
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<RawValue, A::Error> {
+        let mut items = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(256));
+        while let Some(item) = seq.next_element::<RawValue>()? {
+            items.push(item);
+        }
+        Ok(RawValue::List(items))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<RawValue, A::Error> {
+        use serde::de::Error;
+        let (mut amount, mut currency, mut id, mut class): (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<Option<String>>,
+        ) = (None, None, None, None);
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "amount" if amount.is_none() => amount = Some(map.next_value()?),
+                "currency" if currency.is_none() => currency = Some(map.next_value()?),
+                "id" if id.is_none() => id = Some(map.next_value()?),
+                "class" if class.is_none() => class = Some(map.next_value()?),
+                other => {
+                    return Err(A::Error::custom(format!(
+                        "unexpected or repeated field `{other}`"
+                    )))
+                }
+            }
+        }
+        match (amount, currency, id, class) {
+            (Some(amount), Some(currency), None, None) => {
+                Ok(RawValue::Money(RawMoney { amount, currency }))
+            }
+            (None, None, Some(id), class) => Ok(RawValue::Entity(EntityRef {
+                id,
+                class: class.flatten(),
+            })),
+            _ => Err(A::Error::custom(
+                "an object value must be money (`amount`, `currency`) or an entity (`id`, `class`)",
+            )),
         }
     }
 }
@@ -346,5 +439,39 @@ mod tests {
         assert!(is_currency_code("INR"));
         assert!(!is_currency_code("inr"));
         assert!(!is_currency_code("RUPEE"));
+    }
+}
+
+#[cfg(test)]
+mod raw_value_serde_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn every_shape_round_trips_and_two_strings_stay_a_list() {
+        let values = vec![
+            RawValue::Boolean(true),
+            RawValue::Integer(-3),
+            RawValue::Float(1.5),
+            RawValue::text("x"),
+            RawValue::money("12.50", "INR"),
+            RawValue::Entity(EntityRef::typed("method:hnsw", "Method")),
+            RawValue::entity("e1"),
+            RawValue::List(vec!["loss".into(), "eq".into()]),
+            RawValue::List(vec!["a".into()]),
+            RawValue::List(vec![RawValue::entity("a"), RawValue::entity("b")]),
+            RawValue::List(vec![]),
+        ];
+        for value in values {
+            let json = serde_json::to_string(&value).unwrap();
+            let back: RawValue = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, value, "{json}");
+        }
+        assert!(serde_json::from_str::<RawValue>(r#"{"amount": "1", "id": "x"}"#).is_err());
+        assert!(serde_json::from_str::<RawValue>(r#"{"name": "x"}"#).is_err());
+        assert_eq!(
+            serde_json::from_str::<RawValue>("18446744073709551615").unwrap(),
+            RawValue::Float(18446744073709551615.0)
+        );
     }
 }

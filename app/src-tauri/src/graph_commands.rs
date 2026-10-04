@@ -117,12 +117,12 @@ pub async fn paper_graph_build(
         message: "The graph is already being built.".to_string(),
     })?;
     let services = state.services().await?;
-    let blocked = web_block_reason(&data_dir(&app)?);
-    let resolver = if online.unwrap_or(false) && blocked.is_none() {
-        Resolver::online(Arc::new(SafeClient::system()), services.db.clone())
-    } else {
-        Resolver::cache_only(services.db.clone())
-    };
+    let resolver = resolver_for(
+        &data_dir(&app)?,
+        online.unwrap_or(false),
+        services.db.clone(),
+        Arc::new(SafeClient::system()),
+    );
     let files: Vec<String> = indexed_pdfs(&rag.rag)
         .await
         .into_iter()
@@ -140,6 +140,23 @@ pub async fn paper_graph_build(
         .await?;
     broadcast_change(&app, "graph", None);
     Ok(report)
+}
+
+/// The resolver of a build: online only when the user asked for it and the stored
+/// privacy policy allows the web (Local-only mode off, web access on); an unreadable
+/// policy counts as not allowing it. Otherwise only answers cached on this computer are
+/// read and nothing is sent.
+pub fn resolver_for(
+    data_dir: &std::path::Path,
+    online: bool,
+    db: Arc<shodh_rag::research::ResearchDb>,
+    transport: Arc<dyn shodh_rag::research::citations::ScholarlyTransport>,
+) -> Resolver {
+    if online && web_block_reason(data_dir).is_none() {
+        Resolver::online(transport, db)
+    } else {
+        Resolver::cache_only(db)
+    }
 }
 
 /// The file as spelled on disk (the index stores a lower-cased spelling on Windows).
@@ -261,6 +278,41 @@ pub async fn paper_concept(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_users_policy_lets_a_build_look_papers_up_online() {
+        use crate::app_settings::{SettingsStore, SETTINGS_FILE};
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(
+            shodh_rag::research::ResearchDb::open(&dir.path().join("shodh.db"), None).unwrap(),
+        );
+        let transport: Arc<dyn shodh_rag::research::citations::ScholarlyTransport> =
+            Arc::new(SafeClient::system());
+        let online = |asked: bool| {
+            resolver_for(dir.path(), asked, db.clone(), transport.clone()).is_online()
+        };
+        // Default policy: web access on, Local-only off.
+        assert!(online(true));
+        assert!(!online(false), "not asked: cache only");
+        let store = SettingsStore::in_dir(dir.path());
+        store
+            .update(|s| {
+                s.policy.local_only = true;
+                Ok(())
+            })
+            .unwrap();
+        assert!(!online(true), "Local-only mode sends nothing");
+        store
+            .update(|s| {
+                s.policy.local_only = false;
+                s.policy.web_access = false;
+                Ok(())
+            })
+            .unwrap();
+        assert!(!online(true), "web access off sends nothing");
+        std::fs::write(dir.path().join(SETTINGS_FILE), "{not json").unwrap();
+        assert!(!online(true), "an unreadable policy fails closed");
+    }
 
     #[test]
     fn only_one_build_runs_at_a_time() {

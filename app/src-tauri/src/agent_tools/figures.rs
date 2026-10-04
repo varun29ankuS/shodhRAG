@@ -321,7 +321,14 @@ pub fn equation_output(ctx: &ToolContext, parts: &PaperParts, query: Option<&str
             .number
             .as_deref()
             .map_or_else(|| "Equation".to_string(), |n| format!("Equation ({n})"));
-        let n = cite(ctx, parts, e.page, e.bbox.as_ref(), &e.text, &mut passages);
+        let n = cite(
+            ctx,
+            parts,
+            e.page,
+            e.bbox.as_ref(),
+            &e.passage(),
+            &mut passages,
+        );
         lines.push(format!(
             "[{n}] {} — {label}{}, LaTeX {}:\n$$\n{}\n$$",
             e.id,
@@ -535,7 +542,7 @@ mod tests {
         assert!(out.text_for_model.contains("\\beta"));
         assert_eq!(
             ctx.cited_passage(1).map(|p| p.text),
-            Some("St = St−1 + βt(vt − St−1kt)k⊤t".to_string())
+            Some("Equation (1), page 4: As Figure 2 shows, the chunkwise form is faster than the recurrent form for long sequences. St = St−1 + βt(vt − St−1kt)k⊤t".to_string())
         );
         assert_eq!(
             out.detail.unwrap()["passages"][0]["regions"][0]["y1"],

@@ -47,6 +47,31 @@ pub struct Equation {
     /// 1-based page (absent for unpaged documents).
     pub page: Option<u32>,
     pub bbox: Option<BBox>,
+    /// The prose that introduces the equation (the end of the paragraph before it), in
+    /// the paper's words: what claims citing the equation are checked against.
+    pub intro: String,
+    /// The start of the next paragraph when it explains the symbols ("where …").
+    pub explanation: String,
+}
+
+impl Equation {
+    /// The equation as a checkable passage: its label, the prose introducing it, its
+    /// text as printed and the explanation of its symbols.
+    pub fn passage(&self) -> String {
+        let label = self
+            .number
+            .as_deref()
+            .map_or_else(|| "Equation".to_string(), |n| format!("Equation ({n})"));
+        let place = self.page.map(|p| format!(", page {p}")).unwrap_or_default();
+        [
+            self.intro.as_str(),
+            self.text.as_str(),
+            self.explanation.as_str(),
+        ]
+        .into_iter()
+        .filter(|t| !t.is_empty())
+        .fold(format!("{label}{place}:"), |acc, t| format!("{acc} {t}"))
+    }
 }
 
 static RE_TRAILING_NUMBER: LazyLock<Option<Regex>> =
@@ -1003,6 +1028,71 @@ fn match_source<'t>(
         .map(|(_, e)| e)
 }
 
+/// Characters of introducing prose and of a following "where" clause kept per equation.
+const INTRO_CHARS: usize = 300;
+const WHERE_CHARS: usize = 240;
+
+fn is_prose(kind: &BlockKind) -> bool {
+    matches!(
+        kind,
+        BlockKind::Paragraph
+            | BlockKind::ListItem
+            | BlockKind::Theorem { .. }
+            | BlockKind::Definition { .. }
+    )
+}
+
+fn flat(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The end of the paragraph before the equation at `index` (other equations of the same
+/// display skipped), within its section.
+fn equation_intro(doc: &StructuredDocument, index: usize) -> String {
+    doc.blocks[..index]
+        .iter()
+        .rev()
+        .take_while(|b| !matches!(b.kind, BlockKind::Heading { .. } | BlockKind::Title))
+        .find(|b| is_prose(&b.kind))
+        .map(|b| {
+            let text = flat(&b.text);
+            let chars: Vec<char> = text.chars().collect();
+            if chars.len() <= INTRO_CHARS {
+                return text;
+            }
+            let tail: String = chars[chars.len() - INTRO_CHARS..].iter().collect();
+            // Start at a sentence or word boundary.
+            let start = tail
+                .find(". ")
+                .map(|i| i + 2)
+                .filter(|i| *i < tail.len() / 2)
+                .or_else(|| tail.find(' ').map(|i| i + 1))
+                .unwrap_or(0);
+            format!("…{}", &tail[start..])
+        })
+        .unwrap_or_default()
+}
+
+/// The start of the paragraph after the equation at `index` when it explains the symbols.
+fn equation_explanation(doc: &StructuredDocument, index: usize) -> String {
+    doc.blocks[index + 1..]
+        .iter()
+        .find(|b| !matches!(b.kind, BlockKind::Equation))
+        .filter(|b| is_prose(&b.kind))
+        .map(|b| flat(&b.text))
+        .filter(|t| t.to_lowercase().starts_with("where") || t.to_lowercase().starts_with("here"))
+        .map(|t| {
+            if t.chars().count() <= WHERE_CHARS {
+                t
+            } else {
+                let mut cut: String = t.chars().take(WHERE_CHARS - 1).collect();
+                cut.push('…');
+                cut
+            }
+        })
+        .unwrap_or_default()
+}
+
 /// Every display equation of a document, with LaTeX from `source` (a `.tex` path and
 /// its equations) when that source matches the paper.
 pub fn equations_of(
@@ -1012,9 +1102,10 @@ pub fn equations_of(
     let mut found: Vec<Equation> = doc
         .blocks
         .iter()
-        .filter(|b| matches!(b.kind, BlockKind::Equation))
-        .filter(|b| !b.text.trim().is_empty())
-        .map(|b| {
+        .enumerate()
+        .filter(|(_, b)| matches!(b.kind, BlockKind::Equation))
+        .filter(|(_, b)| !b.text.trim().is_empty())
+        .map(|(index, b)| {
             let (text, number) = split_number(&b.text);
             Equation {
                 id: String::new(),
@@ -1025,6 +1116,8 @@ pub fn equations_of(
                 source_file: None,
                 page: b.page,
                 bbox: b.bbox.map(|bb| bb.rounded()),
+                intro: equation_intro(doc, index),
+                explanation: equation_explanation(doc, index),
             }
         })
         .collect();
@@ -1256,6 +1349,37 @@ x \in \R^d
             .iter()
             .all(|e| e.origin == EquationOrigin::Reconstructed));
         assert!(eqs.iter().all(|e| e.source_file.is_none()));
+    }
+
+    #[test]
+    fn equations_carry_the_prose_around_them() {
+        let doc = StructuredDocument {
+            pages: Vec::new(),
+            blocks: vec![
+                Block::new(BlockKind::Heading { level: 1 }, "2 Method"),
+                Block::new(
+                    BlockKind::Paragraph,
+                    "The state is updated with the delta rule, which writes the error of the current prediction:",
+                ),
+                Block::new(BlockKind::Equation, "St = St−1 + βt(vt − St−1kt)k⊤t (1)"),
+                Block::new(BlockKind::Paragraph, "where βt is the writing strength."),
+                Block::new(BlockKind::Heading { level: 1 }, "3 Results"),
+                Block::new(BlockKind::Equation, "x = y (2)"),
+            ],
+        };
+        let eqs = equations_of(&doc, None);
+        assert_eq!(
+            eqs[0].intro,
+            "The state is updated with the delta rule, which writes the error of the current prediction:"
+        );
+        assert_eq!(eqs[0].explanation, "where βt is the writing strength.");
+        assert_eq!(
+            eqs[0].passage(),
+            "Equation (1): The state is updated with the delta rule, which writes the error of the current prediction: St = St−1 + βt(vt − St−1kt)k⊤t where βt is the writing strength."
+        );
+        // A heading ends the search: no prose from another section.
+        assert_eq!(eqs[1].intro, "");
+        assert_eq!(eqs[1].passage(), "Equation (2): x = y");
     }
 
     #[test]

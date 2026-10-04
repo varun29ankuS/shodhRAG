@@ -8,7 +8,12 @@
 //!   paper, cell page and box) read from the structured table blocks of papers, and the
 //!   cross-paper comparison built from them.
 //!
-//! Both are document-derived statements: their provenance source is the file path, so the
+//! - **Figures and equations** ([`figures`], [`equations`], [`objects`]): the figures of a
+//!   paper (caption, page and the region the drawing occupies) and its display equations
+//!   (number, LaTeX from the paper's `.tex` source when it is in the library, else rebuilt
+//!   from the text layer), derived from the PDF on demand and never stored.
+//!
+//! Snippets and results are document-derived statements: their provenance source is the file path, so the
 //! memory layer (which only reads `conversation://` and settings sources) never sees them.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
@@ -16,6 +21,9 @@ pub mod citations;
 #[cfg(test)]
 mod corpus_dump;
 pub mod db;
+pub mod equations;
+pub mod figures;
+pub mod objects;
 pub mod pdf_text;
 pub mod results;
 pub mod snippets;

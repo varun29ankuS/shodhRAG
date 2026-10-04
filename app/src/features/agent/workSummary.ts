@@ -1,3 +1,4 @@
+import { supersededBlocks } from './reducer.ts';
 import type { TranscriptState } from './reducer';
 
 /**
@@ -20,9 +21,12 @@ function seconds(ms: number): string {
 export function workFold(transcript: TranscriptState): WorkFold | null {
   if (transcript.status !== 'completed') return null;
   const blocks = transcript.blocks;
+  // The answer is the last text block that a revision did not replace.
+  const superseded = supersededBlocks(transcript);
   let answerIndex = -1;
   for (let i = blocks.length - 1; i >= 0; i--) {
-    if (blocks[i].kind === 'text') {
+    const block = blocks[i];
+    if (block.kind === 'text' && !superseded.has(block.id)) {
       answerIndex = i;
       break;
     }

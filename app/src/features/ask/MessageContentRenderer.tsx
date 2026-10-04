@@ -25,11 +25,37 @@ import { tableRows } from '../focus/focusDom';
 import rehypeFocusEquations, { FOCUS_EQUATION_TAG } from '../focus/rehypeFocusEquations';
 import { chartTarget, equationTarget, imageTarget, tableTarget } from '../focus/targets';
 import { escapeCurrency, isMermaidLanguage, mermaidSource, normalizeMathDelimiters, protectMath } from './visual/mathText';
+import type { ClaimCheck } from '../agent/events';
+import { FLAG_CLOSE, FLAG_OPEN, insertFlagMarkers, parseCitationMarkers } from '../agent/grounding';
+import { ClaimFlag, InvalidCitation } from '../agent/GroundingFlags';
 
 /** Citation placeholders: ASCII markers that survive markdown parsing. */
 const CITE_OPEN = 'XCSHODH';
 const CITE_CLOSE = 'XESHODH';
 const CITE_PATTERN = new RegExp(`${CITE_OPEN}(\\d+)${CITE_CLOSE}`, 'g');
+/** Citation and claim-flag placeholders, in one pass. */
+const TOKEN_PATTERN = new RegExp(`${CITE_OPEN}(\\d+)${CITE_CLOSE}|${FLAG_OPEN}(\\d+)${FLAG_CLOSE}`, 'g');
+
+/** Replace every citation marker of `text` with placeholders, one per number. */
+function citationPlaceholders(text: string): string {
+  const markers = parseCitationMarkers(text);
+  let out = '';
+  let last = 0;
+  for (const m of markers) {
+    out += text.slice(last, m.start) + m.numbers.map(n => `${CITE_OPEN}${n}${CITE_CLOSE}`).join('');
+    last = m.end;
+  }
+  return out + text.slice(last);
+}
+
+/** A line made only of citation markers. */
+function isCitationOnly(line: string): boolean {
+  const markers = parseCitationMarkers(line);
+  if (markers.length === 0) return false;
+  let rest = line;
+  for (const m of [...markers].reverse()) rest = rest.slice(0, m.start) + rest.slice(m.end);
+  return rest.trim().length === 0;
+}
 
 const REHYPE_PLUGINS = [rehypeKatex, rehypeFocusEquations];
 
@@ -94,6 +120,17 @@ export interface MessageContentRendererProps {
    * wrote, where `[1]` stays literal.
    */
   citations?: boolean;
+  /**
+   * Grounding verdicts on this text's claims; flagged ones get an inline
+   * flag after the claim (found by its anchor text).
+   */
+  claims?: readonly ClaimCheck[];
+  /**
+   * Show a citation number with no matching source as flagged even when the
+   * answer has no sources at all (agent answers). Otherwise such numbers are
+   * dropped when there are no sources.
+   */
+  flagUnknownCitations?: boolean;
 }
 
 /**
@@ -118,6 +155,8 @@ export function MessageContentRenderer({
   onOpenArtifact,
   compact = false,
   citations = true,
+  claims,
+  flagUnknownCitations = false,
 }: MessageContentRendererProps) {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
@@ -131,7 +170,8 @@ export function MessageContentRenderer({
   }, [hits]);
 
   const preprocessed = useMemo(() => {
-    let text = content;
+    // Flags first: their anchors are exact text of the message as written.
+    let text = citations && claims && claims.length > 0 ? insertFlagMarkers(content, claims).text : content;
 
     if (hasArtifacts) {
       text = text.replace(/```(?:chart|table|mermaid|flowchart|sequence|classDiagram|erDiagram|stateDiagram|gantt|gitGraph|journey|form|action)\s*\n[\s\S]*?```/g, '');
@@ -153,37 +193,38 @@ export function MessageContentRenderer({
       const merged: string[] = [];
       for (const line of lines) {
         const trimmed = line.trim();
-        if (/^(\[(?:Document\s+)?\d+(?:\s*,\s*(?:Document\s+)?\d+)*\]\s*)+$/.test(trimmed) && merged.length > 0) {
+        if (isCitationOnly(trimmed) && merged.length > 0) {
           merged[merged.length - 1] = `${merged[merged.length - 1].trimEnd()} ${trimmed}`;
         } else {
           merged.push(line);
         }
       }
-      text = merged.join('\n');
-
-      text = text.replace(/【(\d+)†[^】]*】/g, `${CITE_OPEN}$1${CITE_CLOSE}`);
-      text = text.replace(/\[(?:Document\s+)?(\d+(?:\s*,\s*(?:Document\s+)?\d+)*)\]/gi, (_, nums: string) =>
-        nums
-          .split(',')
-          .map(n => `${CITE_OPEN}${n.replace(/Document\s+/gi, '').trim()}${CITE_CLOSE}`)
-          .join(''),
-      );
+      text = citationPlaceholders(merged.join('\n'));
     }
 
     text = math.restore(text);
     text = text.replace(/\x01CODE(\d+)\x01/g, (_, idx: string) => codeBlocks[Number(idx)] ?? '');
     return text.replace(/\n{3,}/g, '\n\n');
-  }, [content, hasArtifacts, citations]);
+  }, [content, hasArtifacts, citations, claims]);
 
   const renderWithCitations = useCallback((text: string): React.ReactNode => {
-    if (hitsByNumber.size === 0) {
+    if (hitsByNumber.size === 0 && !flagUnknownCitations && !(claims && claims.length > 0)) {
       return text.replace(CITE_PATTERN, '');
     }
     const parts: React.ReactNode[] = [];
     let lastIndex = 0;
-    for (const match of text.matchAll(CITE_PATTERN)) {
+    for (const match of text.matchAll(TOKEN_PATTERN)) {
       const index = match.index ?? 0;
       if (index > lastIndex) parts.push(text.slice(lastIndex, index));
+      lastIndex = index + match[0].length;
+      if (match[2] !== undefined) {
+        const check = claims?.[Number(match[2])];
+        if (check) {
+          const closest = check.closest !== null ? hitsByNumber.get(check.closest) ?? null : null;
+          parts.push(<ClaimFlag key={`flag-${index}`} check={check} closest={closest} onOpenCitation={onOpenCitation} />);
+        }
+        continue;
+      }
       const number = Number(match[1]);
       const hit = hitsByNumber.get(number);
       if (hit) {
@@ -213,14 +254,14 @@ export function MessageContentRenderer({
             {number}
           </button>,
         );
-      } else {
-        parts.push(`[${number}]`);
+      } else if (hitsByNumber.size > 0 || flagUnknownCitations) {
+        // Never a working pill: the number matches no source of this answer.
+        parts.push(<InvalidCitation key={`invalid-${index}-${number}`} number={number} />);
       }
-      lastIndex = index + match[0].length;
     }
     if (lastIndex < text.length) parts.push(text.slice(lastIndex));
     return parts.length > 0 ? <>{parts}</> : text;
-  }, [hitsByNumber, activeCitation, onOpenCitation]);
+  }, [hitsByNumber, activeCitation, onOpenCitation, claims, flagUnknownCitations]);
 
   const processChildren = useCallback((children: React.ReactNode): React.ReactNode =>
     React.Children.map(children, child => {

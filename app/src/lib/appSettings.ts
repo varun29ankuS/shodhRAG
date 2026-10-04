@@ -88,10 +88,28 @@ export function parseMemoryPrefs(value: unknown): MemoryPrefs | null {
   return { injectMemories, learnMode, learnModel, autoMinConfidence, learnCaps };
 }
 
+/** How agent answers are grounded. User-only: the assistant cannot change it. */
+export interface AnswerPrefs {
+  /** When the grounding check flags statements, ask the model once to re-ground or remove them. */
+  autoRepair: boolean;
+}
+
+export const DEFAULT_ANSWER_PREFS: AnswerPrefs = { autoRepair: true };
+
+/** Parse the answers section; settings written before it existed get the defaults. */
+export function parseAnswerPrefs(value: unknown): AnswerPrefs | null {
+  if (value === undefined) return DEFAULT_ANSWER_PREFS;
+  if (!isRecord(value)) return null;
+  const autoRepair = value.autoRepair === undefined ? true : value.autoRepair;
+  if (typeof autoRepair !== 'boolean') return null;
+  return { autoRepair };
+}
+
 export interface AppSettings {
   preferences: Preferences;
   policy: Policy;
   memory: MemoryPrefs;
+  answers: AnswerPrefs;
   seeded: boolean;
 }
 
@@ -109,10 +127,13 @@ export function parseAppSettings(value: unknown): AppSettings | null {
   // Settings written before memory existed have no `memory` section: the defaults apply.
   const memory = parseMemoryPrefs(value.memory);
   if (!memory) return null;
+  const answers = parseAnswerPrefs(value.answers);
+  if (!answers) return null;
   return {
     preferences: { theme: preferences.theme, searchMaxResults: preferences.searchMaxResults },
     policy: { localOnly: policy.localOnly, webAccess: policy.webAccess },
     memory,
+    answers,
     seeded: value.seeded === true,
   };
 }
@@ -137,6 +158,10 @@ export async function setPolicy(policy: Policy): Promise<AppSettings | null> {
 
 export async function setMemoryPreferences(memory: MemoryPrefs): Promise<AppSettings | null> {
   return parseAppSettings(await invoke<unknown>('set_memory_preferences', { memory }));
+}
+
+export async function setAnswerPreferences(answers: AnswerPrefs): Promise<AppSettings | null> {
+  return parseAppSettings(await invoke<unknown>('set_answer_preferences', { answers }));
 }
 
 /** Listen for settings changes (from the UI or the agent). Returns the unsubscribe function. */

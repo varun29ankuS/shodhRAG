@@ -1,5 +1,6 @@
 import type { PageSpan, RawSearchResult, SearchHit } from './types';
 import { parseRegions } from './viewer/regionGeometry.ts';
+import { citedNumbersIn } from '../agent/grounding.ts';
 
 const SPAN_PATTERN = /^\s*(\d+)(?:\s*(?:[-–—]|to)\s*(\d+))?\s*$/i;
 
@@ -174,22 +175,12 @@ export function formatLocation(hit: Pick<SearchHit, 'page' | 'lineRange'>): stri
 }
 
 /**
- * Citation numbers referenced in an answer: `[3]`, `[1, 4]`, `[Document 2]`
- * and `【5†…】`. Content inside fenced code blocks is ignored.
+ * Citation numbers referenced in an answer, in the grammar the transcript
+ * and the grounding check share (`[3]`, `[1, 4]`, `[2-4]`, `[Document 2]`,
+ * `【5†…】`); code is ignored.
  */
 export function citedNumbers(content: string): Set<number> {
-  const withoutCode = content.replace(/```[\s\S]*?```/g, '');
-  const found = new Set<number>();
-  for (const m of withoutCode.matchAll(/\[(?:Document\s+)?(\d+(?:\s*,\s*(?:Document\s+)?\d+)*)\]/gi)) {
-    for (const part of m[1].split(',')) {
-      const n = Number(part.replace(/Document\s+/i, '').trim());
-      if (Number.isInteger(n) && n > 0) found.add(n);
-    }
-  }
-  for (const m of withoutCode.matchAll(/【(\d+)†[^】]*】/g)) {
-    found.add(Number(m[1]));
-  }
-  return found;
+  return citedNumbersIn(content);
 }
 
 export interface SourceGroup {

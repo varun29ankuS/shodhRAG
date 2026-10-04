@@ -43,3 +43,27 @@ test('nothing folds while running, on error, or without steps', () => {
   assert.equal(workFold(transcript({ status: 'completed', blocks: [{ kind: 'text', id: 'a', text: 'x' }] })), null);
   assert.equal(workFold(transcript({ status: 'completed', blocks: [{ kind: 'text', id: 'a', text: 'x' }, { kind: 'text', id: 'b', text: 'y' }] })), null);
 });
+
+test('a draft replaced by a revised answer folds with the working', () => {
+  const blocks: TranscriptState['blocks'] = [
+    { kind: 'step', stepId: 's1' },
+    { kind: 'text', id: 'draft', text: 'Draft answer.' },
+    { kind: 'revision', id: 'revision-1', round: 1, reason: 'repair', flagged: 1, missingNeeds: [] },
+    { kind: 'text', id: 'final', text: 'Revised answer.' },
+  ];
+  const groundings = [{
+    round: 1,
+    isFinal: true,
+    method: 'entailment' as const,
+    summary: { checked: 0, supported: 0, weak: 0, unsupported: 0, uncited: 0, invalid: 0, unchecked: 0, score: null },
+    claims: [],
+    needs: [],
+    messageIds: ['final'],
+    supersededMessageIds: ['draft'],
+  }];
+  assert.equal(workFold(transcript({ status: 'completed', blocks, groundings }))?.answerIndex, 3);
+  // A replaced last block never counts as the answer.
+  const replacedLast = [...blocks.slice(0, 2)];
+  const onlyDraft = [{ ...groundings[0], supersededMessageIds: ['draft'] }];
+  assert.equal(workFold(transcript({ status: 'completed', blocks: replacedLast, groundings: onlyDraft })), null);
+});

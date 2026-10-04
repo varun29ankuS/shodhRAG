@@ -6,6 +6,7 @@ import DataManagement from '../DataManagement';
 import PrivacySettings from '../PrivacySettings';
 import BackgroundSettings from '../BackgroundSettings';
 import MemorySettings from '../MemorySettings';
+import AnswerCheckSettings from '../AnswerCheckSettings';
 import { cn } from '../../lib/utils';
 
 export type SettingsSection = 'models' | 'search' | 'general' | 'privacy' | 'memory' | 'data';
@@ -146,11 +147,14 @@ export default function SettingsView({
 
             <section className="p-5 rounded-[14px] bg-shodh-surface border border-shodh-border">
               {section === 'search' ? (
-                <SearchSettings
-                  config={searchConfig}
-                  onUpdate={onUpdateSearchConfig}
-                  onReset={onResetSearchConfig}
-                />
+                <>
+                  <SearchSettings
+                    config={searchConfig}
+                    onUpdate={onUpdateSearchConfig}
+                    onReset={onResetSearchConfig}
+                  />
+                  <AnswerCheckSettings />
+                </>
               ) : section === 'general' ? (
                 <BackgroundSettings />
               ) : section === 'privacy' ? (

@@ -8,7 +8,7 @@
  * request failed before the run started, or an interrupt timed out.
  */
 
-import type { AgentEvent, PlanItem, RiskTier } from './events';
+import type { AgentEvent, GroundingReport, PlanItem, RevisionReason, RiskTier } from './events';
 import type { PdfRegion } from '../ask/types';
 import { parseRegions } from '../ask/viewer/regionGeometry.ts';
 
@@ -74,7 +74,9 @@ export interface WebSource {
 export type TranscriptBlock =
   | { kind: 'text'; id: string; text: string }
   | { kind: 'step'; stepId: string }
-  | { kind: 'steer'; id: string; text: string };
+  | { kind: 'steer'; id: string; text: string }
+  /** The app asked the model to fix flagged statements or search for missing parts. */
+  | { kind: 'revision'; id: string; round: number; reason: RevisionReason; flagged: number; missingNeeds: string[] };
 
 export type TranscriptStatus = 'starting' | 'running' | 'completed' | 'aborted' | 'error';
 
@@ -115,6 +117,8 @@ export interface TranscriptState {
   usage: UsageTotals | null;
   /** Passages from every search of the run, ordered by `n`. */
   passages: Passage[];
+  /** Grounding checks of the answer, one per round; the final one describes the answer. */
+  groundings: GroundingReport[];
   /** Latest reasoning text (not persisted). */
   thinking: string;
   /** The user asked to interrupt; waiting for the run to stop. */
@@ -146,6 +150,7 @@ export function initialTranscript(runId: string, startedAtMs: number): Transcrip
     plan: null,
     usage: null,
     passages: [],
+    groundings: [],
     thinking: '',
     interrupting: false,
   };
@@ -219,6 +224,18 @@ export function passagesFromDetail(detail: unknown): Passage[] {
     });
   }
   return out;
+}
+
+/** A plan item from an event; items from older builds lack the need fields. */
+function planItem(item: PlanItem): PlanItem {
+  return {
+    id: item.id,
+    text: item.text,
+    status: item.status,
+    need: item.need === true,
+    coverage: item.coverage === 'covered' || item.coverage === 'missing' ? item.coverage : null,
+    evidence: Array.isArray(item.evidence) ? item.evidence.filter(n => Number.isInteger(n)) : [],
+  };
 }
 
 function mergePassages(existing: Passage[], incoming: Passage[]): Passage[] {
@@ -368,7 +385,26 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
     }
 
     case 'plan_updated':
-      return { ...state, plan: action.items.length > 0 ? action.items : null };
+      return { ...state, plan: action.items.length > 0 ? action.items.map(planItem) : null };
+
+    case 'grounding':
+      return { ...state, groundings: [...state.groundings, action.report] };
+
+    case 'revision_started':
+      return {
+        ...state,
+        blocks: [
+          ...state.blocks,
+          {
+            kind: 'revision',
+            id: `revision-${action.round}`,
+            round: action.round,
+            reason: action.reason,
+            flagged: action.flagged,
+            missingNeeds: action.missingNeeds,
+          },
+        ],
+      };
 
     case 'navigated':
       return state;
@@ -449,10 +485,18 @@ export function reduceAll(state: TranscriptState, actions: readonly TranscriptAc
   return next;
 }
 
-/** The answer text: every text block of the run, in order. */
+/** Text blocks a revised answer replaced (kept in the transcript as an earlier draft). */
+export function supersededBlocks(state: TranscriptState): Set<string> {
+  const out = new Set<string>();
+  for (const report of state.groundings) for (const id of report.supersededMessageIds) out.add(id);
+  return out;
+}
+
+/** The answer text: every text block of the run, in order, without replaced drafts. */
 export function answerText(state: TranscriptState): string {
+  const superseded = supersededBlocks(state);
   return state.blocks
-    .filter((b): b is { kind: 'text'; id: string; text: string } => b.kind === 'text')
+    .filter((b): b is { kind: 'text'; id: string; text: string } => b.kind === 'text' && !superseded.has(b.id))
     .map(b => b.text.trim())
     .filter(t => t.length > 0)
     .join('\n\n');
@@ -496,7 +540,8 @@ export function fromPersisted(value: unknown): TranscriptState | null {
     ...initialTranscript(state.runId, state.startedAtMs),
     ...state,
     passages: Array.isArray(state.passages) ? state.passages : [],
-    plan: Array.isArray(state.plan) ? state.plan : null,
+    plan: Array.isArray(state.plan) ? state.plan.map(planItem) : null,
+    groundings: Array.isArray(state.groundings) ? state.groundings : [],
     thinking: '',
     interrupting: false,
   };

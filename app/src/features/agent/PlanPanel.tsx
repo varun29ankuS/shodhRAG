@@ -1,5 +1,5 @@
 import React, { useId, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, CircleCheck, SearchX } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { PlanItem, PlanStatus } from './events';
 import { planProgress } from './reducer';
@@ -27,7 +27,27 @@ interface PlanPanelProps {
   variant: 'docked' | 'inline';
 }
 
-/** The agent's task list: ☐ to do, ◐ in progress, ☑ done. */
+/** Coverage of an information need: found in which passages, or not found. */
+function NeedCoverage({ item }: { item: PlanItem }) {
+  if (!item.need || item.coverage === null) return null;
+  if (item.coverage === 'covered') {
+    const sources = item.evidence.map(n => `[${n}]`).join('');
+    return (
+      <span className="inline-flex w-full items-center gap-1 mt-0.5 text-[11.5px] text-shodh-success no-underline">
+        <CircleCheck className="w-3 h-3 shrink-0" aria-hidden="true" />
+        {sources ? `Found in ${sources}` : 'Found in the sources'}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex w-full items-center gap-1 mt-0.5 text-[11.5px] text-shodh-warning no-underline">
+      <SearchX className="w-3 h-3 shrink-0" aria-hidden="true" />
+      Not found in the sources
+    </span>
+  );
+}
+
+/** The agent's task list: ☐ to do, ◐ in progress, ☑ done; needs show whether a passage covers them. */
 export function PlanPanel({ items, live, variant }: PlanPanelProps) {
   const [collapsed, setCollapsed] = useState(false);
   const listId = useId();
@@ -81,6 +101,7 @@ export function PlanPanel({ items, live, variant }: PlanPanelProps) {
               >
                 {item.text}
                 <span className="sr-only">{` (${STATUS_TEXT[item.status]})`}</span>
+                <NeedCoverage item={item} />
               </span>
             </li>
           ))}

@@ -158,7 +158,8 @@ pub const TABLE_MODEL_DIR: &str = "docling-tables";
 /// `bbox.onnx.data` must sit next to `bbox.onnx` under exactly that name:
 /// ONNX Runtime resolves external weights by the name stored in the graph.
 pub fn table_model_artifacts() -> Vec<ModelArtifact> {
-    const RELEASE: &str = "https://github.com/docling-project/docling.rs/releases/download/models-v1";
+    const RELEASE: &str =
+        "https://github.com/docling-project/docling.rs/releases/download/models-v1";
     vec![
         ModelArtifact::new(
             "Table region detector",

@@ -631,8 +631,14 @@ mod tests {
         };
         doc.finalize();
         assert_eq!(doc.blocks.len(), 2);
-        assert_eq!(caption_of(&doc.blocks[0]), Some("Table 1: Results on SIFT1M."));
-        assert_eq!(caption_of(&doc.blocks[1]), Some("Table 2: Results on GIST1M."));
+        assert_eq!(
+            caption_of(&doc.blocks[0]),
+            Some("Table 1: Results on SIFT1M.")
+        );
+        assert_eq!(
+            caption_of(&doc.blocks[1]),
+            Some("Table 2: Results on GIST1M.")
+        );
     }
 
     #[test]

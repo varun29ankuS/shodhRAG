@@ -185,9 +185,15 @@ mod tests {
     #[test]
     fn spreads_are_read_as_value_and_spread() {
         let n = read_cell("71.4 ± 0.3").unwrap();
-        assert_eq!((n.decimal.as_str(), n.spread.as_deref()), ("71.4", Some("0.3")));
+        assert_eq!(
+            (n.decimal.as_str(), n.spread.as_deref()),
+            ("71.4", Some("0.3"))
+        );
         let n = read_cell("95.3±.2").unwrap();
-        assert_eq!((n.decimal.as_str(), n.spread.as_deref()), ("95.3", Some("0.2")));
+        assert_eq!(
+            (n.decimal.as_str(), n.spread.as_deref()),
+            ("95.3", Some("0.2"))
+        );
         let n = read_cell("78.0% +/- 1.5%").unwrap();
         assert_eq!(
             (n.decimal.as_str(), n.unit.as_deref(), n.spread.as_deref()),

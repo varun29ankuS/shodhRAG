@@ -1,8 +1,11 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use super::document_model::{Block, BlockKind, StructuredDocument};
+use super::pdf_layout::{TableMode, TableReport};
+use super::table_model::{TableModel, TABLE_MODEL_ID};
 use super::{pdf_layout, tabular, text_structure};
 use crate::types::{DocumentFormat, DocumentSection};
 
@@ -21,11 +24,35 @@ pub struct ParsedDocument {
     pub document: Option<StructuredDocument>,
 }
 
-pub struct DocumentParser;
+/// Metadata key listing a PDF's table-candidate pages (comma-separated, 1-based).
+pub const TABLE_CANDIDATES_KEY: &str = "table_candidate_pages";
+/// Metadata key naming the table model whose structure a PDF's tables carry.
+pub const TABLE_MODEL_KEY: &str = "table_model";
+/// Metadata key counting the tables the model structured.
+pub const MODEL_TABLES_KEY: &str = "model_tables";
+
+/// Parses files into text, sections and structured documents.
+///
+/// PDF tables come from the layout heuristics; a parser built
+/// [`with_table_model`](Self::with_table_model) structures the tables of the
+/// table-candidate pages with the model instead. The fast path records the
+/// candidate pages in the metadata ([`TABLE_CANDIDATES_KEY`]) so a caller can
+/// refine those files later.
+#[derive(Debug, Clone, Default)]
+pub struct DocumentParser {
+    table_model: Option<Arc<TableModel>>,
+}
 
 impl DocumentParser {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// A parser that structures PDF tables with `model` on candidate pages.
+    pub fn with_table_model(model: Arc<TableModel>) -> Self {
+        Self {
+            table_model: Some(model),
+        }
     }
 
     pub fn parse_file(&self, path: &Path) -> Result<ParsedDocument> {
@@ -66,8 +93,11 @@ impl DocumentParser {
             Some(tables) => tabular::tables_to_text(tables),
             None => match extension.as_str() {
                 "pdf" => {
-                    let (text, doc) = self.parse_pdf(path)?;
+                    let (text, doc, tables) = self.parse_pdf(path)?;
                     document = doc;
+                    if let Some(report) = tables {
+                        record_table_report(&report, self.table_model.is_some(), &mut metadata);
+                    }
                     text
                 }
                 "tex" | "latex" => {
@@ -158,16 +188,28 @@ impl DocumentParser {
     /// A PDF is treated as scanned only when its text layer is essentially
     /// empty across all pages ([`is_effectively_scanned`]), never because one
     /// extractor failed.
-    fn parse_pdf(&self, path: &Path) -> Result<(String, Option<StructuredDocument>)> {
+    #[allow(clippy::type_complexity)]
+    fn parse_pdf(
+        &self,
+        path: &Path,
+    ) -> Result<(String, Option<StructuredDocument>, Option<TableReport>)> {
         let bytes = std::fs::read(path)
             .with_context(|| format!("Failed to read PDF: {}", path.display()))?;
 
+        let mode = match &self.table_model {
+            Some(model) => TableMode::Model(model),
+            None => TableMode::Candidates,
+        };
         let mut layout_failed = false;
-        match pdf_layout::parse_pdf_layout(&bytes) {
-            Ok(doc) => {
+        match pdf_layout::parse_pdf_layout_with(&bytes, mode) {
+            Ok(parsed) => {
+                let doc = parsed.document;
+                for error in &parsed.tables.model_errors {
+                    tracing::warn!(error = %error, "table model page skipped: {}", path.display());
+                }
                 let chars = doc.text_chars();
                 if !is_effectively_scanned(chars, doc.pages.len()) {
-                    return Ok((doc.plain_text(), Some(doc)));
+                    return Ok((doc.plain_text(), Some(doc), Some(parsed.tables)));
                 }
                 tracing::info!(
                     pages = doc.pages.len(),
@@ -184,7 +226,7 @@ impl DocumentParser {
 
         if layout_failed {
             if let Some(text) = pdf_extract_text(&bytes) {
-                return Ok((text, None));
+                return Ok((text, None, None));
             }
         }
 
@@ -195,7 +237,7 @@ impl DocumentParser {
                     let doc = ocr_pages_to_document(&pages);
                     if doc.text_chars() > 0 {
                         tracing::info!(pages = pages.len(), "Using OCR text: {}", path.display());
-                        return Ok((doc.plain_text(), Some(doc)));
+                        return Ok((doc.plain_text(), Some(doc), None));
                     }
                 }
                 Err(e) => tracing::warn!("Windows OCR failed for {}: {:#}", path.display(), e),
@@ -457,6 +499,30 @@ fn ocr_pages_to_document(pages: &[String]) -> StructuredDocument {
     };
     doc.finalize();
     doc
+}
+
+/// Records the table detection of a PDF parse: its candidate pages, and with the
+/// model, the model's id and how many tables it structured.
+fn record_table_report(
+    report: &TableReport,
+    with_model: bool,
+    metadata: &mut HashMap<String, String>,
+) {
+    if !report.candidates.is_empty() {
+        let pages: Vec<String> = report
+            .candidates
+            .iter()
+            .map(|c| c.page.to_string())
+            .collect();
+        metadata.insert(TABLE_CANDIDATES_KEY.to_string(), pages.join(","));
+    }
+    if with_model {
+        metadata.insert(TABLE_MODEL_KEY.to_string(), TABLE_MODEL_ID.to_string());
+        metadata.insert(
+            MODEL_TABLES_KEY.to_string(),
+            report.model_tables.to_string(),
+        );
+    }
 }
 
 /// Record per-table statistics (sheet count, row count, numeric columns) in

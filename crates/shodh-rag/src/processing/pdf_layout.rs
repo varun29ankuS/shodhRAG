@@ -114,8 +114,10 @@ pub fn parse_pdf_layout_with(
     mode: TableMode<'_>,
 ) -> Result<ParsedLayout, PdfLayoutError> {
     let owned = bytes.to_vec();
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || parse_inner(owned, mode)))
-        .unwrap_or(Err(PdfLayoutError::Panicked))
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        parse_inner(owned, mode)
+    }))
+    .unwrap_or(Err(PdfLayoutError::Panicked))
 }
 
 fn parse_inner(bytes: Vec<u8>, mode: TableMode<'_>) -> Result<ParsedLayout, PdfLayoutError> {
@@ -420,8 +422,7 @@ fn candidate_cues(page: &PageLines, rules: impl FnOnce() -> usize) -> Vec<Candid
 /// Horizontal rules on a page at distinct heights: stroked lines or thin filled
 /// rectangles at least 15% of the page wide (booktabs `\toprule`, `\midrule`, ...).
 fn horizontal_rules(doc: &pdf_oxide::PdfDocument, index: usize, page_width: f32) -> usize {
-    let paths =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| doc.extract_paths(index)));
+    let paths = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| doc.extract_paths(index)));
     let Ok(Ok(paths)) = paths else {
         return 0;
     };
@@ -1999,6 +2000,58 @@ mod generated_pdf_tests {
         assert!(doc.blocks.iter().any(
             |b| matches!(&b.kind, BlockKind::Figure { caption } if caption.starts_with("Figure 2:"))
         ));
+    }
+
+    #[test]
+    fn table_candidate_pages_are_flagged_by_their_cues() {
+        let prose = column(72.0, 700.0, "prose", 10);
+        let mut numeric = column(72.0, 700.0, "intro", 3);
+        for (i, (name, a, b)) in [
+            ("HNSW", "95.3", "88.1"),
+            ("IVF", "71.4", "60.2"),
+            ("PQ", "65.0", "52.9"),
+            ("Flat", "99.9", "99.1"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let y = 600.0 - 12.0 * i as f32;
+            numeric.push(text(72.0, y, 9.0, name));
+            numeric.push(text(200.0, y, 9.0, a));
+            numeric.push(text(260.0, y, 9.0, b));
+        }
+        let mut captioned = column(72.0, 700.0, "body", 3);
+        captioned.push(text(72.0, 600.0, 9.0, "Table 2: Recall of the indexes."));
+        let parsed = parse_pdf_layout_with(
+            &build_pdf(&[prose, numeric, captioned], None),
+            TableMode::Candidates,
+        )
+        .expect("layout");
+        let cues: Vec<(u32, Vec<CandidateCue>)> = parsed
+            .tables
+            .candidates
+            .iter()
+            .map(|c| (c.page, c.cues.clone()))
+            .collect();
+        assert_eq!(cues[0].0, 2, "{cues:?}");
+        assert!(
+            cues[0].1.contains(&CandidateCue::NumericCluster),
+            "{cues:?}"
+        );
+        assert!(
+            cues[0].1.contains(&CandidateCue::AlignedColumns),
+            "{cues:?}"
+        );
+        assert_eq!(cues[1].0, 3, "{cues:?}");
+        assert!(cues[1].1.contains(&CandidateCue::Caption), "{cues:?}");
+        assert_eq!(cues.len(), 2, "the prose page is not a candidate: {cues:?}");
+        // The plain parser reports no candidates.
+        let plain = parse_pdf_layout_with(
+            &build_pdf(&[column(72.0, 700.0, "x", 3)], None),
+            TableMode::Heuristic,
+        )
+        .expect("layout");
+        assert!(plain.tables.candidates.is_empty());
     }
 
     #[test]

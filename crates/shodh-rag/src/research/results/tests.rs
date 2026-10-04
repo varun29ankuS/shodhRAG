@@ -591,7 +591,14 @@ fn corpus_cells_give_exact_values_pages_and_boxes() {
         .iter()
         .filter(|c| c.metric == "Ppl.")
         .take(2)
-        .map(|c| (c.method.clone(), c.number.decimal.clone(), c.cell_box, c.page))
+        .map(|c| {
+            (
+                c.method.clone(),
+                c.number.decimal.clone(),
+                c.cell_box,
+                c.page,
+            )
+        })
         .collect();
     assert_eq!(
         got,

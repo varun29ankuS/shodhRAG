@@ -389,9 +389,12 @@ fn is_aggregate_header(text: &str) -> bool {
         .filter(|w| !w.is_empty())
         .collect();
     !words.is_empty()
-        && words
-            .iter()
-            .all(|w| matches!(w.as_str(), "avg" | "average" | "mean" | "overall" | "all" | "total"))
+        && words.iter().all(|w| {
+            matches!(
+                w.as_str(),
+                "avg" | "average" | "mean" | "overall" | "all" | "total"
+            )
+        })
 }
 
 /// A data split named in a header (`Valid`, `Test`): it qualifies the column.
@@ -646,9 +649,8 @@ fn caption_dataset_token(caption: &str) -> Option<String> {
 /// that names one wins. Generic headings (`4 Experiments`, `4.2 Language Modeling`)
 /// name none.
 pub fn section_dataset(section_path: &[String]) -> Option<String> {
-    static NUMBER: LazyLock<Option<Regex>> = LazyLock::new(|| {
-        Regex::new(r"^\s*(?:[A-Z]|\d{1,2})(?:\.\d{1,2}){0,3}\.?\s+").ok()
-    });
+    static NUMBER: LazyLock<Option<Regex>> =
+        LazyLock::new(|| Regex::new(r"^\s*(?:[A-Z]|\d{1,2})(?:\.\d{1,2}){0,3}\.?\s+").ok());
     for heading in section_path.iter().rev() {
         let title = match NUMBER.as_ref() {
             Some(re) => re.replace(heading, "").into_owned(),
@@ -713,9 +715,8 @@ fn is_word_cell(text: &str) -> bool {
 /// Whether a row only names settings under a header (`| | 2K | 4K | 8K |`): its first
 /// cell is empty and every other filled cell is a size or `k = n` qualifier.
 fn is_setting_row(row: &[String], header: &[String]) -> bool {
-    static SIZE: LazyLock<Option<Regex>> = LazyLock::new(|| {
-        Regex::new(r"(?i)^(?:\d+(?:\.\d+)?\s*[kmbt]|[knlt]\s*=\s*\d+)$").ok()
-    });
+    static SIZE: LazyLock<Option<Regex>> =
+        LazyLock::new(|| Regex::new(r"(?i)^(?:\d+(?:\.\d+)?\s*[kmbt]|[knlt]\s*=\s*\d+)$").ok());
     let Some(size) = SIZE.as_ref() else {
         return false;
     };
@@ -882,7 +883,8 @@ pub fn read_table(table: &TableInput, model: Option<&HeaderRoles>) -> Reading {
             .collect();
         !cells.is_empty() && cells.iter().filter(|c| is_word_cell(c)).count() * 2 > cells.len()
     };
-    if let Some(split) = (label_columns + 1..width).find(|&c| word_column(c) && !word_column(c - 1)) {
+    if let Some(split) = (label_columns + 1..width).find(|&c| word_column(c) && !word_column(c - 1))
+    {
         let left = read_table(&slice_columns(table, 0, split), model);
         let right = read_table(&slice_columns(table, split, width), None);
         return merge_readings(left, right, split);
@@ -1172,10 +1174,11 @@ fn slice_columns(table: &TableInput, from: usize, to: usize) -> TableInput {
 /// by `offset`.
 fn merge_readings(left: Reading, right: Reading, offset: usize) -> Reading {
     let mut out = left;
-    out.candidates.extend(right.candidates.into_iter().map(|mut c| {
-        c.column += offset;
-        c
-    }));
+    out.candidates
+        .extend(right.candidates.into_iter().map(|mut c| {
+            c.column += offset;
+            c
+        }));
     out.unresolved
         .extend(right.unresolved.into_iter().map(|c| c + offset));
     out.ambiguous_cells += right.ambiguous_cells;
@@ -1591,7 +1594,11 @@ mod tests {
         assert_eq!(method_label("Hours"), ("Hours".into(), false));
         let t = table(
             &["Method", "SIFT1M R@10"],
-            &[&["HNSW", "95.3"], &["Ours", "97.1"], &["IVF (ours)", "96.0"]],
+            &[
+                &["HNSW", "95.3"],
+                &["Ours", "97.1"],
+                &["IVF (ours)", "96.0"],
+            ],
             None,
         );
         let got: Vec<(String, f64)> = read_table(&t, None)
@@ -1633,7 +1640,12 @@ mod tests {
             vec![
                 ("SIFT1M".into(), "R@10".into(), "95.3".into(), None),
                 ("SIFT1M".into(), "QPS".into(), "12400".into(), None),
-                ("GIST1M".into(), "R@10".into(), "88.1".into(), Some("0.4".into())),
+                (
+                    "GIST1M".into(),
+                    "R@10".into(),
+                    "88.1".into(),
+                    Some("0.4".into())
+                ),
             ]
         );
     }
@@ -1688,15 +1700,36 @@ mod tests {
         let t = table(
             &["Model", "Dataset", "Acc.", "Model", "Dataset", "Acc."],
             &[
-                &["VGG-16", "CIFAR-10", "93.95%", "ResNet-18", "CIFAR-100", "65.48%"],
-                &["ResNet-34", "ImageNet", "74.31%", "VGG-16", "ImageNet", "73.98 %"],
+                &[
+                    "VGG-16",
+                    "CIFAR-10",
+                    "93.95%",
+                    "ResNet-18",
+                    "CIFAR-100",
+                    "65.48%",
+                ],
+                &[
+                    "ResNet-34",
+                    "ImageNet",
+                    "74.31%",
+                    "VGG-16",
+                    "ImageNet",
+                    "73.98 %",
+                ],
             ],
             None,
         );
         let got: Vec<(String, String, String, usize)> = read_table(&t, None)
             .candidates
             .iter()
-            .map(|c| (c.method.clone(), c.dataset.clone(), c.number.decimal.clone(), c.column))
+            .map(|c| {
+                (
+                    c.method.clone(),
+                    c.dataset.clone(),
+                    c.number.decimal.clone(),
+                    c.column,
+                )
+            })
             .collect();
         assert_eq!(
             got,
@@ -1713,7 +1746,14 @@ mod tests {
     fn task_columns_and_size_rows_are_not_misread() {
         // MAD-style table: tasks, a measure word inside some task names.
         let tasks = table(
-            &["Model", "Compress", "Fuzzy Recall", "In-Context Recall", "Memorize", "Average"],
+            &[
+                "Model",
+                "Compress",
+                "Fuzzy Recall",
+                "In-Context Recall",
+                "Memorize",
+                "Average",
+            ],
             &[&["Mamba", "52.7", "6.7", "90.4", "89.5", "69.3"]],
             None,
         );
@@ -1721,7 +1761,10 @@ mod tests {
         // A row of context sizes under spanning dataset headers continues the header.
         let niah = table(
             &["Model", "S-NIAH-PK", "S-NIAH-PK", "Average"],
-            &[&["", "2K", "4K", "Average"], &["Mamba2", "98.6", "61.4", "52.0"]],
+            &[
+                &["", "2K", "4K", "Average"],
+                &["Mamba2", "98.6", "61.4", "52.0"],
+            ],
             Some("Table 3: Accuracy on NIAH tasks."),
         );
         let got: Vec<(String, String)> = read_table(&niah, None)

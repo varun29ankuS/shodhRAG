@@ -207,8 +207,8 @@ impl TableModel {
         let loaded = std::panic::catch_unwind(|| {
             let layout = docling_pdf::layout::LayoutModel::load_with(threads)
                 .map_err(TableModelError::Load)?;
-            let structure = docling_pdf::tableformer::TableFormer::load_with(threads)
-                .ok_or_else(|| {
+            let structure =
+                docling_pdf::tableformer::TableFormer::load_with(threads).ok_or_else(|| {
                     TableModelError::Load("the table structure graphs did not load".to_string())
                 })?;
             Ok(Models { layout, structure })

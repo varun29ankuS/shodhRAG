@@ -151,7 +151,11 @@ pub fn resolve_cells(cells: &[ModelCell]) -> Option<ResolvedTable> {
             } else {
                 slot.anchor || !is_value(&slot.text)
             };
-            texts.push(if keep { slot.text.clone() } else { String::new() });
+            texts.push(if keep {
+                slot.text.clone()
+            } else {
+                String::new()
+            });
             boxes.push(slot.bbox);
         }
         if section && texts.first().is_some_and(String::is_empty) {
@@ -214,12 +218,14 @@ pub fn header_unit(header: &str) -> Option<String> {
         .ok()
     });
     let caps = UNIT.as_ref()?.captures(header)?;
-    caps.get(1).or_else(|| caps.get(2)).map(|m| match m.as_str() {
-        "×" => "x".to_string(),
-        "us" => "µs".to_string(),
-        "sec" => "s".to_string(),
-        other => other.to_string(),
-    })
+    caps.get(1)
+        .or_else(|| caps.get(2))
+        .map(|m| match m.as_str() {
+            "×" => "x".to_string(),
+            "us" => "µs".to_string(),
+            "sec" => "s".to_string(),
+            other => other.to_string(),
+        })
 }
 
 #[cfg(test)]
@@ -337,7 +343,10 @@ mod tests {
         assert_eq!(header_unit("Latency [ms]").as_deref(), Some("ms"));
         assert_eq!(header_unit("Error in %").as_deref(), Some("%"));
         assert_eq!(header_unit("Speedup (×)").as_deref(), Some("x"));
-        assert_eq!(header_unit("Throughput (tokens/s)").as_deref(), Some("tokens/s"));
+        assert_eq!(
+            header_unit("Throughput (tokens/s)").as_deref(),
+            Some("tokens/s")
+        );
         assert_eq!(header_unit("Energy (mJ)").as_deref(), Some("mJ"));
         assert_eq!(header_unit("Recall@10"), None);
         assert_eq!(header_unit("Trained in Books"), None);

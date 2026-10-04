@@ -234,7 +234,8 @@ fn spot_check_crops(
         .unwrap();
     let stem: String = paper.chars().take(10).collect();
     let readings: Vec<_> = tables.iter().map(|t| read_table(t, None)).collect();
-    let dropped = crate::research::results::ambiguous(readings.iter().flat_map(|r| r.candidates.iter()));
+    let dropped =
+        crate::research::results::ambiguous(readings.iter().flat_map(|r| r.candidates.iter()));
     let mut ordinal = 0usize;
     for (index, (table, reading)) in tables.iter().zip(&readings).enumerate() {
         if reading.candidates.is_empty() {
@@ -261,7 +262,10 @@ fn spot_check_crops(
         let scale = image.height() as f32 / height;
         let px = |x: f32| (x * scale).max(0.0) as u32;
         let (x0, x1) = (px(bbox.x0 - 6.0), px(bbox.x1 + 6.0).min(image.width()));
-        let (y0, y1) = (px(height - bbox.y1 - 30.0), px(height - bbox.y0 + 6.0).min(image.height()));
+        let (y0, y1) = (
+            px(height - bbox.y1 - 30.0),
+            px(height - bbox.y0 + 6.0).min(image.height()),
+        );
         if x1 <= x0 || y1 <= y0 {
             continue;
         }
@@ -269,7 +273,10 @@ fn spot_check_crops(
         for c in &reading.candidates {
             let Some(b) = c.cell_box else { continue };
             let (bx0, bx1) = (px(b.x0).saturating_sub(x0), px(b.x1).saturating_sub(x0));
-            let (by0, by1) = (px(height - b.y1).saturating_sub(y0), px(height - b.y0).saturating_sub(y0));
+            let (by0, by1) = (
+                px(height - b.y1).saturating_sub(y0),
+                px(height - b.y0).saturating_sub(y0),
+            );
             for x in bx0..=bx1.min(crop.width().saturating_sub(1)) {
                 for y in [by0, by1] {
                     if y < crop.height() {

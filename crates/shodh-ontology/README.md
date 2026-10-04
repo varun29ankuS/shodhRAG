@@ -14,7 +14,7 @@ and must report every construct it skips).
 
 ```
 ontology/core.toml            built-in core (shodh.core 1.0.0)
-ontology/packs/research.toml  built-in research pack (shodh.research 1.0.0)
+ontology/packs/research.toml  built-in research pack (shodh.research 1.1.0)
 src/model.rs      Ontology, Class, Property, Range, Datatype, Cardinality, Dynamics
 src/loader.rs     OntologyBuilder: parse, merge, validate, compile
 src/statement.rs  Statement, Provenance, ValidStatement, Violation, Ontology::validate

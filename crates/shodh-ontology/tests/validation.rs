@@ -395,3 +395,71 @@ fn all_violations_are_reported_together() {
         ]
     );
 }
+
+#[test]
+fn research_results_and_snippets_carry_their_cell_and_edits() {
+    let ontology = with_research();
+    assert_eq!(
+        ontology
+            .packs()
+            .find(|p| p.id == "shodh.research")
+            .map(|p| p.version.to_string()),
+        Some("1.1.0".to_owned())
+    );
+    let mut result = statement(
+        "result-1",
+        "Result",
+        vec![
+            (
+                "resultMethod",
+                RawValue::Entity(EntityRef::typed("method:hnsw", "Method")),
+            ),
+            (
+                "resultDataset",
+                RawValue::Entity(EntityRef::typed("dataset:sift1m", "Dataset")),
+            ),
+            (
+                "resultMetric",
+                RawValue::Entity(EntityRef::typed("metric:recall@10", "Metric")),
+            ),
+            ("resultValue", RawValue::text("95.30")),
+            ("resultValueText", RawValue::text("95.30*")),
+            ("resultUnit", RawValue::text("%")),
+            ("resultMethodLabel", RawValue::text("HNSW")),
+            ("resultPage", RawValue::Integer(6)),
+            ("resultRegion", RawValue::text("120.5,600,160.25,612.4")),
+        ],
+    );
+    // A statement written under 1.0.0 still validates under 1.1.0.
+    valid(&ontology, &result);
+    result
+        .properties
+        .insert("resultRegion".to_owned(), RawValue::text("-1,0,2,3"));
+    assert_eq!(single(&ontology, &result).code(), "pattern_mismatch");
+
+    let mut snippet = statement(
+        "snippet-1",
+        "Snippet",
+        vec![
+            (
+                "snippetOf",
+                RawValue::Entity(EntityRef::typed("doc:abc", "Document")),
+            ),
+            ("snippetPage", RawValue::Integer(3)),
+            ("snippetRect", RawValue::text("72,100.5,200,40")),
+            ("snippetKind", RawValue::text("equation")),
+            (
+                "snippetTag",
+                RawValue::List(vec!["loss".into(), "eq-3".into()]),
+            ),
+            ("snippetLatex", RawValue::text(r"\mathcal{L} = -\log p")),
+            ("snippetLatexModel", RawValue::text("qwen2.5-vl")),
+        ],
+    );
+    snippet.ontology_version = semver::Version::new(1, 1, 0);
+    valid(&ontology, &snippet);
+    snippet
+        .properties
+        .insert("snippetKind".to_owned(), RawValue::text("chart"));
+    assert_eq!(single(&ontology, &snippet).code(), "pattern_mismatch");
+}

@@ -1,12 +1,17 @@
 # Research pack: papers, authors, methods, datasets, metrics, results and snippets.
 #
 # A Result is an n-ary statement {method, dataset, metric, value, setting} reported in a
-# paper; its source span is the statement's provenance (page + character span), and it may
-# point at a Snippet (a cropped figure/table region with its text).
+# paper; its source is the statement's provenance plus the page and box of the table cell the
+# value was read from, and it may point at a Snippet (a cropped figure/table region with its
+# text).
+#
+# 1.1.0 (additive): Result keeps the cell text as printed, the unit, the labels as printed,
+# the table caption and the cell's page and box; Snippet gains title, note, tags, kind and a
+# LaTeX transcription with the model that made it.
 
 [pack]
 id = "shodh.research"
-version = "1.0.0"
+version = "1.1.0"
 label = "Shodh research pack"
 prefix = "research"
 namespace = "urn:shodh:ontology:research#"
@@ -260,6 +265,71 @@ cardinality = "one"
 required = true
 
 [[property]]
+id = "resultValueText"
+label = "value as printed"
+description = "The table cell exactly as printed in the paper (the value must occur in it verbatim)."
+domain = "Result"
+range = "String"
+cardinality = "one"
+
+[[property]]
+id = "resultUnit"
+label = "unit"
+description = "Unit of the value as printed in the cell or its header (%, ms, mJ, GB, ...). Values are never converted."
+domain = "Result"
+range = "String"
+cardinality = "one"
+
+[[property]]
+id = "resultMethodLabel"
+label = "method as printed"
+description = "The method's name as printed in the table."
+domain = "Result"
+range = "String"
+cardinality = "one"
+
+[[property]]
+id = "resultDatasetLabel"
+label = "dataset as printed"
+description = "The dataset's name as printed in the table, its header or caption."
+domain = "Result"
+range = "String"
+cardinality = "one"
+
+[[property]]
+id = "resultMetricLabel"
+label = "metric as printed"
+description = "The metric's name as printed in the table header."
+domain = "Result"
+range = "String"
+cardinality = "one"
+
+[[property]]
+id = "resultTableCaption"
+label = "table caption"
+description = "Caption of the table the value was read from."
+domain = "Result"
+range = "String"
+cardinality = "one"
+
+[[property]]
+id = "resultPage"
+label = "page"
+description = "1-based page of the table cell."
+domain = "Result"
+range = "Integer"
+cardinality = "one"
+
+[[property]]
+id = "resultRegion"
+label = "cell box"
+description = "Box of the table cell in PDF points, origin at the bottom-left of the page: \"x0,y0,x1,y1\"."
+domain = "Result"
+range = "String"
+cardinality = "one"
+pattern = '[0-9]+(?:\.[0-9]+)?(?:,[0-9]+(?:\.[0-9]+)?){3}'
+
+[[property]]
 id = "resultSetting"
 label = "setting"
 description = "Conditions of the measurement (split, shots, model size, seed)."
@@ -328,3 +398,52 @@ range = "String"
 cardinality = "one"
 required = true
 pattern = '[0-9]+(?:\.[0-9]+)?(?:,[0-9]+(?:\.[0-9]+)?){3}'
+
+[[property]]
+id = "snippetTitle"
+label = "title"
+description = "Title the user gave the snippet."
+domain = "Snippet"
+range = "String"
+cardinality = "one"
+
+[[property]]
+id = "snippetNote"
+label = "note"
+description = "The user's note on the snippet."
+domain = "Snippet"
+range = "String"
+cardinality = "one"
+
+[[property]]
+id = "snippetTag"
+label = "tag"
+description = "A tag the user put on the snippet."
+domain = "Snippet"
+range = "String"
+cardinality = "many"
+
+[[property]]
+id = "snippetKind"
+label = "kind"
+description = "What the region shows: figure, table, equation or passage."
+domain = "Snippet"
+range = "String"
+cardinality = "one"
+pattern = 'figure|table|equation|passage'
+
+[[property]]
+id = "snippetLatex"
+label = "LaTeX"
+description = "LaTeX transcription of an equation snippet, made by a vision model at the user's request."
+domain = "Snippet"
+range = "String"
+cardinality = "one"
+
+[[property]]
+id = "snippetLatexModel"
+label = "transcribed by"
+description = "The model that made the LaTeX transcription."
+domain = "Snippet"
+range = "String"
+cardinality = "one"

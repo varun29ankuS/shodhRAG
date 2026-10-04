@@ -1266,6 +1266,64 @@ mod tests {
         }
     }
 
+    #[test]
+    fn header_lines_above_a_numeric_header_row_become_the_header() {
+        let cell = |x0: f32, y0: f32, x1: f32, y1: f32| Some(BBox::new(x0, y0, x1, y1));
+        let table = RawTable {
+            bbox: BBox::new(100.0, 628.0, 250.0, 650.0),
+            header: vec!["Mamba".into(), "98.6".into(), "61.4".into()],
+            rows: vec![vec!["DeltaNet".into(), "96.8".into(), "98.8".into()]],
+            cell_boxes: vec![
+                vec![
+                    cell(100.0, 640.0, 150.0, 650.0),
+                    cell(160.0, 640.0, 200.0, 650.0),
+                    cell(210.0, 640.0, 250.0, 650.0),
+                ],
+                vec![
+                    cell(100.0, 628.0, 150.0, 638.0),
+                    cell(160.0, 628.0, 200.0, 638.0),
+                    cell(210.0, 628.0, 250.0, 638.0),
+                ],
+            ],
+        };
+        let mut page = PageLines {
+            number: 1,
+            width: 612.0,
+            height: 792.0,
+            lines: vec![
+                // The caption above the header stops the search.
+                line("Table 1: Recall.", 100.0, 662.0, 200.0, 8.0, false),
+                line("Model SIFT1M GIST1M", 100.0, 652.0, 250.0, 8.0, false),
+            ],
+            tables: vec![table],
+        };
+        recover_table_headers(&mut page);
+        let table = &page.tables[0];
+        assert_eq!(table.header, vec!["Model", "SIFT1M", "GIST1M"]);
+        assert_eq!(table.rows[0], vec!["Mamba", "98.6", "61.4"]);
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(table.cell_boxes.len(), 3);
+        assert!(table.cell_boxes[0].iter().all(Option::is_some));
+        assert_eq!(table.bbox, BBox::new(100.0, 628.0, 250.0, 660.0));
+
+        // A textual header row is left as it is.
+        let mut page = PageLines {
+            number: 1,
+            width: 612.0,
+            height: 792.0,
+            lines: vec![line("Model SIFT1M GIST1M", 100.0, 652.0, 250.0, 8.0, false)],
+            tables: vec![RawTable {
+                bbox: BBox::new(100.0, 628.0, 250.0, 650.0),
+                header: vec!["Method".into(), "R@10".into(), "QPS".into()],
+                rows: vec![vec!["HNSW".into(), "95.3".into(), "1200".into()]],
+                cell_boxes: vec![],
+            }],
+        };
+        recover_table_headers(&mut page);
+        assert_eq!(page.tables[0].header, vec!["Method", "R@10", "QPS"]);
+        assert_eq!(page.tables[0].rows.len(), 1);
+    }
+
     fn stats() -> DocStats {
         DocStats {
             body_size: 10.0,

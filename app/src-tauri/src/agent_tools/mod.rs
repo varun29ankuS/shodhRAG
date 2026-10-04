@@ -350,7 +350,11 @@ pub(crate) mod testing {
             effects: effects.clone(),
             web: SafeClient::system(),
             roots: roots.clone(),
-            research: ResearchState::at(memory.clone(), Some((dir.path().join("shodh.db"), None))),
+            research: ResearchState::at(
+                memory.clone(),
+                Some((dir.path().join("shodh.db"), None)),
+                Default::default(),
+            ),
             memory,
             visuals: VisualState::at(Some((dir.path().join("shodh.db"), None))),
         });

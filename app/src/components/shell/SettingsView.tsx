@@ -7,6 +7,7 @@ import PrivacySettings from '../PrivacySettings';
 import BackgroundSettings from '../BackgroundSettings';
 import MemorySettings from '../MemorySettings';
 import AnswerCheckSettings from '../AnswerCheckSettings';
+import TableModelSettings from '../TableModelSettings';
 import { cn } from '../../lib/utils';
 
 export type SettingsSection = 'models' | 'search' | 'general' | 'privacy' | 'memory' | 'data';
@@ -154,6 +155,7 @@ export default function SettingsView({
                     onReset={onResetSearchConfig}
                   />
                   <AnswerCheckSettings />
+                  <TableModelSettings />
                 </>
               ) : section === 'general' ? (
                 <BackgroundSettings />

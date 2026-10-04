@@ -15,6 +15,7 @@ use serde_json::json;
 use shodh_rag::audit::payload::{is_cloud, provider_id};
 use shodh_rag::audit::AuditKey;
 use shodh_rag::llm::{ApiProvider, LLMMode};
+use shodh_rag::processing::table_model::SharedTableModel;
 use shodh_rag::research::pdf_text::PageRect;
 use shodh_rag::research::results::{
     Comparison, ExtractionReport, PaperResults, ResultFacets, ResultFilter, ResultService,
@@ -106,21 +107,28 @@ struct Inner {
     memory: MemoryState,
     database: Option<(PathBuf, Option<AuditKey>)>,
     services: OnceCell<Arc<ResearchServices>>,
+    /// The table model, when installed; result extraction structures tables with it.
+    tables: SharedTableModel,
 }
 
 impl ResearchState {
     /// State over the app's memory store and the database the audit log opened.
-    pub fn new(memory: MemoryState, audit: &AuditState) -> Self {
-        Self::at(memory, audit.database())
+    pub fn new(memory: MemoryState, audit: &AuditState, tables: SharedTableModel) -> Self {
+        Self::at(memory, audit.database(), tables)
     }
 
     /// State over `memory`'s statement store and `shodh.db` at `database`.
-    pub fn at(memory: MemoryState, database: Option<(PathBuf, Option<AuditKey>)>) -> Self {
+    pub fn at(
+        memory: MemoryState,
+        database: Option<(PathBuf, Option<AuditKey>)>,
+        tables: SharedTableModel,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 memory,
                 database,
                 services: OnceCell::new(),
+                tables,
             }),
         }
     }
@@ -150,7 +158,8 @@ impl ResearchState {
                 let store = service.store().clone();
                 Ok(Arc::new(ResearchServices {
                     snippets: SnippetService::new(store.clone(), db.clone(), APP_VERSION),
-                    results: ResultService::new(store, db, APP_VERSION),
+                    results: ResultService::new(store, db, APP_VERSION)
+                        .with_table_model(self.inner.tables.clone()),
                 }))
             })
             .await

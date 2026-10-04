@@ -34,6 +34,7 @@ mod space_commands;
 mod space_manager;
 mod storage_commands;
 mod system_commands;
+mod table_model_commands;
 mod template_commands;
 mod visual_commands;
 mod window_commands;
@@ -210,6 +211,26 @@ pub fn run() {
                 }
             });
 
+            // The optional table structure model, loaded the same way.
+            app.manage(table_model_commands::TableModelState::new(model_dir.clone()));
+            let table_model_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let loaded = tokio::task::spawn_blocking(move || {
+                    table_model_handle
+                        .state::<table_model_commands::TableModelState>()
+                        .load_if_installed()
+                })
+                .await;
+                match loaded {
+                    Ok(Ok(true)) => tracing::info!("Table model loaded"),
+                    Ok(Ok(false)) => tracing::info!(
+                        "Table model not installed; tables are read with the layout heuristics only"
+                    ),
+                    Ok(Err(e)) => tracing::warn!("Table model not loaded: {e}"),
+                    Err(e) => tracing::warn!("Table model load task failed: {e}"),
+                }
+            });
+
             // Initialize SpaceManager with persistent storage
             let space_manager = SpaceManager::with_data_dir(app_data_dir.clone());
 
@@ -273,7 +294,7 @@ pub fn run() {
                     .map(|c| c.dimension)
                     .unwrap_or(768);
             rag_config.data_dir = app_data_dir.clone();
-            let default_rag = tauri::async_runtime::block_on(
+            let mut default_rag = tauri::async_runtime::block_on(
                 shodh_rag::comprehensive_system::ComprehensiveRAG::new(rag_config),
             )
             .map_err(|e| setup_error("Failed to open the document index", format!("{e:#}")))?;
@@ -281,7 +302,10 @@ pub fn run() {
                 tracing::warn!("Search models are not installed; search needs first-run setup");
             }
 
+            // PDFs indexed with table-candidate pages are refined in the background.
+            let refinement = table_model_commands::spawn_refinement(app.handle(), &mut default_rag);
             let rag_engine = Arc::new(AsyncRwLock::new(default_rag));
+            table_model_commands::start_worker(app.handle().clone(), rag_engine.clone(), refinement);
             // Long-term memory: typed statements next to the document index, dynamics in
             // shodh.db. Opens on first use (it needs the search models' embedder).
             let memory_state = memory_commands::MemoryState::new(
@@ -294,6 +318,9 @@ pub fn run() {
             app.manage(research_commands::ResearchState::new(
                 memory_state.clone(),
                 &app.state::<audit_commands::AuditState>(),
+                app.state::<table_model_commands::TableModelState>()
+                    .model
+                    .clone(),
             ));
             app.manage(memory_state);
             // Generated visuals (the gallery), in shodh.db. Opens on first use.
@@ -472,6 +499,8 @@ pub fn run() {
             search_models_commands::install_search_models,
             answer_check_commands::answer_check_status,
             answer_check_commands::install_answer_check_model,
+            table_model_commands::table_model_status,
+            table_model_commands::install_table_model,
             // Enhanced RAG commands
             enhanced_rag_commands::preview_folder,
             enhanced_rag_commands::link_folder_enhanced,

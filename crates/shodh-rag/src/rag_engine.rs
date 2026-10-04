@@ -9,7 +9,9 @@ use crate::config::RAGConfig;
 use crate::embeddings::e5::{E5Config, E5Embeddings};
 use crate::embeddings::{EmbeddingModel, SearchModelsMissing};
 use crate::processing::chunker::{ContextualChunkResult, TextChunker};
-use crate::processing::parser::DocumentParser;
+use crate::processing::parser::{
+    DocumentParser, ParsedDocument, TABLE_CANDIDATES_KEY, TABLE_MODEL_KEY,
+};
 use crate::processing::structure_chunker::{StructureChunker, STRUCTURE_CHUNKER_VERSION};
 use crate::reranking::CrossEncoderReranker;
 use crate::search::hybrid::{score_aware_rrf, HybridSource};
@@ -282,6 +284,15 @@ pub struct SearchModels {
 }
 
 impl SearchModels {
+    /// Models over a test embedder, without a reranker.
+    #[cfg(test)]
+    pub(crate) fn from_embedder(embeddings: Arc<dyn EmbeddingModel>) -> Self {
+        Self {
+            embeddings,
+            reranker: None,
+        }
+    }
+
     /// Whether the E5 model files exist under `config.embedding.model_dir`.
     pub fn available(config: &RAGConfig) -> bool {
         E5Config::auto_detect(&config.embedding.model_dir).is_some()
@@ -351,6 +362,10 @@ pub struct RAGEngine {
     /// The cross-encoder, shared with other rankers (web and paper results)
     /// through [`Self::reranker_handle`]; filled when models are attached.
     reranker: SharedReranker,
+    /// PDFs indexed by the fast parser that have table-candidate pages are sent
+    /// here, for the table model to refine in the background (see
+    /// [`crate::table_refinement`]).
+    refinement_queue: Option<tokio::sync::mpsc::UnboundedSender<std::path::PathBuf>>,
 }
 
 impl RAGEngine {
@@ -410,6 +425,7 @@ impl RAGEngine {
             parser: DocumentParser::new(),
             config,
             reranker: SharedReranker::default(),
+            refinement_queue: None,
         };
         if let Some(models) = models {
             if let Err(e) = engine.attach_search_models(models) {
@@ -512,12 +528,76 @@ impl RAGEngine {
         metadata: HashMap<String, String>,
     ) -> Result<Vec<Uuid>> {
         self.require_embeddings()?;
-        let source = normalize_source_path(path);
-
         let parse_started = std::time::Instant::now();
         let parsed = self.parser.parse_file(path)?;
         let parse_ms = parse_started.elapsed().as_millis();
+        let refine = parsed.metadata.contains_key(TABLE_CANDIDATES_KEY)
+            && !parsed.metadata.contains_key(TABLE_MODEL_KEY);
+        let ids = self.index_parsed(path, parsed, metadata, parse_ms).await?;
+        if refine {
+            if let Some(queue) = &self.refinement_queue {
+                // A closed queue only means no refinement runs; the index is complete.
+                let _ = queue.send(path.to_path_buf());
+            }
+        }
+        Ok(ids)
+    }
 
+    /// Sends every PDF indexed from now on that has table-candidate pages to `queue`.
+    pub fn set_refinement_queue(
+        &mut self,
+        queue: tokio::sync::mpsc::UnboundedSender<std::path::PathBuf>,
+    ) {
+        self.refinement_queue = Some(queue);
+    }
+
+    /// Replaces the indexed chunks of a file with those of `refined` (the file
+    /// re-parsed with the table model), keeping the document-level metadata the
+    /// file was indexed with. Nothing is written when the file changed since it was
+    /// re-parsed or is no longer indexed.
+    pub async fn apply_refined_tables(
+        &mut self,
+        refined: crate::table_refinement::RefinedTables,
+    ) -> Result<crate::table_refinement::RefineOutcome> {
+        use crate::table_refinement::{document_metadata, FileStamp, RefineOutcome};
+        self.require_embeddings()?;
+        match FileStamp::of(&refined.path) {
+            Ok(stamp) if stamp == refined.stamp => {}
+            _ => return Ok(RefineOutcome::FileChanged),
+        }
+        let source = normalize_source_path(&refined.path);
+        let predicate = format!("source = '{}'", source.replace('\'', "''"));
+        let Some(existing) = self
+            .store
+            .list_chunks(Some(&predicate), 1)
+            .await?
+            .into_iter()
+            .next()
+        else {
+            return Ok(RefineOutcome::NotIndexed);
+        };
+        let stored: HashMap<String, String> =
+            serde_json::from_str(&existing.metadata_json).unwrap_or_default();
+        let metadata = document_metadata(&stored, &existing.space_id);
+        let model_tables = refined.model_tables;
+        let ids = self
+            .index_parsed(&refined.path, refined.parsed, metadata, refined.parse_ms)
+            .await?;
+        Ok(RefineOutcome::Replaced {
+            chunks: ids.len(),
+            model_tables,
+        })
+    }
+
+    /// Chunks, embeds and stores a parsed file, replacing its previous chunks.
+    async fn index_parsed(
+        &mut self,
+        path: &Path,
+        parsed: ParsedDocument,
+        metadata: HashMap<String, String>,
+        parse_ms: u128,
+    ) -> Result<Vec<Uuid>> {
+        let source = normalize_source_path(path);
         let mut merged_metadata = parsed.metadata;
         for (k, v) in metadata {
             merged_metadata.insert(k, v);

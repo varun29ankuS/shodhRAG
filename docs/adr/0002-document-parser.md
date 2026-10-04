@@ -103,4 +103,48 @@ Its layout model is clearly better on hard pages, for tables and figure regions.
 - **Dependencies.** `pdf_oxide = "=0.3.78"` is added. `office_oxide` is pinned to `=0.1.10`, because 0.1.11+ adds a struct field that pdf_oxide 0.3.78 does not initialise. Lift both pins together.
 - **Dev builds.** `[profile.dev.package.pdf_oxide] opt-level = 3` keeps parsing at about 11 ms/page.
 - **Other formats.** LaTeX and Markdown get the same block model, from `\section`, theorem environments, `equation`, `tabular`, `\bibitem`, and ATX headings / fences / pipe tables. They have no page numbers.
-- **Known gaps.** Table detection is weaker than TableFormer: 37 tables vs docling's 75. Wrapped multi-line display equations can split into several equation blocks. The chunker re-attaches them to their context.
+- **Known gaps.** Wrapped multi-line display equations can split into several equation blocks. The chunker re-attaches them to their context. Table detection by the heuristics alone is weaker than TableFormer (37 tables vs docling's 75); see "Table model" below.
+
+## Table model (amendment, 2026-10-04)
+
+**Problem.** Result extraction read 0 values from the 37 tables the heuristics found in the corpus. Refusals: no dataset named 14, header not recovered 7, no method column 9, merged columns or numberless rows 7.
+
+**Decision.** A hybrid path. The heuristic parser still parses every page. Pages are flagged as table candidates (`pdf_layout::candidate_cues`) by any of:
+
+- a `Table N` caption;
+- three or more nearby lines split into cells that are mostly numbers;
+- cells starting at the same x positions in three or more columns over four or more lines;
+- three or more horizontal rules on a page with a numeric row;
+- a table found by the heuristic detector.
+
+Only on those pages, docling.rs 1.91 (`docling-pdf`, MIT) renders the page. Its Heron layout detector (int8) finds the table regions, and its TableFormer port (fp16-weight encoder, int8 decoder) predicts cells with row and column spans and header tags. `processing::table_structure` resolves the cells:
+
+- a spanning header names every column under it;
+- a spanning value is kept once;
+- multi-row headers are flattened as `Parent / Child`;
+- section rows become group labels;
+- units are read from the headers.
+
+A model table replaces the heuristic tables of its page. Pages where the model finds none keep them.
+
+**Models.** `embeddings::model_store::table_model_artifacts`: five files from docling.rs's `models-v1` release, about 212 MB. Each is pinned by size and SHA-256 (GitHub's published digest), because a release tag can be re-pointed. They are downloaded only when the user installs them in Settings. Licences: Heron weights Apache-2.0; TableFormer weights CDLA-Permissive-2.0 / Apache-2.0; exports and runtime MIT. Without the models the heuristics are used, and the Results report says table extraction quality is reduced.
+
+**Configuration.** docling.rs reads model paths only from process environment variables (`DOCLING_LAYOUT_ONNX`, `DOCLING_TABLEFORMER_*`). `TableModel::load` sets them only for the duration of the load, under a process-wide lock, and restores them afterwards. `DOCLING_RS_NO_GRAPH_CACHE` keeps docling from writing optimized graph copies into the user's home directory. This is sound on Windows, where `SetEnvironmentVariableW` is serialized by the OS. On other platforms a C library calling `getenv` concurrently could observe a torn update, so the model is not loaded there (`TableModelError::UnsupportedPlatform`) and the heuristics are used. The models take `&mut self`, so pages are processed one at a time behind a mutex.
+
+**Latency.** Indexing stays on the fast path. A PDF with candidate pages is queued after its chunks are stored. A background worker re-parses it with the model and replaces its chunks only when the model structured a table and the file's size and modification time are unchanged (`table_refinement`). Papers that were scanned for results before are then re-extracted.
+
+**Measured on the corpus (15 PDFs, 367 pages; debug build, docling-pdf and image crates at opt-level 3):**
+
+| | Heuristics only | Hybrid (model on candidate pages) |
+|---|---|---|
+| Candidate pages | — | 101 of 367; they cover 52 of the 54 pages where the layout model, run on every page, finds a table |
+| Table blocks | 37 | 70 (69 structured by the model) |
+| Result values stored | 6 | 774 |
+| Parse time, whole corpus | 4.1 s (11 ms/page; candidate detection included) | +211.8 s in the background. Per candidate page: median 0.87 s, p90 2.6 s, max 40.7 s (a 745-cell page-sized table) |
+
+A spot check of 50 values from the arXiv papers against the rendered pages found the following:
+
+- value, page, dataset and metric correct for all 50;
+- 3 method labels wrong: the label carries a `Figure 1(a)` cell from a neighbouring label column.
+
+**Not adopted:** docling.rs's full pipeline on every page. It is about 70× slower per page, and the heuristic parser is better on equations and reading order.

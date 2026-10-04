@@ -18,6 +18,7 @@ pub mod search;
 pub mod space;
 pub mod statements;
 pub mod storage;
+pub mod table_refinement;
 pub mod templates;
 pub mod types;
 pub mod user_memory;

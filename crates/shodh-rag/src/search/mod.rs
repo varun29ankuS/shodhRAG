@@ -1,3 +1,4 @@
+pub mod graph_fusion;
 pub mod hybrid;
 pub mod text_search;
 

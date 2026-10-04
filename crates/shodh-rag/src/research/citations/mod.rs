@@ -17,15 +17,23 @@
 //! the graph view and the agent tools.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod build;
 #[cfg(test)]
 mod corpus_dump;
 #[cfg(test)]
 mod corpus_tests;
+pub mod graph;
 pub mod identity;
 pub mod reference;
 pub mod resolve;
 pub mod scan;
 pub mod segment;
+pub mod service;
+#[cfg(test)]
+mod service_tests;
 pub mod text;
+pub mod views;
 
+pub use graph::{PaperFilter, PaperGraph, PaperNode};
 pub use resolve::{Resolver, ScholarlyTransport};
+pub use service::{BuildProgress, BuildReport, CitationService, GraphRanker, GraphSlot};

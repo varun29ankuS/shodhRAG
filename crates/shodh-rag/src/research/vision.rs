@@ -54,8 +54,10 @@ impl VisionModel {
     }
 }
 
-static OPENROUTER_LIST: LazyLock<Mutex<Option<(Instant, HashMap<String, Vec<String>>)>>> =
-    LazyLock::new(|| Mutex::new(None));
+/// Input modalities by OpenRouter model id, with the time they were fetched.
+type ModelList = (Instant, HashMap<String, Vec<String>>);
+
+static OPENROUTER_LIST: LazyLock<Mutex<Option<ModelList>>> = LazyLock::new(|| Mutex::new(None));
 
 fn client(timeout: Duration) -> ResearchResult<reqwest::Client> {
     reqwest::Client::builder()

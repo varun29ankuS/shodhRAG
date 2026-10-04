@@ -6,6 +6,9 @@
 //! printed lexeme is kept verbatim (`lexeme` is always a substring of the cell); the
 //! decimal is derived from it only by dropping thousands separators and the percent sign
 //! and writing a Unicode minus as `-`. Nothing is rounded or converted.
+//!
+//! Patterns are compiled once into `Option`s (the module denies `expect`); the tests below
+//! fail if one does not compile, and a missing pattern reads no value rather than a wrong one.
 
 use std::sync::LazyLock;
 
@@ -35,13 +38,13 @@ pub enum CellIssue {
     SeveralNumbers,
 }
 
-static NUMBER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[+\-−–]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|[+\-−–]?\.\d+").expect("static regex")
+static NUMBER: LazyLock<Option<Regex>> = LazyLock::new(|| {
+    Regex::new(r"[+\-−–]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|[+\-−–]?\.\d+").ok()
 });
 
 /// Value, optional spread or delta, optional unit, markers. The value is group `v`, the
 /// unit `u`.
-static VALUE_CELL: LazyLock<Regex> = LazyLock::new(|| {
+static VALUE_CELL: LazyLock<Option<Regex>> = LazyLock::new(|| {
     Regex::new(concat!(
         r"^[*†‡§¶\s]*",
         r"(?P<v>[+\-−–]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|[+\-−–]?\.\d+)",
@@ -50,7 +53,7 @@ static VALUE_CELL: LazyLock<Regex> = LazyLock::new(|| {
         r"(?:\s*\(\s*[+\-−–]\s*\d+(?:\.\d+)?\s*%?\s*\))?",
         r"[*†‡§¶\s]*$",
     ))
-    .expect("static regex")
+    .ok()
 });
 
 fn is_placeholder(text: &str) -> bool {
@@ -66,8 +69,12 @@ pub fn read_cell(text: &str) -> Result<CellNumber, CellIssue> {
     if is_placeholder(trimmed) {
         return Err(CellIssue::Empty);
     }
-    let Some(caps) = VALUE_CELL.captures(trimmed) else {
-        return Err(if NUMBER.find_iter(trimmed).count() > 1 {
+    let Some(caps) = VALUE_CELL.as_ref().and_then(|re| re.captures(trimmed)) else {
+        let numbers = NUMBER
+            .as_ref()
+            .map(|re| re.find_iter(trimmed).count())
+            .unwrap_or(0);
+        return Err(if numbers > 1 {
             CellIssue::SeveralNumbers
         } else {
             CellIssue::NotNumeric
@@ -103,16 +110,15 @@ pub fn read_cell(text: &str) -> Result<CellNumber, CellIssue> {
 
 /// Whether a cell contains any digit (a candidate value cell).
 pub fn has_number(text: &str) -> bool {
-    NUMBER.is_match(text)
+    NUMBER.as_ref().is_some_and(|re| re.is_match(text))
 }
 
 /// A unit stated in a header: `(%)`, `[ms]`, `(mJ)`, `in %`.
 pub fn header_unit(header: &str) -> Option<String> {
-    static UNIT: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?:[(\[]\s*(%|ms|s|µs|mJ|J|GB|MB|KB|TB|x|×)\s*[)\]]|\bin\s+(%))")
-            .expect("static regex")
+    static UNIT: LazyLock<Option<Regex>> = LazyLock::new(|| {
+        Regex::new(r"(?:[(\[]\s*(%|ms|s|µs|mJ|J|GB|MB|KB|TB|x|×)\s*[)\]]|\bin\s+(%))").ok()
     });
-    let caps = UNIT.captures(header)?;
+    let caps = UNIT.as_ref()?.captures(header)?;
     caps.get(1).or_else(|| caps.get(2)).map(|m| {
         if m.as_str() == "×" {
             "x".to_string()

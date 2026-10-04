@@ -59,10 +59,11 @@ impl TableInput {
 
     /// `Table 3` from the caption, when it has a number.
     pub fn label(&self) -> Option<String> {
-        static LABEL: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"(?i)^\s*(table\s+[0-9]+[a-z]?)").expect("static regex"));
+        static LABEL: LazyLock<Option<Regex>> =
+            LazyLock::new(|| Regex::new(r"(?i)^\s*(table\s+[0-9]+[a-z]?)").ok());
         let (caption, _) = self.caption()?;
         LABEL
+            .as_ref()?
             .captures(caption)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().split_whitespace().collect::<Vec<_>>().join(" "))
@@ -365,10 +366,10 @@ fn metrics_in(text: &str) -> Vec<String> {
 
 /// Size, shot or context qualifiers that are settings, not datasets.
 fn is_setting_token(token: &str) -> bool {
-    static SETTING: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)^(?:\d+(?:\.\d+)?\s*[kmbt]|\d+-?shot|zero-?shot|few-?shot|\d+(?:\.\d+)?[kmbt]?\s*(?:params?|tokens?)|k\s*=\s*\d+|n\s*=\s*\d+|t\s*=\s*\d+|l\s*=\s*\d+|\d+(?:\.\d+)?)$").expect("static regex")
+    static SETTING: LazyLock<Option<Regex>> = LazyLock::new(|| {
+        Regex::new(r"(?i)^(?:\d+(?:\.\d+)?\s*[kmbt]|\d+-?shot|zero-?shot|few-?shot|\d+(?:\.\d+)?[kmbt]?\s*(?:params?|tokens?)|k\s*=\s*\d+|n\s*=\s*\d+|t\s*=\s*\d+|l\s*=\s*\d+|\d+(?:\.\d+)?)$").ok()
     });
-    SETTING.is_match(token.trim())
+    SETTING.as_ref().is_some_and(|re| re.is_match(token.trim()))
 }
 
 /// Words that are not dataset names when left over in a header.
@@ -468,17 +469,17 @@ fn looks_like_dataset(token: &str) -> bool {
 
 /// A cleaned header text: arrows, units in brackets and markers removed.
 fn clean_header(text: &str) -> String {
-    static NOISE: LazyLock<Regex> = LazyLock::new(|| {
+    static NOISE: LazyLock<Option<Regex>> = LazyLock::new(|| {
         Regex::new(
             r"[↑↓⇑⇓▲▼†‡*]|\(\s*(?:%|ms|s|mJ|J|GB|MB|x|×)\s*\)|\[\s*(?:%|ms|s|mJ|J|GB|MB)\s*\]",
         )
-        .expect("static regex")
+        .ok()
     });
-    NOISE
-        .replace_all(text, " ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    let cleaned = match NOISE.as_ref() {
+        Some(re) => re.replace_all(text, " ").into_owned(),
+        None => text.to_string(),
+    };
+    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Splits one column header into metric, dataset and setting.
@@ -533,12 +534,13 @@ pub fn split_header(text: &str) -> ColumnRoles {
 /// Dataset names a caption gives: `... on SIFT1M`, `... on the ImageNet validation set`.
 /// Only a caption naming exactly one is used.
 pub fn caption_dataset(caption: &str) -> Option<String> {
-    static ON: LazyLock<Regex> = LazyLock::new(|| {
+    static ON: LazyLock<Option<Regex>> = LazyLock::new(|| {
         Regex::new(r"\bon\s+(?:the\s+)?(?P<d>[A-Z][A-Za-z0-9]*(?:[-.][A-Za-z0-9]+)*(?:\s+[A-Z0-9][A-Za-z0-9]*(?:[-.][A-Za-z0-9]+)*)?)")
-            .expect("static regex")
+            .ok()
     });
     let mut found: Vec<String> = Vec::new();
-    for caps in ON.captures_iter(caption) {
+    let on = ON.as_ref()?;
+    for caps in on.captures_iter(caption) {
         let Some(d) = caps.name("d") else { continue };
         let name = d.as_str().trim_end_matches('.').to_string();
         // Generic capitalised words are not datasets.

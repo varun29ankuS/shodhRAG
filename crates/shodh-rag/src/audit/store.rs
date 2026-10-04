@@ -1551,6 +1551,9 @@ mod tests {
                  DROP TABLE memory_proposals;
                  DROP TABLE memory_learn_usage;
                  DROP TABLE memory_learn_state;
+                 DROP TABLE snippet_images;
+                 DROP TABLE result_extractions;
+                 DROP TABLE result_rejections;
                  DELETE FROM schema_version WHERE version > 1;",
             )
             .unwrap();
@@ -1578,6 +1581,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!(learning, 3);
+        let research: i64 = shared
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table'
+                 AND name IN ('snippet_images', 'result_extractions', 'result_rejections')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(research, 3);
         // Opening again (the audit log after the statement store) applies nothing twice.
         let log = AuditLog::open(&path, None).unwrap();
         let versions: i64 = raw(&dir)

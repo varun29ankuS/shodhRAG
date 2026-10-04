@@ -43,6 +43,7 @@ fn ann_paper(hnsw_recall: &str) -> StructuredDocument {
                 vec!["IVF-PQ".into(), "71.4 ± 0.3".into(), "-".into()],
             ],
             caption: Some("Table 2: Recall of graph and quantisation indexes.".into()),
+            cell_coverage: None,
             cell_boxes: vec![
                 vec![
                     b(100.0, 700.0, 150.0, 710.0),
@@ -70,6 +71,7 @@ fn ann_paper(hnsw_recall: &str) -> StructuredDocument {
             header: vec!["Variant".into(), "Recall@100".into()],
             rows: vec![vec!["HNSW w/o pruning".into(), "97.20".into()]],
             caption: Some("Table 3: Ablation on SIFT1M.".into()),
+            cell_coverage: None,
             cell_boxes: vec![
                 vec![b(100.0, 500.0, 180.0, 510.0), b(190.0, 500.0, 240.0, 510.0)],
                 vec![b(100.0, 488.0, 180.0, 498.0), b(190.0, 488.0, 240.0, 498.0)],
@@ -253,6 +255,7 @@ async fn a_model_names_header_roles_but_never_values() {
             ],
             caption: Some("Table 1: Every model is trained and evaluated with PG19.".into()),
             cell_boxes: vec![],
+            cell_coverage: None,
         },
         "",
     )
@@ -332,6 +335,7 @@ async fn comparisons_cite_cells_and_say_what_is_missing() {
             ],
             caption: Some("Table 1: Main results.".into()),
             cell_boxes: vec![],
+            cell_coverage: None,
         },
         "",
     )
@@ -355,6 +359,7 @@ async fn comparisons_cite_cells_and_say_what_is_missing() {
             rows: vec![vec!["Tiny".into(), "21.3".into()]],
             caption: None,
             cell_boxes: vec![],
+            cell_coverage: None,
         },
         "",
     )

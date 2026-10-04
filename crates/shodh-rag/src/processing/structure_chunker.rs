@@ -14,6 +14,10 @@
 //! - A figure is its caption, alone.
 //! - Every bibliography entry is its own chunk (for the citation graph).
 //! - Code blocks are kept whole when they fit, else split at line breaks.
+//! - Form fields of one section and page are packed together, one `label: value`
+//!   per line, so a label is never separated from its value.
+//! - The raw text of a table region whose cells missed part of it is its own chunk,
+//!   flagged (with the table's chunks) as possibly incomplete.
 //!
 //! Token counts come from the embedding model's tokenizer, so the budget is
 //! exact: the context prefix plus the chunk text never exceeds what the
@@ -48,6 +52,9 @@ pub struct ChunkLayout {
     pub block_kinds: Vec<&'static str>,
     /// The kind of semantic unit the chunk is (see [`UnitKind::name`]).
     pub unit: &'static str,
+    /// The chunk holds a table whose cells missed part of its region's text, or that
+    /// region's raw text ([`BlockKind::TableText`]).
+    pub incomplete: bool,
 }
 
 /// One bounding box on one page.
@@ -68,6 +75,10 @@ enum UnitKind {
     Figure,
     Reference,
     Code,
+    /// Consecutive form fields of one section and page.
+    Form,
+    /// Raw text of a table region the cells did not fully capture.
+    TableText,
 }
 
 impl UnitKind {
@@ -79,6 +90,8 @@ impl UnitKind {
             UnitKind::Figure => "figure",
             UnitKind::Reference => "reference_entry",
             UnitKind::Code => "code",
+            UnitKind::Form => "form",
+            UnitKind::TableText => "table_text",
         }
     }
 }
@@ -167,11 +180,21 @@ impl StructureChunker {
                         push_chunk(&mut out, doc_title, &[unit], text, &doc.blocks);
                     }
                 }
-                UnitKind::Figure | UnitKind::Reference | UnitKind::Code => {
+                UnitKind::Form => {
+                    self.flush_pack(&mut pack, doc, doc_title, count_tokens, &mut out);
+                    for (text, blocks) in form_pieces(unit, &doc.blocks, budget, count_tokens) {
+                        let piece = Unit {
+                            blocks,
+                            ..unit.clone()
+                        };
+                        push_chunk(&mut out, doc_title, &[&piece], text, &doc.blocks);
+                    }
+                }
+                UnitKind::Figure | UnitKind::Reference | UnitKind::Code | UnitKind::TableText => {
                     self.flush_pack(&mut pack, doc, doc_title, count_tokens, &mut out);
                     let text = unit_text(unit, &doc.blocks);
                     let pieces = if count_tokens(&text) > budget {
-                        if unit.kind == UnitKind::Code {
+                        if matches!(unit.kind, UnitKind::Code | UnitKind::TableText) {
                             split_lines(&text, budget, count_tokens)
                         } else {
                             split_text(&text, budget, count_tokens)
@@ -323,6 +346,31 @@ fn build_units(blocks: &[Block]) -> Vec<Unit> {
                 absorbing = false;
                 glue_next = false;
             }
+            BlockKind::FormField { .. } => {
+                let continues = same_section
+                    && units.last().is_some_and(|u| {
+                        u.kind == UnitKind::Form
+                            && u.blocks
+                                .last()
+                                .is_some_and(|&b| blocks[b].page == block.page)
+                    });
+                match units.last_mut() {
+                    Some(last) if continues => last.blocks.push(index),
+                    _ => units.push(new_unit(UnitKind::Form, index, block, &mut pending_heading)),
+                }
+                absorbing = false;
+                glue_next = false;
+            }
+            BlockKind::TableText => {
+                units.push(new_unit(
+                    UnitKind::TableText,
+                    index,
+                    block,
+                    &mut pending_heading,
+                ));
+                absorbing = false;
+                glue_next = false;
+            }
             BlockKind::Figure { .. } => {
                 units.push(new_unit(
                     UnitKind::Figure,
@@ -395,6 +443,8 @@ fn context_prefix(title: &str, section_path: &[String], kind: UnitKind) -> Strin
         UnitKind::Figure => prefix.push_str(" Figure."),
         UnitKind::Reference => prefix.push_str(" Bibliography entry."),
         UnitKind::Code => prefix.push_str(" Code."),
+        UnitKind::Form => prefix.push_str(" Form fields."),
+        UnitKind::TableText => prefix.push_str(" Table text as printed."),
         UnitKind::Statement | UnitKind::Flow => {}
     }
     prefix.push(' ');
@@ -445,6 +495,47 @@ fn table_pieces(
             break;
         }
         start = end;
+    }
+    pieces
+}
+
+/// Form chunks: whole fields (`label: value` lines) packed up to the budget, with
+/// the section heading in front of the first. Returns each piece's text and blocks.
+fn form_pieces(
+    unit: &Unit,
+    blocks: &[Block],
+    budget: usize,
+    count_tokens: &dyn Fn(&str) -> usize,
+) -> Vec<(String, Vec<usize>)> {
+    let overhead = count_tokens("");
+    let cost = |s: &str| count_tokens(s).saturating_sub(overhead) + 1;
+    let room = budget.saturating_sub(overhead).max(1);
+    let mut pieces: Vec<(String, Vec<usize>)> = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
+    let mut members: Vec<usize> = Vec::new();
+    let mut used = 0usize;
+    if let Some(h) = &unit.heading {
+        used += cost(h);
+        lines.push(h.clone());
+    }
+    for &i in &unit.blocks {
+        let text = blocks[i].render();
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let tokens = cost(text);
+        if used + tokens > room && !members.is_empty() {
+            pieces.push((lines.join("\n"), std::mem::take(&mut members)));
+            lines.clear();
+            used = 0;
+        }
+        lines.push(text.to_string());
+        members.push(i);
+        used += tokens;
+    }
+    if !members.is_empty() {
+        pieces.push((lines.join("\n"), members));
     }
     pieces
 }
@@ -690,6 +781,9 @@ fn layout_of(first: &Unit, block_indices: &[usize], blocks: &[Block]) -> ChunkLa
             kinds.push(name);
         }
     }
+    let incomplete = block_indices
+        .iter()
+        .any(|&i| blocks[i].table_incomplete() || matches!(blocks[i].kind, BlockKind::TableText));
     ChunkLayout {
         page_start: pages.iter().copied().min(),
         page_end: pages.iter().copied().max(),
@@ -697,6 +791,7 @@ fn layout_of(first: &Unit, block_indices: &[usize], blocks: &[Block]) -> ChunkLa
         section_path: first.section_path.clone(),
         block_kinds: kinds,
         unit: first.kind.name(),
+        incomplete,
     }
 }
 
@@ -796,6 +891,7 @@ mod tests {
                 rows,
                 caption: Some("Table 2: Results.".into()),
                 cell_boxes: Vec::new(),
+                cell_coverage: None,
             },
             "",
             4,
@@ -883,6 +979,105 @@ mod tests {
         );
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[1].layout.as_ref().unwrap().unit, "figure");
+    }
+
+    #[test]
+    fn form_fields_pack_by_section_and_page_and_keep_label_with_value() {
+        let field = |label: &str, value: &str, page: u32, y: f32| {
+            Block::form_field(
+                label,
+                value,
+                crate::processing::pdf_forms::FieldKind::Layout,
+            )
+            .on_page(page, Some(BBox::new(40.0, y, 560.0, y + 9.0)))
+        };
+        let d = doc(vec![
+            block(BlockKind::Heading { level: 1 }, "Income details", 1),
+            field("Gross salary", "9,10,000", 1, 700.0),
+            field("Standard deduction", "75,000", 1, 680.0),
+            field("Net salary", "8,35,000", 2, 700.0),
+            block(BlockKind::Heading { level: 1 }, "Taxes paid", 2),
+            field("TDS", "12,000", 2, 600.0),
+        ]);
+        let chunks = StructureChunker::new(300).chunk(&d, "Return", &words);
+        assert_eq!(chunks.len(), 3, "{chunks:#?}");
+        assert_eq!(
+            chunks[0].text,
+            "Income details\nGross salary: 9,10,000\nStandard deduction: 75,000"
+        );
+        assert!(chunks[0]
+            .contextualized_text
+            .starts_with("Document: \"Return\". Section: Income details. Form fields. "));
+        let layout = chunks[0].layout.as_ref().unwrap();
+        assert_eq!(layout.unit, "form");
+        assert_eq!(layout.regions.len(), 2, "one box per field");
+        assert_eq!((layout.page_start, layout.page_end), (Some(1), Some(1)));
+        assert_eq!(chunks[1].text, "Net salary: 8,35,000");
+        assert_eq!(chunks[1].layout.as_ref().unwrap().page_start, Some(2));
+        assert!(chunks[2].text.ends_with("TDS: 12,000"));
+        assert_eq!(
+            chunks[2].layout.as_ref().unwrap().section_path,
+            vec!["Taxes paid"]
+        );
+
+        // A long form splits between fields, never inside one.
+        let many: Vec<Block> = (0..40)
+            .map(|i| {
+                field(
+                    &format!("Field number {i}"),
+                    &format!("{i},000"),
+                    3,
+                    700.0 - i as f32,
+                )
+            })
+            .collect();
+        let chunks = StructureChunker::new(64).chunk(&doc(many), "Return", &words);
+        assert!(chunks.len() > 1);
+        let mut seen = 0;
+        for c in &chunks {
+            assert!(words(&c.text) <= 64);
+            for line in c.text.lines() {
+                assert!(
+                    line.starts_with("Field number ") && line.contains(": "),
+                    "{line}"
+                );
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, 40);
+    }
+
+    #[test]
+    fn an_incomplete_table_and_its_region_text_are_flagged() {
+        let table = Block::new(
+            BlockKind::Table {
+                header: vec!["Item".into(), "Amount".into()],
+                rows: vec![vec!["Rent".into(), "1,000".into()]],
+                caption: None,
+                cell_boxes: Vec::new(),
+                cell_coverage: Some(0.6),
+            },
+            "",
+        )
+        .on_page(1, Some(BBox::new(40.0, 500.0, 560.0, 600.0)));
+        let raw = Block::new(BlockKind::TableText, "Item Amount\nRent 1,000\nWater 250")
+            .on_page(1, Some(BBox::new(40.0, 500.0, 560.0, 600.0)));
+        let d = doc(vec![
+            table,
+            raw,
+            block(BlockKind::Paragraph, "Unrelated closing words here.", 1),
+        ]);
+        let chunks = StructureChunker::new(300).chunk(&d, "Bill", &words);
+        assert_eq!(chunks.len(), 3);
+        assert!(chunks[0].layout.as_ref().unwrap().incomplete);
+        let raw = chunks[1].layout.as_ref().unwrap();
+        assert!(raw.incomplete);
+        assert_eq!(raw.unit, "table_text");
+        assert!(chunks[1].text.contains("Water 250"));
+        assert!(chunks[1]
+            .contextualized_text
+            .contains("Table text as printed."));
+        assert!(!chunks[2].layout.as_ref().unwrap().incomplete);
     }
 
     #[test]

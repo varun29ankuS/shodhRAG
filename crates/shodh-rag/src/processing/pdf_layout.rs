@@ -18,6 +18,8 @@ use regex::Regex;
 use super::document_model::{
     is_references_heading, is_table_caption, BBox, Block, BlockKind, PageInfo, StructuredDocument,
 };
+use super::form_layout::{self, LayoutLine};
+use super::pdf_forms::FieldKind;
 use super::table_model::{ModelTable, TableModel};
 use super::table_structure::resolve_cells;
 
@@ -319,23 +321,63 @@ const MIN_RULES: usize = 3;
 /// most of a character's height (word spaces are far narrower). Returns each
 /// cell's text and left edge.
 fn line_cells(line: &Line) -> Vec<(String, f32)> {
+    line_segments(line)
+        .into_iter()
+        .map(|s| (s.text, s.bbox.x0))
+        .collect()
+}
+
+/// Lines as the form pairing reads them ([`form_layout`]).
+fn layout_lines(lines: &[Line]) -> Vec<LayoutLine> {
+    lines
+        .iter()
+        .map(|l| LayoutLine {
+            text: l.text.clone(),
+            bbox: l.bbox,
+            size: l.size,
+            segments: line_segments(l)
+                .into_iter()
+                .map(|s| (s.text, s.bbox))
+                .collect(),
+        })
+        .collect()
+}
+
+/// A run of text on one line between wide gaps (a table cell or a form label/value).
+#[derive(Debug, Clone)]
+struct Segment {
+    text: String,
+    bbox: BBox,
+}
+
+/// The segments of a line: its runs, split where the gap to the next run exceeds
+/// most of a character's height. Runs closer than that join, with a space when they
+/// are visibly apart.
+fn line_segments(line: &Line) -> Vec<Segment> {
     let gap = 0.8 * line.size.max(1.0);
-    let mut cells: Vec<(String, f32, f32)> = Vec::new();
+    let mut cells: Vec<Segment> = Vec::new();
     for (text, bbox) in &line.pieces {
-        let text = text.trim();
-        if text.is_empty() {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
             continue;
         }
         match cells.last_mut() {
-            Some((t, _, x1)) if bbox.x0 - *x1 <= gap => {
-                t.push(' ');
-                t.push_str(text);
-                *x1 = x1.max(bbox.x1);
+            Some(cell) if bbox.x0 - cell.bbox.x1 <= gap => {
+                let apart = bbox.x0 - cell.bbox.x1 > 0.12 * line.size.max(1.0)
+                    || text.starts_with(char::is_whitespace);
+                if apart && !cell.text.ends_with(' ') {
+                    cell.text.push(' ');
+                }
+                cell.text.push_str(trimmed);
+                cell.bbox = cell.bbox.union(bbox);
             }
-            _ => cells.push((text.to_string(), bbox.x0, bbox.x1)),
+            _ => cells.push(Segment {
+                text: trimmed.to_string(),
+                bbox: *bbox,
+            }),
         }
     }
-    cells.into_iter().map(|(t, x0, _)| (t, x0)).collect()
+    cells
 }
 
 /// Whether a line reads as a table row: at least two cells, at least two numbers,
@@ -1248,6 +1290,8 @@ enum RawKind {
     Code,
     Footnote,
     Table,
+    /// A label–value row of a flattened form ([`super::form_layout`]).
+    FormField,
 }
 
 struct RawBlock {
@@ -1259,6 +1303,8 @@ struct RawBlock {
     level: u8,
     title: bool,
     table: Option<RawTable>,
+    /// Label and value of a [`RawKind::FormField`] block.
+    field: Option<(String, String)>,
 }
 
 impl RawBlock {
@@ -1272,6 +1318,7 @@ impl RawBlock {
             level: 0,
             title: false,
             table: None,
+            field: None,
         }
     }
 
@@ -1323,6 +1370,10 @@ impl RawBlock {
     }
 
     fn into_block(self) -> Block {
+        if let (RawKind::FormField, Some((label, value))) = (self.kind, &self.field) {
+            return Block::form_field(label, value, FieldKind::Layout)
+                .on_page(self.page, Some(self.bbox.rounded()));
+        }
         let text = self.joined_text();
         let kind = match self.kind {
             RawKind::Heading(_) if self.title => BlockKind::Title,
@@ -1334,12 +1385,15 @@ impl RawBlock {
             RawKind::Equation => BlockKind::Equation,
             RawKind::Code => BlockKind::Code,
             RawKind::Footnote => BlockKind::Footnote,
+            // Without its pair (never built that way) the row is plain text.
+            RawKind::FormField => BlockKind::Paragraph,
             RawKind::Table => match self.table {
                 Some(t) => BlockKind::Table {
                     header: t.header,
                     rows: t.rows,
                     caption: None,
                     cell_boxes: t.cell_boxes,
+                    cell_coverage: None,
                 },
                 None => BlockKind::Paragraph,
             },
@@ -1400,6 +1454,28 @@ fn segment_page(
     let lefts = column_lefts(&page.lines, body);
     let mut pending_tables: Vec<Option<&RawTable>> = page.tables.iter().map(Some).collect();
     let mut current: Option<RawBlock> = None;
+    let in_table: Vec<bool> = page
+        .lines
+        .iter()
+        .map(|l| {
+            page.tables
+                .iter()
+                .any(|t| t.bbox.contains_point(l.bbox.center_x(), l.bbox.center_y()))
+        })
+        .collect();
+    // Label–value pairs of a flattened form: each pair becomes one block, emitted at
+    // the first line of its row in reading order; the row's lines are consumed.
+    let rows = form_layout::form_rows(&layout_lines(&page.lines), &in_table);
+    let mut consumed = vec![false; page.lines.len()];
+    let mut anchored: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (r, row) in rows.iter().enumerate() {
+        for &i in &row.lines {
+            consumed[i] = true;
+        }
+        if let Some(&anchor) = row.lines.iter().min() {
+            anchored.entry(anchor).or_default().push(r);
+        }
+    }
 
     let flush = |current: &mut Option<RawBlock>, out: &mut Vec<RawBlock>| {
         if let Some(block) = current.take() {
@@ -1407,7 +1483,18 @@ fn segment_page(
         }
     };
 
-    for line in &page.lines {
+    for (index, line) in page.lines.iter().enumerate() {
+        if consumed[index] {
+            for &r in anchored.get(&index).map(Vec::as_slice).unwrap_or(&[]) {
+                flush(&mut current, out);
+                let row = &rows[r];
+                let mut block = RawBlock::new(RawKind::FormField, line.clone(), page.number);
+                block.bbox = row.bbox;
+                block.field = Some((row.label.clone(), row.value.clone()));
+                out.push(block);
+            }
+            continue;
+        }
         // Lines inside a detected table are replaced by the table block,
         // emitted where the first of them appeared.
         if let Some(t_index) = page.tables.iter().position(|t| {
@@ -1866,6 +1953,95 @@ mod generated_pdf_tests {
                 .all(|b| !(b.text.contains("LEFT") && b.text.contains("RIGHT"))),
             "a block mixes both columns: {all}"
         );
+    }
+
+    /// A printed return: codes, labels and amounts in separate columns, drawn column
+    /// by column (labels first, then amounts), as tax portals generate them.
+    fn printed_return() -> Vec<Text> {
+        let rows = [
+            ("B1", "Gross salary (ia + ib)", "i", "9,10,000"),
+            ("a", "Salary as per section 17(1)", "ia", "9,10,000"),
+            ("b", "Value of perquisites", "ib", "0"),
+            ("B2", "Standard deduction u/s 16", "ii", "75,000"),
+            ("B3", "Income chargeable under Salaries", "iii", "8,35,000"),
+        ];
+        let mut page = vec![bold(40.0, 740.0, 10.0, "PART B GROSS TOTAL INCOME")];
+        for (i, (code, ..)) in rows.iter().enumerate() {
+            page.push(text(40.0, 700.0 - 20.0 * i as f32, 9.0, code));
+        }
+        for (i, (_, label, ..)) in rows.iter().enumerate() {
+            page.push(text(90.0, 700.0 - 20.0 * i as f32, 9.0, label));
+        }
+        for (i, (.., line_ref, amount)) in rows.iter().enumerate() {
+            page.push(text(420.0, 700.0 - 20.0 * i as f32, 9.0, line_ref));
+            page.push(text(500.0, 700.0 - 20.0 * i as f32, 9.0, amount));
+        }
+        page
+    }
+
+    #[test]
+    fn printed_form_rows_become_label_value_fields_with_boxes() {
+        let doc = parse(&[printed_return()]);
+        let fields: Vec<(&str, &str, Option<BBox>)> = doc
+            .blocks
+            .iter()
+            .filter_map(|b| match &b.kind {
+                BlockKind::FormField {
+                    label,
+                    value,
+                    field,
+                } => {
+                    assert_eq!(*field, FieldKind::Layout);
+                    Some((label.as_str(), value.as_str(), b.bbox))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fields.len(), 5, "{fields:?}");
+        assert_eq!(fields[0].0, "B1 Gross salary (ia + ib) i");
+        assert_eq!(fields[0].1, "9,10,000");
+        assert_eq!(fields[3].1, "75,000");
+        // The field's box spans its row from the code to the amount.
+        let first = fields[0].2.expect("box");
+        assert!(first.x0 <= 41.0 && first.x1 >= 520.0, "{first:?}");
+        assert!(doc.blocks.iter().all(|b| b.page == Some(1)));
+        // No amount is left as a stray paragraph.
+        assert!(!doc
+            .blocks
+            .iter()
+            .any(|b| b.kind == BlockKind::Paragraph && b.text.contains("9,10,000")));
+        let rendered = doc.plain_text();
+        assert!(
+            rendered.contains("B2 Standard deduction u/s 16 ii: 75,000"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn two_column_prose_and_numeric_tables_get_no_form_fields() {
+        let left = column(72.0, 700.0, "LEFT", 12);
+        let right = column(320.0, 700.0, "RIGHT", 12);
+        let doc = parse(&[left.into_iter().chain(right).collect()]);
+        assert!(texts_of(&doc, "form_field").is_empty());
+        let mut table = vec![text(72.0, 720.0, 10.0, "Results of the indexes follow.")];
+        for (i, (m, a, b)) in [
+            ("HNSW", "95.3", "96.1"),
+            ("IVF-PQ", "88.0", "91.4"),
+            ("Flat", "99.9", "99.9"),
+            ("LSH", "71.2", "75.0"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let y = 690.0 - 14.0 * i as f32;
+            table.extend([
+                text(72.0, y, 9.0, m),
+                text(200.0, y, 9.0, a),
+                text(260.0, y, 9.0, b),
+            ]);
+        }
+        let doc = parse(&[table]);
+        assert!(texts_of(&doc, "form_field").is_empty());
     }
 
     #[test]

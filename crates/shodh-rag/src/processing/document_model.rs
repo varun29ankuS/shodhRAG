@@ -15,6 +15,13 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
+pub use super::pdf_forms::FieldKind;
+
+/// A table whose cells hold less than this share of the text-layer tokens in its
+/// region is "possibly incomplete": its region text is also emitted as a
+/// [`BlockKind::TableText`] block.
+pub const TABLE_COVERAGE_THRESHOLD: f32 = 0.9;
+
 /// Axis-aligned rectangle in PDF points, bottom-left origin.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BBox {
@@ -97,6 +104,22 @@ pub enum BlockKind {
         /// (text, LaTeX and Markdown tables).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         cell_boxes: Vec<Vec<Option<BBox>>>,
+        /// Share of the text-layer tokens inside the table's region that its cells
+        /// hold (see [`TABLE_COVERAGE_THRESHOLD`]). `None` when not measured (sources
+        /// without a text layer region, such as LaTeX or Markdown tables).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cell_coverage: Option<f32>,
+    },
+    /// The text of a table region whose cells did not capture all of it (see
+    /// [`TABLE_COVERAGE_THRESHOLD`]), as laid out on the page, so nothing in the
+    /// region is lost from search. Emitted right after its table.
+    TableText,
+    /// One field of a form: an AcroForm or XFA field, or a label and value read from
+    /// the layout of a flattened (printed) form. `text` is `label: value`.
+    FormField {
+        label: String,
+        value: String,
+        field: FieldKind,
     },
     /// A figure, represented by its caption.
     Figure {
@@ -129,6 +152,8 @@ impl BlockKind {
             BlockKind::Paragraph => "paragraph",
             BlockKind::ListItem => "list_item",
             BlockKind::Table { .. } => "table",
+            BlockKind::TableText => "table_text",
+            BlockKind::FormField { .. } => "form_field",
             BlockKind::Figure { .. } => "figure",
             BlockKind::Equation => "equation",
             BlockKind::Code => "code",
@@ -155,6 +180,33 @@ pub struct Block {
 }
 
 impl Block {
+    /// A form field block (`label: value`).
+    pub fn form_field(label: &str, value: &str, field: FieldKind) -> Self {
+        let label = collapse_ws(label);
+        let value = collapse_ws(value);
+        let text = if label.is_empty() {
+            value.clone()
+        } else {
+            format!("{label}: {value}")
+        };
+        Self::new(
+            BlockKind::FormField {
+                label,
+                value,
+                field,
+            },
+            text,
+        )
+    }
+
+    /// Whether this is a table whose cells missed part of its region's text.
+    pub fn table_incomplete(&self) -> bool {
+        matches!(
+            self.kind,
+            BlockKind::Table { cell_coverage: Some(c), .. } if c < TABLE_COVERAGE_THRESHOLD
+        )
+    }
+
     pub fn new(kind: BlockKind, text: impl Into<String>) -> Self {
         Self {
             kind,
@@ -574,6 +626,7 @@ mod tests {
                 rows: vec![vec!["DeltaNet".into(), "17.7".into()]],
                 caption: None,
                 cell_boxes: Vec::new(),
+                cell_coverage: None,
             },
             "",
         )
@@ -600,6 +653,7 @@ mod tests {
                 rows: vec![vec![model.into(), "17.7".into()]],
                 caption: None,
                 cell_boxes: Vec::new(),
+                cell_coverage: None,
             },
             "",
         )

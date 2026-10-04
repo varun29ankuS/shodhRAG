@@ -658,6 +658,7 @@ pub fn table_under(
         rows,
         caption,
         cell_boxes,
+        ..
     } = &block.kind
     else {
         return None;
@@ -889,6 +890,7 @@ mod tests {
                     vec!["IVF".into(), "88.1".into()],
                 ],
                 caption: Some("Table 2: Recall on SIFT1M.".into()),
+                cell_coverage: None,
                 cell_boxes: vec![
                     vec![
                         Some(BBox::new(100.0, 700.0, 150.0, 710.0)),

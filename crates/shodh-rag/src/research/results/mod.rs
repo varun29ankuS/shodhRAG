@@ -347,6 +347,7 @@ pub fn tables_of(doc: &StructuredDocument) -> Vec<TableInput> {
             rows,
             caption,
             cell_boxes,
+            ..
         } = &block.kind
         else {
             continue;

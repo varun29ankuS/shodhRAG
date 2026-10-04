@@ -158,7 +158,14 @@ fn insert_layout_metadata(
     }
     meta.insert("block_kinds".to_string(), layout.block_kinds.join(","));
     meta.insert("unit_kind".to_string(), layout.unit.to_string());
+    if layout.incomplete {
+        meta.insert(TABLE_INCOMPLETE_KEY.to_string(), "true".to_string());
+    }
 }
+
+/// Chunk metadata flag: the chunk holds a table whose cells missed part of its
+/// region's text, or that region's raw text.
+pub const TABLE_INCOMPLETE_KEY: &str = "table_incomplete";
 
 /// Whether a search result should be widened with its neighbouring chunks.
 /// Window chunks cut text mid-thought, so their neighbours restore context.
@@ -1703,6 +1710,7 @@ mod page_metadata_tests {
             section_path: vec!["3 Method".to_string(), "3.2 Chunkwise form".to_string()],
             block_kinds: vec!["paragraph", "equation"],
             unit: "text",
+            incomplete: false,
         };
         let mut meta = HashMap::new();
         insert_layout_metadata(&mut meta, &layout);
@@ -1710,6 +1718,7 @@ mod page_metadata_tests {
         assert_eq!(meta["section_path"], "3 Method > 3.2 Chunkwise form");
         assert_eq!(meta["block_kinds"], "paragraph,equation");
         assert_eq!(meta["unit_kind"], "text");
+        assert!(!meta.contains_key(TABLE_INCOMPLETE_KEY));
         let regions: Vec<ChunkRegion> = serde_json::from_str(&meta["bboxes"]).expect("bbox json");
         assert_eq!(regions.len(), 2);
         assert_eq!(regions[0].page, 3);

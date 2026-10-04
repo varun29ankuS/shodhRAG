@@ -420,6 +420,7 @@ fn push_tex_environment(env: &str, inner: &[String], blocks: &mut Vec<Block>) {
                 rows,
                 caption,
                 cell_boxes: Vec::new(),
+                cell_coverage: None,
             },
             String::new(),
         ));
@@ -537,6 +538,7 @@ pub fn parse_markdown(source: &str) -> StructuredDocument {
                     rows,
                     caption: None,
                     cell_boxes: Vec::new(),
+                    cell_coverage: None,
                 },
                 String::new(),
             ));

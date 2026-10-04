@@ -1,9 +1,11 @@
 pub mod chunker;
 pub mod document_model;
+pub mod form_layout;
 pub mod lopdf_parser;
 pub mod parser;
 #[cfg(test)]
 pub(crate) mod pdf_fixtures;
+pub mod pdf_forms;
 pub mod pdf_info;
 pub mod pdf_layout;
 pub mod structure_chunker;

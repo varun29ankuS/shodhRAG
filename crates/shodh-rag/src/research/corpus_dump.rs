@@ -2,16 +2,16 @@
 //!
 //! `cargo test -p shodh-rag --lib research::corpus_dump -- --ignored` with
 //! `SHODH_RESEARCH_CORPUS` set to a folder of PDFs (searched recursively) and
-//! `SHODH_TABLE_DUMP` set to the JSON file to write. The output holds every table
-//! block the layout parser finds (page, page height, box, caption, header, rows,
-//! cell boxes) keyed by file name; the extractor tests read the checked-in copy, so
-//! CI needs no corpus.
+//! `SHODH_TABLE_DUMP` set to the JSON file to write. The output holds the extractor's
+//! input for every table block the layout parser finds (page, box, caption, nearby
+//! caption, section, header, rows, cell boxes) keyed by file name; the extractor tests
+//! read the checked-in copy (`fixtures/corpus_tables.json`), so CI needs no corpus.
 
 use std::path::{Path, PathBuf};
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
-use crate::processing::document_model::BlockKind;
+use super::results::tables_of;
 use crate::processing::pdf_layout::parse_pdf_layout;
 
 fn pdfs_under(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -32,37 +32,16 @@ fn pdfs_under(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The table blocks of one parsed PDF as fixture JSON.
+/// The table blocks of one parsed PDF as fixture JSON (the extractor's input, with the
+/// nearby captions the parser did not attach).
 pub(crate) fn tables_json(bytes: &[u8]) -> Vec<Value> {
     let Ok(doc) = parse_pdf_layout(bytes) else {
         return Vec::new();
     };
-    let mut out = Vec::new();
-    for block in &doc.blocks {
-        if let BlockKind::Table {
-            header,
-            rows,
-            caption,
-            cell_boxes,
-        } = &block.kind
-        {
-            let page_height = block
-                .page
-                .and_then(|p| doc.pages.iter().find(|i| i.number == p))
-                .map(|i| i.height);
-            out.push(json!({
-                "page": block.page,
-                "pageHeight": page_height,
-                "bbox": block.bbox,
-                "caption": caption,
-                "sectionPath": block.section_path,
-                "header": header,
-                "rows": rows,
-                "cellBoxes": cell_boxes,
-            }));
-        }
-    }
-    out
+    tables_of(&doc)
+        .iter()
+        .filter_map(|t| serde_json::to_value(t).ok())
+        .collect()
 }
 
 #[test]

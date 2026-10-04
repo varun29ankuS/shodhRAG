@@ -523,9 +523,13 @@ fn recover_table_headers(page: &mut PageLines) {
         let table = &mut page.tables[index];
         let old_header = std::mem::replace(&mut table.header, header);
         table.rows.insert(0, old_header);
-        table
-            .cell_boxes
-            .insert(0, header_boxes.iter().map(|b| b.map(|b| b.rounded())).collect());
+        table.cell_boxes.insert(
+            0,
+            header_boxes
+                .iter()
+                .map(|b| b.map(|b| b.rounded()))
+                .collect(),
+        );
         table.bbox = grown;
     }
 }

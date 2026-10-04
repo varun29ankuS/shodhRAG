@@ -39,8 +39,9 @@ const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 
 /// Ordered schema migrations of `shodh.db`. Never edit an applied entry; append a new one.
 /// The database is shared: the audit chain (1), the dynamics of typed statements (2), the
-/// generated-visuals gallery (3) and learned-memory suggestions (4) use one version sequence, so every component that opens it
-/// sees the same schema.
+/// generated-visuals gallery (3), learned-memory suggestions (4) and research objects (5: snippet
+/// images, Result extraction records and rejections) use one version sequence, so every
+/// component that opens it sees the same schema.
 const MIGRATIONS: &[(i64, &str)] = &[
     (
         1,
@@ -200,6 +201,35 @@ const MIGRATIONS: &[(i64, &str)] = &[
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );",
+    ),
+    (
+        5,
+        // Research objects. Snippet images are stored here, not in the LanceDB statement
+        // rows: this database is encrypted when the app has a key (LanceDB is not), and
+        // statement rows are appended on every edit, which would copy the bytes each
+        // time. An image is content-addressed by the SHA-256 of its PNG bytes and referenced
+        // from the Snippet statement as `shodh-blob:sha256:<hex>`. `result_extractions`
+        // keeps the report of the last Result extraction per paper (what the comparison
+        // coverage notes count); `result_rejections` remembers Results the user rejected,
+        // by fingerprint, so a later extraction does not bring them back.
+        "CREATE TABLE snippet_images (
+            hash TEXT PRIMARY KEY CHECK (length(hash) = 64),
+            png BLOB NOT NULL,
+            width INTEGER NOT NULL CHECK (width > 0),
+            height INTEGER NOT NULL CHECK (height > 0),
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE result_extractions (
+            file_path TEXT PRIMARY KEY,
+            report_json TEXT NOT NULL,
+            extracted_at TEXT NOT NULL
+        );
+        CREATE TABLE result_rejections (
+            fingerprint TEXT PRIMARY KEY,
+            file_path TEXT NOT NULL,
+            rejected_at TEXT NOT NULL
+        );
+        CREATE INDEX result_rejections_file ON result_rejections(file_path);",
     ),
 ];
 

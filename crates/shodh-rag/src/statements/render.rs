@@ -6,6 +6,11 @@ use shodh_ontology::{Ontology, ValidStatement, Value};
 /// The property that carries a note's free text.
 const NOTE_TEXT: &str = "noteText";
 
+/// The research pack's snippet class, rendered as its title, text and note (what a reader
+/// searches for), not its page and rectangle.
+const SNIPPET: &str = "Snippet";
+const SNIPPET_TEXT: [&str; 3] = ["snippetTitle", "snippetText", "snippetNote"];
+
 /// Canonical entity id of the app's user (a `Person`). Every statement about the user
 /// references this id, so identity keys such as a preference's holder compare equal.
 pub const SELF_ENTITY_ID: &str = "person:self";
@@ -19,13 +24,27 @@ fn value_text(value: &Value) -> String {
 
 /// Renders a validated statement as one line of text.
 ///
-/// A `Note` renders as its text. Any other class renders as
+/// A `Note` renders as its text, a research `Snippet` as its title, text and note. Any other
+/// class renders as
 /// `Label: property value; property value, value`, with entity references as `@id` (the
 /// user's own entity as "the user").
 pub fn render_text(ontology: &Ontology, statement: &ValidStatement) -> String {
     if let [Value::Text(text)] = statement.values(NOTE_TEXT) {
         if ontology.is_subclass_of(statement.class(), "Note") {
             return text.trim().to_string();
+        }
+    }
+    if ontology.is_subclass_of(statement.class(), SNIPPET) {
+        let parts: Vec<&str> = SNIPPET_TEXT
+            .iter()
+            .filter_map(|p| match statement.values(p) {
+                [Value::Text(text)] => Some(text.trim()),
+                _ => None,
+            })
+            .filter(|t| !t.is_empty())
+            .collect();
+        if !parts.is_empty() {
+            return parts.join("\n");
         }
     }
     let label = ontology

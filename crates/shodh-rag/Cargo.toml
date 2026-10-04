@@ -56,6 +56,13 @@ pdf_oxide = "=0.3.78"
 # pdf_oxide 0.3.78 does not compile against office_oxide >= 0.1.11 (a field
 # was added to a struct it constructs); pin the last compatible release.
 office_oxide = { version = "=0.1.10", default-features = false }
+# Table structure on table-candidate pages (docs/adr/0002-document-parser.md,
+# "Table model"): docling.rs's layout model finds table regions and its
+# TableFormer port recovers rows, columns and spans. Models are optional and
+# downloaded on demand (embeddings::model_store::table_model_artifacts).
+docling-pdf = { version = "=1.91.0", default-features = false, features = ["ml"] }
+docling-core = "=1.91.0"
+image = { version = "0.25", default-features = false, features = ["png"] }
 pdf-extract = "0.7"
 lopdf = "0.32"
 zip = "2"

@@ -18,6 +18,8 @@ use regex::Regex;
 use super::document_model::{
     is_references_heading, is_table_caption, BBox, Block, BlockKind, PageInfo, StructuredDocument,
 };
+use super::table_model::{ModelTable, TableModel};
+use super::table_structure::resolve_cells;
 
 /// Why a PDF could not be laid out.
 #[derive(Debug, thiserror::Error)]
@@ -35,12 +37,90 @@ pub enum PdfLayoutError {
 /// The parser never panics: a panic inside the PDF library is caught and
 /// reported as [`PdfLayoutError::Panicked`].
 pub fn parse_pdf_layout(bytes: &[u8]) -> Result<StructuredDocument, PdfLayoutError> {
+    parse_pdf_layout_with(bytes, TableMode::Heuristic).map(|parsed| parsed.document)
+}
+
+/// How tables are found.
+#[derive(Clone, Copy)]
+pub enum TableMode<'a> {
+    /// pdf_oxide's detector on pages with a `Table N` caption (every page when the
+    /// document has no caption).
+    Heuristic,
+    /// As [`TableMode::Heuristic`], and the table-candidate pages are reported.
+    Candidates,
+    /// The table model structures the tables of the candidate pages; pages where it
+    /// finds none fall back to the heuristic detector.
+    Model(&'a TableModel),
+}
+
+/// Why a page is a table candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateCue {
+    /// A `Table N` caption.
+    Caption,
+    /// Three or more nearby lines that are split into cells and mostly numbers.
+    NumericCluster,
+    /// Lines whose cells start at the same x positions in three or more columns.
+    AlignedColumns,
+    /// Three or more horizontal rules on a page that has a numeric row.
+    RulingLines,
+}
+
+/// A table-candidate page and why.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct TableCandidate {
+    pub page: u32,
+    pub cues: Vec<CandidateCue>,
+}
+
+/// What the table model did on one page.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPageReport {
+    pub page: u32,
+    pub regions: usize,
+    pub tables: usize,
+    pub millis: u64,
+}
+
+/// Table detection of one parse.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableReport {
+    pub candidates: Vec<TableCandidate>,
+    /// Pages the model ran on (empty without the model).
+    pub model_pages: Vec<ModelPageReport>,
+    /// Pages the model failed on, with the reason (they keep the heuristic tables).
+    pub model_errors: Vec<String>,
+    /// Table blocks in the document.
+    pub tables: usize,
+    /// Table blocks whose structure came from the model.
+    pub model_tables: usize,
+}
+
+/// A parsed PDF with its table report.
+#[derive(Debug, Clone)]
+pub struct ParsedLayout {
+    pub document: StructuredDocument,
+    pub tables: TableReport,
+}
+
+/// [`parse_pdf_layout`] with a choice of table detection.
+pub fn parse_pdf_layout_with(
+    bytes: &[u8],
+    mode: TableMode<'_>,
+) -> Result<ParsedLayout, PdfLayoutError> {
     let owned = bytes.to_vec();
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || parse_inner(owned)))
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || parse_inner(owned, mode)))
         .unwrap_or(Err(PdfLayoutError::Panicked))
 }
 
-fn parse_inner(bytes: Vec<u8>) -> Result<StructuredDocument, PdfLayoutError> {
+fn parse_inner(bytes: Vec<u8>, mode: TableMode<'_>) -> Result<ParsedLayout, PdfLayoutError> {
+    let model_bytes = match mode {
+        TableMode::Model(_) => Some(bytes.clone()),
+        _ => None,
+    };
     let doc = pdf_oxide::PdfDocument::from_bytes(bytes)
         .map_err(|e| PdfLayoutError::Open(e.to_string()))?;
     let page_count = doc
@@ -86,6 +166,48 @@ fn parse_inner(bytes: Vec<u8>) -> Result<StructuredDocument, PdfLayoutError> {
 
     remove_page_furniture(&mut pages);
 
+    let mut report = TableReport::default();
+    if !matches!(mode, TableMode::Heuristic) {
+        report.candidates = pages
+            .iter()
+            .enumerate()
+            .filter_map(|(index, page)| {
+                let cues = candidate_cues(page, || horizontal_rules(&doc, index, page.width));
+                (!cues.is_empty()).then_some(TableCandidate {
+                    page: page.number,
+                    cues,
+                })
+            })
+            .collect();
+    }
+    // Pages whose tables the model structured skip the heuristic detector.
+    let mut modelled: Vec<bool> = vec![false; pages.len()];
+    if let (TableMode::Model(model), Some(bytes)) = (mode, model_bytes.as_deref()) {
+        let numbers: Vec<u32> = report.candidates.iter().map(|c| c.page).collect();
+        let (results, errors) = model.structure_pages(bytes, &numbers);
+        report.model_errors = errors.iter().map(|e| e.to_string()).collect();
+        for result in results {
+            let index = result.number.saturating_sub(1) as usize;
+            let tables: Vec<RawTable> = result
+                .tables
+                .iter()
+                .filter_map(RawTable::from_model)
+                .collect();
+            report.model_pages.push(ModelPageReport {
+                page: result.number,
+                regions: result.regions,
+                tables: tables.len(),
+                millis: u64::try_from(result.elapsed.as_millis()).unwrap_or(u64::MAX),
+            });
+            if let Some(page) = pages.get_mut(index) {
+                if !tables.is_empty() {
+                    page.tables = tables;
+                    modelled[index] = true;
+                }
+            }
+        }
+    }
+
     // Table detection is the most expensive step. Academic PDFs announce
     // their tables with captions, so only captioned pages are scanned; a
     // document without any caption (forms, reports) is scanned fully.
@@ -95,7 +217,7 @@ fn parse_inner(bytes: Vec<u8>) -> Result<StructuredDocument, PdfLayoutError> {
         .collect();
     let any_captions = captioned.iter().any(|&c| c);
     for (index, page) in pages.iter_mut().enumerate() {
-        if any_captions && !captioned[index] {
+        if modelled[index] || (any_captions && !captioned[index]) {
             continue;
         }
         match doc.extract_tables(index) {
@@ -118,6 +240,10 @@ fn parse_inner(bytes: Vec<u8>) -> Result<StructuredDocument, PdfLayoutError> {
     }
     assign_heading_levels(&mut blocks, &stats);
 
+    report.model_tables = blocks
+        .iter()
+        .filter(|b| b.table.as_ref().is_some_and(|t| t.from_model))
+        .count();
     let mut out = StructuredDocument {
         pages: pages
             .iter()
@@ -130,7 +256,15 @@ fn parse_inner(bytes: Vec<u8>) -> Result<StructuredDocument, PdfLayoutError> {
         blocks: blocks.into_iter().map(|b| b.into_block()).collect(),
     };
     out.finalize();
-    Ok(out)
+    report.tables = out
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.kind, BlockKind::Table { .. }))
+        .count();
+    Ok(ParsedLayout {
+        document: out,
+        tables: report,
+    })
 }
 
 /// Page text in reading order: the structure tree's order when the PDF is
@@ -153,6 +287,140 @@ fn page_text_in_reading_order(
         }
     }
     Err(last_error)
+}
+
+// ── Table-candidate pages ───────────────────────────────────────────────────
+
+/// Fewest nearby tabular lines that make a numeric cluster.
+const CLUSTER_LINES: usize = 3;
+/// Fewest lines sharing aligned column starts.
+const ALIGNED_LINES: usize = 4;
+/// Fewest aligned columns.
+const ALIGNED_COLUMNS: usize = 3;
+/// Fewest horizontal rules (at distinct heights) that cue a ruled table.
+const MIN_RULES: usize = 3;
+
+/// The cells of a line: its runs, split where the gap to the next run exceeds
+/// most of a character's height (word spaces are far narrower). Returns each
+/// cell's text and left edge.
+fn line_cells(line: &Line) -> Vec<(String, f32)> {
+    let gap = 0.8 * line.size.max(1.0);
+    let mut cells: Vec<(String, f32, f32)> = Vec::new();
+    for (text, bbox) in &line.pieces {
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        match cells.last_mut() {
+            Some((t, _, x1)) if bbox.x0 - *x1 <= gap => {
+                t.push(' ');
+                t.push_str(text);
+                *x1 = x1.max(bbox.x1);
+            }
+            _ => cells.push((text.to_string(), bbox.x0, bbox.x1)),
+        }
+    }
+    cells.into_iter().map(|(t, x0, _)| (t, x0)).collect()
+}
+
+/// Whether a line reads as a table row: at least two cells, at least two numbers,
+/// and numbers make up at least 40% of its tokens.
+fn is_tabular_line(line: &Line) -> bool {
+    let cells = line_cells(line);
+    if cells.len() < 2 {
+        return false;
+    }
+    let tokens: Vec<&str> = cells
+        .iter()
+        .flat_map(|(t, _)| t.split_whitespace())
+        .collect();
+    let numbers = tokens
+        .iter()
+        .filter(|t| {
+            t.chars().any(|c| c.is_ascii_digit()) && super::document_model::is_numeric_cell(t)
+        })
+        .count();
+    numbers >= 2 && numbers * 5 >= tokens.len() * 2
+}
+
+/// The cues that make `page` a table candidate. `rules` counts the page's
+/// horizontal rules; it is only called when no cheaper cue fired and the page has
+/// a numeric row.
+fn candidate_cues(page: &PageLines, rules: impl FnOnce() -> usize) -> Vec<CandidateCue> {
+    let mut cues = Vec::new();
+    if page.lines.iter().any(|l| is_table_caption(&l.text)) {
+        cues.push(CandidateCue::Caption);
+    }
+    // Numeric clusters: tabular lines close to each other vertically.
+    let mut tabular: Vec<&Line> = page.lines.iter().filter(|l| is_tabular_line(l)).collect();
+    tabular.sort_by(|a, b| b.bbox.y0.total_cmp(&a.bbox.y0));
+    let mut run = 1usize;
+    let mut best = usize::from(!tabular.is_empty());
+    for pair in tabular.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let close = a.bbox.y0 - b.bbox.y1 <= 3.0 * a.size.max(b.size).max(1.0);
+        run = if close { run + 1 } else { 1 };
+        best = best.max(run);
+    }
+    if best >= CLUSTER_LINES {
+        cues.push(CandidateCue::NumericCluster);
+    }
+    // Aligned columns: cell left edges (3 pt buckets) shared by many multi-cell lines.
+    let rows: Vec<Vec<i32>> = page
+        .lines
+        .iter()
+        .map(line_cells)
+        .filter(|c| c.len() >= ALIGNED_COLUMNS)
+        .map(|c| c.iter().map(|(_, x)| (x / 3.0).round() as i32).collect())
+        .collect();
+    if rows.len() >= ALIGNED_LINES {
+        let mut counts: HashMap<i32, usize> = HashMap::new();
+        for row in &rows {
+            let mut seen: Vec<i32> = Vec::new();
+            for &x in row {
+                if !seen.iter().any(|s| (s - x).abs() <= 1) {
+                    seen.push(x);
+                    *counts.entry(x).or_default() += 1;
+                }
+            }
+        }
+        let column = |x: i32| {
+            (-1..=1)
+                .map(|d| counts.get(&(x + d)).copied().unwrap_or(0))
+                .sum::<usize>()
+                >= ALIGNED_LINES
+        };
+        let aligned_rows = rows
+            .iter()
+            .filter(|row| row.iter().filter(|&&x| column(x)).count() >= ALIGNED_COLUMNS)
+            .count();
+        if aligned_rows >= ALIGNED_LINES {
+            cues.push(CandidateCue::AlignedColumns);
+        }
+    }
+    if cues.is_empty() && !tabular.is_empty() && rules() >= MIN_RULES {
+        cues.push(CandidateCue::RulingLines);
+    }
+    cues
+}
+
+/// Horizontal rules on a page at distinct heights: stroked lines or thin filled
+/// rectangles at least 15% of the page wide (booktabs `\toprule`, `\midrule`, ...).
+fn horizontal_rules(doc: &pdf_oxide::PdfDocument, index: usize, page_width: f32) -> usize {
+    let paths =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| doc.extract_paths(index)));
+    let Ok(Ok(paths)) = paths else {
+        return 0;
+    };
+    let mut heights: Vec<f32> = paths
+        .iter()
+        .filter(|p| p.is_horizontal_line(1.5))
+        .filter(|p| p.rendered_bbox().width.abs() >= 0.15 * page_width)
+        .map(|p| p.bbox.y)
+        .collect();
+    heights.sort_by(|a, b| a.total_cmp(b));
+    heights.dedup_by(|a, b| (*a - *b).abs() < 1.0);
+    heights.len()
 }
 
 // ── Runs and lines ──────────────────────────────────────────────────────────
@@ -385,6 +653,8 @@ struct RawTable {
     rows: Vec<Vec<String>>,
     /// Cell boxes, header row first, aligned with the expanded cells.
     cell_boxes: Vec<Vec<Option<BBox>>>,
+    /// The structure came from the table model.
+    from_model: bool,
 }
 
 impl RawTable {
@@ -444,8 +714,39 @@ impl RawTable {
             header,
             rows,
             cell_boxes,
+            from_model: false,
         })
     }
+
+    /// A table the model structured (spans resolved, multi-row headers flattened).
+    fn from_model(table: &ModelTable) -> Option<RawTable> {
+        let resolved = resolve_cells(&table.cells)?;
+        let clean = |t: &String| join_detached_sign(&normalize_ligatures(t));
+        Some(RawTable {
+            bbox: table.bbox.rounded(),
+            header: resolved.header.iter().map(clean).collect(),
+            rows: resolved
+                .rows
+                .iter()
+                .map(|r| r.iter().map(clean).collect())
+                .collect(),
+            cell_boxes: resolved
+                .cell_boxes
+                .iter()
+                .map(|r| r.iter().map(|b| b.map(|b| b.rounded())).collect())
+                .collect(),
+            from_model: true,
+        })
+    }
+}
+
+/// A sign the text layer separated from its number (`− 0.68`, the minus drawn as
+/// its own glyph run) is joined back to it (`−0.68`), so the cell reads as one
+/// signed value.
+fn join_detached_sign(text: &str) -> String {
+    static DETACHED: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^([+\-−–])\s+(\d)").expect("static regex"));
+    DETACHED.replace(text, "$1$2").into_owned()
 }
 
 /// Most header lines recovered above one table.
@@ -1285,6 +1586,7 @@ mod tests {
                     cell(210.0, 628.0, 250.0, 638.0),
                 ],
             ],
+            from_model: false,
         };
         let mut page = PageLines {
             number: 1,
@@ -1317,6 +1619,7 @@ mod tests {
                 header: vec!["Method".into(), "R@10".into(), "QPS".into()],
                 rows: vec![vec!["HNSW".into(), "95.3".into(), "1200".into()]],
                 cell_boxes: vec![],
+                from_model: false,
             }],
         };
         recover_table_headers(&mut page);
@@ -1448,6 +1751,14 @@ mod tests {
         );
         block.push(line("ware training", 72.0, 688.0, 200.0, 10.0, false));
         assert_eq!(block.joined_text(), "efficient hardware training");
+    }
+
+    #[test]
+    fn detached_signs_join_their_numbers() {
+        assert_eq!(join_detached_sign("− 0.68"), "−0.68");
+        assert_eq!(join_detached_sign("+ 1.2"), "+1.2");
+        assert_eq!(join_detached_sign("+ learnable W 0"), "+ learnable W 0");
+        assert_eq!(join_detached_sign("15.91"), "15.91");
     }
 
     #[test]

@@ -7,6 +7,10 @@ pub(crate) mod pdf_fixtures;
 pub mod pdf_info;
 pub mod pdf_layout;
 pub mod structure_chunker;
+#[cfg(test)]
+mod table_corpus;
+pub mod table_model;
+pub mod table_structure;
 pub mod tabular;
 pub mod text_structure;
 

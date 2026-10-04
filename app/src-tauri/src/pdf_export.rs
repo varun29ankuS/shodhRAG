@@ -367,9 +367,11 @@ impl WebViewPdfPrinter {
             WebviewWindowBuilder::new(&self.app, &label, WebviewUrl::App(PRINT_VIEW_PATH.into()))
                 .title(format!("Print — {}", document.title))
                 .inner_size(PRINT_WIDTH, PRINT_HEIGHT);
+        // Off every screen (not -32000, which Windows uses for minimized
+        // windows), visible so WebView2 keeps rendering.
         let builder = if offscreen {
             builder
-                .position(-32_000.0, -32_000.0)
+                .position(-16_000.0, -16_000.0)
                 .visible(true)
                 .focused(false)
                 .skip_taskbar(true)

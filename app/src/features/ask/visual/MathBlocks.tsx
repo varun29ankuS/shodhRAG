@@ -1,4 +1,5 @@
 import React, { useCallback, useId, useMemo, useState } from 'react';
+import { usePrintMode } from '../../print/printContext';
 import { AlertTriangle, ChevronRight } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { FocusFrame } from '../../focus/FocusFrame';
@@ -121,8 +122,12 @@ function Step({
 export function DerivationBlock({ source }: { source: string }) {
   const parsed = useMemo(() => parseDerivationBlock(source), [source]);
   const headingId = useId();
-  const [open, setOpen] = useState<ReadonlySet<number>>(() => new Set());
+  const printing = usePrintMode();
   const derivation = 'derivation' in parsed ? parsed.derivation : null;
+  // Printed: every step's reason is shown (there is nothing to click on paper).
+  const [open, setOpen] = useState<ReadonlySet<number>>(() =>
+    printing && derivation ? new Set(derivation.steps.map((_, i) => i)) : new Set(),
+  );
   const toggle = useCallback((i: number) => {
     setOpen(prev => {
       const next = new Set(prev);

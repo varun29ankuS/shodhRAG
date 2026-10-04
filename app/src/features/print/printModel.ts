@@ -217,7 +217,8 @@ export function printStylesheet(): string {
     '.print-view h1, .print-view h2, .print-view h3, .print-view h4 { break-after: avoid; page-break-after: avoid; }',
     '.print-view .overflow-x-auto, .print-view .overflow-hidden, .print-view .overflow-auto { overflow: visible !important; }',
     '.print-view pre, .print-view code { white-space: pre-wrap !important; word-break: break-word; }',
-    '.print-view svg, .print-view img, .print-view canvas { max-width: 100% !important; height: auto; }',
+    // KaTeX draws radicals and stretchy arrows with SVGs sized by their own rules.
+    '.print-view svg:not(.katex svg), .print-view img, .print-view canvas { max-width: 100% !important; height: auto; }',
     '.print-view a.print-cite { color: inherit; text-decoration: none; font-size: 0.8em; vertical-align: super; }',
     '@media print { html, body { background: #ffffff !important; } .print-screen-only { display: none !important; } }',
   ].join('\n');

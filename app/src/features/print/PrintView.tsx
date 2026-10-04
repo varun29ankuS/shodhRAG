@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { MessageContentRenderer } from '../ask/MessageContentRenderer';
 import { PrintModeContext } from './printContext';
@@ -10,8 +11,17 @@ const QUIET_MS = 700;
 /** Longest wait for the drawing to settle; it prints what is there then. */
 const SETTLE_LIMIT_MS = 45_000;
 
+/** Longest wait for an animation frame: frames stop in a window the system considers hidden. */
+const FRAME_LIMIT_MS = 50;
+
 function nextFrame(): Promise<void> {
-  return new Promise(resolve => requestAnimationFrame(() => resolve()));
+  return new Promise(resolve => {
+    const timer = window.setTimeout(resolve, FRAME_LIMIT_MS);
+    requestAnimationFrame(() => {
+      window.clearTimeout(timer);
+      resolve();
+    });
+  });
 }
 
 /** Every image under `root` loaded (or failed: a broken image must not hold the print). */
@@ -47,6 +57,23 @@ function settled(root: HTMLElement): Promise<void> {
 
 const noCitation = () => undefined;
 
+/** Reports a render error of the printed content, so the export fails at once. */
+class PrintBoundary extends Component<{ onError: (message: string) => void; children: ReactNode }, { failed: string | null }> {
+  state = { failed: null as string | null };
+
+  static getDerivedStateFromError(error: unknown) {
+    return { failed: error instanceof Error ? error.message : String(error) };
+  }
+
+  componentDidCatch(error: unknown) {
+    this.props.onError(`the content could not be drawn (${error instanceof Error ? error.message : String(error)})`);
+  }
+
+  render() {
+    return this.state.failed ? <p role="alert">{`The content could not be drawn: ${this.state.failed}`}</p> : this.props.children;
+  }
+}
+
 /**
  * The print view (`/print-view` in its own window): renders the print job of
  * this window with the answer renderer and a print stylesheet, waits until
@@ -63,6 +90,13 @@ export default function PrintView() {
     reported.current = true;
     invoke('print_job_ready', { error: problem }).catch(e => console.error('Reporting the print view failed:', e));
   }, []);
+
+  // A render error anywhere in the page fails the export at once instead of at the timeout.
+  useEffect(() => {
+    const onError = (event: ErrorEvent) => report(event.message || 'a script error stopped the page');
+    window.addEventListener('error', onError);
+    return () => window.removeEventListener('error', onError);
+  }, [report]);
 
   useEffect(() => {
     invoke<PrintJob>('print_job').then(
@@ -128,7 +162,9 @@ export default function PrintView() {
           {doc.subtitle && <p className="m-0 text-[14px] text-shodh-text-secondary">{doc.subtitle}</p>}
           {date && <p className="m-0 text-[12.5px] text-shodh-text-muted">{date}</p>}
         </header>
-        <MessageContentRenderer content={doc.markdown} hits={hits} onOpenCitation={noCitation} print />
+        <PrintBoundary onError={report}>
+          <MessageContentRenderer content={doc.markdown} hits={hits} onOpenCitation={noCitation} print />
+        </PrintBoundary>
         {doc.sources.length > 0 && (
           <section aria-labelledby="print-sources" className="mt-8 border-t border-shodh-border pt-4" data-print-block="">
             <h2 id="print-sources" className="m-0 mb-3 text-[17px] font-semibold text-shodh-text">Sources</h2>

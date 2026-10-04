@@ -441,8 +441,11 @@ pub struct QueryResultsTool {
     host: Arc<AgentHost>,
 }
 
-fn cell_line(method: &str, dataset: &str, metric: &str, cell: &ComparisonCell) -> String {
-    let mut text = format!(
+/// What a cell says: method, metric, dataset and the value as printed. This alone is the
+/// passage the answer check compares claims with, so a wrong value cannot pass by matching
+/// a page, table or setting number.
+fn cell_value(method: &str, dataset: &str, metric: &str, cell: &ComparisonCell) -> String {
+    format!(
         "{method} — {metric} on {dataset}: {}{}",
         cell.value_text,
         cell.unit
@@ -450,7 +453,12 @@ fn cell_line(method: &str, dataset: &str, metric: &str, cell: &ComparisonCell) -
             .filter(|u| !cell.value_text.contains(*u))
             .map(|u| format!(" {u}"))
             .unwrap_or_default()
-    );
+    )
+}
+
+/// The cell as the model reads it: its value, then setting, paper and page.
+fn cell_line(value: &str, cell: &ComparisonCell) -> String {
+    let mut text = value.to_string();
     if let Some(setting) = cell.setting.as_deref().filter(|s| !s.is_empty()) {
         text.push_str(&format!(" ({setting})"));
     }
@@ -478,14 +486,15 @@ fn render_comparison(
     let mut lines = Vec::new();
     let mut passages = Vec::new();
     for ((method, dataset, metric, cell), n) in cells.into_iter().zip(first..) {
-        let text = cell_line(method, dataset, metric, cell);
+        let value = cell_value(method, dataset, metric, cell);
+        let text = cell_line(&value, cell);
         ctx.record_passage(CitedPassage {
             n,
             file: cell.file_name.clone(),
             path: cell.file_path.clone(),
             page: Some(cell.page.to_string()),
             web: false,
-            text: text.clone(),
+            text: value,
             checkable: true,
         });
         lines.push(format!("[{n}] {text}"));
@@ -694,6 +703,11 @@ mod tests {
         assert_eq!(detail["passages"][0]["regions"][0]["x0"], json!(160.0));
         assert_eq!(detail["passages"][0]["page"], json!("6"));
         assert_eq!(ctx.passages_issued(), 2);
+        // The checked passage is the cell alone: no page, table or setting numbers.
+        assert_eq!(
+            ctx.cited_passage(1).map(|p| p.text),
+            Some("HNSW — R@10 on SIFT1M: 95.3".to_string())
+        );
         assert_eq!(out.summary_for_ui, "2 methods × 1 column from 1 paper");
     }
 

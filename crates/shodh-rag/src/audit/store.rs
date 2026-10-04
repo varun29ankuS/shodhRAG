@@ -39,8 +39,9 @@ const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 
 /// Ordered schema migrations of `shodh.db`. Never edit an applied entry; append a new one.
 /// The database is shared: the audit chain (1), the dynamics of typed statements (2), the
-/// generated-visuals gallery (3), learned-memory suggestions (4) and research objects (5: snippet
-/// images, Result extraction records and rejections) use one version sequence, so every
+/// generated-visuals gallery (3), learned-memory suggestions (4), research objects (5: snippet
+/// images, Result extraction records and rejections) and the citation graph (6: the scholarly
+/// API cache, per-file scans and the build report) use one version sequence, so every
 /// component that opens it sees the same schema.
 const MIGRATIONS: &[(i64, &str)] = &[
     (
@@ -230,6 +231,32 @@ const MIGRATIONS: &[(i64, &str)] = &[
             rejected_at TEXT NOT NULL
         );
         CREATE INDEX result_rejections_file ON result_rejections(file_path);",
+    ),
+    (
+        6,
+        // The citation graph. `scholarly_cache` keeps OpenAlex answers (and "not found")
+        // per request until `expires_at`, so a rebuild sends nothing it already asked;
+        // `citation_scans` keeps each library PDF's parsed identity and references, keyed
+        // by the file's size and modification time, so a rebuild parses only changed
+        // files; `citation_graph_state` keeps the last build report.
+        "CREATE TABLE scholarly_cache (
+            key TEXT PRIMARY KEY,
+            status INTEGER NOT NULL,
+            body BLOB NOT NULL,
+            fetched_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        );
+        CREATE TABLE citation_scans (
+            file_path TEXT PRIMARY KEY,
+            fingerprint TEXT NOT NULL,
+            scan_json TEXT NOT NULL,
+            scanned_at TEXT NOT NULL
+        );
+        CREATE TABLE citation_graph_state (
+            key TEXT PRIMARY KEY,
+            value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );",
     ),
 ];
 
@@ -1554,6 +1581,9 @@ mod tests {
                  DROP TABLE snippet_images;
                  DROP TABLE result_extractions;
                  DROP TABLE result_rejections;
+                 DROP TABLE scholarly_cache;
+                 DROP TABLE citation_scans;
+                 DROP TABLE citation_graph_state;
                  DELETE FROM schema_version WHERE version > 1;",
             )
             .unwrap();
@@ -1590,6 +1620,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!(research, 3);
+        let citations: i64 = shared
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table'
+                 AND name IN ('scholarly_cache', 'citation_scans', 'citation_graph_state')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(citations, 3);
         // Opening again (the audit log after the statement store) applies nothing twice.
         let log = AuditLog::open(&path, None).unwrap();
         let versions: i64 = raw(&dir)

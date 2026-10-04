@@ -23,6 +23,9 @@ mod corpus_dump;
 mod corpus_tests;
 pub mod identity;
 pub mod reference;
+pub mod resolve;
 pub mod scan;
 pub mod segment;
 pub mod text;
+
+pub use resolve::{Resolver, ScholarlyTransport};

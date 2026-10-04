@@ -1,5 +1,6 @@
-//! The research tables of `shodh.db` (schema version 5): snippet images, the last Result
-//! extraction per paper and the Results the user rejected.
+//! The research tables of `shodh.db` (schema versions 5 and 6): snippet images, the last
+//! Result extraction per paper, the Results the user rejected, and for the citation graph
+//! the scholarly API cache, per-file scans and the last build report.
 //!
 //! Why images are here and not in the LanceDB statement rows: `shodh.db` is encrypted
 //! (SQLCipher) when the app has a key and LanceDB is not; statement rows are appended on
@@ -195,6 +196,128 @@ impl ResearchDb {
     }
 }
 
+impl ResearchDb {
+    /// A cached scholarly API answer (status and body) that has not expired.
+    pub fn cached_answer(&self, key: &str) -> ResearchResult<Option<(u16, Vec<u8>)>> {
+        let row: Option<(i64, Vec<u8>)> = self
+            .lock()
+            .query_row(
+                "SELECT status, body FROM scholarly_cache WHERE key = ?1 AND expires_at > ?2",
+                params![key, now_text()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(row.and_then(|(status, body)| u16::try_from(status).ok().map(|s| (s, body))))
+    }
+
+    /// Caches a scholarly API answer for `ttl_days`.
+    pub fn cache_answer(
+        &self,
+        key: &str,
+        status: u16,
+        body: &[u8],
+        ttl_days: i64,
+    ) -> ResearchResult<()> {
+        let now = Utc::now();
+        let expires =
+            (now + chrono::Duration::days(ttl_days)).to_rfc3339_opts(SecondsFormat::Millis, true);
+        self.lock().execute(
+            "INSERT INTO scholarly_cache(key, status, body, fetched_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(key) DO UPDATE SET status = excluded.status, body = excluded.body,
+               fetched_at = excluded.fetched_at, expires_at = excluded.expires_at",
+            params![
+                key,
+                i64::from(status),
+                body,
+                now.to_rfc3339_opts(SecondsFormat::Millis, true),
+                expires
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Removes expired cache entries; returns how many.
+    pub fn prune_answers(&self) -> ResearchResult<usize> {
+        Ok(self.lock().execute(
+            "DELETE FROM scholarly_cache WHERE expires_at <= ?1",
+            params![now_text()],
+        )?)
+    }
+
+    /// The stored scan of a file (fingerprint and JSON), if any.
+    pub fn citation_scan(&self, file_key: &str) -> ResearchResult<Option<(String, String)>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT fingerprint, scan_json FROM citation_scans WHERE file_path = ?1",
+                params![file_key],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    /// Stores the scan of a file.
+    pub fn put_citation_scan(
+        &self,
+        file_key: &str,
+        fingerprint: &str,
+        scan_json: &str,
+    ) -> ResearchResult<()> {
+        self.lock().execute(
+            "INSERT INTO citation_scans(file_path, fingerprint, scan_json, scanned_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(file_path) DO UPDATE SET fingerprint = excluded.fingerprint,
+               scan_json = excluded.scan_json, scanned_at = excluded.scanned_at",
+            params![file_key, fingerprint, scan_json, now_text()],
+        )?;
+        Ok(())
+    }
+
+    /// Removes the scans of files not in `keep`; returns how many.
+    pub fn retain_citation_scans(&self, keep: &HashSet<String>) -> ResearchResult<usize> {
+        let conn = self.lock();
+        let stored: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT file_path FROM citation_scans")?;
+            let rows = stmt
+                .query_map([], |r| r.get(0))?
+                .collect::<Result<Vec<String>, _>>()?;
+            rows
+        };
+        let mut removed = 0;
+        for key in stored.iter().filter(|k| !keep.contains(*k)) {
+            removed += conn.execute(
+                "DELETE FROM citation_scans WHERE file_path = ?1",
+                params![key],
+            )?;
+        }
+        Ok(removed)
+    }
+
+    /// A value of the citation graph's state (`report`, ...), as JSON.
+    pub fn graph_state(&self, key: &str) -> ResearchResult<Option<String>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT value_json FROM citation_graph_state WHERE key = ?1",
+                params![key],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Stores a value of the citation graph's state.
+    pub fn put_graph_state(&self, key: &str, value_json: &str) -> ResearchResult<()> {
+        self.lock().execute(
+            "INSERT INTO citation_graph_state(key, value_json, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json,
+               updated_at = excluded.updated_at",
+            params![key, value_json, now_text()],
+        )?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -254,5 +377,30 @@ pub(crate) mod tests {
         db.reject("fp-1", "a.pdf").unwrap();
         assert_eq!(db.rejected("a.pdf").unwrap().len(), 1);
         assert!(db.rejected("b.pdf").unwrap().is_empty());
+    }
+
+    #[test]
+    fn scholarly_answers_expire_and_scans_are_kept_per_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = ResearchDb::open(&dir.path().join("shodh.db"), None).unwrap();
+        db.cache_answer("k", 200, b"{}", 30).unwrap();
+        assert_eq!(db.cached_answer("k").unwrap(), Some((200, b"{}".to_vec())));
+        db.cache_answer("gone", 404, b"", -1).unwrap();
+        assert_eq!(db.cached_answer("gone").unwrap(), None);
+        assert_eq!(db.prune_answers().unwrap(), 1);
+
+        db.put_citation_scan("a.pdf", "fp1", "{}").unwrap();
+        db.put_citation_scan("b.pdf", "fp2", "{}").unwrap();
+        db.put_citation_scan("a.pdf", "fp3", "{\"x\":1}").unwrap();
+        assert_eq!(
+            db.citation_scan("a.pdf").unwrap(),
+            Some(("fp3".to_string(), "{\"x\":1}".to_string()))
+        );
+        let keep: HashSet<String> = ["a.pdf".to_string()].into_iter().collect();
+        assert_eq!(db.retain_citation_scans(&keep).unwrap(), 1);
+        assert_eq!(db.citation_scan("b.pdf").unwrap(), None);
+        assert_eq!(db.graph_state("report").unwrap(), None);
+        db.put_graph_state("report", "{}").unwrap();
+        assert_eq!(db.graph_state("report").unwrap().as_deref(), Some("{}"));
     }
 }

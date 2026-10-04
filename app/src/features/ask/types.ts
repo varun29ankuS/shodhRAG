@@ -82,6 +82,8 @@ export interface SearchHit {
   section?: string | null;
   /** Where the passage sits on its pages; preferred over text search to highlight it. */
   regions?: PdfRegion[] | null;
+  /** A snippet's rectangles (top-left origin of the page view box), outlined when there are no regions. */
+  rects?: { page: number; rect: { x: number; y: number; width: number; height: number } }[] | null;
 }
 
 export type RunStatus = 'running' | 'done' | 'failed' | 'cancelled';

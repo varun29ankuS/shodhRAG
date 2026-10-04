@@ -46,6 +46,7 @@ import { ChatSessionProvider, useChatSession } from './features/ask/ChatSessionC
 import { FocusProvider } from './features/focus/FocusContext';
 import { VisualsButton } from './features/visuals/GalleryDialog';
 import { VisualNavigator } from './features/visuals/VisualNavigator';
+import { SnippetHost } from './features/research/SnippetHost';
 import { ReminderAlerts } from './features/tasks/ReminderAlerts';
 import { AskView } from './features/ask/AskView';
 import { useCommandPalette } from './hooks/useCommandPalette';
@@ -1522,6 +1523,7 @@ function AppSplitViewRoot() {
       <FocusProvider>
         <AppSplitView />
         <VisualNavigator />
+        <SnippetHost />
       </FocusProvider>
     </ChatSessionProvider>
   );

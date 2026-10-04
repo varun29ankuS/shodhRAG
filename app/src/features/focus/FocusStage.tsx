@@ -19,6 +19,7 @@ import { useSourceDocument } from '../ask/useSourceDocument';
 import type { SearchHit } from '../ask/types';
 import { momentToDate, parseMoment } from '../tasks/dueDate';
 import { PRIORITY_LABELS, STATUS_LABELS } from '../tasks/types';
+import { SnippetStage } from '../research/SnippetStage';
 import type { FocusCommand } from './focusKeys';
 import { panDelta } from './focusKeys';
 import type { FocusParamValue, FocusTarget, FocusTaskSnapshot } from './focusTypes';
@@ -678,7 +679,7 @@ export interface FocusStageProps {
 export function FocusStage({ target, theme, commandRef, onPageChange }: FocusStageProps) {
   // Documents and tasks have no stage zoom (PDF pages zoom in their own viewer).
   // Interactive visuals have sliders and controls instead of zoom.
-  if (target.kind === 'source' || target.kind === 'task' || target.kind === 'selection' || target.kind === 'plot' || target.kind === 'simulation') {
+  if (target.kind === 'source' || target.kind === 'task' || target.kind === 'selection' || target.kind === 'snippet' || target.kind === 'plot' || target.kind === 'simulation') {
     commandRef.current = null;
   }
   switch (target.kind) {
@@ -714,5 +715,7 @@ export function FocusStage({ target, theme, commandRef, onPageChange }: FocusSta
       return <TaskStage task={target.task} />;
     case 'selection':
       return <SelectionStage target={target} />;
+    case 'snippet':
+      return <SnippetStage target={target} />;
   }
 }

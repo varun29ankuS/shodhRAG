@@ -36,6 +36,9 @@ import { clearReveal, pendingReveal, subscribeReveal } from '../visuals/reveal';
 import type { MessageReveal } from '../visuals/reveal';
 import { scrollBehavior } from './viewer/sourceAccess';
 import type { ChatMessage, SearchHit, SendOptions } from './types';
+import { SnippetDropZone } from '../research/SnippetDropZone';
+import { COMPOSER_INSERT_EVENT, onWindowEvent, takePendingInserts } from '../research/snippetBus';
+import { appendToDraft } from '../research/snippetModel';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -656,6 +659,21 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     composerRef.current?.focus();
   }, []);
 
+  // A snippet (or other context) sent to the composer, e.g. "Add to chat":
+  // appended to the draft, also when Ask mounts after the request.
+  const insertContext = useCallback((text: string) => {
+    setDraft(prev => appendToDraft(prev, text));
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }, []);
+  useEffect(() => {
+    const drain = () => {
+      const pending = takePendingInserts();
+      if (pending.length > 0) insertContext(pending.join(''));
+    };
+    drain();
+    return onWindowEvent<string>(COMPOSER_INSERT_EVENT, drain);
+  }, [insertContext]);
+
   // e.g. "Ask about this file" from the Library: prefill, then let the user finish the question.
   const appliedDraftSeq = useRef(0);
   useEffect(() => {
@@ -742,29 +760,31 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
   );
 
   const composer = (autoFocus: boolean) => (
-    <AgentComposer
-      id="ask-composer"
-      ref={composerRef}
-      value={draft}
-      onChange={setDraft}
-      onSubmit={submit}
-      onSteer={submitSteer}
-      onStop={cancel}
-      onApprove={waitingStep?.tier === 'write' ? approveWaiting : undefined}
-      running={isStreaming}
-      canSteer={liveTranscript?.status === 'running'}
-      approvalPending={waitingStepId !== null}
-      blockedReason={blockedReason}
-      placeholder={messages.length === 0 ? 'Ask about your files…' : 'Ask a follow-up…'}
-      modelLabel={modelLabel}
-      modelConnected={llmStatus.connected}
-      onOpenModelSettings={() => onNavigate('settings')}
-      scopeLabel={scopeLabel}
-      scopeTitle={scopeTitle}
-      onOpenLibrary={() => onNavigate('library')}
-      onPickImage={onPickImage}
-      autoFocus={autoFocus}
-    />
+    <SnippetDropZone onInsert={insertContext}>
+      <AgentComposer
+        id="ask-composer"
+        ref={composerRef}
+        value={draft}
+        onChange={setDraft}
+        onSubmit={submit}
+        onSteer={submitSteer}
+        onStop={cancel}
+        onApprove={waitingStep?.tier === 'write' ? approveWaiting : undefined}
+        running={isStreaming}
+        canSteer={liveTranscript?.status === 'running'}
+        approvalPending={waitingStepId !== null}
+        blockedReason={blockedReason}
+        placeholder={messages.length === 0 ? 'Ask about your files…' : 'Ask a follow-up…'}
+        modelLabel={modelLabel}
+        modelConnected={llmStatus.connected}
+        onOpenModelSettings={() => onNavigate('settings')}
+        scopeLabel={scopeLabel}
+        scopeTitle={scopeTitle}
+        onOpenLibrary={() => onNavigate('library')}
+        onPickImage={onPickImage}
+        autoFocus={autoFocus}
+      />
+    </SnippetDropZone>
   );
 
   const dropOverlay = isDraggingFile && (

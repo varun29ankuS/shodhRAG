@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Loader2 } from 'lucide-react';
 import { ImageViewer } from '../ask/viewer/ImageViewer';
 import { PdfViewer } from '../ask/viewer/PdfViewer';
@@ -7,6 +7,8 @@ import { TextViewer } from '../ask/viewer/TextViewer';
 import { getSourceFileInfo, toSourceError } from '../ask/viewer/sourceAccess';
 import type { SourceAccessError, SourceFileInfo } from '../ask/viewer/sourceAccess';
 import { extensionOf } from './fileTree';
+import type { PdfRegion } from '../ask/types';
+import type { SnippetRect } from '../research/types';
 
 /** Extensions shown as prose (proportional font); other text is code. */
 const PROSE_EXTENSIONS = new Set(['pdf', 'docx', 'pptx', 'txt', 'text', 'md', 'markdown', 'mdx', 'rst', 'log', 'html', 'htm']);
@@ -61,7 +63,20 @@ interface FileViewerProps {
   path: string;
   /** Called once the first page of a PDF is on screen (prefetch neighbours then). */
   onFirstPageVisible?: () => void;
+  /** Workspace (source id) snippets made in this file belong to. */
+  workspace?: string | null;
+  /** A place to show with its box outlined (a result cell, a snippet); PDFs only. */
+  highlight?: FileHighlight | null;
 }
+
+/** A page of a PDF with boxes to outline. */
+export interface FileHighlight {
+  page: number;
+  regions?: PdfRegion[] | null;
+  rects?: { page: number; rect: SnippetRect }[] | null;
+}
+
+const NO_PAGES = null;
 
 /**
  * An indexed file shown in the app with the same viewers as cited sources
@@ -70,7 +85,8 @@ interface FileViewerProps {
  * remembered page skeleton appear at once, while its size is looked up.
  * Every failure says why, never a blank pane.
  */
-export function FileViewer({ path, onFirstPageVisible }: FileViewerProps) {
+export function FileViewer({ path, onFirstPageVisible, workspace = null, highlight = null }: FileViewerProps) {
+  const cited = useMemo(() => (highlight ? { start: highlight.page, end: highlight.page } : NO_PAGES), [highlight]);
   const [state, setState] = useState<State>({ status: 'loading', path });
 
   useEffect(() => {
@@ -147,11 +163,14 @@ export function FileViewer({ path, onFirstPageVisible }: FileViewerProps) {
         fileSize={info ? info.sizeBytes : 'pending'}
         fileModifiedMs={info?.modifiedMs ?? null}
         passage=""
-        citedPages={null}
+        citedPages={cited}
+        regions={highlight?.regions ?? null}
+        rects={highlight?.rects ?? null}
         onLocate={ignoreLocate}
         onFatal={handlePdfFatal}
-        rememberView
+        rememberView={!highlight}
         onFirstPageVisible={onFirstPageVisible}
+        workspace={workspace}
       />
     );
   } else if (viewer === 'table') {

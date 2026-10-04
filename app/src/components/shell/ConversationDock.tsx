@@ -4,6 +4,8 @@ import { cn } from '../../lib/utils';
 import type { ViewTab } from '../../lib/viewTabs';
 import { AgentComposer } from '../../features/agent/AgentComposer';
 import type { AgentComposerHandle } from '../../features/agent/AgentComposer';
+import { SnippetDropZone } from '../../features/research/SnippetDropZone';
+import { appendToDraft } from '../../features/research/snippetModel';
 import { passageHits } from '../../features/agent/citations';
 import { currentStep, isLive, pendingApproval } from '../../features/agent/reducer';
 import { StatusLine } from '../../features/agent/StatusLine';
@@ -261,22 +263,24 @@ export function ConversationDock({ activeTab, onExpand }: ConversationDockProps)
             <StatusLine transcript={transcript} fallbackModel={null} compact />
           </div>
         )}
-        <AgentComposer
-          id="dock-composer"
-          ref={composerRef}
-          value={draft}
-          onChange={setDraft}
-          onSubmit={submit}
-          onSteer={submitSteer}
-          onStop={cancel}
-          onApprove={waiting?.tier === 'write' ? () => approve(waiting.id, true) : undefined}
-          running={isStreaming}
-          canSteer={transcript?.status === 'running'}
-          approvalPending={waiting !== null}
-          blockedReason={sideRun ? `Answering your side question about “${sideRun.label}”.` : busyElsewhere ? 'An answer is running in another conversation.' : null}
-          placeholder="Reply…"
-          compact
-        />
+        <SnippetDropZone onInsert={text => setDraft(prev => appendToDraft(prev, text))}>
+          <AgentComposer
+            id="dock-composer"
+            ref={composerRef}
+            value={draft}
+            onChange={setDraft}
+            onSubmit={submit}
+            onSteer={submitSteer}
+            onStop={cancel}
+            onApprove={waiting?.tier === 'write' ? () => approve(waiting.id, true) : undefined}
+            running={isStreaming}
+            canSteer={transcript?.status === 'running'}
+            approvalPending={waiting !== null}
+            blockedReason={sideRun ? `Answering your side question about “${sideRun.label}”.` : busyElsewhere ? 'An answer is running in another conversation.' : null}
+            placeholder="Reply…"
+            compact
+          />
+        </SnippetDropZone>
       </div>
     </div>
   );

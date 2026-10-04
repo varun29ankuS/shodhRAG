@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from 'pdfjs-dist';
-import { ChevronDown, ChevronUp, Loader2, Minus, MoveHorizontal, Plus, Search, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, Loader2, Minus, MoveHorizontal, Plus, Scissors, Search, TextSelect, X } from 'lucide-react';
+import { toast } from 'sonner';
 import { cn } from '../../../lib/utils';
 import { pathKey } from '../../library/fileTree';
 import type { PageSpan, PdfRegion } from '../types';
@@ -14,6 +15,11 @@ import { getPdfMeta, pdfViewStates, rememberPdfMeta } from './viewerStores';
 import { MAX_PDF_SCALE, MIN_PDF_SCALE, type PdfViewState, type PdfZoom } from './viewState';
 import type { LocateResult } from './viewerTypes';
 import { VIEWER_FOCUS_RING } from './viewerTypes';
+import { researchApi, toResearchError } from '../../research/api';
+import { openSnippet } from '../../research/snippetBus';
+import { cssToSnippetRect, rectToRegion, type CssBox } from '../../research/snippetGeometry';
+import { renderSnippet, snippetText } from '../../research/snippetRender';
+import type { SnippetRect } from '../../research/types';
 
 type TextContent = Awaited<ReturnType<PDFPageProxy['getTextContent']>>;
 type TextLayerInstance = InstanceType<Awaited<ReturnType<typeof loadPdfJs>>['TextLayer']>;
@@ -421,6 +427,27 @@ interface PdfViewerProps {
   onFirstPageVisible?: () => void;
   /** The page the reader is on changed (scrolling, keys or the page field). */
   onPageChange?: (page: number) => void;
+  /**
+   * Rectangles to outline (a snippet's region, top-left origin of the page's
+   * view box); converted to boxes once the document is open. Used when
+   * `regions` is empty.
+   */
+  rects?: { page: number; rect: SnippetRect }[] | null;
+  /** Workspace (source id) new snippets belong to, when the viewer knows it. */
+  workspace?: string | null;
+}
+
+/** A rectangle being dragged on a page in snippet mode (page CSS pixels). */
+interface Marquee {
+  page: number;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+function marqueeBox(m: Marquee): CssBox {
+  return { left: Math.min(m.x0, m.x1), top: Math.min(m.y0, m.y1), width: Math.abs(m.x1 - m.x0), height: Math.abs(m.y1 - m.y0) };
 }
 
 /**
@@ -444,6 +471,8 @@ export function PdfViewer({
   rememberView = false,
   onFirstPageVisible,
   onPageChange,
+  rects = null,
+  workspace = null,
 }: PdfViewerProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -478,6 +507,12 @@ export function PdfViewer({
   const [findHits, setFindHits] = useState<FindHit[]>([]);
   const [findSelected, setFindSelected] = useState<FindHit | null>(null);
   const [findStatus, setFindStatus] = useState<'idle' | 'searching' | 'done'>('idle');
+  const [snipping, setSnipping] = useState(false);
+  const [marquee, setMarquee] = useState<Marquee | null>(null);
+  const [snipBusy, setSnipBusy] = useState(false);
+  const [hasSelection, setHasSelection] = useState(false);
+  /** `rects` converted to boxes on their pages (null until the document is open). */
+  const [rectRegions, setRectRegions] = useState<PdfRegion[] | null>(null);
   const locateToken = useRef(0);
   const scrolledToken = useRef<number | null>(null);
   /** What the current highlight is: the cited passage or a find match. */
@@ -818,7 +853,32 @@ export function PdfViewer({
 
   const citedStart = citedPages?.start ?? null;
   const citedEnd = citedPages?.end ?? null;
-  const regionsKey = regions && regions.length > 0 ? JSON.stringify(regions) : '';
+  const rectsKey = rects && rects.length > 0 ? JSON.stringify(rects) : '';
+  // Snippet rectangles become boxes through each page's view box.
+  useEffect(() => {
+    if (!doc || !rectsKey) {
+      setRectRegions(null);
+      return;
+    }
+    let cancelled = false;
+    const list = JSON.parse(rectsKey) as { page: number; rect: SnippetRect }[];
+    Promise.all(
+      list
+        .filter(r => r.page >= 1 && r.page <= doc.numPages)
+        .map(async r => rectToRegion(r.rect, r.page, (await doc.getPage(r.page)).view)),
+    )
+      .then(out => {
+        if (!cancelled) setRectRegions(out);
+      })
+      .catch(() => {
+        if (!cancelled) setRectRegions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [doc, rectsKey]);
+  const regionsKey =
+    regions && regions.length > 0 ? JSON.stringify(regions) : rectRegions && rectRegions.length > 0 ? JSON.stringify(rectRegions) : '';
 
   // Locate the passage: cited page(s) first, then every page by distance.
   useEffect(() => {
@@ -1051,6 +1111,129 @@ export function PdfViewer({
     return () => root.removeEventListener(VIEWER_FIND_EVENT, openFind);
   }, [openFind]);
 
+  // ── Snippets ──────────────────────────────────────────────────────────────
+
+  /** Saves the region of a page as a snippet: a pdf.js render, its text and its place. */
+  const createSnippet = useCallback(
+    async (page: number, rect: SnippetRect) => {
+      if (!doc) return;
+      setSnipBusy(true);
+      try {
+        const [image, text] = await Promise.all([renderSnippet(doc, page, rect), snippetText(doc, page, rect)]);
+        const snippet = await researchApi.createSnippet({
+          filePath,
+          page,
+          rect,
+          text,
+          imagePng: image.png,
+          workspace,
+        });
+        toast.success(`Snippet saved from page ${page}`, {
+          description: 'Find it in Library under Snippets.',
+          action: { label: 'Open', onClick: () => openSnippet(snippet) },
+        });
+      } catch (error) {
+        toast.error('The snippet could not be saved', { description: toResearchError(error).message });
+      } finally {
+        setSnipBusy(false);
+      }
+    },
+    [doc, filePath, workspace],
+  );
+
+  /** CSS boxes on a page element -> the page's snippet rectangle at the current scale. */
+  const cssToRect = useCallback(
+    async (page: number, boxes: CssBox[]): Promise<SnippetRect | null> => {
+      if (!doc) return null;
+      const p = await doc.getPage(page);
+      const viewport = p.getViewport({ scale });
+      return cssToSnippetRect(boxes, viewport.transform, p.view);
+    },
+    [doc, scale],
+  );
+
+  const toggleSnipping = useCallback(() => {
+    setMarquee(null);
+    setSnipping(on => !on);
+  }, []);
+
+  // Whether text is selected inside this viewer (enables "Snippet from selection").
+  useEffect(() => {
+    const update = () => {
+      const selection = document.getSelection();
+      const root = rootRef.current;
+      setHasSelection(
+        Boolean(selection && !selection.isCollapsed && root && selection.anchorNode && root.contains(selection.anchorNode) && selection.toString().trim()),
+      );
+    };
+    document.addEventListener('selectionchange', update);
+    return () => document.removeEventListener('selectionchange', update);
+  }, []);
+
+  /** "Snippet from selection": the selected text's boxes on the page it starts on. */
+  const snipSelection = useCallback(async () => {
+    const selection = document.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+    const range = selection.getRangeAt(0);
+    const start = range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement;
+    const pageEl = start?.closest<HTMLElement>('[data-page]');
+    const page = pageEl ? Number(pageEl.dataset.page) : NaN;
+    if (!pageEl || !Number.isInteger(page)) return;
+    const origin = pageEl.getBoundingClientRect();
+    const boxes: CssBox[] = Array.from(range.getClientRects())
+      .filter(r => r.width > 0.5 && r.height > 0.5 && r.bottom > origin.top && r.top < origin.bottom)
+      .map(r => ({ left: r.left - origin.left, top: r.top - origin.top, width: r.width, height: r.height }));
+    const rect = await cssToRect(page, boxes);
+    if (!rect) {
+      toast.error('The selection is too small to save as a snippet.');
+      return;
+    }
+    selection.removeAllRanges();
+    await createSnippet(page, rect);
+  }, [createSnippet, cssToRect]);
+
+  /** Position of a pointer event in a page's CSS pixels (clamped to the page). */
+  const pagePoint = (pageEl: HTMLElement, e: React.PointerEvent) => {
+    const r = pageEl.getBoundingClientRect();
+    return {
+      x: Math.min(Math.max(0, e.clientX - r.left), r.width),
+      y: Math.min(Math.max(0, e.clientY - r.top), r.height),
+    };
+  };
+
+  const onSnipPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!snipping || !doc || e.button !== 0) return;
+    const pageEl = (e.target as Element).closest<HTMLElement>('[data-page]');
+    if (!pageEl) return;
+    const page = Number(pageEl.dataset.page);
+    if (!Number.isInteger(page)) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const p = pagePoint(pageEl, e);
+    setMarquee({ page, x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+  };
+
+  const onSnipPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!marquee) return;
+    const pageEl = pageEls.current.get(marquee.page);
+    if (!pageEl) return;
+    const p = pagePoint(pageEl, e);
+    setMarquee(m => (m ? { ...m, x1: p.x, y1: p.y } : m));
+  };
+
+  const onSnipPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!marquee) return;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+    const done = marquee;
+    setMarquee(null);
+    void (async () => {
+      const rect = await cssToRect(done.page, [marqueeBox(done)]);
+      if (!rect) return; // A click or a tiny drag: nothing to save.
+      setSnipping(false);
+      await createSnippet(done.page, rect);
+    })();
+  };
+
   const zoomBy = (factor: number) => {
     anchorPage.current = currentPage;
     setZoom({ mode: 'manual', scale: clampScale(scale * factor) });
@@ -1100,6 +1283,20 @@ export function PdfViewer({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.isDefaultPrevented()) return;
+    const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
+    if (plain && (e.key === 's' || e.key === 'S') && !isEditableTarget(e.target) && doc) {
+      e.preventDefault();
+      toggleSnipping();
+      return;
+    }
+    if (e.key === 'Escape' && (snipping || marquee)) {
+      // Leaves snippet mode only; the surrounding view's Esc must not also fire.
+      e.preventDefault();
+      e.stopPropagation();
+      setMarquee(null);
+      setSnipping(false);
+      return;
+    }
     const command = viewerCommand({
       key: e.key,
       ctrlKey: e.ctrlKey,
@@ -1173,6 +1370,29 @@ export function PdfViewer({
         <div className="flex-1" />
         <button
           type="button"
+          className={cn(toolButton, snipping && 'bg-shodh-accent-soft text-shodh-accent-text')}
+          onClick={toggleSnipping}
+          disabled={!doc || snipBusy}
+          aria-pressed={snipping}
+          aria-label="Snippet: drag a rectangle on a page to save it"
+          title="Snippet (S)"
+        >
+          {snipBusy ? <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Scissors className="w-4 h-4" aria-hidden="true" />}
+        </button>
+        <button
+          type="button"
+          className={toolButton}
+          onClick={() => void snipSelection()}
+          // Keep the text selection when the button is pressed.
+          onMouseDown={e => e.preventDefault()}
+          disabled={!doc || snipBusy || !hasSelection}
+          aria-label="Snippet from selection"
+          title={hasSelection ? 'Snippet from selection' : 'Select text on a page to save it as a snippet'}
+        >
+          <TextSelect className="w-4 h-4" aria-hidden="true" />
+        </button>
+        <button
+          type="button"
           className={cn(toolButton, findOpen && 'bg-shodh-raised text-shodh-text')}
           onClick={() => (findOpen ? closeFind() : openFind())}
           disabled={!doc}
@@ -1203,6 +1423,12 @@ export function PdfViewer({
           Fit width
         </button>
       </div>
+
+      {snipping && (
+        <p role="status" className="px-3 py-1.5 border-b border-shodh-border-subtle text-[12.5px] text-shodh-accent-text bg-shodh-accent-soft">
+          Drag a rectangle on a page to save it as a snippet. Esc cancels.
+        </p>
+      )}
 
       {findOpen && (
         <div role="search" className="flex items-center gap-1.5 px-3 py-1.5 border-b border-shodh-border-subtle text-[12.5px] text-shodh-text-secondary">
@@ -1260,7 +1486,14 @@ export function PdfViewer({
             Loading PDF…
           </div>
         ) : (
-          <div className="flex flex-col items-center" style={{ gap: PAGE_GAP }}>
+          <div
+            className={cn('relative flex flex-col items-center', snipping && 'cursor-crosshair select-none [&_.pdf-text-layer]:pointer-events-none')}
+            style={{ gap: PAGE_GAP, touchAction: snipping ? 'none' : undefined }}
+            onPointerDown={onSnipPointerDown}
+            onPointerMove={onSnipPointerMove}
+            onPointerUp={onSnipPointerUp}
+            onPointerCancel={() => setMarquee(null)}
+          >
             {sizes.map((size, index) => {
               const pageNumber = index + 1;
               const isTarget = target?.page === pageNumber;
@@ -1284,6 +1517,18 @@ export function PdfViewer({
                 />
               );
             })}
+            {marquee && (() => {
+              const pageEl = pageEls.current.get(marquee.page);
+              if (!pageEl) return null;
+              const box = marqueeBox(marquee);
+              return (
+                <div
+                  className="absolute pointer-events-none border-2 border-shodh-accent bg-shodh-accent-soft/40 rounded-[2px]"
+                  style={{ left: pageEl.offsetLeft + box.left, top: pageEl.offsetTop + box.top, width: box.width, height: box.height }}
+                  aria-hidden="true"
+                />
+              );
+            })()}
           </div>
         )}
       </div>

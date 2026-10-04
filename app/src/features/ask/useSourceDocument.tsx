@@ -295,6 +295,7 @@ export function useSourceDocument(hit: SearchHit, { onPageChange }: SourceDocume
           passage={passage}
           citedPages={hit.page}
           regions={hit.regions ?? null}
+          rects={hit.rects ?? null}
           onLocate={setLocate}
           onFatal={handlePdfFatal}
           onPageChange={onPageChange}

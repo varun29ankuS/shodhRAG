@@ -21,6 +21,8 @@ export function paperHit(paper: PaperRef): SearchHit {
     page: paper.page !== null ? { start: paper.page, end: paper.page } : null,
     lineRange: null,
     url: null,
+    regions: paper.regions ?? null,
+    rects: paper.rects ?? null,
   };
 }
 

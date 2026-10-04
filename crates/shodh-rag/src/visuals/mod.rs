@@ -10,8 +10,11 @@
 //! by a SHA-256 of the kind and the normalised source ([`content_hash`]), so recording the
 //! same answer twice (or backfilling it later) adds nothing.
 
+pub mod expr;
+pub mod spec;
 mod store;
 
+pub use spec::validate_spec;
 pub use store::VisualStore;
 
 use serde::{Deserialize, Serialize};

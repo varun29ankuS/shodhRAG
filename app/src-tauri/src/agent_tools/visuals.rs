@@ -17,8 +17,8 @@ use shodh_rag::harness::tools::{
 };
 use shodh_rag::harness::RiskTier;
 use shodh_rag::visuals::{
-    NewVersion, VisualAuthor, VisualDetail, VisualKind, VisualQuery, VisualRecord, VisualSummary,
-    MAX_NOTE_CHARS, MAX_SOURCE_CHARS, MAX_TITLE_CHARS,
+    validate_spec, NewVersion, VisualAuthor, VisualDetail, VisualKind, VisualQuery, VisualRecord,
+    VisualSummary, MAX_NOTE_CHARS, MAX_SOURCE_CHARS, MAX_TITLE_CHARS,
 };
 
 use super::{invalid, limit_arg, str_arg, AgentHost};
@@ -377,6 +377,14 @@ impl HostTool for ReviseVisualTool {
             .await
             .map_err(tool_error)?;
         let v = &detail.visual;
+        // Refuse before asking for approval: the user never approves a version that would
+        // not draw (the store applies the same rules again when saving).
+        validate_spec(v.kind, &revision.source).map_err(|e| {
+            invalid(
+                app_tools::REVISE_VISUAL,
+                format!("the revised {} cannot be drawn: {e}", v.kind.as_str()),
+            )
+        })?;
         Ok(ApprovalPreview {
             label: Some(format!("Save version {} of “{}”", v.version + 1, v.title)),
             details: json!({
@@ -590,7 +598,7 @@ mod tests {
     use shodh_rag::harness::AgentEvent;
     use shodh_rag::visuals::{NewVisual, VisualOrigin};
 
-    const PLOT: &str = r#"{"title":"Pendulum","params":[{"name":"L","min":0.1,"max":2}]}"#;
+    const PLOT: &str = r#"{"title":"Pendulum","x":{"min":0,"max":4},"y":{"min":-3,"max":3},"params":[{"name":"L","min":0.1,"max":2}],"items":[{"type":"function","expr":"L*sin(x)"}]}"#;
 
     async fn seeded(t: &testing::TestHost) -> String {
         t.host
@@ -704,6 +712,23 @@ mod tests {
             )
             .await;
         assert!(matches!(wrong, Err(ToolError::Failed(_))));
+
+        // Same rules as Refine: valid JSON that would not draw is refused, before approval
+        // and when saving.
+        let undrawable = json!({
+            "visual_id": id,
+            "source": PLOT.replace("\"items\":[{", "\"items\":[{\"type\":\"bar\"},{"),
+        });
+        let refused = revise.preview(&undrawable).await;
+        assert!(
+            matches!(&refused, Err(ToolError::InvalidArguments { reasons, .. }) if reasons.contains("unknown type")),
+            "{refused:?}"
+        );
+        let refused = revise.execute(undrawable, &ctx).await;
+        assert!(
+            matches!(&refused, Err(ToolError::Failed(m)) if m.contains("cannot be drawn")),
+            "{refused:?}"
+        );
 
         let open = OpenVisualTool {
             host: t.host.clone(),

@@ -418,6 +418,13 @@ impl VisualStore {
                 return Err(VisualError::Deleted(base_id.to_string()));
             }
             let source = validate_source(base.kind, &new.source)?;
+            // A new version must draw: the renderer's full spec rules, not only JSON.
+            super::spec::validate_spec(base.kind, &source).map_err(|e| {
+                VisualError::Invalid(format!(
+                    "the revised {} cannot be drawn: {e}",
+                    base.kind.as_str()
+                ))
+            })?;
             let hash = content_hash(base.kind, &source);
             let next: u32 = tx.query_row(
                 "SELECT MAX(version) + 1 FROM generated_visuals WHERE root_id = ?1",
@@ -590,7 +597,7 @@ mod tests {
         }
     }
 
-    const PLOT: &str = r#"{"title":"Pendulum","params":[{"name":"L","min":0.1,"max":2}]}"#;
+    const PLOT: &str = r#"{"title":"Pendulum","x":{"min":0,"max":4},"y":{"min":-3,"max":3},"params":[{"name":"L","min":0.1,"max":2}],"items":[{"type":"function","expr":"L*sin(x)"}]}"#;
 
     #[test]
     fn migration_creates_the_tables_and_the_audit_log_still_opens() {
@@ -778,6 +785,20 @@ mod tests {
             },
         );
         assert!(matches!(bad, Err(VisualError::Invalid(_))));
+        // JSON alone is not enough: the plot must draw (here a formula reads an unknown name).
+        let undrawable = store.add_version(
+            &v1,
+            &NewVersion {
+                source: PLOT.replace("L*sin(x)", "k*sin(x)"),
+                params: None,
+                instruction: None,
+                author: VisualAuthor::Agent,
+            },
+        );
+        assert!(
+            matches!(&undrawable, Err(VisualError::Invalid(m)) if m.contains("Unknown name \"k\"")),
+            "{undrawable:?}"
+        );
 
         // Renaming any version renames the chain.
         store.rename(&v2.visual.id, "Long pendulum").unwrap();

@@ -8,10 +8,12 @@
 # 1.1.0 (additive): Result keeps the cell text as printed, the unit, the labels as printed,
 # the table caption and the cell's page and box; Snippet gains title, note, tags, kind and a
 # LaTeX transcription with the model that made it.
+#
+# 1.2.0 (additive): Result keeps the spread printed after a value (`71.4 ± 0.3`).
 
 [pack]
 id = "shodh.research"
-version = "1.1.0"
+version = "1.2.0"
 label = "Shodh research pack"
 prefix = "research"
 namespace = "urn:shodh:ontology:research#"
@@ -270,6 +272,14 @@ label = "value as printed"
 description = "The table cell exactly as printed in the paper (the value must occur in it verbatim)."
 domain = "Result"
 range = "String"
+cardinality = "one"
+
+[[property]]
+id = "resultSpread"
+label = "spread"
+description = "The ± spread printed after the value (usually a standard deviation or error; the table caption says which), exactly as a decimal."
+domain = "Result"
+range = "Decimal"
 cardinality = "one"
 
 [[property]]

@@ -25,6 +25,10 @@ pub struct CellNumber {
     pub decimal: String,
     /// Unit printed in the cell (`%`, `ms`, `mJ`, `GB`, `B`, `M`, `K`, `x`), if any.
     pub unit: Option<String>,
+    /// The `±` spread printed after the value (`71.4 ± 0.3` → `0.3`), as a decimal
+    /// derived the same way as [`CellNumber::decimal`]; usually a standard deviation
+    /// or error, which the table's caption defines.
+    pub spread: Option<String>,
 }
 
 /// Why a cell gave no value.
@@ -49,7 +53,7 @@ static VALUE_CELL: LazyLock<Option<Regex>> = LazyLock::new(|| {
         r"^[*†‡§¶\s]*",
         r"(?P<v>[+\-−–]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|[+\-−–]?\.\d+)",
         r"\s*(?P<u>%|ms|s|µs|us|mJ|J|GB|MB|KB|TB|[KMBT]|x|×)?",
-        r"(?:\s*(?:±|\+/-|\+-)\s*\d+(?:\.\d+)?\s*%?)?",
+        r"(?:\s*(?:±|\+/-|\+-)\s*(?P<s>\d+(?:\.\d+)?|\.\d+)\s*%?)?",
         r"(?:\s*\(\s*[+\-−–]\s*\d+(?:\.\d+)?\s*%?\s*\))?",
         r"[*†‡§¶\s]*$",
     ))
@@ -101,10 +105,18 @@ pub fn read_cell(text: &str) -> Result<CellNumber, CellIssue> {
         "us" => "µs".to_string(),
         other => other.to_string(),
     });
+    let spread = caps.name("s").map(|m| {
+        let text = m.as_str();
+        match text.strip_prefix('.') {
+            Some(rest) => format!("0.{rest}"),
+            None => text.to_string(),
+        }
+    });
     Ok(CellNumber {
         lexeme,
         decimal,
         unit,
+        spread,
     })
 }
 
@@ -168,6 +180,21 @@ mod tests {
             ("3.80".into(), "3.80".into(), Some("B".into()))
         );
         assert_eq!(value(".5"), (".5".into(), "0.5".into(), None));
+    }
+
+    #[test]
+    fn spreads_are_read_as_value_and_spread() {
+        let n = read_cell("71.4 ± 0.3").unwrap();
+        assert_eq!((n.decimal.as_str(), n.spread.as_deref()), ("71.4", Some("0.3")));
+        let n = read_cell("95.3±.2").unwrap();
+        assert_eq!((n.decimal.as_str(), n.spread.as_deref()), ("95.3", Some("0.2")));
+        let n = read_cell("78.0% +/- 1.5%").unwrap();
+        assert_eq!(
+            (n.decimal.as_str(), n.unit.as_deref(), n.spread.as_deref()),
+            ("78.0", Some("%"), Some("1.5"))
+        );
+        assert_eq!(read_cell("95.3 (+1.2)").unwrap().spread, None);
+        assert_eq!(read_cell("12.35").unwrap().spread, None);
     }
 
     #[test]

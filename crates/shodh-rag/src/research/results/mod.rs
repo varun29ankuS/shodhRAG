@@ -30,6 +30,8 @@ use super::{
     blocking, canonical_file, document_entity, file_name, path_key, ResearchError, ResearchResult,
 };
 use crate::processing::document_model::{is_table_caption, BBox, BlockKind, StructuredDocument};
+use crate::processing::pdf_layout::{parse_pdf_layout_with, TableMode};
+use crate::processing::table_model::{loaded, SharedTableModel, TABLE_MODEL_ID};
 use crate::statements::{
     PropertyFilter, PutIntent, PutOutcome, Scope, StatementError, StatementQuery, StatementStore,
     StoredStatement,
@@ -90,6 +92,8 @@ pub struct ResultRecord {
     pub value: String,
     pub value_text: String,
     pub unit: Option<String>,
+    /// The `±` spread printed after the value.
+    pub spread: Option<String>,
     pub setting: Option<String>,
     pub file_path: String,
     pub file_name: String,
@@ -145,6 +149,10 @@ pub struct ExtractionReport {
     pub conflicts: usize,
     pub skipped: Vec<SkippedTable>,
     pub model: Option<String>,
+    /// The table model that structured the paper's tables; `None` when they came from
+    /// the layout heuristics alone (reduced table quality).
+    #[serde(default)]
+    pub table_model: Option<String>,
     pub extracted_at: DateTime<Utc>,
 }
 
@@ -186,6 +194,7 @@ pub struct ComparisonCell {
     pub value: String,
     pub value_text: String,
     pub unit: Option<String>,
+    pub spread: Option<String>,
     pub file_path: String,
     pub file_name: String,
     pub page: u32,
@@ -365,6 +374,36 @@ pub fn tables_of(doc: &StructuredDocument) -> Vec<TableInput> {
     out
 }
 
+/// Candidates that are not stored: the same method, dataset, metric and setting twice
+/// in one paper with different values is ambiguous, so neither is kept; with the same
+/// value, only the first is.
+pub fn ambiguous<'a>(candidates: impl Iterator<Item = &'a Candidate>) -> HashSet<usize> {
+    let mut by_identity: HashMap<(String, String, String, String), Vec<usize>> = HashMap::new();
+    let mut values: Vec<&str> = Vec::new();
+    for (i, c) in candidates.enumerate() {
+        values.push(c.number.decimal.as_str());
+        by_identity
+            .entry((
+                canonical_id("method", &c.method),
+                canonical_id("dataset", &c.dataset),
+                canonical_id("metric", &c.metric),
+                c.setting.clone(),
+            ))
+            .or_default()
+            .push(i);
+    }
+    let mut drop: HashSet<usize> = HashSet::new();
+    for indices in by_identity.values().filter(|v| v.len() > 1) {
+        let distinct: BTreeSet<&str> = indices.iter().map(|i| values[*i]).collect();
+        if distinct.len() > 1 {
+            drop.extend(indices.iter().copied());
+        } else {
+            drop.extend(indices.iter().skip(1).copied());
+        }
+    }
+    drop
+}
+
 fn vertical_gap(a: &BBox, b: &BBox) -> f32 {
     if a.y1 < b.y0 {
         b.y0 - a.y1
@@ -474,6 +513,7 @@ pub fn record_from(stored: &StoredStatement) -> ResearchResult<ResultRecord> {
         value_text: text_of(p, "resultValueText").unwrap_or_else(|| value.clone()),
         value,
         unit: text_of(p, "resultUnit"),
+        spread: text_of(p, "resultSpread"),
         setting: text_of(p, "resultSetting"),
         file_path: provenance.source.clone(),
         file_name: file_name(&provenance.source),
@@ -504,6 +544,8 @@ pub struct ResultService {
     store: Arc<StatementStore>,
     db: Arc<ResearchDb>,
     app_version: String,
+    /// Structures the tables of candidate pages when installed.
+    tables: SharedTableModel,
 }
 
 impl std::fmt::Debug for ResultService {
@@ -524,7 +566,14 @@ impl ResultService {
             store,
             db,
             app_version: app_version.to_string(),
+            tables: SharedTableModel::default(),
         }
+    }
+
+    /// Parses papers with the table model in `tables` whenever one is loaded.
+    pub fn with_table_model(mut self, tables: SharedTableModel) -> Self {
+        self.tables = tables;
+        self
     }
 
     fn version(&self) -> semver::Version {
@@ -563,22 +612,67 @@ impl ResultService {
     ) -> ResearchResult<ExtractionReport> {
         let path = canonical_file(path);
         let read_path = path.clone();
+        let table_model = loaded(&self.tables);
+        let used = table_model.as_ref().map(|_| TABLE_MODEL_ID.to_string());
         let doc = blocking(move || {
             let bytes = std::fs::read(&read_path).map_err(|e| {
                 ResearchError::Pdf(format!("{} could not be read: {e}", file_name(&read_path)))
             })?;
-            crate::processing::pdf_layout::parse_pdf_layout(&bytes)
+            let mode = match &table_model {
+                Some(m) => TableMode::Model(m),
+                None => TableMode::Heuristic,
+            };
+            parse_pdf_layout_with(&bytes, mode)
+                .map(|parsed| parsed.document)
                 .map_err(|e| ResearchError::Pdf(format!("The PDF could not be parsed: {e}")))
         })
         .await?;
-        self.extract_document(&path, &doc, scope, model).await
+        self.extract_parsed(&path, &doc, used, scope, model).await
     }
 
-    /// Extracts the results of an already parsed document.
+    /// Re-extracts a paper whose tables the table model has just structured, when it
+    /// was scanned for results before (a paper never scanned stays unscanned). The
+    /// values keep the scope of the paper's current results.
+    pub async fn reextract_if_scanned(
+        &self,
+        path: &str,
+        doc: &StructuredDocument,
+    ) -> ResearchResult<Option<ExtractionReport>> {
+        let path = canonical_file(path);
+        let key = path_key(&path);
+        let db = self.db.clone();
+        if blocking(move || db.report(&key)).await?.is_none() {
+            return Ok(None);
+        }
+        let scope = self
+            .current_of(&path)
+            .await?
+            .first()
+            .map(|r| r.scope.clone())
+            .unwrap_or_else(|| Scope::for_workspace(None));
+        self.extract_parsed(&path, doc, Some(TABLE_MODEL_ID.to_string()), scope, None)
+            .await
+            .map(Some)
+    }
+
+    /// Extracts the results of an already parsed document (tables from the heuristics).
     pub async fn extract_document(
         &self,
         path: &str,
         doc: &StructuredDocument,
+        scope: Scope,
+        model: Option<Arc<dyn TextModel>>,
+    ) -> ResearchResult<ExtractionReport> {
+        self.extract_parsed(path, doc, None, scope, model).await
+    }
+
+    /// Extracts the results of a parsed document whose tables `table_model` structured
+    /// (`None`: the heuristics).
+    async fn extract_parsed(
+        &self,
+        path: &str,
+        doc: &StructuredDocument,
+        table_model: Option<String>,
         scope: Scope,
         model: Option<Arc<dyn TextModel>>,
     ) -> ResearchResult<ExtractionReport> {
@@ -658,32 +752,7 @@ impl ResultService {
             }
         }
 
-        // The same method, dataset, metric and setting twice with different values in one
-        // paper is ambiguous: neither is stored.
-        let mut by_identity: HashMap<(String, String, String, String), Vec<usize>> = HashMap::new();
-        for (i, (c, _, _, _)) in candidates.iter().enumerate() {
-            by_identity
-                .entry((
-                    canonical_id("method", &c.method),
-                    canonical_id("dataset", &c.dataset),
-                    canonical_id("metric", &c.metric),
-                    c.setting.clone(),
-                ))
-                .or_default()
-                .push(i);
-        }
-        let mut drop: HashSet<usize> = HashSet::new();
-        for indices in by_identity.values().filter(|v| v.len() > 1) {
-            let values: BTreeSet<&str> = indices
-                .iter()
-                .map(|i| candidates[*i].0.number.decimal.as_str())
-                .collect();
-            if values.len() > 1 {
-                drop.extend(indices.iter().copied());
-            } else {
-                drop.extend(indices.iter().skip(1).copied());
-            }
-        }
+        let drop = ambiguous(candidates.iter().map(|(c, _, _, _)| c));
         if !drop.is_empty() {
             tracing::info!(target: "shodh::research", dropped = drop.len(), "ambiguous duplicate values not stored");
         }
@@ -744,6 +813,9 @@ impl ResultService {
             );
             if let Some(unit) = &c.unit {
                 properties.insert("resultUnit".into(), RawValue::text(unit.clone()));
+            }
+            if let Some(spread) = &c.number.spread {
+                properties.insert("resultSpread".into(), RawValue::text(spread.clone()));
             }
             if !c.setting.is_empty() {
                 properties.insert("resultSetting".into(), RawValue::text(c.setting.clone()));
@@ -868,6 +940,7 @@ impl ResultService {
             conflicts,
             skipped,
             model: used_model,
+            table_model,
             extracted_at: now,
         };
         let json = serde_json::to_string(&report)
@@ -1106,6 +1179,7 @@ impl ResultService {
                     value: r.value.clone(),
                     value_text: r.value_text.clone(),
                     unit: r.unit.clone(),
+                    spread: r.spread.clone(),
                     file_path: r.file_path.clone(),
                     file_name: r.file_name.clone(),
                     page: r.page,

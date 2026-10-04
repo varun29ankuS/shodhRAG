@@ -84,6 +84,8 @@ pub enum Evidence {
     Caption,
     /// In a caption near the table (not attached by the parser).
     NearbyCaption,
+    /// In the heading of the section the table is in.
+    Section,
     /// Named by the language model (verified to occur in the table text).
     Model,
 }
@@ -156,8 +158,11 @@ const BASE_CONFIDENCE: f64 = 0.9;
 /// Taken off when the dataset or metric came from the parser's caption (below the
 /// acceptance threshold: the user reviews such values).
 const CAPTION_PENALTY: f64 = 0.15;
-/// Taken off when it came from a caption near the table.
+/// Taken off when it came from a caption near the table, or from the section heading.
 const NEARBY_PENALTY: f64 = 0.25;
+/// Highest confidence of a value whose method is printed only as "Ours": the label
+/// names no method, so the user confirms what it stands for.
+const OURS_CONFIDENCE: f64 = 0.7;
 /// Confidence of a value whose header roles a model named.
 pub const MODEL_CONFIDENCE: f64 = 0.7;
 
@@ -230,7 +235,7 @@ const METRICS: &[MetricTerm] = &[
     },
     MetricTerm {
         canonical: "accuracy",
-        pattern: r"acc(?:uracy)?\.?(?:\s*n\b)?",
+        pattern: r"acc(?:uracy)?\.?(?:(?:\s*|_)n\b)?",
     },
     MetricTerm {
         canonical: "precision",
@@ -372,6 +377,33 @@ fn is_setting_token(token: &str) -> bool {
     SETTING.as_ref().is_some_and(|re| re.is_match(token.trim()))
 }
 
+/// A header naming only an aggregate of other columns (`Avg.`, `Average`, `Overall`).
+fn is_aggregate_header(text: &str) -> bool {
+    let words: Vec<String> = clean_header(text)
+        .split_whitespace()
+        .map(|w| {
+            w.to_ascii_lowercase()
+                .trim_matches(|c: char| !c.is_alphanumeric())
+                .to_string()
+        })
+        .filter(|w| !w.is_empty())
+        .collect();
+    !words.is_empty()
+        && words
+            .iter()
+            .all(|w| matches!(w.as_str(), "avg" | "average" | "mean" | "overall" | "all" | "total"))
+}
+
+/// A data split named in a header (`Valid`, `Test`): it qualifies the column.
+fn is_split_name(token: &str) -> bool {
+    matches!(
+        token
+            .to_ascii_lowercase()
+            .trim_matches(|c: char| !c.is_alphanumeric()),
+        "test" | "dev" | "val" | "valid" | "validation" | "train"
+    )
+}
+
 /// Words that are not dataset names when left over in a header.
 fn is_filler(token: &str) -> bool {
     matches!(
@@ -504,7 +536,7 @@ pub fn split_header(text: &str) -> ColumnRoles {
         if token.is_empty() {
             continue;
         }
-        if is_setting_token(token) {
+        if is_setting_token(token) || is_split_name(token) {
             setting.push(token.to_string());
             continue;
         }
@@ -520,7 +552,7 @@ pub fn split_header(text: &str) -> ColumnRoles {
     // description qualifies the metric instead, so it becomes part of the setting.
     let named = !dataset_words.is_empty() && dataset_words.iter().all(|w| looks_like_dataset(w));
     let dataset = named.then(|| (dataset_words.join(" "), Evidence::Header));
-    if !named && !dataset_words.is_empty() && metric.is_some() {
+    if !named && !dataset_words.is_empty() {
         setting.push(leftover.join(" "));
     }
     ColumnRoles {
@@ -549,6 +581,7 @@ pub fn caption_dataset(caption: &str) -> Option<String> {
             lower.as_str(),
             "table" | "figure" | "section" | "appendix" | "average" | "all" | "our" | "each"
         ) || find_metric(&name).is_some()
+            || is_model_name(&name)
         {
             continue;
         }
@@ -558,7 +591,103 @@ pub fn caption_dataset(caption: &str) -> Option<String> {
     }
     match found.as_slice() {
         [one] => Some(one.clone()),
+        [] => caption_dataset_token(caption),
         _ => None,
+    }
+}
+
+/// A model checkpoint name rather than a dataset: a size suffix (`Qwen2.5-3B`,
+/// `Llama-2-7B`) or a known model family.
+fn is_model_name(name: &str) -> bool {
+    static SIZE: LazyLock<Option<Regex>> =
+        LazyLock::new(|| Regex::new(r"(?i)[-_ ]\d+(?:\.\d+)?\s*[bm]$").ok());
+    let lower = name.to_ascii_lowercase();
+    SIZE.as_ref().is_some_and(|re| re.is_match(name))
+        || [
+            "gpt", "llama", "qwen", "mistral", "bert", "resnet", "vgg", "vit-", "t5",
+        ]
+        .iter()
+        .any(|family| lower.starts_with(family))
+}
+
+/// The one dataset name a caption gives without "on" (`WikiText-103 language model
+/// perplexity results ...`): a token mixing letters with a digit and a hyphen, when the
+/// caption has exactly one such token. (Plain words such as `WikiText` are too often
+/// mentioned in passing to be taken from a caption.)
+fn caption_dataset_token(caption: &str) -> Option<String> {
+    let mut found: Vec<String> = Vec::new();
+    // Skip the "Table N" label.
+    let rest = caption
+        .split_once([':', '.'])
+        .map(|(_, r)| r)
+        .unwrap_or(caption);
+    for raw in rest.split_whitespace() {
+        let token = raw.trim_matches(|c: char| ",.;:()[]{}\"'".contains(c));
+        let letters = token.chars().filter(|c| c.is_alphabetic()).count();
+        let digit = token.chars().any(|c| c.is_ascii_digit());
+        let strong = letters >= 2 && digit && token.contains('-') && !token.contains('/');
+        if strong
+            && !is_model_name(token)
+            && find_metric(token).is_none()
+            && !is_setting_token(token)
+            && !found.iter().any(|f| f == token)
+        {
+            found.push(token.to_string());
+        }
+    }
+    match found.as_slice() {
+        [one] => Some(one.clone()),
+        _ => None,
+    }
+}
+
+/// A dataset named by a section heading: `4.2 Results on ImageNet` (the caption rule),
+/// or a short heading made only of dataset-like names (`5.1 LRA`). The deepest heading
+/// that names one wins. Generic headings (`4 Experiments`, `4.2 Language Modeling`)
+/// name none.
+pub fn section_dataset(section_path: &[String]) -> Option<String> {
+    static NUMBER: LazyLock<Option<Regex>> = LazyLock::new(|| {
+        Regex::new(r"^\s*(?:[A-Z]|\d{1,2})(?:\.\d{1,2}){0,3}\.?\s+").ok()
+    });
+    for heading in section_path.iter().rev() {
+        let title = match NUMBER.as_ref() {
+            Some(re) => re.replace(heading, "").into_owned(),
+            None => heading.clone(),
+        };
+        if let Some(d) = caption_dataset(&title) {
+            if d.split_whitespace().all(looks_like_dataset) {
+                return Some(d);
+            }
+        }
+        let words: Vec<&str> = title.split_whitespace().collect();
+        let named = !words.is_empty()
+            && words.len() <= 3
+            && find_metric(&title).is_none()
+            && words.iter().all(|w| looks_like_dataset(w) && !is_filler(w));
+        if named {
+            return Some(words.join(" "));
+        }
+    }
+    None
+}
+
+/// A method label with "(ours)" markers removed (`DeltaNet (ours)` → `DeltaNet`), and
+/// whether the label is only "Ours" (names no method).
+fn method_label(label: &str) -> (String, bool) {
+    static OURS: LazyLock<Option<Regex>> =
+        LazyLock::new(|| Regex::new(r"(?i)\s*[(\[]\s*ours\s*[)\]]\s*").ok());
+    let cleaned = match OURS.as_ref() {
+        Some(re) => re.replace_all(label, " ").into_owned(),
+        None => label.to_string(),
+    };
+    let cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    let bare = cleaned
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .eq_ignore_ascii_case("ours");
+    if cleaned.is_empty() {
+        (label.trim().to_string(), bare)
+    } else {
+        (cleaned, bare)
     }
 }
 
@@ -581,6 +710,107 @@ fn is_word_cell(text: &str) -> bool {
     !t.is_empty() && read_cell(t).is_err() && t.chars().any(char::is_alphabetic)
 }
 
+/// Whether a row only names settings under a header (`| | 2K | 4K | 8K |`): its first
+/// cell is empty and every other filled cell is a size or `k = n` qualifier.
+fn is_setting_row(row: &[String], header: &[String]) -> bool {
+    static SIZE: LazyLock<Option<Regex>> = LazyLock::new(|| {
+        Regex::new(r"(?i)^(?:\d+(?:\.\d+)?\s*[kmbt]|[knlt]\s*=\s*\d+)$").ok()
+    });
+    let Some(size) = SIZE.as_ref() else {
+        return false;
+    };
+    let filled: Vec<(usize, &str)> = row
+        .iter()
+        .map(|c| c.trim())
+        .enumerate()
+        .filter(|(_, c)| !c.is_empty())
+        .collect();
+    let sizes = filled.iter().filter(|(_, c)| size.is_match(c)).count();
+    let repeated = |i: usize, c: &str| header.get(i).is_some_and(|h| h.trim() == c);
+    row.first().is_some_and(|c| c.trim().is_empty())
+        && sizes >= 2
+        && filled
+            .iter()
+            .all(|(i, c)| size.is_match(c) || repeated(*i, c))
+}
+
+/// The words of a column header other than its measure and settings, trimmed of
+/// punctuation (what is left to describe the column).
+fn header_words(text: &str) -> Vec<String> {
+    let cleaned = clean_header(text);
+    let mut rest = cleaned.clone();
+    if let Some((_, printed)) = find_metric(&cleaned) {
+        if let Some(at) = rest.find(&printed) {
+            rest.replace_range(at..at + printed.len(), " ");
+        }
+    }
+    rest.split_whitespace()
+        .map(|t| {
+            t.trim_matches(|c: char| matches!(c, '(' | ')' | '[' | ']' | ',' | ':' | ';' | '/'))
+                .to_string()
+        })
+        .filter(|t| t.chars().any(char::is_alphabetic) && !is_setting_token(t))
+        .collect()
+}
+
+/// Words that name a split or a model size rather than describe a column (`Valid`,
+/// `Test`, `small`), and fillers.
+fn is_split_word(word: &str) -> bool {
+    is_filler(word)
+        || matches!(
+            word.to_ascii_lowercase()
+                .trim_matches(|c: char| !c.is_alphanumeric()),
+            "valid" | "small" | "medium" | "large" | "base" | "tiny" | "xl"
+        )
+}
+
+/// Whether a label column's header says its cells are datasets (`Dataset`, `Benchmark`).
+fn is_dataset_header(text: &str) -> bool {
+    let lowest = text.rsplit(" / ").next().unwrap_or(text);
+    matches!(
+        lowest
+            .trim()
+            .trim_end_matches(['.', ':'])
+            .to_ascii_lowercase()
+            .as_str(),
+        "dataset" | "datasets" | "data" | "benchmark" | "benchmarks" | "task" | "tasks"
+    )
+}
+
+/// Marker characters printed after a label (`Samba∗`, `Ours†`).
+fn strip_markers(label: &str) -> String {
+    label
+        .trim_end_matches(|c: char| "*∗†‡§¶".contains(c) || c.is_whitespace())
+        .to_string()
+}
+
+/// A trailing group label run into a row label by the text layer
+/// (`DeltaNet [−1, 1] 370M params`): the method, and the group that starts after it.
+fn split_trailing_group(label: &str) -> (String, Option<String>) {
+    static GROUP: LazyLock<Option<Regex>> = LazyLock::new(|| {
+        Regex::new(r"(?i)^(?P<m>.*\S)\s+(?P<g>\d+(?:\.\d+)?\s*[kmbt]\s+params?(?:\s*/\s*\d+(?:\.\d+)?\s*[kmbt]\s+tokens)?)$").ok()
+    });
+    match GROUP.as_ref().and_then(|re| re.captures(label)) {
+        Some(c) => (c["m"].to_string(), Some(c["g"].to_string())),
+        None => (label.to_string(), None),
+    }
+}
+
+/// A row label that continues the method above it: a variant in parentheses
+/// (`(w. conv)`) or an addition (`+ Sliding Attn`).
+fn is_continuation(label: &str) -> bool {
+    label.starts_with('(') || label.starts_with('+')
+}
+
+/// The method a continuation label extends: the label above without its parenthetical
+/// variant (`GLA (w/o. conv)` → `GLA`).
+fn base_method(label: &str) -> String {
+    match label.find(" (") {
+        Some(at) => label[..at].trim().to_string(),
+        None => label.trim().to_string(),
+    }
+}
+
 /// Reads a table. `model` supplies roles for columns the rules could not name.
 pub fn read_table(table: &TableInput, model: Option<&HeaderRoles>) -> Reading {
     let width = std::iter::once(table.header.len())
@@ -593,7 +823,7 @@ pub fn read_table(table: &TableInput, model: Option<&HeaderRoles>) -> Reading {
     let mut header_rows: Vec<Vec<String>> = vec![table.header.clone()];
     let mut first_body = 0;
     for row in &table.rows {
-        if !row_has_values(row)
+        if (!row_has_values(row) || is_setting_row(row, &table.header))
             && first_body < 3
             && row.iter().filter(|c| !c.trim().is_empty()).count() > 1
         {
@@ -641,6 +871,22 @@ pub fn read_table(table: &TableInput, model: Option<&HeaderRoles>) -> Reading {
     if label_columns == width {
         return skipped("no column holds numbers");
     }
+    // Side-by-side tables (`Model | Dataset | T | Acc. | Model | Dataset | T | Acc.`): a
+    // word column after the value columns starts a second table, read on its own so its
+    // values are never paired with the first table's row labels.
+    let word_column = |column: usize| {
+        let cells: Vec<&str> = body
+            .iter()
+            .filter_map(|r| r.get(column).map(String::as_str))
+            .filter(|c| !c.trim().is_empty())
+            .collect();
+        !cells.is_empty() && cells.iter().filter(|c| is_word_cell(c)).count() * 2 > cells.len()
+    };
+    if let Some(split) = (label_columns + 1..width).find(|&c| word_column(c) && !word_column(c - 1)) {
+        let left = read_table(&slice_columns(table, 0, split), model);
+        let right = read_table(&slice_columns(table, split, width), None);
+        return merge_readings(left, right, split);
+    }
     let header_text = |column: usize| -> String {
         let mut parts: Vec<&str> = Vec::new();
         for row in &header_rows {
@@ -652,6 +898,12 @@ pub fn read_table(table: &TableInput, model: Option<&HeaderRoles>) -> Reading {
         }
         parts.join(" ")
     };
+
+    // A label column headed `Dataset` names each row's dataset; the other label columns
+    // name the method.
+    let dataset_column = (0..label_columns)
+        .find(|&c| is_dataset_header(&header_text(c)))
+        .filter(|_| label_columns >= 2);
 
     // Transposed: datasets with their metric in the row labels, methods in the columns.
     let label_metrics = body
@@ -676,18 +928,58 @@ pub fn read_table(table: &TableInput, model: Option<&HeaderRoles>) -> Reading {
             Evidence::NearbyCaption
         }
     };
+    // Columns that are tasks rather than measures (`Compress | Fuzzy Recall | Memorize`):
+    // a measure word inside some task names is not the column's metric.
+    let headed: Vec<usize> = (label_columns..width)
+        .filter(|&c| !header_text(c).is_empty())
+        .collect();
+    let with_metric = headed
+        .iter()
+        .filter(|&&c| find_metric(&header_text(c)).is_some())
+        .count();
+    let task_columns = with_metric > 0 && with_metric * 2 < headed.len();
     let mut roles: BTreeMap<usize, ColumnRoles> = BTreeMap::new();
     let mut unresolved = Vec::new();
     for column in label_columns..width {
         let text = header_text(column);
+        if is_aggregate_header(&text) {
+            // An average over the table's other columns is derived, not a reported result.
+            continue;
+        }
         let mut r = split_header(&text);
-        if r.metric.is_none() {
+        if task_columns {
+            r = ColumnRoles {
+                dataset: None,
+                metric: None,
+                setting: vec![text.clone()],
+                unit: r.unit,
+            };
+        }
+        if dataset_column.is_some() {
+            // Each row names its dataset; a name in the header qualifies the column.
+            if let Some((d, _)) = r.dataset.take() {
+                r.setting.insert(0, d);
+            }
+        }
+        // A header that describes its column in words of its own (`Prms. in M.`, `χ`)
+        // does not take the caption's measure, and one whose words are all spelled like
+        // a name (`Hella.`) does not take the caption's or section's dataset.
+        let words = header_words(&text);
+        let described = words
+            .iter()
+            .any(|w| !is_split_word(w) && !looks_like_dataset(w));
+        let naming: Vec<&String> = words.iter().filter(|w| !is_split_word(w)).collect();
+        let names_dataset = !naming.is_empty() && naming.iter().all(|w| looks_like_dataset(w));
+        if r.metric.is_none() && !described {
             r.metric = caption
                 .and_then(|(c, parser)| caption_metric(c).map(|m| (m, caption_evidence(parser))));
         }
-        if r.dataset.is_none() {
+        if r.dataset.is_none() && dataset_column.is_none() && !names_dataset {
             r.dataset = caption
                 .and_then(|(c, parser)| caption_dataset(c).map(|d| (d, caption_evidence(parser))));
+        }
+        if r.dataset.is_none() && dataset_column.is_none() && !names_dataset {
+            r.dataset = section_dataset(&table.section_path).map(|d| (d, Evidence::Section));
         }
         if let Some(model) = model {
             if let Some(named) = model.columns.iter().find(|c| c.index == column) {
@@ -704,7 +996,7 @@ pub fn read_table(table: &TableInput, model: Option<&HeaderRoles>) -> Reading {
                 }
             }
         }
-        if r.metric.is_none() || r.dataset.is_none() {
+        if r.metric.is_none() || (r.dataset.is_none() && dataset_column.is_none()) {
             unresolved.push(column);
         }
         roles.insert(column, r);
@@ -716,13 +1008,45 @@ pub fn read_table(table: &TableInput, model: Option<&HeaderRoles>) -> Reading {
         ..Reading::default()
     };
     let mut group: Option<String> = None;
+    let mut base: Option<String> = None;
+    // A label cell spanning rows is often printed once: a row whose first label cell is
+    // empty while a later one is filled (`| | delta |` under `| Performer | sum |`)
+    // continues the label above.
+    let mut above: Vec<String> = vec![String::new(); label_columns];
     for (index, row) in body.iter().enumerate() {
+        let mut row: Vec<String> = (*row).clone();
+        let partial = label_columns >= 2
+            && row.first().is_some_and(|c| c.trim().is_empty())
+            && row[1..label_columns.min(row.len())]
+                .iter()
+                .any(|c| !c.trim().is_empty());
+        if partial {
+            for (column, cell) in row.iter_mut().enumerate().take(label_columns) {
+                if !cell.trim().is_empty() {
+                    break;
+                }
+                cell.clone_from(&above[column]);
+            }
+        }
+        for (column, cell) in row.iter().enumerate().take(label_columns) {
+            if !cell.trim().is_empty() {
+                above[column].clone_from(cell);
+            }
+        }
+        let row = &row;
+        let row_dataset = dataset_column
+            .and_then(|c| row.get(c))
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty());
         let label = row[..label_columns.min(row.len())]
             .iter()
-            .map(|c| c.trim())
-            .filter(|c| !c.is_empty())
+            .enumerate()
+            .filter(|(c, _)| Some(*c) != dataset_column)
+            .map(|(_, c)| c.trim())
+            .filter(|c| !c.is_empty() && read_cell(c) != Err(CellIssue::Empty))
             .collect::<Vec<_>>()
             .join(" ");
+        let (label, next_group) = split_trailing_group(&strip_markers(&label));
         let values: Vec<(usize, &str)> = (label_columns..width)
             .filter_map(|c| row.get(c).map(|t| (c, t.as_str())))
             .filter(|(_, t)| !t.trim().is_empty())
@@ -730,18 +1054,38 @@ pub fn read_table(table: &TableInput, model: Option<&HeaderRoles>) -> Reading {
         if values.is_empty() {
             if !label.is_empty() {
                 group = Some(label);
+                base = None;
             }
             continue;
         }
         if label.is_empty() {
             continue;
         }
+        let label = if is_continuation(&label) {
+            match &base {
+                Some(b) => format!("{b} {label}"),
+                None => label,
+            }
+        } else {
+            base = Some(base_method(&label));
+            label
+        };
+        let row_group = group.clone();
+        if next_group.is_some() {
+            group = next_group;
+            base = None;
+        }
         for (column, text) in values {
             let Some(r) = roles.get(&column) else {
                 continue;
             };
+            let dataset = match &row_dataset {
+                Some(d) => Some((d.clone(), Evidence::Header)),
+                None if dataset_column.is_some() => None,
+                None => r.dataset.clone(),
+            };
             let (Some((metric, metric_evidence)), Some((dataset, dataset_evidence))) =
-                (r.metric.clone(), r.dataset.clone())
+                (r.metric.clone(), dataset)
             else {
                 continue;
             };
@@ -757,7 +1101,7 @@ pub fn read_table(table: &TableInput, model: Option<&HeaderRoles>) -> Reading {
             if let Some(label) = &table_label {
                 setting.push(label.clone());
             }
-            if let Some(group) = &group {
+            if let Some(group) = &row_group {
                 setting.push(group.clone());
             }
             setting.extend(r.setting.iter().cloned());
@@ -766,13 +1110,17 @@ pub fn read_table(table: &TableInput, model: Option<&HeaderRoles>) -> Reading {
                 confidence = match evidence {
                     Evidence::Header => confidence,
                     Evidence::Caption => confidence - CAPTION_PENALTY,
-                    Evidence::NearbyCaption => confidence - NEARBY_PENALTY,
+                    Evidence::NearbyCaption | Evidence::Section => confidence - NEARBY_PENALTY,
                     Evidence::Model => confidence.min(MODEL_CONFIDENCE),
                 };
             }
+            let (method, only_ours) = method_label(&label);
+            if only_ours {
+                confidence = confidence.min(OURS_CONFIDENCE);
+            }
             let unit = number.unit.clone().or_else(|| r.unit.clone());
             reading.candidates.push(Candidate {
-                method: label.clone(),
+                method,
                 dataset,
                 dataset_evidence,
                 metric,
@@ -799,6 +1147,44 @@ pub fn read_table(table: &TableInput, model: Option<&HeaderRoles>) -> Reading {
         });
     }
     reading
+}
+
+/// Columns `from..to` of a table as a table of their own.
+fn slice_columns(table: &TableInput, from: usize, to: usize) -> TableInput {
+    let cut = |row: &Vec<String>| -> Vec<String> {
+        (from..to)
+            .map(|c| row.get(c).cloned().unwrap_or_default())
+            .collect()
+    };
+    TableInput {
+        header: cut(&table.header),
+        rows: table.rows.iter().map(cut).collect(),
+        cell_boxes: table
+            .cell_boxes
+            .iter()
+            .map(|row| (from..to).map(|c| row.get(c).copied().flatten()).collect())
+            .collect(),
+        ..table.clone()
+    }
+}
+
+/// The readings of two side-by-side tables as one; the right one's columns are offset
+/// by `offset`.
+fn merge_readings(left: Reading, right: Reading, offset: usize) -> Reading {
+    let mut out = left;
+    out.candidates.extend(right.candidates.into_iter().map(|mut c| {
+        c.column += offset;
+        c
+    }));
+    out.unresolved
+        .extend(right.unresolved.into_iter().map(|c| c + offset));
+    out.ambiguous_cells += right.ambiguous_cells;
+    out.skipped = if out.candidates.is_empty() {
+        out.skipped.or(right.skipped)
+    } else {
+        None
+    };
+    out
 }
 
 fn read_transposed(
@@ -1101,7 +1487,9 @@ mod tests {
         assert_eq!(reading.ambiguous_cells, 1);
         for c in &reading.candidates {
             assert!(c.cell_text.contains(&c.number.lexeme));
-            assert_eq!(c.confidence, 0.9);
+            // "Ours" names no method: its values wait for review.
+            let expected = if c.method == "Ours" { 0.7 } else { 0.9 };
+            assert_eq!(c.confidence, expected);
             assert_eq!(c.setting, "Table 2");
         }
     }
@@ -1161,6 +1549,227 @@ mod tests {
     }
 
     #[test]
+    fn section_headings_name_datasets_only_when_they_name_one() {
+        let path = |p: &[&str]| p.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            section_dataset(&path(&["4 Experiments", "4.2 Results on ImageNet"])),
+            Some("ImageNet".into())
+        );
+        assert_eq!(
+            section_dataset(&path(&["5 Experiments", "5.1 LRA"])),
+            Some("LRA".into())
+        );
+        assert_eq!(
+            section_dataset(&path(&["4 Experiments", "4.2 Language Modeling"])),
+            None
+        );
+        assert_eq!(section_dataset(&path(&["3 Recall@10 Analysis"])), None);
+        assert_eq!(section_dataset(&[]), None);
+
+        let mut t = table(
+            &["Model", "Ppl."],
+            &[&["DeltaNet", "17.7"], &["GLA", "18.2"]],
+            Some("Table 3: Perplexity."),
+        );
+        t.section_path = path(&["4 Experiments", "4.1 Results on WikiText-103"]);
+        let reading = read_table(&t, None);
+        assert_eq!(reading.candidates.len(), 2);
+        assert!(reading
+            .candidates
+            .iter()
+            .all(|c| c.dataset == "WikiText-103"
+                && c.dataset_evidence == Evidence::Section
+                && c.confidence == 0.65));
+    }
+
+    #[test]
+    fn ours_markers_are_plain_text_and_bare_ours_goes_to_review() {
+        assert_eq!(method_label("DeltaNet (ours)"), ("DeltaNet".into(), false));
+        assert_eq!(method_label("DeltaNet [Ours]"), ("DeltaNet".into(), false));
+        assert_eq!(method_label("Ours"), ("Ours".into(), true));
+        assert_eq!(method_label("Ours*"), ("Ours*".into(), true));
+        assert_eq!(method_label("Hours"), ("Hours".into(), false));
+        let t = table(
+            &["Method", "SIFT1M R@10"],
+            &[&["HNSW", "95.3"], &["Ours", "97.1"], &["IVF (ours)", "96.0"]],
+            None,
+        );
+        let got: Vec<(String, f64)> = read_table(&t, None)
+            .candidates
+            .iter()
+            .map(|c| (c.method.clone(), c.confidence))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("HNSW".into(), 0.9),
+                ("Ours".into(), 0.7),
+                ("IVF".into(), 0.9)
+            ]
+        );
+    }
+
+    #[test]
+    fn flattened_multi_row_headers_split_into_dataset_and_metric() {
+        let t = table(
+            &["Method", "SIFT1M / R@10", "SIFT1M / QPS", "GIST1M / R@10"],
+            &[&["HNSW", "95.3", "12,400", "88.1 ± 0.4"]],
+            None,
+        );
+        let got: Vec<(String, String, String, Option<String>)> = read_table(&t, None)
+            .candidates
+            .iter()
+            .map(|c| {
+                (
+                    c.dataset.clone(),
+                    c.metric.clone(),
+                    c.number.decimal.clone(),
+                    c.number.spread.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("SIFT1M".into(), "R@10".into(), "95.3".into(), None),
+                ("SIFT1M".into(), "QPS".into(), "12400".into(), None),
+                ("GIST1M".into(), "R@10".into(), "88.1".into(), Some("0.4".into())),
+            ]
+        );
+    }
+
+    #[test]
+    fn labels_printed_once_carry_down_and_splits_qualify_columns() {
+        // 2102.11174 Table 2: "Performer" is printed once for its two update rules.
+        let t = table(
+            &["", "Update Rule", "small / Valid", "small / Test"],
+            &[
+                &["Transformer", "-", "33.0", "34.1"],
+                &["Performer", "sum", "39.0", "39.6"],
+                &["", "delta", "36.1", "37.2"],
+            ],
+            Some("Table 2. WikiText-103 language model perplexity results."),
+        );
+        let got: Vec<(String, String, String, String)> = read_table(&t, None)
+            .candidates
+            .iter()
+            .map(|c| {
+                (
+                    c.method.clone(),
+                    c.dataset.clone(),
+                    c.number.lexeme.clone(),
+                    c.setting.clone(),
+                )
+            })
+            .collect();
+        let row = |m: &str, v: &str, s: &str| {
+            (
+                m.to_string(),
+                "WikiText-103".to_string(),
+                v.to_string(),
+                format!("Table 2; {s}; small"),
+            )
+        };
+        assert_eq!(
+            got,
+            vec![
+                row("Transformer", "33.0", "Valid"),
+                row("Transformer", "34.1", "Test"),
+                row("Performer sum", "39.0", "Valid"),
+                row("Performer sum", "39.6", "Test"),
+                row("Performer delta", "36.1", "Valid"),
+                row("Performer delta", "37.2", "Test"),
+            ]
+        );
+    }
+
+    #[test]
+    fn side_by_side_tables_and_dataset_columns_are_read_apart() {
+        let t = table(
+            &["Model", "Dataset", "Acc.", "Model", "Dataset", "Acc."],
+            &[
+                &["VGG-16", "CIFAR-10", "93.95%", "ResNet-18", "CIFAR-100", "65.48%"],
+                &["ResNet-34", "ImageNet", "74.31%", "VGG-16", "ImageNet", "73.98 %"],
+            ],
+            None,
+        );
+        let got: Vec<(String, String, String, usize)> = read_table(&t, None)
+            .candidates
+            .iter()
+            .map(|c| (c.method.clone(), c.dataset.clone(), c.number.decimal.clone(), c.column))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("VGG-16".into(), "CIFAR-10".into(), "93.95".into(), 2),
+                ("ResNet-34".into(), "ImageNet".into(), "74.31".into(), 2),
+                ("ResNet-18".into(), "CIFAR-100".into(), "65.48".into(), 5),
+                ("VGG-16".into(), "ImageNet".into(), "73.98".into(), 5),
+            ]
+        );
+    }
+
+    #[test]
+    fn task_columns_and_size_rows_are_not_misread() {
+        // MAD-style table: tasks, a measure word inside some task names.
+        let tasks = table(
+            &["Model", "Compress", "Fuzzy Recall", "In-Context Recall", "Memorize", "Average"],
+            &[&["Mamba", "52.7", "6.7", "90.4", "89.5", "69.3"]],
+            None,
+        );
+        assert!(read_table(&tasks, None).candidates.is_empty());
+        // A row of context sizes under spanning dataset headers continues the header.
+        let niah = table(
+            &["Model", "S-NIAH-PK", "S-NIAH-PK", "Average"],
+            &[&["", "2K", "4K", "Average"], &["Mamba2", "98.6", "61.4", "52.0"]],
+            Some("Table 3: Accuracy on NIAH tasks."),
+        );
+        let got: Vec<(String, String)> = read_table(&niah, None)
+            .candidates
+            .iter()
+            .map(|c| (c.number.lexeme.clone(), c.setting.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("98.6".into(), "Table 3; 2K".into()),
+                ("61.4".into(), "Table 3; 4K".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn continuation_labels_and_run_in_groups_name_their_method() {
+        let t = table(
+            &["Model", "Wiki. ppl"],
+            &[
+                &["340M params", ""],
+                &["GLA (w/o. conv)", "28.65"],
+                &["(w. conv)", "29.47"],
+                &["DeltaNet [−1, 1] 370M params", "28.24"],
+                &["Mamba [0, 1]", "24.84"],
+                &["Samba∗", "20.63"],
+            ],
+            None,
+        );
+        let got: Vec<(String, String)> = read_table(&t, None)
+            .candidates
+            .iter()
+            .map(|c| (c.method.clone(), c.setting.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("GLA (w/o. conv)".into(), "340M params".into()),
+                ("GLA (w. conv)".into(), "340M params".into()),
+                ("DeltaNet [−1, 1]".into(), "340M params".into()),
+                ("Mamba [0, 1]".into(), "370M params".into()),
+                ("Samba".into(), "370M params".into()),
+            ]
+        );
+    }
+
+    #[test]
     fn transposed_tables_read_methods_from_columns() {
         let t = table(
             &["Benchmark", "Model A", "Model B"],
@@ -1216,14 +1825,14 @@ mod tests {
                 &["Linear attention", "15.91", ""],
                 &["TTT", "15.23", "−0.68"],
             ],
-            Some("Table 1: Ablations; every model is trained and evaluated with Books."),
+            Some("Table 1: Ablations; every model is trained and evaluated with PG19."),
         );
         let roles = HeaderRoles {
             columns: vec![
                 ModelColumn {
                     index: 1,
                     metric: Some("Ppl.".into()),
-                    dataset: Some("Books".into()),
+                    dataset: Some("PG19".into()),
                     setting: None,
                 },
                 // Invented dataset and an out-of-range column are refused.
@@ -1236,7 +1845,7 @@ mod tests {
                 ModelColumn {
                     index: 9,
                     metric: Some("Ppl.".into()),
-                    dataset: Some("Books".into()),
+                    dataset: Some("PG19".into()),
                     setting: None,
                 },
             ],
@@ -1261,13 +1870,13 @@ mod tests {
             vec![
                 (
                     "Linear attention".into(),
-                    "Books".into(),
+                    "PG19".into(),
                     "15.91".into(),
                     MODEL_CONFIDENCE
                 ),
                 (
                     "TTT".into(),
-                    "Books".into(),
+                    "PG19".into(),
                     "15.23".into(),
                     MODEL_CONFIDENCE
                 ),

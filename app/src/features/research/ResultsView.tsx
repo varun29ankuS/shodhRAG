@@ -48,6 +48,11 @@ function ReportSummary({ report }: { report: ExtractionReport }) {
         <time dateTime={report.extractedAt}>{relativeTime(report.extractedAt)}</time>
         {report.model ? ` · headers interpreted with ${report.model}` : ' · rules only'}
       </p>
+      {!report.tableModel && (
+        <p className="text-shodh-text-muted">
+          Tables were read with the layout heuristics only, so table extraction quality is reduced: merged headers, spanning cells and some tables can be missed. Install the table model in Settings to structure tables with it.
+        </p>
+      )}
       {report.skipped.length > 0 && (
         <details>
           <summary className={cn('cursor-pointer w-fit rounded text-shodh-text', FOCUS_RING)}>

@@ -404,7 +404,7 @@ fn research_results_and_snippets_carry_their_cell_and_edits() {
             .packs()
             .find(|p| p.id == "shodh.research")
             .map(|p| p.version.to_string()),
-        Some("1.1.0".to_owned())
+        Some("1.2.0".to_owned())
     );
     let mut result = statement(
         "result-1",
@@ -425,12 +425,13 @@ fn research_results_and_snippets_carry_their_cell_and_edits() {
             ("resultValue", RawValue::text("95.30")),
             ("resultValueText", RawValue::text("95.30*")),
             ("resultUnit", RawValue::text("%")),
+            ("resultSpread", RawValue::text("0.3")),
             ("resultMethodLabel", RawValue::text("HNSW")),
             ("resultPage", RawValue::Integer(6)),
             ("resultRegion", RawValue::text("120.5,600,160.25,612.4")),
         ],
     );
-    // A statement written under 1.0.0 still validates under 1.1.0.
+    // A statement written under 1.0.0 still validates under 1.2.0.
     valid(&ontology, &result);
     result
         .properties

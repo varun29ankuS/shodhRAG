@@ -251,7 +251,7 @@ async fn a_model_names_header_roles_but_never_values() {
                 vec!["Linear attention".into(), "15.91".into()],
                 vec!["TTT".into(), "15.23".into()],
             ],
-            caption: Some("Table 1: Every model is trained and evaluated with Books.".into()),
+            caption: Some("Table 1: Every model is trained and evaluated with PG19.".into()),
             cell_boxes: vec![],
         },
         "",
@@ -272,9 +272,9 @@ async fn a_model_names_header_roles_but_never_values() {
         .unwrap();
     assert_eq!(report.added, 0);
     assert!(report.skipped[0].reason.contains("no dataset"));
-    // The model names "Books" (in the caption) and tries to add a value: only roles count.
+    // The model names "PG19" (in the caption, a name the rules do not take as one) and tries to add a value: only roles count.
     let model: Arc<dyn TextModel> = Arc::new(FixedModel(
-        "Here: {\"columns\": [{\"index\": 1, \"metric\": \"Ppl.\", \"dataset\": \"Books\", \"setting\": \"99.9\"}]}".into(),
+        "Here: {\"columns\": [{\"index\": 1, \"metric\": \"Ppl.\", \"dataset\": \"PG19\", \"setting\": \"99.9\"}]}".into(),
     ));
     let report = service
         .extract_document("C:/papers/ttt.pdf", &doc, Scope::Global, Some(model))
@@ -299,8 +299,8 @@ async fn a_model_names_header_roles_but_never_values() {
     assert_eq!(
         values,
         vec![
-            ("Linear attention", "Books", "15.91", ExtractorKind::Llm),
-            ("TTT", "Books", "15.23", ExtractorKind::Llm),
+            ("Linear attention", "PG19", "15.91", ExtractorKind::Llm),
+            ("TTT", "PG19", "15.23", ExtractorKind::Llm),
         ]
     );
     assert!(listed
@@ -429,13 +429,15 @@ async fn comparisons_cite_cells_and_say_what_is_missing() {
     assert_eq!(facets.papers.len(), 3);
 }
 
-// ── The user's paper corpus ─────────────────────────────────────────────────
+// ── The research-paper corpus ───────────────────────────────────────────────
 //
-// `fixtures/corpus_tables.json` is the extractor input the layout parser produced for every
-// table block of 14 published papers (see `research::corpus_dump`; the user's own unpublished paper
-// in the corpus was left out of the checked-in copy). These tests pin what the rules do
-// on real parser output: nothing is ever invented, every refusal has its reason, and where a
-// dataset is named the values, units, pages and cell boxes are exactly the parser's.
+// `fixtures/corpus_tables.json` is the extractor input for every table block of the public
+// arXiv papers in the user's corpus, parsed with the table model on table-candidate pages
+// (see `processing::table_corpus`; the user's own papers and non-arXiv files are never
+// included). The model's output depends on the CPU's kernels, so it is checked in rather
+// than produced in CI. These tests pin what the rules do on real tables: nothing is ever
+// invented, every refusal has its reason, and the values, settings, pages and cell boxes
+// are exactly the parser's.
 
 fn corpus() -> Vec<(String, TableInput)> {
     let text = include_str!("../fixtures/corpus_tables.json");
@@ -456,10 +458,25 @@ fn corpus_table(paper: &str, page: u32, index: usize) -> TableInput {
 }
 
 #[test]
+fn corpus_fixture_holds_only_public_arxiv_papers() {
+    for (name, _) in corpus() {
+        let arxiv = name.len() > 10
+            && name[..4].chars().all(|c| c.is_ascii_digit())
+            && &name[4..5] == "."
+            && name[5..10].chars().all(|c| c.is_ascii_digit());
+        assert!(
+            arxiv || name.starts_with("KAN - Kolmogorov-Arnold Networks"),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn corpus_tables_never_yield_an_invented_value() {
     let tables = corpus();
-    assert_eq!(tables.len(), 35);
+    assert_eq!(tables.len(), 54);
     let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
+    let mut candidates = Vec::new();
     for (name, table) in &tables {
         let reading = read_table(table, None);
         let width = std::iter::once(table.header.len())
@@ -476,26 +493,30 @@ fn corpus_tables_never_yield_an_invented_value() {
                 "{name}: {c:?}"
             );
             assert!(c.cell_text.contains(&c.number.lexeme), "{name}: {c:?}");
+            assert_eq!(c.page, table.page);
         }
+        candidates.extend(reading.candidates);
         if let Some(reason) = reading.skipped {
             *reasons.entry(reason).or_default() += 1;
         }
     }
-    // The parser's table detection is the bottleneck on this corpus: headers outside the
-    // detected region, merged columns and fragments. The rules refuse every such table.
+    // What extraction stores: ambiguous duplicates (the same method, dataset, metric and
+    // setting with different values, e.g. one model trained on two corpora told apart only
+    // by a rotated label) are dropped.
+    let stored = candidates.len() - ambiguous(candidates.iter()).len();
+    assert_eq!((candidates.len(), stored), (820, 770));
     let expected: BTreeMap<String, usize> = [
         (
             "no dataset or metric is named in the column headers or the caption",
-            14,
+            30,
         ),
+        ("no column holds numbers", 9),
         (
             "the column headers are numbers: the table's header was not recovered",
-            7,
+            1,
         ),
-        ("no column holds method names", 9),
-        ("no body rows hold numbers", 2),
-        ("no transposed value could be read", 2),
-        ("no column holds numbers", 1),
+        ("no body rows hold numbers", 1),
+        ("no column holds method names", 2),
     ]
     .into_iter()
     .map(|(r, n)| (r.to_string(), n))
@@ -522,112 +543,109 @@ fn corpus_model_labels_not_in_the_table_text_are_refused() {
 }
 
 #[test]
-fn corpus_cells_give_exact_values_pages_and_boxes_once_a_dataset_is_named() {
-    // The parser's cells and boxes of TTT Table 1, with a caption that names the dataset.
+fn corpus_cells_give_exact_values_pages_and_boxes() {
+    let cell = |x0: f32, y0: f32, x1: f32, y1: f32| Some(BBox::new(x0, y0, x1, y1).rounded());
+
+    // DeltaNet Table 1: dataset and metric in each header, the model size and token count
+    // from the group rows, values with their cell boxes.
+    let deltanet = corpus_table("2406.06484", 8, 0);
+    let reading = read_table(&deltanet, None);
+    let first = &reading.candidates[0];
+    assert_eq!(
+        (
+            first.method.as_str(),
+            first.dataset.as_str(),
+            first.metric.as_str(),
+            first.cell_text.as_str(),
+            first.setting.as_str(),
+            first.confidence,
+        ),
+        (
+            "Transformer++",
+            "Wiki.",
+            "ppl",
+            "28.39",
+            "Table 1; 340M params / 15B tokens",
+            0.9
+        )
+    );
+    assert!(first.cell_box.is_some());
+    // A label printed as a variant of the row above names its method in full.
+    assert!(reading
+        .candidates
+        .iter()
+        .any(|c| c.method == "GLA (w. conv)" && c.cell_text == "29.47"));
+    assert!(reading
+        .candidates
+        .iter()
+        .any(|c| c.method == "DeltaNet + Sliding Attn" && c.cell_text == "27.06"));
+    // The derived average column is not a result.
+    assert!(reading.candidates.iter().all(|c| c.column != 9));
+
+    // TTT Table 1 with a caption that names the dataset: the model's cell boxes.
     let mut ttt = corpus_table("2407.04620", 11, 0);
     ttt.caption = Some("Table 1. Ablations on Books.".into());
     let reading = read_table(&ttt, None);
-    let got: Vec<(String, String, String, Option<BBox>, u32)> = reading
+    let got: Vec<(String, String, Option<BBox>, u32)> = reading
         .candidates
         .iter()
         .filter(|c| c.metric == "Ppl.")
-        .map(|c| {
-            (
-                c.method.clone(),
-                c.number.decimal.clone(),
-                c.cell_text.clone(),
-                c.cell_box,
-                c.page,
-            )
-        })
+        .take(2)
+        .map(|c| (c.method.clone(), c.number.decimal.clone(), c.cell_box, c.page))
         .collect();
-    let cell = |x0: f32, y0: f32, x1: f32, y1: f32| Some(BBox::new(x0, y0, x1, y1).rounded());
     assert_eq!(
         got,
         vec![
             (
                 "Linear attention [44]".into(),
                 "15.91".into(),
-                "15.91".into(),
-                cell(205.7, 673.1, 228.1, 682.2),
+                cell(205.7, 670.7, 228.1, 679.7),
                 11
             ),
             (
                 "Linear attn. improved".into(),
                 "15.23".into(),
-                "15.23".into(),
-                cell(205.7, 656.6, 228.1, 665.7),
-                11
-            ),
-            (
-                "TTT equivalence".into(),
-                "15.23".into(),
-                "15.23".into(),
-                cell(205.7, 639.7, 228.1, 648.9),
+                cell(205.7, 654.2, 228.1, 663.2),
                 11
             ),
         ]
     );
-    // "Diff." names no metric the lexicon knows: that column stays unread.
-    assert!(reading.candidates.iter().all(|c| c.column == 1));
-    assert!(reading
-        .candidates
-        .iter()
-        .all(|c| c.dataset == "Books" && c.confidence == 0.75));
 
-    // PASCAL Table 14: values with units in the cell; the header's description is not a
-    // dataset, the caption names one.
-    let mut pascal = corpus_table("2505.01730", 23, 0);
-    pascal.caption = Some("Table 14: Energy metrics of VGG-16 SNN on CIFAR-10.".into());
-    let reading = read_table(&pascal, None);
-    let got: Vec<(String, String, String, String, Option<String>)> = reading
+    // MIRAS Table 3: dataset headers spanning a row of context lengths.
+    let niah = corpus_table("2504.13173", 18, 0);
+    let reading = read_table(&niah, None);
+    let mamba: Vec<(&str, &str, &str)> = reading
         .candidates
         .iter()
-        .map(|c| {
-            (
-                c.method.clone(),
-                c.dataset.clone(),
-                c.metric.clone(),
-                c.number.decimal.clone(),
-                c.unit.clone(),
-            )
-        })
+        .filter(|c| c.method == "Mamba2")
+        .take(4)
+        .map(|c| (c.dataset.as_str(), c.setting.as_str(), c.cell_text.as_str()))
         .collect();
     assert_eq!(
-        got,
+        mamba,
         vec![
-            (
-                "Default IF (T = 4)".into(),
-                "CIFAR-10".into(),
-                "Energy".into(),
-                "445.47".into(),
-                Some("mJ".into())
-            ),
-            (
-                "Default IF (T = 4)".into(),
-                "CIFAR-10".into(),
-                "Energy".into(),
-                "0.08".into(),
-                Some("mJ".into())
-            ),
-            (
-                "PASC IF (T = 4)".into(),
-                "CIFAR-10".into(),
-                "Energy".into(),
-                "446.02".into(),
-                Some("mJ".into())
-            ),
-            (
-                "PASC IF (T = 4)".into(),
-                "CIFAR-10".into(),
-                "Energy".into(),
-                "0.63".into(),
-                Some("mJ".into())
-            ),
+            ("S-NIAH-PK", "Table 3; 2K", "98.6"),
+            ("S-NIAH-PK", "Table 3; 4K", "61.4"),
+            ("S-NIAH-PK", "Table 3; 8K", "31.0"),
+            ("S-NIAH-N", "Table 3; 2K", "98.4"),
         ]
     );
+
+    // PASCAL Table 5: two tables side by side, each with a dataset column.
+    let pascal = corpus_table("2505.01730", 12, 0);
+    let reading = read_table(&pascal, None);
+    let seenn: Vec<(&str, &str, &str)> = reading
+        .candidates
+        .iter()
+        .filter(|c| c.method.contains("SEENN-1") && c.metric == "Acc.")
+        .map(|c| (c.method.as_str(), c.dataset.as_str(), c.cell_text.as_str()))
+        .collect();
     assert_eq!(
-        reading.candidates[0].cell_box,
-        Some(BBox::new(233.7, 306.9, 278.1, 316.8).rounded())
+        seenn,
+        vec![
+            ("ResNet-34 SEENN-1", "ImageNet", "71.84%"),
+            ("ResNet-18 SEENN-1", "CIFAR-10", "95.08%"),
+            ("ResNet-18 SEENN-1", "CIFAR-100", "65.48%"),
+        ]
     );
 }

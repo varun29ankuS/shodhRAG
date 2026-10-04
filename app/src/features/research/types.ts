@@ -128,6 +128,8 @@ export interface ResultRecord {
   value: string;
   valueText: string;
   unit: string | null;
+  /** The `±` spread printed after the value (also visible in `valueText`). */
+  spread: string | null;
   setting: string | null;
   filePath: string;
   fileName: string;
@@ -161,6 +163,8 @@ export interface ExtractionReport {
   skipped: SkippedTable[];
   /** Whether a language model was asked to interpret headers, and which. */
   model: string | null;
+  /** The table model that structured the tables; null when only the layout heuristics read them. */
+  tableModel: string | null;
   extractedAt: string;
 }
 
@@ -187,6 +191,7 @@ export interface ComparisonCell {
   value: string;
   valueText: string;
   unit: string | null;
+  spread: string | null;
   filePath: string;
   fileName: string;
   page: number;

@@ -9101,6 +9101,7 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "async-trait",
+ "base64 0.21.7",
  "bytes",
  "calamine",
  "chardetng",

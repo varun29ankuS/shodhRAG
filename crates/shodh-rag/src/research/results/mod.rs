@@ -26,10 +26,13 @@ use shodh_ontology::{EntityRef, Extractor, ExtractorKind, Provenance, RawValue, 
 use self::interpret::{find_metric, read_table, verify_roles, Candidate, HeaderRoles, TableInput};
 use super::db::ResearchDb;
 use super::pdf_text::format_points;
-use super::{blocking, canonical_file, document_entity, file_name, ResearchError, ResearchResult};
+use super::{
+    blocking, canonical_file, document_entity, file_name, path_key, ResearchError, ResearchResult,
+};
 use crate::processing::document_model::{is_table_caption, BBox, BlockKind, StructuredDocument};
 use crate::statements::{
-    PutIntent, PutOutcome, Scope, StatementError, StatementQuery, StatementStore, StoredStatement,
+    PropertyFilter, PutIntent, PutOutcome, Scope, StatementError, StatementQuery, StatementStore,
+    StoredStatement,
 };
 
 /// Class of result statements.
@@ -488,7 +491,7 @@ pub fn record_from(stored: &StoredStatement) -> ResearchResult<ResultRecord> {
 fn record_fingerprint(record: &ResultRecord) -> String {
     let region = record.region.as_ref().map(region_text);
     fingerprint(
-        &record.file_path,
+        &path_key(&record.file_path),
         record.page,
         region.as_deref(),
         &record.value_text,
@@ -685,10 +688,11 @@ impl ResultService {
             tracing::info!(target: "shodh::research", dropped = drop.len(), "ambiguous duplicate values not stored");
         }
 
+        let key = path_key(&path);
         let rejected = {
             let db = self.db.clone();
-            let p = path.clone();
-            blocking(move || db.rejected(&p)).await?
+            let k = key.clone();
+            blocking(move || db.rejected(&k)).await?
         };
         let now = self.store.now();
         let mut prepared: Vec<Prepared> = Vec::new();
@@ -708,7 +712,7 @@ impl ResultService {
             });
             let region_text = region.as_ref().map(region_text);
             let fp = fingerprint(
-                &path,
+                &key,
                 c.page,
                 region_text.as_deref(),
                 &c.cell_text,
@@ -869,26 +873,23 @@ impl ResultService {
         let json = serde_json::to_string(&report)
             .map_err(|e| ResearchError::Database(format!("report could not be encoded: {e}")))?;
         let db = self.db.clone();
-        blocking(move || db.put_report(&path, &json)).await?;
+        blocking(move || db.put_report(&key, &json)).await?;
         Ok(report)
     }
 
-    /// Current result statements whose source is exactly `path`.
+    /// Current result statements reported in the paper at `path` (any spelling of it).
     async fn current_of(&self, path: &str) -> ResearchResult<Vec<ResultRecord>> {
         let query = StatementQuery {
             classes: vec![RESULT_CLASS.to_string()],
-            source_prefixes: vec![path.to_string()],
+            properties: vec![PropertyFilter {
+                property: "reportedIn".to_string(),
+                equals: format!("@{}", document_entity(path).id),
+            }],
             limit: Some(MAX_READ),
             ..StatementQuery::default()
         };
         let mut out = Vec::new();
         for row in self.store.query(&query).await? {
-            let Some(provenance) = &row.statement.provenance else {
-                continue;
-            };
-            if provenance.source != path {
-                continue;
-            }
             match record_from(&row) {
                 Ok(r) => out.push(r),
                 Err(e) => {
@@ -928,8 +929,8 @@ impl ResultService {
             .into_iter()
             .partition(|r| r.status == ResultStatus::Accepted);
         let db = self.db.clone();
-        let p = path.clone();
-        let report = blocking(move || db.report(&p))
+        let key = path_key(&path);
+        let report = blocking(move || db.report(&key))
             .await?
             .and_then(|json| serde_json::from_str::<ExtractionReport>(&json).ok());
         Ok(PaperResults {
@@ -980,8 +981,8 @@ impl ResultService {
         } else {
             let fp = record_fingerprint(&record);
             let db = self.db.clone();
-            let path = record.file_path.clone();
-            blocking(move || db.reject(&fp, &path)).await?;
+            let key = path_key(&record.file_path);
+            blocking(move || db.reject(&fp, &key)).await?;
             self.store.forget(id).await?;
         }
         Ok(())
@@ -990,8 +991,7 @@ impl ResultService {
     /// A comparison of accepted results matching `filter`, with coverage notes.
     pub async fn query(&self, filter: &ResultFilter) -> ResearchResult<Comparison> {
         let records = self.all(&filter.scopes).await?;
-        let papers_filter: HashSet<String> =
-            filter.papers.iter().map(|p| canonical_file(p)).collect();
+        let papers_filter: HashSet<String> = filter.papers.iter().map(|p| path_key(p)).collect();
         let want = |kind: &str, value: &Option<String>| -> Option<(String, String)> {
             value
                 .as_deref()
@@ -1013,7 +1013,7 @@ impl ResultService {
             method.as_ref().is_none_or(|(id, _)| &r.method_id == id)
                 && dataset.as_ref().is_none_or(|(id, _)| &r.dataset_id == id)
                 && metric.as_ref().is_none_or(|(id, _)| &r.metric_id == id)
-                && (papers_filter.is_empty() || papers_filter.contains(&r.file_path))
+                && (papers_filter.is_empty() || papers_filter.contains(&path_key(&r.file_path)))
         };
         let matching: Vec<&ResultRecord> = records.iter().filter(|r| matches(r)).collect();
         let pending_review = matching
@@ -1136,11 +1136,7 @@ impl ResultService {
         }
         let db = self.db.clone();
         let reports: Vec<(String, String)> = blocking(move || db.reports()).await?;
-        let known: HashSet<String> = filter
-            .known_papers
-            .iter()
-            .map(|p| canonical_file(p))
-            .collect();
+        let known: HashSet<String> = filter.known_papers.iter().map(|p| path_key(p)).collect();
         // Papers in scope that were scanned: every extracted paper, limited to the papers
         // asked for and, when the caller knows the papers in scope, to those.
         let scanned: BTreeSet<String> = reports
@@ -1149,7 +1145,7 @@ impl ResultService {
             .filter(|p| papers_filter.is_empty() || papers_filter.contains(p))
             .filter(|p| known.is_empty() || known.contains(p))
             .collect();
-        let contributing: BTreeSet<String> = papers.keys().cloned().collect();
+        let contributing: BTreeSet<String> = papers.keys().map(|p| path_key(p)).collect();
         if metric.is_some() || dataset.is_some() || method.is_some() {
             let silent: Vec<&String> = scanned.difference(&contributing).collect();
             if !silent.is_empty() {
@@ -1170,9 +1166,9 @@ impl ResultService {
         let unscanned: Vec<String> = filter
             .known_papers
             .iter()
+            .filter(|p| papers_filter.is_empty() || papers_filter.contains(&path_key(p)))
+            .filter(|p| !reports.iter().any(|(r, _)| *r == path_key(p)))
             .map(|p| canonical_file(p))
-            .filter(|p| papers_filter.is_empty() || papers_filter.contains(p))
-            .filter(|p| !reports.iter().any(|(r, _)| r == p))
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();

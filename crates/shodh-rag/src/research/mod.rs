@@ -18,6 +18,7 @@ pub mod db;
 pub mod pdf_text;
 pub mod results;
 pub mod snippets;
+pub mod vision;
 
 use sha2::{Digest, Sha256};
 use shodh_ontology::EntityRef;
@@ -79,10 +80,17 @@ pub fn canonical_file(path: &str) -> String {
         .to_string()
 }
 
-/// Entity id of a document: `doc:` and the first 16 bytes of the SHA-256 of its canonical
-/// path, in hex. Paths contain spaces and separators; the hash is a stable, opaque id.
+/// The key two spellings of one file share: the index's stored form (forward slashes,
+/// lower-cased on Windows; see [`crate::rag_engine::normalize_source_path`]).
+pub fn path_key(path: &str) -> String {
+    crate::rag_engine::normalize_source_path(std::path::Path::new(path.trim()))
+}
+
+/// Entity id of a document: `doc:` and the first 16 bytes of the SHA-256 of its
+/// [`path_key`], in hex. Paths contain spaces and separators; the hash is a stable, opaque
+/// id that every spelling of the path maps to.
 pub fn document_entity(path: &str) -> EntityRef {
-    let digest = Sha256::digest(canonical_file(path).as_bytes());
+    let digest = Sha256::digest(path_key(path).as_bytes());
     EntityRef::typed(format!("doc:{}", hex::encode(&digest[..16])), "Document")
 }
 

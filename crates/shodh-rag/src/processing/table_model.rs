@@ -39,6 +39,18 @@ pub enum TableModelError {
     Panicked(u32),
 }
 
+/// Id of the model set, recorded on the chunks and Results whose tables it structured.
+pub const TABLE_MODEL_ID: &str = "docling-heron-int8+tableformer/models-v1";
+
+/// The table model when it is installed and loaded, shared by the parsers and the
+/// background refinement.
+pub type SharedTableModel = std::sync::Arc<std::sync::RwLock<Option<std::sync::Arc<TableModel>>>>;
+
+/// The loaded model of a shared handle, if any.
+pub fn loaded(shared: &SharedTableModel) -> Option<std::sync::Arc<TableModel>> {
+    shared.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// Files of the model set, relative to the model directory (`docling-tables/`).
 const LAYOUT_FILE: &str = "layout_heron_int8.onnx";
 const ENCODER_FILE: &str = "encoder_fp16.onnx";
@@ -229,6 +241,54 @@ impl TableModel {
             }
         }
         (out, errors)
+    }
+
+    /// Table regions the layout detector finds on page `number`, without structuring
+    /// them (the candidate-recall survey runs it on every page).
+    #[cfg(test)]
+    pub(crate) fn table_regions_on(&self, bytes: &[u8], number: u32) -> Option<usize> {
+        let index = number.saturating_sub(1) as usize;
+        let mut rendered = None;
+        docling_pdf::pdfium_backend::for_each_page::<docling_pdf::PdfError, _>(
+            bytes,
+            None,
+            true,
+            true,
+            Some((index, index)),
+            |_, _, page| {
+                rendered = Some(page);
+                Ok(())
+            },
+        )
+        .ok()?;
+        let page = rendered?;
+        let mut models = self.models.lock().unwrap_or_else(|e| e.into_inner());
+        let regions = models
+            .layout
+            .predict(docling_pdf::layout_src(&page), page.width, page.height)
+            .ok()?;
+        Some(table_regions(&regions).len())
+    }
+
+    /// The page rendered as the models see it (2 px per point) with its height in
+    /// points, for the spot-check harness.
+    #[cfg(test)]
+    pub(crate) fn render_page(bytes: &[u8], number: u32) -> Option<(image::RgbImage, f32)> {
+        let index = number.saturating_sub(1) as usize;
+        let mut rendered = None;
+        docling_pdf::pdfium_backend::for_each_page::<docling_pdf::PdfError, _>(
+            bytes,
+            None,
+            true,
+            false,
+            Some((index, index)),
+            |_, _, page| {
+                rendered = Some((page.image, page.height));
+                Ok(())
+            },
+        )
+        .ok()?;
+        rendered
     }
 
     fn structure_page(&self, bytes: &[u8], number: u32) -> Result<ModelPage, TableModelError> {

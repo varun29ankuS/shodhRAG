@@ -65,6 +65,8 @@ pub enum CandidateCue {
     AlignedColumns,
     /// Three or more horizontal rules on a page that has a numeric row.
     RulingLines,
+    /// The heuristic table detector found a table on the page.
+    DetectedTable,
 }
 
 /// A table-candidate page and why.
@@ -180,8 +182,44 @@ fn parse_inner(bytes: Vec<u8>, mode: TableMode<'_>) -> Result<ParsedLayout, PdfL
             })
             .collect();
     }
-    // Pages whose tables the model structured skip the heuristic detector.
-    let mut modelled: Vec<bool> = vec![false; pages.len()];
+    // Table detection is the most expensive heuristic step. Academic PDFs announce
+    // their tables with captions, so only captioned pages are scanned; a document
+    // without any caption (forms, reports) is scanned fully.
+    let captioned: Vec<bool> = pages
+        .iter()
+        .map(|p| p.lines.iter().any(|l| is_table_caption(&l.text)))
+        .collect();
+    let any_captions = captioned.iter().any(|&c| c);
+    for (index, page) in pages.iter_mut().enumerate() {
+        if any_captions && !captioned[index] {
+            continue;
+        }
+        match doc.extract_tables(index) {
+            Ok(tables) => {
+                page.tables = tables
+                    .into_iter()
+                    .filter_map(|t| RawTable::from_oxide(t, page.height))
+                    .collect();
+                recover_table_headers(page);
+            }
+            Err(e) => tracing::debug!(page = page.number, error = %e, "table detection failed"),
+        }
+    }
+    if !matches!(mode, TableMode::Heuristic) {
+        // A table the heuristic detector found makes its page a candidate too.
+        for page in pages.iter().filter(|p| !p.tables.is_empty()) {
+            match report.candidates.iter_mut().find(|c| c.page == page.number) {
+                Some(candidate) => candidate.cues.push(CandidateCue::DetectedTable),
+                None => report.candidates.push(TableCandidate {
+                    page: page.number,
+                    cues: vec![CandidateCue::DetectedTable],
+                }),
+            }
+        }
+        report.candidates.sort_by_key(|c| c.page);
+    }
+
+    // The model's tables replace the heuristic ones on the pages where it finds any.
     if let (TableMode::Model(model), Some(bytes)) = (mode, model_bytes.as_deref()) {
         let numbers: Vec<u32> = report.candidates.iter().map(|c| c.page).collect();
         let (results, errors) = model.structure_pages(bytes, &numbers);
@@ -202,33 +240,8 @@ fn parse_inner(bytes: Vec<u8>, mode: TableMode<'_>) -> Result<ParsedLayout, PdfL
             if let Some(page) = pages.get_mut(index) {
                 if !tables.is_empty() {
                     page.tables = tables;
-                    modelled[index] = true;
                 }
             }
-        }
-    }
-
-    // Table detection is the most expensive step. Academic PDFs announce
-    // their tables with captions, so only captioned pages are scanned; a
-    // document without any caption (forms, reports) is scanned fully.
-    let captioned: Vec<bool> = pages
-        .iter()
-        .map(|p| p.lines.iter().any(|l| is_table_caption(&l.text)))
-        .collect();
-    let any_captions = captioned.iter().any(|&c| c);
-    for (index, page) in pages.iter_mut().enumerate() {
-        if modelled[index] || (any_captions && !captioned[index]) {
-            continue;
-        }
-        match doc.extract_tables(index) {
-            Ok(tables) => {
-                page.tables = tables
-                    .into_iter()
-                    .filter_map(|t| RawTable::from_oxide(t, page.height))
-                    .collect();
-                recover_table_headers(page);
-            }
-            Err(e) => tracing::debug!(page = page.number, error = %e, "table detection failed"),
         }
     }
 
@@ -721,9 +734,17 @@ impl RawTable {
     /// A table the model structured (spans resolved, multi-row headers flattened).
     fn from_model(table: &ModelTable) -> Option<RawTable> {
         let resolved = resolve_cells(&table.cells)?;
-        let clean = |t: &String| join_detached_sign(&normalize_ligatures(t));
+        let clean = |t: &String| tidy_cell_text(&normalize_ligatures(t));
+        // The table's box is its cells' extent: the detected region can reach into the
+        // caption above it, whose lines must stay outside the table.
+        let bbox = table
+            .cells
+            .iter()
+            .filter_map(|c| c.bbox)
+            .reduce(|a, b| a.union(&b))
+            .unwrap_or(table.bbox);
         Some(RawTable {
-            bbox: table.bbox.rounded(),
+            bbox: bbox.rounded(),
             header: resolved.header.iter().map(clean).collect(),
             rows: resolved
                 .rows
@@ -747,6 +768,30 @@ fn join_detached_sign(text: &str) -> String {
     static DETACHED: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"^([+\-−–])\s+(\d)").expect("static regex"));
     DETACHED.replace(text, "$1$2").into_owned()
+}
+
+/// Spacing the model's word matching puts inside a cell, removed: after an opening
+/// and before a closing bracket, before a comma, inside a signed number after a
+/// bracket or comma (`[ − 1 , 1]` → `[−1, 1]`), and before a hyphenated suffix
+/// (`Moneta -H` → `Moneta-H`, `L 1 -norm` → `L 1-norm`).
+fn tidy_cell_text(text: &str) -> String {
+    static RULES: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
+        [
+            (r"([\[(])\s+", "$1"),
+            (r"\s+([\])])", "$1"),
+            (r"\s+,", ","),
+            (r"([\[(,]\s*)([+\-−–])\s+(\d)", "$1$2$3"),
+            (r"(\w) -(\pL)", "$1-$2"),
+        ]
+        .into_iter()
+        .map(|(pattern, with)| (Regex::new(pattern).expect("static regex"), with))
+        .collect()
+    });
+    let mut out = join_detached_sign(text);
+    for (re, with) in RULES.iter() {
+        out = re.replace_all(&out, *with).into_owned();
+    }
+    out
 }
 
 /// Most header lines recovered above one table.
@@ -1751,6 +1796,16 @@ mod tests {
         );
         block.push(line("ware training", 72.0, 688.0, 200.0, 10.0, false));
         assert_eq!(block.joined_text(), "efficient hardware training");
+    }
+
+    #[test]
+    fn model_cell_spacing_is_tidied() {
+        assert_eq!(tidy_cell_text("DeltaNet [ − 1 , 1]"), "DeltaNet [−1, 1]");
+        assert_eq!(tidy_cell_text("Mamba ( w. conv )"), "Mamba (w. conv)");
+        assert_eq!(tidy_cell_text("Moneta -H"), "Moneta-H");
+        assert_eq!(tidy_cell_text("w. L 1 -norm &1+ELU"), "w. L 1-norm &1+ELU");
+        assert_eq!(tidy_cell_text("Transformer -"), "Transformer -");
+        assert_eq!(tidy_cell_text("− 0.68"), "−0.68");
     }
 
     #[test]

@@ -370,38 +370,92 @@ fn classify_semantics(blocks: &mut [Block]) {
     }
 }
 
-/// Move a "Table N:" caption paragraph into the nearest table on the same
-/// page (the caption is typically directly above or below the table).
+/// Farthest a caption may sit above or below its table, in points.
+const MAX_CAPTION_GAP: f32 = 72.0;
+/// Added to the distance of a caption below its table: papers set table captions
+/// above, so of two equally close tables the one below the caption is preferred.
+const CAPTION_BELOW_PENALTY: f32 = 6.0;
+/// Score of a pairing by reading order alone (no geometry): worse than any
+/// geometric pairing.
+const ORDER_ONLY_SCORE: f32 = 1_000.0;
+
+/// Moves every "Table N" caption paragraph into its table on the same page.
+///
+/// With boxes, a caption pairs with a table it overlaps horizontally and sits at most
+/// [`MAX_CAPTION_GAP`] above or below; the closest pairs are taken first (a caption
+/// above its table wins a tie), and each caption and table pairs once, so two tables
+/// stacked on a page keep their own captions. Without boxes, a caption pairs with a
+/// table at most two blocks away in reading order.
 fn attach_table_captions(blocks: &mut Vec<Block>) {
-    let mut i = 0;
-    while i < blocks.len() {
-        let is_caption =
-            matches!(blocks[i].kind, BlockKind::Paragraph) && is_table_caption(&blocks[i].text);
-        if !is_caption {
-            i += 1;
-            continue;
-        }
-        let page = blocks[i].page;
-        let window = |j: usize| j < blocks.len() && blocks[j].page == page;
-        let target = [i + 1, i + 2, i.wrapping_sub(1), i.wrapping_sub(2)]
-            .into_iter()
-            .filter(|&j| window(j))
-            .find(|&j| matches!(blocks[j].kind, BlockKind::Table { caption: None, .. }));
-        match target {
-            Some(j) => {
-                let caption_text = blocks[i].text.trim().to_string();
-                let caption_bbox = blocks[i].bbox;
-                if let BlockKind::Table { caption, .. } = &mut blocks[j].kind {
-                    *caption = Some(caption_text);
-                }
-                if let (Some(a), Some(b)) = (blocks[j].bbox, caption_bbox) {
-                    blocks[j].bbox = Some(a.union(&b));
-                }
-                blocks.remove(i);
+    let captions: Vec<usize> = (0..blocks.len())
+        .filter(|&i| {
+            matches!(blocks[i].kind, BlockKind::Paragraph) && is_table_caption(&blocks[i].text)
+        })
+        .collect();
+    let tables: Vec<usize> = (0..blocks.len())
+        .filter(|&i| matches!(blocks[i].kind, BlockKind::Table { caption: None, .. }))
+        .collect();
+    let mut pairs: Vec<(f32, usize, usize)> = Vec::new();
+    for &c in &captions {
+        for &t in &tables {
+            if blocks[c].page != blocks[t].page {
+                continue;
             }
-            None => i += 1,
+            let order = c.abs_diff(t);
+            match (blocks[c].bbox, blocks[t].bbox) {
+                (Some(cb), Some(tb)) => {
+                    if let Some(d) = caption_distance(&cb, &tb) {
+                        pairs.push((d, c, t));
+                    }
+                }
+                _ if order <= 2 => pairs.push((ORDER_ONLY_SCORE + order as f32, c, t)),
+                _ => {}
+            }
         }
     }
+    pairs.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    let mut used_captions: Vec<usize> = Vec::new();
+    let mut used_tables: Vec<usize> = Vec::new();
+    for (_, c, t) in pairs {
+        if used_captions.contains(&c) || used_tables.contains(&t) {
+            continue;
+        }
+        used_captions.push(c);
+        used_tables.push(t);
+        let caption_text = blocks[c].text.trim().to_string();
+        let caption_bbox = blocks[c].bbox;
+        if let BlockKind::Table { caption, .. } = &mut blocks[t].kind {
+            *caption = Some(caption_text);
+        }
+        if let (Some(a), Some(b)) = (blocks[t].bbox, caption_bbox) {
+            blocks[t].bbox = Some(a.union(&b));
+        }
+    }
+    used_captions.sort_unstable();
+    for c in used_captions.into_iter().rev() {
+        blocks.remove(c);
+    }
+}
+
+/// Distance score of a caption to a table: the vertical gap when the caption sits
+/// above or below the table and overlaps it horizontally, with
+/// [`CAPTION_BELOW_PENALTY`] for a caption below. `None` when they do not line up.
+fn caption_distance(caption: &BBox, table: &BBox) -> Option<f32> {
+    let overlap = caption.x1.min(table.x1) - caption.x0.max(table.x0);
+    if overlap <= 0.0 {
+        return None;
+    }
+    let above = caption.y0 - table.y1;
+    let below = table.y0 - caption.y1;
+    let (gap, penalty) = if above >= -2.0 {
+        (above.max(0.0), 0.0)
+    } else if below >= -2.0 {
+        (below.max(0.0), CAPTION_BELOW_PENALTY)
+    } else {
+        // The caption overlaps the table vertically: inside a region that grew over it.
+        (0.0, 0.0)
+    };
+    (gap <= MAX_CAPTION_GAP).then_some(gap + penalty)
 }
 
 fn assign_section_paths(blocks: &mut [Block]) {
@@ -537,6 +591,68 @@ mod tests {
         assert!(rendered.contains("| Model | PPL |"));
         assert!(rendered.contains("| DeltaNet | 17.7 |"));
         assert_eq!(doc.blocks[0].bbox.map(|b| b.y1), Some(215.0));
+    }
+
+    fn table_at(y0: f32, y1: f32, model: &str) -> Block {
+        Block::new(
+            BlockKind::Table {
+                header: vec!["Model".into(), "PPL".into()],
+                rows: vec![vec![model.into(), "17.7".into()]],
+                caption: None,
+                cell_boxes: Vec::new(),
+            },
+            "",
+        )
+        .on_page(3, Some(BBox::new(100.0, y0, 300.0, y1)))
+    }
+
+    fn caption_of(block: &Block) -> Option<&str> {
+        match &block.kind {
+            BlockKind::Table { caption, .. } => caption.as_deref(),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn stacked_tables_keep_the_captions_above_them() {
+        // Caption 1, table A, caption 2, table B (top to bottom). Caption 2 is closer to
+        // table A's bottom than table A's own caption is to its top, but captions above
+        // their tables win and each caption pairs once.
+        let mut doc = StructuredDocument {
+            pages: Vec::new(),
+            blocks: vec![
+                para("Table 1: Results on SIFT1M.")
+                    .on_page(3, Some(BBox::new(100.0, 712.0, 300.0, 722.0))),
+                table_at(600.0, 708.0, "A"),
+                para("Table 2: Results on GIST1M.")
+                    .on_page(3, Some(BBox::new(100.0, 584.0, 300.0, 594.0))),
+                table_at(480.0, 580.0, "B"),
+            ],
+        };
+        doc.finalize();
+        assert_eq!(doc.blocks.len(), 2);
+        assert_eq!(caption_of(&doc.blocks[0]), Some("Table 1: Results on SIFT1M."));
+        assert_eq!(caption_of(&doc.blocks[1]), Some("Table 2: Results on GIST1M."));
+    }
+
+    #[test]
+    fn a_caption_below_its_table_attaches_and_far_or_offset_captions_do_not() {
+        let mut doc = StructuredDocument {
+            pages: Vec::new(),
+            blocks: vec![
+                table_at(600.0, 700.0, "A"),
+                para("Table 3: Ablations.").on_page(3, Some(BBox::new(100.0, 588.0, 300.0, 596.0))),
+                // In the other column of the page: no horizontal overlap with B.
+                para("Table 4: Elsewhere.").on_page(3, Some(BBox::new(320.0, 300.0, 520.0, 310.0))),
+                table_at(200.0, 296.0, "B"),
+            ],
+        };
+        doc.finalize();
+        assert_eq!(caption_of(&doc.blocks[0]), Some("Table 3: Ablations."));
+        // Table 4's caption is adjacent in reading order but lines up with nothing; the
+        // order-only fallback applies only without boxes, so it stays a paragraph.
+        assert!(doc.blocks.iter().any(|b| b.text.starts_with("Table 4")));
+        assert_eq!(caption_of(doc.blocks.last().unwrap()), None);
     }
 
     #[test]

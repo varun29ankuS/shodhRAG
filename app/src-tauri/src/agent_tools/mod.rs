@@ -12,6 +12,7 @@
 mod audit;
 mod calendar;
 mod export;
+mod figures;
 mod files;
 mod graph;
 mod history;
@@ -207,6 +208,7 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     visuals::register(&mut registry, &host)?;
     papers::register(&mut registry, &host)?;
     graph::register(&mut registry, &host)?;
+    figures::register(&mut registry, &host)?;
     Ok(registry)
 }
 

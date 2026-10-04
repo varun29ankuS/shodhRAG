@@ -103,6 +103,7 @@
     "paper_graph_status": { "excluded": "Reports when the citation graph was last built, its size and whether online lookups are allowed; the assistant reads the graph itself with paper_graph and is told when it was never built." },
     "paper_graph_build": { "excluded": "Building parses every indexed PDF and, when the user chooses and the privacy policy allows it, sends reference identifiers and titles to OpenAlex; it runs when the user asks in Library → Graph, so the agent never starts network lookups on its own." },
     "paper_graph_view": { "tool": "paper_graph" },
+    "paper_objects": { "tools": ["show_figure", "get_equation"] },
     "paper_get": { "tool": "get_paper" },
     "papers_find": { "tool": "find_papers" },
     "paper_concept": { "tool": "find_papers" },

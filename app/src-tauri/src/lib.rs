@@ -748,6 +748,7 @@ pub fn run() {
             research_commands::results_review,
             research_commands::results_query,
             research_commands::results_facets,
+            research_commands::paper_objects,
             graph_commands::paper_graph_status,
             graph_commands::paper_graph_build,
             graph_commands::paper_graph_view,

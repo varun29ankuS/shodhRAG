@@ -18,6 +18,7 @@ use shodh_rag::audit::AuditKey;
 use shodh_rag::llm::{ApiProvider, LLMMode};
 use shodh_rag::processing::table_model::SharedTableModel;
 use shodh_rag::research::citations::{CitationService, GraphSlot};
+use shodh_rag::research::objects::{tex_candidates, PaperObjects, PaperParts};
 use shodh_rag::research::pdf_text::PageRect;
 use shodh_rag::research::results::{
     Comparison, ExtractionReport, PaperResults, ResultFacets, ResultFilter, ResultService,
@@ -116,6 +117,8 @@ struct Inner {
     tables: SharedTableModel,
     /// The citation graph snapshot, shared with the document search's ranker.
     graph: GraphSlot,
+    /// Figures and equations of recently read papers.
+    objects: Arc<PaperObjects>,
 }
 
 impl ResearchState {
@@ -144,8 +147,27 @@ impl ResearchState {
                 services: OnceCell::new(),
                 tables,
                 graph,
+                objects: Arc::new(PaperObjects::new()),
             }),
         }
+    }
+
+    /// The figures and equations of an indexed PDF (`pdf` as returned by
+    /// [`indexed_pdf`]), with the library's `.tex` files near it as possible sources.
+    pub async fn paper_parts(
+        &self,
+        rag: &tokio::sync::RwLock<shodh_rag::RAGEngine>,
+        pdf: &str,
+    ) -> ResearchCommandResult<Arc<PaperParts>> {
+        let indexed: Vec<String> = match rag.read().await.document_sources().await {
+            Ok(rows) => rows.into_iter().map(|row| row.source).collect(),
+            Err(e) => {
+                tracing::warn!(target: "shodh::research", error = %e, "indexed files could not be listed; equations use the text layer only");
+                Vec::new()
+            }
+        };
+        let candidates = tex_candidates(pdf, &indexed);
+        Ok(self.inner.objects.parts(pdf, candidates).await?)
     }
 
     /// The services, opening them if needed. Fails (and retries on the next call) while
@@ -617,6 +639,58 @@ impl ResultFilterInput {
             known_papers,
         }
     }
+}
+
+/// The indexed PDF that `requested` names (a full path, or a file name that is unique in
+/// the index), as spelled on disk. Anything else is refused: model output (a ```figure
+/// block, a tool argument) must never become a read of an arbitrary file.
+pub async fn indexed_pdf(
+    rag: &tokio::sync::RwLock<shodh_rag::RAGEngine>,
+    requested: &str,
+) -> ResearchCommandResult<String> {
+    let matches = rag
+        .read()
+        .await
+        .find_indexed_sources(requested)
+        .await
+        .map_err(|e| {
+            ResearchCommandError::unavailable(format!("The index could not be read: {e}"))
+        })?;
+    let source = match matches.as_slice() {
+        [] => {
+            return Err(ResearchCommandError {
+                code: "not_found",
+                message: format!("{} is not an indexed file.", requested.trim()),
+            })
+        }
+        [one] => one.clone(),
+        many => {
+            return Err(ResearchCommandError::invalid(format!(
+                "{} matches several indexed files; give the full path: {}",
+                requested.trim(),
+                many.join(", ")
+            )))
+        }
+    };
+    if source.contains("://") {
+        return Err(ResearchCommandError::invalid(
+            "Figures and equations are read from indexed PDF files.",
+        ));
+    }
+    require_pdf(&source)
+}
+
+/// The figures and equations of an indexed PDF: the paper page's Figures tab and the
+/// ```figure blocks of answers.
+#[tauri::command]
+pub async fn paper_objects(
+    state: State<'_, ResearchState>,
+    rag: State<'_, crate::rag_commands::RagState>,
+    path: String,
+) -> ResearchCommandResult<PaperParts> {
+    let pdf = indexed_pdf(&rag.rag, &path).await?;
+    let parts = state.paper_parts(&rag.rag, &pdf).await?;
+    Ok(parts.as_ref().clone())
 }
 
 /// Indexed PDF files (the index's stored paths), for "not yet scanned" notes.

@@ -419,6 +419,7 @@ fn push_tex_environment(env: &str, inner: &[String], blocks: &mut Vec<Block>) {
                 header,
                 rows,
                 caption,
+                cell_boxes: Vec::new(),
             },
             String::new(),
         ));
@@ -535,6 +536,7 @@ pub fn parse_markdown(source: &str) -> StructuredDocument {
                     header,
                     rows,
                     caption: None,
+                    cell_boxes: Vec::new(),
                 },
                 String::new(),
             ));
@@ -641,6 +643,7 @@ N & primes \\ \hline
                 header,
                 rows,
                 caption,
+                ..
             } => {
                 assert_eq!(header, &vec!["N".to_string(), "primes".to_string()]);
                 assert_eq!(rows.len(), 2);

@@ -92,6 +92,11 @@ pub enum BlockKind {
         header: Vec<String>,
         rows: Vec<Vec<String>>,
         caption: Option<String>,
+        /// Box of every cell, header row first, aligned with `header` and `rows`
+        /// (`None` where the parser has no box). Empty when the source has no layout
+        /// (text, LaTeX and Markdown tables).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        cell_boxes: Vec<Vec<Option<BBox>>>,
     },
     /// A figure, represented by its caption.
     Figure {
@@ -174,6 +179,7 @@ impl Block {
                 header,
                 rows,
                 caption,
+                ..
             } => render_table(caption.as_deref(), header, rows),
             BlockKind::Figure { caption } => caption.clone(),
             _ => self.text.clone(),
@@ -415,6 +421,20 @@ fn assign_section_paths(blocks: &mut [Block]) {
 }
 
 /// Collapse runs of whitespace into single spaces.
+/// Whether a table cell holds one number as printed: digits with an optional sign,
+/// thousands separators, decimal point, percent sign, a `±` spread or trailing
+/// markers (`*`, `†`), e.g. `95.3`, `-0.68`, `1,234`, `78.0%`, `95.3±0.2`.
+pub fn is_numeric_cell(text: &str) -> bool {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"^[+\-−–]?(?:\d{1,3}(?:,\d{3})+|\d+)?(?:\.\d+)?%?(?:\s*±\s*\d+(?:\.\d+)?%?)?[*†‡]*$",
+        )
+        .expect("static regex")
+    });
+    let t = text.trim();
+    t.chars().any(|c| c.is_ascii_digit()) && RE.is_match(t)
+}
+
 pub fn collapse_ws(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -499,6 +519,7 @@ mod tests {
                 header: vec!["Model".into(), "PPL".into()],
                 rows: vec![vec!["DeltaNet".into(), "17.7".into()]],
                 caption: None,
+                cell_boxes: Vec::new(),
             },
             "",
         )

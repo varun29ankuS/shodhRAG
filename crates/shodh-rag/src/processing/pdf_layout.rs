@@ -104,6 +104,7 @@ fn parse_inner(bytes: Vec<u8>) -> Result<StructuredDocument, PdfLayoutError> {
                     .into_iter()
                     .filter_map(|t| RawTable::from_oxide(t, page.height))
                     .collect();
+                recover_table_headers(page);
             }
             Err(e) => tracing::debug!(page = page.number, error = %e, "table detection failed"),
         }
@@ -266,6 +267,9 @@ struct Line {
     bold: bool,
     mono: bool,
     chars: usize,
+    /// The runs the line was built from, with their boxes (used to split table
+    /// header lines into columns).
+    pieces: Vec<(String, BBox)>,
 }
 
 /// Group runs (in content order) into visual lines. A run joins the current
@@ -275,6 +279,7 @@ struct Line {
 fn build_lines(runs: Vec<Run>) -> Vec<Line> {
     struct Acc {
         text: String,
+        pieces: Vec<(String, BBox)>,
         bbox: BBox,
         sizes: HashMap<i32, usize>,
         bold_chars: usize,
@@ -297,6 +302,7 @@ fn build_lines(runs: Vec<Run>) -> Vec<Line> {
             bold: acc.bold_chars * 2 > acc.chars,
             mono: acc.mono_chars * 2 > acc.chars,
             chars: acc.chars,
+            pieces: acc.pieces,
         }
     }
     let mut lines = Vec::new();
@@ -319,6 +325,7 @@ fn build_lines(runs: Vec<Run>) -> Vec<Line> {
                     acc.text.push(' ');
                 }
                 acc.text.push_str(&run.text);
+                acc.pieces.push((run.text.clone(), run.bbox));
                 acc.bbox = acc.bbox.union(&run.bbox);
                 acc.last_x1 = acc.last_x1.max(run.bbox.x1);
                 *acc.sizes
@@ -347,6 +354,7 @@ fn build_lines(runs: Vec<Run>) -> Vec<Line> {
             mono_chars: if run.mono { visible } else { 0 },
             chars: visible,
             sizes,
+            pieces: vec![(run.text.clone(), run.bbox)],
             text: run.text,
         });
     }
@@ -367,11 +375,16 @@ struct PageLines {
     tables: Vec<RawTable>,
 }
 
+/// Widest column span a table cell is expanded to (guards against corrupt spans).
+const MAX_COLSPAN: u32 = 64;
+
 #[derive(Debug, Clone)]
 struct RawTable {
     bbox: BBox,
     header: Vec<String>,
     rows: Vec<Vec<String>>,
+    /// Cell boxes, header row first, aligned with the expanded cells.
+    cell_boxes: Vec<Vec<Option<BBox>>>,
 }
 
 impl RawTable {
@@ -387,16 +400,34 @@ impl RawTable {
         if table.col_count < 2 || table.rows.len() < 2 || bbox.height() > 0.75 * page_height {
             return None;
         }
-        let mut rows: Vec<Vec<String>> = table
-            .rows
-            .iter()
-            .map(|row| {
-                row.cells
-                    .iter()
-                    .map(|c| normalize_ligatures(&super::document_model::collapse_ws(&c.text)))
-                    .collect()
-            })
-            .collect();
+        // A cell spanning several columns is expanded to one position per column so
+        // that a cell's index is its column: a spanning header names every column under
+        // it (its text is repeated), a spanning body cell holds its text once (repeating
+        // a value would report it several times). Every position keeps the cell's box.
+        let mut rows: Vec<Vec<String>> = Vec::with_capacity(table.rows.len());
+        let mut cell_boxes: Vec<Vec<Option<BBox>>> = Vec::with_capacity(table.rows.len());
+        for (index, row) in table.rows.iter().enumerate() {
+            let header_row = index == 0 || row.is_header;
+            let mut texts = Vec::with_capacity(row.cells.len());
+            let mut boxes = Vec::with_capacity(row.cells.len());
+            for cell in &row.cells {
+                let text = normalize_ligatures(&super::document_model::collapse_ws(&cell.text));
+                let cell_box = cell
+                    .bbox
+                    .map(|b| BBox::new(b.x, b.y, b.x + b.width, b.y + b.height).rounded());
+                let span = usize::try_from(cell.colspan.clamp(1, MAX_COLSPAN)).unwrap_or(1);
+                for position in 0..span {
+                    if position == 0 || header_row || cell.is_header {
+                        texts.push(text.clone());
+                    } else {
+                        texts.push(String::new());
+                    }
+                    boxes.push(cell_box);
+                }
+            }
+            rows.push(texts);
+            cell_boxes.push(boxes);
+        }
         let cells: Vec<&String> = rows.iter().flatten().collect();
         let filled = cells.iter().filter(|c| !c.is_empty()).count();
         if cells.is_empty() || filled * 2 < cells.len() {
@@ -408,7 +439,166 @@ impl RawTable {
             return None;
         }
         let header = rows.remove(0);
-        Some(RawTable { bbox, header, rows })
+        Some(RawTable {
+            bbox,
+            header,
+            rows,
+            cell_boxes,
+        })
+    }
+}
+
+/// Most header lines recovered above one table.
+const MAX_HEADER_LINES: usize = 3;
+
+/// Table detection often stops below a table's header: the column titles sit in
+/// lines just above the detected region and the first data row becomes the
+/// "header". When a table's header row is mostly numbers, the lines directly above
+/// it that split into the table's columns are taken as its header (outermost line
+/// first, joined per column) and the numeric row is moved back into the body. The
+/// table's box grows to cover them, so the lines are not emitted twice.
+fn recover_table_headers(page: &mut PageLines) {
+    let boxes: Vec<BBox> = page.tables.iter().map(|t| t.bbox).collect();
+    for index in 0..page.tables.len() {
+        let table = &page.tables[index];
+        if !mostly_numeric(&table.header) {
+            continue;
+        }
+        let columns = column_extents(&table.cell_boxes, table.header.len());
+        if columns.iter().filter(|c| c.is_some()).count() < 2 {
+            continue;
+        }
+        let mut chosen: Vec<&Line> = Vec::new();
+        let mut top = table.bbox.y1;
+        while chosen.len() < MAX_HEADER_LINES {
+            // The nearest line above the current top that lies over the table.
+            let candidate = page
+                .lines
+                .iter()
+                .filter(|l| l.bbox.y0 >= top - 1.0)
+                .filter(|l| {
+                    let overlap = l.bbox.x1.min(table.bbox.x1) - l.bbox.x0.max(table.bbox.x0);
+                    overlap > 0.5 * l.bbox.width()
+                })
+                .min_by(|a, b| a.bbox.y0.total_cmp(&b.bbox.y0));
+            let Some(line) = candidate else { break };
+            let gap = line.bbox.y0 - top;
+            if gap > 1.8 * line.size.max(1.0)
+                || is_table_caption(&line.text)
+                || boxes.iter().enumerate().any(|(j, b)| {
+                    j != index && b.contains_point(line.bbox.center_x(), line.bbox.center_y())
+                })
+            {
+                break;
+            }
+            let assigned = split_into_columns(line, &columns);
+            if assigned.iter().filter(|c| c.is_some()).count() < 2 {
+                break;
+            }
+            chosen.push(line);
+            top = line.bbox.y1;
+        }
+        if chosen.is_empty() {
+            continue;
+        }
+        let width = table.header.len();
+        let mut texts: Vec<Vec<String>> = vec![Vec::new(); width];
+        let mut header_boxes: Vec<Option<BBox>> = vec![None; width];
+        // Outermost (highest) line first.
+        for line in chosen.iter().rev() {
+            for (column, piece) in split_into_columns(line, &columns).into_iter().enumerate() {
+                if let Some((text, bbox)) = piece {
+                    texts[column].push(text);
+                    header_boxes[column] = Some(match header_boxes[column] {
+                        Some(b) => b.union(&bbox),
+                        None => bbox,
+                    });
+                }
+            }
+        }
+        let header: Vec<String> = texts.into_iter().map(|t| t.join(" ")).collect();
+        let grown = chosen
+            .iter()
+            .fold(page.tables[index].bbox, |acc, l| acc.union(&l.bbox));
+        let table = &mut page.tables[index];
+        let old_header = std::mem::replace(&mut table.header, header);
+        table.rows.insert(0, old_header);
+        table
+            .cell_boxes
+            .insert(0, header_boxes.iter().map(|b| b.map(|b| b.rounded())).collect());
+        table.bbox = grown;
+    }
+}
+
+/// Whether most non-empty cells of a row are numbers.
+fn mostly_numeric(row: &[String]) -> bool {
+    let filled: Vec<&String> = row.iter().filter(|c| !c.trim().is_empty()).collect();
+    let numeric = filled
+        .iter()
+        .filter(|c| super::document_model::is_numeric_cell(c))
+        .count();
+    numeric >= 1 && numeric * 2 >= filled.len()
+}
+
+/// Horizontal extent of each column: the narrowest box seen in it (a box shared by
+/// a spanning cell is wider than its columns).
+fn column_extents(cell_boxes: &[Vec<Option<BBox>>], width: usize) -> Vec<Option<(f32, f32)>> {
+    let mut out: Vec<Option<(f32, f32)>> = vec![None; width];
+    for row in cell_boxes {
+        for (column, cell) in row.iter().enumerate().take(width) {
+            let Some(b) = cell else { continue };
+            if out[column].is_none_or(|(x0, x1)| b.width() < x1 - x0) {
+                out[column] = Some((b.x0, b.x1));
+            }
+        }
+    }
+    out
+}
+
+/// Splits a header line into the table's columns: each word goes to the column
+/// whose extent is nearest to the word's centre. Word positions inside a run are
+/// estimated from character offsets. Returns per column the text and its box.
+fn split_into_columns(line: &Line, columns: &[Option<(f32, f32)>]) -> Vec<Option<(String, BBox)>> {
+    let mut out: Vec<Option<(String, BBox)>> = vec![None; columns.len()];
+    for (text, bbox) in &line.pieces {
+        let chars = text.chars().count().max(1) as f32;
+        let mut offset = 0usize;
+        for word in text.split(' ') {
+            let len = word.chars().count();
+            let trimmed = word.trim();
+            if !trimmed.is_empty() {
+                let x0 = bbox.x0 + bbox.width() * offset as f32 / chars;
+                let x1 = bbox.x0 + bbox.width() * (offset + len) as f32 / chars;
+                let centre = (x0 + x1) / 2.0;
+                let nearest = columns
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, c)| c.map(|(a, b)| (i, a, b)))
+                    .min_by(|(_, a0, a1), (_, b0, b1)| {
+                        distance(centre, *a0, *a1).total_cmp(&distance(centre, *b0, *b1))
+                    });
+                if let Some((column, _, _)) = nearest {
+                    let word_box = BBox::new(x0, bbox.y0, x1, bbox.y1);
+                    out[column] = Some(match out[column].take() {
+                        Some((t, b)) => (format!("{t} {trimmed}"), b.union(&word_box)),
+                        None => (trimmed.to_string(), word_box),
+                    });
+                }
+            }
+            offset += len + 1;
+        }
+    }
+    out
+}
+
+/// Distance from `x` to the interval `[x0, x1]` (0 inside it).
+fn distance(x: f32, x0: f32, x1: f32) -> f32 {
+    if x < x0 {
+        x0 - x
+    } else if x > x1 {
+        x - x1
+    } else {
+        0.0
     }
 }
 
@@ -798,6 +988,7 @@ impl RawBlock {
                     header: t.header,
                     rows: t.rows,
                     caption: None,
+                    cell_boxes: t.cell_boxes,
                 },
                 None => BlockKind::Paragraph,
             },
@@ -1067,6 +1258,7 @@ mod tests {
             bold,
             mono: false,
             chars: text.chars().filter(|c| !c.is_whitespace()).count(),
+            pieces: vec![(text.to_string(), BBox::new(x0, y0, x1, y0 + size))],
         }
     }
 

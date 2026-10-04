@@ -416,6 +416,7 @@ fn table_pieces(
         header,
         rows,
         caption,
+        ..
     } = &blocks[index].kind
     else {
         return vec![blocks[index].render()];
@@ -794,6 +795,7 @@ mod tests {
                 header: vec!["Model".into(), "PPL".into(), "Notes".into()],
                 rows,
                 caption: Some("Table 2: Results.".into()),
+                cell_boxes: Vec::new(),
             },
             "",
             4,

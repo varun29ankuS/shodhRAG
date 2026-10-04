@@ -12,6 +12,7 @@ pub mod harness;
 pub mod indexing;
 pub mod processing;
 pub mod rag_engine;
+pub mod research;
 pub mod reranking;
 pub mod search;
 pub mod space;

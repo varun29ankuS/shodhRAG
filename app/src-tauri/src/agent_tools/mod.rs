@@ -13,6 +13,7 @@ mod audit;
 mod calendar;
 mod export;
 mod files;
+mod graph;
 mod history;
 mod memory;
 mod papers;
@@ -145,8 +146,8 @@ pub trait HostEffects: Send + Sync {
     fn library_changed(&self, source_id: &str);
     /// A gallery visual of `conversation_id` was revised or organised: refresh the gallery.
     fn visuals_changed(&self, conversation_id: &str);
-    /// Snippets or results (`kind` `snippet` or `result`) of `file_path` changed: refresh
-    /// the Library and the gallery.
+    /// Snippets, results or the citation graph (`kind` `snippet`, `result` or `graph`) of
+    /// `file_path` changed: refresh the Library and the gallery.
     fn research_changed(&self, kind: &str, file_path: &str);
 }
 
@@ -205,6 +206,7 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     memory::register(&mut registry, &host)?;
     visuals::register(&mut registry, &host)?;
     papers::register(&mut registry, &host)?;
+    graph::register(&mut registry, &host)?;
     Ok(registry)
 }
 
@@ -353,6 +355,7 @@ pub(crate) mod testing {
             research: ResearchState::at(
                 memory.clone(),
                 Some((dir.path().join("shodh.db"), None)),
+                Default::default(),
                 Default::default(),
             ),
             memory,

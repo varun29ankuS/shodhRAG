@@ -13,6 +13,7 @@ mod doc_gen_commands;
 mod document_upload_commands;
 mod enhanced_rag_commands;
 mod file_watcher;
+mod graph_commands;
 mod history_commands;
 mod image_upload_commands;
 mod library_commands;
@@ -302,6 +303,12 @@ pub fn run() {
                 tracing::warn!("Search models are not installed; search needs first-run setup");
             }
 
+            // The citation graph ranks library files for queries about papers and
+            // citations; search reads the same snapshot the graph commands build.
+            let graph_slot: shodh_rag::research::citations::GraphSlot = Default::default();
+            default_rag.set_source_ranker(Some(Arc::new(
+                shodh_rag::research::citations::GraphRanker::new(graph_slot.clone()),
+            )));
             // PDFs indexed with table-candidate pages are refined in the background.
             let refinement = table_model_commands::spawn_refinement(app.handle(), &mut default_rag);
             let rag_engine = Arc::new(AsyncRwLock::new(default_rag));
@@ -321,7 +328,10 @@ pub fn run() {
                 app.state::<table_model_commands::TableModelState>()
                     .model
                     .clone(),
+                graph_slot,
             ));
+            // Load a graph built in an earlier session, so search can use it from the start.
+            graph_commands::warm(app.handle().clone());
             app.manage(memory_state);
             // Generated visuals (the gallery), in shodh.db. Opens on first use.
             let visual_state =
@@ -738,6 +748,12 @@ pub fn run() {
             research_commands::results_review,
             research_commands::results_query,
             research_commands::results_facets,
+            graph_commands::paper_graph_status,
+            graph_commands::paper_graph_build,
+            graph_commands::paper_graph_view,
+            graph_commands::paper_get,
+            graph_commands::papers_find,
+            graph_commands::paper_concept,
             // Calendar/Todo commands
             calendar_commands::load_tasks,
             calendar_commands::create_task,

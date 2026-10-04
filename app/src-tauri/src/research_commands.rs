@@ -1,5 +1,6 @@
-//! Snippets and Result statements: managed state and the commands of the PDF viewer, the
-//! focus pop-out, the Library's Snippets and Results views and the comparison builder.
+//! Snippets, Result statements and the citation graph: managed state and the commands of
+//! the PDF viewer, the focus pop-out, the Library's Snippets and Results views and the
+//! comparison builder (the graph's commands are in `graph_commands`).
 //!
 //! Both are research-pack statements in the statement store the memory layer opens (one
 //! `StatementStore` per LanceDB table, so its write lock covers every writer), with snippet
@@ -16,6 +17,7 @@ use shodh_rag::audit::payload::{is_cloud, provider_id};
 use shodh_rag::audit::AuditKey;
 use shodh_rag::llm::{ApiProvider, LLMMode};
 use shodh_rag::processing::table_model::SharedTableModel;
+use shodh_rag::research::citations::{CitationService, GraphSlot};
 use shodh_rag::research::pdf_text::PageRect;
 use shodh_rag::research::results::{
     Comparison, ExtractionReport, PaperResults, ResultFacets, ResultFilter, ResultService,
@@ -35,7 +37,7 @@ use crate::audit_commands::AuditState;
 use crate::llm_commands::LLMState;
 use crate::memory_commands::{MemoryState, APP_VERSION};
 
-/// Emitted with `{ "kind": "snippet" | "result", "filePath": ... }` after a write.
+/// Emitted with `{ "kind": "snippet" | "result" | "graph", "filePath": ... }` after a write.
 pub const RESEARCH_CHANGED_EVENT: &str = "research-changed";
 
 /// Error of a research command: `not_found`, `invalid`, `unavailable` or `storage`.
@@ -90,10 +92,13 @@ impl std::fmt::Display for ResearchCommandError {
 
 pub type ResearchCommandResult<T> = Result<T, ResearchCommandError>;
 
-/// The snippet and result services over one statement store.
+/// The snippet, result and citation graph services over one statement store.
 pub struct ResearchServices {
     pub snippets: SnippetService,
     pub results: ResultService,
+    pub citations: CitationService,
+    /// `shodh.db`'s research tables (the graph's scholarly cache lives there).
+    pub db: Arc<ResearchDb>,
 }
 
 /// Managed state: the research services, opened on first use (they need the statement
@@ -109,12 +114,20 @@ struct Inner {
     services: OnceCell<Arc<ResearchServices>>,
     /// The table model, when installed; result extraction structures tables with it.
     tables: SharedTableModel,
+    /// The citation graph snapshot, shared with the document search's ranker.
+    graph: GraphSlot,
 }
 
 impl ResearchState {
-    /// State over the app's memory store and the database the audit log opened.
-    pub fn new(memory: MemoryState, audit: &AuditState, tables: SharedTableModel) -> Self {
-        Self::at(memory, audit.database(), tables)
+    /// State over the app's memory store and the database the audit log opened. `graph` is
+    /// the slot the document search's graph ranker reads.
+    pub fn new(
+        memory: MemoryState,
+        audit: &AuditState,
+        tables: SharedTableModel,
+        graph: GraphSlot,
+    ) -> Self {
+        Self::at(memory, audit.database(), tables, graph)
     }
 
     /// State over `memory`'s statement store and `shodh.db` at `database`.
@@ -122,6 +135,7 @@ impl ResearchState {
         memory: MemoryState,
         database: Option<(PathBuf, Option<AuditKey>)>,
         tables: SharedTableModel,
+        graph: GraphSlot,
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
@@ -129,6 +143,7 @@ impl ResearchState {
                 database,
                 services: OnceCell::new(),
                 tables,
+                graph,
             }),
         }
     }
@@ -158,8 +173,14 @@ impl ResearchState {
                 let store = service.store().clone();
                 Ok(Arc::new(ResearchServices {
                     snippets: SnippetService::new(store.clone(), db.clone(), APP_VERSION),
-                    results: ResultService::new(store, db, APP_VERSION)
+                    citations: CitationService::new(
+                        store.clone(),
+                        db.clone(),
+                        self.inner.graph.clone(),
+                    ),
+                    results: ResultService::new(store, db.clone(), APP_VERSION)
                         .with_table_model(self.inner.tables.clone()),
+                    db,
                 }))
             })
             .await

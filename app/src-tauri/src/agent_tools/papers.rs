@@ -62,7 +62,7 @@ fn research_error(error: shodh_rag::research::ResearchError) -> ToolError {
 
 /// The scopes a run sees: its workspace and global ones, or everything in a global
 /// conversation (snippets and results are the user's own documents).
-fn run_scopes(ctx: &ToolContext) -> Vec<Scope> {
+pub(super) fn run_scopes(ctx: &ToolContext) -> Vec<Scope> {
     scopes_for(ctx.scope().workspace.as_deref())
 }
 

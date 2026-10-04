@@ -12,6 +12,7 @@
 //! memory layer (which only reads `conversation://` and settings sources) never sees them.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod citations;
 #[cfg(test)]
 mod corpus_dump;
 pub mod db;

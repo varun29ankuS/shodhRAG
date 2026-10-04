@@ -1,5 +1,6 @@
 //! `export_document` (write): save the model's markdown, with its `[n]`
-//! citations resolved into a Sources section, as Markdown or Word (DOCX).
+//! citations resolved into a Sources section, as Word (DOCX), Markdown or
+//! PDF.
 //!
 //! Where files go:
 //! - by default `Documents/Shodh exports/` (created when missing);
@@ -11,9 +12,11 @@
 //!   auto-approved; the file is written to exactly the approved path or not
 //!   at all.
 //!
-//! PDF is not offered: the maintained pure-Rust writer (printpdf) only has
-//! the 14 standard fonts, which cannot encode most non-Latin text, so a PDF
-//! export would need a bundled font and a text layout engine.
+//! PDF is printed by the app's own WebView (`crate::pdf_export`), so math,
+//! diagrams, charts, figures and every script look as they do in the app.
+//! It needs a system where the app writes PDFs itself (Windows, WebView2);
+//! elsewhere the call fails before asking and the user is pointed to
+//! Export → PDF on the answer, which opens the system print dialog.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
@@ -40,6 +43,7 @@ use super::files::{
     sanitize_name,
 };
 use super::{invalid, str_arg, AgentHost};
+use crate::pdf_export::{print_reserved, PdfExportError, PrintDocument, PrintSource};
 
 /// Folder created under the user's Documents folder for exports.
 pub const EXPORTS_FOLDER: &str = "Shodh exports";
@@ -59,20 +63,69 @@ pub(super) fn register(
 enum Format {
     Markdown,
     Docx,
+    Pdf,
 }
 
 impl Format {
-    fn parse(raw: Option<&str>) -> Self {
+    /// The format named by `raw` (`docx` when absent). Unknown names are an
+    /// error, never a silent fallback to Word.
+    fn parse(raw: Option<&str>) -> Result<Self, ToolError> {
         match raw {
-            Some("md") | Some("markdown") => Format::Markdown,
-            _ => Format::Docx,
+            None | Some("docx") => Ok(Format::Docx),
+            Some("md") | Some("markdown") => Ok(Format::Markdown),
+            Some("pdf") => Ok(Format::Pdf),
+            Some(other) => Err(invalid(
+                app_tools::EXPORT_DOCUMENT,
+                format!("unknown format {other}; use docx, md or pdf"),
+            )),
         }
     }
     fn extension(self) -> &'static str {
         match self {
             Format::Markdown => "md",
             Format::Docx => "docx",
+            Format::Pdf => "pdf",
         }
+    }
+}
+
+/// Why a PDF cannot be written on this system, as the model is told.
+const PDF_UNAVAILABLE: &str = "PDF files can only be written by the app on Windows. On this \
+     system the user can open the answer's Export → PDF, which shows the system print dialog \
+     (choose Save as PDF); offer docx or md instead.";
+
+/// The print job for a PDF export: the markdown and its resolved sources.
+fn print_document(title: &str, markdown: &str, sources: &[SourceEntry]) -> PrintDocument {
+    PrintDocument {
+        title: title.to_string(),
+        subtitle: None,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        markdown: markdown.to_string(),
+        sources: sources
+            .iter()
+            .map(|s| PrintSource {
+                n: s.n,
+                title: if s.title.trim().is_empty() {
+                    format!("Source {}", s.n)
+                } else {
+                    s.title.chars().take(300).collect()
+                },
+                location: s.location.as_ref().map(|l| l.chars().take(1_000).collect()),
+                url: s
+                    .url
+                    .clone()
+                    .filter(|u| u.starts_with("https://") || u.starts_with("http://"))
+                    .filter(|u| u.chars().count() <= 2_048),
+            })
+            .collect(),
+    }
+}
+
+fn pdf_error(error: PdfExportError) -> ToolError {
+    match error {
+        PdfExportError::InvalidDocument(reason) => invalid(app_tools::EXPORT_DOCUMENT, reason),
+        PdfExportError::Unsupported => ToolError::Unavailable(PDF_UNAVAILABLE.to_string()),
+        other => ToolError::Failed(other.to_string()),
     }
 }
 
@@ -599,7 +652,10 @@ impl ExportDocumentTool {
     async fn plan(&self, args: &Value) -> Result<Plan, ToolError> {
         let tool = app_tools::EXPORT_DOCUMENT;
         let title = str_arg(args, "title").ok_or_else(|| invalid(tool, "`title` is required"))?;
-        let format = Format::parse(str_arg(args, "format"));
+        let format = Format::parse(str_arg(args, "format"))?;
+        if format == Format::Pdf && !self.host.pdf.writes_files() {
+            return Err(ToolError::Unavailable(PDF_UNAVAILABLE.to_string()));
+        }
         let (folder, create_folder) = match str_arg(args, "folder") {
             Some(raw) => (existing_folder(tool, raw)?, false),
             None => {
@@ -645,8 +701,9 @@ impl HostTool for ExportDocumentTool {
         "Exporting {title}[ as {format!}]"
     }
     fn description(&self) -> &'static str {
-        "Save a document you wrote (markdown, with [n] citations) as Word (docx, default) or \
-         Markdown (md). Citations are resolved into a Sources section listing each file and page \
+        "Save a document you wrote (markdown, with [n] citations) as Word (docx, default), \
+         Markdown (md) or PDF (pdf: printed like the app shows it, with math, diagrams, charts \
+         and figures). Citations are resolved into a Sources section listing each file and page \
          or web page; citations from earlier answers need an entry in sources. Saves to \
          Documents/Shodh exports unless you pass an existing folder; never overwrites (adds (2), \
          (3)…). Saving inside an indexed folder always asks the user."
@@ -657,7 +714,7 @@ impl HostTool for ExportDocumentTool {
             "properties": {
                 "title": {"type": "string", "minLength": 1, "maxLength": 200},
                 "markdown": {"type": "string", "minLength": 1, "maxLength": MAX_MARKDOWN_CHARS},
-                "format": {"type": "string", "enum": ["docx", "md"]},
+                "format": {"type": "string", "enum": ["docx", "md", "pdf"]},
                 "file_name": {"type": "string", "minLength": 1, "maxLength": 200},
                 "folder": {"type": "string", "minLength": 3, "maxLength": 1024},
                 "sources": {
@@ -742,9 +799,15 @@ impl HostTool for ExportDocumentTool {
             ));
         }
         let bytes = match plan.format {
-            Format::Markdown => markdown_bytes(&plan.title, markdown, &sources),
-            Format::Docx => docx_bytes(&plan.title, markdown, &sources)?,
+            Format::Markdown => Some(markdown_bytes(&plan.title, markdown, &sources)),
+            Format::Docx => Some(docx_bytes(&plan.title, markdown, &sources)?),
+            Format::Pdf => None,
         };
+        let document =
+            (plan.format == Format::Pdf).then(|| print_document(&plan.title, markdown, &sources));
+        if let Some(document) = &document {
+            document.validate().map_err(pdf_error)?;
+        }
         if plan.create_folder {
             std::fs::create_dir_all(&plan.folder).map_err(|e| {
                 ToolError::Unavailable(format!("Could not create {}: {e}", plan.folder.display()))
@@ -782,21 +845,40 @@ impl HostTool for ExportDocumentTool {
                 })?
             }
         };
-        if let Err(e) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
-            drop(file);
-            if let Err(cleanup) = std::fs::remove_file(&path) {
-                tracing::warn!(path = %path.display(), error = %cleanup, "removing a partial export failed");
+        let size = match (&bytes, &document) {
+            (Some(bytes), _) => {
+                if let Err(e) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+                    drop(file);
+                    if let Err(cleanup) = std::fs::remove_file(&path) {
+                        tracing::warn!(path = %path.display(), error = %cleanup, "removing a partial export failed");
+                    }
+                    return Err(ToolError::Failed(format!(
+                        "Writing {} failed: {e}",
+                        path.display()
+                    )));
+                }
+                bytes.len()
             }
-            return Err(ToolError::Failed(format!(
-                "Writing {} failed: {e}",
-                path.display()
-            )));
-        }
+            (None, Some(document)) => {
+                // The printer opens the reserved file itself; this handle
+                // would make its write fail with a sharing violation.
+                drop(file);
+                let written = print_reserved(self.host.pdf.as_ref(), document, &path)
+                    .await
+                    .map_err(pdf_error)?;
+                usize::try_from(written).unwrap_or(usize::MAX)
+            }
+            (None, None) => {
+                return Err(ToolError::Failed(
+                    "internal error: nothing to write".to_string(),
+                ))
+            }
+        };
         let shown = path.display().to_string();
         Ok(ToolOutput {
             text_for_model: format!(
                 "Saved {shown} ({} KB, {} sources).",
-                bytes.len().div_ceil(1024),
+                size.div_ceil(1024),
                 sources.len()
             ),
             summary_for_ui: format!(
@@ -809,7 +891,7 @@ impl HostTool for ExportDocumentTool {
                 "path": shown,
                 "folder": plan.folder.display().to_string(),
                 "format": plan.format.extension(),
-                "bytes": bytes.len(),
+                "bytes": size,
                 "sources": sources.iter().map(SourceEntry::line).collect::<Vec<_>>(),
             })),
         })
@@ -962,5 +1044,164 @@ mod tests {
         tool.preview_in(&args, &ctx).await.unwrap();
         let out = tool.execute(args, &ctx).await.unwrap();
         assert_eq!(out.detail.unwrap()["path"], approved_path);
+    }
+
+    #[test]
+    fn formats_are_parsed_strictly() {
+        assert_eq!(Format::parse(None).unwrap(), Format::Docx);
+        assert_eq!(Format::parse(Some("pdf")).unwrap(), Format::Pdf);
+        assert_eq!(Format::parse(Some("markdown")).unwrap(), Format::Markdown);
+        assert!(matches!(
+            Format::parse(Some("rtf")),
+            Err(ToolError::InvalidArguments { .. })
+        ));
+        assert_eq!(Format::Pdf.extension(), "pdf");
+    }
+
+    #[tokio::test]
+    async fn pdf_exports_print_the_markdown_with_its_sources_and_never_overwrite() {
+        let t = testing::host().await;
+        let tool = ExportDocumentTool {
+            host: t.host.clone(),
+            approved: Mutex::new(HashMap::new()),
+        };
+        let ctx = ctx_with_passages();
+        let args = json!({"title": "Lease notes", "markdown": BODY, "format": "pdf"});
+        let folder = t.effects.documents.join(EXPORTS_FOLDER);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("Lease notes.pdf"), b"user file").unwrap();
+        let out = tool.execute(args, &ctx).await.unwrap();
+        let detail = out.detail.unwrap();
+        let path = detail["path"].as_str().unwrap().to_string();
+        assert!(path.ends_with("Lease notes (2).pdf"), "{path}");
+        assert_eq!(detail["format"], "pdf");
+        assert!(std::fs::read(&path).unwrap().starts_with(b"%PDF"));
+        assert_eq!(
+            std::fs::read(folder.join("Lease notes.pdf")).unwrap(),
+            b"user file"
+        );
+        let printed = t.printer.printed();
+        assert_eq!(printed.len(), 1);
+        let (document, printed_to) = &printed[0];
+        assert_eq!(printed_to, Path::new(&path));
+        assert_eq!(document.title, "Lease notes");
+        assert_eq!(document.markdown, BODY.trim());
+        assert!(chrono::DateTime::parse_from_rfc3339(&document.created_at).is_ok());
+        assert_eq!(
+            document.sources,
+            vec![
+                PrintSource {
+                    n: 1,
+                    title: "lease.pdf".into(),
+                    location: Some("page 4".into()),
+                    url: None
+                },
+                PrintSource {
+                    n: 2,
+                    title: "Rust blog".into(),
+                    location: None,
+                    url: Some("https://blog.example/r".into())
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn pdf_exports_fail_cleanly_where_the_app_cannot_print_or_printing_fails() {
+        let t = testing::host().await;
+        let ctx = ctx_with_passages();
+        let args = json!({"title": "Lease notes", "markdown": BODY, "format": "pdf"});
+        let folder = t.effects.documents.join(EXPORTS_FOLDER);
+
+        let dialog_only = ExportDocumentTool {
+            host: testing::with_printer(
+                &t,
+                Arc::new(crate::pdf_export::testing::FakePrinter::dialog_only()),
+            ),
+            approved: Mutex::new(HashMap::new()),
+        };
+        // Refused before the approval prompt, with the way the user can do it.
+        let err = dialog_only.preview_in(&args, &ctx).await.unwrap_err();
+        assert!(matches!(&err, ToolError::Unavailable(m) if m.contains("Export → PDF")));
+        assert!(matches!(
+            dialog_only.execute(args.clone(), &ctx).await,
+            Err(ToolError::Unavailable(_))
+        ));
+
+        let failing = ExportDocumentTool {
+            host: testing::with_printer(
+                &t,
+                Arc::new(crate::pdf_export::testing::FakePrinter::failing(
+                    PdfExportError::RenderTimeout(90),
+                )),
+            ),
+            approved: Mutex::new(HashMap::new()),
+        };
+        let err = failing.execute(args, &ctx).await.unwrap_err();
+        assert!(
+            matches!(&err, ToolError::Failed(m) if m.contains("90 seconds")),
+            "{err}"
+        );
+        let left: Vec<_> = std::fs::read_dir(&folder)
+            .map(|d| d.filter_map(Result::ok).map(|e| e.file_name()).collect())
+            .unwrap_or_default();
+        assert!(left.is_empty(), "no partial file: {left:?}");
+    }
+
+    #[tokio::test]
+    async fn pdf_exports_are_audited_as_write_tool_calls() {
+        use shodh_rag::audit::{AuditEventType, AuditQuery, AuditRecord, AuditScope};
+        use shodh_rag::harness::profile::AgentProfile;
+        use shodh_rag::harness::tools::{ApprovalGate, ToolAudit, ToolCall};
+
+        let t = testing::host().await;
+        let registry = super::super::build_registry(t.host.clone()).unwrap();
+        let log = t.host.audit.clone().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let ctx = ToolContext::new("run-9", "step-1", tx).with_audit(Some(ToolAudit {
+            log: log.clone(),
+            scope: AuditScope {
+                principal: "local-owner".into(),
+                conversation_id: "conv-1".into(),
+                profile_id: "assistant".into(),
+            },
+        }));
+        let profile = AgentProfile {
+            auto_approve_writes: true,
+            ..AgentProfile::assistant()
+        };
+        let outcome = registry
+            .dispatch(
+                ToolCall {
+                    tool: app_tools::EXPORT_DOCUMENT.to_string(),
+                    args: json!({"title": "Plain", "markdown": "No sources here.", "format": "pdf"}),
+                    call_index: 1,
+                },
+                &profile,
+                &ApprovalGate::default(),
+                &ctx,
+            )
+            .await;
+        assert!(outcome.ok, "{}", outcome.text_for_model);
+        // A barrier record: the log writes in the background, in order.
+        log.append(AuditRecord::new(
+            AuditEventType::Question,
+            json!({"text": "barrier"}),
+        ))
+        .unwrap();
+        let calls = log
+            .query(&AuditQuery {
+                types: vec![AuditEventType::ToolCall],
+                ..Default::default()
+            })
+            .unwrap();
+        let call = calls
+            .iter()
+            .find(|r| r.payload["tool"] == app_tools::EXPORT_DOCUMENT)
+            .expect("the export is audited");
+        assert_eq!(call.payload["args"]["format"], "pdf");
+        assert_eq!(call.payload["tier"], "write");
+        assert_eq!(call.payload["ok"], true);
+        assert_eq!(t.printer.printed().len(), 1);
     }
 }

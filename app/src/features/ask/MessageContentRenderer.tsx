@@ -36,6 +36,7 @@ import { escapeCurrency, isMermaidLanguage, mermaidSource, normalizeMathDelimite
 import type { ClaimCheck } from '../agent/events';
 import { FLAG_CLOSE, FLAG_OPEN, insertFlagMarkers, parseCitationMarkers } from '../agent/grounding';
 import { ClaimFlag, InvalidCitation } from '../agent/GroundingFlags';
+import { sourceAnchor } from '../print/printModel';
 
 /** Citation placeholders: ASCII markers that survive markdown parsing. */
 const CITE_OPEN = 'XCSHODH';
@@ -137,6 +138,11 @@ export interface MessageContentRendererProps {
    * dropped when there are no sources.
    */
   flagUnknownCitations?: boolean;
+  /**
+   * Printing (the PDF print view): citations become plain `[n]` links to the
+   * printed Sources list, and numbers without a source stay plain text.
+   */
+  print?: boolean;
 }
 
 /**
@@ -163,6 +169,7 @@ export function MessageContentRenderer({
   citations = true,
   claims,
   flagUnknownCitations = false,
+  print = false,
 }: MessageContentRendererProps) {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
@@ -249,6 +256,16 @@ export function MessageContentRenderer({
       }
       const number = Number(match[1]);
       const hit = hitsByNumber.get(number);
+      if (print) {
+        parts.push(
+          hit ? (
+            <a key={`cite-${index}-${number}`} href={`#${sourceAnchor(number)}`} className="print-cite">{`[${number}]`}</a>
+          ) : (
+            `[${number}]`
+          ),
+        );
+        continue;
+      }
       if (hit) {
         const isActive = activeCitation === number;
         // Web sources are untrusted and outside the user's documents: they
@@ -283,7 +300,7 @@ export function MessageContentRenderer({
     }
     if (lastIndex < text.length) parts.push(text.slice(lastIndex));
     return parts.length > 0 ? <>{parts}</> : text;
-  }, [hitsByNumber, activeCitation, onOpenCitation, claims, flagUnknownCitations]);
+  }, [hitsByNumber, activeCitation, onOpenCitation, claims, flagUnknownCitations, print]);
 
   const processChildren = useCallback((children: React.ReactNode): React.ReactNode =>
     React.Children.map(children, child => {

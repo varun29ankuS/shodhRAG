@@ -13,7 +13,7 @@ mod audit;
 mod calendar;
 mod export;
 mod figures;
-mod files;
+pub(crate) mod files;
 mod graph;
 mod history;
 mod memory;
@@ -168,6 +168,8 @@ pub struct AgentHost {
     pub visuals: VisualState,
     /// Snippets and Result statements (opened on first use).
     pub research: ResearchState,
+    /// Prints documents to PDF (`export_document` with format `pdf`).
+    pub pdf: Arc<dyn crate::pdf_export::PdfPrinter>,
 }
 
 /// Build the registry with every agent tool. Fails if two tools share a
@@ -320,6 +322,7 @@ pub(crate) mod testing {
         pub host: Arc<AgentHost>,
         pub effects: Arc<Recorder>,
         pub roots: Arc<FixedRoots>,
+        pub printer: Arc<crate::pdf_export::testing::FakePrinter>,
     }
 
     /// A host with an empty RAG engine (no search models) and an audit log
@@ -347,6 +350,7 @@ pub(crate) mod testing {
         });
         std::fs::create_dir_all(&effects.documents).unwrap();
         let roots = Arc::new(FixedRoots::default());
+        let printer = Arc::new(crate::pdf_export::testing::FakePrinter::writing());
         let host = Arc::new(AgentHost {
             data_dir: dir.path().to_path_buf(),
             rag: Arc::new(RwLock::new(rag)),
@@ -362,12 +366,14 @@ pub(crate) mod testing {
             ),
             memory,
             visuals: VisualState::at(Some((dir.path().join("shodh.db"), None))),
+            pdf: printer.clone(),
         });
         TestHost {
             dir,
             host,
             effects,
             roots,
+            printer,
         }
     }
 
@@ -409,6 +415,26 @@ pub(crate) mod testing {
             memory: t.host.memory.clone(),
             visuals: t.host.visuals.clone(),
             research: t.host.research.clone(),
+            pdf: t.host.pdf.clone(),
+        })
+    }
+
+    /// The test host with another PDF printer.
+    pub fn with_printer(
+        t: &TestHost,
+        pdf: Arc<dyn crate::pdf_export::PdfPrinter>,
+    ) -> Arc<AgentHost> {
+        Arc::new(AgentHost {
+            data_dir: t.host.data_dir.clone(),
+            rag: t.host.rag.clone(),
+            audit: t.host.audit.clone(),
+            effects: t.host.effects.clone(),
+            web: t.host.web.clone(),
+            roots: t.host.roots.clone(),
+            memory: t.host.memory.clone(),
+            visuals: t.host.visuals.clone(),
+            research: t.host.research.clone(),
+            pdf,
         })
     }
 

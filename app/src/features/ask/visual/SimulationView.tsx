@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Pause, Play, RotateCcw, Square } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { FocusFrame } from '../../focus/FocusFrame';
+import { usePrintMode } from '../../print/printContext';
 import { simulationTarget } from '../../focus/targets';
 import type { FocusParamValue } from '../../focus/focusTypes';
 import { BlockError } from './VisualBlocks';
@@ -419,6 +420,7 @@ export function SimulationPlayer({
 
 /** A ```simulation block in an answer. */
 export function SimulationBlock({ source }: { source: string }) {
+  const printing = usePrintMode();
   const result = useMemo(() => parseSimulationSpec(source), [source]);
   const model = result.ok ? result.model : null;
   const valuesRef = useRef<FocusParamValue[]>([]);
@@ -429,6 +431,17 @@ export function SimulationBlock({ source }: { source: string }) {
 
   if ('error' in result) return <BlockError title="Simulation not run" message={result.error} source={source} />;
   if (!model) return null;
+  if (printing) {
+    // Printed: the first frame, without controls, and where to run it.
+    return (
+      <figure className="m-0 my-4 rounded-xl border border-shodh-border bg-shodh-surface p-4" data-print-block="">
+        <SimulationPlayer model={model} maxHeight={380} autoPlay={false} />
+        <figcaption className="mt-2 text-[12px] text-shodh-text-muted">
+          Still of the first frame. The simulation is interactive in Shodh.
+        </figcaption>
+      </figure>
+    );
+  }
   return (
     <FocusFrame noun="simulation" getTarget={getTarget} doubleClick={false} className="my-4">
       <figure className="m-0 rounded-xl border border-shodh-border bg-shodh-surface p-4">

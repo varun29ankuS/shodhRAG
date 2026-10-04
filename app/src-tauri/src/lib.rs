@@ -24,6 +24,7 @@ mod mcp;
 mod mcp_commands;
 mod memory_commands;
 mod memory_learn;
+mod pdf_export;
 mod rag_commands;
 mod reminders;
 mod research_commands;
@@ -371,6 +372,7 @@ pub fn run() {
                 }
             }
             app.manage(agent_session_commands::AgentSessions::default());
+            pdf_export::manage(app.handle());
             let analytics_path = app_data_dir.join("analytics.json");
             app.manage(AnalyticsState::load_or_default(&analytics_path));
             app.manage(TemplateStore::default());
@@ -521,6 +523,9 @@ pub fn run() {
             enhanced_rag_commands::cancel_indexing,
             enhanced_rag_commands::check_path_type,
             // Window commands
+            pdf_export::export_pdf,
+            pdf_export::print_job,
+            pdf_export::print_job_ready,
             window_commands::create_floating_widget,
             window_commands::show_main_window,
             window_commands::watch_folder,

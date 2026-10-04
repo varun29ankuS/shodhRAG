@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { CornerLeftUp, FileText, Loader2, MessageSquarePlus, Sparkles, TextSelect, X } from 'lucide-react';
+import { CornerLeftUp, FileDown, FileText, Loader2, MessageSquarePlus, Sparkles, TextSelect, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import { AgentComposer } from '../agent/AgentComposer';
@@ -18,6 +18,8 @@ import { FocusDrillProvider, useFocus } from './FocusContext';
 import type { OpenFocus, SummaryResult } from './FocusContext';
 import { splitFollowups, stripFollowups } from './followups';
 import { threadSummary } from './threadStore';
+import { exportPdf } from '../print/exportPdf';
+import { buildPrintDocument } from '../print/printModel';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -401,6 +403,20 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
                 </div>
               )}
               <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => void exportPdf(buildPrintDocument({
+                    title: `Summary: ${label}`,
+                    subtitle: 'Summary of a side discussion in Shodh',
+                    markdown: summary.text,
+                  }))}
+                  disabled={!summary.text.trim()}
+                  aria-label="Export this summary as PDF"
+                  className={cn('mr-auto h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12.5px] text-shodh-text-secondary hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro', FOCUS_RING)}
+                >
+                  <FileDown className="w-3.5 h-3.5" aria-hidden="true" />
+                  Export PDF
+                </button>
                 <button
                   type="button"
                   onClick={cancelSummary}

@@ -7,6 +7,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App-SplitView";
 import DailyBriefWindow from "./DailyBrief";
 import MapViewWindow from "./MapView";
+import PrintView from "./features/print/PrintView";
 import { ThemeProvider, useTheme } from "./contexts/ThemeContext";
 import { SidebarProvider } from "./contexts/SidebarContext";
 import { SearchModelsProvider } from "./features/setup/SearchModelsContext";
@@ -60,24 +61,39 @@ function ThemedToaster() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    {/* Every framer-motion animation follows prefers-reduced-motion. */}
-    <MotionConfig reducedMotion="user">
+const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
+
+if (path === '/print-view') {
+  // A print window (PDF export): always light, no app shell.
+  root.render(
+    <React.StrictMode>
       <ErrorBoundary>
-        <ThemeProvider>
-          <SidebarProvider>
-            {Component === App ? (
-              <SearchModelsProvider>
-                <App />
-              </SearchModelsProvider>
-            ) : (
-              <Component />
-            )}
-            <ThemedToaster />
-          </SidebarProvider>
+        <ThemeProvider forced="light">
+          <PrintView />
         </ThemeProvider>
       </ErrorBoundary>
-    </MotionConfig>
-  </React.StrictMode>,
-);
+    </React.StrictMode>,
+  );
+} else {
+  root.render(
+    <React.StrictMode>
+      {/* Every framer-motion animation follows prefers-reduced-motion. */}
+      <MotionConfig reducedMotion="user">
+        <ErrorBoundary>
+          <ThemeProvider>
+            <SidebarProvider>
+              {Component === App ? (
+                <SearchModelsProvider>
+                  <App />
+                </SearchModelsProvider>
+              ) : (
+                <Component />
+              )}
+              <ThemedToaster />
+            </SidebarProvider>
+          </ThemeProvider>
+        </ErrorBoundary>
+      </MotionConfig>
+    </React.StrictMode>,
+  );
+}

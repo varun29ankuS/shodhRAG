@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUpRight, Check, Copy, CornerLeftUp, FolderPlus, Globe, MessagesSquare, RotateCcw } from 'lucide-react';
+import { ArrowUpRight, Check, Copy, CornerLeftUp, FileDown, FolderPlus, Globe, MessagesSquare, RotateCcw } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { cn } from '../../lib/utils';
 import type { ViewTab } from '../../lib/viewTabs';
@@ -37,6 +37,8 @@ import type { MessageReveal } from '../visuals/reveal';
 import { scrollBehavior } from './viewer/sourceAccess';
 import type { ChatMessage, SearchHit, SendOptions } from './types';
 import { SnippetDropZone } from '../research/SnippetDropZone';
+import { exportPdf } from '../print/exportPdf';
+import { answerTitle, buildPrintDocument } from '../print/printModel';
 import { COMPOSER_INSERT_EVENT, onWindowEvent, takePendingInserts } from '../research/snippetBus';
 import { appendToDraft } from '../research/snippetModel';
 
@@ -235,6 +237,41 @@ function CopyAnswerButton({ text }: { text: string }) {
   );
 }
 
+/** Export → PDF of one answer, printed as the app shows it, with its sources. */
+function ExportPdfButton({ message, question, hits }: { message: ChatMessage; question: string | null; hits: readonly SearchHit[] }) {
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    setBusy(true);
+    try {
+      const fromQuestion = question ? answerTitle(question, '') : '';
+      await exportPdf(buildPrintDocument({
+        title: fromQuestion || answerTitle(message.content),
+        subtitle: fromQuestion ? null : 'Answer from Shodh',
+        createdAt: message.timestamp,
+        markdown: message.content,
+        hits,
+      }));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={() => void run()}
+      disabled={busy}
+      aria-label="Export this answer as PDF"
+      title="Export as PDF"
+      className={cn(
+        'w-8 h-8 inline-flex items-center justify-center rounded-lg text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-40 disabled:cursor-wait transition-colors duration-micro',
+        FOCUS_RING,
+      )}
+    >
+      <FileDown className="w-[15px] h-[15px]" aria-hidden="true" />
+    </button>
+  );
+}
+
 /** "2 replies about Revenue by quarter": reopens that side discussion. */
 function ThreadChips({ threads, onOpen }: { threads: readonly FocusThread[]; onOpen: (thread: FocusThread, trigger: HTMLElement) => void }) {
   // Nested (drill-down) discussions open from their root; the chip counts them.
@@ -270,6 +307,8 @@ interface AssistantMessageProps {
   /** Conversation the message belongs to (anchors side discussions). */
   conversationId: string | null;
   message: ChatMessage;
+  /** The question this answers (the user message before it), for the PDF title. */
+  question: string | null;
   activeCitation: number | null;
   activeFile: string | null;
   canRetry: boolean;
@@ -290,6 +329,7 @@ const REVEAL_HIGHLIGHT_MS = 2_400;
 function AssistantMessage({
   conversationId,
   message,
+  question,
   activeCitation,
   activeFile,
   canRetry,
@@ -397,6 +437,7 @@ function AssistantMessage({
       {!running && (
         <div className="flex items-center gap-0.5 opacity-60 group-hover/msg:opacity-100 focus-within:opacity-100 transition-opacity duration-micro">
           {message.content.length > 0 && <CopyAnswerButton text={message.content} />}
+          {message.content.trim().length > 0 && <ExportPdfButton message={message} question={question} hits={hits} />}
           {(message.run || transcript) && (
           <button
             type="button"
@@ -862,7 +903,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
           aria-label="Conversation"
           aria-live="off"
         >
-          {messages.map(message => {
+          {messages.map((message, index) => {
             if (message.role === 'user') {
               const summary = message.sideSummary;
               if (summary) {
@@ -893,6 +934,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
                 key={message.id}
                 conversationId={conversationId}
                 message={message}
+                question={index > 0 && messages[index - 1].role === 'user' ? messages[index - 1].content : null}
                 activeCitation={isPreviewed ? preview.hit.number : null}
                 activeFile={isPreviewed ? preview.hit.sourceFile : null}
                 canRetry={streamingConversationId === null && sideRun === null}

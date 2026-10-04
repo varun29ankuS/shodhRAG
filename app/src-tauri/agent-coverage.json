@@ -49,6 +49,9 @@
     "audit_query": { "tool": "audit_query" },
     "audit_stats": { "tool": "audit_query" },
     "audit_verify": { "excluded": "The tamper-evidence check is the user's control over the assistant; a result reported by the assistant itself is not evidence." },
+    "export_pdf": { "tool": "export_document" },
+    "print_job": { "excluded": "Plumbing of the print window: the print view fetches the document it was opened to print. The agent prints through export_document with format pdf." },
+    "print_job_ready": { "excluded": "Plumbing of the print window: the print view reports that it finished rendering so the app can print it. The agent prints through export_document with format pdf." },
     "audit_export": { "excluded": "Audit policy is withheld from the assistant: exporting moves the record of its own actions." },
     "audit_set_retention_days": { "excluded": "Audit policy is withheld from the assistant: shortening retention deletes the record of its own actions." },
 

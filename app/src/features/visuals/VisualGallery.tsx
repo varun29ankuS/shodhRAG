@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, CornerDownRight, Download, Loader2, MoreHorizontal, Pencil, Pin, PinOff, Search, Trash2 } from 'lucide-react';
+import { AlertTriangle, CornerDownRight, Download, FileDown, Loader2, MoreHorizontal, Pencil, Pin, PinOff, Search, Trash2 } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
@@ -20,6 +20,8 @@ import { SnippetCard } from '../research/SnippetCard';
 import { useSnippetList } from '../research/useSnippets';
 import { backfillOnce } from './recording';
 import { VisualThumb } from './VisualThumb';
+import { exportPdf } from '../print/exportPdf';
+import { buildPrintDocument, visualPrintMarkdown } from '../print/printModel';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -43,6 +45,7 @@ function CardMenu({
   onPin,
   onEdit,
   onExport,
+  onExportPdf,
   onGoTo,
   onDelete,
 }: {
@@ -51,6 +54,7 @@ function CardMenu({
   onPin: () => void;
   onEdit: () => void;
   onExport: (format: ExportFormat) => void;
+  onExportPdf: () => void;
   onGoTo: (() => void) | null;
   onDelete: () => void;
 }) {
@@ -113,6 +117,10 @@ function CardMenu({
           {`Export ${FORMAT_LABEL[format]}…`}
         </button>
       ))}
+      <button type="button" role="menuitem" tabIndex={-1} className={MENU_ITEM} onClick={act(onExportPdf)}>
+        <FileDown className="w-3.5 h-3.5" aria-hidden="true" />
+        Export PDF…
+      </button>
       <button type="button" role="menuitem" tabIndex={-1} className={MENU_ITEM} disabled={!onGoTo} onClick={onGoTo ? act(onGoTo) : undefined}>
         <CornerDownRight className="w-3.5 h-3.5" aria-hidden="true" />
         Go to message
@@ -230,6 +238,12 @@ function VisualCard({
             onPin={pin}
             onEdit={() => setEditing(true)}
             onExport={format => void runExport(card, format, thumbRef.current, theme === 'dark')}
+            onExportPdf={() => void exportPdf(buildPrintDocument({
+              title: card.title || KIND_NOUN[card.kind],
+              subtitle: `${KIND_NOUN[card.kind]} from Shodh`,
+              createdAt: card.updatedAt,
+              markdown: visualPrintMarkdown(card),
+            }))}
             onGoTo={card.messageId ? () => goToMessage(card, switchConversation) : null}
             onDelete={() => {
               void confirmDelete(card).then(deleted => {

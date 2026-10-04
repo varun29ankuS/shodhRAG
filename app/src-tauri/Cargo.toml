@@ -77,6 +77,10 @@ dashmap = "5.5"
 
 # Windows OCR
 [target.'cfg(windows)'.dependencies]
+# WebView2 PrintToPdf for PDF export (pdf_export.rs). Same versions as wry
+# uses, so `PlatformWebview::controller()` returns these exact types.
+webview2-com = "0.38.2"
+windows-core = "0.61.2"
 windows = { version = "0.58", features = [
     "Media_Ocr",
     "Graphics_Imaging",

@@ -689,6 +689,10 @@ pub async fn agent_start(
                 memory: memory.inner().clone(),
                 visuals: visuals.inner().clone(),
                 research: research.inner().clone(),
+                pdf: app
+                    .state::<crate::pdf_export::PdfExportState>()
+                    .printer
+                    .clone(),
             });
             build_registry(host)
                 .map(Arc::new)

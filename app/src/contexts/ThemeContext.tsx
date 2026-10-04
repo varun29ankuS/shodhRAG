@@ -145,25 +145,31 @@ function readStoredSearchResults(): number {
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
-export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [theme, setTheme] = useState<Theme>(readStoredTheme);
+/**
+ * `forced` pins the theme for this window without reading or writing the
+ * user's choice (the print view always prints light).
+ */
+export const ThemeProvider: React.FC<{ children: React.ReactNode; forced?: Theme }> = ({ children, forced }) => {
+  const [theme, setTheme] = useState<Theme>(() => forced ?? readStoredTheme());
 
   // Applying the attribute and reading the palette happen together so the
   // colours handed to children always match the active stylesheet.
   const colors = useMemo(() => applyThemeAndReadColors(theme), [theme]);
 
   useEffect(() => {
+    if (forced) return;
     try {
       localStorage.setItem('theme', theme);
     } catch {
       // Storage unavailable (private mode / quota); theme still applies for this session.
     }
-  }, [theme]);
+  }, [theme, forced]);
 
   // The backend settings store is the source of truth for the theme (the
   // agent can change it too); local storage only avoids a flash at startup.
   // On first run the store is seeded from what this browser storage held.
   useEffect(() => {
+    if (forced) return;
     let cancelled = false;
     getAppSettings()
       .then(async settings => {
@@ -183,7 +189,7 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       cancelled = true;
       unsubscribe();
     };
-  }, []);
+  }, [forced]);
 
   const themeRef = useRef(theme);
   themeRef.current = theme;

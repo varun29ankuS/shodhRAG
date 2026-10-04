@@ -404,7 +404,7 @@ fn research_results_and_snippets_carry_their_cell_and_edits() {
             .packs()
             .find(|p| p.id == "shodh.research")
             .map(|p| p.version.to_string()),
-        Some("1.2.0".to_owned())
+        Some("1.3.0".to_owned())
     );
     let mut result = statement(
         "result-1",
@@ -431,7 +431,7 @@ fn research_results_and_snippets_carry_their_cell_and_edits() {
             ("resultRegion", RawValue::text("120.5,600,160.25,612.4")),
         ],
     );
-    // A statement written under 1.0.0 still validates under 1.2.0.
+    // A statement written under 1.0.0 still validates under 1.3.0.
     valid(&ontology, &result);
     result
         .properties
@@ -463,4 +463,66 @@ fn research_results_and_snippets_carry_their_cell_and_edits() {
         .properties
         .insert("snippetKind".to_owned(), RawValue::text("chart"));
     assert_eq!(single(&ontology, &snippet).code(), "pattern_mismatch");
+}
+
+#[test]
+fn papers_carry_their_graph_identity_and_library_status() {
+    let ontology = with_research();
+    let paper = |extra: Vec<(&str, RawValue)>| {
+        let mut properties = vec![
+            (
+                "title",
+                RawValue::text("Parallelizing Linear Transformers with the Delta Rule"),
+            ),
+            ("arxivId", RawValue::text("2406.06484")),
+            ("openalexId", RawValue::text("W4399530491")),
+            ("inLibrary", RawValue::Boolean(true)),
+            (
+                "authorsAsPrinted",
+                RawValue::text("Songlin Yang, Bailin Wang, Yu Zhang"),
+            ),
+            ("citedByCount", RawValue::Integer(57)),
+            ("publicationYear", RawValue::Integer(2024)),
+            (
+                "authoredBy",
+                RawValue::List(vec![RawValue::Entity(EntityRef::typed(
+                    "author:yang-songlin",
+                    "Author",
+                ))]),
+            ),
+            (
+                "cites",
+                RawValue::List(vec![RawValue::Entity(EntityRef::typed(
+                    "paper:arxiv:2102.11174",
+                    "Paper",
+                ))]),
+            ),
+        ];
+        properties.extend(extra);
+        let mut s = statement("paper-1", "Paper", properties);
+        s.ontology_version = semver::Version::new(1, 3, 0);
+        s
+    };
+    valid(&ontology, &paper(vec![]));
+    assert_eq!(
+        single(
+            &ontology,
+            &paper(vec![(
+                "openalexId",
+                RawValue::text("https://openalex.org/W1")
+            )])
+        )
+        .code(),
+        "pattern_mismatch"
+    );
+    let openalex = ontology.property("openalexId").expect("openalexId");
+    assert_eq!(openalex.cardinality, shodh_ontology::Cardinality::One);
+    assert!(
+        ontology
+            .property("citedByCount")
+            .expect("citedByCount")
+            .temporal
+    );
+    let keys = &ontology.class("Paper").expect("Paper").identity_keys;
+    assert!(keys.iter().any(|k| k == &vec!["openalexId".to_string()]));
 }

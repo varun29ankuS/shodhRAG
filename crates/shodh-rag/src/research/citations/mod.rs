@@ -21,6 +21,8 @@ pub mod build;
 #[cfg(test)]
 mod corpus_dump;
 #[cfg(test)]
+mod corpus_live;
+#[cfg(test)]
 mod corpus_tests;
 pub mod graph;
 pub mod identity;

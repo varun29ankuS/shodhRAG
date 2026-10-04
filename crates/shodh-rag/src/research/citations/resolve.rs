@@ -38,6 +38,8 @@ pub const TITLE_THRESHOLD: f64 = 0.9;
 pub const IDENTIFIER_TITLE_FLOOR: f64 = 0.5;
 /// Pause between two requests.
 pub const MIN_INTERVAL: Duration = Duration::from_millis(250);
+/// Pause before the one retry after a 429 (too many requests).
+pub const RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(20);
 /// Most requests one build sends.
 pub const DEFAULT_BUDGET: usize = 400;
 /// How long a found work is reused before it is asked again.
@@ -356,6 +358,7 @@ pub struct Resolver {
     db: Arc<ResearchDb>,
     budget: usize,
     interval: Duration,
+    backoff: Duration,
     pace: Mutex<Pace>,
 }
 
@@ -384,6 +387,7 @@ impl Resolver {
             db,
             budget: DEFAULT_BUDGET,
             interval: MIN_INTERVAL,
+            backoff: RATE_LIMIT_BACKOFF,
             pace: Mutex::new(Pace {
                 last: None,
                 halted: None,
@@ -392,10 +396,11 @@ impl Resolver {
         }
     }
 
-    /// Another request budget and pause (tests use a zero pause).
+    /// Another request budget and pause (tests use a zero pause and back-off).
     pub fn with_limits(mut self, budget: usize, interval: Duration) -> Self {
         self.budget = budget;
         self.interval = interval;
+        self.backoff = interval.min(self.backoff);
         self
     }
 
@@ -445,7 +450,14 @@ impl Resolver {
         let url = request
             .url()
             .map_err(|e| ResearchError::Invalid(e.to_string()))?;
-        let answer = transport.get(&url).await;
+        let mut answer = transport.get(&url).await;
+        // One 429 is answered by waiting and asking once more; a second halts the build.
+        if matches!(answer, Ok((429, _))) && pace.stats.requests < self.budget {
+            tokio::time::sleep(self.backoff).await;
+            pace.last = Some(tokio::time::Instant::now());
+            pace.stats.requests += 1;
+            answer = transport.get(&url).await;
+        }
         let (status, body) = match answer {
             Ok(answer) => answer,
             Err(e) => {
@@ -689,7 +701,11 @@ pub(crate) mod tests {
             resolver.lookup(&b).await.unwrap(),
             Lookup::Halted(Halt::RateLimited)
         );
-        assert_eq!(busy.0.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            busy.0.load(Ordering::SeqCst),
+            2,
+            "one retry after a pause, then halt"
+        );
     }
 
     #[tokio::test]

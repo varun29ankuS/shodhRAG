@@ -462,37 +462,20 @@ impl CitationService {
         let total: usize = scans.iter().map(|s| 1 + s.identifiable().count()).sum();
         let mut done = 0usize;
         let mut answers: HashMap<WorkRequest, Lookup> = HashMap::new();
-        let mut inputs = Vec::with_capacity(scans.len());
-        for mut scan in scans {
+        // Library papers first: within a budget or before a rate limit, their identities
+        // matter most.
+        let mut works: Vec<Option<OpenAlexWork>> = Vec::with_capacity(scans.len());
+        let mut scans = scans;
+        for scan in &mut scans {
             progress(BuildProgress::Resolving { done, total });
             done += 1;
-            let identity = scan.identity.clone();
-            let mut work = None;
-            let request = identity
-                .doi
-                .clone()
-                .map(WorkRequest::Doi)
-                .or_else(|| identity.arxiv_id.as_deref().map(WorkRequest::arxiv));
-            if let Some(request) = request {
-                if let Some(found) = first_work(lookup(resolver, &mut answers, &request).await?) {
-                    if identifier_match(identity.title.as_deref(), &found).accepted() {
-                        work = Some(found);
-                    }
-                }
-            } else if let (Some(hint), Some(title)) = (
-                identity.filename_arxiv_id.as_deref(),
-                identity.title.as_deref(),
-            ) {
-                // The file name's arXiv id counts only once the work it names has this
-                // paper's title.
-                let request = WorkRequest::arxiv(hint);
-                if let Some(found) = first_work(lookup(resolver, &mut answers, &request).await?) {
-                    if titles_agree(title, &found.title) {
-                        scan.identity.arxiv_id = Some(hint.to_string());
-                        work = Some(found);
-                    }
-                }
-            }
+            works.push(
+                self.resolve_library_paper(scan, resolver, &mut answers)
+                    .await?,
+            );
+        }
+        let mut inputs = Vec::with_capacity(scans.len());
+        for (scan, work) in scans.into_iter().zip(works) {
             let mut reference_works = HashMap::new();
             let references: Vec<_> = scan.identifiable().cloned().collect();
             for reference in references {
@@ -542,6 +525,39 @@ impl CitationService {
         }
         progress(BuildProgress::Resolving { done: total, total });
         Ok(inputs)
+    }
+
+    /// The OpenAlex work of a library paper, by its DOI or arXiv id; an arXiv id in the
+    /// file name counts only when the work has the paper's title (then it is kept).
+    async fn resolve_library_paper(
+        &self,
+        scan: &mut PaperScan,
+        resolver: &Resolver,
+        answers: &mut HashMap<WorkRequest, Lookup>,
+    ) -> ResearchResult<Option<OpenAlexWork>> {
+        let identity = scan.identity.clone();
+        let request = identity
+            .doi
+            .clone()
+            .map(WorkRequest::Doi)
+            .or_else(|| identity.arxiv_id.as_deref().map(WorkRequest::arxiv));
+        if let Some(request) = request {
+            return Ok(first_work(lookup(resolver, answers, &request).await?)
+                .filter(|w| identifier_match(identity.title.as_deref(), w).accepted()));
+        }
+        if let (Some(hint), Some(title)) = (
+            identity.filename_arxiv_id.as_deref(),
+            identity.title.as_deref(),
+        ) {
+            let request = WorkRequest::arxiv(hint);
+            if let Some(found) = first_work(lookup(resolver, answers, &request).await?) {
+                if titles_agree(title, &found.title) {
+                    scan.identity.arxiv_id = Some(hint.to_string());
+                    return Ok(Some(found));
+                }
+            }
+        }
+        Ok(None)
     }
 
     async fn previous_sources(&self) -> ResearchResult<BTreeSet<String>> {

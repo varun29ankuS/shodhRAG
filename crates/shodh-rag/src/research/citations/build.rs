@@ -41,6 +41,8 @@ use super::text::{normalize_title, slug, title_similarity, titles_agree};
 pub const GRAPH_EXTRACTOR: &str = "citation-graph/1";
 /// Lowest similarity at which a reference is taken to be a library paper.
 pub const LOCAL_TITLE_THRESHOLD: f64 = 0.9;
+/// Lowest venue confidence that makes a Venue node (a known venue or OpenAlex's).
+const MIN_VENUE_CONFIDENCE: f64 = 0.8;
 /// Most authors kept per paper.
 const MAX_AUTHORS: usize = 12;
 
@@ -525,9 +527,12 @@ pub fn assemble(inputs: &[ScanInput]) -> Assembled {
                 .map(|f| f.authors.clone())
                 .unwrap_or_default(),
             et_al: ordered.iter().any(|f| f.et_al),
+            // Only a venue OpenAlex names or the lexicon recognises becomes a node; free
+            // text after a title is too often a publisher, city or page range.
             venue: ordered
                 .iter()
                 .filter_map(|f| f.venue.clone())
+                .filter(|(_, w)| *w >= MIN_VENUE_CONFIDENCE)
                 .max_by(|a, b| a.1.total_cmp(&b.1)),
             cited_by_count: ordered.iter().find_map(|f| f.cited_by_count),
             first_surname: None,

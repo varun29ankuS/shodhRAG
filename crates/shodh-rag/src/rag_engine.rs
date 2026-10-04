@@ -366,6 +366,9 @@ pub struct RAGEngine {
     /// here, for the table model to refine in the background (see
     /// [`crate::table_refinement`]).
     refinement_queue: Option<tokio::sync::mpsc::UnboundedSender<std::path::PathBuf>>,
+    /// Ranks library files by the citation graph for queries about papers, methods or
+    /// citations: a third list fused into search (see [`crate::search::graph_fusion`]).
+    source_ranker: Option<Arc<dyn crate::search::graph_fusion::SourceRanker>>,
 }
 
 impl RAGEngine {
@@ -426,6 +429,7 @@ impl RAGEngine {
             config,
             reranker: SharedReranker::default(),
             refinement_queue: None,
+            source_ranker: None,
         };
         if let Some(models) = models {
             if let Err(e) = engine.attach_search_models(models) {
@@ -549,6 +553,27 @@ impl RAGEngine {
         queue: tokio::sync::mpsc::UnboundedSender<std::path::PathBuf>,
     ) {
         self.refinement_queue = Some(queue);
+    }
+
+    /// Fuses the citation graph's ranking of library files into every search from now
+    /// on (`None` removes it).
+    pub fn set_source_ranker(
+        &mut self,
+        ranker: Option<Arc<dyn crate::search::graph_fusion::SourceRanker>>,
+    ) {
+        self.source_ranker = ranker;
+    }
+
+    /// The graph's ranks of library files for `query`, when it is about the graph.
+    fn graph_ranks(&self, query: &str) -> Option<HashMap<String, usize>> {
+        let files = self.source_ranker.as_ref()?.rank_sources(query)?;
+        let ranks = crate::search::graph_fusion::rank_map(&files);
+        tracing::info!(
+            query,
+            graph_files = ranks.len(),
+            "Citation graph ranks fused into search"
+        );
+        (!ranks.is_empty()).then_some(ranks)
     }
 
     /// Replaces the indexed chunks of a file with those of `refined` (the file
@@ -866,6 +891,8 @@ impl RAGEngine {
         // Checked before decomposition: sub-query failures are swallowed
         // there, which would turn "not installed" into "no results".
         self.require_embeddings()?;
+        // The graph is asked about the whole query, also when it is decomposed.
+        let graph_ranks = self.graph_ranks(query);
         // Decompose complex queries into independent sub-queries
         let decomposed = crate::rag::query_decomposer::decompose_query(query);
 
@@ -880,7 +907,10 @@ impl RAGEngine {
             // Search each sub-query independently
             let mut result_sets = Vec::new();
             for sub_query in &decomposed.sub_queries {
-                match self.search_single_query(sub_query, k, filter.clone()).await {
+                match self
+                    .search_single_query(sub_query, k, filter.clone(), graph_ranks.as_ref())
+                    .await
+                {
                     Ok(results) => result_sets.push(results),
                     Err(e) => {
                         tracing::warn!(sub_query = sub_query, error = %e, "Sub-query search failed");
@@ -901,7 +931,9 @@ impl RAGEngine {
             return Ok(merged);
         }
 
-        let mut results = self.search_single_query(query, k, filter).await?;
+        let mut results = self
+            .search_single_query(query, k, filter, graph_ranks.as_ref())
+            .await?;
         self.expand_with_neighbors(&mut results, 1).await;
         Ok(results)
     }
@@ -912,6 +944,7 @@ impl RAGEngine {
         query: &str,
         k: usize,
         filter: Option<MetadataFilter>,
+        graph_ranks: Option<&HashMap<String, usize>>,
     ) -> Result<Vec<ComprehensiveResult>> {
         // Use same candidate count for both vector and FTS for balanced fusion
         let candidate_count = k * self.config.search.candidate_multiplier;
@@ -1059,6 +1092,16 @@ impl RAGEngine {
             );
         }
 
+        // The citation graph as a third RRF list, before the threshold decides.
+        if let Some(ranks) = graph_ranks {
+            let boosted = crate::search::graph_fusion::boost_scores(
+                &mut results,
+                ranks,
+                self.config.search.rrf_k,
+            );
+            tracing::info!(boosted, "Graph list fused");
+        }
+
         // Filter by minimum score threshold
         let threshold = self.config.search.min_score_threshold;
         let pre_filter_count = results.len();
@@ -1099,6 +1142,15 @@ impl RAGEngine {
                                 .partial_cmp(&a.score)
                                 .unwrap_or(std::cmp::Ordering::Equal)
                         });
+                        // The cross-encoder replaced every score; fuse the graph's order
+                        // again so its vote survives (scores keep their scale).
+                        if let Some(ranks) = graph_ranks {
+                            crate::search::graph_fusion::fuse_ranks(
+                                &mut results,
+                                ranks,
+                                self.config.search.rrf_k,
+                            );
+                        }
                     }
                     Err(e) => {
                         tracing::warn!("Reranking failed, using fusion scores: {}", e);

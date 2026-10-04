@@ -36,6 +36,8 @@ const SUGGESTIONS: Record<FocusKind, string[]> = {
   source: ['Explain this passage in plain words', 'What does the rest of the document say about this?'],
   task: ['Break this task into concrete steps', 'What do I need before I can start?'],
   snippet: ['Explain what this region of the paper shows', 'How does this relate to the rest of the paper?'],
+  figure: ['Explain what this figure shows', 'What should I notice in this figure, and why?'],
+  derivation_step: ['Why does this step follow from the previous one?', 'Show this step in more detail'],
   selection: ['Explain this in plain words', 'Why does this matter here?'],
 };
 

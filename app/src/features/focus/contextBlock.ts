@@ -12,6 +12,8 @@
 import type { FocusExtras, FocusTarget, FocusTaskSnapshot } from './focusTypes.ts';
 import { FOLLOWUPS_INSTRUCTION, stripFollowups } from './followups.ts';
 import { compactSvg } from '../ask/visual/svgSanitize.ts';
+import { symbolDescription } from '../ask/visual/symbols.ts';
+import type { SymbolNote } from '../ask/visual/symbols.ts';
 
 /** Most characters of the object itself placed in one question. */
 export const MAX_CONTEXT_CHARS = 6_000;
@@ -105,6 +107,11 @@ function visualSource(source: string): string {
   return cut.omitted > 0 ? `${cut.text}\n(${cut.omitted} more characters not included)` : cut.text;
 }
 
+/** Symbol meanings as `symbol: meaning` lines. */
+function symbolLines(symbols: readonly SymbolNote[]): string {
+  return symbols.map(s => `${s.symbol}: ${symbolDescription(s)}`).join('\n');
+}
+
 /** Slider positions as `name = value` lines. */
 export function sliderLines(values: readonly { name: string; value: number }[]): string {
   return values.map(v => `${v.name} = ${Number(v.value.toPrecision(6))}`).join('\n');
@@ -142,8 +149,30 @@ function sectionsFor(target: FocusTarget, extras: FocusExtras): Section[] {
       return interactiveSections('interactive plot (JSON spec; formulas use x and the slider parameters)', target);
     case 'simulation':
       return interactiveSections('simulation (JSON spec: state, derivatives, events, drawing)', target);
-    case 'equation':
-      return [{ heading: 'equation (LaTeX)', payload: target.tex.trim(), info: 'latex' }];
+    case 'equation': {
+      const sections: Section[] = [{ heading: 'equation (LaTeX)', payload: target.tex.trim(), info: 'latex' }];
+      if (target.symbols && target.symbols.length > 0) sections.push({ heading: 'meanings of its symbols', payload: symbolLines(target.symbols), info: 'text' });
+      return sections;
+    }
+    case 'figure': {
+      const name = oneLine(target.fileName || target.filePath);
+      const where = `figure from ${name} page ${extras.page ?? target.page}`;
+      const sections: Section[] = [{ heading: `${where}, caption`, payload: target.caption.trim() || '(no caption was found)', info: 'text' }];
+      if (target.nearby.trim()) sections.push({ heading: `${where}, text that refers to it`, payload: target.nearby.trim(), info: 'text' });
+      const selection = extras.selection?.trim();
+      if (selection) sections.push({ heading: `${where}, selected text`, payload: capText(selection, MAX_SELECTION_CHARS).text, info: 'text' });
+      return sections;
+    }
+    case 'derivation_step': {
+      const where = `step ${target.index + 1} of ${target.total} of the derivation${target.title ? ` "${oneLine(target.title)}"` : ''}`;
+      const sections: Section[] = [];
+      if (target.previous) sections.push({ heading: `${where}, the step before (LaTeX)`, payload: target.previous.trim(), info: 'latex' });
+      sections.push({ heading: `${where} (LaTeX)`, payload: target.latex.trim(), info: 'latex' });
+      sections.push({ heading: `${where}, justification given`, payload: target.justification.trim() || '(none given)', info: 'text' });
+      if (target.next) sections.push({ heading: `${where}, the step after (LaTeX)`, payload: target.next.trim(), info: 'latex' });
+      if (target.symbols && target.symbols.length > 0) sections.push({ heading: 'meanings of its symbols', payload: symbolLines(target.symbols), info: 'text' });
+      return sections;
+    }
     case 'table': {
       const table = tableMarkdown(target.rows);
       const note = table.omittedRows > 0 ? `\n(${table.omittedRows} more rows not included)` : '';
@@ -324,7 +353,11 @@ export function contextLabel(target: FocusTarget, extras: FocusExtras = {}): str
     case 'simulation':
       return target.values.length > 0 ? 'simulation spec and slider values' : 'simulation spec';
     case 'equation':
-      return 'equation';
+      return target.symbols && target.symbols.length > 0 ? 'equation and its symbols' : 'equation';
+    case 'figure':
+      return `figure caption and the text near it (page ${target.page})`;
+    case 'derivation_step':
+      return `step ${target.index + 1} with its neighbours and justification`;
     case 'table':
       return 'table';
     case 'image':

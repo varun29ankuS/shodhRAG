@@ -4,7 +4,9 @@
  * small. Pure module, unit-tested with Node (`app/tests/focusContext.test.ts`).
  */
 
-import type { FocusDocumentRef, FocusParamValue, FocusSourceHit, FocusTarget, FocusTaskSnapshot } from './focusTypes.ts';
+import type { FocusBox, FocusDocumentRef, FocusParamValue, FocusSourceHit, FocusTarget, FocusTaskSnapshot } from './focusTypes.ts';
+import { annotateTex } from '../ask/visual/symbols.ts';
+import type { SymbolNote } from '../ask/visual/symbols.ts';
 import { MAX_TARGET_CHARS, readParamValues } from './threadStore.ts';
 import { SVG_MAX_CHARS } from '../ask/visual/svgSanitize.ts';
 import { PLOT_MAX_CHARS } from '../ask/visual/plotSpec.ts';
@@ -103,8 +105,83 @@ export function simulationTarget(source: string, title: string | null | undefine
   return { kind: 'simulation', label: label ? short(label) : 'Simulation', source, values: readParamValues(values) };
 }
 
-export function equationTarget(tex: string): FocusTarget {
-  return { kind: 'equation', label: `Equation ${short(tex, 40)}`, tex: cap(tex) };
+/** A display equation, with the meanings of the symbols it contains (if any were given). */
+export function equationTarget(tex: string, symbols: readonly SymbolNote[] = []): FocusTarget {
+  const inside = symbolsIn(tex, symbols);
+  return { kind: 'equation', label: `Equation ${short(tex, 40)}`, tex: cap(tex), ...(inside.length > 0 ? { symbols: inside } : {}) };
+}
+
+/** The notes of the symbols that occur in `tex`. */
+export function symbolsIn(tex: string, symbols: readonly SymbolNote[]): SymbolNote[] {
+  if (symbols.length === 0) return [];
+  return annotateTex(tex, symbols).matched.map(i => symbols[i]);
+}
+
+/** Characters of the text near a figure kept with a thread. */
+export const MAX_FIGURE_NEARBY_CHARS = 2_000;
+
+export interface FigureTargetInput {
+  filePath: string;
+  fileName?: string;
+  page: number;
+  bbox: FocusBox;
+  figureId: string | null;
+  caption: string;
+  /** "Figure 3", when known. */
+  label?: string;
+  /** Paragraphs that refer to the figure. */
+  mentions?: readonly string[];
+}
+
+/** A figure of a paper; null without a usable place. */
+export function figureTarget(input: FigureTargetInput): FocusTarget | null {
+  const { x0, y0, x1, y1 } = input.bbox;
+  if (!input.filePath || !Number.isInteger(input.page) || input.page < 1 || ![x0, y0, x1, y1].every(Number.isFinite) || x1 <= x0 || y1 <= y0) return null;
+  const caption = cap(input.caption.replace(/\s+/g, ' ').trim(), MAX_SELECTED_CHARS);
+  const fileName = input.fileName || input.filePath.split(/[\\/]/).pop() || input.filePath;
+  const number = /^(?:figure|fig\.?)\s*([A-Z]?\d+[a-z]?)/i.exec(caption)?.[1];
+  const name = input.label?.trim() || (number ? `Figure ${number}` : 'Figure');
+  return {
+    kind: 'figure',
+    label: short(`${name} · ${fileName}`, 80),
+    filePath: input.filePath,
+    fileName,
+    page: input.page,
+    bbox: { x0, y0, x1, y1 },
+    figureId: input.figureId,
+    caption,
+    nearby: cap((input.mentions ?? []).map(m => m.replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n\n'), MAX_FIGURE_NEARBY_CHARS),
+  };
+}
+
+export interface DerivationStepInput {
+  title: string;
+  index: number;
+  total: number;
+  latex: string;
+  justification: string;
+  previous: string | null;
+  next: string | null;
+  symbols?: readonly SymbolNote[];
+}
+
+/** One step of a derivation with its neighbours. */
+export function derivationStepTarget(input: DerivationStepInput): FocusTarget | null {
+  if (!input.latex.trim() || !Number.isInteger(input.index) || input.index < 0 || input.index >= input.total) return null;
+  const inside = symbolsIn(input.latex, input.symbols ?? []);
+  const title = short(input.title, 80);
+  return {
+    kind: 'derivation_step',
+    label: `Step ${input.index + 1} of ${input.total}${title ? ` · ${title}` : ''}`,
+    title,
+    index: input.index,
+    total: input.total,
+    latex: cap(input.latex),
+    justification: cap(input.justification, MAX_SELECTED_CHARS),
+    previous: input.previous ? cap(input.previous) : null,
+    next: input.next ? cap(input.next) : null,
+    ...(inside.length > 0 ? { symbols: inside } : {}),
+  };
 }
 
 export function tableTarget(rows: readonly (readonly string[])[]): FocusTarget | null {
@@ -212,6 +289,15 @@ export function paperOf(target: FocusTarget): PaperRef | null {
       page: target.hit.page?.start ?? null,
       passage: target.hit.text || target.hit.snippet,
       ...(target.hit.regions && target.hit.regions.length > 0 ? { regions: target.hit.regions } : {}),
+    };
+  }
+  if (target.kind === 'figure') {
+    return {
+      sourceFile: target.filePath,
+      fileName: target.fileName,
+      page: target.page,
+      passage: target.caption,
+      regions: [{ page: target.page, ...target.bbox }],
     };
   }
   if (target.kind === 'snippet') {

@@ -29,13 +29,16 @@ export async function pageView(doc: PDFDocumentProxy, pageNumber: number): Promi
   return [...page.view];
 }
 
-/** The region of a page as a PNG drawn by pdf.js. */
-export async function renderSnippet(doc: PDFDocumentProxy, pageNumber: number, rect: SnippetRect): Promise<RenderedSnippet> {
+/**
+ * The region of a page as a PNG drawn by pdf.js. `pixelsPerPoint` lowers the
+ * resolution for thumbnails (it is raised to the screen's pixel density).
+ */
+export async function renderSnippet(doc: PDFDocumentProxy, pageNumber: number, rect: SnippetRect, pixelsPerPoint?: number): Promise<RenderedSnippet> {
   const page = await doc.getPage(pageNumber);
   const unit = page.getViewport({ scale: 1 });
   const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
   const plan = cropPlan(rect, page.view, unit.transform, {
-    targetScale: Math.max(SNIPPET_RENDER_SCALE, dpr * 3),
+    targetScale: pixelsPerPoint !== undefined ? Math.max(pixelsPerPoint, dpr * 1.5) : Math.max(SNIPPET_RENDER_SCALE, dpr * 3),
     maxSide: 4096,
     maxPixels: 16_000_000,
   });

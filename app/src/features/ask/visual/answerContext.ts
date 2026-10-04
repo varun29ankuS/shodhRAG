@@ -1,0 +1,24 @@
+/**
+ * What fenced blocks of one answer need from the answer around them, given
+ * through context so the renderer's code components keep a stable identity
+ * (a new component would remount every visual below it): the symbol
+ * meanings of the answer and a renderer for inline text with citation pills.
+ */
+
+import { createContext, useContext } from 'react';
+import type { ReactNode } from 'react';
+import type { SymbolNote } from './symbols';
+
+export interface AnswerBlocks {
+  symbols: readonly SymbolNote[];
+  /** Text with `[n]` citations as pills (plain text where citations are off). */
+  renderInline: (text: string) => ReactNode;
+}
+
+const NONE: AnswerBlocks = { symbols: [], renderInline: text => text };
+
+export const AnswerBlocksContext = createContext<AnswerBlocks>(NONE);
+
+export function useAnswerBlocks(): AnswerBlocks {
+  return useContext(AnswerBlocksContext);
+}

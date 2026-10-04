@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -20,6 +20,14 @@ import { ChartBlock, MermaidBlock } from './visual/VisualBlocks';
 import { SvgBlock } from './visual/SvgSketch';
 import { PlotBlock } from './visual/PlotView';
 import { SimulationBlock } from './visual/SimulationView';
+import { FigureBlock } from './visual/FigureBlock';
+import { DerivationBlock, SymbolsBlock } from './visual/MathBlocks';
+import { SymbolLayer } from './visual/SymbolLayer';
+import { AnswerBlocksContext } from './visual/answerContext';
+import type { AnswerBlocks } from './visual/answerContext';
+import rehypeSymbols from './visual/rehypeSymbols';
+import { safeAnnotate } from './visual/symbolTex';
+import { KATEX_SYMBOL_OPTIONS, symbolsInMessage } from './visual/symbols';
 import { FocusFrame } from '../focus/FocusFrame';
 import { tableRows } from '../focus/focusDom';
 import rehypeFocusEquations, { FOCUS_EQUATION_TAG } from '../focus/rehypeFocusEquations';
@@ -57,10 +65,8 @@ function isCitationOnly(line: string): boolean {
   return rest.trim().length === 0;
 }
 
-const REHYPE_PLUGINS = [rehypeKatex, rehypeFocusEquations];
-
 /** Fenced languages drawn as visuals, which draw their own frame. */
-const VISUAL_LANGUAGES = new Set(['chart', 'svg', 'plot', 'simulation']);
+const VISUAL_LANGUAGES = new Set(['chart', 'svg', 'plot', 'simulation', 'figure', 'derivation', 'symbols']);
 
 /** Target of a rendered table (header row first). */
 function tableFromElement(el: HTMLElement) {
@@ -162,6 +168,22 @@ export function MessageContentRenderer({
   const isDark = theme === 'dark';
 
   const hasArtifacts = (artifacts?.length ?? 0) > 0;
+  const proseRef = useRef<HTMLDivElement>(null);
+
+  // Symbol meanings of the whole answer (from its ```symbols blocks), shown on its math.
+  const symbols = useMemo(() => symbolsInMessage(content), [content]);
+  const symbolsRef = useRef(symbols);
+  symbolsRef.current = symbols;
+  const symbolsKey = symbols.map(s => `${s.symbol}\u0001${s.meaning}`).join('\u0002');
+  const rehypePlugins = useMemo(
+    () => [
+      [rehypeSymbols, { annotate: (tex: string, display: boolean) => safeAnnotate(tex, symbols, display) }],
+      [rehypeKatex, KATEX_SYMBOL_OPTIONS],
+      rehypeFocusEquations,
+    ],
+    // symbolsKey stands for the symbols' content.
+    [symbolsKey],
+  );
 
   const hitsByNumber = useMemo(() => {
     const map = new Map<number, SearchHit>();
@@ -294,6 +316,9 @@ export function MessageContentRenderer({
         if (match[1] === 'svg') return <SvgBlock source={codeString} />;
         if (match[1] === 'plot') return <PlotBlock source={codeString} />;
         if (match[1] === 'simulation') return <SimulationBlock source={codeString} />;
+        if (match[1] === 'figure') return <FigureBlock source={codeString} />;
+        if (match[1] === 'derivation') return <DerivationBlock source={codeString} />;
+        if (match[1] === 'symbols') return <SymbolsBlock source={codeString} />;
         return (
           <div>
             <div className="flex items-center justify-between pl-3 pr-1.5 h-8 border-b border-shodh-border-subtle bg-shodh-raised">
@@ -358,7 +383,7 @@ export function MessageContentRenderer({
       const tex = typeof node?.properties?.dataTex === 'string' ? node.properties.dataTex : '';
       if (!tex) return <>{children}</>;
       return (
-        <FocusFrame noun="equation" getTarget={() => equationTarget(tex)}>
+        <FocusFrame noun="equation" getTarget={() => equationTarget(tex, symbolsRef.current)}>
           {children}
         </FocusFrame>
       );
@@ -373,6 +398,11 @@ export function MessageContentRenderer({
     tr: ({ children }) => <tr>{children}</tr>,
     hr: () => <hr className="my-6 border-shodh-border" />,
   }), [codeComponents, processChildren]);
+
+  const answerBlocks = useMemo<AnswerBlocks>(
+    () => ({ symbols, renderInline: text => renderWithCitations(citations ? citationPlaceholders(text) : text) }),
+    [symbols, renderWithCitations, citations],
+  );
 
   const { charts, tables, others } = useMemo(() => {
     const list = artifacts ?? [];
@@ -389,10 +419,13 @@ export function MessageContentRenderer({
   return (
     <div className="flex flex-col gap-4">
       {preprocessed.trim().length > 0 && (
-        <div className={cn('text-shodh-text-secondary break-words', compact ? 'text-[13.5px] leading-[1.6]' : 'text-[16px] leading-[1.75]')}>
-          <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={REHYPE_PLUGINS} components={markdownComponents}>
-            {preprocessed}
-          </ReactMarkdown>
+        <div ref={proseRef} className={cn('relative text-shodh-text-secondary break-words', compact ? 'text-[13.5px] leading-[1.6]' : 'text-[16px] leading-[1.75]')}>
+          <AnswerBlocksContext.Provider value={answerBlocks}>
+            <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={rehypePlugins as never} components={markdownComponents}>
+              {preprocessed}
+            </ReactMarkdown>
+          </AnswerBlocksContext.Provider>
+          <SymbolLayer containerRef={proseRef} symbols={symbols} watch={preprocessed} />
         </div>
       )}
 

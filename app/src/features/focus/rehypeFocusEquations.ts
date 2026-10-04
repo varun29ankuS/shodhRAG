@@ -3,9 +3,13 @@
  * (`span.katex-display`) in a `focus-equation` element that carries the
  * LaTeX source (from KaTeX's MathML annotation) as `data-tex`, so the
  * renderer can give the equation a focus affordance and re-render it large.
+ * Symbol annotations (see `symbols.ts`) are removed from that source, so the
+ * equation is kept and shown again exactly as the answer wrote it.
  *
- * Pure module (no runtime imports).
+ * Pure module.
  */
+
+import { stripSymbolWrappers } from '../ask/visual/symbols.ts';
 
 interface HastNode {
   type: string;
@@ -32,7 +36,7 @@ function textOf(node: HastNode): string {
 /** The TeX source KaTeX stored in its MathML `annotation`, if present. */
 export function annotationTex(node: HastNode): string | null {
   if (node.type === 'element' && node.tagName === 'annotation' && node.properties?.encoding === 'application/x-tex') {
-    return textOf(node).trim();
+    return stripSymbolWrappers(textOf(node).trim());
   }
   for (const child of node.children ?? []) {
     const found = annotationTex(child);

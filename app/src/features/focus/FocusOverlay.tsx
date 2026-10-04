@@ -36,6 +36,8 @@ const KIND_LABEL: Record<FocusKind, string> = {
   source: 'Source',
   task: 'Task',
   snippet: 'Snippet',
+  figure: 'Figure',
+  derivation_step: 'Derivation step',
   selection: 'Selection',
 };
 

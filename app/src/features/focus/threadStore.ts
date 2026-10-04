@@ -34,6 +34,7 @@ import { SVG_MAX_CHARS } from '../ask/visual/svgSanitize.ts';
 import { PLOT_MAX_CHARS } from '../ask/visual/plotSpec.ts';
 import { SIMULATION_MAX_CHARS } from '../ask/visual/simulationSpec.ts';
 import { parseRegions } from '../ask/viewer/regionGeometry.ts';
+import { readSymbolNotes } from '../ask/visual/symbols.ts';
 
 /** Key of the side threads inside a message's `metadata`. */
 export const METADATA_KEY = 'focusThreads';
@@ -95,6 +96,13 @@ function readRect(value: unknown): { x: number; y: number; width: number; height
   if (!finiteNumber(x) || !finiteNumber(y) || !finiteNumber(width) || !finiteNumber(height)) return null;
   if (x < 0 || y < 0 || width <= 0 || height <= 0) return null;
   return { x, y, width, height };
+}
+
+function readBox(value: unknown): { x0: number; y0: number; x1: number; y1: number } | null {
+  if (!isRecord(value)) return null;
+  const { x0, y0, x1, y1 } = value;
+  if (!finiteNumber(x0) || !finiteNumber(y0) || !finiteNumber(x1) || !finiteNumber(y1)) return null;
+  return x1 > x0 && y1 > y0 ? { x0, y0, x1, y1 } : null;
 }
 
 function readTask(value: unknown): FocusTaskSnapshot | null {
@@ -167,8 +175,46 @@ export function readTarget(value: unknown): FocusTarget | null {
       const source = visualSource(value.source, value.kind === 'plot' ? PLOT_MAX_CHARS : SIMULATION_MAX_CHARS);
       return source ? { kind: value.kind, label, source, values: readParamValues(value.values) } : null;
     }
-    case 'equation':
-      return str(value.tex) ? { kind: 'equation', label, tex: capped(value.tex) } : null;
+    case 'equation': {
+      if (!str(value.tex)) return null;
+      const symbols = readSymbolNotes(value.symbols);
+      return { kind: 'equation', label, tex: capped(value.tex), ...(symbols.length > 0 ? { symbols } : {}) };
+    }
+    case 'figure': {
+      if (!str(value.filePath) || !value.filePath) return null;
+      const page = value.page;
+      const box = readBox(value.bbox);
+      if (!box || typeof page !== 'number' || !Number.isInteger(page) || page < 1) return null;
+      return {
+        kind: 'figure',
+        label,
+        filePath: value.filePath,
+        fileName: str(value.fileName) ? value.fileName : '',
+        page,
+        bbox: box,
+        figureId: str(value.figureId) && value.figureId ? value.figureId : null,
+        caption: str(value.caption) ? capped(value.caption, MAX_SELECTION_TARGET_CHARS) : '',
+        nearby: str(value.nearby) ? capped(value.nearby, MAX_PARAGRAPH_TARGET_CHARS) : '',
+      };
+    }
+    case 'derivation_step': {
+      const { index, total } = value;
+      if (!str(value.latex) || !value.latex.trim()) return null;
+      if (typeof index !== 'number' || typeof total !== 'number' || !Number.isInteger(index) || !Number.isInteger(total) || index < 0 || index >= total) return null;
+      const symbols = readSymbolNotes(value.symbols);
+      return {
+        kind: 'derivation_step',
+        label,
+        title: str(value.title) ? value.title : '',
+        index,
+        total,
+        latex: capped(value.latex),
+        justification: str(value.justification) ? capped(value.justification, MAX_SELECTION_TARGET_CHARS) : '',
+        previous: str(value.previous) ? capped(value.previous) : null,
+        next: str(value.next) ? capped(value.next) : null,
+        ...(symbols.length > 0 ? { symbols } : {}),
+      };
+    }
     case 'table': {
       if (!Array.isArray(value.rows)) return null;
       const rows = value.rows.filter(Array.isArray).map(r => (r as unknown[]).map(c => (str(c) ? c : String(c ?? ''))));

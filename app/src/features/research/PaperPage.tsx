@@ -1,11 +1,13 @@
 import React, { useEffect, useId, useMemo, useState } from 'react';
 import { AlertTriangle, ArrowLeft, ExternalLink, FileText, Loader2, MessageSquare } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import * as Tabs from '@radix-ui/react-tabs';
 import { cn } from '../../lib/utils';
 import { onResearchChanged, toResearchError } from './api';
 import { graphApi } from './graphApi';
 import type { ConceptNode, LinkedPaper, PaperDetail, PaperNode } from './graphTypes';
 import { SnippetCard } from './SnippetCard';
+import { PaperFigures } from './PaperFigures';
 import { readSnippet } from './snippetModel';
 import { insertIntoComposer, showSourceBox } from './snippetBus';
 import { valueLabel } from './comparison';
@@ -16,6 +18,12 @@ type Load<T> = { status: 'loading' } | { status: 'ready'; value: T } | { status:
 
 /** Rows shown per citation list before "Show all". */
 const FOLDED = 12;
+
+const TAB = cn(
+  'h-8 px-3 -mb-px border-b-2 border-transparent text-[13px] text-shodh-text-secondary hover:text-shodh-text transition-colors duration-micro',
+  'data-[state=active]:border-shodh-accent data-[state=active]:text-shodh-text data-[state=active]:font-semibold',
+  FOCUS_RING,
+);
 
 function fileName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
@@ -223,86 +231,101 @@ export function PaperPage({
         </div>
       </header>
 
-      <Concepts title="Proposes" items={d.proposes} kind="method" onOpenConcept={onOpenConcept} />
-      <Concepts title="Methods" items={d.methods} kind="method" onOpenConcept={onOpenConcept} />
-      <Concepts title="Datasets" items={d.datasets} kind="dataset" onOpenConcept={onOpenConcept} />
+      <Tabs.Root defaultValue="overview" className="flex flex-col gap-5">
+        {p.inLibrary && p.filePath && (
+          <Tabs.List aria-label="Paper" className="flex items-center gap-1 border-b border-shodh-border-subtle">
+            <Tabs.Trigger value="overview" className={TAB}>Overview</Tabs.Trigger>
+            <Tabs.Trigger value="figures" className={TAB}>Figures</Tabs.Trigger>
+          </Tabs.List>
+        )}
+        {p.inLibrary && p.filePath && (
+          <Tabs.Content value="figures" className="focus-visible:outline-none">
+            <PaperFigures filePath={p.filePath} paperTitle={paperTitle(p)} />
+          </Tabs.Content>
+        )}
+        <Tabs.Content value="overview" className="flex flex-col gap-5 focus-visible:outline-none">
+          <Concepts title="Proposes" items={d.proposes} kind="method" onOpenConcept={onOpenConcept} />
+          <Concepts title="Methods" items={d.methods} kind="method" onOpenConcept={onOpenConcept} />
+          <Concepts title="Datasets" items={d.datasets} kind="dataset" onOpenConcept={onOpenConcept} />
 
-      <div className="grid gap-5 md:grid-cols-2">
-        <CitationList title="Cites — in your library" items={d.citesInLibrary} emptyText="It cites none of your other papers." onOpenPaper={onOpenPaper} />
-        <CitationList title="Cited by — in your library" items={d.citedByInLibrary} emptyText="None of your papers cite it." onOpenPaper={onOpenPaper} />
-      </div>
-      <CitationList title="Cites — elsewhere" items={d.citesElsewhere} emptyText={p.inLibrary ? 'No references were read from this paper.' : 'Only library papers have their references read.'} onOpenPaper={onOpenPaper} />
+          <div className="grid gap-5 md:grid-cols-2">
+            <CitationList title="Cites — in your library" items={d.citesInLibrary} emptyText="It cites none of your other papers." onOpenPaper={onOpenPaper} />
+            <CitationList title="Cited by — in your library" items={d.citedByInLibrary} emptyText="None of your papers cite it." onOpenPaper={onOpenPaper} />
+          </div>
+          <CitationList title="Cites — elsewhere" items={d.citesElsewhere} emptyText={p.inLibrary ? 'No references were read from this paper.' : 'Only library papers have their references read.'} onOpenPaper={onOpenPaper} />
 
-      {p.inLibrary && (
-        <section aria-labelledby={`${headingId}-results`} className="flex flex-col gap-2">
-          <h3 id={`${headingId}-results`} className={SECTION_TITLE}>{`Results (${d.results.length})`}</h3>
-          {d.results.length === 0 ? (
-            <p className="text-[12.5px] text-shodh-text-muted">No accepted results. Extract them from the paper’s tables in its Results view.</p>
-          ) : (
-            <div className="overflow-x-auto rounded-xl border border-shodh-border">
-              <table className="min-w-full border-collapse text-[12.5px]">
-                <caption className="sr-only">Results read from the paper’s tables; each value opens its cell.</caption>
-                <thead className="bg-shodh-raised">
-                  <tr>
-                    {['Method', 'Dataset', 'Metric', 'Value'].map(h => (
-                      <th key={h} scope="col" className="px-3 py-1.5 text-left font-semibold text-shodh-text border-b border-shodh-border">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {d.results.map(r => (
-                    <tr key={r.id}>
-                      <th scope="row" className="px-3 py-1.5 text-left font-medium text-shodh-text border-b border-shodh-border-subtle">{r.method}</th>
-                      <td className="px-3 py-1.5 border-b border-shodh-border-subtle text-shodh-text-secondary">{r.dataset}</td>
-                      <td className="px-3 py-1.5 border-b border-shodh-border-subtle text-shodh-text-secondary">{r.metric}</td>
-                      <td className="px-3 py-1.5 border-b border-shodh-border-subtle">
-                        <button
-                          type="button"
-                          className={cn('tabular-nums text-shodh-text underline decoration-dotted underline-offset-2 rounded', FOCUS_RING)}
-                          title={`Show the cell on page ${r.page}`}
-                          onClick={() => showSourceBox({ filePath: r.filePath, fileName: r.fileName, page: r.page, regions: r.region ? [r.region] : null, label: `${r.method} · ${r.metric}` })}
-                        >
-                          {valueLabel(r)}
-                        </button>
-                        {r.setting && <span className="ml-1.5 text-[11px] text-shodh-text-muted">{r.setting}</span>}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+          {p.inLibrary && (
+            <section aria-labelledby={`${headingId}-results`} className="flex flex-col gap-2">
+              <h3 id={`${headingId}-results`} className={SECTION_TITLE}>{`Results (${d.results.length})`}</h3>
+              {d.results.length === 0 ? (
+                <p className="text-[12.5px] text-shodh-text-muted">No accepted results. Extract them from the paper’s tables in its Results view.</p>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-shodh-border">
+                  <table className="min-w-full border-collapse text-[12.5px]">
+                    <caption className="sr-only">Results read from the paper’s tables; each value opens its cell.</caption>
+                    <thead className="bg-shodh-raised">
+                      <tr>
+                        {['Method', 'Dataset', 'Metric', 'Value'].map(h => (
+                          <th key={h} scope="col" className="px-3 py-1.5 text-left font-semibold text-shodh-text border-b border-shodh-border">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {d.results.map(r => (
+                        <tr key={r.id}>
+                          <th scope="row" className="px-3 py-1.5 text-left font-medium text-shodh-text border-b border-shodh-border-subtle">{r.method}</th>
+                          <td className="px-3 py-1.5 border-b border-shodh-border-subtle text-shodh-text-secondary">{r.dataset}</td>
+                          <td className="px-3 py-1.5 border-b border-shodh-border-subtle text-shodh-text-secondary">{r.metric}</td>
+                          <td className="px-3 py-1.5 border-b border-shodh-border-subtle">
+                            <button
+                              type="button"
+                              className={cn('tabular-nums text-shodh-text underline decoration-dotted underline-offset-2 rounded', FOCUS_RING)}
+                              title={`Show the cell on page ${r.page}`}
+                              onClick={() => showSourceBox({ filePath: r.filePath, fileName: r.fileName, page: r.page, regions: r.region ? [r.region] : null, label: `${r.method} · ${r.metric}` })}
+                            >
+                              {valueLabel(r)}
+                            </button>
+                            {r.setting && <span className="ml-1.5 text-[11px] text-shodh-text-muted">{r.setting}</span>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
           )}
-        </section>
-      )}
 
-      {snippets.length > 0 && (
-        <section aria-labelledby={`${headingId}-snippets`} className="flex flex-col gap-2">
-          <h3 id={`${headingId}-snippets`} className={SECTION_TITLE}>{`Snippets (${snippets.length})`}</h3>
-          <ul className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(220px,1fr))]">
-            {snippets.map(s => (
-              <li key={s.id}>
-                <SnippetCard snippet={s} showFile={false} onChange={() => setTick(t => t + 1)} />
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+          {snippets.length > 0 && (
+            <section aria-labelledby={`${headingId}-snippets`} className="flex flex-col gap-2">
+              <h3 id={`${headingId}-snippets`} className={SECTION_TITLE}>{`Snippets (${snippets.length})`}</h3>
+              <ul className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(220px,1fr))]">
+                {snippets.map(s => (
+                  <li key={s.id}>
+                    <SnippetCard snippet={s} showFile={false} onChange={() => setTick(t => t + 1)} />
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
 
-      {d.related.length > 0 && (
-        <section aria-labelledby={`${headingId}-related`} className="flex flex-col gap-2">
-          <h3 id={`${headingId}-related`} className={SECTION_TITLE}>Related papers (shared references)</h3>
-          <ul className="flex flex-col divide-y divide-shodh-border-subtle rounded-xl border border-shodh-border">
-            {d.related.map(r => (
-              <li key={r.paper.id}>
-                <button type="button" onClick={() => onOpenPaper(r.paper.id)} className={cn('w-full text-left px-3 py-2 hover:bg-shodh-raised', FOCUS_RING)}>
-                  <span className="block text-[13px] text-shodh-text truncate">{paperTitle(r.paper)}</span>
-                  <span className="block text-[11.5px] text-shodh-text-muted">{`${r.count} shared ${r.count === 1 ? 'reference' : 'references'}`}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+          {d.related.length > 0 && (
+            <section aria-labelledby={`${headingId}-related`} className="flex flex-col gap-2">
+              <h3 id={`${headingId}-related`} className={SECTION_TITLE}>Related papers (shared references)</h3>
+              <ul className="flex flex-col divide-y divide-shodh-border-subtle rounded-xl border border-shodh-border">
+                {d.related.map(r => (
+                  <li key={r.paper.id}>
+                    <button type="button" onClick={() => onOpenPaper(r.paper.id)} className={cn('w-full text-left px-3 py-2 hover:bg-shodh-raised', FOCUS_RING)}>
+                      <span className="block text-[13px] text-shodh-text truncate">{paperTitle(r.paper)}</span>
+                      <span className="block text-[11.5px] text-shodh-text-muted">{`${r.count} shared ${r.count === 1 ? 'reference' : 'references'}`}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+        </Tabs.Content>
+      </Tabs.Root>
     </article>
   );
 }

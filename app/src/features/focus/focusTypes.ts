@@ -5,6 +5,8 @@
  * Pure module (types only) so the logic around it is unit-tested with Node.
  */
 
+import type { SymbolNote } from '../ask/visual/symbols.ts';
+
 export interface FocusPageSpan {
   start: number;
   end: number;
@@ -29,6 +31,14 @@ export interface FocusSourceHit {
 /** A box on a PDF page in points, bottom-left origin (the indexer's layout boxes). */
 export interface FocusRegion {
   page: number;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+/** A box on a PDF page in points, bottom-left origin, without its page. */
+export interface FocusBox {
   x0: number;
   y0: number;
   x1: number;
@@ -80,7 +90,8 @@ export type FocusTarget =
   | { kind: 'plot'; label: string; source: string; values: FocusParamValue[] }
   /** A ```simulation spec with the slider positions when it was opened. */
   | { kind: 'simulation'; label: string; source: string; values: FocusParamValue[] }
-  | { kind: 'equation'; label: string; tex: string }
+  /** A display equation; `symbols` are the meanings shown on hover (those found in it). */
+  | { kind: 'equation'; label: string; tex: string; symbols?: SymbolNote[] }
   | { kind: 'table'; label: string; rows: string[][] }
   | { kind: 'image'; label: string; src: string | null; alt: string }
   | { kind: 'source'; label: string; hit: FocusSourceHit }
@@ -90,6 +101,36 @@ export type FocusTarget =
    * the snippet store and is loaded by id when drawn.
    */
   | { kind: 'snippet'; label: string; snippetId: string; filePath: string; fileName: string; page: number; rect: FocusRect; text: string }
+  /**
+   * A figure of a paper: its place (page and box, PDF points from the
+   * bottom-left), caption and the text that refers to it. The image is
+   * cropped from the PDF again whenever it is drawn.
+   */
+  | {
+      kind: 'figure';
+      label: string;
+      filePath: string;
+      fileName: string;
+      page: number;
+      bbox: FocusBox;
+      figureId: string | null;
+      caption: string;
+      nearby: string;
+    }
+  /** One step of a derivation, with the steps before and after it. */
+  | {
+      kind: 'derivation_step';
+      label: string;
+      title: string;
+      /** 0-based position and the number of steps. */
+      index: number;
+      total: number;
+      latex: string;
+      justification: string;
+      previous: string | null;
+      next: string | null;
+      symbols?: SymbolNote[];
+    }
   /**
    * Text the reader selected in an answer or a document, with the paragraph
    * around it. `document` is set when it was selected in a document viewer.

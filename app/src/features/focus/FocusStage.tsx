@@ -1,7 +1,4 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { AlertTriangle, CheckSquare, Loader2, Minus, Plus, Square } from 'lucide-react';
 import { cn } from '../../lib/utils';
@@ -20,6 +17,12 @@ import type { SearchHit } from '../ask/types';
 import { momentToDate, parseMoment } from '../tasks/dueDate';
 import { PRIORITY_LABELS, STATUS_LABELS } from '../tasks/types';
 import { SnippetStage } from '../research/SnippetStage';
+import { FigureImage } from '../research/FigureImage';
+import { figureRegion } from '../research/paperObjects';
+import { showSourceBox } from '../research/snippetBus';
+import { TexView } from '../ask/visual/TexView';
+import { SymbolLayer } from '../ask/visual/SymbolLayer';
+import type { SymbolNote } from '../ask/visual/symbols';
 import type { FocusCommand } from './focusKeys';
 import { panDelta } from './focusKeys';
 import type { FocusParamValue, FocusTarget, FocusTaskSnapshot } from './focusTypes';
@@ -526,6 +529,96 @@ function SimulationStage({ source, values, onValues }: { source: string; values:
   );
 }
 
+/** Math drawn large with its symbol meanings on hover and focus. */
+function MathStageContent({ tex, symbols }: { tex: string; symbols: readonly SymbolNote[] }) {
+  const ref = useRef<HTMLDivElement>(null);
+  return (
+    <div ref={ref} className="relative">
+      <TexView tex={tex} symbols={symbols} />
+      <SymbolLayer containerRef={ref} symbols={symbols} watch={tex} />
+    </div>
+  );
+}
+
+function DerivationStepStage({ target, commandRef }: { target: Extract<FocusTarget, { kind: 'derivation_step' }>; commandRef: StageCommandRef }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const symbols = target.symbols ?? [];
+  return (
+    <TextStage baseFont={TABLE_FONT + 2} label={target.label} commandRef={commandRef}>
+      <div ref={ref} className="relative flex flex-col gap-3 text-shodh-text-secondary">
+        {target.previous && (
+          <div className="opacity-70">
+            <p className="m-0 text-[0.75em] uppercase tracking-[0.08em] text-shodh-text-faint">{`Step ${target.index}`}</p>
+            <TexView tex={target.previous} symbols={symbols} />
+          </div>
+        )}
+        <div className="rounded-xl border border-shodh-border bg-shodh-surface px-4 py-2 text-shodh-text">
+          <p className="m-0 text-[0.75em] uppercase tracking-[0.08em] text-shodh-text-faint">{`Step ${target.index + 1} of ${target.total}`}</p>
+          <TexView tex={target.latex} symbols={symbols} />
+          <p className="m-0 mt-1 text-[0.85em] text-shodh-text-secondary">
+            <span className="font-semibold">Why: </span>
+            {target.justification || 'No justification was given.'}
+          </p>
+        </div>
+        {target.next && (
+          <div className="opacity-70">
+            <p className="m-0 text-[0.75em] uppercase tracking-[0.08em] text-shodh-text-faint">{`Step ${target.index + 2}`}</p>
+            <TexView tex={target.next} symbols={symbols} />
+          </div>
+        )}
+        <SymbolLayer containerRef={ref} symbols={symbols} watch={target.latex} />
+      </div>
+    </TextStage>
+  );
+}
+
+function FigureStage({ target, commandRef }: { target: Extract<FocusTarget, { kind: 'figure' }>; commandRef: StageCommandRef }) {
+  const [size, setSize] = useState<Size | null>(null);
+  const onReady = useCallback((image: { width: number; height: number }) => setSize({ width: image.width, height: image.height }), []);
+  const alt = target.caption || target.label;
+  return (
+    <div className="flex-1 min-h-0 min-w-0 flex flex-col">
+      {!size && (
+        <div className="flex-1 min-h-0 flex items-center justify-center bg-shodh-raised-2 p-6">
+          <div className="w-full max-w-[640px] rounded-xl bg-white p-3">
+            <FigureImage filePath={target.filePath} page={target.page} bbox={target.bbox} alt={alt} onReady={onReady} />
+          </div>
+        </div>
+      )}
+      {size && (
+        <CanvasStage natural={size} label={target.label} commandRef={commandRef}>
+          {() => (
+            <div className="w-full h-full bg-white">
+              <FigureImage filePath={target.filePath} page={target.page} bbox={target.bbox} alt={alt} className="w-full h-full" />
+            </div>
+          )}
+        </CanvasStage>
+      )}
+      <div className="shrink-0 max-h-[30%] overflow-y-auto scrollbar-thin border-t border-shodh-border-subtle bg-shodh-surface px-4 py-2.5 flex flex-col gap-1.5">
+        <div className="flex items-start gap-3">
+          <p className="m-0 flex-1 min-w-0 text-[13px] leading-snug text-shodh-text">{target.caption || target.label}</p>
+          <button
+            type="button"
+            onClick={() =>
+              showSourceBox({
+                filePath: target.filePath,
+                fileName: target.fileName,
+                page: target.page,
+                regions: [figureRegion(target.page, target.bbox)],
+                label: target.label,
+              })
+            }
+            className="shrink-0 h-7 px-2 rounded-lg text-[12px] text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {`Show in PDF (page ${target.page})`}
+          </button>
+        </div>
+        {target.nearby && <p className="m-0 text-[12.5px] leading-relaxed text-shodh-text-secondary whitespace-pre-wrap">{target.nearby}</p>}
+      </div>
+    </div>
+  );
+}
+
 function ImageStage({ src, alt, label, commandRef }: { src: string | null; alt: string; label: string; commandRef: StageCommandRef }) {
   const [size, setSize] = useState<Size | null>(null);
   const [broken, setBroken] = useState(false);
@@ -703,9 +796,7 @@ export function FocusStage({ target, theme, commandRef, onPageChange, onValues }
     case 'equation':
       return (
         <TextStage baseFont={EQUATION_FONT} label={target.label} commandRef={commandRef}>
-          <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
-            {`$$\n${target.tex}\n$$`}
-          </ReactMarkdown>
+          <MathStageContent tex={target.tex} symbols={target.symbols ?? []} />
         </TextStage>
       );
     case 'table':
@@ -722,5 +813,9 @@ export function FocusStage({ target, theme, commandRef, onPageChange, onValues }
       return <SelectionStage target={target} />;
     case 'snippet':
       return <SnippetStage target={target} />;
+    case 'figure':
+      return <FigureStage target={target} commandRef={commandRef} />;
+    case 'derivation_step':
+      return <DerivationStepStage target={target} commandRef={commandRef} />;
   }
 }

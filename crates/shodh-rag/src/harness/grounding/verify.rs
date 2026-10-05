@@ -27,7 +27,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use super::claims::{split_claims, Claim};
+use super::claims::{inherit_citations, split_claims, Claim};
 use super::numbers::missing_numbers;
 use crate::harness::events::{
     ClaimCheck, ClaimOutcome, CoverageState, GroundingSummary, NeedCheck, ScoringMethod,
@@ -542,6 +542,27 @@ fn check_claim(
             }
         }
     }
+    // An uncited claim that a passage of this answer clearly supports is
+    // grounded, not "no source": verify it against that passage and, when
+    // it passes the support threshold, record the passage as its source.
+    if check.outcome == ClaimOutcome::UncitedFactual {
+        if let Some(n) = check.closest {
+            if let Some(p) = input.passages.iter().find(|p| p.n == n && p.checkable) {
+                let found = support(scorers, &claim.text, std::slice::from_ref(&p.text));
+                methods.insert(found.method);
+                if outcome_for(found.score, found.method, thresholds) == ClaimOutcome::Supported
+                    && missing_numbers(&claim.text, &[p.text.as_str()]).is_empty()
+                {
+                    check.outcome = ClaimOutcome::Supported;
+                    check.cited = vec![n];
+                    check.support = Some(found.score);
+                    check.contradiction = found.contradiction;
+                    check.closest = None;
+                    check.closest_score = None;
+                }
+            }
+        }
+    }
     Some(check)
 }
 
@@ -556,7 +577,9 @@ pub fn verify_answer(
     let mut checks = Vec::new();
     let mut closest_budget = MAX_CLOSEST_SEARCHES;
     for message in input.messages {
-        for claim in split_claims(&message.text) {
+        let mut claims = split_claims(&message.text);
+        inherit_citations(&message.text, &mut claims);
+        for claim in claims {
             if let Some(check) = check_claim(
                 &message.id,
                 &claim,

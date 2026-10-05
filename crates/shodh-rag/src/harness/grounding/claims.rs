@@ -657,9 +657,220 @@ fn flush(message: &str, block: &mut Block, out: &mut Vec<Claim>) {
     *block = Block::default();
 }
 
+/// Byte span of each claim's `source` in `message`, found in reading order.
+fn claim_spans(message: &str, claims: &[Claim]) -> Vec<Option<(usize, usize)>> {
+    let mut from = 0;
+    claims
+        .iter()
+        .map(|c| {
+            let at = message.get(from..)?.find(&c.source)? + from;
+            from = at + c.source.len();
+            Some((at, from))
+        })
+        .collect()
+}
+
+/// True when nothing but layout separates two spans: whitespace with at most
+/// one blank line, list markers ("- ", "* ", "1. ") and table syntax (row
+/// pipes, the header row and its `|---|` separator). A table or list directly
+/// under its lead-in, or a source line directly under a table, is adjacent.
+fn adjacent(message: &str, end: usize, start: usize) -> bool {
+    let Some(gap) = message.get(end..start) else {
+        return false;
+    };
+    let mut blank_run = 0;
+    for (i, line) in gap.split('\n').enumerate() {
+        let t = line.trim();
+        if t.is_empty() {
+            // The first and last pieces are the rest of the previous line
+            // and the start of the next one, not lines of their own.
+            if i != 0 && i != gap.split('\n').count() - 1 {
+                blank_run += 1;
+                if blank_run > 1 {
+                    return false;
+                }
+            }
+            continue;
+        }
+        blank_run = 0;
+        if t.starts_with('|') || t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ')) {
+            continue;
+        }
+        let marker = t
+            .strip_prefix("- ")
+            .or_else(|| t.strip_prefix("* "))
+            .or_else(|| t.strip_prefix("+ "))
+            .map(str::trim)
+            .or_else(|| {
+                let digits = t.trim_start_matches(|c: char| c.is_ascii_digit());
+                (digits.len() < t.len())
+                    .then(|| {
+                        digits
+                            .strip_prefix(". ")
+                            .or_else(|| digits.strip_prefix(") "))
+                    })
+                    .flatten()
+                    .map(str::trim)
+            });
+        match marker {
+            Some("") => {}
+            _ if matches!(t, "-" | "*" | "+") => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// True when two spans are in the same paragraph (no blank line between).
+fn same_paragraph(message: &str, end: usize, start: usize) -> bool {
+    message
+        .get(end..start)
+        .is_some_and(|gap| !gap.contains("\n\n") && !gap.contains("\n\r\n"))
+}
+
+/// Give uncited claims the citations that cover them in the answer's layout,
+/// so a correctly sourced answer is not flagged claim by claim:
+/// - rows of a table / items of a list without their own marker take the
+///   citations of the other rows in that table or list, else those of the
+///   lead-in sentence directly above it, else those of a line directly below;
+/// - a sentence without a marker takes the citations of the next cited
+///   sentence in the same paragraph (a citation placed at paragraph end).
+///
+/// Inherited citations are still verified against the passage text; this
+/// only decides which passages a claim is checked against.
+pub fn inherit_citations(message: &str, claims: &mut [Claim]) {
+    let spans = claim_spans(message, claims);
+
+    // Tables and lists: contiguous runs of the same structural kind.
+    let mut i = 0;
+    while i < claims.len() {
+        let kind = claims[i].kind;
+        if kind == ClaimKind::Sentence {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j + 1 < claims.len()
+            && claims[j + 1].kind == kind
+            && matches!((spans[j], spans[j + 1]), (Some(a), Some(b)) if adjacent(message, a.1, b.0))
+        {
+            j += 1;
+        }
+        let mut shared: Vec<u32> = Vec::new();
+        for c in &claims[i..=j] {
+            for n in &c.citations {
+                if !shared.contains(n) {
+                    shared.push(*n);
+                }
+            }
+        }
+        if shared.is_empty() {
+            let before = i
+                .checked_sub(1)
+                .filter(|&p| matches!((spans[p], spans[i]), (Some(a), Some(b)) if adjacent(message, a.1, b.0)));
+            let after = (j + 1 < claims.len())
+                .then_some(j + 1)
+                .filter(|&n| matches!((spans[j], spans[n]), (Some(a), Some(b)) if adjacent(message, a.1, b.0)));
+            if let Some(p) = before.filter(|&p| !claims[p].citations.is_empty()) {
+                shared = claims[p].citations.clone();
+            } else if let Some(n) = after.filter(|&n| !claims[n].citations.is_empty()) {
+                shared = claims[n].citations.clone();
+            }
+        }
+        if !shared.is_empty() {
+            for c in &mut claims[i..=j] {
+                if c.citations.is_empty() {
+                    c.citations = shared.clone();
+                }
+            }
+        }
+        i = j + 1;
+    }
+
+    // Sentences: a citation at the end of the paragraph covers it.
+    for k in (0..claims.len()).rev() {
+        if claims[k].kind != ClaimKind::Sentence || !claims[k].citations.is_empty() {
+            continue;
+        }
+        let mut next = k + 1;
+        while next < claims.len() && claims[next].kind == ClaimKind::Sentence {
+            let joined = matches!((spans[next - 1], spans[next]), (Some(a), Some(b)) if same_paragraph(message, a.1, b.0));
+            if !joined {
+                break;
+            }
+            if !claims[next].citations.is_empty() {
+                claims[k].citations = claims[next].citations.clone();
+                break;
+            }
+            next += 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn table_rows_inherit_the_tables_citation() {
+        let answer = "Invoice details [6]:\n\n| Field | Value |\n|---|---|\n| Invoice No. | MH/25-26/JUN/10 |\n| Date | 12-Jun-2025 |\n";
+        let mut claims = split_claims(answer);
+        inherit_citations(answer, &mut claims);
+        let rows: Vec<&Claim> = claims
+            .iter()
+            .filter(|c| c.kind == ClaimKind::TableRow)
+            .collect();
+        assert!(!rows.is_empty());
+        assert!(rows.iter().all(|c| c.citations == vec![6]), "{claims:?}");
+    }
+
+    #[test]
+    fn table_rows_share_a_citation_given_on_one_row() {
+        let answer =
+            "| Field | Value |\n|---|---|\n| Seller | Acme Ltd [3] |\n| Buyer | Beta LLP |\n";
+        let mut claims = split_claims(answer);
+        inherit_citations(answer, &mut claims);
+        let rows: Vec<&Claim> = claims
+            .iter()
+            .filter(|c| c.kind == ClaimKind::TableRow)
+            .collect();
+        assert!(rows.iter().all(|c| c.citations == vec![3]), "{claims:?}");
+    }
+
+    #[test]
+    fn a_source_line_under_a_table_covers_it() {
+        let answer = "| Metric | Value |\n|---|---|\n| Recall | 0.91 |\n\nSource: [2]\n";
+        let mut claims = split_claims(answer);
+        inherit_citations(answer, &mut claims);
+        let rows: Vec<&Claim> = claims
+            .iter()
+            .filter(|c| c.kind == ClaimKind::TableRow)
+            .collect();
+        assert!(rows.iter().all(|c| c.citations == vec![2]), "{claims:?}");
+    }
+
+    #[test]
+    fn a_paragraph_end_citation_covers_its_sentences_only() {
+        let answer = "The model uses fast weights. They are updated by gradient descent [4].\n\nA new paragraph states something else entirely about scaling laws.";
+        let mut claims = split_claims(answer);
+        inherit_citations(answer, &mut claims);
+        assert_eq!(claims[0].citations, vec![4]);
+        assert_eq!(claims[1].citations, vec![4]);
+        assert!(claims.last().is_some_and(|c| c.citations.is_empty()));
+    }
+
+    #[test]
+    fn list_items_inherit_from_their_lead_in() {
+        let answer = "Key settings [5]:\n- Learning rate is 0.001.\n- Batch size is 256.\n";
+        let mut claims = split_claims(answer);
+        inherit_citations(answer, &mut claims);
+        let items: Vec<&Claim> = claims
+            .iter()
+            .filter(|c| c.kind == ClaimKind::ListItem)
+            .collect();
+        assert!(!items.is_empty());
+        assert!(items.iter().all(|c| c.citations == vec![5]), "{claims:?}");
+    }
 
     fn texts(claims: &[Claim]) -> Vec<&str> {
         claims.iter().map(|c| c.text.as_str()).collect()

@@ -181,7 +181,7 @@ function locateLabel(line: string, start: number, shape: Shape): Located | null 
 function shapeBlockEnd(line: string, start: number): number {
   let depth = 0;
   let quoted = false;
-  for (let p = start + 1; p < line.length; p++) {
+  for (let p = start; p < line.length; p++) {
     const ch = line[p];
     if (ch === '"') quoted = !quoted;
     if (quoted) continue;
@@ -432,4 +432,3 @@ export function repairMermaid(source: string): MermaidRepairResult {
   if (repaired === normalized) return { source, changed: false, fixes: [] };
   return { source: repaired, changed: true, fixes: FIX_ORDER.filter(f => fixes.has(f)) };
 }
-

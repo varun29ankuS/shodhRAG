@@ -90,7 +90,10 @@ export function extractMermaidReply(reply: string): string | null {
     fences += 1;
     const lang = open[2];
     const body = lines.slice(i + 1, close).join('\n');
-    if (isMermaidLanguage(lang) || (!lang && HEADER.test(body))) found.push(mermaidSource(lang || 'mermaid', body).trim());
+    // An empty fence is no diagram (mermaidSource would give it a bare header).
+    if (body.trim() && (isMermaidLanguage(lang) || (!lang && HEADER.test(body)))) {
+      found.push(mermaidSource(lang || 'mermaid', body).trim());
+    }
     i = close;
   }
   if (found.length === 1) return found[0] || null;

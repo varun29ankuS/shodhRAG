@@ -146,3 +146,21 @@ test('targets: labels from the content, payloads capped', () => {
   assert.equal((imageTarget('https://example.com/a.png', '') as { src: string | null }).src, 'https://example.com/a.png');
   assert.equal(imageTarget(null, '').label, 'Image');
 });
+
+test('failed visual blocks carry why they did not draw into the side question', () => {
+  const diagram = mermaidTarget('flowchart TD\n A[x (y)] --> B', "Parse error on line 2:\nExpecting 'SQE'");
+  const block = buildContextBlock(diagram);
+  assert.ok(block.includes('the diagram did not draw; the mermaid parser reported'));
+  assert.ok(block.includes("Expecting 'SQE'"));
+  assert.equal(contextLabel(diagram), 'diagram source and its parse error');
+
+  const chart = chartTarget('{"type":"radar3d"}', null, 'Unknown chart type "radar3d".');
+  assert.equal(chart.kind === 'chart' ? chart.error : null, 'Unknown chart type "radar3d".');
+  assert.ok(buildContextBlock(chart).includes('the chart did not draw'));
+  assert.equal(contextLabel(chart), 'chart data and why it did not draw');
+
+  const drawn = chartTarget('{"type":"bar"}', 'Recall');
+  assert.equal('error' in drawn, false, 'a drawn chart has no error field');
+  assert.equal(contextLabel(drawn), 'chart data');
+  assert.equal('error' in mermaidTarget('graph TD\n A-->B', '   '), false, 'a blank reason is no reason');
+});

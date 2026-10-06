@@ -84,13 +84,14 @@ export interface FocusParamValue {
 export type FocusTarget =
   /** A diagram; `error` is the parser's message when it did not draw (kept so the reader can ask about it). */
   | { kind: 'mermaid'; label: string; source: string; error?: string }
-  | { kind: 'chart'; label: string; source: string }
+  /** A chart; `error` is why it did not draw, as with diagrams. */
+  | { kind: 'chart'; label: string; source: string; error?: string }
   /** A ```svg sketch (source as written; sanitized again whenever drawn). */
-  | { kind: 'svg'; label: string; source: string }
+  | { kind: 'svg'; label: string; source: string; error?: string }
   /** A ```plot spec with the slider positions when it was opened. */
-  | { kind: 'plot'; label: string; source: string; values: FocusParamValue[] }
+  | { kind: 'plot'; label: string; source: string; values: FocusParamValue[]; error?: string }
   /** A ```simulation spec with the slider positions when it was opened. */
-  | { kind: 'simulation'; label: string; source: string; values: FocusParamValue[] }
+  | { kind: 'simulation'; label: string; source: string; values: FocusParamValue[]; error?: string }
   /** A display equation; `symbols` are the meanings shown on hover (those found in it). */
   | { kind: 'equation'; label: string; tex: string; symbols?: SymbolNote[] }
   | { kind: 'table'; label: string; rows: string[][] }

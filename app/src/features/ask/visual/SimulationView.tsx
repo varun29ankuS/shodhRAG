@@ -429,7 +429,17 @@ export function SimulationBlock({ source }: { source: string }) {
   }, []);
   const getTarget = useCallback(() => simulationTarget(source.trim(), model?.title ?? null, valuesRef.current), [source, model]);
 
-  if ('error' in result) return <BlockError title="Simulation not run" message={result.error} source={source} />;
+  if ('error' in result) {
+    const error = result.error;
+    return (
+      <BlockError
+        title="Simulation not run"
+        message={error}
+        source={source}
+        ask={{ noun: 'simulation', getTarget: () => simulationTarget(source.trim(), null, [], error) }}
+      />
+    );
+  }
   if (!model) return null;
   if (printing) {
     // Printed: the first frame, without controls, and where to run it.

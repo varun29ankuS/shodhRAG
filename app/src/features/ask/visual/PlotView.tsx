@@ -240,7 +240,17 @@ export function PlotBlock({ source }: { source: string }) {
     [source, spec],
   );
 
-  if ('error' in result) return <BlockError title="Plot not drawn" message={result.error} source={source} />;
+  if ('error' in result) {
+    const error = result.error;
+    return (
+      <BlockError
+        title="Plot not drawn"
+        message={error}
+        source={source}
+        ask={{ noun: 'plot', getTarget: () => plotTarget(source.trim(), null, [], error) }}
+      />
+    );
+  }
   if (!spec) return null;
   return (
     <FocusFrame noun="plot" getTarget={getTarget} doubleClick={false} className="my-4">

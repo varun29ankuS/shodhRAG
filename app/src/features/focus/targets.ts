@@ -7,7 +7,7 @@
 import type { FocusBox, FocusDocumentRef, FocusParamValue, FocusSourceHit, FocusTarget, FocusTaskSnapshot } from './focusTypes.ts';
 import { annotateTex } from '../ask/visual/symbols.ts';
 import type { SymbolNote } from '../ask/visual/symbols.ts';
-import { MAX_DIAGRAM_ERROR_CHARS, MAX_TARGET_CHARS, readParamValues } from './threadStore.ts';
+import { MAX_TARGET_CHARS, blockError, readParamValues } from './threadStore.ts';
 import { SVG_MAX_CHARS } from '../ask/visual/svgSanitize.ts';
 import { PLOT_MAX_CHARS } from '../ask/visual/plotSpec.ts';
 import { SIMULATION_MAX_CHARS } from '../ask/visual/simulationSpec.ts';
@@ -51,11 +51,11 @@ export function mermaidTarget(source: string, error?: string | null): FocusTarge
   const title = /^\s*title\s+(.+)$/im.exec(source)?.[1];
   const keyword = (lines[0] ?? '').split(/\s+/)[0].toLowerCase();
   const name = DIAGRAM_NAMES[keyword] ?? 'Diagram';
-  const problem = error?.trim() ? cap(error.trim(), MAX_DIAGRAM_ERROR_CHARS) : '';
-  return { kind: 'mermaid', label: title ? short(title) : name, source: cap(source), ...(problem ? { error: problem } : {}) };
+  return { kind: 'mermaid', label: title ? short(title) : name, source: cap(source), ...blockError(error) };
 }
 
-export function chartTarget(source: string, title?: string | null): FocusTarget {
+/** A chart; `error` is why it did not draw (kept so the reader can ask about it). */
+export function chartTarget(source: string, title?: string | null, error?: string | null): FocusTarget {
   let label = title?.trim() || '';
   if (!label) {
     try {
@@ -65,7 +65,7 @@ export function chartTarget(source: string, title?: string | null): FocusTarget 
       // Not JSON: keep the generic label.
     }
   }
-  return { kind: 'chart', label: label ? short(label) : 'Chart', source: cap(source) };
+  return { kind: 'chart', label: label ? short(label) : 'Chart', source: cap(source), ...blockError(error) };
 }
 
 /** The <title> of an SVG, if it has one. */
@@ -87,24 +87,24 @@ function specTitle(source: string): string {
  * A ```svg sketch. Sources over the render cap are never drawn, so they never
  * become targets; null keeps a truncated (invalid) SVG out of a thread.
  */
-export function svgTarget(source: string, title?: string | null): FocusTarget | null {
+export function svgTarget(source: string, title?: string | null, error?: string | null): FocusTarget | null {
   if (source.length > SVG_MAX_CHARS) return null;
   const label = title?.trim() || svgTitle(source);
-  return { kind: 'svg', label: label ? short(label) : 'Sketch', source };
+  return { kind: 'svg', label: label ? short(label) : 'Sketch', source, ...blockError(error) };
 }
 
 /** A ```plot with the slider positions the reader had when opening it. */
-export function plotTarget(source: string, title: string | null | undefined, values: readonly FocusParamValue[]): FocusTarget | null {
+export function plotTarget(source: string, title: string | null | undefined, values: readonly FocusParamValue[], error?: string | null): FocusTarget | null {
   if (source.length > PLOT_MAX_CHARS) return null;
   const label = title?.trim() || specTitle(source);
-  return { kind: 'plot', label: label ? short(label) : 'Interactive plot', source, values: readParamValues(values) };
+  return { kind: 'plot', label: label ? short(label) : 'Interactive plot', source, values: readParamValues(values), ...blockError(error) };
 }
 
 /** A ```simulation with the slider positions the reader had when opening it. */
-export function simulationTarget(source: string, title: string | null | undefined, values: readonly FocusParamValue[]): FocusTarget | null {
+export function simulationTarget(source: string, title: string | null | undefined, values: readonly FocusParamValue[], error?: string | null): FocusTarget | null {
   if (source.length > SIMULATION_MAX_CHARS) return null;
   const label = title?.trim() || specTitle(source);
-  return { kind: 'simulation', label: label ? short(label) : 'Simulation', source, values: readParamValues(values) };
+  return { kind: 'simulation', label: label ? short(label) : 'Simulation', source, values: readParamValues(values), ...blockError(error) };
 }
 
 /** A display equation, with the meanings of the symbols it contains (if any were given). */

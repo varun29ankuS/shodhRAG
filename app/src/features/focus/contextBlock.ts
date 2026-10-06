@@ -117,6 +117,11 @@ export function sliderLines(values: readonly { name: string; value: number }[]):
   return values.map(v => `${v.name} = ${Number(v.value.toPrecision(6))}`).join('\n');
 }
 
+/** `sections` followed by the reason a visual block did not draw, when there is one. */
+function withError(sections: Section[], error: string | undefined, heading: string): Section[] {
+  return error?.trim() ? [...sections, { heading, payload: error.trim(), info: 'text' }] : sections;
+}
+
 function interactiveSections(heading: string, target: Extract<FocusTarget, { kind: 'plot' | 'simulation' }>): Section[] {
   const sections: Section[] = [{ heading, payload: visualSource(target.source), info: 'json' }];
   if (target.values.length > 0) sections.push({ heading: 'slider values when the reader opened it', payload: sliderLines(target.values), info: 'text' });
@@ -140,20 +145,24 @@ interface Section {
 function sectionsFor(target: FocusTarget, extras: FocusExtras): Section[] {
   switch (target.kind) {
     case 'mermaid': {
-      const sections: Section[] = [{ heading: 'diagram (mermaid source)', payload: target.source.trim(), info: 'mermaid' }];
-      if (target.error?.trim()) {
-        sections.push({ heading: 'the diagram did not draw; the mermaid parser reported', payload: target.error.trim(), info: 'text' });
-      }
-      return sections;
+      return withError(
+        [{ heading: 'diagram (mermaid source)', payload: target.source.trim(), info: 'mermaid' }],
+        target.error,
+        'the diagram did not draw; the mermaid parser reported',
+      );
     }
     case 'chart':
-      return [{ heading: 'chart data (JSON)', payload: target.source.trim(), info: 'json' }];
+      return withError([{ heading: 'chart data (JSON)', payload: target.source.trim(), info: 'json' }], target.error, 'the chart did not draw');
     case 'svg':
-      return [{ heading: 'sketch (SVG source; long path data shortened)', payload: visualSource(compactSvg(target.source)), info: 'svg' }];
+      return withError(
+        [{ heading: 'sketch (SVG source; long path data shortened)', payload: visualSource(compactSvg(target.source)), info: 'svg' }],
+        target.error,
+        'the sketch did not draw',
+      );
     case 'plot':
-      return interactiveSections('interactive plot (JSON spec; formulas use x and the slider parameters)', target);
+      return withError(interactiveSections('interactive plot (JSON spec; formulas use x and the slider parameters)', target), target.error, 'the plot did not draw');
     case 'simulation':
-      return interactiveSections('simulation (JSON spec: state, derivatives, events, drawing)', target);
+      return withError(interactiveSections('simulation (JSON spec: state, derivatives, events, drawing)', target), target.error, 'the simulation did not run');
     case 'equation': {
       const sections: Section[] = [{ heading: 'equation (LaTeX)', payload: target.tex.trim(), info: 'latex' }];
       if (target.symbols && target.symbols.length > 0) sections.push({ heading: 'meanings of its symbols', payload: symbolLines(target.symbols), info: 'text' });
@@ -350,12 +359,14 @@ export function contextLabel(target: FocusTarget, extras: FocusExtras = {}): str
     case 'mermaid':
       return target.error?.trim() ? 'diagram source and its parse error' : 'diagram source';
     case 'chart':
-      return 'chart data';
+      return target.error?.trim() ? 'chart data and why it did not draw' : 'chart data';
     case 'svg':
-      return 'sketch source';
+      return target.error?.trim() ? 'sketch source and why it did not draw' : 'sketch source';
     case 'plot':
+      if (target.error?.trim()) return 'plot spec and why it did not draw';
       return target.values.length > 0 ? 'plot spec and slider values' : 'plot spec';
     case 'simulation':
+      if (target.error?.trim()) return 'simulation spec and why it did not run';
       return target.values.length > 0 ? 'simulation spec and slider values' : 'simulation spec';
     case 'equation':
       return target.symbols && target.symbols.length > 0 ? 'equation and its symbols' : 'equation';

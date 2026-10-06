@@ -156,8 +156,13 @@ function visualSource(value: unknown, max: number): string | null {
 /** Characters of a selected text and of its paragraph kept with a thread. */
 export const MAX_SELECTION_TARGET_CHARS = 4_000;
 export const MAX_PARAGRAPH_TARGET_CHARS = 3_000;
-/** Characters of a diagram's parse error kept with a thread. */
+/** Characters of a visual block's error (a diagram's parse error, a chart's spec error) kept with a thread. */
 export const MAX_DIAGRAM_ERROR_CHARS = 1_000;
+
+/** Why a visual block did not draw, as kept with a target: `{ error }` when there is a reason, else nothing. */
+export function blockError(value: unknown): { error?: string } {
+  return typeof value === 'string' && value.trim() ? { error: capped(value.trim(), MAX_DIAGRAM_ERROR_CHARS) } : {};
+}
 
 /** A stored target, or null when it is not a valid one. */
 export function readTarget(value: unknown): FocusTarget | null {
@@ -167,19 +172,18 @@ export function readTarget(value: unknown): FocusTarget | null {
   switch (value.kind) {
     case 'mermaid': {
       if (!str(value.source)) return null;
-      const error = str(value.error) && value.error.trim() ? capped(value.error.trim(), MAX_DIAGRAM_ERROR_CHARS) : '';
-      return { kind: 'mermaid', label, source: capped(value.source), ...(error ? { error } : {}) };
+      return { kind: 'mermaid', label, source: capped(value.source), ...blockError(value.error) };
     }
     case 'chart':
-      return str(value.source) ? { kind: value.kind, label, source: capped(value.source) } : null;
+      return str(value.source) ? { kind: value.kind, label, source: capped(value.source), ...blockError(value.error) } : null;
     case 'svg': {
       const source = visualSource(value.source, SVG_MAX_CHARS);
-      return source ? { kind: 'svg', label, source } : null;
+      return source ? { kind: 'svg', label, source, ...blockError(value.error) } : null;
     }
     case 'plot':
     case 'simulation': {
       const source = visualSource(value.source, value.kind === 'plot' ? PLOT_MAX_CHARS : SIMULATION_MAX_CHARS);
-      return source ? { kind: value.kind, label, source, values: readParamValues(value.values) } : null;
+      return source ? { kind: value.kind, label, source, values: readParamValues(value.values), ...blockError(value.error) } : null;
     }
     case 'equation': {
       if (!str(value.tex)) return null;

@@ -191,7 +191,17 @@ export function SvgBlock({ source }: { source: string }) {
   const { result, markup, seed } = useSvgSketch(source);
   const title = result.ok ? result.title : '';
   const getTarget = useCallback(() => svgTarget(source.trim(), title), [source, title]);
-  if ('error' in result) return <BlockError title="Sketch not drawn" message={result.error} source={source} />;
+  if ('error' in result) {
+    const error = result.error;
+    return (
+      <BlockError
+        title="Sketch not drawn"
+        message={error}
+        source={source}
+        ask={{ noun: 'sketch', getTarget: () => svgTarget(source.trim(), null, error) }}
+      />
+    );
+  }
   return (
     <FocusFrame noun="sketch" getTarget={getTarget} className="my-4">
       <figure className="m-0 rounded-xl border border-shodh-border bg-shodh-surface p-4 overflow-x-auto scrollbar-thin">

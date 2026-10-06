@@ -106,7 +106,7 @@ export function MermaidBlock({ source, dark }: { source: string; dark: boolean }
     if (!store.begin(key)) return;
     setNotice(null);
     const outcome = await focus.repairDiagram({ place, key, source: written, message: composeMermaidFixRequest(written, error) });
-    if (!outcome.ok) {
+    if ('reason' in outcome) {
       if (outcome.reason === 'busy') {
         // Nothing was sent: the attempt is not used up.
         store.release(key);
@@ -126,8 +126,8 @@ export function MermaidBlock({ source, dark }: { source: string; dark: boolean }
       return;
     }
     const check = await checkDiagram(fixed);
-    if (check.ok) store.succeed(key, check.source);
-    else store.fail(key, `Its correction does not draw either: ${parseErrorText(check.error).short}`);
+    if ('error' in check) store.fail(key, `Its correction does not draw either: ${parseErrorText(check.error).short}`);
+    else store.succeed(key, check.source);
   }, [focus, place, key, written]);
 
   const errorMessage = state.status === 'error' && toDraw === written ? state.message : null;

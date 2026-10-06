@@ -82,7 +82,8 @@ export interface FocusParamValue {
 
 /** The object shown in the pop-out. Everything needed to draw it again. */
 export type FocusTarget =
-  | { kind: 'mermaid'; label: string; source: string }
+  /** A diagram; `error` is the parser's message when it did not draw (kept so the reader can ask about it). */
+  | { kind: 'mermaid'; label: string; source: string; error?: string }
   | { kind: 'chart'; label: string; source: string }
   /** A ```svg sketch (source as written; sanitized again whenever drawn). */
   | { kind: 'svg'; label: string; source: string }

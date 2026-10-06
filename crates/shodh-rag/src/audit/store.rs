@@ -258,6 +258,16 @@ const MIGRATIONS: &[(i64, &str)] = &[
             updated_at TEXT NOT NULL
         );",
     ),
+    (
+        7,
+        // The model picker's list of models (OpenRouter's public list, parsed), so the
+        // picker opens instantly and shows prices offline. Refreshed after its TTL.
+        "CREATE TABLE model_catalog_cache (
+            source TEXT PRIMARY KEY,
+            models_json TEXT NOT NULL,
+            fetched_at_ms INTEGER NOT NULL CHECK (fetched_at_ms >= 0)
+        );",
+    ),
 ];
 
 fn latest_schema_version() -> i64 {

@@ -144,6 +144,7 @@ impl RunAuditTap {
                 status,
                 duration_ms,
                 error,
+                provider_error,
             } => {
                 let run = self.runs.remove(run_id).unwrap_or_default();
                 let text: String = run
@@ -174,6 +175,7 @@ impl RunAuditTap {
                     payload: json!({
                         "status": status,
                         "error": error,
+                        "error_kind": provider_error.as_ref().map(|e| e.kind),
                         "duration_ms": duration_ms,
                         "model": run.model,
                         "provider": provider,
@@ -324,6 +326,7 @@ mod tests {
                 status: RunStatus::Completed,
                 duration_ms: 10,
                 error: None,
+                provider_error: None,
             })
             .unwrap();
         let p = &answer.payload;
@@ -391,6 +394,7 @@ mod tests {
                 status: RunStatus::Completed,
                 duration_ms: 1234,
                 error: None,
+                provider_error: None,
             })
             .unwrap();
         assert_eq!(answer.run_id, "r1");
@@ -422,6 +426,7 @@ mod tests {
                 status: RunStatus::Error,
                 duration_ms: 0,
                 error: Some("omp exited".into()),
+                provider_error: None,
             })
             .unwrap();
         assert_eq!(answer.payload["status"], "error");

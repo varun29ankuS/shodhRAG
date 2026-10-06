@@ -1,0 +1,1084 @@
+flowchart LR
+A[a ( b] --> B
+=====
+flowchart LR
+A[a ) b] --> B
+=====
+flowchart LR
+A[a [ b] --> B
+=====
+flowchart LR
+A[a ] b] --> B
+=====
+flowchart LR
+A[a { b] --> B
+=====
+flowchart LR
+A[a } b] --> B
+=====
+flowchart LR
+A[a : b] --> B
+=====
+flowchart LR
+A[a ; b] --> B
+=====
+flowchart LR
+A[a , b] --> B
+=====
+flowchart LR
+A[a " b] --> B
+=====
+flowchart LR
+A[a # b] --> B
+=====
+flowchart LR
+A[a & b] --> B
+=====
+flowchart LR
+A[a < b] --> B
+=====
+flowchart LR
+A[a > b] --> B
+=====
+flowchart LR
+A[a | b] --> B
+=====
+flowchart LR
+A[a ? b] --> B
+=====
+flowchart LR
+A[a / b] --> B
+=====
+flowchart LR
+A[a \ b] --> B
+=====
+flowchart LR
+A[a = b] --> B
+=====
+flowchart LR
+A[a - b] --> B
+=====
+flowchart LR
+A[a @ b] --> B
+=====
+flowchart LR
+A[a * b] --> B
+=====
+flowchart LR
+A[a % b] --> B
+=====
+flowchart LR
+A[a ! b] --> B
+=====
+flowchart LR
+A[a ' b] --> B
+=====
+flowchart LR
+A[a ` b] --> B
+=====
+flowchart LR
+A[a + b] --> B
+=====
+flowchart LR
+A[a ~ b] --> B
+=====
+flowchart LR
+A[a → b] --> B
+=====
+flowchart LR
+A[a é b] --> B
+=====
+flowchart LR
+A[a 1. b] --> B
+=====
+flowchart LR
+A(a ( b) --> B
+=====
+flowchart LR
+A(a ) b) --> B
+=====
+flowchart LR
+A(a [ b) --> B
+=====
+flowchart LR
+A(a ] b) --> B
+=====
+flowchart LR
+A(a { b) --> B
+=====
+flowchart LR
+A(a } b) --> B
+=====
+flowchart LR
+A(a : b) --> B
+=====
+flowchart LR
+A(a ; b) --> B
+=====
+flowchart LR
+A(a , b) --> B
+=====
+flowchart LR
+A(a " b) --> B
+=====
+flowchart LR
+A(a # b) --> B
+=====
+flowchart LR
+A(a & b) --> B
+=====
+flowchart LR
+A(a < b) --> B
+=====
+flowchart LR
+A(a > b) --> B
+=====
+flowchart LR
+A(a | b) --> B
+=====
+flowchart LR
+A(a ? b) --> B
+=====
+flowchart LR
+A(a / b) --> B
+=====
+flowchart LR
+A(a \ b) --> B
+=====
+flowchart LR
+A(a = b) --> B
+=====
+flowchart LR
+A(a - b) --> B
+=====
+flowchart LR
+A(a @ b) --> B
+=====
+flowchart LR
+A(a * b) --> B
+=====
+flowchart LR
+A(a % b) --> B
+=====
+flowchart LR
+A(a ! b) --> B
+=====
+flowchart LR
+A(a ' b) --> B
+=====
+flowchart LR
+A(a ` b) --> B
+=====
+flowchart LR
+A(a + b) --> B
+=====
+flowchart LR
+A(a ~ b) --> B
+=====
+flowchart LR
+A(a → b) --> B
+=====
+flowchart LR
+A(a é b) --> B
+=====
+flowchart LR
+A(a 1. b) --> B
+=====
+flowchart LR
+A{a ( b} --> B
+=====
+flowchart LR
+A{a ) b} --> B
+=====
+flowchart LR
+A{a [ b} --> B
+=====
+flowchart LR
+A{a ] b} --> B
+=====
+flowchart LR
+A{a { b} --> B
+=====
+flowchart LR
+A{a } b} --> B
+=====
+flowchart LR
+A{a : b} --> B
+=====
+flowchart LR
+A{a ; b} --> B
+=====
+flowchart LR
+A{a , b} --> B
+=====
+flowchart LR
+A{a " b} --> B
+=====
+flowchart LR
+A{a # b} --> B
+=====
+flowchart LR
+A{a & b} --> B
+=====
+flowchart LR
+A{a < b} --> B
+=====
+flowchart LR
+A{a > b} --> B
+=====
+flowchart LR
+A{a | b} --> B
+=====
+flowchart LR
+A{a ? b} --> B
+=====
+flowchart LR
+A{a / b} --> B
+=====
+flowchart LR
+A{a \ b} --> B
+=====
+flowchart LR
+A{a = b} --> B
+=====
+flowchart LR
+A{a - b} --> B
+=====
+flowchart LR
+A{a @ b} --> B
+=====
+flowchart LR
+A{a * b} --> B
+=====
+flowchart LR
+A{a % b} --> B
+=====
+flowchart LR
+A{a ! b} --> B
+=====
+flowchart LR
+A{a ' b} --> B
+=====
+flowchart LR
+A{a ` b} --> B
+=====
+flowchart LR
+A{a + b} --> B
+=====
+flowchart LR
+A{a ~ b} --> B
+=====
+flowchart LR
+A{a → b} --> B
+=====
+flowchart LR
+A{a é b} --> B
+=====
+flowchart LR
+A{a 1. b} --> B
+=====
+flowchart LR
+A((a ( b)) --> B
+=====
+flowchart LR
+A((a ) b)) --> B
+=====
+flowchart LR
+A((a [ b)) --> B
+=====
+flowchart LR
+A((a ] b)) --> B
+=====
+flowchart LR
+A((a { b)) --> B
+=====
+flowchart LR
+A((a } b)) --> B
+=====
+flowchart LR
+A((a : b)) --> B
+=====
+flowchart LR
+A((a ; b)) --> B
+=====
+flowchart LR
+A((a , b)) --> B
+=====
+flowchart LR
+A((a " b)) --> B
+=====
+flowchart LR
+A((a # b)) --> B
+=====
+flowchart LR
+A((a & b)) --> B
+=====
+flowchart LR
+A((a < b)) --> B
+=====
+flowchart LR
+A((a > b)) --> B
+=====
+flowchart LR
+A((a | b)) --> B
+=====
+flowchart LR
+A((a ? b)) --> B
+=====
+flowchart LR
+A((a / b)) --> B
+=====
+flowchart LR
+A((a \ b)) --> B
+=====
+flowchart LR
+A((a = b)) --> B
+=====
+flowchart LR
+A((a - b)) --> B
+=====
+flowchart LR
+A((a @ b)) --> B
+=====
+flowchart LR
+A((a * b)) --> B
+=====
+flowchart LR
+A((a % b)) --> B
+=====
+flowchart LR
+A((a ! b)) --> B
+=====
+flowchart LR
+A((a ' b)) --> B
+=====
+flowchart LR
+A((a ` b)) --> B
+=====
+flowchart LR
+A((a + b)) --> B
+=====
+flowchart LR
+A((a ~ b)) --> B
+=====
+flowchart LR
+A((a → b)) --> B
+=====
+flowchart LR
+A((a é b)) --> B
+=====
+flowchart LR
+A((a 1. b)) --> B
+=====
+flowchart LR
+A([a ( b]) --> B
+=====
+flowchart LR
+A([a ) b]) --> B
+=====
+flowchart LR
+A([a [ b]) --> B
+=====
+flowchart LR
+A([a ] b]) --> B
+=====
+flowchart LR
+A([a { b]) --> B
+=====
+flowchart LR
+A([a } b]) --> B
+=====
+flowchart LR
+A([a : b]) --> B
+=====
+flowchart LR
+A([a ; b]) --> B
+=====
+flowchart LR
+A([a , b]) --> B
+=====
+flowchart LR
+A([a " b]) --> B
+=====
+flowchart LR
+A([a # b]) --> B
+=====
+flowchart LR
+A([a & b]) --> B
+=====
+flowchart LR
+A([a < b]) --> B
+=====
+flowchart LR
+A([a > b]) --> B
+=====
+flowchart LR
+A([a | b]) --> B
+=====
+flowchart LR
+A([a ? b]) --> B
+=====
+flowchart LR
+A([a / b]) --> B
+=====
+flowchart LR
+A([a \ b]) --> B
+=====
+flowchart LR
+A([a = b]) --> B
+=====
+flowchart LR
+A([a - b]) --> B
+=====
+flowchart LR
+A([a @ b]) --> B
+=====
+flowchart LR
+A([a * b]) --> B
+=====
+flowchart LR
+A([a % b]) --> B
+=====
+flowchart LR
+A([a ! b]) --> B
+=====
+flowchart LR
+A([a ' b]) --> B
+=====
+flowchart LR
+A([a ` b]) --> B
+=====
+flowchart LR
+A([a + b]) --> B
+=====
+flowchart LR
+A([a ~ b]) --> B
+=====
+flowchart LR
+A([a → b]) --> B
+=====
+flowchart LR
+A([a é b]) --> B
+=====
+flowchart LR
+A([a 1. b]) --> B
+=====
+flowchart LR
+A[[a ( b]] --> B
+=====
+flowchart LR
+A[[a ) b]] --> B
+=====
+flowchart LR
+A[[a [ b]] --> B
+=====
+flowchart LR
+A[[a ] b]] --> B
+=====
+flowchart LR
+A[[a { b]] --> B
+=====
+flowchart LR
+A[[a } b]] --> B
+=====
+flowchart LR
+A[[a : b]] --> B
+=====
+flowchart LR
+A[[a ; b]] --> B
+=====
+flowchart LR
+A[[a , b]] --> B
+=====
+flowchart LR
+A[[a " b]] --> B
+=====
+flowchart LR
+A[[a # b]] --> B
+=====
+flowchart LR
+A[[a & b]] --> B
+=====
+flowchart LR
+A[[a < b]] --> B
+=====
+flowchart LR
+A[[a > b]] --> B
+=====
+flowchart LR
+A[[a | b]] --> B
+=====
+flowchart LR
+A[[a ? b]] --> B
+=====
+flowchart LR
+A[[a / b]] --> B
+=====
+flowchart LR
+A[[a \ b]] --> B
+=====
+flowchart LR
+A[[a = b]] --> B
+=====
+flowchart LR
+A[[a - b]] --> B
+=====
+flowchart LR
+A[[a @ b]] --> B
+=====
+flowchart LR
+A[[a * b]] --> B
+=====
+flowchart LR
+A[[a % b]] --> B
+=====
+flowchart LR
+A[[a ! b]] --> B
+=====
+flowchart LR
+A[[a ' b]] --> B
+=====
+flowchart LR
+A[[a ` b]] --> B
+=====
+flowchart LR
+A[[a + b]] --> B
+=====
+flowchart LR
+A[[a ~ b]] --> B
+=====
+flowchart LR
+A[[a → b]] --> B
+=====
+flowchart LR
+A[[a é b]] --> B
+=====
+flowchart LR
+A[[a 1. b]] --> B
+=====
+flowchart LR
+A[(a ( b)] --> B
+=====
+flowchart LR
+A[(a ) b)] --> B
+=====
+flowchart LR
+A[(a [ b)] --> B
+=====
+flowchart LR
+A[(a ] b)] --> B
+=====
+flowchart LR
+A[(a { b)] --> B
+=====
+flowchart LR
+A[(a } b)] --> B
+=====
+flowchart LR
+A[(a : b)] --> B
+=====
+flowchart LR
+A[(a ; b)] --> B
+=====
+flowchart LR
+A[(a , b)] --> B
+=====
+flowchart LR
+A[(a " b)] --> B
+=====
+flowchart LR
+A[(a # b)] --> B
+=====
+flowchart LR
+A[(a & b)] --> B
+=====
+flowchart LR
+A[(a < b)] --> B
+=====
+flowchart LR
+A[(a > b)] --> B
+=====
+flowchart LR
+A[(a | b)] --> B
+=====
+flowchart LR
+A[(a ? b)] --> B
+=====
+flowchart LR
+A[(a / b)] --> B
+=====
+flowchart LR
+A[(a \ b)] --> B
+=====
+flowchart LR
+A[(a = b)] --> B
+=====
+flowchart LR
+A[(a - b)] --> B
+=====
+flowchart LR
+A[(a @ b)] --> B
+=====
+flowchart LR
+A[(a * b)] --> B
+=====
+flowchart LR
+A[(a % b)] --> B
+=====
+flowchart LR
+A[(a ! b)] --> B
+=====
+flowchart LR
+A[(a ' b)] --> B
+=====
+flowchart LR
+A[(a ` b)] --> B
+=====
+flowchart LR
+A[(a + b)] --> B
+=====
+flowchart LR
+A[(a ~ b)] --> B
+=====
+flowchart LR
+A[(a → b)] --> B
+=====
+flowchart LR
+A[(a é b)] --> B
+=====
+flowchart LR
+A[(a 1. b)] --> B
+=====
+flowchart LR
+A{{a ( b}} --> B
+=====
+flowchart LR
+A{{a ) b}} --> B
+=====
+flowchart LR
+A{{a [ b}} --> B
+=====
+flowchart LR
+A{{a ] b}} --> B
+=====
+flowchart LR
+A{{a { b}} --> B
+=====
+flowchart LR
+A{{a } b}} --> B
+=====
+flowchart LR
+A{{a : b}} --> B
+=====
+flowchart LR
+A{{a ; b}} --> B
+=====
+flowchart LR
+A{{a , b}} --> B
+=====
+flowchart LR
+A{{a " b}} --> B
+=====
+flowchart LR
+A{{a # b}} --> B
+=====
+flowchart LR
+A{{a & b}} --> B
+=====
+flowchart LR
+A{{a < b}} --> B
+=====
+flowchart LR
+A{{a > b}} --> B
+=====
+flowchart LR
+A{{a | b}} --> B
+=====
+flowchart LR
+A{{a ? b}} --> B
+=====
+flowchart LR
+A{{a / b}} --> B
+=====
+flowchart LR
+A{{a \ b}} --> B
+=====
+flowchart LR
+A{{a = b}} --> B
+=====
+flowchart LR
+A{{a - b}} --> B
+=====
+flowchart LR
+A{{a @ b}} --> B
+=====
+flowchart LR
+A{{a * b}} --> B
+=====
+flowchart LR
+A{{a % b}} --> B
+=====
+flowchart LR
+A{{a ! b}} --> B
+=====
+flowchart LR
+A{{a ' b}} --> B
+=====
+flowchart LR
+A{{a ` b}} --> B
+=====
+flowchart LR
+A{{a + b}} --> B
+=====
+flowchart LR
+A{{a ~ b}} --> B
+=====
+flowchart LR
+A{{a → b}} --> B
+=====
+flowchart LR
+A{{a é b}} --> B
+=====
+flowchart LR
+A{{a 1. b}} --> B
+=====
+flowchart LR
+A>a ( b] --> B
+=====
+flowchart LR
+A>a ) b] --> B
+=====
+flowchart LR
+A>a [ b] --> B
+=====
+flowchart LR
+A>a ] b] --> B
+=====
+flowchart LR
+A>a { b] --> B
+=====
+flowchart LR
+A>a } b] --> B
+=====
+flowchart LR
+A>a : b] --> B
+=====
+flowchart LR
+A>a ; b] --> B
+=====
+flowchart LR
+A>a , b] --> B
+=====
+flowchart LR
+A>a " b] --> B
+=====
+flowchart LR
+A>a # b] --> B
+=====
+flowchart LR
+A>a & b] --> B
+=====
+flowchart LR
+A>a < b] --> B
+=====
+flowchart LR
+A>a > b] --> B
+=====
+flowchart LR
+A>a | b] --> B
+=====
+flowchart LR
+A>a ? b] --> B
+=====
+flowchart LR
+A>a / b] --> B
+=====
+flowchart LR
+A>a \ b] --> B
+=====
+flowchart LR
+A>a = b] --> B
+=====
+flowchart LR
+A>a - b] --> B
+=====
+flowchart LR
+A>a @ b] --> B
+=====
+flowchart LR
+A>a * b] --> B
+=====
+flowchart LR
+A>a % b] --> B
+=====
+flowchart LR
+A>a ! b] --> B
+=====
+flowchart LR
+A>a ' b] --> B
+=====
+flowchart LR
+A>a ` b] --> B
+=====
+flowchart LR
+A>a + b] --> B
+=====
+flowchart LR
+A>a ~ b] --> B
+=====
+flowchart LR
+A>a → b] --> B
+=====
+flowchart LR
+A>a é b] --> B
+=====
+flowchart LR
+A>a 1. b] --> B
+=====
+flowchart LR
+A -->|a ( b| B
+=====
+flowchart LR
+A -->|a ) b| B
+=====
+flowchart LR
+A -->|a [ b| B
+=====
+flowchart LR
+A -->|a ] b| B
+=====
+flowchart LR
+A -->|a { b| B
+=====
+flowchart LR
+A -->|a } b| B
+=====
+flowchart LR
+A -->|a : b| B
+=====
+flowchart LR
+A -->|a ; b| B
+=====
+flowchart LR
+A -->|a , b| B
+=====
+flowchart LR
+A -->|a " b| B
+=====
+flowchart LR
+A -->|a # b| B
+=====
+flowchart LR
+A -->|a & b| B
+=====
+flowchart LR
+A -->|a < b| B
+=====
+flowchart LR
+A -->|a > b| B
+=====
+flowchart LR
+A -->|a | b| B
+=====
+flowchart LR
+A -->|a ? b| B
+=====
+flowchart LR
+A -->|a / b| B
+=====
+flowchart LR
+A -->|a \ b| B
+=====
+flowchart LR
+A -->|a = b| B
+=====
+flowchart LR
+A -->|a - b| B
+=====
+flowchart LR
+A -->|a @ b| B
+=====
+flowchart LR
+A -->|a * b| B
+=====
+flowchart LR
+A -->|a % b| B
+=====
+flowchart LR
+A -->|a ! b| B
+=====
+flowchart LR
+A -->|a ' b| B
+=====
+flowchart LR
+A -->|a ` b| B
+=====
+flowchart LR
+A -->|a + b| B
+=====
+flowchart LR
+A -->|a ~ b| B
+=====
+flowchart LR
+A -->|a → b| B
+=====
+flowchart LR
+A -->|a é b| B
+=====
+flowchart LR
+A -->|a 1. b| B
+=====
+flowchart LR
+subgraph S1 a ( b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a ) b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a [ b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a ] b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a { b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a } b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a : b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a ; b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a , b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a " b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a # b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a & b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a < b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a > b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a | b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a ? b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a / b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a \ b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a = b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a - b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a @ b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a * b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a % b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a ! b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a ' b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a ` b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a + b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a ~ b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a → b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a é b
+A-->B
+end
+=====
+flowchart LR
+subgraph S1 a 1. b
+A-->B
+end

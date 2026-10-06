@@ -156,6 +156,8 @@ function visualSource(value: unknown, max: number): string | null {
 /** Characters of a selected text and of its paragraph kept with a thread. */
 export const MAX_SELECTION_TARGET_CHARS = 4_000;
 export const MAX_PARAGRAPH_TARGET_CHARS = 3_000;
+/** Characters of a diagram's parse error kept with a thread. */
+export const MAX_DIAGRAM_ERROR_CHARS = 1_000;
 
 /** A stored target, or null when it is not a valid one. */
 export function readTarget(value: unknown): FocusTarget | null {
@@ -163,7 +165,11 @@ export function readTarget(value: unknown): FocusTarget | null {
   const label = str(value.label) && value.label.trim() ? value.label : null;
   if (!label) return null;
   switch (value.kind) {
-    case 'mermaid':
+    case 'mermaid': {
+      if (!str(value.source)) return null;
+      const error = str(value.error) && value.error.trim() ? capped(value.error.trim(), MAX_DIAGRAM_ERROR_CHARS) : '';
+      return { kind: 'mermaid', label, source: capped(value.source), ...(error ? { error } : {}) };
+    }
     case 'chart':
       return str(value.source) ? { kind: value.kind, label, source: capped(value.source) } : null;
     case 'svg': {

@@ -1,0 +1,115 @@
+flowchart LR
+subgraph X;
+A-->B
+end
+=====
+flowchart LR
+subgraph X
+A-->B
+end;
+=====
+flowchart LR
+direction LR;
+A-->B
+=====
+flowchart LR
+A-->B
+classDef foo fill:#f9f,stroke:#333;
+class A foo;
+=====
+flowchart LR
+A-->B
+style A fill:#f9f;
+=====
+flowchart LR
+A:::foo --> B;
+=====
+flowchart LR
+A[x]; B[y];
+A-->B;
+=====
+stateDiagram-v2
+[*] --> A;
+A --> B;
+=====
+classDiagram
+A <|-- B;
+=====
+erDiagram
+A ||--o{ B : has;
+=====
+sequenceDiagram
+A->>B: hi;
+=====
+sequenceDiagram
+A->>B: hi #59; there
+=====
+sequenceDiagram
+participant A;
+A->>B: hi
+=====
+flowchart LR
+A -- "yes (maybe)" --> B
+=====
+flowchart LR
+A -->|"yes (maybe)"| B
+=====
+flowchart LR
+A -- yes --> B
+=====
+flowchart LR
+A -> B
+=====
+flowchart LR
+A --> B -->
+=====
+flowchart LR
+A ==> B
+A -.-> C
+A <--> D
+A --o E
+A --x F
+A ~~~ G
+A --- H
+A === I
+A -.- J
+=====
+flowchart LR
+A["He said #quot;hi#quot;"] --> B
+=====
+flowchart LR
+subgraph "Phase 1: Setup (init)"
+A-->B
+end
+=====
+flowchart LR
+subgraph one ["Phase (x)"]
+A-->B
+end
+=====
+flowchart LR
+subgraph "Phase → 2"
+A-->B
+end
+=====
+flowchart LR
+direction LR
+direction LR
+A-->B
+=====
+flowchart TD
+A --> B
+direction TB
+=====
+flowchart LR
+A@{ shape: rect, label: "x" } --> B
+=====
+flowchart LR
+A[Text] -- label --> B
+B -- "q (x)" --- C
+=====
+flowchart LR
+A["a"] --> B("b") --> C{"c"}
+=====
+graph TD;
+A-->B;

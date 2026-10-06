@@ -21,6 +21,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::Value;
 
 use super::events::{AgentEvent, RiskTier, RunStatus};
+use super::provider_error::classify;
 use super::protocol::{
     AssistantMessageEvent, InboundFrame, MessageEndFrame, PromptResultFrame, PromptStatus,
     ResponseFrame, ToolResultPayload,
@@ -73,6 +74,11 @@ struct ActiveRun {
     usage: UsageTotals,
     worst_status: RunStatus,
     error: Option<String>,
+    /// The runtime's hint that the failure is transient.
+    retryable: Option<bool>,
+    /// Provider error of the latest assistant turn (`stopReason: "error"`); a
+    /// later successful turn clears it.
+    turn_error: Option<String>,
     /// Answer text by assistant message, in order.
     messages: Vec<(String, String)>,
     answer_chars: usize,
@@ -210,6 +216,8 @@ impl NormaliserState {
             usage: UsageTotals::default(),
             worst_status: RunStatus::Completed,
             error: None,
+            retryable: None,
+            turn_error: None,
             messages: Vec::new(),
             answer_chars: 0,
             held: false,
@@ -282,7 +290,17 @@ impl NormaliserState {
         let Some(run) = self.run.take() else {
             return Vec::new();
         };
-        let interrupted_summary = match run.worst_status {
+        // A run whose last model turn failed did not produce an answer, even
+        // when the runtime reports the prompt itself as completed.
+        let (status, error) = match (run.worst_status, run.error, run.turn_error) {
+            (RunStatus::Completed, None, Some(turn_error)) => (RunStatus::Error, Some(turn_error)),
+            (status, error, _) => (status, error),
+        };
+        let provider_error = match (status, error.as_deref()) {
+            (RunStatus::Error, Some(message)) => Some(classify(message, run.retryable, now_ms)),
+            _ => None,
+        };
+        let interrupted_summary = match status {
             RunStatus::Aborted => "Interrupted",
             RunStatus::Error | RunStatus::Completed => "Did not complete",
         };
@@ -308,9 +326,10 @@ impl NormaliserState {
         self.host_calls.clear();
         events.push(AgentEvent::RunFinished {
             run_id: run.run_id,
-            status: run.worst_status,
+            status,
             duration_ms: now_ms.saturating_sub(run.started_at_ms),
-            error: run.error,
+            error,
+            provider_error,
         });
         events
     }
@@ -466,6 +485,11 @@ impl NormaliserState {
                 ),
             ),
         };
+        if let (Some(run), Some(e)) = (self.run.as_mut(), result.error.as_ref()) {
+            if e.retryable.is_some() {
+                run.retryable = e.retryable;
+            }
+        }
         self.on_prompt_completion(result.id.as_deref(), status, error, now_ms)
     }
 
@@ -477,6 +501,16 @@ impl NormaliserState {
             if let Some(intent) = call.intent() {
                 self.remember_intent(&call.id, intent);
             }
+        }
+        if let Some(run) = self.run.as_mut() {
+            run.turn_error = (frame.message.stop_reason.as_deref() == Some("error")).then(|| {
+                frame
+                    .message
+                    .error_message
+                    .clone()
+                    .filter(|m| !m.trim().is_empty())
+                    .unwrap_or_else(|| "The model provider returned an error".to_string())
+            });
         }
         let Some(usage) = frame.message.usage.as_ref() else {
             return Vec::new();
@@ -1070,6 +1104,63 @@ mod tests {
         assert!(matches!(
             normalise(&failed, &mut state, 12).last(),
             Some(AgentEvent::RunFinished { status: RunStatus::Error, error: Some(e), .. }) if e == "401 Unauthorized"
+        ));
+    }
+
+    #[test]
+    fn provider_errors_are_classified_on_the_finished_run() {
+        use crate::harness::provider_error::ProviderErrorKind;
+        // A prompt that fails outright, with the runtime's retry hint.
+        let mut state = NormaliserState::new(catalog());
+        state.begin_run("r", "s", "m", "p1", 0);
+        let failed = parse_frame(
+            r#"{"type":"prompt_result","id":"p1","agentInvoked":true,"status":"error","error":{"message":"429 {\"error\":{\"message\":\"Rate limit exceeded: free-models-per-min.\",\"code\":429}}","retryable":true}}"#,
+        )
+        .unwrap();
+        match normalise(&failed, &mut state, 5).last() {
+            Some(AgentEvent::RunFinished {
+                status: RunStatus::Error,
+                provider_error: Some(e),
+                ..
+            }) => assert_eq!(e.kind, ProviderErrorKind::RateLimited),
+            other => panic!("unexpected {other:?}"),
+        }
+
+        // The model turn fails (stopReason "error") but the prompt reports completed.
+        state.begin_run("r2", "s", "m", "p2", 10);
+        let turn = parse_frame(
+            r#"{"type":"message_end","messageId":"m1","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"401 {\"error\":{\"message\":\"No auth credentials found\",\"code\":401}}"}}"#,
+        )
+        .unwrap();
+        assert!(normalise(&turn, &mut state, 11).is_empty());
+        match normalise(&completed("p2"), &mut state, 12).last() {
+            Some(AgentEvent::RunFinished {
+                status: RunStatus::Error,
+                error: Some(message),
+                provider_error: Some(e),
+                ..
+            }) => {
+                assert!(message.contains("No auth credentials"));
+                assert_eq!(e.kind, ProviderErrorKind::Auth);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        // A failed turn followed by a successful one (the runtime retried) completes.
+        state.begin_run("r3", "s", "m", "p3", 20);
+        normalise(&turn, &mut state, 21);
+        let ok_turn = parse_frame(
+            r#"{"type":"message_end","messageId":"m2","message":{"role":"assistant","content":[],"stopReason":"stop"}}"#,
+        )
+        .unwrap();
+        normalise(&ok_turn, &mut state, 22);
+        assert!(matches!(
+            normalise(&completed("p3"), &mut state, 23).last(),
+            Some(AgentEvent::RunFinished {
+                status: RunStatus::Completed,
+                provider_error: None,
+                ..
+            })
         ));
     }
 

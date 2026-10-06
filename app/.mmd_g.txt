@@ -1,0 +1,31 @@
+stateDiagram-v2
+  A → B
+=====
+stateDiagram-v2
+  A --> B: go (now); x
+=====
+mindmap
+  root((Root))
+    A;
+=====
+timeline
+  title History
+  2020 : Event;
+=====
+sequenceDiagram
+  A->>B: <b>hi</b> there
+=====
+sequenceDiagram
+  participant A as Foo (bar)
+  A->>B: x
+=====
+gantt
+  title Plan
+  section A
+  Task one :a1, 2026-01-01, 3d
+=====
+flowchart LR
+  A[a <b>b</b>] --> B
+=====
+flowchart LR
+  A[x: y; z, #1 & <2>] --> B

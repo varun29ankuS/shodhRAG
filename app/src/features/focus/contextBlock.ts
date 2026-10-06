@@ -139,8 +139,13 @@ interface Section {
 
 function sectionsFor(target: FocusTarget, extras: FocusExtras): Section[] {
   switch (target.kind) {
-    case 'mermaid':
-      return [{ heading: 'diagram (mermaid source)', payload: target.source.trim(), info: 'mermaid' }];
+    case 'mermaid': {
+      const sections: Section[] = [{ heading: 'diagram (mermaid source)', payload: target.source.trim(), info: 'mermaid' }];
+      if (target.error?.trim()) {
+        sections.push({ heading: 'the diagram did not draw; the mermaid parser reported', payload: target.error.trim(), info: 'text' });
+      }
+      return sections;
+    }
     case 'chart':
       return [{ heading: 'chart data (JSON)', payload: target.source.trim(), info: 'json' }];
     case 'svg':
@@ -343,7 +348,7 @@ export function composeSideQuestion(
 export function contextLabel(target: FocusTarget, extras: FocusExtras = {}): string {
   switch (target.kind) {
     case 'mermaid':
-      return 'diagram source';
+      return target.error?.trim() ? 'diagram source and its parse error' : 'diagram source';
     case 'chart':
       return 'chart data';
     case 'svg':

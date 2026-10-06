@@ -123,6 +123,12 @@ pub(crate) fn summarize(row: &AuditRow) -> String {
                 .unwrap_or(0);
             format!("{count} memories recalled for \"{}\"", s(p, "query"))
         }
+        "model_change" => format!(
+            "Model changed from {} to {} ({})",
+            s(p, "from"),
+            s(p, "to"),
+            s(p, "reason")
+        ),
         other => other.to_string(),
     };
     truncate(text.trim(), MAX_SUMMARY_CHARS)

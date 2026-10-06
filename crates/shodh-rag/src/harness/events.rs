@@ -7,6 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::provider_error::ProviderError;
+
 /// Risk tier of a host tool. Decides whether a call needs user approval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -355,6 +357,9 @@ pub enum AgentEvent {
         status: RunStatus,
         duration_ms: u64,
         error: Option<String>,
+        /// What kind of provider failure `error` is (rate limit, quota, bad key,
+        /// unavailable model), so the UI can offer the next step.
+        provider_error: Option<ProviderError>,
     },
 }
 
@@ -556,9 +561,10 @@ mod tests {
                     status: RunStatus::Completed,
                     duration_ms: 100,
                     error: None,
+                    provider_error: None,
                 },
                 "run_finished",
-                vec!["runId", "status", "durationMs", "error"],
+                vec!["runId", "status", "durationMs", "error", "providerError"],
             ),
         ]
     }
@@ -794,9 +800,11 @@ mod tests {
             status: RunStatus::Aborted,
             duration_ms: 1,
             error: None,
+            provider_error: None,
         };
         let value = serde_json::to_value(&event).unwrap();
         assert_eq!(value["error"], Value::Null);
+        assert_eq!(value["providerError"], Value::Null);
         assert_eq!(value["status"], json!("aborted"));
     }
 

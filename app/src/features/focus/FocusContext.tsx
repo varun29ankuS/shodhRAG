@@ -40,6 +40,8 @@ import { currentValues } from './liveValues';
 
 /** How long an interrupt may take before the side answer is closed locally. */
 const INTERRUPT_TIMEOUT_MS = 5_000;
+/** How long a diagram correction may run before it is stopped. */
+const REPAIR_TIMEOUT_MS = 120_000;
 
 function newId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -109,11 +111,32 @@ export type SummaryResult =
   | { ok: true; text: string }
   | { ok: false; reason: 'busy' | 'stopped' | 'failed'; message?: string };
 
-type SidePurpose = 'answer' | 'summary' | 'refine';
+type SidePurpose = 'answer' | 'summary' | 'refine' | 'repair';
 
 /** What a refine run produced. */
 export type RefineOutcome =
   | RefineResult
+  | { ok: false; reason: 'busy' | 'stopped' | 'failed'; message: string };
+
+/** Where a diagram that did not draw was found: a main answer, or an answer in a side thread. */
+export type DiagramPlace =
+  | { kind: 'answer'; conversationId: string; messageId: string }
+  | { kind: 'side'; parentThreadId: string; parentTurnId: string };
+
+/** A request for the model to correct a diagram the mermaid parser rejected. */
+export interface DiagramRepairRequest {
+  place: DiagramPlace;
+  /** Identifies the diagram (a hash of its source); one run per key at a time. */
+  key: string;
+  /** The diagram as written. */
+  source: string;
+  /** The message sent (source, parser message and the reply format asked for). */
+  message: string;
+}
+
+/** The model's reply, or why there is none. `busy`: another answer holds the agent, nothing was sent. */
+export type DiagramRepairOutcome =
+  | { ok: true; reply: string }
   | { ok: false; reason: 'busy' | 'stopped' | 'failed'; message: string };
 
 /** The side answer (or summary) being produced. */
@@ -134,6 +157,8 @@ interface SideLive {
   onSummary: ((result: SummaryResult) => void) | null;
   /** Receives the result of a refine run, with the kind and source it revised. */
   onRefine: { kind: VisualRecord['kind']; previous: string; resolve: (result: RefineOutcome) => void } | null;
+  /** Receives the reply of a diagram correction run. */
+  onRepair: ((outcome: DiagramRepairOutcome) => void) | null;
 }
 
 export interface SideLiveView {
@@ -175,6 +200,14 @@ export interface FocusContextValue {
   refine: (open: OpenFocus, instruction: string) => Promise<RefineOutcome>;
   /** Show another version of the gallery visual as the pop-out's only level. */
   showVisualVersion: (record: VisualRecord) => void;
+  /**
+   * Ask the model, in a session of its own, for a corrected version of a
+   * diagram that did not draw. Never enters the conversation or a thread;
+   * resolves `busy` without sending anything when another answer is running.
+   */
+  repairDiagram: (request: DiagramRepairRequest) => Promise<DiagramRepairOutcome>;
+  /** Whether the answer at `place` is the newest one where it is shown (read on call, no re-render). */
+  isLatestAnswer: (place: DiagramPlace) => boolean;
   /** Interrupt the side answer. */
   stop: () => void;
   /** Answer a pending approval of the side answer. */
@@ -401,6 +434,16 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
             : { ok: false, reason: 'failed', message: transcript.error ?? 'The refinement failed.' };
         refine.resolve(result);
       }
+    } else if (live.purpose === 'repair') {
+      // Not part of any discussion: the reply goes back to the diagram only.
+      const reply = answerText(transcript);
+      live.onRepair?.(transcript.status === 'completed' && reply.trim()
+        ? { ok: true, reply }
+        : {
+            ok: false,
+            reason: transcript.status === 'aborted' ? 'stopped' : 'failed',
+            message: transcript.error ?? (transcript.status === 'aborted' ? 'The correction was stopped.' : 'The model gave no correction.'),
+          });
     } else if (live.purpose === 'summary') {
       const text = cleanSummary(answerText(transcript));
       const result: SummaryResult = transcript.status === 'completed' && text
@@ -492,6 +535,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     label: string,
     onSummary: ((result: SummaryResult) => void) | null,
     onRefine: SideLive['onRefine'] = null,
+    onRepair: SideLive['onRepair'] = null,
   ): SideLive | null => {
     if (liveRef.current) return null;
     const { conversationId, parentMessageId, threadId } = level;
@@ -511,6 +555,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       links: { parentThreadId: level.parentThreadId, parentTurnId: level.parentTurnId },
       onSummary,
       onRefine,
+      onRepair,
     };
     liveRef.current = live;
     setSideLive({ threadId, purpose, transcript: live.transcript });
@@ -698,6 +743,85 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     });
   }, [api, enqueue]);
 
+  /** The conversation and message a diagram's answer belongs to, or null when it is not shown any more. */
+  const placeOf = useCallback((place: DiagramPlace): { conversationId: string; parentMessageId: string | null } | null => {
+    if (place.kind === 'answer') return { conversationId: place.conversationId, parentMessageId: place.messageId };
+    const level = sessionRef.current?.stack.levels.find(l => l.threadId === place.parentThreadId);
+    return level ? { conversationId: level.conversationId, parentMessageId: level.parentMessageId } : null;
+  }, []);
+
+  const isLatestAnswer = useCallback((place: DiagramPlace): boolean => {
+    if (place.kind === 'answer') {
+      if (activeIdRef.current !== place.conversationId) return false;
+      const answers = messagesRef.current.filter(m => m.role === 'assistant');
+      return answers.length > 0 && answers[answers.length - 1].id === place.messageId;
+    }
+    const where = placeOf(place);
+    if (!where) return false;
+    const turns = findThread(where.conversationId, where.parentMessageId, place.parentThreadId)?.turns ?? [];
+    const answers = turns.filter(t => t.role === 'assistant');
+    return answers.length > 0 && answers[answers.length - 1].id === place.parentTurnId;
+  }, [findThread, placeOf]);
+
+  const repairDiagram = useCallback((request: DiagramRepairRequest): Promise<DiagramRepairOutcome> => {
+    const busy: DiagramRepairOutcome = { ok: false, reason: 'busy', message: 'Another answer is running. Try again when it has finished.' };
+    const where = placeOf(request.place);
+    if (!where) return Promise.resolve({ ok: false, reason: 'failed', message: 'The answer this diagram belongs to is no longer open.' });
+    if (liveRef.current) return Promise.resolve(busy);
+    const { conversationId, parentMessageId } = where;
+    // A session of its own per diagram: the request never enters the
+    // conversation's or a discussion's agent memory.
+    const threadId = `${request.key}-repair`;
+    const key = sideSessionKey(conversationId, threadId);
+    const level: OpenFocus = {
+      target: { kind: 'mermaid', label: 'Diagram correction', source: request.source },
+      conversationId,
+      parentMessageId,
+      threadId,
+      parentThreadId: null,
+      parentTurnId: null,
+      trigger: null,
+      seq: nextSeq(),
+      visual: null,
+    };
+    const closeRepairSession = () => {
+      api.closeSession(key).catch(error => console.error('Diagram correction session not closed:', toAgentError(error).message));
+    };
+    return new Promise<DiagramRepairOutcome>(resolve => {
+      let timer: number | null = null;
+      const finish = (outcome: DiagramRepairOutcome) => {
+        if (timer !== null) window.clearTimeout(timer);
+        timer = null;
+        resolve(outcome);
+        closeRepairSession();
+      };
+      const live = beginRun(level, 'repair', 'correcting a diagram', null, null, finish);
+      if (!live) {
+        resolve(busy);
+        return;
+      }
+      timer = window.setTimeout(() => {
+        timer = null;
+        if (liveRef.current === live && !live.settled) stop();
+      }, REPAIR_TIMEOUT_MS);
+      void (async () => {
+        try {
+          const sessionId = await api.start(key, null, conversationId);
+          if (live.settled) {
+            closeRepairSession();
+            return;
+          }
+          live.sessionId = sessionId;
+          setRuntimeInstalled(true);
+          await api.send(sessionId, request.message, live.runId, []);
+        } catch (error) {
+          const failure = toAgentError(error);
+          enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);
+        }
+      })();
+    });
+  }, [api, beginRun, enqueue, placeOf, setRuntimeInstalled, stop]);
+
   const approve = useCallback((stepId: string, approved: boolean) => {
     const live = liveRef.current;
     if (!live || live.settled || live.sessionId === null) return;
@@ -851,11 +975,13 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     summarize,
     refine,
     showVisualVersion,
+    repairDiagram,
+    isLatestAnswer,
     bringBack,
     stop,
     approve,
     sideLive,
-  }), [openFocus, closeFocus, drillDown, navigate, jumpToThread, session, localThreads, locationThreads, findThread, ask, summarize, refine, showVisualVersion, bringBack, stop, approve, sideLive]);
+  }), [openFocus, closeFocus, drillDown, navigate, jumpToThread, session, localThreads, locationThreads, findThread, ask, summarize, refine, showVisualVersion, repairDiagram, isLatestAnswer, bringBack, stop, approve, sideLive]);
 
   return (
     <FocusContext.Provider value={value}>

@@ -13,9 +13,15 @@ export interface AnswerBlocks {
   symbols: readonly SymbolNote[];
   /** Text with `[n]` citations as pills (plain text where citations are off). */
   renderInline: (text: string) => ReactNode;
+  /**
+   * The text is a model's answer (not text the reader wrote, a summary
+   * card or a printout): a diagram in it that does not draw may be sent
+   * back to the model for one correction.
+   */
+  modelAnswer: boolean;
 }
 
-const NONE: AnswerBlocks = { symbols: [], renderInline: text => text };
+const NONE: AnswerBlocks = { symbols: [], renderInline: text => text, modelAnswer: false };
 
 export const AnswerBlocksContext = createContext<AnswerBlocks>(NONE);
 

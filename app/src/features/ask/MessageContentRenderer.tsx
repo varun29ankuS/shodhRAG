@@ -417,8 +417,13 @@ export function MessageContentRenderer({
   }), [codeComponents, processChildren]);
 
   const answerBlocks = useMemo<AnswerBlocks>(
-    () => ({ symbols, renderInline: text => renderWithCitations(citations ? citationPlaceholders(text) : text) }),
-    [symbols, renderWithCitations, citations],
+    () => ({
+      symbols,
+      renderInline: text => renderWithCitations(citations ? citationPlaceholders(text) : text),
+      // Text the reader wrote and summary cards turn citations off; printouts are not interactive.
+      modelAnswer: citations && !print,
+    }),
+    [symbols, renderWithCitations, citations, print],
   );
 
   const { charts, tables, others } = useMemo(() => {

@@ -137,14 +137,17 @@ fn provider_name(provider: &ApiProvider) -> String {
 }
 
 /// Model ids are passed on the command line; keep them to a safe alphabet.
-fn validate_model_id(model: &str) -> Result<(), HarnessError> {
-    let ok = !model.is_empty()
+pub fn is_valid_model_id(model: &str) -> bool {
+    !model.is_empty()
         && model.len() <= 200
         && !model.starts_with('-')
         && model
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/' | '@'));
-    if ok {
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/' | '@'))
+}
+
+fn validate_model_id(model: &str) -> Result<(), HarnessError> {
+    if is_valid_model_id(model) {
         Ok(())
     } else {
         Err(HarnessError::InvalidModel(model.to_string()))
@@ -152,7 +155,7 @@ fn validate_model_id(model: &str) -> Result<(), HarnessError> {
 }
 
 /// OpenRouter stealth models log prompts for training (ADR 0001, consequence 5).
-fn is_stealth(model: &str) -> bool {
+pub fn is_stealth(model: &str) -> bool {
     model
         .split('/')
         .next()
@@ -169,10 +172,15 @@ pub fn select_model(
     mode: &LLMMode,
     fallback_key: impl Fn(&ApiProvider) -> Option<String>,
 ) -> Result<OmpModel, HarnessError> {
-    let allow_stealth = std::env::var(ALLOW_STEALTH_ENV)
+    select_model_with(mode, fallback_key, stealth_allowed_by_env())
+}
+
+/// Whether `SHODH_ALLOW_STEALTH_MODELS=1` is set (the in-app opt-in is the
+/// other way to allow stealth models).
+pub fn stealth_allowed_by_env() -> bool {
+    std::env::var(ALLOW_STEALTH_ENV)
         .map(|v| v.trim() == "1")
-        .unwrap_or(false);
-    select_model_with(mode, fallback_key, allow_stealth)
+        .unwrap_or(false)
 }
 
 /// [`select_model`] with the stealth opt-in passed explicitly.
@@ -200,7 +208,7 @@ pub fn select_model_with(
             tracing::warn!(
                 target: "shodh::harness",
                 model,
-                "stealth model enabled by {ALLOW_STEALTH_ENV}=1; its provider may log prompts"
+                "stealth model allowed by the user's opt-in; its provider may log prompts"
             );
         });
         Some(STEALTH_WARNING.to_string())
@@ -352,7 +360,9 @@ mod tests {
     fn stealth_models_need_the_opt_in_and_carry_a_warning() {
         let stealth = external(ApiProvider::OpenRouter, "k", "stealth/space-bunny-alpha");
         let refused = select_model_with(&stealth, |_| None, false).unwrap_err();
-        assert!(refused.to_string().contains(ALLOW_STEALTH_ENV));
+        let message = refused.to_string();
+        assert!(message.contains("may log prompts"), "{message}");
+        assert!(message.contains("model picker"), "says where to accept the risk: {message}");
         let allowed = select_model_with(&stealth, |_| None, true).unwrap();
         assert_eq!(allowed.model_arg, "openrouter/stealth/space-bunny-alpha");
         assert_eq!(allowed.warning.as_deref(), Some(STEALTH_WARNING));

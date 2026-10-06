@@ -108,10 +108,12 @@ pub enum AuditEventType {
     MemoryForget,
     /// Memories were recalled and used in an answer.
     MemoryUse,
+    /// The agent's model changed (user choice, fallback for one answer, environment).
+    ModelChange,
 }
 
 impl AuditEventType {
-    pub const ALL: [AuditEventType; 12] = [
+    pub const ALL: [AuditEventType; 13] = [
         AuditEventType::Question,
         AuditEventType::ToolCall,
         AuditEventType::Approval,
@@ -124,6 +126,7 @@ impl AuditEventType {
         AuditEventType::MemoryWrite,
         AuditEventType::MemoryForget,
         AuditEventType::MemoryUse,
+        AuditEventType::ModelChange,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -140,6 +143,7 @@ impl AuditEventType {
             AuditEventType::MemoryWrite => "memory_write",
             AuditEventType::MemoryForget => "memory_forget",
             AuditEventType::MemoryUse => "memory_use",
+            AuditEventType::ModelChange => "model_change",
         }
     }
 }

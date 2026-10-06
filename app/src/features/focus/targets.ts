@@ -7,7 +7,7 @@
 import type { FocusBox, FocusDocumentRef, FocusParamValue, FocusSourceHit, FocusTarget, FocusTaskSnapshot } from './focusTypes.ts';
 import { annotateTex } from '../ask/visual/symbols.ts';
 import type { SymbolNote } from '../ask/visual/symbols.ts';
-import { MAX_TARGET_CHARS, readParamValues } from './threadStore.ts';
+import { MAX_DIAGRAM_ERROR_CHARS, MAX_TARGET_CHARS, readParamValues } from './threadStore.ts';
 import { SVG_MAX_CHARS } from '../ask/visual/svgSanitize.ts';
 import { PLOT_MAX_CHARS } from '../ask/visual/plotSpec.ts';
 import { SIMULATION_MAX_CHARS } from '../ask/visual/simulationSpec.ts';
@@ -45,12 +45,14 @@ const DIAGRAM_NAMES: Record<string, string> = {
   timeline: 'Timeline',
 };
 
-export function mermaidTarget(source: string): FocusTarget {
+/** A diagram; `error` is the parser's message when the diagram did not draw. */
+export function mermaidTarget(source: string, error?: string | null): FocusTarget {
   const lines = source.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('%%'));
   const title = /^\s*title\s+(.+)$/im.exec(source)?.[1];
   const keyword = (lines[0] ?? '').split(/\s+/)[0].toLowerCase();
   const name = DIAGRAM_NAMES[keyword] ?? 'Diagram';
-  return { kind: 'mermaid', label: title ? short(title) : name, source: cap(source) };
+  const problem = error?.trim() ? cap(error.trim(), MAX_DIAGRAM_ERROR_CHARS) : '';
+  return { kind: 'mermaid', label: title ? short(title) : name, source: cap(source), ...(problem ? { error: problem } : {}) };
 }
 
 export function chartTarget(source: string, title?: string | null): FocusTarget {

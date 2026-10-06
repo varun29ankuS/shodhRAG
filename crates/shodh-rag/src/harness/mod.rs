@@ -8,13 +8,16 @@
 // Gated on `clippy` so a new compiler lint never breaks a normal build.
 #![cfg_attr(clippy, deny(warnings))]
 
+pub mod catalog_cache;
 pub mod error;
 pub mod events;
 pub mod grounding;
 pub mod model;
+pub mod model_catalog;
 pub mod omp;
 pub mod profile;
 pub mod protocol;
+pub mod provider_error;
 pub mod session;
 pub mod sidecar;
 pub mod tools;
@@ -22,7 +25,8 @@ pub mod web;
 
 pub use error::HarnessError;
 pub use events::{AgentEvent, PlanItem, PlanStatus, RiskTier, RunStatus};
-pub use model::{select_model, OmpModel};
+pub use model::{select_model, select_model_with, stealth_allowed_by_env, OmpModel};
+pub use provider_error::{ProviderError, ProviderErrorKind};
 pub use omp::{normalise, NormaliserState, StepMeta, StepOutcome};
 pub use profile::AgentProfile;
 pub use session::{OmpSession, SessionConfig};

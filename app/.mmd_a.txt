@@ -1,0 +1,58 @@
+graph TD
+A-->B;
+=====
+graph TD
+A[Start (init)] --> B{x: y?}
+=====
+graph TD; A-->B
+=====
+flowchart TD
+subgraph My Group
+A-->B
+end
+=====
+flowchart TD
+A --> B;;
+=====
+graph TD
+graph TD
+A-->B
+=====
+flowchart LR
+A["Start (init)"] --> B{"x: y?"}
+=====
+flowchart LR
+A --> B
+B --> 
+=====
+flowchart LR
+A -->|yes (maybe)| B
+=====
+flowchart LR
+A[He said "hi"] --> B
+=====
+flowchart LR
+A[<b>Bold</b>] --> B[line<br/>two]
+=====
+flowchart LR
+A → B
+=====
+flowchart LR
+A --- B
+end;
+=====
+sequenceDiagram
+A->>B: hello (there): x; y
+=====
+flowchart LR
+A & B --> C
+=====
+flowchart LR
+subgraph "My Group"
+A-->B
+end
+=====
+flowchart LR
+subgraph one [My Group (x)]
+A-->B
+end

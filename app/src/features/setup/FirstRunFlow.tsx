@@ -6,6 +6,7 @@ import { cn } from '../../lib/utils';
 import { ENTER_TRANSITION, EXIT_TRANSITION } from '../../lib/motion';
 import { SearchSetupCard } from './SearchSetupCard';
 import { useSearchModels } from './SearchModelsContext';
+import { AnswerCheckModelRow } from '../../components/AnswerCheckSettings';
 import { FIRST_RUN_STEPS, FIRST_RUN_STEP_LABELS, nextStep, previousStep, stepIndex } from './firstRun';
 import type { FirstRunStep } from './firstRun';
 
@@ -270,6 +271,11 @@ function SearchStep(props: StepProps) {
           The download continues if you move on or close this window.
         </p>
       )}
+      <section aria-label="Optional: answer checking" className="p-4 rounded-xl border border-shodh-border bg-shodh-surface flex flex-col gap-2">
+        <p className="m-0 text-[12px] font-semibold uppercase tracking-[0.06em] text-shodh-text-faint">Optional</p>
+        <AnswerCheckModelRow />
+        <p className="m-0 text-[12px] text-shodh-text-faint">You can install it later in Settings → Search.</p>
+      </section>
     </div>
   );
 }

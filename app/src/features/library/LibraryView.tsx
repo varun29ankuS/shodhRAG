@@ -26,6 +26,9 @@ import { baseName } from './fileTree';
 import type { FileNode } from './fileTree';
 import { FileBrowser } from './FileBrowser';
 import { showInFolder } from './fileActions';
+import { adviceForFailures, indexingAdvice } from './indexingAdvice';
+import type { IndexingAction, IndexingAdvice } from './indexingAdvice';
+import { useSearchModels } from '../setup/SearchModelsContext';
 import { groupSourcesByKind, progressPercent } from './sources';
 import type { LibrarySource } from './sources';
 
@@ -295,12 +298,37 @@ interface FolderCardProps {
   onRemove: (e: React.MouseEvent) => void;
 }
 
+/** One line on what to do about an indexing failure, with the button that does it. */
+function AdviceLine({ advice, onAction }: { advice: IndexingAdvice; onAction: (action: IndexingAction) => void }) {
+  return (
+    <p className="m-0 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-shodh-text-secondary">
+      <span className="min-w-0">{advice.hint}</span>
+      {advice.actionLabel && (
+        <button
+          type="button"
+          onClick={() => onAction(advice.action)}
+          className={cn('h-6 px-2 rounded-md bg-shodh-raised-2 text-[11.5px] font-medium text-shodh-text hover:bg-shodh-pressed transition-colors duration-micro', FOCUS_RING)}
+        >
+          {advice.actionLabel}
+        </button>
+      )}
+    </p>
+  );
+}
+
 function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onToggle, onRemove }: FolderCardProps) {
   const [showFailures, setShowFailures] = useState(false);
   const failuresId = useId();
   const nameId = useId();
   const failures = source.failures ?? [];
   const percent = progressPercent(source);
+  const { install } = useSearchModels();
+  const act = (action: IndexingAction) => {
+    if (action === 'reindex') onReindex();
+    else if (action === 'show_in_folder') void showInFolder(source.path);
+    else if (action === 'install_search_models') void install();
+  };
+  const failureAdvice = source.status === 'indexing' ? null : adviceForFailures(failures.map(f => f.reason));
 
   let statusLine: React.ReactNode;
   if (source.status === 'indexing') {
@@ -335,10 +363,13 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
     );
   } else if (source.status === 'error') {
     statusLine = (
-      <p className="text-[12.5px] text-shodh-error flex items-start gap-1.5">
-        <AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0" aria-hidden="true" />
-        <span className="break-words">{source.lastError ? `Indexing failed: ${source.lastError}` : 'Indexing failed.'}</span>
-      </p>
+      <div className="flex flex-col gap-1">
+        <p className="m-0 text-[12.5px] text-shodh-error flex items-start gap-1.5">
+          <AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0" aria-hidden="true" />
+          <span className="break-words">{source.lastError ? `Indexing failed: ${source.lastError}` : 'Indexing failed.'}</span>
+        </p>
+        <AdviceLine advice={indexingAdvice(source.lastError)} onAction={act} />
+      </div>
     );
   } else if (source.status === 'interrupted') {
     statusLine = (
@@ -402,6 +433,7 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
             {showFailures ? <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" /> : <ChevronRight className="w-3.5 h-3.5" aria-hidden="true" />}
             {`${failures.length} file${failures.length === 1 ? '' : 's'} could not be indexed`}
           </button>
+          {failureAdvice && <AdviceLine advice={failureAdvice} onAction={act} />}
           {showFailures && (
             <ul id={failuresId} className="max-h-40 overflow-y-auto scrollbar-thin flex flex-col gap-1 rounded-lg bg-shodh-raised p-2">
               {failures.map(f => (

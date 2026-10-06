@@ -29,6 +29,7 @@ import { buildFileTree, countTree, displayPath, findDir, folderEntries, pathKey,
 import type { DirNode, FileNode, IndexedFileRow, SortKey, TreeEntry, TypeFamily } from './fileTree';
 import { copyPath, joinPath, openInDefaultApp, showInFolder } from './fileActions';
 import { FileViewer } from './FileViewer';
+import { indexingAdvice } from './indexingAdvice';
 import type { FileHighlight } from './FileViewer';
 import { SnippetShelf } from '../research/SnippetShelf';
 import { ResultsView } from '../research/ResultsView';
@@ -1089,7 +1090,10 @@ function OpenFilePane({ paneRef, file, shownPath, focusMode, onToggleFocus, onCl
         {file.status === 'failed' && (
           <p role="note" className="text-[12px] text-shodh-error flex items-start gap-1.5">
             <AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0" aria-hidden="true" />
-            <span>{file.reason ? `Not indexed: ${file.reason}` : 'This file could not be indexed.'}</span>
+            <span>
+              {file.reason ? `Not indexed: ${file.reason}` : 'This file could not be indexed.'}
+              <span className="block text-shodh-text-secondary">{indexingAdvice(file.reason).hint}</span>
+            </span>
           </p>
         )}
       </header>

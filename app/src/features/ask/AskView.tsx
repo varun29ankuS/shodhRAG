@@ -24,6 +24,8 @@ import { activeRootThreads, descendantCount, nodeLabel } from '../focus/threadTr
 import type { SideSummaryRef } from '../focus/summary';
 import { UserText } from './UserText';
 import { useChatSession } from './ChatSessionContext';
+import type { FallbackRun } from './ChatSessionContext';
+import type { ProviderErrorActions } from '../modelPicker/ProviderErrorCard';
 import { MessageContentRenderer } from './MessageContentRenderer';
 import { RunChip } from './RunChip';
 import { SourcePreview } from './SourcePreview';
@@ -41,6 +43,7 @@ import { exportPdf } from '../print/exportPdf';
 import { answerTitle, buildPrintDocument } from '../print/printModel';
 import { COMPOSER_INSERT_EVENT, onWindowEvent, takePendingInserts } from '../research/snippetBus';
 import { appendToDraft } from '../research/snippetModel';
+import { ModelChip } from '../modelPicker/ModelChip';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -312,11 +315,13 @@ interface AssistantMessageProps {
   activeCitation: number | null;
   activeFile: string | null;
   canRetry: boolean;
+  /** The newest message of the conversation: a provider failure may retry or fall back by itself. */
+  latest: boolean;
   /** Task list shown inline above the answer (narrow layouts). */
   inlinePlan: boolean;
   onOpenSource: (messageId: string, hit: SearchHit, trigger: HTMLElement) => void;
   onOpenArtifact: (artifactId: string) => void;
-  onRetry: (message: ChatMessage) => void;
+  onRetry: (message: ChatMessage, fallback?: FallbackRun | null) => void;
   onDecide: (stepId: string, approved: boolean) => void;
   onRuntimeInstalled: () => void;
   onOpenSettings: () => void;
@@ -333,6 +338,7 @@ function AssistantMessage({
   activeCitation,
   activeFile,
   canRetry,
+  latest,
   inlinePlan,
   onOpenSource,
   onOpenArtifact,
@@ -371,6 +377,22 @@ function AssistantMessage({
     [messageId, onOpenThread],
   );
 
+  // Retry and fallback after a provider failure, on the newest answer only
+  // (older answers never retry by themselves). Stable while the answer stays
+  // the newest, so a countdown is not restarted by re-renders.
+  const messageRef = useRef(message);
+  messageRef.current = message;
+  const providerActions = useMemo<ProviderErrorActions | null>(
+    () => (latest && canRetry
+      ? {
+          questionKey: `${conversationId ?? ''}|${question ?? messageId}`,
+          onRetry: (override, from) =>
+            onRetry(messageRef.current, override && from ? { override, from } : null),
+        }
+      : null),
+    [latest, canRetry, conversationId, question, messageId, onRetry],
+  );
+
   const article = (
     <article
       className="ask-rise group/msg flex flex-col gap-4 rounded-xl outline-none data-[revealed=true]:ring-2 data-[revealed=true]:ring-shodh-accent data-[revealed=true]:ring-offset-4 data-[revealed=true]:ring-offset-shodh-ground"
@@ -391,6 +413,7 @@ function AssistantMessage({
             onDecide={onDecide}
             onRuntimeInstalled={onRuntimeInstalled}
             onOpenSettings={onOpenSettings}
+            providerActions={providerActions}
           />
         </>
       ) : (
@@ -571,7 +594,6 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
   const scopeTitle = indexedCount === 0
     ? 'Add a folder in Library'
     : 'Answers search everything you have indexed. Manage sources in Library.';
-  const modelLabel = llmStatus.connected ? llmStatus.model : 'No model configured';
 
   // Reset per-conversation UI when the conversation changes.
   const conversationId = session.activeConversationId;
@@ -780,8 +802,8 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     if (trigger && trigger.isConnected) trigger.focus();
   }, []);
 
-  const handleRetry = useCallback((message: ChatMessage) => {
-    retry(message.id, sendOptions);
+  const handleRetry = useCallback((message: ChatMessage, fallback: FallbackRun | null = null) => {
+    retry(message.id, sendOptions, fallback);
   }, [retry, sendOptions]);
 
   const previewSiblings = useMemo(() => {
@@ -816,9 +838,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
         approvalPending={waitingStepId !== null}
         blockedReason={blockedReason}
         placeholder={messages.length === 0 ? 'Ask about your files…' : 'Ask a follow-up…'}
-        modelLabel={modelLabel}
-        modelConnected={llmStatus.connected}
-        onOpenModelSettings={() => onNavigate('settings')}
+        modelChip={<ModelChip answerRunning={isStreaming} onOpenSettings={() => onNavigate('settings')} />}
         scopeLabel={scopeLabel}
         scopeTitle={scopeTitle}
         onOpenLibrary={() => onNavigate('library')}
@@ -938,6 +958,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
                 activeCitation={isPreviewed ? preview.hit.number : null}
                 activeFile={isPreviewed ? preview.hit.sourceFile : null}
                 canRetry={streamingConversationId === null && sideRun === null}
+                latest={index === messages.length - 1}
                 inlinePlan={!wide}
                 onOpenSource={openSource}
                 onOpenArtifact={setOpenArtifactId}

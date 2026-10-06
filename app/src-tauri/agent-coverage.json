@@ -2,6 +2,7 @@
   "about": "Every Tauri command the frontend uses must either map to the agent tool(s) that give the assistant the same ability, or be excluded with the reason the assistant must not (or need not) have it. Checked by agent_coverage::tests (cargo test -p shodh-rag-app --lib). A new UI command without an entry here fails CI.",
   "dynamicInvokeFiles": {
     "features/agent/useAgentSession.ts": "Wraps invoke as call(command, args) to normalise agent errors; every command it sends is a string literal in the same file.",
+    "features/modelPicker/modelApi.ts": "Wraps invoke as call(command, args) to normalise model picker errors; every command it sends is a string literal in the same file.",
     "features/ask/viewer/sourceAccess.ts": "Wraps invoke as call(command, filePath) to normalise file access errors; every command it sends is a string literal in the same file.",
     "components/shell/ActivityTray.tsx": "Picks pause_indexing or resume_indexing with a ternary of two string literals."
   },
@@ -115,6 +116,11 @@
     "set_start_with_windows": { "excluded": "Adding a program to Windows startup changes the user's system; only the user may do it (AGENT_DENIED: start_with_windows)." },
     "get_llm_info": { "tool": "get_settings" },
     "switch_llm_mode": { "excluded": "Switching the model or provider changes who receives the user's documents; user-only." },
+    "model_picker_view": { "excluded": "The model picker lists models and prices for the user to choose from; choosing the model is user-only, so the assistant has no use for the list." },
+    "model_select": { "excluded": "Switching the model or provider changes who receives the user's documents and what it costs; user-only." },
+    "model_set_favourite": { "excluded": "Starring models only arranges the user's own model picker." },
+    "model_set_fallback": { "excluded": "The fallback model receives the user's documents when the main one fails; user-only." },
+    "model_fallback_offer": { "excluded": "Offers the user a fallback after a failed answer; the switch itself is the user's click." },
     "update_llm_config": { "excluded": "Model and provider configuration changes who receives the user's documents; user-only." },
     "test_llm_inference": { "excluded": "Tests the user's provider configuration (and spends their credits); part of model setup, which is user-only." },
     "browse_model_file": { "excluded": "Opens a native file picker for choosing a local model; model setup is user-only." },

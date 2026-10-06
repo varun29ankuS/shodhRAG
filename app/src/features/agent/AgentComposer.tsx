@@ -38,9 +38,8 @@ interface AgentComposerProps {
   /** Sending is blocked (e.g. an answer is running in another conversation). */
   blockedReason: string | null;
   placeholder: string;
-  modelLabel?: string;
-  modelConnected?: boolean;
-  onOpenModelSettings?: () => void;
+  /** The model chip (Ask only): shows and changes the model the next answer uses. */
+  modelChip?: React.ReactNode;
   scopeLabel?: string;
   scopeTitle?: string;
   onOpenLibrary?: () => void;
@@ -71,9 +70,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     approvalPending = false,
     blockedReason,
     placeholder,
-    modelLabel,
-    modelConnected = false,
-    onOpenModelSettings,
+    modelChip,
     scopeLabel,
     scopeTitle,
     onOpenLibrary,
@@ -193,21 +190,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
             {voice.listening ? <MicOff className="w-[17px] h-[17px]" aria-hidden="true" /> : <Mic className="w-[17px] h-[17px]" aria-hidden="true" />}
           </button>
         )}
-        {!compact && modelLabel && onOpenModelSettings && (
-          <button
-            type="button"
-            onClick={onOpenModelSettings}
-            className={chip}
-            title="Model settings"
-            aria-label={`Model: ${modelLabel}. Open model settings`}
-          >
-            <span
-              className={cn('w-[7px] h-[7px] rounded-full shrink-0', modelConnected ? 'bg-shodh-info' : 'bg-shodh-warning')}
-              aria-hidden="true"
-            />
-            <span className="truncate max-w-[200px]">{modelLabel}</span>
-          </button>
-        )}
+        {!compact && modelChip}
         {!compact && scopeLabel && onOpenLibrary && (
           <button
             type="button"

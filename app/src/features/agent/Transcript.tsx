@@ -11,6 +11,18 @@ import { workFold } from './workSummary';
 import type { GroundingReport, RevisionReason } from './events';
 import { answerReport, checksForMessage } from './grounding';
 import { GroundingChip } from './GroundingFlags';
+import { ProviderErrorCard } from '../modelPicker/ProviderErrorCard';
+import type { ProviderErrorActions } from '../modelPicker/ProviderErrorCard';
+import type { ProviderErrorKind } from '../modelPicker/modelTypes';
+
+/** Why a fallback model answered, as the note under the answer says it. */
+const FALLBACK_REASON: Record<ProviderErrorKind, string> = {
+  rate_limited: 'rate-limited',
+  quota_exhausted: 'out of credits or its daily limit',
+  model_unavailable: 'unavailable',
+  auth: 'refused (key rejected)',
+  other: 'unable to answer',
+};
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -28,6 +40,8 @@ interface TranscriptProps {
   onOpenArtifact?: (artifactId: string) => void;
   /** Dense variant for the conversation dock. */
   compact?: boolean;
+  /** Retry and fallback for a provider failure (the newest answer in Ask only). */
+  providerActions?: ProviderErrorActions | null;
 }
 
 /** A live "what is happening now" row with a spinner. */
@@ -84,6 +98,7 @@ export function Transcript({
   artifacts,
   onOpenArtifact,
   compact = false,
+  providerActions = null,
 }: TranscriptProps) {
   const live = isLive(transcript);
   const step = currentStep(transcript);
@@ -230,7 +245,25 @@ export function Transcript({
         />
       )}
 
-      {transcript.status === 'error' && transcript.errorCode !== 'runtime_missing' && transcript.errorCode !== 'runtime_invalid' && (
+      {transcript.fallback && (
+        <p className="m-0 text-[12px] text-shodh-text-muted">
+          {`Answered with a fallback model: ${transcript.fallback.from} was ${FALLBACK_REASON[transcript.fallback.kind]}${transcript.fallback.automatic ? ' (always fall back is on)' : ''}.`}
+        </p>
+      )}
+
+      {transcript.status === 'error' && transcript.providerError && (
+        <ProviderErrorCard
+          error={transcript.providerError}
+          runModel={transcript.model}
+          message={transcript.error}
+          fellBack={!!transcript.fallback}
+          actions={providerActions}
+          onOpenSettings={onOpenSettings}
+          compact={compact}
+        />
+      )}
+
+      {transcript.status === 'error' && !transcript.providerError && transcript.errorCode !== 'runtime_missing' && transcript.errorCode !== 'runtime_invalid' && (
         <div role="alert" className="flex flex-col gap-2">
           <p className="text-[13px] leading-relaxed text-shodh-error break-words">
             {`The answer could not be completed: ${transcript.error ?? 'unknown error'}`}

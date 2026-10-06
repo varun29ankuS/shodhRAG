@@ -20,8 +20,9 @@ use shodh_rag::harness::model::EnvValue;
 use shodh_rag::harness::profile::is_valid_slug;
 use shodh_rag::harness::tools::{RunScope, ToolRegistry};
 use shodh_rag::harness::{
-    fetch_omp, resolve_binary_path, select_model, AgentEvent, AgentHarness, AgentProfile,
-    HarnessError, LaunchSpec, OmpLayout, OmpModel, OmpSession, SessionConfig, OMP_VERSION,
+    fetch_omp, resolve_binary_path, select_model_with, stealth_allowed_by_env, AgentEvent,
+    AgentHarness, AgentProfile, HarnessError, LaunchSpec, OmpLayout, OmpModel, OmpSession,
+    SessionConfig, OMP_VERSION,
 };
 use shodh_rag::llm::{ApiProvider, LLMMode};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -37,6 +38,7 @@ use crate::audit_commands::AuditState;
 use crate::llm_commands::LLMState;
 use crate::memory_commands::{recall_for_run, with_memories, MemoryState};
 use crate::memory_learn::{LearnState, TextOrigin};
+use crate::model_picker_commands::{override_mode, ModelOverride};
 use crate::rag_commands::RagState;
 use crate::research_commands::ResearchState;
 use crate::visual_commands::VisualState;
@@ -726,6 +728,26 @@ pub(crate) async fn resolve_key(llm: &LLMState, mode: &LLMMode) -> Option<String
     }
 }
 
+/// What `agent_start` does with a conversation's existing session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionReuse {
+    /// Same model, profile and instructions: keep it.
+    Reuse,
+    /// It no longer fits but an answer is still running on it: leave it alone.
+    Busy,
+    /// Closed, or no longer fits and idle: replace it.
+    Replace,
+}
+
+fn session_reuse(closed: bool, running: bool, fits: bool) -> SessionReuse {
+    match (closed, running, fits) {
+        (true, _, _) => SessionReuse::Replace,
+        (false, _, true) => SessionReuse::Reuse,
+        (false, true, false) => SessionReuse::Busy,
+        (false, false, false) => SessionReuse::Replace,
+    }
+}
+
 /// Start (or reuse) the agent session for a conversation. Returns its id.
 ///
 /// `instructions` are the conversation's custom instructions; a change
@@ -742,6 +764,7 @@ pub async fn agent_start(
     profile_id: Option<String>,
     instructions: Option<String>,
     parent_conversation_id: Option<String>,
+    model_override: Option<ModelOverride>,
     sessions: State<'_, AgentSessions>,
     rag: State<'_, RagState>,
     llm: State<'_, LLMState>,
@@ -774,12 +797,27 @@ pub async fn agent_start(
         .filter(|i| !i.is_empty())
         .map(|i| truncate(&i, MAX_INSTRUCTIONS_CHARS));
 
-    let mode = llm
-        .config
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .mode
-        .clone();
+    // A fallback for one answer runs with its own model; the next start
+    // without one returns to the configured model.
+    // The switch is audited once the session for that answer is ready.
+    let (mode, override_audit) = match &model_override {
+        Some(request) => {
+            let (mode, record) =
+                override_mode(&app, &llm, request).map_err(|e| AgentCommandError {
+                    code: "model_config",
+                    message: e.message,
+                })?;
+            (mode, Some(record))
+        }
+        None => (
+            llm.config
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .mode
+                .clone(),
+            None,
+        ),
+    };
     let mode = match (resolve_key(&llm, &mode).await, mode) {
         (
             Some(key),
@@ -793,15 +831,29 @@ pub async fn agent_start(
         },
         (_, mode) => mode,
     };
-    let model = select_model(&mode, |_| None)?;
-    // Local-only mode: refuse any model whose provider is off this computer.
-    let local_only = SettingsStore::in_dir(&app_data_dir(&app)?)
+    let settings = SettingsStore::in_dir(&app_data_dir(&app)?)
         .load()
-        .map(|s| s.policy.local_only)
         .map_err(|e| AgentCommandError {
             code: "runtime_error",
             message: format!("Settings could not be read: {e}"),
         })?;
+    // Stealth models: allowed by the environment opt-in or by the person's
+    // confirmation in the model picker (kept per model in settings).
+    let stealth_accepted = match &mode {
+        LLMMode::External { model, .. } => settings
+            .models
+            .stealth_accepted
+            .iter()
+            .any(|id| id == model.trim()),
+        _ => false,
+    };
+    let model = select_model_with(
+        &mode,
+        |_| None,
+        stealth_allowed_by_env() || stealth_accepted,
+    )?;
+    // Local-only mode: refuse any model whose provider is off this computer.
+    let local_only = settings.policy.local_only;
     if local_only && is_cloud(&model.model_arg) {
         return Err(HarnessError::LocalOnlyCloudModel(model.model_arg.clone()).into());
     }
@@ -815,20 +867,38 @@ pub async fn agent_start(
         .get(&conversation_id)
         .map(|sid| sid.value().clone());
     if let Some(session_id) = existing {
-        let reusable = sessions.sessions.get(&session_id).and_then(|e| {
-            let fits = !e.session.is_closed()
-                && e.parent_conversation_id == parent_conversation_id
+        let current = sessions
+            .sessions
+            .get(&session_id)
+            .map(|e| e.value().clone());
+        let decision = current.as_ref().map(|e| {
+            let fits = e.parent_conversation_id == parent_conversation_id
                 && e.profile_id == profile_id
                 && e.instructions == instructions
                 && e.model_fingerprint == fingerprint;
-            fits.then(|| e.value().clone())
+            session_reuse(
+                e.session.is_closed(),
+                e.session.active_run_id().is_some(),
+                fits,
+            )
         });
-        if let Some(entry) = reusable {
-            entry.touch();
-            return Ok(session_id);
-        }
-        if let Some(stale) = sessions.remove(&session_id) {
-            stale.session.shutdown().await;
+        match (decision, current) {
+            (Some(SessionReuse::Reuse), Some(entry)) => {
+                entry.touch();
+                if let Some(record) = override_audit {
+                    audit.record(record);
+                }
+                return Ok(session_id);
+            }
+            // A different model (or instructions) while an answer is running:
+            // that answer finishes on the session it started with. The change
+            // applies when the conversation next starts a session after it.
+            (Some(SessionReuse::Busy), Some(_)) => return Err(HarnessError::RunInProgress.into()),
+            _ => {
+                if let Some(stale) = sessions.remove(&session_id) {
+                    stale.session.shutdown().await;
+                }
+            }
         }
     }
     let _starting = StartingGuard::new(&sessions.starting);
@@ -975,6 +1045,9 @@ pub async fn agent_start(
         total_ms = started.elapsed().as_millis(),
         "agent_start: session ready"
     );
+    if let Some(record) = override_audit {
+        audit.record(record);
+    }
     Ok(session_id)
 }
 
@@ -1296,6 +1369,34 @@ pub async fn agent_install_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_model_change_never_interrupts_a_running_answer() {
+        // Same model and settings: the session is kept, running or not.
+        assert_eq!(session_reuse(false, false, true), SessionReuse::Reuse);
+        assert_eq!(session_reuse(false, true, true), SessionReuse::Reuse);
+        // A new model while idle: replaced, so the next answer uses it.
+        assert_eq!(session_reuse(false, false, false), SessionReuse::Replace);
+        // A new model while an answer runs: left to finish, never shut down.
+        assert_eq!(session_reuse(false, true, false), SessionReuse::Busy);
+        // A closed session is always replaced.
+        assert_eq!(session_reuse(true, true, true), SessionReuse::Replace);
+        assert_eq!(session_reuse(true, false, false), SessionReuse::Replace);
+    }
+
+    #[test]
+    fn a_new_model_changes_the_session_fingerprint() {
+        let mode = |model: &str| LLMMode::External {
+            provider: ApiProvider::OpenRouter,
+            api_key: "sk-or-test".into(),
+            model: model.into(),
+        };
+        let a = select_model_with(&mode("a/one:free"), |_| None, false).unwrap();
+        let a_again = select_model_with(&mode("a/one:free"), |_| None, false).unwrap();
+        let b = select_model_with(&mode("anthropic/claude-haiku-4.5"), |_| None, false).unwrap();
+        assert_eq!(model_fingerprint(&a), model_fingerprint(&a_again));
+        assert_ne!(model_fingerprint(&a), model_fingerprint(&b));
+    }
 
     fn turn(role: &str, content: &str) -> HistoryTurn {
         HistoryTurn {

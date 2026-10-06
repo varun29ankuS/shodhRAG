@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useTheme } from './contexts/ThemeContext';
 import { notify } from './lib/notify';
 import { migrateLegacyApiKeys } from './lib/apiKeyMigration';
+import { announceModelChange } from './features/modelPicker/modelApi';
 import {
   Brain, Cloud, Power, Settings, CheckCircle, AlertCircle,
   FileCode, X, FolderOpen, RefreshCw, Play, FlaskConical,
@@ -222,6 +223,7 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
       setLlmMode(mode);
       await loadSettings();
       onStatusChange?.();
+      announceModelChange();
       notify.success(mode === 'external' ? `Connected to ${providerConfig.label}` : 'LLM disabled');
     } catch (error) {
       notify.error(`Failed to change mode: ${error}`);
@@ -239,6 +241,8 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
     await invoke('set_api_key', { provider, apiKey: key });
     setKeyDrafts(prev => ({ ...prev, [provider]: '' }));
     await refreshConfiguredProviders();
+    // The model picker lists the models of providers with a key.
+    announceModelChange();
   };
 
   const handleSaveApiKey = async () => {
@@ -256,6 +260,7 @@ export default function LLMSettings({ onClose, onStatusChange, embedded = false 
       await invoke('delete_api_key', { provider: selectedProvider });
       setKeyDrafts(prev => ({ ...prev, [selectedProvider]: '' }));
       await refreshConfiguredProviders();
+      announceModelChange();
       notify.success(`${providerConfig.label} API key removed`);
     } catch (error) {
       notify.error(`Failed to remove API key: ${error}`);

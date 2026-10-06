@@ -10,6 +10,7 @@ import type { AgentEventEnvelope } from './events';
 import type { FailureCode } from './reducer';
 import { AGENT_SESSIONS_EVENT, isSessionCounts } from './sessionCounts';
 import type { SessionCounts } from './sessionCounts';
+import type { ModelOverride } from '../modelPicker/modelTypes';
 
 export const AGENT_EVENT = 'agent_event';
 export const RUNTIME_PROGRESS_EVENT = 'agent_runtime_progress';
@@ -90,9 +91,15 @@ export const agentApi = {
    * Start or reuse the conversation's session. Rejects with `AgentError`.
    * `parentConversationId` marks a focus side-thread session: its work is
    * audited under that conversation and it is evicted before ordinary ones.
+   * `modelOverride` runs this one answer with a fallback model; the next start
+   * without it returns to the chosen model.
    */
-  start: (conversationId: string, instructions: string | null, parentConversationId: string | null = null) =>
-    call<string>('agent_start', { conversationId, profileId: null, instructions, parentConversationId }),
+  start: (
+    conversationId: string,
+    instructions: string | null,
+    parentConversationId: string | null = null,
+    modelOverride: ModelOverride | null = null,
+  ) => call<string>('agent_start', { conversationId, profileId: null, instructions, parentConversationId, modelOverride }),
   /**
    * `scope` limits what the answer may search (selected sources, or files for "Ask about this file").
    * `textOrigin` is `typed` only when `text` is exactly what the user typed in the main

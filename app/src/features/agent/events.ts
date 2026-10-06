@@ -273,6 +273,8 @@ export interface RunFinishedEvent {
   status: RunStatus;
   durationMs: number;
   error: string | null;
+  /** What kind of provider failure `error` is (read with `readProviderError`). */
+  providerError: unknown;
 }
 
 export type AgentEvent =

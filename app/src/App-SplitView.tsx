@@ -37,6 +37,7 @@ import type { FileNode } from './features/library/fileTree';
 import { errorMessage as searchErrorMessage } from './features/setup/searchModels';
 import Sidebar from './components/shell/Sidebar';
 import { ConversationDock } from './components/shell/ConversationDock';
+import { MODEL_CHANGED_EVENT } from './features/modelPicker/modelApi';
 import { normalizeViewTab, VIEW_TAB_LABELS } from './lib/viewTabs';
 import { isBlankConversation } from './lib/conversationGroups';
 import type { ViewTab } from './lib/viewTabs';
@@ -206,6 +207,13 @@ function AppSplitView() {
       });
     }
   }, []);
+
+  // A model chosen in the picker (Ask chip, Settings → Model) changes the status line too.
+  useEffect(() => {
+    const onModelChanged = () => void refreshLlmStatus();
+    window.addEventListener(MODEL_CHANGED_EVENT, onModelChanged);
+    return () => window.removeEventListener(MODEL_CHANGED_EVENT, onModelChanged);
+  }, [refreshLlmStatus]);
 
   // Remember the last non-settings view so dismissing model settings returns there.
   const lastContentTabRef = useRef<ViewTab>('ask');

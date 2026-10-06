@@ -22,6 +22,7 @@ import type { FocusThread } from '../focus/focusTypes';
 import { metadataWithThreads, metadataWithoutThreads, threadsFromMetadata } from '../focus/threadStore';
 import { metadataWithSummary, readSideSummary, summaryPrompt } from '../focus/summary';
 import type { SideSummaryRef } from '../focus/summary';
+import type { ModelOverride } from '../modelPicker/modelTypes';
 import type {
   ChatMessage,
   RawSearchResult,
@@ -65,6 +66,20 @@ const PREWARM_DELAY_MS = 400;
 const INTERRUPT_TIMEOUT_MS = 5_000;
 
 type ConversationsApi = ReturnType<typeof useConversations>;
+
+/** One answer run with a fallback model: the override sent with `agent_start` and the model it replaces. */
+export interface FallbackRun {
+  override: ModelOverride;
+  /** The failed model as runs name it (`provider/model`). */
+  from: string;
+}
+
+export interface SendExtra {
+  /** A summary brought back from a side discussion. */
+  sideSummary?: SideSummaryRef;
+  /** Run this answer with a fallback model. */
+  fallback?: FallbackRun | null;
+}
 
 /** What the rest of the app needs to know about the running answer. */
 export interface LiveRunInfo {
@@ -112,9 +127,12 @@ export interface ChatSessionValue {
    * Post a message and run the agent on it. `extra.sideSummary` marks it as
    * a summary brought back from a side discussion.
    */
-  send: (text: string, options: SendOptions, extra?: { sideSummary?: SideSummaryRef }) => Promise<void>;
-  /** Re-run the user prompt that produced `assistantMessageId`. */
-  retry: (assistantMessageId: string, options: SendOptions) => void;
+  send: (text: string, options: SendOptions, extra?: SendExtra) => Promise<void>;
+  /**
+   * Re-run the user prompt that produced `assistantMessageId`; with
+   * `fallback`, that one answer runs with the fallback model.
+   */
+  retry: (assistantMessageId: string, options: SendOptions, fallback?: FallbackRun | null) => void;
   /** Redirect the running answer. */
   steer: (text: string) => void;
   /** Interrupt the running answer. */
@@ -439,10 +457,21 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
 
   // `textOrigin`: `typed` when `prompt` is exactly what the user typed (learning may use it);
   // `composed` for prompts the app builds (a side-thread summary request).
-  const runAgent = useCallback(async (conversationId: string, prompt: string, history: ChatMessage[], options: SendOptions | null, textOrigin: 'typed' | 'composed') => {
+  const runAgent = useCallback(async (
+    conversationId: string,
+    prompt: string,
+    history: ChatMessage[],
+    options: SendOptions | null,
+    textOrigin: 'typed' | 'composed',
+    fallback: FallbackRun | null = null,
+  ) => {
     const runId = newId('run');
     const startedAtMs = Date.now();
-    const transcript = initialTranscript(runId, startedAtMs);
+    const transcript = initialTranscript(
+      runId,
+      startedAtMs,
+      fallback ? { from: fallback.from, kind: fallback.override.failure ?? 'other', automatic: fallback.override.automatic } : null,
+    );
     const message: ChatMessage = {
       id: newId('msg'),
       role: 'assistant',
@@ -467,7 +496,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     const conversation = activeConversationRef.current?.id === conversationId ? activeConversationRef.current : null;
     const conversationInstructions = conversation?.systemPrompt?.trim() || null;
     try {
-      const sessionId = await api.start(conversationId, conversationInstructions);
+      const sessionId = await api.start(conversationId, conversationInstructions, null, fallback?.override ?? null);
       if (live.settled) return;
       live.sessionId = sessionId;
       setRuntimeInstalled(true);
@@ -480,7 +509,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     }
   }, [api, enqueue, publish]);
 
-  const send = useCallback(async (text: string, options: SendOptions, extra?: { sideSummary?: SideSummaryRef }) => {
+  const send = useCallback(async (text: string, options: SendOptions, extra?: SendExtra) => {
     const content = text.trim();
     const conversationId = viewRef.current.conversationId;
     if (!content || !conversationId || liveRef.current || sideRunRef.current) return;
@@ -502,10 +531,10 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       updateConversationMeta(conversationId, { spaceId: options.spaceId, spaceName: options.spaceName });
     }
 
-    await runAgent(conversationId, prompt, history, options, sideSummary ? 'composed' : 'typed');
+    await runAgent(conversationId, prompt, history, options, sideSummary ? 'composed' : 'typed', extra?.fallback ?? null);
   }, [publish, runAgent, updateConversationMeta]);
 
-  const retry = useCallback((assistantMessageId: string, options: SendOptions) => {
+  const retry = useCallback((assistantMessageId: string, options: SendOptions, fallback: FallbackRun | null = null) => {
     const { conversationId, messages } = viewRef.current;
     if (!conversationId || liveRef.current || sideRunRef.current) return;
     const index = messages.findIndex(m => m.id === assistantMessageId);
@@ -527,9 +556,9 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       setView(v => (v.conversationId === conversationId
         ? { ...v, messages: v.messages.filter(m => m.id !== assistantMessageId) }
         : v));
-      void runAgent(conversationId, prompt, messages.slice(0, userIndex), options, asked.sideSummary ? 'composed' : 'typed');
+      void runAgent(conversationId, prompt, messages.slice(0, userIndex), options, asked.sideSummary ? 'composed' : 'typed', fallback);
     } else {
-      void send(asked.content, options, asked.sideSummary ? { sideSummary: asked.sideSummary } : undefined);
+      void send(asked.content, options, { ...(asked.sideSummary ? { sideSummary: asked.sideSummary } : {}), fallback });
     }
   }, [runAgent, send]);
 

@@ -19,6 +19,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use shodh_rag::audit::{AuditEventType, AuditRecord};
+use shodh_rag::harness::model_choice::ModelPrefs;
 use shodh_rag::user_memory::learn::{
     LearnCaps, LearnMode, DEFAULT_AUTO_MIN_CONFIDENCE, MAX_CALLS_PER_DAY_LIMIT,
     MAX_INPUT_CHARS_LIMIT, MAX_PROPOSALS_LIMIT,
@@ -229,6 +230,9 @@ pub struct AppSettings {
     pub background: BackgroundPrefs,
     pub memory: MemoryPrefs,
     pub answers: AnswerPrefs,
+    /// The model picker: chosen model, fallback, recent and starred models.
+    /// User-only (no keys; those stay in the OS keychain).
+    pub models: ModelPrefs,
     /// The UI has copied its earlier local-storage preferences here.
     pub seeded: bool,
 }
@@ -271,7 +275,7 @@ pub const AGENT_WRITABLE: [SettingKey; 2] = [SettingKey::Theme, SettingKey::Sear
 /// these by name (in addition to its schema only listing [`AGENT_WRITABLE`]),
 /// so a prompt-injected request gets a clear refusal rather than a
 /// best-effort match.
-pub const AGENT_DENIED: [(&str, &str); 18] = [
+pub const AGENT_DENIED: [(&str, &str); 21] = [
     ("api_keys", "API keys are secrets; a manipulated agent could leak or replace them."),
     ("provider", "Switching the model provider changes who receives the user's documents."),
     ("model", "Switching the model changes who receives the user's documents and what it costs."),
@@ -290,6 +294,9 @@ pub const AGENT_DENIED: [(&str, &str); 18] = [
     ("auto_min_confidence", "Lowering the bar for storing memories without asking weakens the user's approval."),
     ("learn_caps", "The daily limits bound what learning costs; only the user may raise them."),
     ("auto_repair", "Re-checking flagged statements guards the assistant's own answers; only the user may turn it off."),
+    ("models", "The model picker's settings (chosen and fallback models, stealth consent) decide who receives the user's documents; only the user may change them."),
+    ("fallback_model", "The fallback model receives the user's documents when the main one fails; choosing who receives them is the user's decision."),
+    ("always_fall_back", "Switching models without asking changes who receives the user's documents; only the user may allow that."),
 ];
 
 /// Why `key` is withheld from the agent, if it is.
@@ -619,6 +626,45 @@ mod tests {
             .web_block_reason()
             .unwrap()
             .contains("Local-only"));
+    }
+
+    #[test]
+    fn the_model_choice_is_saved_without_keys_and_withheld_from_the_agent() {
+        use shodh_rag::harness::model_catalog::{ModelRef, ProviderId};
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::in_dir(dir.path());
+        assert_eq!(store.load().unwrap().models, ModelPrefs::default());
+        let chosen = ModelRef::new(ProviderId::OpenRouter, "anthropic/claude-haiku-4.5");
+        store
+            .update(|s| {
+                s.models.chosen = Some(chosen.clone());
+                s.models.remember(&chosen);
+                s.models.always_fall_back = true;
+                Ok(())
+            })
+            .unwrap();
+        let reloaded = SettingsStore::in_dir(dir.path()).load().unwrap();
+        assert_eq!(reloaded.models.chosen, Some(chosen.clone()));
+        assert_eq!(reloaded.models.recent, vec![chosen]);
+        assert!(reloaded.models.always_fall_back);
+        let text = std::fs::read_to_string(dir.path().join(SETTINGS_FILE)).unwrap();
+        assert!(text.contains("\"models\""));
+        assert!(
+            !text.to_ascii_lowercase().contains("key\":"),
+            "no key is stored: {text}"
+        );
+        // Settings written before the picker existed load with an empty model section.
+        let old: AppSettings = serde_json::from_str(r#"{"seeded": true}"#).unwrap();
+        assert_eq!(old.models, ModelPrefs::default());
+        for key in [
+            "models",
+            "models.chosen",
+            "fallback_model",
+            "always_fall_back",
+            "model",
+        ] {
+            assert!(denied_reason(key).is_some(), "{key} must be user-only");
+        }
     }
 
     #[test]

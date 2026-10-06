@@ -11,6 +11,8 @@
 import type { AgentEvent, GroundingReport, PlanItem, RevisionReason, RiskTier } from './events';
 import type { PdfRegion } from '../ask/types';
 import { parseRegions } from '../ask/viewer/regionGeometry.ts';
+import { readProviderError } from '../modelPicker/modelTypes.ts';
+import type { ProviderError, ProviderErrorKind } from '../modelPicker/modelTypes.ts';
 
 export type StepStatus = 'running' | 'awaiting_approval' | 'done' | 'failed';
 
@@ -125,6 +127,20 @@ export interface TranscriptState {
   thinking: string;
   /** The user asked to interrupt; waiting for the run to stop. */
   interrupting: boolean;
+  /** The provider failure behind an `error` status (absent in transcripts saved before it existed). */
+  providerError?: ProviderError | null;
+  /** This answer was retried with a fallback model (absent when it was not). */
+  fallback?: TranscriptFallback | null;
+}
+
+/** Why an answer came from a fallback model. */
+export interface TranscriptFallback {
+  /** The model that failed (`provider/model`, as runs name it). */
+  from: string;
+  /** Its failure. */
+  kind: ProviderErrorKind;
+  /** Retried by the "always fall back" setting rather than a click. */
+  automatic: boolean;
 }
 
 export type LocalAction =
@@ -136,8 +152,10 @@ export type LocalAction =
 
 export type TranscriptAction = AgentEvent | LocalAction;
 
-export function initialTranscript(runId: string, startedAtMs: number): TranscriptState {
+export function initialTranscript(runId: string, startedAtMs: number, fallback: TranscriptFallback | null = null): TranscriptState {
   return {
+    providerError: null,
+    fallback,
     runId,
     sessionId: null,
     model: null,
@@ -437,6 +455,7 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
         durationMs: action.durationMs,
         error: action.error,
         errorCode: status === 'error' ? 'runtime_error' : null,
+        providerError: status === 'error' ? readProviderError(action.providerError) : null,
         steps: closeOpenSteps(state.steps, status === 'aborted' ? 'Interrupted' : 'Did not complete', endMs),
         thinking: '',
         interrupting: false,

@@ -55,6 +55,22 @@ impl ApiKeys {
         }
     }
 
+    /// The key of a provider id, if one is set. Never log the result.
+    pub fn get(&self, provider: &str) -> Option<String> {
+        let value = match provider {
+            "openai" => &self.openai,
+            "anthropic" => &self.anthropic,
+            "openrouter" => &self.openrouter,
+            "kimi" => &self.kimi,
+            "grok" => &self.grok,
+            "perplexity" => &self.perplexity,
+            "google" => &self.google,
+            "baseten" => &self.baseten,
+            _ => return None,
+        };
+        value.clone()
+    }
+
     fn is_configured(&self, provider: &str) -> bool {
         let value = match provider {
             "openai" => &self.openai,
@@ -191,6 +207,7 @@ async fn activate_local_model(state: &LLMState) -> Result<String, String> {
 /// Switch LLM mode
 #[tauri::command]
 pub async fn switch_llm_mode(
+    app: tauri::AppHandle,
     state: State<'_, LLMState>,
     audit: State<'_, AuditState>,
     mode: String,
@@ -214,6 +231,9 @@ pub async fn switch_llm_mode(
             }
         };
         audit.record(model_switch_record(payload, &result));
+        if result.is_ok() {
+            crate::model_picker_commands::note_settings_switch(&app, &config_mode);
+        }
         return result;
     }
 
@@ -303,19 +323,27 @@ pub async fn switch_llm_mode(
         LLMMode::Disabled
     };
 
-    // Update config
-    let mut config = state
-        .config
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
-    config.mode = llm_mode.clone();
-    *state.config.lock().unwrap_or_else(|e| e.into_inner()) = config.clone();
     // Provider and model only; the mode's API key is never read.
     let switch_payload = audit_payload::model_switch(&llm_mode);
+    tracing::info!("Switching LLM mode to {}", mode);
+    let result = activate_mode(&state, llm_mode.clone()).await;
+    audit.record(model_switch_record(switch_payload, &result));
+    if result.is_ok() {
+        crate::model_picker_commands::note_settings_switch(&app, &llm_mode);
+    }
+    result
+}
+
+/// Make `llm_mode` the app's model: the config the agent sessions read when
+/// they next start, and the in-process manager used by the other features.
+pub(crate) async fn activate_mode(state: &LLMState, llm_mode: LLMMode) -> Result<String, String> {
+    let config = {
+        let mut config = state.config.lock().unwrap_or_else(|e| e.into_inner());
+        config.mode = llm_mode.clone();
+        config.clone()
+    };
 
     // Switch mode or create new manager
-    tracing::info!("Switching LLM mode to {}", mode);
     let mut manager_lock = state.manager.write().await;
 
     let result = if let Some(manager) = manager_lock.as_mut() {
@@ -358,7 +386,6 @@ pub async fn switch_llm_mode(
         }
     };
     drop(manager_lock);
-    audit.record(model_switch_record(switch_payload, &result));
     result
 }
 

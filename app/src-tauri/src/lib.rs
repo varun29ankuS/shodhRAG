@@ -24,6 +24,7 @@ mod mcp;
 mod mcp_commands;
 mod memory_commands;
 mod memory_learn;
+mod model_picker_commands;
 mod pdf_export;
 mod rag_commands;
 mod reminders;
@@ -245,6 +246,7 @@ pub fn run() {
             // Initialize LLMState FIRST so RagState can reference its manager
             let shared_llm_manager = Arc::new(AsyncRwLock::new(None));
 
+            app.manage(model_picker_commands::ModelPickerState::default());
             app.manage(LLMState {
                 manager: shared_llm_manager.clone(),
                 config: Arc::new(Mutex::new(LLMConfig::default())),
@@ -274,13 +276,23 @@ pub fn run() {
                     }
                     Err(e) => tracing::warn!("Loading stored API keys failed: {}", e),
                 }
-                match llm_bootstrap::configure_from_environment(&llm_state).await {
-                    Ok(Some(description)) => {
-                        tracing::info!("LLM configured from environment: {}", description)
+                let environment = match llm_bootstrap::configure_from_environment(&llm_state).await {
+                    Ok(Some(configured)) => {
+                        tracing::info!(
+                            "LLM configured from environment: {}",
+                            configured.description
+                        );
+                        configured.model
                     }
-                    Ok(None) => {}
-                    Err(e) => tracing::warn!("LLM environment configuration failed: {}", e),
-                }
+                    Ok(None) => None,
+                    Err(e) => {
+                        tracing::warn!("LLM environment configuration failed: {}", e);
+                        None
+                    }
+                };
+                // The saved model choice applies unless the environment set one.
+                model_picker_commands::apply_startup_choice(&llm_bootstrap_handle, environment)
+                    .await;
             });
 
             // Initialize the RAG engine. Without the search models (first
@@ -570,6 +582,11 @@ pub fn run() {
             llm_commands::set_custom_model_path,
             llm_commands::get_custom_model_path,
             llm_commands::test_llm_inference,
+            model_picker_commands::model_picker_view,
+            model_picker_commands::model_select,
+            model_picker_commands::model_set_favourite,
+            model_picker_commands::model_set_fallback,
+            model_picker_commands::model_fallback_offer,
             // Space commands
             space_commands::create_space,
             space_commands::get_spaces,

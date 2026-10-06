@@ -1594,6 +1594,7 @@ mod tests {
                  DROP TABLE scholarly_cache;
                  DROP TABLE citation_scans;
                  DROP TABLE citation_graph_state;
+                 DROP TABLE model_catalog_cache;
                  DELETE FROM schema_version WHERE version > 1;",
             )
             .unwrap();

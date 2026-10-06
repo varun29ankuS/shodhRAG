@@ -723,7 +723,7 @@ mod tests {
             allow_stealth: false,
         };
         assert_eq!(choose_fallback(&ctx), Some(ModelRef::new(ProviderId::Ollama, "llama3.2:3b")));
-        let only_one: Vec<CatalogModel> = catalog.into_iter().take(1).collect();
+        let only_one: Vec<CatalogModel> = catalog.iter().take(1).cloned().collect();
         assert_eq!(choose_fallback(&FallbackContext { catalog: &only_one, ..ctx }), None);
     }
 

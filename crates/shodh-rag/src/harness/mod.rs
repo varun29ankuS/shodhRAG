@@ -9,11 +9,13 @@
 #![cfg_attr(clippy, deny(warnings))]
 
 pub mod catalog_cache;
+pub mod catalog_fetch;
 pub mod error;
 pub mod events;
 pub mod grounding;
 pub mod model;
 pub mod model_catalog;
+pub mod model_choice;
 pub mod omp;
 pub mod profile;
 pub mod protocol;

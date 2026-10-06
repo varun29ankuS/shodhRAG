@@ -135,7 +135,22 @@ fn contains_any(text: &str, markers: &[&str]) -> bool {
     markers.iter().any(|m| text.contains(m))
 }
 
+/// Refusals of the request itself (moderation, a prompt too long for the
+/// model): another try or a key change does not help, whatever the status.
+const REQUEST_MARKERS: &[&str] = &[
+    "requires moderation",
+    "was flagged",
+    "content_policy",
+    "maximum context length",
+    "context_length_exceeded",
+    "prompt is too long",
+];
+
 fn kind_of(lower: &str, status: Option<u16>, retryable: Option<bool>) -> ProviderErrorKind {
+    // OpenRouter answers a moderation refusal with 403; it is not a bad key.
+    if contains_any(lower, REQUEST_MARKERS) {
+        return ProviderErrorKind::Other;
+    }
     // Quota before auth: some providers send quota failures as 403.
     if contains_any(lower, QUOTA_MARKERS) || status == Some(402) {
         return ProviderErrorKind::QuotaExhausted;
@@ -407,6 +422,16 @@ mod tests {
             classify("connection reset", Some(true), NOW_MS).kind,
             ProviderErrorKind::ModelUnavailable
         );
+    }
+
+    #[test]
+    fn refusals_of_the_request_are_not_key_or_rate_problems() {
+        let moderation = r#"403 {"error":{"message":"meta-llama/llama-3-70b requires moderation on OpenRouter. Your input was flagged for \"harassment\".","code":403,"metadata":{"reasons":["harassment"],"flagged_input":"..."}}}"#;
+        let e = classify(moderation, None, NOW_MS);
+        assert_eq!(e.kind, ProviderErrorKind::Other);
+        assert!(!e.fallback_helps());
+        let too_long = r#"400 {"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}"#;
+        assert_eq!(kind(too_long), ProviderErrorKind::Other);
     }
 
     #[test]

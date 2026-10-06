@@ -289,7 +289,10 @@ mod tests {
         let all = resolve_active(Some(&session), Some(&env), Some(&saved)).unwrap();
         assert_eq!((all.model, all.source), (session, ModelSource::Session));
         let env_wins = resolve_active(None, Some(&env), Some(&saved)).unwrap();
-        assert_eq!((env_wins.model, env_wins.source), (env, ModelSource::Environment));
+        assert_eq!(
+            (env_wins.model, env_wins.source),
+            (env, ModelSource::Environment)
+        );
         let saved_only = resolve_active(None, None, Some(&saved)).unwrap();
         assert_eq!(saved_only.source, ModelSource::Settings);
         assert_eq!(resolve_active(None, None, None), None);
@@ -319,18 +322,38 @@ mod tests {
             Err(SelectionError::Invalid(_))
         ));
         assert_eq!(
-            check_selection(ModelRef::new(ProviderId::OpenAI, "gpt-5-mini"), &base, false, false),
+            check_selection(
+                ModelRef::new(ProviderId::OpenAI, "gpt-5-mini"),
+                &base,
+                false,
+                false
+            ),
             Err(SelectionError::MissingKey("OpenAI"))
         );
         // Ollama needs no key.
-        assert!(check_selection(ModelRef::new(ProviderId::Ollama, "qwen3:4b"), &base, false, false).is_ok());
+        assert!(check_selection(
+            ModelRef::new(ProviderId::Ollama, "qwen3:4b"),
+            &base,
+            false,
+            false
+        )
+        .is_ok());
 
-        let local = SelectionContext { local_only: true, ..base.clone() };
+        let local = SelectionContext {
+            local_only: true,
+            ..base.clone()
+        };
         assert!(matches!(
             check_selection(or("a/b"), &local, false, false),
             Err(SelectionError::LocalOnly(_))
         ));
-        assert!(check_selection(ModelRef::new(ProviderId::Ollama, "qwen3:4b"), &local, false, false).is_ok());
+        assert!(check_selection(
+            ModelRef::new(ProviderId::Ollama, "qwen3:4b"),
+            &local,
+            false,
+            false
+        )
+        .is_ok());
     }
 
     #[test]
@@ -338,18 +361,32 @@ mod tests {
         let mut prefs = ModelPrefs::default();
         let keyed = [ProviderId::OpenRouter];
         let stealth = or("stealth/space-bunny-alpha");
-        let refused = check_selection(stealth.clone(), &ctx(&prefs, &keyed), false, false).unwrap_err();
-        assert!(matches!(refused, SelectionError::StealthNeedsConfirmation(_)));
+        let refused =
+            check_selection(stealth.clone(), &ctx(&prefs, &keyed), false, false).unwrap_err();
+        assert!(matches!(
+            refused,
+            SelectionError::StealthNeedsConfirmation(_)
+        ));
         assert!(refused.to_string().contains("may log prompts"));
         assert!(check_selection(stealth.clone(), &ctx(&prefs, &keyed), true, false).is_ok());
         prefs.accept_stealth(&stealth);
         prefs.accept_stealth(&stealth);
-        assert_eq!(prefs.stealth_accepted, vec!["stealth/space-bunny-alpha".to_string()]);
+        assert_eq!(
+            prefs.stealth_accepted,
+            vec!["stealth/space-bunny-alpha".to_string()]
+        );
         assert!(check_selection(stealth.clone(), &ctx(&prefs, &keyed), false, false).is_ok());
-        assert!(prefs.stealth_ok(&or("stealth/other"), true), "the environment opt-in allows all");
+        assert!(
+            prefs.stealth_ok(&or("stealth/other"), true),
+            "the environment opt-in allows all"
+        );
         assert!(!prefs.stealth_ok(&or("stealth/other"), false));
         prefs.accept_stealth(&or("a/not-stealth"));
-        assert_eq!(prefs.stealth_accepted.len(), 1, "only stealth models are recorded");
+        assert_eq!(
+            prefs.stealth_accepted.len(),
+            1,
+            "only stealth models are recorded"
+        );
     }
 
     #[test]
@@ -365,11 +402,15 @@ mod tests {
         assert!(matches!(refused, SelectionError::EnvironmentSet(_)));
         assert!(refused.to_string().contains("Anthropic · claude-haiku-4-5"));
         assert_eq!(
-            check_selection(or("a/b"), &with_env, false, true).unwrap().1,
+            check_selection(or("a/b"), &with_env, false, true)
+                .unwrap()
+                .1,
             Selection::SessionOverride
         );
         assert_eq!(
-            check_selection(env.clone(), &with_env, false, false).unwrap().1,
+            check_selection(env.clone(), &with_env, false, false)
+                .unwrap()
+                .1,
             Selection::SessionOverride,
             "re-selecting the environment's model clears the override"
         );
@@ -412,20 +453,32 @@ mod tests {
         let prefs: ModelPrefs = serde_json::from_str(json).unwrap();
         let prefs = prefs.sanitized();
         assert_eq!(prefs.chosen, None, "an unsafe id is dropped");
-        assert_eq!(prefs.fallback, Some(ModelRef::new(ProviderId::Anthropic, "claude-haiku-4-5")));
+        assert_eq!(
+            prefs.fallback,
+            Some(ModelRef::new(ProviderId::Anthropic, "claude-haiku-4-5"))
+        );
         assert!(prefs.always_fall_back);
         assert_eq!(prefs.stealth_accepted, vec!["stealth/x".to_string()]);
         assert_eq!(prefs.recent.len(), 1);
-        let again: ModelPrefs = serde_json::from_value(serde_json::to_value(&prefs).unwrap()).unwrap();
+        let again: ModelPrefs =
+            serde_json::from_value(serde_json::to_value(&prefs).unwrap()).unwrap();
         assert_eq!(again, prefs);
-        assert_eq!(serde_json::from_str::<ModelPrefs>("{}").unwrap(), ModelPrefs::default());
+        assert_eq!(
+            serde_json::from_str::<ModelPrefs>("{}").unwrap(),
+            ModelPrefs::default()
+        );
     }
 
     #[test]
     fn model_change_payloads_name_models_and_never_keys() {
         let from = or("nvidia/nemotron:free");
         let to = ModelRef::new(ProviderId::Anthropic, "claude-haiku-4-5");
-        let p = model_change_payload(Some(&from), &to, ChangeReason::FallbackOnce, Some("rate_limited"));
+        let p = model_change_payload(
+            Some(&from),
+            &to,
+            ChangeReason::FallbackOnce,
+            Some("rate_limited"),
+        );
         assert_eq!(p["from"], "OpenRouter · nvidia/nemotron:free");
         assert_eq!(p["to"], "Anthropic · claude-haiku-4-5");
         assert_eq!(p["reason"], "fallback_once");

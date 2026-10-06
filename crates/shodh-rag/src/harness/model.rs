@@ -362,7 +362,10 @@ mod tests {
         let refused = select_model_with(&stealth, |_| None, false).unwrap_err();
         let message = refused.to_string();
         assert!(message.contains("may log prompts"), "{message}");
-        assert!(message.contains("model picker"), "says where to accept the risk: {message}");
+        assert!(
+            message.contains("model picker"),
+            "says where to accept the risk: {message}"
+        );
         let allowed = select_model_with(&stealth, |_| None, true).unwrap();
         assert_eq!(allowed.model_arg, "openrouter/stealth/space-bunny-alpha");
         assert_eq!(allowed.warning.as_deref(), Some(STEALTH_WARNING));

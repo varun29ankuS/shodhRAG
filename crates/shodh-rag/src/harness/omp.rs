@@ -21,11 +21,11 @@ use std::collections::{HashMap, HashSet};
 use serde_json::Value;
 
 use super::events::{AgentEvent, RiskTier, RunStatus};
-use super::provider_error::classify;
 use super::protocol::{
     AssistantMessageEvent, InboundFrame, MessageEndFrame, PromptResultFrame, PromptStatus,
     ResponseFrame, ToolResultPayload,
 };
+use super::provider_error::classify;
 use super::truncate_chars;
 
 /// Display metadata for a registered host tool.

@@ -123,6 +123,9 @@ mod tests {
         assert!(cached.is_fresh(2_000, ttl));
         assert!(cached.is_fresh(11_999, ttl));
         assert!(!cached.is_fresh(12_000, ttl));
-        assert!(!cached.is_fresh(1_000, ttl), "a clock behind the fetch is not trusted");
+        assert!(
+            !cached.is_fresh(1_000, ttl),
+            "a clock behind the fetch is not trusted"
+        );
     }
 }

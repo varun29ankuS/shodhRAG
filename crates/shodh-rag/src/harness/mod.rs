@@ -28,9 +28,9 @@ pub mod web;
 pub use error::HarnessError;
 pub use events::{AgentEvent, PlanItem, PlanStatus, RiskTier, RunStatus};
 pub use model::{select_model, select_model_with, stealth_allowed_by_env, OmpModel};
-pub use provider_error::{ProviderError, ProviderErrorKind};
 pub use omp::{normalise, NormaliserState, StepMeta, StepOutcome};
 pub use profile::AgentProfile;
+pub use provider_error::{ProviderError, ProviderErrorKind};
 pub use session::{OmpSession, SessionConfig};
 pub use sidecar::{
     fetch_omp, resolve_binary_path, FetchProgress, InstalledRuntime, LaunchSpec, OmpLayout,

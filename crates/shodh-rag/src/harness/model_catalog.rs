@@ -258,8 +258,7 @@ pub fn parse_openrouter(json: &str) -> Result<Vec<CatalogModel>, CatalogError> {
         .map(|m| {
             let prompt = per_million(m.pricing.as_ref().and_then(|p| p.prompt.as_ref()));
             let completion = per_million(m.pricing.as_ref().and_then(|p| p.completion.as_ref()));
-            let free =
-                m.id.ends_with(":free") || (prompt == Some(0.0) && completion == Some(0.0));
+            let free = m.id.ends_with(":free") || (prompt == Some(0.0) && completion == Some(0.0));
             let stealth = is_stealth(&m.id);
             let tools = match &m.supported_parameters {
                 Some(params) if params.iter().any(|p| p == "tools") => ToolSupport::Yes,
@@ -280,7 +279,11 @@ pub fn parse_openrouter(json: &str) -> Result<Vec<CatalogModel>, CatalogError> {
                 prompt_per_million: prompt,
                 completion_per_million: completion,
                 tools,
-                tier: if free { ModelTier::Free } else { ModelTier::Paid },
+                tier: if free {
+                    ModelTier::Free
+                } else {
+                    ModelTier::Paid
+                },
                 privacy: if free || stealth {
                     PrivacyNote::MayLogPrompts
                 } else {
@@ -494,7 +497,10 @@ pub fn choose_fallback(ctx: &FallbackContext<'_>) -> Option<ModelRef> {
         return fast_direct;
     }
     let via_openrouter = ModelRef::new(ProviderId::OpenRouter, OPENROUTER_FAST_FALLBACK);
-    let openrouter_listed = ctx.catalog.iter().any(|m| m.provider == ProviderId::OpenRouter);
+    let openrouter_listed = ctx
+        .catalog
+        .iter()
+        .any(|m| m.provider == ProviderId::OpenRouter);
     if ctx.usable(&via_openrouter)
         && (!openrouter_listed || ctx.in_catalog(&via_openrouter).is_some())
     {
@@ -572,7 +578,10 @@ mod tests {
         assert_eq!(guard.prompt_per_million, Some(0.18));
         let glm = find(&models, "z-ai/glm-4.5-air:free");
         assert_eq!(glm.tools, ToolSupport::Unknown);
-        assert_eq!(glm.name, "z-ai/glm-4.5-air:free", "empty names fall back to the id");
+        assert_eq!(
+            glm.name, "z-ai/glm-4.5-air:free",
+            "empty names fall back to the id"
+        );
         assert!(find(&models, "stealth/space-bunny-alpha").stealth);
         assert!(parse_openrouter("{\"nope\":1}").is_err());
     }
@@ -588,18 +597,36 @@ mod tests {
             ollama: &ollama,
             local_only: false,
         });
-        assert!(catalog.iter().all(|m| m.id != "meta-llama/llama-guard-4-12b"));
-        assert!(catalog.iter().any(|m| m.id == "z-ai/glm-4.5-air:free"), "unknown tool support is kept");
+        assert!(catalog
+            .iter()
+            .all(|m| m.id != "meta-llama/llama-guard-4-12b"));
+        assert!(
+            catalog.iter().any(|m| m.id == "z-ai/glm-4.5-air:free"),
+            "unknown tool support is kept"
+        );
         assert!(catalog.iter().all(|m| m.provider != ProviderId::OpenAI));
         let haiku = catalog
             .iter()
             .find(|m| m.provider == ProviderId::Anthropic && m.id == "claude-haiku-4-5")
             .unwrap();
-        assert_eq!(haiku.prompt_per_million, Some(1.0), "priced from the OpenRouter alias");
+        assert_eq!(
+            haiku.prompt_per_million,
+            Some(1.0),
+            "priced from the OpenRouter alias"
+        );
         assert_eq!(haiku.context_length, Some(200_000));
-        let sonnet = catalog.iter().find(|m| m.id == "claude-sonnet-4-5").unwrap();
-        assert_eq!(sonnet.prompt_per_million, None, "not in the fixture: price unknown");
-        let local = catalog.iter().find(|m| m.provider == ProviderId::Ollama).unwrap();
+        let sonnet = catalog
+            .iter()
+            .find(|m| m.id == "claude-sonnet-4-5")
+            .unwrap();
+        assert_eq!(
+            sonnet.prompt_per_million, None,
+            "not in the fixture: price unknown"
+        );
+        let local = catalog
+            .iter()
+            .find(|m| m.provider == ProviderId::Ollama)
+            .unwrap();
         assert_eq!(local.tier, ModelTier::Local);
         assert_eq!(local.privacy, PrivacyNote::OnDevice);
 
@@ -634,7 +661,10 @@ mod tests {
 
     #[test]
     fn fallback_prefers_the_users_choice_then_a_fast_paid_model() {
-        let nemotron = ModelRef::new(ProviderId::OpenRouter, "nvidia/nemotron-3-super-120b-a12b:free");
+        let nemotron = ModelRef::new(
+            ProviderId::OpenRouter,
+            "nvidia/nemotron-3-super-120b-a12b:free",
+        );
         let keyed = [ProviderId::OpenRouter, ProviderId::OpenAI];
         let catalog = catalog_for(&keyed, &[]);
         let base = FallbackContext {
@@ -652,17 +682,26 @@ mod tests {
         );
         let qwen = ModelRef::new(ProviderId::OpenRouter, "qwen/qwen3-coder:free");
         assert_eq!(
-            choose_fallback(&FallbackContext { preferred: Some(&qwen), ..base.clone() }),
+            choose_fallback(&FallbackContext {
+                preferred: Some(&qwen),
+                ..base.clone()
+            }),
             Some(qwen.clone())
         );
         let unkeyed = ModelRef::new(ProviderId::Google, "gemini-2.5-flash");
         assert_eq!(
-            choose_fallback(&FallbackContext { preferred: Some(&unkeyed), ..base.clone() }),
+            choose_fallback(&FallbackContext {
+                preferred: Some(&unkeyed),
+                ..base.clone()
+            }),
             Some(ModelRef::new(ProviderId::OpenAI, "gpt-5-mini")),
             "a preferred model without a key is skipped"
         );
         assert_eq!(
-            choose_fallback(&FallbackContext { preferred: Some(&nemotron), ..base }),
+            choose_fallback(&FallbackContext {
+                preferred: Some(&nemotron),
+                ..base
+            }),
             Some(ModelRef::new(ProviderId::OpenAI, "gpt-5-mini")),
             "never the failing model"
         );
@@ -670,7 +709,10 @@ mod tests {
 
     #[test]
     fn fallback_through_openrouter_then_free_models() {
-        let nemotron = ModelRef::new(ProviderId::OpenRouter, "nvidia/nemotron-3-super-120b-a12b:free");
+        let nemotron = ModelRef::new(
+            ProviderId::OpenRouter,
+            "nvidia/nemotron-3-super-120b-a12b:free",
+        );
         let keyed = [ProviderId::OpenRouter];
         let catalog = catalog_for(&keyed, &[]);
         let ctx = FallbackContext {
@@ -683,14 +725,23 @@ mod tests {
         };
         assert_eq!(
             choose_fallback(&ctx),
-            Some(ModelRef::new(ProviderId::OpenRouter, OPENROUTER_FAST_FALLBACK))
+            Some(ModelRef::new(
+                ProviderId::OpenRouter,
+                OPENROUTER_FAST_FALLBACK
+            ))
         );
         // When the fast paid model itself failed: the free tools model with the largest context.
         let haiku = ModelRef::new(ProviderId::OpenRouter, OPENROUTER_FAST_FALLBACK);
-        let from_haiku = FallbackContext { current: &haiku, ..ctx.clone() };
+        let from_haiku = FallbackContext {
+            current: &haiku,
+            ..ctx.clone()
+        };
         assert_eq!(
             choose_fallback(&from_haiku),
-            Some(ModelRef::new(ProviderId::OpenRouter, "nvidia/nemotron-3-super-120b-a12b:free"))
+            Some(ModelRef::new(
+                ProviderId::OpenRouter,
+                "nvidia/nemotron-3-super-120b-a12b:free"
+            ))
         );
         // Without the paid model in the list, free models are next (never stealth).
         let free_only: Vec<CatalogModel> = catalog
@@ -698,7 +749,11 @@ mod tests {
             .filter(|m| m.id != OPENROUTER_FAST_FALLBACK)
             .cloned()
             .collect();
-        let chosen = choose_fallback(&FallbackContext { catalog: &free_only, ..ctx }).unwrap();
+        let chosen = choose_fallback(&FallbackContext {
+            catalog: &free_only,
+            ..ctx
+        })
+        .unwrap();
         assert_eq!(chosen.model, "qwen/qwen3-coder:free");
     }
 
@@ -722,18 +777,34 @@ mod tests {
             local_only: true,
             allow_stealth: false,
         };
-        assert_eq!(choose_fallback(&ctx), Some(ModelRef::new(ProviderId::Ollama, "llama3.2:3b")));
+        assert_eq!(
+            choose_fallback(&ctx),
+            Some(ModelRef::new(ProviderId::Ollama, "llama3.2:3b"))
+        );
         let only_one: Vec<CatalogModel> = catalog.iter().take(1).cloned().collect();
-        assert_eq!(choose_fallback(&FallbackContext { catalog: &only_one, ..ctx }), None);
+        assert_eq!(
+            choose_fallback(&FallbackContext {
+                catalog: &only_one,
+                ..ctx
+            }),
+            None
+        );
     }
 
     #[test]
     fn model_refs_validate_and_serialise() {
-        assert!(ModelRef::new(ProviderId::OpenAI, " gpt-5 ").validated().is_ok());
-        assert!(ModelRef::new(ProviderId::OpenAI, "--config=x").validated().is_err());
+        assert!(ModelRef::new(ProviderId::OpenAI, " gpt-5 ")
+            .validated()
+            .is_ok());
+        assert!(ModelRef::new(ProviderId::OpenAI, "--config=x")
+            .validated()
+            .is_err());
         assert!(ModelRef::new(ProviderId::OpenRouter, "stealth/x").is_stealth());
         let v = serde_json::to_value(ModelRef::new(ProviderId::OpenRouter, "a/b")).unwrap();
-        assert_eq!(v, serde_json::json!({"provider": "openrouter", "model": "a/b"}));
+        assert_eq!(
+            v,
+            serde_json::json!({"provider": "openrouter", "model": "a/b"})
+        );
         assert_eq!(ProviderId::parse("Gemini"), Some(ProviderId::Google));
         assert_eq!(ProviderId::parse("xai"), Some(ProviderId::Grok));
         assert_eq!(ProviderId::parse("acme"), None);

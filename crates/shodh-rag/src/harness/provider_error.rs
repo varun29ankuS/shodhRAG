@@ -254,7 +254,11 @@ fn retry_after(lower: &str, now_ms: u64) -> Option<u32> {
             };
             if reset_ms > now_ms {
                 let secs = (reset_ms - now_ms).div_ceil(1_000);
-                return Some(u32::try_from(secs).unwrap_or(u32::MAX).min(MAX_RETRY_AFTER_SECS));
+                return Some(
+                    u32::try_from(secs)
+                        .unwrap_or(u32::MAX)
+                        .min(MAX_RETRY_AFTER_SECS),
+                );
             }
         }
     }
@@ -340,7 +344,9 @@ mod tests {
     #[test]
     fn openrouter_model_unavailable() {
         assert_eq!(
-            kind(r#"404 {"error":{"message":"No endpoints found for nvidia/nemotron-x:free.","code":404}}"#),
+            kind(
+                r#"404 {"error":{"message":"No endpoints found for nvidia/nemotron-x:free.","code":404}}"#
+            ),
             ProviderErrorKind::ModelUnavailable
         );
         assert_eq!(
@@ -373,7 +379,8 @@ mod tests {
     fn anthropic_errors() {
         let rate = r#"429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed the rate limit for your organization of 50,000 input tokens per minute. Please try again later."}}"#;
         assert_eq!(kind(rate), ProviderErrorKind::RateLimited);
-        let overloaded = r#"529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
+        let overloaded =
+            r#"529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
         let e = classify(overloaded, None, NOW_MS);
         assert_eq!(e.kind, ProviderErrorKind::ModelUnavailable);
         assert_eq!(e.status, Some(529));
@@ -414,7 +421,9 @@ mod tests {
     #[test]
     fn other_errors_stay_other() {
         assert_eq!(
-            kind(r#"400 {"error":{"message":"This model's maximum context length is 128000 tokens.","code":400}}"#),
+            kind(
+                r#"400 {"error":{"message":"This model's maximum context length is 128000 tokens.","code":400}}"#
+            ),
             ProviderErrorKind::Other
         );
         assert_eq!(kind("omp exited"), ProviderErrorKind::Other);
@@ -436,12 +445,26 @@ mod tests {
 
     #[test]
     fn retry_hints_are_parsed_and_capped() {
-        assert_eq!(retry_after("please retry after 30 seconds", NOW_MS), Some(30));
+        assert_eq!(
+            retry_after("please retry after 30 seconds", NOW_MS),
+            Some(30)
+        );
         assert_eq!(retry_after("try again in 250ms", NOW_MS), Some(1));
         assert_eq!(retry_after("try again in 2 minutes", NOW_MS), Some(120));
-        assert_eq!(retry_after("retry-after: 99999", NOW_MS), Some(MAX_RETRY_AFTER_SECS));
-        assert_eq!(retry_after("x-ratelimit-reset\":\"1759749000000", NOW_MS), None, "a reset in the past is no hint");
-        assert_eq!(retry_after("x-ratelimit-reset: 1759750030", NOW_MS), Some(30), "epoch seconds");
+        assert_eq!(
+            retry_after("retry-after: 99999", NOW_MS),
+            Some(MAX_RETRY_AFTER_SECS)
+        );
+        assert_eq!(
+            retry_after("x-ratelimit-reset\":\"1759749000000", NOW_MS),
+            None,
+            "a reset in the past is no hint"
+        );
+        assert_eq!(
+            retry_after("x-ratelimit-reset: 1759750030", NOW_MS),
+            Some(30),
+            "epoch seconds"
+        );
         assert_eq!(retry_after("no hint here", NOW_MS), None);
     }
 

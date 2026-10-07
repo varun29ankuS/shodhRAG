@@ -299,22 +299,22 @@ mod tests {
 
     #[test]
     fn test_create_simple_folders() {
-        let temp_dir = env::temp_dir().join("shodh_test_folders");
+        // A directory of its own: a fixed path under the system temp folder is shared
+        // with every other test process running at the same time.
+        let dir = tempfile::tempdir().unwrap();
+        let temp_dir = dir.path().join("shodh_test_folders");
 
         let structure = FolderStructure::Simple(vec!["folder1".to_string(), "folder2".to_string()]);
 
         let result = create_folder_structure(&temp_dir, &structure).unwrap();
         assert!(result.success);
         assert_eq!(result.affected_paths.as_ref().unwrap().len(), 2);
-
-        // Cleanup
-        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
     fn test_create_file() {
-        let temp_dir = env::temp_dir();
-        let file_path = temp_dir.join("shodh_test_file.txt");
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("shodh_test_file.txt");
 
         let result = create_file(&file_path, "Hello, Shodh!", false).unwrap();
         assert!(result.success);
@@ -322,9 +322,6 @@ mod tests {
 
         let content = fs::read_to_string(&file_path).unwrap();
         assert_eq!(content, "Hello, Shodh!");
-
-        // Cleanup
-        let _ = fs::remove_file(file_path);
     }
 
     #[test]

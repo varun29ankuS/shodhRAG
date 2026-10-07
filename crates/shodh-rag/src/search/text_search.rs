@@ -3,7 +3,9 @@ use std::path::Path;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::{self, Schema, Value as TantivyValue, STORED, STRING, TEXT};
-use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument};
+use tantivy::{doc, Index, IndexReader, IndexSettings, IndexWriter, ReloadPolicy, TantivyDocument};
+
+use super::index_directory::IndexDirectory;
 
 pub struct TextSearch {
     index: Index,
@@ -53,9 +55,9 @@ impl TextSearch {
         let (schema, id_field, text_field, title_field, source_field) = Self::build_schema();
 
         let needs_rebuild = {
-            let dir = tantivy::directory::MmapDirectory::open(&index_path)?;
+            let dir = IndexDirectory::open(&index_path)?;
             if Index::exists(&dir)? {
-                let existing = Index::open_in_dir(&index_path)?;
+                let existing = Index::open(dir)?;
                 let migrate = Self::needs_schema_migration(&existing);
                 drop(existing);
                 migrate
@@ -71,13 +73,17 @@ impl TextSearch {
             );
             std::fs::remove_dir_all(&index_path).ok();
             std::fs::create_dir_all(&index_path)?;
-            Index::create_in_dir(&index_path, schema.clone())?
+            Index::create(
+                IndexDirectory::open(&index_path)?,
+                schema.clone(),
+                IndexSettings::default(),
+            )?
         } else {
-            let dir = tantivy::directory::MmapDirectory::open(&index_path)?;
+            let dir = IndexDirectory::open(&index_path)?;
             if Index::exists(&dir)? {
-                Index::open_in_dir(&index_path)?
+                Index::open(dir)?
             } else {
-                Index::create_in_dir(&index_path, schema.clone())?
+                Index::create(dir, schema.clone(), IndexSettings::default())?
             }
         };
 

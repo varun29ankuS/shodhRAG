@@ -767,7 +767,7 @@ mod tests {
 
         release_tx.send(()).expect("release");
         let result = job.await.expect("join").expect("indexed");
-        assert_eq!(result.files_processed, 1);
+        assert_eq!(result.files_processed, 1, "{:?}", result.failures);
         let after = rag
             .read()
             .await

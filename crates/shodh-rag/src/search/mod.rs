@@ -1,5 +1,6 @@
 pub mod graph_fusion;
 pub mod hybrid;
+pub mod index_directory;
 pub mod text_search;
 
 pub use hybrid::{reciprocal_rank_fusion, weighted_fusion, HybridResult, HybridSource};

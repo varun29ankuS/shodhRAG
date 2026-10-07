@@ -224,7 +224,8 @@ function layered(spec: DiagramSpec, horizontal: boolean): DiagramDrawing {
   });
   const rankOf = (v: number) => {
     const g = spec.nodes[v].group;
-    return g === null ? -1 : groupRank.get(g) ?? -1;
+    // Parts outside every group come last, in a band of their own.
+    return g === null ? groupRank.size : groupRank.get(g) ?? groupRank.size;
   };
   const layers: number[][] = Array.from({ length: layerCount }, () => []);
   for (let v = 0; v < n; v++) layers[layer[v]].push(v);
@@ -257,10 +258,16 @@ function layered(spec: DiagramSpec, horizontal: boolean): DiagramDrawing {
   );
   const depth = layers.map(row => Math.max(...row.map(v => (horizontal ? boxes[v].w : boxes[v].h))));
   const widest = Math.max(...extent);
-  const groupTop = groupRank.size > 0 ? 24 : 0;
+  // Edges that skip a layer run in a lane beside the drawing (left of a
+  // flow, below an architecture), never behind a box in between.
+  const spans = ends.map(([a, b], e) => !back.has(e) && a !== b && layer[b] - layer[a] > 1);
+  const spanCount = spans.filter(Boolean).length;
+  const laneRoom = !horizontal && spanCount > 0 ? spanCount * 12 + 16 : 0;
+  const grouped = horizontal && groupRank.size > 0;
+  const groupTop = grouped ? 24 : 0;
   let along = PAD + groupTop;
   layers.forEach((row, li) => {
-    let across = PAD + groupTop + snap((widest - extent[li]) / 2);
+    let across = PAD + laneRoom + groupTop + snap((widest - extent[li]) / 2);
     for (const v of row) {
       const b = boxes[v];
       if (horizontal) {
@@ -275,6 +282,24 @@ function layered(spec: DiagramSpec, horizontal: boolean): DiagramDrawing {
     }
     along += depth[li] + (horizontal ? GAP_LR : GAP_TB);
   });
+  if (grouped) {
+    // One band per group, so group frames never overlap: within a band each
+    // column stacks its members of that group.
+    let top = PAD + groupTop;
+    for (let band = 0; band <= groupRank.size; band++) {
+      let bottom = top;
+      for (const row of layers) {
+        let y = top;
+        for (const v of row) {
+          if (rankOf(v) !== band) continue;
+          boxes[v].y = y;
+          y += boxes[v].h + GAP_IN_LAYER;
+        }
+        bottom = Math.max(bottom, y - GAP_IN_LAYER);
+      }
+      if (bottom > top) top = bottom + 52;
+    }
+  }
 
   // Attach points: per box side, ordered by where the other end is.
   const centre = (v: number) => (horizontal ? boxes[v].y + boxes[v].h / 2 : boxes[v].x + boxes[v].w / 2);
@@ -296,6 +321,7 @@ function layered(spec: DiagramSpec, horizontal: boolean): DiagramDrawing {
   const maxX = Math.max(...boxes.map(b => b.x + b.w));
   const maxY = Math.max(...boxes.map(b => b.y + b.h));
   let backLane = 0;
+  let spanLane = 0;
   const wires: Wire[] = ends.map(([a, b], e) => {
     const edge = spec.edges[e];
     const s = boxes[a];
@@ -316,6 +342,26 @@ function layered(spec: DiagramSpec, horizontal: boolean): DiagramDrawing {
       const ty = t.y + t.h / 2 + (a === b ? 8 : 0);
       const pts: [number, number][] = [[s.x + s.w, sy], [lane, sy], [lane, ty], [t.x + t.w, ty]];
       return { edge: e, d: roundedPath(pts), dashed, arrow: true, label: edgeLabel(edge.label, lane + 8, (sy + ty) / 2), sign: null };
+    }
+    if (spans[e]) {
+      if (horizontal) {
+        backLane += 1;
+        const lane = maxY + 16 + backLane * 12;
+        const sy = attach(a, e, true);
+        const ty = attach(b, e, false);
+        const sx = s.x + s.w;
+        const tx = t.x;
+        const pts: [number, number][] = [[sx, sy], [sx + 16, sy], [sx + 16, lane], [tx - 16, lane], [tx - 16, ty], [tx, ty]];
+        return { edge: e, d: roundedPath(pts), dashed, arrow: true, label: edgeLabel(edge.label, (sx + tx) / 2, lane + 12), sign: null };
+      }
+      spanLane += 1;
+      const lane = PAD + 4 + (spanCount - spanLane) * 12;
+      const sx = attach(a, e, true);
+      const tx = attach(b, e, false);
+      const sy = s.y + s.h;
+      const ty = t.y;
+      const pts: [number, number][] = [[sx, sy], [sx, sy + 16], [lane, sy + 16], [lane, ty - 16], [tx, ty - 16], [tx, ty]];
+      return { edge: e, d: roundedPath(pts), dashed, arrow: true, label: edgeLabel(edge.label, (lane + tx) / 2, ty - 26), sign: null };
     }
     if (horizontal) {
       const sy = attach(a, e, true);

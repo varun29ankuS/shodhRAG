@@ -220,6 +220,58 @@ test('layout: flow goes down in layers, boxes of one layer do not overlap', () =
   }
 });
 
+test('layout: connectors never pass behind a box they do not join, and group frames do not overlap', () => {
+  const samples = [
+    {
+      layout: 'flow',
+      nodes: [{ id: 'p', label: 'Parse' }, { id: 'o', label: 'OCR scanned pages' }, { id: 'c', label: 'Chunk' }, { id: 'e', label: 'Embed' }],
+      edges: [{ from: 'p', to: 'o' }, { from: 'o', to: 'c' }, { from: 'p', to: 'c', label: 'text' }, { from: 'c', to: 'e' }, { from: 'p', to: 'e' }],
+    },
+    {
+      layout: 'architecture',
+      nodes: [
+        { id: 'ui', label: 'UI', group: 'App' }, { id: 'cmd', label: 'Commands', group: 'App' },
+        { id: 'rag', label: 'RAG', group: 'Core' }, { id: 'db', label: 'Store', group: 'Core' },
+        { id: 'omp', label: 'Harness' },
+      ],
+      edges: [{ from: 'ui', to: 'cmd' }, { from: 'cmd', to: 'rag' }, { from: 'cmd', to: 'omp' }, { from: 'rag', to: 'db' }, { from: 'ui', to: 'db' }],
+    },
+  ];
+  for (const sample of samples) {
+    const s = spec(sample);
+    const d = layoutDiagram(s);
+    const index = new Map(s.nodes.map((n, i) => [n.id, i]));
+    for (const w of d.wires) {
+      const e = s.edges[w.edge];
+      const pts = [...w.d.matchAll(/[ML](-?[\d.]+) (-?[\d.]+)/g)].map(m => [Number(m[1]), Number(m[2])]);
+      for (let i = 1; i < pts.length; i++) {
+        const [x1, y1] = pts[i - 1];
+        const [x2, y2] = pts[i];
+        for (const b of d.boxes) {
+          if (b.node === index.get(e.from) || b.node === index.get(e.to)) continue;
+          const crosses = Math.max(x1, x2) > b.x && Math.min(x1, x2) < b.x + b.w && Math.max(y1, y2) > b.y && Math.min(y1, y2) < b.y + b.h;
+          assert.ok(!crosses, `${s.layout}: ${e.from}->${e.to} passes behind ${s.nodes[b.node].id}`);
+        }
+      }
+    }
+    for (let i = 0; i < d.frames.length; i++) {
+      for (let j = i + 1; j < d.frames.length; j++) {
+        const a = d.frames[i];
+        const b = d.frames[j];
+        assert.ok(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y, 'frames overlap');
+      }
+    }
+    for (const f of d.frames) {
+      for (const b of d.boxes) {
+        const inside = b.x >= f.x && b.y >= f.y && b.x + b.w <= f.x + f.w && b.y + b.h <= f.y + f.h;
+        const apart = b.x + b.w <= f.x || f.x + f.w <= b.x || b.y + b.h <= f.y || f.y + f.h <= b.y;
+        const member = s.nodes[b.node].group === f.label;
+        assert.ok(member ? inside : apart, `${s.nodes[b.node].id} and frame ${f.label}`);
+      }
+    }
+  }
+});
+
 test('svg: themed interactive nodes, an export the sketch sanitizer keeps, escaped text', () => {
   const s = spec({ ...FLOW, title: 'A <b> & "c"', nodes: [...FLOW.nodes.slice(0, 3), { id: 'store', label: '<script>x</script>' }] });
   const d = layoutDiagram(s);

@@ -9,14 +9,14 @@ use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
 use super::{
-    req_str, CitedPassage, HostTool, ToolContext, ToolError, ToolOutput, MAX_MODEL_OUTPUT_CHARS,
-    UNTRUSTED_NOTICE,
+    req_str, CitedPassage, HostTool, RunScope, ScopedSnippet, ToolContext, ToolError, ToolOutput,
+    MAX_MODEL_OUTPUT_CHARS, UNTRUSTED_NOTICE,
 };
 use crate::harness::events::RiskTier;
 use crate::harness::protocol::ToolLoadMode;
 use crate::harness::truncate_chars;
 use crate::rag_engine::page_numbers_from_metadata;
-use crate::types::{ComprehensiveResult, MetadataFilter};
+use crate::types::{ComprehensiveResult, MetadataFilter, SourceSet};
 use crate::RAGEngine;
 
 pub const SEARCH_DOCUMENTS: &str = "search_documents";
@@ -105,7 +105,7 @@ impl SearchDocumentsTool {
         self.default_k
             .as_ref()
             .map(|f| f())
-            .unwrap_or_else(|| self.default_k())
+            .unwrap_or(DEFAULT_K)
             .clamp(1, MAX_K)
     }
 }
@@ -215,6 +215,171 @@ fn passage(n: u32, result: &ComprehensiveResult, max_chars: usize) -> Passage {
     }
 }
 
+/// Most snippet passages one search returns (they come before document passages).
+const MAX_SNIPPET_PASSAGES: usize = 3;
+
+/// What one search may cover, from the answer's scope and the sources the model asked
+/// for.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct SearchPlan {
+    /// Whether the search is limited to `space_ids` (and, with `use_scope_files`, the
+    /// scope's files); otherwise it covers everything.
+    limited: bool,
+    space_ids: Vec<String>,
+    use_scope_files: bool,
+    /// The sources the model asked for, as given.
+    model_sources: Vec<String>,
+    /// Told to the model with the results.
+    notes: Vec<String>,
+}
+
+/// The search a call may run. Without a restriction the model's own sources win over the
+/// user's limit (as before workspaces); with one they are narrowed to the scope, and a
+/// scope with nothing in it searches nothing.
+fn plan_search(scope: &RunScope, model_sources: &[String]) -> SearchPlan {
+    let mut sorted: Vec<String> = model_sources.to_vec();
+    sorted.sort();
+    let mut plan = SearchPlan {
+        model_sources: sorted.clone(),
+        ..SearchPlan::default()
+    };
+    if scope.restricted {
+        plan.limited = true;
+        if sorted.is_empty() {
+            plan.space_ids = scope.source_ids.clone();
+            plan.use_scope_files = true;
+        } else {
+            let (inside, outside): (Vec<String>, Vec<String>) =
+                sorted.into_iter().partition(|s| scope.allows_source(s));
+            if !outside.is_empty() {
+                plan.notes
+                    .push(scope.outside_message(&format!("Source {}", outside.join(", "))));
+            }
+            plan.space_ids = inside;
+        }
+    } else if !sorted.is_empty() {
+        plan.limited = true;
+        plan.space_ids = sorted;
+    } else if !scope.is_empty() {
+        plan.limited = true;
+        plan.space_ids = scope.source_ids.clone();
+        plan.use_scope_files = true;
+    }
+    plan
+}
+
+/// What the model is told about the limit the results were searched under.
+fn limit_note(
+    scope: &RunScope,
+    plan: &SearchPlan,
+    set: &SourceSet,
+    scoped_files: &[String],
+    pages: &[u32],
+) -> Option<String> {
+    let mut notes: Vec<String> = plan.notes.clone();
+    if !scoped_files.is_empty() && !pages.is_empty() {
+        notes.push(format!(
+            "The user limited this answer to {} of {}.",
+            pages_text(pages),
+            scoped_files.join(", ")
+        ));
+    } else if scope.restricted && plan.model_sources.is_empty() {
+        if set.is_empty() && scope.snippets.is_empty() {
+            notes.push(match &scope.workspace_name {
+                Some(name) => format!(
+                    "The workspace \"{name}\" has no searchable sources yet (none added, or none \
+                     indexed). Tell the user to add sources to the workspace, or to ask again \
+                     with \"search all my library\" turned on."
+                ),
+                None => "The sources this answer is limited to are not indexed.".to_string(),
+            });
+        } else if let Some(name) = &scope.workspace_name {
+            notes.push(format!(
+                "This chat belongs to the workspace \"{name}\": only its sources were searched."
+            ));
+        } else if !scoped_files.is_empty() {
+            notes.push(format!(
+                "The user limited this answer to {}.",
+                scoped_files.join(", ")
+            ));
+        }
+    } else if !scoped_files.is_empty() {
+        notes.push(format!(
+            "The user limited this answer to {}.",
+            scoped_files.join(", ")
+        ));
+    } else if plan.use_scope_files && !scope.source_ids.is_empty() {
+        notes.push(format!(
+            "The user limited this answer to sources {}.",
+            scope.source_ids.join(", ")
+        ));
+    } else if plan.use_scope_files && !scope.files.is_empty() {
+        notes.push(format!(
+            "The files this answer is limited to are not indexed: {}.",
+            scope.files.join(", ")
+        ));
+    }
+    (!notes.is_empty()).then(|| notes.join(" "))
+}
+
+fn query_terms(text: &str) -> HashSet<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.chars().count() > 2)
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// The snippets that share words with `query`, best first, as results (a snippet is the
+/// text of a page region the user saved, so it is cited like a passage of its file).
+fn snippet_results(
+    query: &str,
+    snippets: &[ScopedSnippet],
+    max: usize,
+) -> Vec<ComprehensiveResult> {
+    let terms = query_terms(query);
+    if terms.is_empty() || max == 0 {
+        return Vec::new();
+    }
+    let mut scored: Vec<(f32, &ScopedSnippet)> = snippets
+        .iter()
+        .filter_map(|s| {
+            let words = query_terms(&format!("{} {}", s.title, s.text));
+            let shared = terms.iter().filter(|t| words.contains(*t)).count();
+            (shared > 0).then(|| (shared as f32 / terms.len() as f32, s))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
+    scored
+        .into_iter()
+        .take(max)
+        .map(|(score, s)| {
+            let mut metadata = std::collections::HashMap::new();
+            metadata.insert("page_start".to_string(), s.page.to_string());
+            metadata.insert("page_end".to_string(), s.page.to_string());
+            metadata.insert("source_file".to_string(), s.file_path.clone());
+            metadata.insert("snippet_id".to_string(), s.id.clone());
+            if !s.title.trim().is_empty() {
+                metadata.insert(
+                    "heading".to_string(),
+                    format!("Snippet: {}", s.title.trim()),
+                );
+            }
+            ComprehensiveResult {
+                id: uuid::Uuid::nil(),
+                score,
+                metadata,
+                citation: crate::types::Citation {
+                    title: s.file_name.clone(),
+                    source: s.file_path.clone(),
+                    ..crate::types::Citation::default()
+                },
+                snippet: s.text.clone(),
+                source_index: "snippet".to_string(),
+            }
+        })
+        .collect()
+}
+
 #[async_trait]
 impl HostTool for SearchDocumentsTool {
     fn name(&self) -> &'static str {
@@ -276,25 +441,22 @@ impl HostTool for SearchDocumentsTool {
             })
             .unwrap_or_default();
 
-        let rag = self.rag.read().await;
-        // The user's limit for this answer applies unless the model chose
-        // sources itself.
         let scope = ctx.scope();
-        let (sources, scoped_files) = if sources.is_empty() && !scope.is_empty() {
-            let mut files = Vec::new();
+        let plan = plan_search(scope, &sources);
+        let rag = self.rag.read().await;
+        // The user's files, as the index stores them.
+        let mut scoped_files = Vec::new();
+        if plan.use_scope_files {
             for file in &scope.files {
                 let matches = rag
                     .find_indexed_sources(file)
                     .await
                     .map_err(|e| ToolError::Failed(format!("Could not read the index: {e}")))?;
-                files.extend(matches);
+                scoped_files.extend(matches);
             }
-            files.sort();
-            files.dedup();
-            (scope.source_ids.clone(), files)
-        } else {
-            (sources, Vec::new())
-        };
+            scoped_files.sort();
+            scoped_files.dedup();
+        }
         // Pages apply only to the user's file limit, not to sources the
         // model chose.
         let pages: &[u32] = if scoped_files.is_empty() {
@@ -302,71 +464,62 @@ impl HostTool for SearchDocumentsTool {
         } else {
             &scope.pages
         };
-        let mut results = if !scoped_files.is_empty() {
+        let set = SourceSet {
+            space_ids: plan.space_ids.clone(),
+            source_paths: scoped_files.clone(),
+        };
+        let mut results = if !plan.limited {
+            rag.search_comprehensive(query, k, None)
+                .await
+                .map_err(|e| ToolError::Failed(format!("Search failed: {e}")))?
+        } else if set.is_empty() {
+            // A limit that resolves to nothing finds nothing, never everything.
+            Vec::new()
+        } else {
             let fetch = if pages.is_empty() {
                 k
             } else {
                 (k * PAGE_OVERFETCH).min(MAX_PAGE_FETCH).max(k)
             };
-            let mut merged = Vec::new();
-            for file in &scoped_files {
-                let filter = MetadataFilter {
-                    source_path: Some(file.clone()),
-                    ..MetadataFilter::default()
-                };
-                let hits = rag
-                    .search_comprehensive(query, fetch, Some(filter))
-                    .await
-                    .map_err(|e| ToolError::Failed(format!("Search failed: {e}")))?;
-                merged.extend(
-                    hits.into_iter()
-                        .filter(|h| pages.is_empty() || on_pages(h, pages)),
-                );
-            }
-            merged.sort_by(|a, b| b.score.total_cmp(&a.score));
-            merged
-        } else if sources.is_empty() {
-            rag.search_comprehensive(query, k, None)
+            let filter = MetadataFilter {
+                any_of: Some(set.clone()),
+                ..MetadataFilter::default()
+            };
+            let mut hits = rag
+                .search_comprehensive(query, fetch, Some(filter))
                 .await
-                .map_err(|e| ToolError::Failed(format!("Search failed: {e}")))?
-        } else {
-            let mut merged = Vec::new();
-            for source in &sources {
-                let filter = MetadataFilter {
-                    space_id: Some(source.clone()),
-                    ..MetadataFilter::default()
-                };
-                let hits = rag
-                    .search_comprehensive(query, k, Some(filter))
-                    .await
-                    .map_err(|e| ToolError::Failed(format!("Search failed: {e}")))?;
-                merged.extend(hits);
+                .map_err(|e| ToolError::Failed(format!("Search failed: {e}")))?;
+            if !pages.is_empty() {
+                // The page limit applies to the user's files; passages of the
+                // scope's sources are kept whatever their page.
+                hits.retain(|h| {
+                    let file = h.metadata.get("source_file").map_or("", String::as_str);
+                    !scoped_files.iter().any(|f| f == file) || on_pages(h, pages)
+                });
             }
-            merged.sort_by(|a, b| b.score.total_cmp(&a.score));
-            merged
+            hits
         };
         drop(rag);
+        // Defence in depth: nothing outside the limit reaches the model.
+        if plan.limited {
+            results.retain(|r| {
+                set.contains(
+                    r.metadata.get("space_id").map_or("", String::as_str),
+                    r.metadata.get("source_file").map_or("", String::as_str),
+                )
+            });
+        }
+        let snippet_hits = if plan.limited {
+            snippet_results(query, &scope.snippets, k.min(MAX_SNIPPET_PASSAGES))
+        } else {
+            Vec::new()
+        };
+        results.truncate(k.saturating_sub(snippet_hits.len()));
+        let mut results: Vec<ComprehensiveResult> =
+            snippet_hits.into_iter().chain(results).collect();
         results.truncate(k);
 
-        let limited_to = if !scoped_files.is_empty() && !pages.is_empty() {
-            Some(format!(
-                "The user limited this answer to {} of {}.",
-                pages_text(pages),
-                scoped_files.join(", ")
-            ))
-        } else if !scoped_files.is_empty() {
-            Some(format!(
-                "The user limited this answer to {}.",
-                scoped_files.join(", ")
-            ))
-        } else if args.get("sources").is_none() && !ctx.scope().source_ids.is_empty() {
-            Some(format!(
-                "The user limited this answer to sources {}.",
-                ctx.scope().source_ids.join(", ")
-            ))
-        } else {
-            None
-        };
+        let limited_to = limit_note(scope, &plan, &set, &scoped_files, pages);
         if results.is_empty() {
             return Ok(ToolOutput {
                 text_for_model: format!(
@@ -571,5 +724,234 @@ mod tests {
             );
         }
         assert_eq!(passage_budget(DEFAULT_K), MAX_PASSAGE_CHARS);
+    }
+
+    fn workspace_scope(source_ids: &[&str], files: &[&str]) -> RunScope {
+        RunScope {
+            source_ids: source_ids.iter().map(|s| s.to_string()).collect(),
+            files: files.iter().map(|s| s.to_string()).collect(),
+            workspace: Some("ws-1".into()),
+            workspace_name: Some("Thesis".into()),
+            restricted: true,
+            folders: vec!["C:/docs/thesis".into()],
+            ..RunScope::default()
+        }
+    }
+
+    #[test]
+    fn a_restricted_scope_narrows_the_models_sources_and_never_widens() {
+        let scope = workspace_scope(&["space-a"], &["C:/x/one.pdf"]);
+        // No sources from the model: the workspace's sources and files.
+        let plan = plan_search(&scope, &[]);
+        assert!(plan.limited && plan.use_scope_files);
+        assert_eq!(plan.space_ids, vec!["space-a"]);
+        // The model asks for another source: it is refused, and nothing widens.
+        let plan = plan_search(&scope, &["space-b".to_string()]);
+        assert!(plan.limited);
+        assert!(plan.space_ids.is_empty());
+        assert!(plan.notes[0].contains("outside the workspace \"Thesis\""));
+        let plan = plan_search(&scope, &["space-a".to_string(), "space-b".to_string()]);
+        assert_eq!(plan.space_ids, vec!["space-a"]);
+        // An empty workspace is still limited: it finds nothing, not everything.
+        let empty = workspace_scope(&[], &[]);
+        assert!(!empty.is_empty());
+        let plan = plan_search(&empty, &[]);
+        assert!(plan.limited && plan.space_ids.is_empty());
+        // Without a restriction (no workspace, or "search all my library").
+        assert!(!plan_search(&RunScope::default(), &[]).limited);
+        let plan = plan_search(&RunScope::default(), &["space-b".to_string()]);
+        assert_eq!(plan.space_ids, vec!["space-b"]);
+        // Sources and files of an unrestricted limit are searched together.
+        let library = RunScope {
+            source_ids: vec!["space-a".into()],
+            files: vec!["C:/x/one.pdf".into()],
+            ..RunScope::default()
+        };
+        let plan = plan_search(&library, &[]);
+        assert!(plan.limited && plan.use_scope_files);
+        assert_eq!(plan.space_ids, vec!["space-a"]);
+    }
+
+    #[test]
+    fn paths_outside_a_restricted_scope_are_not_allowed() {
+        let mut scope = workspace_scope(&["space-a"], &["C:/x/one.pdf"]);
+        scope.snippets.push(ScopedSnippet {
+            id: "snippet:1".into(),
+            file_path: "C:/y/two.pdf".into(),
+            file_name: "two.pdf".into(),
+            page: 3,
+            title: String::new(),
+            text: "text".into(),
+        });
+        assert!(scope.allows_path(r"C:\docs\thesis\ch1.pdf"));
+        assert!(scope.allows_path("c:/x/one.pdf") || !cfg!(windows));
+        assert!(scope.allows_path("C:/x/one.pdf"));
+        assert!(scope.allows_path("C:/y/two.pdf"));
+        assert!(!scope.allows_path("C:/docs/other/secret.pdf"));
+        assert!(!scope.allows_path("C:/docs/thesis-old/a.pdf"));
+        assert!(RunScope::default().allows_path("C:/anything.pdf"));
+        assert!(scope.allows_source("space-a") && !scope.allows_source("space-b"));
+    }
+
+    #[test]
+    fn snippets_match_by_shared_words() {
+        let snippet = |id: &str, title: &str, text: &str| ScopedSnippet {
+            id: id.into(),
+            file_path: format!("C:/p/{id}.pdf"),
+            file_name: format!("{id}.pdf"),
+            page: 2,
+            title: title.into(),
+            text: text.into(),
+        };
+        let snippets = vec![
+            snippet("a", "Recall table", "HNSW reaches 95.3 recall at 10"),
+            snippet("b", "", "Unrelated passage about weather"),
+            snippet("c", "", "Recall of IVF-PQ is lower than HNSW recall"),
+        ];
+        let hits = snippet_results("HNSW recall numbers", &snippets, 3);
+        let ids: Vec<&str> = hits
+            .iter()
+            .map(|h| h.metadata["snippet_id"].as_str())
+            .collect();
+        assert_eq!(ids, vec!["a", "c"]);
+        assert_eq!(hits[0].citation.source, "C:/p/a.pdf");
+        assert_eq!(
+            page_numbers_from_metadata(&hits[0].metadata).as_deref(),
+            Some("2")
+        );
+        assert!(snippet_results("of", &snippets, 3).is_empty());
+        assert_eq!(snippet_results("recall", &snippets, 1).len(), 1);
+    }
+
+    fn stored(path: &str) -> String {
+        crate::rag_engine::normalize_source_path(std::path::Path::new(path))
+    }
+
+    async fn engine_with_two_spaces(dir: &std::path::Path) -> Arc<RwLock<RAGEngine>> {
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.join("data");
+        config.embedding.model_dir = dir.join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        config.search.min_score_threshold = 0.0;
+        let mut engine = RAGEngine::new(config).await.unwrap();
+        engine
+            .attach_search_models(crate::rag_engine::SearchModels::from_embedder(Arc::new(
+                crate::statements::testing::WordEmbedder::default(),
+            )))
+            .unwrap();
+        for (space, path, text) in [
+            (
+                "space-a",
+                "C:/docs/thesis/inside.txt",
+                "The notice period for the office lease is sixty days. Rent is reviewed every spring, and the landlord repairs the roof and the heating.",
+            ),
+            (
+                "space-b",
+                "C:/docs/other/outside.txt",
+                "The notice period for the bank loan is ninety days. Interest is fixed for five years; early repayment costs one percent of the balance.",
+            ),
+            (
+                "space-b",
+                "C:/docs/other/file.txt",
+                "The notice period for the car rental is thirty days. Mileage above twenty thousand kilometres a year is charged per kilometre driven.",
+            ),
+        ] {
+            // As indexing stores a file's path.
+            let path = stored(path);
+            let path = path.as_str();
+            let mut metadata = HashMap::new();
+            metadata.insert("space_id".to_string(), space.to_string());
+            metadata.insert("file_path".to_string(), path.to_string());
+            metadata.insert("title".to_string(), path.to_string());
+            let ids = engine
+                .add_document(
+                    text,
+                    crate::types::DocumentFormat::TXT,
+                    metadata,
+                    Citation {
+                        title: path.into(),
+                        source: path.into(),
+                        ..Citation::default()
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(!ids.is_empty(), "{path} was not indexed");
+        }
+        Arc::new(RwLock::new(engine))
+    }
+
+    async fn search_paths(
+        tool: &SearchDocumentsTool,
+        scope: RunScope,
+        args: Value,
+    ) -> (Vec<String>, String) {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let ctx = ToolContext::new("run-1", "step-1", tx).with_scope(Arc::new(scope));
+        // Boxed: the search future is large for a test thread's stack.
+        let out = Box::pin(tool.execute(args, &ctx)).await.unwrap();
+        let mut paths: Vec<String> = out.detail.unwrap()["passages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["path"].as_str().unwrap().to_string())
+            .collect();
+        paths.sort();
+        paths.dedup();
+        (paths, out.text_for_model)
+    }
+
+    #[tokio::test]
+    async fn a_workspace_chat_never_retrieves_outside_its_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let rag = Box::pin(engine_with_two_spaces(dir.path())).await;
+        let tool = SearchDocumentsTool::new(rag);
+        let query = json!({"query": "notice period days"});
+
+        // Unlimited: every space.
+        let (all, _) = search_paths(&tool, RunScope::default(), query.clone()).await;
+        assert_eq!(all.len(), 3, "{all:?}");
+
+        // A workspace with folder space-a: only its file, also when the model asks
+        // for the other source.
+        let scope = workspace_scope(&["space-a"], &[]);
+        let (inside, text) = search_paths(&tool, scope.clone(), query.clone()).await;
+        assert_eq!(inside, vec![stored("C:/docs/thesis/inside.txt")]);
+        assert!(text.contains("workspace \"Thesis\""));
+        let (forced, text) = search_paths(
+            &tool,
+            scope,
+            json!({"query": "notice period days", "sources": ["space-b"]}),
+        )
+        .await;
+        assert!(forced.is_empty(), "{forced:?}");
+        assert!(text.contains("outside the workspace"));
+
+        // Folder and single file together: the union, nothing else.
+        let both = workspace_scope(&["space-a"], &["C:/docs/other/file.txt"]);
+        let (union, _) = search_paths(&tool, both, query.clone()).await;
+        assert_eq!(
+            union,
+            vec![
+                stored("C:/docs/other/file.txt"),
+                stored("C:/docs/thesis/inside.txt")
+            ]
+        );
+
+        // A workspace whose sources are not indexed finds nothing (never everything).
+        let unindexed = workspace_scope(&[], &["C:/docs/missing.pdf"]);
+        let (none, text) = search_paths(&tool, unindexed, query.clone()).await;
+        assert!(none.is_empty());
+        assert!(text.contains("no searchable sources"));
+
+        // An unrestricted file limit that does not resolve does not search everything.
+        let stale = RunScope {
+            files: vec!["C:/docs/missing.pdf".into()],
+            ..RunScope::default()
+        };
+        let (none, text) = search_paths(&tool, stale, query).await;
+        assert!(none.is_empty());
+        assert!(text.contains("not indexed"));
     }
 }

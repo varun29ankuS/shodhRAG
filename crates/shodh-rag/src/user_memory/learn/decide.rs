@@ -169,7 +169,9 @@ pub struct Neighbour {
 }
 
 /// Current memories that could be the same fact as `candidate` (same subject or identity
-/// key first, then semantically similar ones of the class), in `scope`.
+/// key first, then semantically similar ones of the class), visible from `scope` (a
+/// workspace's own and global ones, so a fact already remembered globally is not proposed
+/// again for a workspace).
 pub async fn neighbours(
     service: &MemoryService,
     candidate: &ValidStatement,
@@ -180,7 +182,7 @@ pub async fn neighbours(
     let ontology = store.ontology();
     let base = StatementQuery {
         classes: vec![general_class(ontology, candidate.class())],
-        scopes: vec![scope.clone()],
+        scopes: scope.visible(),
         source_prefixes: memory_source_prefixes(),
         limit: Some(20),
         ..Default::default()

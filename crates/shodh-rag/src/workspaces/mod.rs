@@ -9,6 +9,9 @@
 //! Conversations stay in the app's conversation file; each records the id of the
 //! workspace it belongs to. Ids of workspaces imported from legacy spaces are the old
 //! space ids, so memories and snippets scoped to `workspace:<id>` stay attached.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+// Clippy runs on this module with every warning denied, like the harness and audit modules.
+#![cfg_attr(clippy, deny(warnings))]
 
 pub mod diff;
 mod store;

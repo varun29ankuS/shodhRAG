@@ -274,7 +274,6 @@ impl Learner {
         let episodes: Vec<StoredStatement> = store
             .query(&StatementQuery {
                 classes: vec!["Episode".to_string()],
-                scopes: vec![Scope::Global],
                 source_prefixes: vec![CONVERSATION_SOURCE_PREFIX.to_string()],
                 limit: Some(MAX_EPISODES),
                 ..Default::default()
@@ -301,8 +300,14 @@ impl Learner {
         let model = self.model().map_err(LearnError::ModelUnavailable)?;
         let ontology = store.ontology();
         for cluster in clusters.into_iter().take(MAX_CLUSTERS) {
+            // A fact drawn from episodes stays where they were: episodes of one workspace
+            // never become a memory of another (or a global one).
+            let Some(scope) = cluster.first().map(|&e| episodes[e].scope.clone()) else {
+                continue;
+            };
             let sources: Vec<SourceText> = cluster
                 .iter()
+                .filter(|&&e| episodes[e].scope == scope)
                 .enumerate()
                 .filter_map(|(i, &e)| {
                     let episode = &episodes[e];
@@ -320,6 +325,7 @@ impl Learner {
                         conversation_id,
                         turn_id,
                         at: episode.valid_from,
+                        scope: scope.clone(),
                     })
                 })
                 .collect();
@@ -454,6 +460,8 @@ impl Learner {
                 conversation_id: sequence.latest.0.clone(),
                 turn_id: sequence.latest.1.clone(),
                 at: now,
+                // Procedures are drawn from tool use across conversations.
+                scope: Scope::Global,
             };
             let Some(class) = ontology.class("Procedure") else {
                 return Ok(());

@@ -1085,6 +1085,24 @@ impl RAGEngine {
             // Skip results where we can't find full data (shouldn't happen now)
         }
 
+        // Every result honours the filter's source limits: keyword-only candidates were
+        // fetched by id without the vector store's predicate.
+        if let Some(filter) = &filter {
+            let before = results.len();
+            results.retain(|r| {
+                filter.admits(
+                    r.metadata.get("space_id").map_or("", String::as_str),
+                    r.metadata.get("source_file").map_or("", String::as_str),
+                )
+            });
+            if results.len() < before {
+                tracing::debug!(
+                    dropped = before - results.len(),
+                    "results outside the search's sources removed"
+                );
+            }
+        }
+
         // Log source diversity of built results
         {
             let built_sources: std::collections::HashSet<&str> = results

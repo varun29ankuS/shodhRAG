@@ -676,6 +676,9 @@ impl HostTool for OpenDocumentTool {
                     .to_string(),
             ));
         }
+        if !ctx.scope().allows_path(&source) {
+            return Err(ToolError::Forbidden(ctx.scope().outside_message(&source)));
+        }
 
         let path = source.clone();
         let wants_page = selection.wants_page();

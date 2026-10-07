@@ -257,7 +257,7 @@ impl Learner {
         learned: &mut Vec<String>,
         suppressed: &mut usize,
     ) -> LearnResult<()> {
-        let scope = extract::learned_scope();
+        let scope = candidate.source.scope.clone();
         let record = self.decide(candidate, model).await?;
         if matches!(record.decision, Decision::Noop { .. })
             && record.decided_by != DecidedBy::Undecided
@@ -297,7 +297,12 @@ impl Learner {
         };
         let new = NewProposal {
             origin,
-            fingerprint: fingerprint(&["remember", candidate.valid.class(), &text]),
+            fingerprint: fingerprint(&[
+                "remember",
+                &scope.as_key(),
+                candidate.valid.class(),
+                &text,
+            ]),
             scope,
             conversation_id: Some(candidate.source.conversation_id.clone()),
             turn_id: Some(candidate.source.turn_id.clone()),
@@ -361,7 +366,7 @@ impl Learner {
             &self.service,
             &candidate.valid,
             &candidate.text,
-            &extract::learned_scope(),
+            &candidate.source.scope,
         )
         .await?;
         let close = match decide::decide_by_rule(

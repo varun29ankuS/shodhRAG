@@ -1024,7 +1024,12 @@ impl AgentHarness for OmpSession {
                 tracing::info!(target: "shodh::audit", event = "steer", session = %inner.session_id, run_id = %run_id, "agent steer");
                 Ok(run_id)
             }
-            None => inner.start_run(message, None, RunScope::default()),
+            // A new run started by steering keeps the scope of the conversation's last
+            // answer (a workspace chat stays limited to the workspace's sources).
+            None => {
+                let scope = RunScope::clone(&lock(&inner.scope));
+                inner.start_run(message, None, scope)
+            }
         }
     }
 

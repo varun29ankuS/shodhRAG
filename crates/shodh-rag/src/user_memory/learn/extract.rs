@@ -45,6 +45,8 @@ pub struct TurnInput {
     pub assistant_context: Option<String>,
     /// When the user sent it.
     pub at: DateTime<Utc>,
+    /// Where memories learned from it go: the conversation's workspace, or global.
+    pub scope: Scope,
 }
 
 /// A text a candidate may be grounded in: a user turn, or (in consolidation) an episode.
@@ -64,6 +66,8 @@ pub struct SourceText {
     pub turn_id: String,
     /// When the text was written.
     pub at: DateTime<Utc>,
+    /// Where memories grounded in it go (the workspace of its conversation, or global).
+    pub scope: Scope,
 }
 
 impl SourceText {
@@ -81,6 +85,7 @@ impl SourceText {
             conversation_id: turn.conversation_id.clone(),
             turn_id: turn.turn_id.clone(),
             at: turn.at,
+            scope: turn.scope.clone(),
         }
     }
 }
@@ -395,9 +400,11 @@ pub(crate) fn valid_entity_id(id: &str) -> bool {
         && !rest.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
-/// The scope learned memories are stored in: facts about the user hold everywhere.
-pub fn learned_scope() -> Scope {
-    Scope::Global
+/// The scope memories learned from a conversation are stored in: the conversation's
+/// workspace when it has one (a workspace sees its own memories and global ones), else
+/// global.
+pub fn learned_scope(workspace: Option<&str>) -> Scope {
+    Scope::for_workspace(workspace)
 }
 
 #[cfg(test)]

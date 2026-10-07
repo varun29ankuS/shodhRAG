@@ -435,6 +435,8 @@ pub struct ProposalView {
     pub conversation_id: Option<String>,
     /// Turn it came from.
     pub turn_id: Option<String>,
+    /// Where the memory goes (`global` or `workspace:<id>`).
+    pub scope: Scope,
     /// What applying it did.
     pub outcome: Option<AppliedOutcome>,
     /// Why it failed or went stale.
@@ -461,6 +463,7 @@ impl From<Proposal> for ProposalView {
             sensitive: p.sensitive,
             conversation_id: p.conversation_id,
             turn_id: p.turn_id,
+            scope: p.scope,
             outcome: p.outcome,
             error: p.error,
             undoable,

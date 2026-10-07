@@ -118,6 +118,7 @@ impl Env {
             user_text: text.to_string(),
             assistant_context: None,
             at: self.f.store.now(),
+            scope: Scope::Global,
         }
     }
 
@@ -1041,4 +1042,39 @@ fn coffee_like_spreadsheets() -> serde_json::Value {
     json!({"turn": "E1", "class": "Preference", "subject": null,
         "properties": {"preferenceTopic": "report format", "preferenceValue": "spreadsheets"},
         "confidence": 0.8, "evidence": "user prefers spreadsheets"})
+}
+
+#[tokio::test]
+async fn memories_learned_in_a_workspace_chat_default_to_that_workspace() {
+    let e = env().await;
+    let workspace = Scope::Workspace("ws-thesis".into());
+    e.model.answer(json!({"memories": [
+        coffee("dark roast", "I prefer dark roast coffee", 0.8),
+    ]}));
+    let mut turn = e.turn("I prefer dark roast coffee.");
+    turn.scope = workspace.clone();
+    let report = e.learner.learn_from_turns(&[turn]).await.unwrap();
+    assert_eq!(report.proposed.len(), 1, "{report:?}");
+    let pending = e.pending();
+    assert_eq!(pending[0].scope, workspace);
+    let accepted = e
+        .learner
+        .accept(&pending[0].id, None, &Actor::ui())
+        .await
+        .unwrap();
+    let memory_id = accepted.outcome.unwrap().memory_id.unwrap();
+    let memory = e.service.get(&memory_id).await.unwrap();
+    assert_eq!(memory.scope, workspace);
+
+    // A chat without a workspace learns into the global scope, as before.
+    e.model.answer(json!({"memories": [
+        lives_in("pune", "I moved to Pune", 0.9),
+    ]}));
+    e.learn("I moved to Pune last month.").await;
+    let global = e
+        .pending()
+        .into_iter()
+        .find(|p| matches!(&p.action, ProposalAction::Remember { text, .. } if text.contains("place:pune")))
+        .unwrap();
+    assert_eq!(global.scope, Scope::Global);
 }

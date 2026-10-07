@@ -172,8 +172,9 @@ impl RunPassages {
     }
 }
 
-/// What the user limited one answer to ("Ask about this file", or the
-/// sources selected in the Library). Empty means everything indexed.
+/// What the user limited one answer to ("Ask about this file", the sources
+/// selected in the Library, or the sources of the conversation's workspace).
+/// Empty and not `restricted` means everything indexed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RunScope {
     /// Source ids (`space_id`s) to search.
@@ -183,15 +184,69 @@ pub struct RunScope {
     /// Pages of `files` to search (1-based); empty means every page. Only
     /// meaningful with `files`.
     pub pages: Vec<u32>,
-    /// The workspace (source / space id) the conversation belongs to. It does
-    /// not limit search; it scopes memories (a workspace sees its own and
-    /// global ones). `None` means global.
+    /// The workspace the conversation belongs to. It scopes memories (a
+    /// workspace sees its own and global ones). `None` means global.
     pub workspace: Option<String>,
+    /// The workspace's name, for messages to the model.
+    pub workspace_name: Option<String>,
+    /// The answer may use only these sources: the model cannot widen the
+    /// search with sources of its own, an empty scope finds nothing (never
+    /// everything), and documents outside it cannot be opened. Set for a
+    /// workspace chat unless the user asked to search the whole library.
+    pub restricted: bool,
+    /// Folders of `source_ids`, for checking paths read outside search.
+    pub folders: Vec<String>,
+    /// Snippets of the workspace, searched by their text.
+    pub snippets: Vec<ScopedSnippet>,
+}
+
+/// A snippet an answer may use: the region of a page the user saved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopedSnippet {
+    pub id: String,
+    pub file_path: String,
+    pub file_name: String,
+    pub page: u32,
+    pub title: String,
+    pub text: String,
 }
 
 impl RunScope {
+    /// Whether no source limit applies (search covers everything).
     pub fn is_empty(&self) -> bool {
-        self.source_ids.is_empty() && self.files.is_empty()
+        !self.restricted && self.source_ids.is_empty() && self.files.is_empty()
+    }
+
+    /// Whether the answer may read `path` (an indexed file path): always when
+    /// not restricted; otherwise only files of the scope, files under its
+    /// folders, and the files of its snippets.
+    pub fn allows_path(&self, path: &str) -> bool {
+        use crate::workspaces::{normalize_path, path_within};
+        if !self.restricted {
+            return true;
+        }
+        let wanted = normalize_path(path);
+        self.files.iter().any(|f| normalize_path(f) == wanted)
+            || self
+                .snippets
+                .iter()
+                .any(|s| normalize_path(&s.file_path) == wanted)
+            || self.folders.iter().any(|folder| path_within(path, folder))
+    }
+
+    /// Whether the answer may search source `source_id`.
+    pub fn allows_source(&self, source_id: &str) -> bool {
+        !self.restricted || self.source_ids.iter().any(|s| s == source_id)
+    }
+
+    /// Why a path or source outside a restricted scope is refused, for the model.
+    pub fn outside_message(&self, what: &str) -> String {
+        match &self.workspace_name {
+            Some(name) => format!(
+                "{what} is outside the workspace \"{name}\". This chat only uses the workspace's                  sources; the user can add it to the workspace, or ask again with \"search all my                  library\" turned on."
+            ),
+            None => format!("{what} is outside the sources the user limited this answer to."),
+        }
     }
 }
 

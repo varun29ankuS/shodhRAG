@@ -110,10 +110,13 @@ pub enum AuditEventType {
     MemoryUse,
     /// The agent's model changed (user choice, fallback for one answer, environment).
     ModelChange,
+    /// Code mode changed a code folder's git state (switched to its branch,
+    /// or discarded its changes).
+    CodeChange,
 }
 
 impl AuditEventType {
-    pub const ALL: [AuditEventType; 13] = [
+    pub const ALL: [AuditEventType; 14] = [
         AuditEventType::Question,
         AuditEventType::ToolCall,
         AuditEventType::Approval,
@@ -127,6 +130,7 @@ impl AuditEventType {
         AuditEventType::MemoryForget,
         AuditEventType::MemoryUse,
         AuditEventType::ModelChange,
+        AuditEventType::CodeChange,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -144,6 +148,7 @@ impl AuditEventType {
             AuditEventType::MemoryForget => "memory_forget",
             AuditEventType::MemoryUse => "memory_use",
             AuditEventType::ModelChange => "model_change",
+            AuditEventType::CodeChange => "code_change",
         }
     }
 }

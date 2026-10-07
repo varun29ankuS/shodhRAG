@@ -10,6 +10,7 @@
 
 pub mod catalog_cache;
 pub mod catalog_fetch;
+pub mod code_mode;
 pub mod error;
 pub mod events;
 pub mod grounding;
@@ -31,7 +32,7 @@ pub use model::{select_model, select_model_with, stealth_allowed_by_env, OmpMode
 pub use omp::{normalise, NormaliserState, StepMeta, StepOutcome};
 pub use profile::AgentProfile;
 pub use provider_error::{ProviderError, ProviderErrorKind};
-pub use session::{OmpSession, SessionConfig};
+pub use session::{CodeSession, OmpSession, SessionConfig};
 pub use sidecar::{
     fetch_omp, resolve_binary_path, FetchProgress, InstalledRuntime, LaunchSpec, OmpLayout,
     OMP_VERSION,

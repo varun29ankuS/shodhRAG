@@ -15,6 +15,9 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 
+use super::code_mode::{
+    code_launch_args, code_overlay_config, CodeFolder, CODE_ROOT_ENV, EDIT_VARIANT_ENV, GUARD_HOOK,
+};
 use super::error::HarnessError;
 use super::model::{EnvValue, OmpModel};
 
@@ -177,20 +180,36 @@ pub struct OmpLayout {
     pub temp: PathBuf,
     pub overlay: PathBuf,
     pub sessions: PathBuf,
+    /// Code mode's overlay and guard hook (outside every code folder).
+    pub code_overlay: PathBuf,
+    pub guard_hook: PathBuf,
 }
 
 impl OmpLayout {
     pub fn new(app_data_dir: &Path) -> Self {
         let root = app_data_dir.join("omp");
         let home = root.join("home");
+        let code = root.join("code");
         Self {
             agent_dir: home.join(".omp").join("agent"),
             temp: root.join("tmp"),
             overlay: root.join("overlay.yml"),
             sessions: root.join("sessions"),
+            code_overlay: code.join("overlay.yml"),
+            guard_hook: code.join("guard.js"),
             home,
             root,
         }
+    }
+
+    /// Write Code mode's overlay and guard hook. Files whose content is
+    /// already current are left alone (another Code session may be loading
+    /// them).
+    pub fn prepare_code(&self) -> Result<(), HarnessError> {
+        let overlay = serde_json::to_string_pretty(&code_overlay_config())?;
+        write_if_changed(&self.code_overlay, &overlay)?;
+        write_if_changed(&self.guard_hook, GUARD_HOOK)?;
+        Ok(())
     }
 
     /// Create the directories and (re)write the overlay config.
@@ -220,6 +239,23 @@ impl OmpLayout {
         std::fs::create_dir_all(&dir)?;
         Ok(dir)
     }
+}
+
+fn write_if_changed(path: &Path, content: &str) -> Result<(), HarnessError> {
+    if std::fs::read_to_string(path).is_ok_and(|current| current == content) {
+        return Ok(());
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4().simple()));
+    std::fs::write(&tmp, content)?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        // Best effort: the temporary copy is useless.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
+    Ok(())
 }
 
 /// The `--config` overlay. YAML is a superset of JSON, so it is written as
@@ -356,20 +392,69 @@ pub struct LaunchSpec {
     pub model: OmpModel,
     pub system_prompt: String,
     pub session_id: String,
+    /// Code mode: omp's coding tools, confined to this folder. `None` is a
+    /// Research session (host tools only).
+    pub code: Option<CodeFolder>,
 }
 
 impl LaunchSpec {
     /// A loggable description: no environment values, no prompt text.
     pub fn describe(&self) -> String {
         let env_names: Vec<&str> = self.model.env.iter().map(|(k, _)| k.as_str()).collect();
+        let mode = match &self.code {
+            Some(folder) => format!("code in {}", folder.display()),
+            None => "research".to_string(),
+        };
         format!(
-            "omp {} at {} (model {}, provider env {:?}, session {})",
+            "omp {} at {} (model {}, provider env {:?}, session {}, {mode})",
             OMP_VERSION,
             self.binary.display(),
             self.model.model_arg,
             env_names,
             self.session_id
         )
+    }
+
+    /// The process's arguments and working directory. A Code session works in
+    /// its folder; a Research session gets an empty one of its own.
+    fn command_line(&self) -> Result<(Vec<String>, PathBuf), HarnessError> {
+        match &self.code {
+            None => Ok((
+                launch_args(
+                    &self.model.model_arg,
+                    &self.layout.overlay,
+                    &self.system_prompt,
+                ),
+                self.layout.session_dir(&self.session_id)?,
+            )),
+            Some(folder) => {
+                self.layout.prepare_code()?;
+                Ok((
+                    code_launch_args(
+                        &self.model.model_arg,
+                        &self.layout.overlay,
+                        &self.layout.code_overlay,
+                        &self.layout.guard_hook,
+                        &self.system_prompt,
+                    ),
+                    folder.root().to_path_buf(),
+                ))
+            }
+        }
+    }
+
+    /// The child's environment: [`child_env`], plus the guard's folder and
+    /// the edit format in Code mode.
+    fn environment(&self) -> Vec<(String, EnvValue)> {
+        let mut env = child_env(&self.layout, &self.model, |n| std::env::var(n).ok());
+        if let Some(folder) = &self.code {
+            env.push((CODE_ROOT_ENV.to_string(), EnvValue::Plain(folder.display())));
+            env.push((
+                EDIT_VARIANT_ENV.0.to_string(),
+                EnvValue::Plain(EDIT_VARIANT_ENV.1.to_string()),
+            ));
+        }
+        env
     }
 }
 
@@ -387,22 +472,18 @@ pub async fn spawn(spec: &LaunchSpec) -> Result<SidecarProcess, HarnessError> {
     verify_binary(&spec.binary).await?;
     let verify_ms = started.elapsed().as_millis();
     spec.layout.prepare()?;
-    let cwd = spec.layout.session_dir(&spec.session_id)?;
+    let (args, cwd) = spec.command_line()?;
 
     let mut command = Command::new(&spec.binary);
     command
-        .args(launch_args(
-            &spec.model.model_arg,
-            &spec.layout.overlay,
-            &spec.system_prompt,
-        ))
+        .args(args)
         .env_clear()
         .current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    for (name, value) in child_env(&spec.layout, &spec.model, |n| std::env::var(n).ok()) {
+    for (name, value) in spec.environment() {
         command.env(name, value.as_str());
     }
     #[cfg(windows)]
@@ -644,11 +725,76 @@ mod tests {
             model: model(),
             system_prompt: "private instructions".into(),
             session_id: "s1".into(),
+            code: None,
         };
         let text = spec.describe();
         assert!(text.contains("ANTHROPIC_API_KEY"));
         assert!(!text.contains("sk-ant-secret"));
         assert!(!text.contains("private instructions"));
+    }
+
+    fn spec(data: &Path, code: Option<CodeFolder>) -> LaunchSpec {
+        LaunchSpec {
+            binary: data.join("bin").join("omp"),
+            layout: OmpLayout::new(data),
+            model: model(),
+            system_prompt: "prompt".into(),
+            session_id: "s1".into(),
+            code,
+        }
+    }
+
+    #[test]
+    fn research_sessions_run_without_tools_in_an_empty_folder() {
+        let data = tempfile::tempdir().unwrap();
+        let spec = spec(data.path(), None);
+        let (args, cwd) = spec.command_line().unwrap();
+        assert_eq!(&args[..12], &BASE_FLAGS.map(String::from));
+        assert!(!args
+            .iter()
+            .any(|a| a.starts_with("--tools") || a.starts_with("--hook")));
+        assert_eq!(cwd, spec.layout.sessions.join("s1"));
+        assert_eq!(std::fs::read_dir(&cwd).unwrap().count(), 0);
+        let env = spec.environment();
+        assert!(!env
+            .iter()
+            .any(|(k, _)| k == CODE_ROOT_ENV || k == EDIT_VARIANT_ENV.0));
+    }
+
+    #[test]
+    fn code_sessions_run_with_the_code_tools_in_the_code_folder() {
+        let data = tempfile::tempdir().unwrap();
+        let code = tempfile::tempdir().unwrap();
+        std::fs::write(code.path().join("main.rs"), "fn main() {}").unwrap();
+        let folder = CodeFolder::open(code.path()).unwrap();
+        let spec = spec(data.path(), Some(folder.clone()));
+        let (args, cwd) = spec.command_line().unwrap();
+        assert!(args.contains(&"--tools=read,grep,glob,ast_grep,edit,write,bash".to_string()));
+        assert!(!args.iter().any(|a| a == "--no-tools" || a == "--no-ui"));
+        assert!(args.contains(&format!("--hook={}", spec.layout.guard_hook.display())));
+        assert!(args.contains(&format!("--config={}", spec.layout.code_overlay.display())));
+        // The folder is worked in, never emptied.
+        assert_eq!(cwd, folder.root());
+        assert!(code.path().join("main.rs").exists());
+        // The guard and overlay live in app data, outside the code folder.
+        assert_eq!(
+            std::fs::read_to_string(&spec.layout.guard_hook).unwrap(),
+            GUARD_HOOK
+        );
+        let overlay: Value =
+            serde_json::from_str(&std::fs::read_to_string(&spec.layout.code_overlay).unwrap())
+                .unwrap();
+        assert_eq!(overlay, code_overlay_config());
+        assert!(!spec.layout.guard_hook.starts_with(folder.root()));
+        let env = spec.environment();
+        let get = |k: &str| {
+            env.iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.as_str().to_string())
+        };
+        assert_eq!(get(CODE_ROOT_ENV), Some(folder.display()));
+        assert_eq!(get(EDIT_VARIANT_ENV.0).as_deref(), Some("replace"));
+        assert!(spec.describe().contains("code in"));
     }
 
     #[test]

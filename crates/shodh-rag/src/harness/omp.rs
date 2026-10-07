@@ -274,6 +274,23 @@ impl NormaliserState {
         self.host_calls.get(host_call_id).map(String::as_str)
     }
 
+    /// Open the step of a tool call before omp reports it (a Code session's
+    /// guard asks for approval before `tool_execution_start`). `None` when no
+    /// run is active or the step is already open.
+    pub fn open_step(
+        &mut self,
+        tool_call_id: &str,
+        tool: &str,
+        args: &Value,
+        now_ms: u64,
+    ) -> Option<AgentEvent> {
+        let run_id = self.active_run_id()?.to_string();
+        if self.steps.contains_key(tool_call_id) {
+            return None;
+        }
+        Some(self.start_step(run_id, tool_call_id, tool, args, None, now_ms))
+    }
+
     /// End the active run with an error (e.g. the sidecar exited).
     pub fn fail_run(&mut self, error: &str, now_ms: u64) -> Vec<AgentEvent> {
         match self.run.as_mut() {
@@ -779,6 +796,8 @@ pub fn normalise(
         | InboundFrame::TurnEnd
         | InboundFrame::SessionSettled
         | InboundFrame::HostToolCancel(_)
+        | InboundFrame::ExtensionUiRequest(_)
+        | InboundFrame::AvailableCommands(_)
         | InboundFrame::Other { .. }
         | InboundFrame::Malformed { .. } => Vec::new(),
     }

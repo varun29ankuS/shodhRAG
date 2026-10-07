@@ -86,6 +86,12 @@ pub enum HarnessError {
     #[error("Agent session {0} does not exist.")]
     UnknownSession(String),
 
+    #[error("Code mode cannot use the code folder: {0}")]
+    CodeFolder(String),
+
+    #[error("Code mode's safety checks did not start ({0}), so Code mode was not started. Switch this conversation to Research, or try again.")]
+    CodeGuard(String),
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 

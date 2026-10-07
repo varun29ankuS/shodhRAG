@@ -19,14 +19,20 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use futures::StreamExt;
+use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
 use tokio::sync::{mpsc, oneshot, Notify};
 use tokio::task::AbortHandle;
 use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 
+use super::code_mode::{
+    approval_for, code_catalog, create_branch, git_state, inventory_matches, parse_guard_request,
+    plan_change, ChangePlan, CodeBranch, CodeBranchStore, CodeFolder, GuardRequest, ALLOW_ANSWER,
+    GUARD_COMMAND,
+};
 use super::error::HarnessError;
-use super::events::{AgentEvent, ClaimCheck, GroundingReport, NeedCheck, ScoringMethod};
+use super::events::{AgentEvent, ClaimCheck, GroundingReport, NeedCheck, RiskTier, ScoringMethod};
 use super::grounding::followup::{self, Next, Rounds};
 use super::grounding::verify::{check_needs, summarise, verify_answer, Thresholds};
 use super::grounding::{AnswerMessage, Evidence, GroundingConfig, OpenedText, VerifyInput};
@@ -34,15 +40,17 @@ use super::model::EnvValue;
 use super::omp::{normalise, HeldRun, NormaliserState, StepOutcome};
 use super::profile::AgentProfile;
 use super::protocol::{
-    parse_frame, HostToolCallFrame, InboundFrame, MessageUpdateMode, OutboundFrame, ResponseFrame,
-    StreamingBehavior, SubagentLevel, ToolResultPayload,
+    parse_frame, ExtensionUiRequestFrame, HostToolCallFrame, InboundFrame, MessageUpdateMode,
+    OutboundFrame, ResponseFrame, StreamingBehavior, SubagentLevel, ToolResultPayload,
 };
 use super::sidecar::{self, LaunchSpec};
 use super::tools::plan::UPDATE_PLAN;
 use super::tools::{
-    ApprovalGate, RunPassages, RunPlan, RunScope, ToolAudit, ToolCall, ToolContext, ToolRegistry,
+    ApprovalDecision, ApprovalGate, RunPassages, RunPlan, RunScope, ToolAudit, ToolCall,
+    ToolContext, ToolRegistry,
 };
 use super::{truncate_chars, AgentHarness};
+use crate::audit::{payload as audit_payload, AuditEventType, LOCAL_OWNER, SYSTEM_PRINCIPAL};
 
 /// Longest stdout line accepted. omp's v1 frames are capped at 1 MiB.
 const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
@@ -56,6 +64,8 @@ pub const MAX_MESSAGE_CHARS: usize = 200_000;
 /// falls back to word and number checks (the models keep running on their
 /// blocking thread and their result is dropped).
 const CHECK_TIMEOUT: Duration = Duration::from_secs(45);
+/// How long a Code session waits for its guard to announce itself.
+const GUARD_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -75,6 +85,65 @@ pub struct SessionConfig {
     /// Check every completed answer against its passages before the run
     /// ends. `None` finishes runs as soon as the model does.
     pub grounding: Option<GroundingConfig>,
+    /// Code mode (with `launch.code` set): the conversation whose branch the
+    /// session works on. `None` for Research sessions.
+    pub code: Option<CodeSession>,
+}
+
+/// Code mode settings of a session; its folder is `LaunchSpec::code`.
+#[derive(Debug, Clone)]
+pub struct CodeSession {
+    pub conversation_id: String,
+    pub branches: CodeBranchStore,
+}
+
+/// A Code session's state: its folder and branch, the guard's presence,
+/// open approval dialogs and running tool calls (for the audit log).
+struct CodeRuntime {
+    folder: CodeFolder,
+    conversation_id: String,
+    branches: CodeBranchStore,
+    /// One change decision at a time: planning, the prompt and the branch
+    /// switch of a change finish before the next change is considered.
+    turn: tokio::sync::Mutex<()>,
+    guard_loaded: tokio::sync::watch::Sender<bool>,
+    /// Open approval dialog id → step id.
+    dialogs: Mutex<HashMap<String, String>>,
+    /// Running tool call id → (tool, arguments, start).
+    calls: Mutex<HashMap<String, (String, serde_json::Value, std::time::Instant)>>,
+}
+
+impl CodeRuntime {
+    /// What the next change needs (git and the store are read off the runtime).
+    async fn plan(&self) -> ChangePlan {
+        let root = self.folder.root().to_path_buf();
+        let folder = self.folder.display();
+        let store = self.branches.clone();
+        let conversation = self.conversation_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let recorded = store.get(&conversation).unwrap_or_else(|e| {
+                tracing::warn!(target: "shodh::harness", error = %e, "code branch record unreadable");
+                None
+            });
+            plan_change(&git_state(&root), recorded.as_ref(), &folder)
+        })
+        .await
+        .unwrap_or_else(|e| ChangePlan::Refuse(format!("Checking the code folder failed: {e}")))
+    }
+
+    /// Switch to a new branch and record it for the conversation.
+    async fn switch_branch(&self) -> Result<CodeBranch, String> {
+        let folder = self.folder.clone();
+        let store = self.branches.clone();
+        let conversation = self.conversation_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let branch = create_branch(&folder, &chrono::Utc::now().to_rfc3339())?;
+            store.put(&conversation, branch.clone())?;
+            Ok(branch)
+        })
+        .await
+        .map_err(|e| format!("the branch switch did not finish: {e}"))?
+    }
 }
 
 /// The grounding state of the active run.
@@ -122,6 +191,7 @@ struct Inner {
     child: tokio::sync::Mutex<Option<Child>>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
     secrets: Vec<String>,
+    code: Option<Arc<CodeRuntime>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -191,7 +261,10 @@ impl Inner {
             OutboundFrame::SetEventFilter { .. } => "set_event_filter",
             OutboundFrame::SetSubagentSubscription { .. } => "set_subagent_subscription",
             OutboundFrame::GetSessionStats { .. } => "get_session_stats",
-            OutboundFrame::HostToolUpdate { .. } | OutboundFrame::HostToolResult { .. } => "frame",
+            OutboundFrame::GetState { .. } => "get_state",
+            OutboundFrame::HostToolUpdate { .. }
+            | OutboundFrame::HostToolResult { .. }
+            | OutboundFrame::ExtensionUiResponse { .. } => "frame",
         };
         let (tx, rx) = oneshot::channel();
         lock(&self.pending).insert(id.clone(), tx);
@@ -242,6 +315,53 @@ impl Inner {
             InboundFrame::Malformed { frame_type, error } => {
                 tracing::warn!(target: "shodh::harness", session = %self.session_id, frame_type, error, "unexpected omp frame shape; skipped");
             }
+            InboundFrame::AvailableCommands(update) => {
+                if let Some(code) = &self.code {
+                    let loaded = update.commands.iter().any(|c| {
+                        c.name == GUARD_COMMAND && c.source.as_deref() == Some("extension")
+                    });
+                    code.guard_loaded.send_replace(loaded);
+                }
+            }
+            InboundFrame::ToolExecutionStart(start) => {
+                if let Some(code) = &self.code {
+                    lock(&code.calls).insert(
+                        start.tool_call_id.clone(),
+                        (
+                            start.tool_name.clone(),
+                            start.args.clone(),
+                            std::time::Instant::now(),
+                        ),
+                    );
+                }
+            }
+            InboundFrame::ToolExecutionEnd(end) => {
+                if let Some(code) = &self.code {
+                    let call = lock(&code.calls).remove(&end.tool_call_id);
+                    let run_id = lock(&self.state).active_run_id().map(str::to_string);
+                    if let (Some((tool, args, started)), Some(run_id)) = (call, run_id) {
+                        let text = end
+                            .result
+                            .as_ref()
+                            .map(ToolResultPayload::joined_text)
+                            .unwrap_or_default();
+                        let summary = text.lines().map(str::trim).find(|l| !l.is_empty());
+                        let tier = code_catalog().get(&tool).map(|m| m.tier);
+                        self.audit(
+                            &run_id,
+                            AuditEventType::ToolCall,
+                            audit_payload::tool_call(
+                                &tool,
+                                tier,
+                                &args,
+                                !end.is_error,
+                                &truncate_chars(summary.unwrap_or(""), 160),
+                                u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                            ),
+                        );
+                    }
+                }
+            }
             _ => {}
         }
 
@@ -268,8 +388,239 @@ impl Inner {
         match frame {
             InboundFrame::HostToolCall(call) => self.dispatch_host_tool(call),
             InboundFrame::HostToolCancel(cancel) => self.cancel_host_tool(&cancel.target_id),
+            InboundFrame::ExtensionUiRequest(request) => self.handle_ui_request(request),
             _ => {}
         }
+    }
+
+    /// Queue an audit event for `run_id` in the session's scope (no-op
+    /// without an audit log).
+    fn audit(&self, run_id: &str, event_type: AuditEventType, payload: serde_json::Value) {
+        if let Some(audit) = &self.audit {
+            audit
+                .log
+                .submit(audit.scope.record(run_id, event_type, payload));
+        }
+    }
+
+    fn principal(&self) -> &str {
+        self.audit
+            .as_ref()
+            .map(|a| a.scope.principal.as_str())
+            .unwrap_or(LOCAL_OWNER)
+    }
+
+    /// omp's dialog requests. A Code session answers its guard's approval
+    /// requests; every other dialog is declined at once so omp never waits
+    /// on a prompt nobody sees (omp's own tool prompts are switched off in
+    /// Code mode, so one appearing is refused, not approved).
+    fn handle_ui_request(self: &Arc<Self>, request: ExtensionUiRequestFrame) {
+        if request.method == "cancel" {
+            if let (Some(code), Some(target)) = (&self.code, &request.target_id) {
+                let step = lock(&code.dialogs).remove(target);
+                if let Some(step) = step {
+                    self.approvals.cancel(&step);
+                }
+            }
+            return;
+        }
+        if !request.is_dialog() {
+            return;
+        }
+        let guarded = self.code.as_ref().and_then(|code| {
+            parse_guard_request(
+                &request.id,
+                request.title.as_deref(),
+                request.placeholder.as_deref(),
+            )
+            .map(|guarded| (Arc::clone(code), guarded))
+        });
+        match guarded {
+            Some((code, guarded)) => {
+                let inner = Arc::clone(self);
+                tokio::spawn(async move {
+                    let answer = match inner.decide_guarded(&code, &guarded).await {
+                        Ok(()) => ALLOW_ANSWER.to_string(),
+                        Err(reason) => reason,
+                    };
+                    if inner
+                        .send(OutboundFrame::ExtensionUiResponse {
+                            id: guarded.ui_id,
+                            value: Some(answer),
+                            cancelled: false,
+                        })
+                        .is_err()
+                    {
+                        tracing::debug!(target: "shodh::harness", "omp writer closed before an approval answer");
+                    }
+                });
+            }
+            None => {
+                let title = request.title.as_deref().unwrap_or("");
+                tracing::warn!(target: "shodh::harness", session = %self.session_id, method = %request.method, title = %truncate_chars(title, 120), "omp dialog declined");
+                if let Some(run_id) = lock(&self.state).active_run_id() {
+                    if title.starts_with("Allow tool:") {
+                        self.audit(
+                            run_id,
+                            AuditEventType::Approval,
+                            json!({
+                                "tool": title.lines().next().unwrap_or(title).trim_start_matches("Allow tool:").trim(),
+                                "label": truncate_chars(title, 300),
+                                "decision": "refused",
+                                "who": SYSTEM_PRINCIPAL,
+                                "reason": "the runtime asked outside Shodh's approval prompt",
+                            }),
+                        );
+                    }
+                }
+                if self
+                    .send(OutboundFrame::ExtensionUiResponse {
+                        id: request.id,
+                        value: None,
+                        cancelled: true,
+                    })
+                    .is_err()
+                {
+                    tracing::debug!(target: "shodh::harness", "omp writer closed before a dialog answer");
+                }
+            }
+        }
+    }
+
+    /// Decide one guarded change: check the code folder, ask the user, and
+    /// switch to the conversation's branch first when this is the first
+    /// change. `Err` carries the reason the model is given.
+    async fn decide_guarded(
+        &self,
+        code: &CodeRuntime,
+        request: &GuardRequest,
+    ) -> Result<(), String> {
+        let (run_id, opened) = {
+            let mut state = lock(&self.state);
+            let run_id = state.active_run_id().map(str::to_string);
+            let opened = state.open_step(
+                &request.tool_call_id,
+                &request.tool,
+                &request.input,
+                now_ms(),
+            );
+            (run_id, opened)
+        };
+        let Some(run_id) = run_id else {
+            return Err("No answer is running.".to_string());
+        };
+        if let Some(event) = opened {
+            self.emit(event);
+        }
+        let _turn = code.turn.lock().await;
+        let plan = code.plan().await;
+        let undo = match &plan {
+            ChangePlan::Refuse(reason) => {
+                self.audit(
+                    &run_id,
+                    AuditEventType::Approval,
+                    json!({
+                        "tool": request.tool,
+                        "label": approval_for(request, None).label,
+                        "decision": "refused",
+                        "who": SYSTEM_PRINCIPAL,
+                        "reason": reason,
+                    }),
+                );
+                return Err(reason.clone());
+            }
+            ChangePlan::Continue(branch) => format!(
+                "On branch {}; \"Discard changes\" returns to {}.",
+                branch.branch, branch.base
+            ),
+            ChangePlan::CreateBranch => "Shodh first switches to a new branch, so this can be \
+                                         undone with \"Discard changes\"."
+                .to_string(),
+            ChangePlan::NotRepo => {
+                "Not possible: the code folder is not a git repository.".to_string()
+            }
+        };
+        let approval = approval_for(request, Some(&undo));
+        lock(&code.dialogs).insert(request.ui_id.clone(), request.tool_call_id.clone());
+        self.emit(AgentEvent::ApprovalRequested {
+            run_id: run_id.clone(),
+            step_id: request.tool_call_id.clone(),
+            tool: request.tool.clone(),
+            label: approval.label.clone(),
+            tier: approval.tier,
+            preview: approval.preview.clone(),
+        });
+        let decision = self.approvals.wait(&request.tool_call_id).await;
+        lock(&code.dialogs).remove(&request.ui_id);
+        let who = match decision {
+            ApprovalDecision::Approved | ApprovalDecision::Denied => self.principal(),
+            ApprovalDecision::TimedOut | ApprovalDecision::Cancelled => SYSTEM_PRINCIPAL,
+        };
+        self.audit(
+            &run_id,
+            AuditEventType::Approval,
+            audit_payload::approval(&request.tool, &approval.label, approval.tier, decision, who),
+        );
+        match decision {
+            ApprovalDecision::Approved => {}
+            ApprovalDecision::Denied => {
+                return Err(
+                    "The user declined this. Do not attempt it another way; ask the \
+                            user how to continue."
+                        .to_string(),
+                )
+            }
+            ApprovalDecision::TimedOut => {
+                return Err("Nobody approved this in time, so it was not done.".to_string())
+            }
+            ApprovalDecision::Cancelled => {
+                return Err("The answer was stopped before this was approved.".to_string())
+            }
+        }
+        if plan == ChangePlan::CreateBranch {
+            let branch = code.switch_branch().await.map_err(|e| {
+                format!("Shodh could not switch to a new branch, so the change was not made: {e}")
+            })?;
+            self.announce_branch(&run_id, &branch);
+        }
+        Ok(())
+    }
+
+    /// Show and audit the switch to the conversation's branch.
+    fn announce_branch(&self, run_id: &str, branch: &CodeBranch) {
+        tracing::info!(target: "shodh::audit", event = "code_change", session = %self.session_id, branch = %branch.branch, base = %branch.base, "switched to the code branch");
+        self.audit(
+            run_id,
+            AuditEventType::CodeChange,
+            json!({
+                "action": "created",
+                "branch": branch.branch,
+                "base": branch.base,
+                "folder": branch.folder,
+            }),
+        );
+        let step_id = format!("{run_id}-branch");
+        self.emit(AgentEvent::StepStarted {
+            run_id: run_id.to_string(),
+            step_id: step_id.clone(),
+            parent_step_id: None,
+            tool: "git_branch".to_string(),
+            label: format!("Switched to branch {}", branch.branch),
+            args: json!({ "branch": branch.branch, "base": branch.base }),
+            tier: RiskTier::Write,
+            at_ms: now_ms(),
+        });
+        self.emit(AgentEvent::StepFinished {
+            run_id: run_id.to_string(),
+            step_id,
+            ok: true,
+            summary: format!(
+                "This conversation's changes are on {}. \"Discard changes\" returns to {}.",
+                branch.branch, branch.base
+            ),
+            detail: Some(json!({ "branch": branch.branch, "base": branch.base })),
+            duration_ms: 0,
+        });
     }
 
     fn dispatch_host_tool(self: &Arc<Self>, call: HostToolCallFrame) {
@@ -705,6 +1056,21 @@ fn run_checks(
     (checks, need_checks, method)
 }
 
+/// Tool names in a `get_state` response (`dumpTools[].name`).
+fn tool_inventory(state: Option<&serde_json::Value>) -> Vec<String> {
+    state
+        .and_then(|s| s.get("dumpTools"))
+        .and_then(serde_json::Value::as_array)
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|t| t.get("name").and_then(serde_json::Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 async fn write_loop(
     mut stdin: ChildStdin,
     mut frames: mpsc::UnboundedReceiver<OutboundFrame>,
@@ -810,7 +1176,25 @@ impl OmpSession {
             registry,
             audit,
             grounding,
+            code,
         } = config;
+        let code = match (&launch.code, code) {
+            (None, None) => None,
+            (Some(folder), Some(session)) => Some(Arc::new(CodeRuntime {
+                folder: folder.clone(),
+                conversation_id: session.conversation_id,
+                branches: session.branches,
+                turn: tokio::sync::Mutex::new(()),
+                guard_loaded: tokio::sync::watch::channel(false).0,
+                dialogs: Mutex::new(HashMap::new()),
+                calls: Mutex::new(HashMap::new()),
+            })),
+            _ => {
+                return Err(HarnessError::CodeGuard(
+                    "the code folder and its conversation must be set together".to_string(),
+                ))
+            }
+        };
         let started = std::time::Instant::now();
         let process = sidecar::spawn(&launch).await?;
         let spawn_ms = started.elapsed().as_millis();
@@ -833,7 +1217,13 @@ impl OmpSession {
             session_id: launch.session_id.clone(),
             model: launch.model.model_arg.clone(),
             state: Mutex::new({
-                let mut state = NormaliserState::new(registry.catalog());
+                // A Code session's steps are omp's own tools.
+                let catalog = if code.is_some() {
+                    code_catalog()
+                } else {
+                    registry.catalog()
+                };
+                let mut state = NormaliserState::new(catalog);
                 state.set_model_warning(launch.model.warning.clone());
                 state.set_hold_completion(grounding.is_some());
                 state
@@ -859,6 +1249,7 @@ impl OmpSession {
             child: tokio::sync::Mutex::new(Some(process.child)),
             stderr_tail: stderr_tail.clone(),
             secrets,
+            code,
         });
 
         tokio::spawn(write_loop(process.stdin, out_rx, close_writer));
@@ -896,6 +1287,9 @@ impl OmpSession {
             }
         }
         let ready_ms = waited.elapsed().as_millis();
+        if let Some(code) = &inner.code {
+            return self.initialise_code(code, ready_ms).await;
+        }
         let configured = std::time::Instant::now();
         // The three setup commands are independent: send them back to back
         // and await the responses together instead of one round trip each.
@@ -923,6 +1317,51 @@ impl OmpSession {
             setup_ms = configured.elapsed().as_millis(),
             tools = %response.data.map(|d| d.to_string()).unwrap_or_default(),
             "omp session ready"
+        );
+        Ok(())
+    }
+
+    /// Set up a Code session and prove its safety checks are in place: the
+    /// guard announced itself and the tools are exactly the Code tools (no
+    /// sub-agents, no eval, no browser). Either failing stops the session.
+    async fn initialise_code(
+        &self,
+        code: &CodeRuntime,
+        ready_ms: u128,
+    ) -> Result<(), HarnessError> {
+        let inner = &self.inner;
+        let (_, state) = tokio::try_join!(
+            inner.command(OutboundFrame::SetEventFilter {
+                id: inner.next_id("c"),
+                events: None,
+                message_updates: MessageUpdateMode::Delta,
+            }),
+            inner.command(OutboundFrame::GetState {
+                id: inner.next_id("c"),
+            }),
+        )?;
+        let tools = tool_inventory(state.data.as_ref());
+        if !inventory_matches(&tools) {
+            return Err(HarnessError::CodeGuard(format!(
+                "the runtime offered the tools {tools:?}"
+            )));
+        }
+        let mut loaded = code.guard_loaded.subscribe();
+        match tokio::time::timeout(GUARD_TIMEOUT, loaded.wait_for(|loaded| *loaded)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) | Err(_) => {
+                return Err(HarnessError::CodeGuard(format!(
+                    "the folder guard did not load ({})",
+                    inner.stderr_summary()
+                )))
+            }
+        }
+        tracing::info!(
+            target: "shodh::harness",
+            session = %inner.session_id,
+            ready_ms,
+            folder = %code.folder.display(),
+            "omp code session ready"
         );
         Ok(())
     }
@@ -1085,14 +1524,30 @@ mod tests {
         mpsc::UnboundedReceiver<AgentEvent>,
         mpsc::UnboundedReceiver<OutboundFrame>,
     ) {
+        offline_session(grounding, None)
+    }
+
+    fn offline_session(
+        grounding: Option<GroundingConfig>,
+        code: Option<Arc<CodeRuntime>>,
+    ) -> (
+        Arc<Inner>,
+        mpsc::UnboundedReceiver<AgentEvent>,
+        mpsc::UnboundedReceiver<OutboundFrame>,
+    ) {
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (out_tx, out_rx) = mpsc::unbounded_channel();
         let registry = Arc::new(ToolRegistry::new());
+        let catalog = if code.is_some() {
+            code_catalog()
+        } else {
+            registry.catalog()
+        };
         let inner = Arc::new(Inner {
             session_id: "s".into(),
             model: "test/model".into(),
             state: Mutex::new({
-                let mut state = NormaliserState::new(registry.catalog());
+                let mut state = NormaliserState::new(catalog);
                 state.set_hold_completion(grounding.is_some());
                 state
             }),
@@ -1117,6 +1572,7 @@ mod tests {
             child: tokio::sync::Mutex::new(None),
             stderr_tail: Arc::new(Mutex::new(VecDeque::new())),
             secrets: Vec::new(),
+            code,
         });
         (inner, events_rx, out_rx)
     }
@@ -1361,5 +1817,216 @@ mod tests {
             Inner::validate_message(&long),
             Err(HarnessError::MessageTooLong(_))
         ));
+    }
+
+    /// A Code session over `folder` (not a git repository: no branch work).
+    fn code_runtime(folder: &std::path::Path, data: &std::path::Path) -> Arc<CodeRuntime> {
+        Arc::new(CodeRuntime {
+            folder: CodeFolder::open(folder).unwrap(),
+            conversation_id: "conv-1".into(),
+            branches: CodeBranchStore::in_dir(data),
+            turn: tokio::sync::Mutex::new(()),
+            guard_loaded: tokio::sync::watch::channel(false).0,
+            dialogs: Mutex::new(HashMap::new()),
+            calls: Mutex::new(HashMap::new()),
+        })
+    }
+
+    fn guard_dialog(
+        ui_id: &str,
+        tool_call_id: &str,
+        tool: &str,
+        input: serde_json::Value,
+    ) -> String {
+        json!({
+            "type": "extension_ui_request",
+            "id": ui_id,
+            "method": "input",
+            "title": "shodh-approval",
+            "placeholder": json!({"toolCallId": tool_call_id, "tool": tool, "input": input}).to_string(),
+        })
+        .to_string()
+    }
+
+    async fn next_frame(out: &mut mpsc::UnboundedReceiver<OutboundFrame>) -> OutboundFrame {
+        tokio::time::timeout(Duration::from_secs(10), out.recv())
+            .await
+            .expect("a frame within 10 s")
+            .expect("writer open")
+    }
+
+    #[tokio::test]
+    async fn guard_requests_become_approvals_and_their_answers() {
+        let folder = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let (inner, mut events, mut out) =
+            offline_session(None, Some(code_runtime(folder.path(), data.path())));
+        inner
+            .start_run("Fix the build", Some("run-1".into()), RunScope::default())
+            .unwrap();
+        let _ = sent_prompt(&mut out);
+
+        // A command: the step opens first, then the prompt (destructive, with
+        // the not-undoable warning because the folder has no git).
+        feed(
+            &inner,
+            &guard_dialog("ui-1", "call-1", "bash", json!({"command": "rm -rf build"})),
+        );
+        let seen = events_until(&mut events, |e| {
+            matches!(e, AgentEvent::ApprovalRequested { .. })
+        })
+        .await;
+        assert!(matches!(
+            &seen[seen.len() - 2],
+            AgentEvent::StepStarted { step_id, tool, .. } if step_id == "call-1" && tool == "bash"
+        ));
+        match seen.last() {
+            Some(AgentEvent::ApprovalRequested {
+                step_id,
+                tier,
+                preview,
+                label,
+                ..
+            }) => {
+                assert_eq!(step_id, "call-1");
+                assert_eq!(*tier, RiskTier::Destructive);
+                assert_eq!(label, "Run: rm -rf build");
+                assert_eq!(preview["warning"], "Deletes files and folders recursively.");
+                assert!(preview["undo"]
+                    .as_str()
+                    .unwrap()
+                    .contains("not a git repository"));
+            }
+            other => panic!("expected an approval request, got {other:?}"),
+        }
+        inner.approvals.resolve("call-1", true).unwrap();
+        match next_frame(&mut out).await {
+            OutboundFrame::ExtensionUiResponse {
+                id,
+                value,
+                cancelled,
+            } => {
+                assert_eq!(id, "ui-1");
+                assert_eq!(value.as_deref(), Some(ALLOW_ANSWER));
+                assert!(!cancelled);
+            }
+            other => panic!("expected the dialog answer, got {other:?}"),
+        }
+
+        // Declined: the reason goes back instead of "allow".
+        feed(
+            &inner,
+            &guard_dialog(
+                "ui-2",
+                "call-2",
+                "write",
+                json!({"path": "a.txt", "content": "x"}),
+            ),
+        );
+        events_until(&mut events, |e| {
+            matches!(e, AgentEvent::ApprovalRequested { .. })
+        })
+        .await;
+        inner.approvals.resolve("call-2", false).unwrap();
+        match next_frame(&mut out).await {
+            OutboundFrame::ExtensionUiResponse { id, value, .. } => {
+                assert_eq!(id, "ui-2");
+                let reason = value.unwrap();
+                assert_ne!(reason, ALLOW_ANSWER);
+                assert!(reason.contains("declined"));
+            }
+            other => panic!("expected the dialog answer, got {other:?}"),
+        }
+
+        // omp closing the dialog (e.g. the turn was aborted) cancels the prompt.
+        feed(
+            &inner,
+            &guard_dialog(
+                "ui-3",
+                "call-3",
+                "edit",
+                json!({"path": "a.txt", "old_string": "x", "new_string": "y"}),
+            ),
+        );
+        events_until(&mut events, |e| {
+            matches!(e, AgentEvent::ApprovalRequested { .. })
+        })
+        .await;
+        feed(
+            &inner,
+            r#"{"type":"extension_ui_request","id":"ui-c","method":"cancel","targetId":"ui-3"}"#,
+        );
+        match next_frame(&mut out).await {
+            OutboundFrame::ExtensionUiResponse { id, value, .. } => {
+                assert_eq!(id, "ui-3");
+                assert!(value.unwrap().contains("stopped"));
+            }
+            other => panic!("expected the dialog answer, got {other:?}"),
+        }
+        assert!(!inner.approvals.is_pending("call-3"));
+    }
+
+    #[tokio::test]
+    async fn other_dialogs_are_declined_at_once() {
+        let folder = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let (inner, mut events, mut out) =
+            offline_session(None, Some(code_runtime(folder.path(), data.path())));
+        // omp's own tool prompt, and a guard-titled request for a read tool
+        // (the guard never asks about those): both refused, nothing shown.
+        feed(
+            &inner,
+            r#"{"type":"extension_ui_request","id":"n1","method":"select","title":"Allow tool: bash\nCommand: ls","options":["Approve","Deny"]}"#,
+        );
+        feed(
+            &inner,
+            &guard_dialog("n2", "call-9", "read", json!({"path": "a.txt"})),
+        );
+        for expected in ["n1", "n2"] {
+            match next_frame(&mut out).await {
+                OutboundFrame::ExtensionUiResponse {
+                    id,
+                    value,
+                    cancelled,
+                } => {
+                    assert_eq!(id, expected);
+                    assert_eq!(value, None);
+                    assert!(cancelled);
+                }
+                other => panic!("expected a declined dialog, got {other:?}"),
+            }
+        }
+        // Presentation updates need no answer.
+        feed(
+            &inner,
+            r#"{"type":"extension_ui_request","id":"w1","method":"setWidget","widgetKey":"autoresearch"}"#,
+        );
+        assert!(out.try_recv().is_err());
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn the_guard_announcement_and_tool_inventory_are_read() {
+        let folder = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let code = code_runtime(folder.path(), data.path());
+        let (inner, _events, _out) = offline_session(None, Some(Arc::clone(&code)));
+        feed(
+            &inner,
+            r#"{"type":"available_commands_update","commands":[{"name":"model","source":"builtin"},{"name":"shodh-guard","source":"file"}]}"#,
+        );
+        assert!(
+            !*code.guard_loaded.borrow(),
+            "a file command is not the guard"
+        );
+        feed(
+            &inner,
+            r#"{"type":"available_commands_update","commands":[{"name":"model","source":"builtin"},{"name":"shodh-guard","source":"extension"}]}"#,
+        );
+        assert!(*code.guard_loaded.borrow());
+
+        let state = json!({"dumpTools": [{"name": "read"}, {"name": "task"}]});
+        assert_eq!(tool_inventory(Some(&state)), vec!["read", "task"]);
+        assert!(tool_inventory(None).is_empty());
     }
 }

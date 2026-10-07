@@ -6,7 +6,6 @@
 pub mod audit;
 pub mod chat;
 pub mod config;
-pub mod context;
 pub mod embeddings;
 pub mod harness;
 pub mod indexing;
@@ -29,7 +28,6 @@ pub mod workspaces;
 // Ported modules from old shodh-rag
 pub mod agent;
 pub mod llm;
-pub mod memory;
 pub mod rag;
 pub mod system;
 

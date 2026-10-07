@@ -3,9 +3,7 @@
 use crate::space_manager::SpaceManager;
 use chrono::{self, Local};
 use serde::{Deserialize, Serialize};
-use shodh_rag::agent::ConversationManager;
 use shodh_rag::comprehensive_system::{Citation, ComprehensiveRAG, DocumentFormat};
-use shodh_rag::memory::MemorySystem;
 use shodh_rag::types::MetadataFilter;
 use std::collections::HashMap;
 use std::fs;
@@ -37,8 +35,6 @@ pub struct RagState {
     pub rag: Arc<TokioRwLock<ComprehensiveRAG>>,
     pub notes: Mutex<Vec<Note>>,
     pub space_manager: Mutex<SpaceManager>,
-    pub conversation_manager: Arc<TokioRwLock<Option<ConversationManager>>>,
-    pub memory_system: Arc<TokioRwLock<Option<Arc<TokioRwLock<MemorySystem>>>>>,
     pub app_paths: AppPaths,
     pub rag_initialized: Arc<TokioRwLock<bool>>,
     pub initialization_lock: Arc<TokioMutex<()>>, // Mutex to prevent concurrent initialization
@@ -145,18 +141,12 @@ pub async fn check_initialization_status(
     use serde_json::json;
 
     let rag_initialized = *state.rag_initialized.read().await;
-    let memory_initialized = state.memory_system.read().await.is_some();
-    let conversation_initialized = state.conversation_manager.read().await.is_some();
 
     Ok(json!({
         "rag_initialized": rag_initialized,
-        "memory_system_initialized": memory_initialized,
-        "conversation_manager_initialized": conversation_initialized,
-        "all_systems_ready": rag_initialized && memory_initialized,
+        "all_systems_ready": rag_initialized,
         "message": if !rag_initialized {
             "RAG not initialized - call initialize_rag command"
-        } else if !memory_initialized {
-            "Memory System not initialized - this is a background task that should complete automatically"
         } else {
             "All systems initialized and ready"
         }

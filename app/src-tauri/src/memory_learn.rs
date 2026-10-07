@@ -45,6 +45,46 @@ use crate::audit_commands::AuditState;
 use crate::llm_commands::{ApiKeys, LLMState};
 use crate::memory_commands::MemoryState;
 
+/// Chat messages saved by the removed legacy memory system (relative to the data dir).
+const LEGACY_MEMORIES: &str = "memory_store/memories.json";
+/// Written once the legacy messages were learned from. The legacy file is never changed.
+const LEGACY_IMPORTED: &str = "memory_store/learned-v1";
+/// How long after start the legacy messages are learned from.
+const LEGACY_IMPORT_DELAY: Duration = Duration::from_secs(120);
+
+/// The user's own messages among the legacy memories, oldest first, as turns of one
+/// conversation. Assistant messages are skipped: only what the user wrote is a source of
+/// memories (see [`TurnInput`]).
+fn legacy_turns(json: &str) -> Result<Vec<TurnInput>, serde_json::Error> {
+    #[derive(Deserialize)]
+    struct LegacyMemory {
+        id: String,
+        experience: LegacyExperience,
+        created_at: DateTime<Utc>,
+    }
+    #[derive(Deserialize)]
+    struct LegacyExperience {
+        content: String,
+        #[serde(default)]
+        metadata: std::collections::HashMap<String, String>,
+    }
+    let mut memories: Vec<LegacyMemory> = serde_json::from_str(json)?;
+    memories.sort_by_key(|m| m.created_at);
+    Ok(memories
+        .into_iter()
+        .filter(|m| m.experience.metadata.get("role").map(String::as_str) == Some("user"))
+        .filter(|m| !m.experience.content.trim().is_empty())
+        .map(|m| TurnInput {
+            conversation_id: "legacy-memory-store".to_string(),
+            turn_id: m.id,
+            user_text: m.experience.content.trim().to_string(),
+            assistant_context: None,
+            at: m.created_at,
+            scope: learned_scope(None),
+        })
+        .collect())
+}
+
 /// Emitted with `{ pending }` whenever suggestions change.
 pub const SUGGESTIONS_CHANGED_EVENT: &str = "memory-suggestions-changed";
 
@@ -633,6 +673,63 @@ impl LearnState {
         });
     }
 
+    /// Learns once from what the user wrote in chats the removed legacy memory system
+    /// saved, like from a conversation: facts become suggestions (applied under automatic
+    /// learning, with the usual sensitivity rules). Skipped while learning is off; it is
+    /// tried again at the next start until it completes.
+    pub async fn import_legacy_memories(&self) {
+        let path = self.inner.data_dir.join(LEGACY_MEMORIES);
+        let marker = self.inner.data_dir.join(LEGACY_IMPORTED);
+        if marker.exists() || !path.exists() || self.policy().mode == LearnMode::Off {
+            return;
+        }
+        let turns = match std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|json| legacy_turns(&json).map_err(|e| e.to_string()))
+        {
+            Ok(turns) => turns,
+            Err(e) => {
+                tracing::warn!(target: "shodh::memory", error = %e, "legacy memories unreadable; not imported");
+                return;
+            }
+        };
+        let learner = match self.learner().await {
+            Ok(learner) => learner,
+            Err(e) => {
+                tracing::debug!(target: "shodh::memory", error = %e, "learning unavailable; legacy memories not imported yet");
+                return;
+            }
+        };
+        let mut proposed = 0;
+        for batch in turns.chunks(MAX_BATCH_TURNS) {
+            match learner.learn_from_turns(batch).await {
+                Ok(report)
+                    if report
+                        .skipped
+                        .as_deref()
+                        .is_some_and(|s| s.starts_with("today's limit")) =>
+                {
+                    tracing::info!(target: "shodh::memory", "legacy memories: today's learning limit reached; continued at a later start");
+                    return;
+                }
+                Ok(report) => proposed += report.proposed.len(),
+                Err(e) => {
+                    tracing::info!(target: "shodh::memory", error = %e, "legacy memories not imported yet");
+                    return;
+                }
+            }
+        }
+        self.notify(&learner);
+        match std::fs::write(&marker, Utc::now().to_rfc3339()) {
+            Ok(()) => {
+                tracing::info!(target: "shodh::memory", messages = turns.len(), proposed, "legacy memories learned from")
+            }
+            Err(e) => {
+                tracing::warn!(target: "shodh::memory", error = %e, "legacy import could not be marked done")
+            }
+        }
+    }
+
     /// Drops every queued turn (the kill switch).
     fn clear_queues(&self) {
         self.inner.runs.clear();
@@ -867,12 +964,46 @@ pub fn manage(app: &tauri::App, data_dir: &Path) {
         &app.state::<AuditState>(),
     );
     state.spawn_sleep();
+    let legacy = state.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(LEGACY_IMPORT_DELAY).await;
+        legacy.import_legacy_memories().await;
+    });
     app.manage(state);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_memories_give_the_users_own_messages_oldest_first() {
+        let json = r#"[
+            {"id": "b", "experience": {"experience_type": "Conversation", "content": "Sure, here is a summary.",
+              "metadata": {"role": "assistant"}}, "importance": 0.5, "created_at": "2026-03-01T10:00:00Z"},
+            {"id": "c", "experience": {"experience_type": "Conversation", "content": " I moved to Pune last month. ",
+              "metadata": {"role": "user", "platform": "Desktop"}}, "created_at": "2026-03-02T10:00:00Z"},
+            {"id": "a", "experience": {"experience_type": "Conversation", "content": "My manager is Asha.",
+              "metadata": {"role": "user"}}, "created_at": "2026-02-01T10:00:00Z"},
+            {"id": "d", "experience": {"experience_type": "Conversation", "content": "  ",
+              "metadata": {"role": "user"}}, "created_at": "2026-03-03T10:00:00Z"}
+        ]"#;
+        let turns = legacy_turns(json).unwrap();
+        let texts: Vec<(&str, &str)> = turns
+            .iter()
+            .map(|t| (t.turn_id.as_str(), t.user_text.as_str()))
+            .collect();
+        assert_eq!(
+            texts,
+            vec![
+                ("a", "My manager is Asha."),
+                ("c", "I moved to Pune last month.")
+            ]
+        );
+        assert!(turns.iter().all(|t| t.assistant_context.is_none()));
+        assert!(turns.iter().all(|t| t.scope == learned_scope(None)));
+        assert!(legacy_turns("{}").is_err());
+    }
 
     fn external(provider: ApiProvider) -> LLMMode {
         LLMMode::External {

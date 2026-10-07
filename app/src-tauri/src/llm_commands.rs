@@ -407,12 +407,7 @@ fn estimate_tokens(text: &str) -> usize {
 
 /// Generate text with LLM
 #[tauri::command]
-pub async fn llm_generate(
-    state: State<'_, LLMState>,
-    context_state: State<'_, crate::context_commands::ContextState>,
-    rag_state: State<'_, crate::rag_commands::RagState>,
-    prompt: String,
-) -> Result<String, String> {
+pub async fn llm_generate(state: State<'_, LLMState>, prompt: String) -> Result<String, String> {
     use crate::llm_response::LLMResponse;
     use std::time::Instant;
 
@@ -431,53 +426,8 @@ pub async fn llm_generate(
         context_tier
     );
 
-    // Get conversation history from ContextAccumulator (DISABLED - context accumulator not migrated)
-    let llm_context = String::new();
-
-    // INTEGRATION: Retrieve relevant memories for additional context (only for non-greeting queries)
-    let mut memory_context = String::new();
-    if query_intent != shodh_rag::rag::ContextQueryIntent::Greeting {
-        let memory_system_guard = rag_state.memory_system.read().await;
-        if let Some(memory_system) = &*memory_system_guard {
-            use shodh_rag::memory::{Query as MemQuery, RetrievalMode};
-
-            let query = MemQuery {
-                query_text: Some(prompt.clone()),
-                query_embedding: None,
-                retrieval_mode: RetrievalMode::Similarity,
-                max_results: 5,
-                importance_threshold: Some(0.5),
-                time_range: None,
-                experience_types: None,
-            };
-
-            if let Ok(memories) = memory_system.read().await.retrieve(&query) {
-                if !memories.is_empty() {
-                    memory_context = format!("\n## Relevant Past Context:\n");
-                    for (i, memory) in memories.iter().take(3).enumerate() {
-                        memory_context.push_str(&format!(
-                            "{}. {}\n",
-                            i + 1,
-                            memory.experience.content
-                        ));
-                    }
-                    tracing::info!(
-                        "💡 Retrieved {} relevant memories ({} chars)",
-                        memories.len(),
-                        memory_context.len()
-                    );
-                }
-            }
-        }
-        drop(memory_system_guard);
-    }
-
     // Format with Qwen chat template
-    let user_message = if memory_context.is_empty() {
-        prompt.to_string()
-    } else {
-        format!("{}{}", prompt, memory_context)
-    };
+    let user_message = prompt.to_string();
 
     let enhanced_prompt = format!(
         "<|im_start|>system\n{}<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
@@ -485,11 +435,7 @@ pub async fn llm_generate(
         user_message.trim()
     );
 
-    tracing::info!(
-        "🔧 System context: {} chars, Memory context: {} chars",
-        system_context.len(),
-        memory_context.len()
-    );
+    tracing::info!("🔧 System context: {} chars", system_context.len());
     tracing::info!("📤 Full prompt length: {} chars", enhanced_prompt.len());
 
     // Intent-based max_tokens
@@ -581,7 +527,6 @@ pub async fn llm_generate_stream(
 #[tauri::command]
 pub async fn llm_generate_stream_with_rag(
     state: State<'_, LLMState>,
-    rag_state: State<'_, crate::rag_commands::RagState>,
     query: String,
     context: Vec<String>,
     app_handle: tauri::AppHandle,
@@ -597,96 +542,12 @@ pub async fn llm_generate_stream_with_rag(
     let manager = manager_lock.as_ref().ok_or("LLM not initialized")?;
 
     // ============================================================================
-    // FULL CONTEXT INTEGRATION - Memory + Conversation + Knowledge Graph + RAG
+    // CONTEXT INTEGRATION - RAG search results
     // ============================================================================
 
     let mut full_context_parts = Vec::new();
 
-    // 1. Get recent conversation history
-    tracing::info!("  📖 Retrieving conversation history...");
-    let conv_mgr_guard = rag_state.conversation_manager.read().await;
-    if let Some(ref conv_mgr) = *conv_mgr_guard {
-        if let Ok(Some(conversation)) = conv_mgr.get_last_conversation().await {
-            let recent_messages: Vec<String> = conversation
-                .messages
-                .iter()
-                .rev()
-                .take(5) // Last 5 messages
-                .rev()
-                .map(|m| format!("{:?}: {}", m.role, m.content))
-                .collect();
-
-            if !recent_messages.is_empty() {
-                full_context_parts.push(format!(
-                    "## Recent Conversation\n{}",
-                    recent_messages.join("\n")
-                ));
-                tracing::info!("    ✓ Added {} recent messages", recent_messages.len());
-            }
-        }
-    }
-    drop(conv_mgr_guard);
-
-    // 2. Get relevant memories (with timeout to prevent deadlock)
-    tracing::info!("  🧠 Retrieving relevant memories...");
-
-    let memory_result = tokio::time::timeout(tokio::time::Duration::from_secs(3), async {
-        let memory_guard = rag_state.memory_system.read().await;
-        if let Some(ref memory_arc) = *memory_guard {
-            let memory = memory_arc.read().await;
-
-            let memory_query = shodh_rag::memory::Query {
-                query_text: Some(query.clone()),
-                query_embedding: None,
-                retrieval_mode: shodh_rag::memory::RetrievalMode::Hybrid,
-                max_results: 3,
-                importance_threshold: Some(0.6),
-                time_range: Some((
-                    chrono::Utc::now() - chrono::Duration::hours(24),
-                    chrono::Utc::now(),
-                )),
-                experience_types: None,
-            };
-
-            memory.retrieve(&memory_query).ok()
-        } else {
-            None
-        }
-    })
-    .await;
-
-    match memory_result {
-        Ok(Some(memories)) if !memories.is_empty() => {
-            let memory_context: Vec<String> = memories
-                .iter()
-                .map(|m| {
-                    format!(
-                        "Memory (importance: {:.2}): {}",
-                        m.importance, m.experience.content
-                    )
-                })
-                .collect();
-            full_context_parts.push(format!(
-                "## Relevant Memories\n{}",
-                memory_context.join("\n")
-            ));
-            tracing::info!("    ✓ Added {} relevant memories", memories.len());
-        }
-        Ok(_) => {
-            tracing::info!("    ℹ No relevant memories found");
-        }
-        Err(_) => {
-            tracing::info!(
-                "    ⚠ Memory retrieval timed out after 3s, continuing without memories"
-            );
-        }
-    }
-    // 3. Knowledge graph context (removed - not available in new API)
-    {
-        tracing::info!("    ⚠ Knowledge graph not available in this build");
-    }
-
-    // 4. Add RAG search results with context compression
+    // RAG search results with context compression
     tracing::info!("  📄 Adding RAG search results...");
     if !context.is_empty() {
         let original_chars: usize = context.iter().map(|c| c.len()).sum();

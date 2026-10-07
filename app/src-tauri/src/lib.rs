@@ -6,7 +6,6 @@ mod app_settings;
 mod audit_commands;
 mod background;
 mod chat_history;
-mod context_commands;
 mod database_commands;
 mod diagnostic_commands;
 mod doc_gen_commands;
@@ -56,7 +55,6 @@ use tauri::Manager;
 
 use analytics_commands::AnalyticsState;
 use chat_history::ChatHistoryManager;
-use context_commands::ContextState;
 use enhanced_rag_commands::IndexingState;
 use llm_commands::{ApiKeys, LLMState};
 use mcp_commands::MCPState;
@@ -68,7 +66,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use template_commands::TemplateStore;
 use tokio::sync::RwLock as AsyncRwLock;
-use uuid::Uuid;
 
 /// Resolve the directory holding the search models (E5 + reranker).
 ///
@@ -378,8 +375,6 @@ pub fn run() {
                 rag: rag_engine,
                 notes: Mutex::new(Vec::new()),
                 space_manager: Mutex::new(space_manager),
-                conversation_manager: Arc::new(AsyncRwLock::new(None)),
-                memory_system: Arc::new(AsyncRwLock::new(None)),
                 app_paths,
                 rag_initialized: Arc::new(AsyncRwLock::new(false)),
                 initialization_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -427,51 +422,12 @@ pub fn run() {
                 registry: Arc::new(AsyncRwLock::new(mcp_registry)),
             });
 
-            // Initialize context accumulator with unique session ID
-            let session_id = Uuid::new_v4().to_string();
-            app.manage(ContextState::new(session_id));
-
             // Initialize search and chat history managers
             let search_history_manager = SearchHistoryManager::new(&app_data_dir);
             app.manage(Arc::new(Mutex::new(search_history_manager)));
 
             let chat_history_manager = ChatHistoryManager::new(&app_data_dir);
             app.manage(Arc::new(Mutex::new(chat_history_manager)));
-
-            // Initialize conversation manager and memory system with app data directory
-            let memory_store_path = app_data_dir.join("memory_store");
-
-            let rag_state = app.state::<RagState>();
-            let conversation_manager_arc = rag_state.conversation_manager.clone();
-            let memory_system_arc_state = rag_state.memory_system.clone();
-
-            tauri::async_runtime::spawn(async move {
-                let mut memory_config = shodh_rag::memory::MemoryConfig::default();
-                memory_config.storage_path = memory_store_path;
-
-                match shodh_rag::memory::MemorySystem::new(memory_config) {
-                    Ok(memory_system) => {
-                        let memory_system_shared = Arc::new(AsyncRwLock::new(memory_system));
-                        *memory_system_arc_state.write().await = Some(memory_system_shared.clone());
-                        tracing::info!("Memory system initialized successfully");
-
-                        match shodh_rag::agent::ConversationManager::new_with_memory(
-                            memory_system_shared.clone(),
-                        ) {
-                            Ok(manager) => {
-                                *conversation_manager_arc.write().await = Some(manager);
-                                tracing::info!("Conversation manager initialized successfully");
-                            }
-                            Err(e) => {
-                                tracing::error!("Failed to initialize conversation manager: {}", e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to initialize memory system: {}", e);
-                    }
-                }
-            });
 
             // Re-index existing calendar data into RAG engine (best-effort, background)
             {
@@ -673,20 +629,6 @@ pub fn run() {
             storage_commands::create_backup,
             storage_commands::restore_backup,
             // Context accumulator commands
-            context_commands::update_context,
-            context_commands::track_user_message,
-            context_commands::track_assistant_message,
-            context_commands::track_search,
-            context_commands::track_search_refinement,
-            context_commands::track_document_view,
-            context_commands::track_filter,
-            context_commands::get_context_summary,
-            context_commands::build_llm_context,
-            context_commands::get_full_context,
-            context_commands::clear_context,
-            context_commands::start_task,
-            context_commands::save_session_to_memory,
-            context_commands::restore_session_from_memory,
             // Document commands (in rag_commands.rs)
             rag_commands::get_document_preview,
             source_viewer_commands::get_source_file_info,

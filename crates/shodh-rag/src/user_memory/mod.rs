@@ -12,9 +12,6 @@
 //!
 //! Recall ranks hybrid-search candidates by relevance, current strength, importance and
 //! spreading activation over the links (see [`recall`]).
-//!
-//! The legacy `crate::memory::MemorySystem` (JSON conversation log) is unrelated and not
-//! used here.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod guard;

@@ -18,11 +18,9 @@ use chrono::Local;
 use std::env;
 use std::path::PathBuf;
 
-/// Rich context from the memory system and recent screenshots:
-/// - memory::MemorySystem (conversation history, experiences)
-/// - Recent screenshots (OCR analysis)
+/// Rich context: recent conversation snippets and recent screenshots (OCR analysis).
 pub struct RichContextData {
-    /// Recent conversation snippets from MemorySystem
+    /// Recent conversation snippets
     pub recent_conversations: Option<Vec<String>>,
 
     /// Screenshot analysis (OCR text or description of what user is viewing)

@@ -521,6 +521,7 @@ async fn code_sessions_run_their_host_tools() {
         code: Some(CodeSession {
             conversation_id: "conv".into(),
             branches: CodeBranchStore::in_dir(data.path()),
+            settings_dir: None,
         }),
     })
     .await

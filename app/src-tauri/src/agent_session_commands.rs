@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use shodh_rag::audit::{AuditEventType, AuditRecord, RunAuditTap};
 use shodh_rag::harness::code_mode::{
-    code_system_prompt, discard_changes, CodeBranch, CodeBranchStore, CodeFolder, CODE_TOOLS,
+    code_system_prompt, discard_changes, ApprovalLevel, CodeBranch, CodeBranchStore, CodeFolder,
+    CodeSettings, CODE_TOOLS,
 };
 use shodh_rag::harness::mcp::Mode;
 use shodh_rag::harness::model::EnvValue;
@@ -1067,6 +1068,9 @@ More tools, from the MCP servers and skills the user connected: {}.             
     let code = code_folder.as_ref().map(|_| CodeSession {
         conversation_id: conversation_id.clone(),
         branches: CodeBranchStore::in_dir(&app_data_dir),
+        settings_dir: workspace_id
+            .as_deref()
+            .and_then(|id| workspace_data_dir(&app_data_dir, id)),
     });
     let launch = LaunchSpec {
         binary: resolve_binary_path(&app_data_dir),
@@ -1459,6 +1463,8 @@ pub struct CodeStatus {
     pub problem: Option<String>,
     /// The conversation's branch in that folder, while it is checked out.
     pub branch: Option<CodeBranch>,
+    /// The workspace's approval level.
+    pub approval: ApprovalLevel,
 }
 
 /// Whether Code mode can work for a conversation, in which folder, and on
@@ -1478,10 +1484,19 @@ pub async fn agent_code_status(
                 folder: None,
                 problem: Some(problem),
                 branch: None,
+                approval: ApprovalLevel::AskEveryTime,
             })
         }
     };
-    let store = CodeBranchStore::in_dir(&app_data_dir(&app)?);
+    let data_dir = app_data_dir(&app)?;
+    let approval = workspace_id
+        .as_deref()
+        .and_then(|id| workspace_data_dir(&data_dir, id))
+        .map(|dir| CodeSettings::load(&dir).map(|s| s.approval))
+        .transpose()
+        .unwrap_or(Some(ApprovalLevel::AskEveryTime))
+        .unwrap_or_default();
+    let store = CodeBranchStore::in_dir(&data_dir);
     let shown = folder.display();
     let branch = tokio::task::spawn_blocking(move || -> Result<Option<CodeBranch>, String> {
         let Some(record) = store.get(&conversation_id)? else {
@@ -1511,7 +1526,112 @@ pub async fn agent_code_status(
         folder: Some(shown),
         problem: None,
         branch,
+        approval,
     })
+}
+
+/// A workspace's data folder (`workspaces/<id>`), for a valid id.
+fn workspace_data_dir(
+    data_dir: &std::path::Path,
+    workspace_id: &str,
+) -> Option<std::path::PathBuf> {
+    crate::mcp::is_valid_workspace_id(workspace_id)
+        .then(|| data_dir.join("workspaces").join(workspace_id))
+}
+
+fn workspace_settings_dir(
+    app: &AppHandle,
+    workspace_id: &str,
+) -> CommandResult<std::path::PathBuf> {
+    workspace_data_dir(&app_data_dir(app)?, workspace_id.trim())
+        .ok_or_else(|| AgentCommandError::invalid("invalid workspace id".to_string()))
+}
+
+/// A workspace's Code settings (approval level and command allowlist).
+#[tauri::command]
+pub async fn code_settings_get(
+    app: AppHandle,
+    workspace_id: String,
+) -> CommandResult<CodeSettings> {
+    let dir = workspace_settings_dir(&app, &workspace_id)?;
+    CodeSettings::load(&dir).map_err(AgentCommandError::invalid)
+}
+
+/// Save a workspace's Code settings; returns them as saved (cleaned). The
+/// running sessions apply them from their next decision.
+#[tauri::command]
+pub async fn code_settings_set(
+    app: AppHandle,
+    workspace_id: String,
+    settings: CodeSettings,
+    audit: State<'_, AuditState>,
+) -> CommandResult<CodeSettings> {
+    let dir = workspace_settings_dir(&app, &workspace_id)?;
+    let saved = tokio::task::spawn_blocking(move || settings.save(&dir))
+        .await
+        .map_err(|e| AgentCommandError::invalid(e.to_string()))?
+        .map_err(AgentCommandError::invalid)?;
+    tracing::info!(target: "shodh::audit", event = "code_settings", workspace = %workspace_id.trim(), approval = ?saved.approval, "code approval level changed");
+    audit.record(AuditRecord::new(
+        AuditEventType::SettingsChange,
+        json!({
+            "action": "code_approval_change",
+            "workspace": workspace_id.trim(),
+            "new": saved,
+            "via": "ui",
+        }),
+    ));
+    Ok(saved)
+}
+
+/// Most paths one check takes.
+const MAX_CHECKED_PATHS: usize = 64;
+
+/// Which of `paths` (relative to the workspace's code folder) are files or
+/// folders inside it: the absolute path of each one that is, `None` for the
+/// others (missing, absolute, or leading outside the folder).
+#[tauri::command]
+pub async fn agent_code_paths(
+    workspace_id: String,
+    paths: Vec<String>,
+    workspaces: State<'_, WorkspaceState>,
+) -> CommandResult<Vec<Option<String>>> {
+    if paths.len() > MAX_CHECKED_PATHS {
+        return Err(AgentCommandError::invalid(format!(
+            "At most {MAX_CHECKED_PATHS} paths are checked at once."
+        )));
+    }
+    let folder = workspace_code_folder(&workspaces, Some(&workspace_id))
+        .await
+        .map_err(AgentCommandError::invalid)?;
+    tokio::task::spawn_blocking(move || {
+        paths
+            .iter()
+            .map(|path| inside_code_folder(folder.root(), path).map(|p| p.display().to_string()))
+            .collect()
+    })
+    .await
+    .map_err(|e| AgentCommandError::invalid(e.to_string()))
+}
+
+/// `relative` resolved inside `root`, when it names an existing file or
+/// folder there (symbolic links leading out are refused).
+fn inside_code_folder(root: &std::path::Path, relative: &str) -> Option<std::path::PathBuf> {
+    let relative = relative.trim().replace('\\', "/");
+    let relative = relative.trim_start_matches("./");
+    if relative.is_empty()
+        || relative.len() > 1024
+        || std::path::Path::new(relative).is_absolute()
+        || relative.starts_with('/')
+        || relative.contains(':')
+        || relative.split('/').any(|part| part == "..")
+    {
+        return None;
+    }
+    let joined = root.join(relative);
+    let resolved = std::fs::canonicalize(&joined).ok()?;
+    let base = std::fs::canonicalize(root).ok()?;
+    resolved.starts_with(&base).then_some(joined)
 }
 
 /// "Discard changes": commit the conversation's Code changes on their branch
@@ -1815,6 +1935,39 @@ pub async fn agent_install_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagram_paths_resolve_only_inside_the_code_folder() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("app");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src").join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(parent.path().join("secret.txt"), "x").unwrap();
+        let found = inside_code_folder(&root, "src/main.rs").unwrap();
+        assert_eq!(found, root.join("src/main.rs"));
+        assert!(inside_code_folder(&root, "./src").is_some());
+        assert!(inside_code_folder(&root, "src\\main.rs").is_some());
+        for refused in [
+            "src/missing.rs",
+            "../secret.txt",
+            "src/../../secret.txt",
+            "",
+            "/etc/passwd",
+            "C:/Windows/win.ini",
+        ] {
+            assert!(inside_code_folder(&root, refused).is_none(), "{refused}");
+        }
+        let absolute = parent.path().join("secret.txt").display().to_string();
+        assert!(inside_code_folder(&root, &absolute).is_none());
+        assert_eq!(
+            workspace_data_dir(std::path::Path::new("C:/data"), "ws-1"),
+            Some(std::path::PathBuf::from("C:/data/workspaces/ws-1"))
+        );
+        assert_eq!(
+            workspace_data_dir(std::path::Path::new("C:/data"), "../x"),
+            None
+        );
+    }
 
     #[test]
     fn code_mode_needs_exactly_one_workspace_folder() {

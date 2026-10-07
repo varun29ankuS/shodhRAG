@@ -79,6 +79,7 @@ export function summarise(row: AuditRow): string {
         timed_out: 'Timed out',
         cancelled: 'Cancelled',
         refused: 'Refused',
+        auto_approved: 'Ran without asking',
       };
       return `${decided[decision] ?? decision}: ${clip(label, 100)}`;
     }

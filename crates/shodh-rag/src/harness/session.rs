@@ -27,9 +27,9 @@ use tokio::task::AbortHandle;
 use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 
 use super::code_mode::{
-    approval_for, code_catalog, create_branch, git_state, inventory_matches, parse_guard_request,
-    plan_change, ChangePlan, CodeBranch, CodeBranchStore, CodeFolder, GuardRequest, ALLOW_ANSWER,
-    CODE_TOOLS, GUARD_COMMAND,
+    approval_for, auto_approval, code_catalog, create_branch, git_state, inventory_matches,
+    parse_guard_request, plan_change, ApprovalLevel, ChangePlan, CodeBranch, CodeBranchStore,
+    CodeFolder, CodeSettings, GuardRequest, ALLOW_ANSWER, CODE_TOOLS, GUARD_COMMAND,
 };
 use super::error::HarnessError;
 use super::events::{AgentEvent, ClaimCheck, GroundingReport, NeedCheck, RiskTier, ScoringMethod};
@@ -95,6 +95,10 @@ pub struct SessionConfig {
 pub struct CodeSession {
     pub conversation_id: String,
     pub branches: CodeBranchStore,
+    /// The workspace's data folder, whose `code.json` sets the approval
+    /// level ([`CodeSettings`]); read at every decision, so a change applies
+    /// to the running session. `None`: every change asks.
+    pub settings_dir: Option<std::path::PathBuf>,
 }
 
 /// A Code session's state: its folder and branch, the guard's presence,
@@ -103,6 +107,7 @@ struct CodeRuntime {
     folder: CodeFolder,
     conversation_id: String,
     branches: CodeBranchStore,
+    settings_dir: Option<std::path::PathBuf>,
     /// One change decision at a time: planning, the prompt and the branch
     /// switch of a change finish before the next change is considered.
     turn: tokio::sync::Mutex<()>,
@@ -114,6 +119,22 @@ struct CodeRuntime {
 }
 
 impl CodeRuntime {
+    /// The workspace's Code settings now (asking for everything when they
+    /// cannot be read).
+    fn settings(&self) -> CodeSettings {
+        let ask = || CodeSettings {
+            approval: ApprovalLevel::AskEveryTime,
+            ..CodeSettings::default()
+        };
+        let Some(dir) = &self.settings_dir else {
+            return ask();
+        };
+        CodeSettings::load(dir).unwrap_or_else(|e| {
+            tracing::warn!(target: "shodh::harness", error = %e, "code settings unreadable; every change asks");
+            ask()
+        })
+    }
+
     /// What the next change needs (git and the store are read off the runtime).
     async fn plan(&self) -> ChangePlan {
         let root = self.folder.root().to_path_buf();
@@ -544,6 +565,28 @@ impl Inner {
             }
         };
         let approval = approval_for(request, Some(&undo));
+        if let Some(reason) = auto_approval(&code.settings(), request, &plan) {
+            self.audit(
+                &run_id,
+                AuditEventType::Approval,
+                json!({
+                    "tool": request.tool,
+                    "label": approval.label,
+                    "decision": "auto_approved",
+                    "who": SYSTEM_PRINCIPAL,
+                    "reason": reason,
+                }),
+            );
+            if plan == ChangePlan::CreateBranch {
+                let branch = code.switch_branch().await.map_err(|e| {
+                    format!(
+                        "Shodh could not switch to a new branch, so the change was not made: {e}"
+                    )
+                })?;
+                self.announce_branch(&run_id, &branch);
+            }
+            return Ok(());
+        }
         lock(&code.dialogs).insert(request.ui_id.clone(), request.tool_call_id.clone());
         self.emit(AgentEvent::ApprovalRequested {
             run_id: run_id.clone(),
@@ -1187,6 +1230,7 @@ impl OmpSession {
                 folder: folder.clone(),
                 conversation_id: session.conversation_id,
                 branches: session.branches,
+                settings_dir: session.settings_dir,
                 turn: tokio::sync::Mutex::new(()),
                 guard_loaded: tokio::sync::watch::channel(false).0,
                 dialogs: Mutex::new(HashMap::new()),
@@ -1858,6 +1902,7 @@ mod tests {
             folder: CodeFolder::open(folder).unwrap(),
             conversation_id: "conv-1".into(),
             branches: CodeBranchStore::in_dir(data),
+            settings_dir: Some(data.to_path_buf()),
             turn: tokio::sync::Mutex::new(()),
             guard_loaded: tokio::sync::watch::channel(false).0,
             dialogs: Mutex::new(HashMap::new()),
@@ -1997,6 +2042,112 @@ mod tests {
             other => panic!("expected the dialog answer, got {other:?}"),
         }
         assert!(!inner.approvals.is_pending("call-3"));
+    }
+
+    #[tokio::test]
+    async fn approval_levels_skip_the_prompt_only_where_allowed() {
+        let folder = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(folder.path())
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["-c", "init.defaultBranch=main", "init", "--quiet"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(folder.path().join("lib.rs"), "fn a() {}\n").unwrap();
+        git(&["add", "--all"]);
+        git(&["commit", "--quiet", "-m", "first"]);
+        CodeSettings {
+            approval: ApprovalLevel::Trusted,
+            allowlist: vec!["cargo test".into()],
+        }
+        .save(data.path())
+        .unwrap();
+        let code = code_runtime(folder.path(), data.path());
+        let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
+        inner
+            .start_run("Fix the build", Some("run-1".into()), RunScope::default())
+            .unwrap();
+        let _ = sent_prompt(&mut out);
+
+        // An allowlisted command and an edit run without a prompt; the edit
+        // switches to the conversation's branch first.
+        for (n, tool, input) in [
+            ("1", "bash", json!({"command": "cargo test -p app"})),
+            (
+                "2",
+                "edit",
+                json!({"path": "lib.rs", "old_string": "a", "new_string": "b"}),
+            ),
+        ] {
+            feed(
+                &inner,
+                &guard_dialog(&format!("ui-{n}"), &format!("call-{n}"), tool, input),
+            );
+            match next_frame(&mut out).await {
+                OutboundFrame::ExtensionUiResponse { id, value, .. } => {
+                    assert_eq!(id, format!("ui-{n}"));
+                    assert_eq!(value.as_deref(), Some(ALLOW_ANSWER));
+                }
+                other => panic!("expected the dialog answer, got {other:?}"),
+            }
+        }
+        let branch = code.branches.get("conv-1").unwrap().expect("a branch");
+        assert!(branch.branch.starts_with("shodh/"));
+
+        // A destructive command asks even when it starts like an allowed one,
+        // and so does one that is not on the list.
+        for (n, command) in [("3", "cargo test; rm -rf src"), ("4", "cargo build")] {
+            feed(
+                &inner,
+                &guard_dialog(
+                    &format!("ui-{n}"),
+                    &format!("call-{n}"),
+                    "bash",
+                    json!({ "command": command }),
+                ),
+            );
+            let seen = events_until(&mut events, |e| {
+                matches!(e, AgentEvent::ApprovalRequested { .. })
+            })
+            .await;
+            assert!(matches!(
+                seen.last(),
+                Some(AgentEvent::ApprovalRequested { step_id, .. }) if *step_id == format!("call-{n}")
+            ));
+            inner
+                .approvals
+                .resolve(&format!("call-{n}"), false)
+                .unwrap();
+            let _ = next_frame(&mut out).await;
+        }
+
+        // Back to "Ask every time": the running session asks again.
+        CodeSettings::default().save(data.path()).unwrap();
+        feed(
+            &inner,
+            &guard_dialog(
+                "ui-5",
+                "call-5",
+                "write",
+                json!({"path": "b.rs", "content": "x"}),
+            ),
+        );
+        events_until(&mut events, |e| {
+            matches!(e, AgentEvent::ApprovalRequested { .. })
+        })
+        .await;
+        inner.approvals.resolve("call-5", true).unwrap();
+        let _ = next_frame(&mut out).await;
     }
 
     #[tokio::test]

@@ -168,6 +168,9 @@
     "agent_approve": { "excluded": "Approves the assistant's own actions; an assistant that could approve itself would make approvals meaningless." },
     "agent_code_status": { "excluded": "Reports whether the assistant's own Code mode can run and on which branch; it describes the assistant's sandbox, not anything the assistant acts on." },
     "agent_code_discard": { "excluded": "Undoes the assistant's own Code changes; only the user may decide to throw away what the assistant did." },
+    "agent_code_paths": { "excluded": "Checks which files a diagram in an answer names exist in the code folder, so the reader can open them; the assistant reads the folder with its own Code tools." },
+    "code_settings_get": { "excluded": "Shows the workspace's Code approval level; the assistant must not inspect or manage its own permissions." },
+    "code_settings_set": { "excluded": "Sets which Code changes and commands run without asking; the assistant must never change which of its actions need approval." },
     "agent_runtime_status": { "excluded": "Reports whether the assistant's runtime is installed; it only matters before the assistant can run." },
     "agent_install_runtime": { "excluded": "Downloads and verifies the assistant's own runtime binary; installing code is user-only." },
 

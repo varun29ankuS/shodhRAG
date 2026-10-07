@@ -561,6 +561,130 @@ fn a_detached_head_is_returned_to_as_a_commit() {
     assert!(run_git(dir.path(), &["symbolic-ref", "--quiet", "HEAD"]).is_err());
 }
 
+fn guarded(tool: &str, input: Value) -> GuardRequest {
+    GuardRequest {
+        ui_id: "ui".into(),
+        tool_call_id: "call".into(),
+        tool: tool.into(),
+        input,
+    }
+}
+
+#[test]
+fn allowlisted_commands_match_whole_words_without_shell_tricks() {
+    let settings = CodeSettings {
+        approval: ApprovalLevel::Trusted,
+        allowlist: vec!["cargo test".into(), "npm test".into(), "pytest".into()],
+    };
+    for allowed in [
+        "cargo test",
+        "cargo  test -p shodh-rag --lib",
+        "pytest tests/test_a.py -k slow",
+        "npm test",
+    ] {
+        assert!(settings.allows(allowed), "{allowed}");
+    }
+    for refused in [
+        "cargo testx",
+        "cargo",
+        "cargo build",
+        "cargo test && rm -rf /",
+        "cargo test; curl x",
+        "cargo test | sh",
+        "cargo test > out.txt",
+        "cargo test $(whoami)",
+        "cargo test `whoami`",
+        "cargo test\nrm -rf src",
+        "RUSTFLAGS=x cargo test",
+        "npm test %COMSPEC%",
+        "",
+        "  ",
+    ] {
+        assert!(!settings.allows(refused), "{refused:?}");
+    }
+    let cleaned = CodeSettings {
+        approval: ApprovalLevel::Trusted,
+        allowlist: vec![
+            "  cargo   test ".into(),
+            "cargo test".into(),
+            "make; rm".into(),
+            "X=1 make".into(),
+            "".into(),
+        ],
+    }
+    .cleaned();
+    assert_eq!(cleaned.allowlist, ["cargo test"]);
+}
+
+#[test]
+fn approval_levels_decide_what_runs_without_asking() {
+    let edit = guarded(
+        "edit",
+        json!({"path": "a.rs", "old_string": "a", "new_string": "b"}),
+    );
+    let write = guarded("write", json!({"path": "b.rs", "content": "x"}));
+    let test = guarded("bash", json!({"command": "cargo test"}));
+    let wipe = guarded("bash", json!({"command": "cargo test && git reset --hard"}));
+    let delete = guarded("bash", json!({"command": "rm -rf target"}));
+    let level = |approval| CodeSettings {
+        approval,
+        allowlist: vec!["cargo test".into(), "rm -rf target".into()],
+    };
+    let continuing = ChangePlan::Continue(branch("/a", "shodh/1"));
+    let refuse = ChangePlan::Refuse("dirty".into());
+
+    let ask = level(ApprovalLevel::AskEveryTime);
+    for request in [&edit, &write, &test] {
+        assert_eq!(auto_approval(&ask, request, &continuing), None);
+    }
+
+    let edits = level(ApprovalLevel::AutoApplyEdits);
+    assert!(auto_approval(&edits, &edit, &continuing).is_some());
+    assert!(auto_approval(&edits, &write, &ChangePlan::CreateBranch).is_some());
+    // Without git nothing can undo an edit, so it asks.
+    assert_eq!(auto_approval(&edits, &edit, &ChangePlan::NotRepo), None);
+    assert_eq!(auto_approval(&edits, &edit, &refuse), None);
+    assert_eq!(auto_approval(&edits, &test, &continuing), None);
+
+    let trusted = level(ApprovalLevel::Trusted);
+    assert!(auto_approval(&trusted, &edit, &continuing).is_some());
+    assert!(auto_approval(&trusted, &test, &continuing).is_some());
+    assert!(auto_approval(&trusted, &test, &ChangePlan::NotRepo).is_some());
+    assert_eq!(auto_approval(&trusted, &test, &refuse), None);
+    // Destructive commands always ask, even when the user listed them.
+    assert_eq!(auto_approval(&trusted, &wipe, &continuing), None);
+    for approval in [
+        ApprovalLevel::AskEveryTime,
+        ApprovalLevel::AutoApplyEdits,
+        ApprovalLevel::Trusted,
+    ] {
+        assert_eq!(auto_approval(&level(approval), &delete, &continuing), None);
+    }
+}
+
+#[test]
+fn code_settings_default_to_asking_and_survive_a_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let loaded = CodeSettings::load(dir.path()).unwrap();
+    assert_eq!(loaded.approval, ApprovalLevel::AskEveryTime);
+    assert_eq!(loaded.allowlist, DEFAULT_ALLOWLIST);
+    let saved = CodeSettings {
+        approval: ApprovalLevel::AutoApplyEdits,
+        allowlist: vec!["go test ./...".into(), "a | b".into()],
+    }
+    .save(dir.path())
+    .unwrap();
+    assert_eq!(saved.allowlist, ["go test ./..."]);
+    assert_eq!(CodeSettings::load(dir.path()).unwrap(), saved);
+    // Files without some keys load with the defaults for them.
+    std::fs::write(CodeSettings::path(dir.path()), r#"{"approval":"trusted"}"#).unwrap();
+    let partial = CodeSettings::load(dir.path()).unwrap();
+    assert_eq!(partial.approval, ApprovalLevel::Trusted);
+    assert_eq!(partial.allowlist, DEFAULT_ALLOWLIST);
+    std::fs::write(CodeSettings::path(dir.path()), "not json").unwrap();
+    assert!(CodeSettings::load(dir.path()).is_err());
+}
+
 #[test]
 fn a_tool_index_is_excluded_locally_so_the_tree_stays_clean() {
     let dir = repo();
@@ -657,7 +781,7 @@ fn the_system_prompt_names_the_folder_and_keeps_the_rules_first() {
     let folder = CodeFolder::open(dir.path()).unwrap();
     let prompt = code_system_prompt(&folder, Some("Use tabs."));
     assert!(prompt.contains(&folder.display()));
-    let rules = prompt.find("Every edit, write and command waits").unwrap();
+    let rules = prompt.find("destructive commands always do").unwrap();
     let extra = prompt.find("Use tabs.").unwrap();
     assert!(rules < extra);
     assert!(!code_system_prompt(&folder, Some("  ")).contains("instructions for this conversation"));

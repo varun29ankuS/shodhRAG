@@ -289,8 +289,9 @@ pub fn code_system_prompt(folder: &CodeFolder, instructions: Option<&str>) -> St
          Rules:\n\
          - Work only inside the code folder. Paths outside it, URLs and other resources are \
          blocked.\n\
-         - Every edit, write and command waits for the user's approval. If one is declined, do \
-         not try it another way: say what you wanted to do and ask how to continue.\n\
+         - Edits, writes and commands may wait for the user's approval (the workspace's \
+         approval level decides; destructive commands always do). If one is declined, do not \
+         try it another way: say what you wanted to do and ask how to continue.\n\
          - Read the relevant code before changing it, keep changes small and focused, and say \
          what you changed and how to check it.\n\
          - Prefer edit for changes to existing files; use write for new files.\n\
@@ -406,6 +407,158 @@ pub fn parse_guard_request(
         tool: parsed.tool,
         input: parsed.input,
     })
+}
+
+// ── Approval levels ────────────────────────────────────────────────────────
+
+/// How much of a workspace's Code work runs without asking.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ApprovalLevel {
+    /// Every edit, write and command asks (the default).
+    #[default]
+    AskEveryTime,
+    /// Edits and writes run by themselves while the conversation's branch is
+    /// their undo; commands still ask.
+    AutoApplyEdits,
+    /// As [`ApprovalLevel::AutoApplyEdits`], and commands matching the
+    /// allowlist run by themselves.
+    Trusted,
+}
+
+/// The commands a new workspace trusts.
+pub const DEFAULT_ALLOWLIST: [&str; 3] = ["cargo test", "npm test", "pytest"];
+
+/// Most allowlist entries kept.
+pub const MAX_ALLOWLIST: usize = 32;
+
+/// Longest allowlist entry.
+pub const MAX_ALLOWLIST_CHARS: usize = 120;
+
+/// A workspace's Code settings (`workspaces/<id>/code.json`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CodeSettings {
+    pub approval: ApprovalLevel,
+    /// Command prefixes that run without asking at [`ApprovalLevel::Trusted`].
+    pub allowlist: Vec<String>,
+}
+
+impl Default for CodeSettings {
+    fn default() -> Self {
+        Self {
+            approval: ApprovalLevel::default(),
+            allowlist: DEFAULT_ALLOWLIST.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+}
+
+/// Characters that let a command do more than its first words say: command
+/// separators, redirection, substitution, variables and line breaks.
+const SHELL_SPECIAL: [char; 14] = [
+    ';', '|', '&', '>', '<', '`', '$', '(', ')', '{', '}', '%', '\n', '\r',
+];
+
+fn has_shell_special(text: &str) -> bool {
+    text.contains(SHELL_SPECIAL)
+}
+
+impl CodeSettings {
+    /// The settings with the allowlist cleaned: entries trimmed, with single
+    /// spaces, without shell special characters or duplicates, capped.
+    pub fn cleaned(mut self) -> Self {
+        let mut seen = std::collections::HashSet::new();
+        self.allowlist = self
+            .allowlist
+            .iter()
+            .map(|entry| entry.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|entry| {
+                !entry.is_empty()
+                    && entry.chars().count() <= MAX_ALLOWLIST_CHARS
+                    && !has_shell_special(entry)
+                    && !entry.split(' ').next().is_some_and(|w| w.contains('='))
+            })
+            .filter(|entry| seen.insert(entry.clone()))
+            .take(MAX_ALLOWLIST)
+            .collect();
+        self
+    }
+
+    /// Whether `command` is one of the allowlisted commands: its words start
+    /// with an entry's words, and it has no shell special characters or
+    /// leading variable assignment that could make it run something else.
+    pub fn allows(&self, command: &str) -> bool {
+        if has_shell_special(command) {
+            return false;
+        }
+        let words: Vec<&str> = command.split_whitespace().collect();
+        if words.is_empty() || words[0].contains('=') {
+            return false;
+        }
+        self.allowlist.iter().any(|entry| {
+            let prefix: Vec<&str> = entry.split_whitespace().collect();
+            !prefix.is_empty()
+                && !has_shell_special(entry)
+                && words.len() >= prefix.len()
+                && words.iter().zip(&prefix).all(|(w, p)| w == p)
+        })
+    }
+
+    /// The settings file of a workspace's data folder.
+    pub fn path(workspace_dir: &Path) -> PathBuf {
+        workspace_dir.join("code.json")
+    }
+
+    /// A workspace's settings; the defaults when it has none.
+    pub fn load(workspace_dir: &Path) -> Result<Self, String> {
+        let path = Self::path(workspace_dir);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => serde_json::from_str::<Self>(&text)
+                .map(Self::cleaned)
+                .map_err(|e| format!("{} is not readable: {e}", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(format!("{} is not readable: {e}", path.display())),
+        }
+    }
+
+    /// Save the (cleaned) settings; returns what was saved.
+    pub fn save(self, workspace_dir: &Path) -> Result<Self, String> {
+        let settings = self.cleaned();
+        let path = Self::path(workspace_dir);
+        std::fs::create_dir_all(workspace_dir).map_err(|e| e.to_string())?;
+        let text = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            e.to_string()
+        })?;
+        Ok(settings)
+    }
+}
+
+/// Why a guarded call may run without asking under `settings`, or `None`
+/// when the user decides. Destructive commands always ask, and edits run by
+/// themselves only while a branch can undo them.
+pub fn auto_approval(
+    settings: &CodeSettings,
+    request: &GuardRequest,
+    plan: &ChangePlan,
+) -> Option<&'static str> {
+    let undoable = matches!(plan, ChangePlan::Continue(_) | ChangePlan::CreateBranch);
+    match request.tool.as_str() {
+        "edit" | "write" => (undoable && settings.approval != ApprovalLevel::AskEveryTime)
+            .then_some("the workspace applies edits automatically"),
+        "bash" => {
+            let command = str_arg(&request.input, "command");
+            let trusted = settings.approval == ApprovalLevel::Trusted
+                && !matches!(plan, ChangePlan::Refuse(_))
+                && destructive_reason(command).is_none()
+                && settings.allows(command);
+            trusted.then_some("the command is on the workspace's allowlist")
+        }
+        _ => None,
+    }
 }
 
 /// What an approval prompt shows for a guarded call.

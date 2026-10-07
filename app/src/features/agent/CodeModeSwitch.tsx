@@ -4,17 +4,24 @@ import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import type { ConversationMode } from '../../hooks/useConversations';
 import { agentApi, toAgentError } from './useAgentSession';
-import type { CodeStatus } from './useAgentSession';
+import type { ApprovalLevel, CodeStatus } from './useAgentSession';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
+
+/** The approval level as the mode chip's tooltip states it. */
+const APPROVAL_SUMMARY: Record<ApprovalLevel, string> = {
+  askEveryTime: 'ask every time',
+  autoApplyEdits: "edits apply by themselves on the conversation's branch; commands ask",
+  trusted: 'edits apply by themselves; allowed commands run without asking',
+};
 
 /** How long "Discard changes" waits for its confirming second press. */
 const CONFIRM_WINDOW_MS = 5000;
 
 const MODES: readonly { id: ConversationMode; label: string; hint: string; Icon: typeof Search }[] = [
   { id: 'research', label: 'Research', hint: 'Answers from your library and the web', Icon: Search },
-  { id: 'code', label: 'Code', hint: "Reads and changes the workspace's code folder; every change and command asks first", Icon: Code2 },
+  { id: 'code', label: 'Code', hint: "Reads and changes the workspace's code folder", Icon: Code2 },
 ];
 
 interface CodeModeSwitchProps {
@@ -47,7 +54,7 @@ export function CodeModeSwitch({ conversationId, workspaceId, mode, onChange, an
       .codeStatus(conversationId, workspaceId)
       .then(next => { if (active) setStatus(next); })
       .catch(error => {
-        if (active) setStatus({ folder: null, problem: toAgentError(error).message, branch: null });
+        if (active) setStatus({ folder: null, problem: toAgentError(error).message, branch: null, approval: 'askEveryTime' });
       });
     return () => { active = false; };
   }, [mode, conversationId, workspaceId, answerRunning]);
@@ -88,7 +95,9 @@ export function CodeModeSwitch({ conversationId, workspaceId, mode, onChange, an
   }, [conversationId, confirming, discarding]);
 
   const branch = mode === 'code' ? status?.branch ?? null : null;
-  const folderTitle = status?.folder ? `Code folder: ${status.folder}` : status?.problem ?? undefined;
+  const folderTitle = status?.folder
+    ? `Code folder: ${status.folder}. Approvals: ${APPROVAL_SUMMARY[status.approval] ?? APPROVAL_SUMMARY.askEveryTime} (set in the workspace's Overview)`
+    : status?.problem ?? undefined;
 
   return (
     <div className="flex items-center gap-1.5 min-w-0">

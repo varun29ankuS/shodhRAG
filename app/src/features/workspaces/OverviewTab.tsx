@@ -8,6 +8,7 @@ import { DiffView } from './DiffView';
 import { lineDiff, MAX_INSTRUCTIONS_CHARS, WORKSPACE_COLORS, WORKSPACE_ICONS } from './model';
 import type { InstructionVersion, WorkspaceDetail } from './types';
 import { WorkspaceIcon } from './WorkspaceIcon';
+import { CodeSettingsSection } from './CodeSettingsSection';
 import { FOCUS_RING, INPUT, LABEL, OUTLINE_BUTTON, PRIMARY_BUTTON, QUIET_BUTTON, SECTION_TITLE, TEXTAREA } from './ui';
 
 const AUTHOR_LABELS: Record<InstructionVersion['author'], string> = {
@@ -346,6 +347,7 @@ export function OverviewTab({ workspace, onChanged }: { workspace: WorkspaceDeta
     <div className="flex flex-col gap-8">
       <DetailsForm workspace={workspace} onSaved={onChanged} />
       <InstructionsEditor workspace={workspace} onSaved={onChanged} />
+      <CodeSettingsSection workspaceId={workspace.id} />
     </div>
   );
 }

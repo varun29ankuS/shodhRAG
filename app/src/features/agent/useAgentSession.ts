@@ -87,6 +87,18 @@ export interface CodeStatus {
   problem: string | null;
   /** The conversation's branch, while it is checked out. */
   branch: CodeBranch | null;
+  /** The workspace's approval level. */
+  approval: ApprovalLevel;
+}
+
+/** How much of a workspace's Code work runs without asking. */
+export type ApprovalLevel = 'askEveryTime' | 'autoApplyEdits' | 'trusted';
+
+/** A workspace's Code settings. */
+export interface CodeSettings {
+  approval: ApprovalLevel;
+  /** Command prefixes that run without asking at the Trusted level. */
+  allowlist: string[];
 }
 
 export interface HistoryTurn {
@@ -147,6 +159,13 @@ export const agentApi = {
     call<CodeStatus>('agent_code_status', { conversationId, workspaceId }),
   /** Commit the conversation's Code changes on their branch and return to the original branch. */
   discardCodeChanges: (conversationId: string) => call<CodeBranch>('agent_code_discard', { conversationId }),
+  /** Which of `paths` exist in the workspace's code folder (their absolute paths; null when not). */
+  codePaths: (workspaceId: string, paths: string[]) =>
+    call<(string | null)[]>('agent_code_paths', { workspaceId, paths }),
+  codeSettings: (workspaceId: string) => call<CodeSettings>('code_settings_get', { workspaceId }),
+  /** Save a workspace's Code settings; returns them as saved. */
+  setCodeSettings: (workspaceId: string, settings: CodeSettings) =>
+    call<CodeSettings>('code_settings_set', { workspaceId, settings }),
   /**
    * `scope` limits what the answer may search (selected sources, or files for "Ask about this file").
    * `textOrigin` is `typed` only when `text` is exactly what the user typed in the main

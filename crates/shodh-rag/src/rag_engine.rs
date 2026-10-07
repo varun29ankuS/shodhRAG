@@ -177,6 +177,42 @@ fn wants_neighbor_expansion(meta: &HashMap<String, String>) -> bool {
     !meta.contains_key("unit_kind")
 }
 
+/// Whether a chunk is one bibliography entry.
+fn is_reference_entry(meta: &HashMap<String, String>) -> bool {
+    meta.get("unit_kind").map(String::as_str) == Some("reference_entry")
+}
+
+/// Whether `query` asks about citations or the works behind an idea ("which paper
+/// proposed ...", "what does X cite"). Only such queries are answered from
+/// bibliography entries; any other query gets content chunks only.
+pub fn seeks_references(query: &str) -> bool {
+    let lower = query.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let citation_word = words.iter().any(|w| {
+        w.starts_with("cite")
+            || w.starts_with("citing")
+            || w.starts_with("citation")
+            || w.starts_with("referenc")
+            || w.starts_with("bibliograph")
+    });
+    let asks_for_origin = words.windows(2).any(|pair| {
+        matches!(
+            (pair[0], pair[1]),
+            (
+                "who",
+                "proposed" | "introduced" | "invented" | "first" | "wrote" | "authored"
+            ) | (
+                "which" | "what",
+                "paper" | "papers" | "work" | "works" | "article" | "articles"
+            ) | ("original", "paper" | "work")
+        )
+    });
+    citation_word || asks_for_origin
+}
+
 /// Other spellings under which older versions of the indexer may have stored
 /// `path`: the verbatim string, its forward-slash form, and the previous
 /// normalization (forward slashes, lowercased on Windows, `\\?\` prefixes and
@@ -900,6 +936,8 @@ impl RAGEngine {
         self.require_embeddings()?;
         // The graph is asked about the whole query, also when it is decomposed.
         let graph_ranks = self.graph_ranks(query);
+        // Likewise the intent: a sub-query may lose the words that asked for references.
+        let keep_references = seeks_references(query);
         // Decompose complex queries into independent sub-queries
         let decomposed = crate::rag::query_decomposer::decompose_query(query);
 
@@ -915,7 +953,13 @@ impl RAGEngine {
             let mut result_sets = Vec::new();
             for sub_query in &decomposed.sub_queries {
                 match self
-                    .search_single_query(sub_query, k, filter.clone(), graph_ranks.as_ref())
+                    .search_single_query(
+                        sub_query,
+                        k,
+                        filter.clone(),
+                        graph_ranks.as_ref(),
+                        keep_references,
+                    )
                     .await
                 {
                     Ok(results) => result_sets.push(results),
@@ -939,7 +983,7 @@ impl RAGEngine {
         }
 
         let mut results = self
-            .search_single_query(query, k, filter, graph_ranks.as_ref())
+            .search_single_query(query, k, filter, graph_ranks.as_ref(), keep_references)
             .await?;
         self.expand_with_neighbors(&mut results, 1).await;
         Ok(results)
@@ -952,6 +996,7 @@ impl RAGEngine {
         k: usize,
         filter: Option<MetadataFilter>,
         graph_ranks: Option<&HashMap<String, usize>>,
+        keep_references: bool,
     ) -> Result<Vec<ComprehensiveResult>> {
         // Use same candidate count for both vector and FTS for balanced fusion
         let candidate_count = k * self.config.search.candidate_multiplier;
@@ -1101,6 +1146,14 @@ impl RAGEngine {
                     "results outside the search's sources removed"
                 );
             }
+        }
+
+        // Bibliography entries are short and dense in names and topics, so they score
+        // well on almost any query and pushed real content down. They answer only
+        // queries about citations; dropped before the threshold, reranking and the
+        // cut to `k`, so the k results returned are content.
+        if !keep_references {
+            results.retain(|r| !is_reference_entry(&r.metadata));
         }
 
         // Log source diversity of built results
@@ -1606,14 +1659,12 @@ impl RAGEngine {
         });
     }
 
-    /// Bibliography entries are indexed one per chunk. Short and dense in
-    /// names and topics, they score moderately on almost any query; they are
-    /// kept below content chunks unless one outscores every content chunk
-    /// (a query about a cited work). Order is otherwise unchanged.
+    /// On a query about citations (the only queries that see bibliography
+    /// entries), entries are kept below content chunks unless one outscores
+    /// every content chunk (a query about a cited work). Order is otherwise
+    /// unchanged.
     fn demote_reference_entries(results: &mut Vec<ComprehensiveResult>) {
-        let is_reference = |r: &ComprehensiveResult| {
-            r.metadata.get("unit_kind").map(String::as_str) == Some("reference_entry")
-        };
+        let is_reference = |r: &ComprehensiveResult| is_reference_entry(&r.metadata);
         let best_content = results
             .iter()
             .filter(|r| !is_reference(r))
@@ -1781,6 +1832,113 @@ mod page_metadata_tests {
         .map(|(s, k)| (*s, k.to_string()))
         .collect();
         assert_eq!(order, expected);
+    }
+
+    #[test]
+    fn only_queries_about_citations_seek_references() {
+        for query in [
+            "which paper proposed the delta rule",
+            "Who introduced linear attention?",
+            "what does the DeltaNet paper cite",
+            "papers citing Katharopoulos et al.",
+            "list the references of the RWKV paper",
+            "bibliography of the survey",
+            "the original paper on fast weights",
+        ] {
+            assert!(seeks_references(query), "{query}");
+        }
+        for query in [
+            "delta rule parallelized over sequence length",
+            "how is the chunkwise form computed",
+            "what is the recall of HNSW",
+            "who won the benchmark",
+        ] {
+            assert!(!seeks_references(query), "{query}");
+        }
+    }
+
+    async fn engine_with_paper(dir: &Path) -> RAGEngine {
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.join("data");
+        config.embedding.model_dir = dir.join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        config.search.min_score_threshold = 0.0;
+        let mut engine = RAGEngine::new(config).await.unwrap();
+        engine
+            .attach_search_models(SearchModels::from_embedder(Arc::new(
+                crate::statements::testing::WordEmbedder::default(),
+            )))
+            .unwrap();
+        // The reported case: the References section shares the query's words with
+        // the introduction and outscored it.
+        let paper = dir.join("deltanet.tex");
+        std::fs::write(
+            &paper,
+            r"\documentclass{article}
+\begin{document}
+\section{Introduction}
+We show how the delta rule update of linear transformers is parallelized over
+sequence length with a chunkwise form, so training on long sequences is efficient.
+\section{Experiments}
+Language models trained on long documents reach lower perplexity.
+\begin{thebibliography}{9}
+\bibitem{yang} S. Yang. Parallelizing the delta rule over sequence length. 2024.
+\bibitem{schlag} I. Schlag. The delta rule over sequence length in fast weight programmers. 2021.
+\end{thebibliography}
+\end{document}
+",
+        )
+        .unwrap();
+        engine
+            .add_document_from_file(&paper, HashMap::new())
+            .await
+            .unwrap();
+        engine
+    }
+
+    #[tokio::test]
+    async fn reference_entries_answer_only_queries_about_citations() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine_with_paper(dir.path()).await;
+        let kinds = |results: &[ComprehensiveResult]| -> Vec<String> {
+            results
+                .iter()
+                .map(|r| r.metadata.get("unit_kind").cloned().unwrap_or_default())
+                .collect()
+        };
+
+        let content = Box::pin(engine.search_comprehensive(
+            "delta rule parallelized over sequence length",
+            5,
+            None,
+        ))
+        .await
+        .unwrap();
+        assert!(!content.is_empty());
+        assert!(
+            !kinds(&content).iter().any(|k| k == "reference_entry"),
+            "{:?}",
+            kinds(&content)
+        );
+        assert!(
+            content[0].snippet.contains("parallelized over"),
+            "{}",
+            content[0].snippet
+        );
+
+        let citations = Box::pin(engine.search_comprehensive(
+            "which paper proposed the delta rule over sequence length",
+            5,
+            None,
+        ))
+        .await
+        .unwrap();
+        assert!(
+            kinds(&citations).iter().any(|k| k == "reference_entry"),
+            "{:?}",
+            kinds(&citations)
+        );
     }
 
     #[test]

@@ -393,6 +393,9 @@ pub async fn workspaces_delete(
     let dir = data_dir(&app)?;
     let workspace_id = id.clone();
     let removed = state.run(move |s| s.delete(&id)).await?;
+    if removed {
+        crate::mcp_commands::forget_workspace(&app, &workspace_id);
+    }
     let detached = detach_conversations(&dir, &workspace_id)?;
     if removed || detached > 0 {
         broadcast_change(&app, Some(&workspace_id));

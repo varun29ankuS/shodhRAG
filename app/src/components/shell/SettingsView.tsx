@@ -9,10 +9,11 @@ import BackgroundSettings from '../BackgroundSettings';
 import MemorySettings from '../MemorySettings';
 import AnswerCheckSettings from '../AnswerCheckSettings';
 import TableModelSettings from '../TableModelSettings';
+import ToolsSettings from '../ToolsSettings';
 import { cn } from '../../lib/utils';
 import { useWorkspaces } from '../../features/workspaces/WorkspaceContext';
 
-export type SettingsSection = 'models' | 'search' | 'general' | 'privacy' | 'memory' | 'data';
+export type SettingsSection = 'models' | 'search' | 'tools' | 'general' | 'privacy' | 'memory' | 'data';
 
 const SECTIONS: { id: SettingsSection; label: string; description: string }[] = [
   {
@@ -24,6 +25,11 @@ const SECTIONS: { id: SettingsSection; label: string; description: string }[] = 
     id: 'search',
     label: 'Search',
     description: 'Choose how many passages each document search retrieves.',
+  },
+  {
+    id: 'tools',
+    label: 'Tools & connections',
+    description: 'What the assistant can use: its built-in tools, MCP servers you connect (with which tools ask first), and skills.',
   },
   {
     id: 'general',
@@ -168,6 +174,8 @@ export default function SettingsView({
                   <AnswerCheckSettings />
                   <TableModelSettings />
                 </>
+              ) : section === 'tools' ? (
+                <ToolsSettings />
               ) : section === 'general' ? (
                 <BackgroundSettings />
               ) : section === 'privacy' ? (

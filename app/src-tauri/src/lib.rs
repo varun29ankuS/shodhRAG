@@ -56,7 +56,6 @@ use analytics_commands::AnalyticsState;
 use chat_history::ChatHistoryManager;
 use enhanced_rag_commands::IndexingState;
 use llm_commands::{ApiKeys, LLMState};
-use mcp_commands::MCPState;
 use rag_commands::{AppPaths, RagState};
 use search_history::SearchHistoryManager;
 use shodh_rag::llm::LLMConfig;
@@ -408,21 +407,11 @@ pub fn run() {
             app.manage(AnalyticsState::load_or_default(&analytics_path));
             app.manage(TemplateStore::default());
 
-            // Initialize MCP (Model Context Protocol) state
-            let mcp_config_dir = app_data_dir.join("mcp");
-            if let Err(e) = std::fs::create_dir_all(&mcp_config_dir) {
-                tracing::error!(
-                    "Failed to create MCP config directory {:?}: {}; MCP settings will not be saved",
-                    mcp_config_dir,
-                    e
-                );
-            }
-            let mcp_manager = mcp::MCPManager::new();
-            let mcp_registry = mcp::registry::MCPRegistry::new(mcp_config_dir);
-            app.manage(MCPState {
-                manager: Arc::new(AsyncRwLock::new(mcp_manager)),
-                registry: Arc::new(AsyncRwLock::new(mcp_registry)),
-            });
+            // MCP servers and skills for the agent (Settings → Tools & connections).
+            app.manage(mcp_commands::McpState(mcp::McpManager::new(
+                app_data_dir.clone(),
+            )));
+            app.manage(mcp::skills::SkillInstaller::default());
 
             // Initialize search and chat history managers
             let search_history_manager = SearchHistoryManager::new(&app_data_dir);
@@ -651,16 +640,23 @@ pub fn run() {
             system_commands::open_file_manager,
             system_commands::get_system_information,
             system_commands::get_running_processes,
-            // MCP (Model Context Protocol) commands
-            mcp_commands::mcp_connect_server,
-            mcp_commands::mcp_disconnect_server,
-            mcp_commands::mcp_list_tools,
-            mcp_commands::mcp_search_tools,
-            mcp_commands::mcp_call_tool,
-            mcp_commands::mcp_list_servers,
-            mcp_commands::mcp_upsert_server,
+            // Tools & connections: MCP servers, skills, the composer tool chip
+            mcp_commands::tools_overview,
+            mcp_commands::mcp_test_server,
+            mcp_commands::mcp_add_servers,
             mcp_commands::mcp_remove_server,
-            mcp_commands::mcp_update_server_env,
+            mcp_commands::mcp_set_server,
+            mcp_commands::mcp_set_tool,
+            mcp_commands::mcp_open_config,
+            mcp_commands::enola_install,
+            mcp_commands::skills_prepare_install,
+            mcp_commands::skills_prepare_recommended,
+            mcp_commands::skills_set_modes,
+            mcp_commands::skills_confirm_install,
+            mcp_commands::skills_cancel_install,
+            mcp_commands::skills_set_enabled,
+            mcp_commands::skills_remove,
+            mcp_commands::tools_for_chat,
             // Document Upload commands
             document_upload_commands::upload_document_file,
             document_upload_commands::save_temp_file,

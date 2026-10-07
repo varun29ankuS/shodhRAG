@@ -47,6 +47,7 @@ import { COMPOSER_INSERT_EVENT, onWindowEvent, takePendingInserts } from '../res
 import { appendToDraft } from '../research/snippetModel';
 import { ModelChip } from '../modelPicker/ModelChip';
 import { CodeModeSwitch } from '../agent/CodeModeSwitch';
+import { ToolsChip } from '../tools/ToolsChip';
 import type { ConversationMode } from '../../hooks/useConversations';
 
 const FOCUS_RING =
@@ -865,6 +866,15 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
               onChange={changeMode}
               answerRunning={isStreaming}
               onProblem={setCodeProblem}
+            />
+            <ToolsChip
+              workspaceId={session.activeConversation?.workspaceId ?? null}
+              mode={mode}
+              answerRunning={isStreaming}
+              onOpenSettings={() => {
+                requestSettingsSection('tools');
+                onNavigate('settings');
+              }}
             />
           </>
         )}

@@ -445,17 +445,22 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   // Start the active conversation's agent session ahead of the first
   // question: launching the runtime takes seconds, asking should not.
   const instructions = activeConversation?.systemPrompt?.trim() || null;
+  const activeMode = activeConversation?.mode ?? 'research';
+  const activeWorkspaceId = activeConversation?.workspaceId ?? null;
+  const streaming = liveRun !== null;
   useEffect(() => {
     if (!activeConversationId || runtimeInstalled !== true) return;
+    // A mode switch during an answer applies to the next one: no restart now.
+    if (streaming) return;
     const timer = window.setTimeout(() => {
-      api.start(activeConversationId, instructions).catch(error => {
+      api.start(activeConversationId, instructions, null, null, { mode: activeMode, workspaceId: activeWorkspaceId }).catch(error => {
         const failure = toAgentError(error);
         if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
-        // Other failures (no model configured, …) surface when the user asks.
+        // Other failures (no model configured, no code folder, …) surface when the user asks.
       });
     }, PREWARM_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [api, activeConversationId, instructions, runtimeInstalled]);
+  }, [api, activeConversationId, instructions, activeMode, activeWorkspaceId, runtimeInstalled, streaming]);
 
   // `textOrigin`: `typed` when `prompt` is exactly what the user typed (learning may use it);
   // `composed` for prompts the app builds (a side-thread summary request).
@@ -498,7 +503,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     const conversation = activeConversationRef.current?.id === conversationId ? activeConversationRef.current : null;
     const conversationInstructions = conversation?.systemPrompt?.trim() || null;
     try {
-      const sessionId = await api.start(conversationId, conversationInstructions, null, fallback?.override ?? null);
+      const mode = { mode: conversation?.mode ?? 'research', workspaceId: conversation?.workspaceId ?? null } as const;
+      const sessionId = await api.start(conversationId, conversationInstructions, null, fallback?.override ?? null, mode);
       if (live.settled) return;
       live.sessionId = sessionId;
       setRuntimeInstalled(true);

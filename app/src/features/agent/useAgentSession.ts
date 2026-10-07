@@ -11,6 +11,7 @@ import type { FailureCode } from './reducer';
 import { AGENT_SESSIONS_EVENT, isSessionCounts } from './sessionCounts';
 import type { SessionCounts } from './sessionCounts';
 import type { ModelOverride } from '../modelPicker/modelTypes';
+import type { ConversationMode } from '../../hooks/useConversations';
 
 export const AGENT_EVENT = 'agent_event';
 export const RUNTIME_PROGRESS_EVENT = 'agent_runtime_progress';
@@ -61,6 +62,33 @@ export interface AnswerScope {
   searchAll?: boolean;
 }
 
+/** How a conversation's answers work, sent with `agent_start`. */
+export interface AnswerMode {
+  mode: ConversationMode;
+  /** The conversation's workspace: Code mode works in its one folder. */
+  workspaceId: string | null;
+}
+
+/** The branch a conversation's Code changes are on (`CodeBranch`). */
+export interface CodeBranch {
+  folder: string;
+  branch: string;
+  /** The branch (or commit) the work started from. */
+  base: string;
+  baseIsCommit: boolean;
+  createdAt: string;
+}
+
+/** `agent_code_status`. */
+export interface CodeStatus {
+  /** The code folder, when Code mode can be used. */
+  folder: string | null;
+  /** Why Code mode cannot be used, and how to fix it. */
+  problem: string | null;
+  /** The conversation's branch, while it is checked out. */
+  branch: CodeBranch | null;
+}
+
 export interface HistoryTurn {
   role: 'user' | 'assistant';
   content: string;
@@ -104,7 +132,21 @@ export const agentApi = {
     instructions: string | null,
     parentConversationId: string | null = null,
     modelOverride: ModelOverride | null = null,
-  ) => call<string>('agent_start', { conversationId, profileId: null, instructions, parentConversationId, modelOverride }),
+    mode: AnswerMode | null = null,
+  ) => call<string>('agent_start', {
+    conversationId,
+    profileId: null,
+    instructions,
+    parentConversationId,
+    modelOverride,
+    mode: mode?.mode ?? null,
+    workspaceId: mode?.workspaceId ?? null,
+  }),
+  /** Whether Code mode can work in the conversation's workspace, and its branch. */
+  codeStatus: (conversationId: string, workspaceId: string | null) =>
+    call<CodeStatus>('agent_code_status', { conversationId, workspaceId }),
+  /** Commit the conversation's Code changes on their branch and return to the original branch. */
+  discardCodeChanges: (conversationId: string) => call<CodeBranch>('agent_code_discard', { conversationId }),
   /**
    * `scope` limits what the answer may search (selected sources, or files for "Ask about this file").
    * `textOrigin` is `typed` only when `text` is exactly what the user typed in the main

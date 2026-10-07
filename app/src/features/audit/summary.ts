@@ -78,6 +78,7 @@ export function summarise(row: AuditRow): string {
         denied: 'Declined',
         timed_out: 'Timed out',
         cancelled: 'Cancelled',
+        refused: 'Refused',
       };
       return `${decided[decision] ?? decision}: ${clip(label, 100)}`;
     }
@@ -134,6 +135,13 @@ export function summarise(row: AuditRow): string {
       const count = Array.isArray(p.ids) ? p.ids.length : 0;
       const query = str(p.query);
       return `${count} ${count === 1 ? 'memory' : 'memories'} recalled${query ? ` for “${clip(query, 80)}”` : ''}`;
+    }
+    case 'code_change': {
+      const branch = str(p.branch) ?? 'a branch';
+      const base = str(p.base) ?? 'the original branch';
+      return p.action === 'discarded'
+        ? `Discarded Code changes: back on ${base} (kept on ${branch})`
+        : `Code changes go to ${branch} (from ${base})`;
     }
     case 'retention_checkpoint': {
       const deleted = num(p.deleted) ?? 0;

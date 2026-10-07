@@ -20,6 +20,8 @@ export interface ConversationMessage {
   transcript?: Record<string, unknown>;
 }
 
+export type ConversationMode = 'research' | 'code';
+
 export interface Conversation {
   id: string;
   title: string;
@@ -33,6 +35,8 @@ export interface Conversation {
   /** The workspace the chat belongs to; absent is "No workspace". */
   workspaceId?: string;
   systemPrompt?: string;
+  /** How answers work: Research (absent) or Code (the workspace's code folder). */
+  mode?: ConversationMode;
   /**
    * Side discussions not tied to a message (e.g. about a task). Opaque here;
    * read and written through features/focus/threadStore. Saved with the
@@ -337,7 +341,7 @@ export function useConversations() {
     [activeConversationId]
   );
 
-  const updateConversationMeta = useCallback((id: string, meta: Partial<Pick<Conversation, 'workspaceId' | 'systemPrompt'>>) => {
+  const updateConversationMeta = useCallback((id: string, meta: Partial<Pick<Conversation, 'workspaceId' | 'systemPrompt' | 'mode'>>) => {
     setConversations(prev =>
       prev.map(c => {
         if (c.id !== id) return c;

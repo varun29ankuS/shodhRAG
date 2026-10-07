@@ -46,6 +46,8 @@ import { answerTitle, buildPrintDocument } from '../print/printModel';
 import { COMPOSER_INSERT_EVENT, onWindowEvent, takePendingInserts } from '../research/snippetBus';
 import { appendToDraft } from '../research/snippetModel';
 import { ModelChip } from '../modelPicker/ModelChip';
+import { CodeModeSwitch } from '../agent/CodeModeSwitch';
+import type { ConversationMode } from '../../hooks/useConversations';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -582,12 +584,23 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     };
   }, [selectedSource?.id, selectedSource?.name, includedKey, sources.length]);
 
+  // Research or Code, per conversation (Code works in the workspace's code folder).
+  const mode = session.activeConversation?.mode ?? 'research';
+  const [codeProblem, setCodeProblem] = useState<string | null>(null);
+  const { updateConversationMeta } = session;
+  const changeMode = useCallback((next: ConversationMode) => {
+    const id = session.activeConversationId;
+    if (id) updateConversationMeta(id, { mode: next });
+  }, [session.activeConversationId, updateConversationMeta]);
+
   const busyElsewhere = (streamingConversationId !== null && !isStreaming) || sideRun !== null;
   const blockedReason = sideRun
     ? `Answering your side question about “${sideRun.label}”. You can send once it finishes; to stop it, reopen that discussion and press Esc.`
     : busyElsewhere
       ? 'An answer is still being written in another conversation. You can send once it finishes.'
-      : null;
+      : mode === 'code' && codeProblem && !isStreaming
+        ? `${codeProblem} Or switch this conversation to Research.`
+        : null;
 
   const indexedCount = sources.filter(s => s.status !== 'error').length;
   // In a workspace chat, answers search only the workspace's sources unless "Search all my
@@ -842,7 +855,19 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
         approvalPending={waitingStepId !== null}
         blockedReason={blockedReason}
         placeholder={messages.length === 0 ? 'Ask about your files…' : 'Ask a follow-up…'}
-        modelChip={<ModelChip answerRunning={isStreaming} onOpenSettings={() => onNavigate('settings')} />}
+        modelChip={(
+          <>
+            <ModelChip answerRunning={isStreaming} onOpenSettings={() => onNavigate('settings')} />
+            <CodeModeSwitch
+              conversationId={conversationId}
+              workspaceId={session.activeConversation?.workspaceId ?? null}
+              mode={mode}
+              onChange={changeMode}
+              answerRunning={isStreaming}
+              onProblem={setCodeProblem}
+            />
+          </>
+        )}
         scopeLabel={chip.label}
         scopeTitle={chip.title}
         onOpenLibrary={() => (workspace ? openWorkspace(workspace.id, 'sources') : onNavigate('library'))}

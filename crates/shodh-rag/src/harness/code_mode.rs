@@ -130,9 +130,8 @@ fn strip_verbatim(path: PathBuf) -> PathBuf {
     }
 }
 
-/// The second `--config` overlay of a Code session (written as JSON, which
-/// YAML accepts). Overlays outrank the code folder's own `.omp` settings.
-pub fn code_overlay_config() -> Value {
+/// Code mode's own settings (see [`code_overlay_config`]).
+fn code_settings() -> Value {
     // The guard is the approval gate; omp's own prompts would ask twice.
     let approvals: serde_json::Map<String, Value> = CODE_TOOLS
         .iter()
@@ -151,6 +150,88 @@ pub fn code_overlay_config() -> Value {
         "enabledProviders": [],
         "disabledProviders": DISABLED_DISCOVERY,
     })
+}
+
+/// The second `--config` overlay of a Code session (written as JSON, which
+/// YAML accepts).
+///
+/// Overlays outrank the code folder's own `.omp/settings.json` and
+/// `.omp/config.yml`, but only for the keys they set: omp 18.4.10 reads a
+/// folder's settings before it applies `disabledProviders`, and the folder
+/// supplies every other key (shell path, extensions, MCP, approval of other
+/// tiers...). So every setting omp has is pinned here. `settings` is omp's
+/// `config list --json` (each key with its `value`, if set, and `type`);
+/// each key takes Code mode's value, else the base overlay's
+/// ([`super::sidecar::overlay_config`]), else omp's own. Unset keys are
+/// pinned to null, which keeps a folder's value out. Records (maps, which omp
+/// merges entry by entry across layers) are pinned to null as well, which omp
+/// reads as empty; the records the overlays fill (tool approvals, fallback
+/// chains) keep their entries and still accept a folder's entries for other
+/// names.
+pub fn code_overlay_config(settings: &serde_json::Map<String, Value>) -> Value {
+    let mut pinned: std::collections::BTreeMap<String, Value> = settings
+        .iter()
+        .map(|(key, info)| {
+            let value = match info.get("type").and_then(Value::as_str) {
+                Some("record") => Value::Null,
+                _ => info.get("value").cloned().unwrap_or(Value::Null),
+            };
+            (key.clone(), value)
+        })
+        .collect();
+    for layer in [super::sidecar::overlay_config(), code_settings()] {
+        flatten_settings(&layer, "", settings, &mut pinned);
+    }
+    let mut overlay = serde_json::Map::new();
+    for (key, value) in pinned {
+        insert_path(&mut overlay, &key, value);
+    }
+    Value::Object(overlay)
+}
+
+/// Adds the leaves of `value` to `out` as dotted keys. A key omp knows is a
+/// leaf whatever its value (a record's entries are its value).
+fn flatten_settings(
+    value: &Value,
+    prefix: &str,
+    known: &serde_json::Map<String, Value>,
+    out: &mut std::collections::BTreeMap<String, Value>,
+) {
+    match value {
+        Value::Object(map) if prefix.is_empty() || !known.contains_key(prefix) => {
+            for (name, child) in map {
+                let key = if prefix.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{prefix}.{name}")
+                };
+                flatten_settings(child, &key, known, out);
+            }
+        }
+        _ => {
+            out.insert(prefix.to_string(), value.clone());
+        }
+    }
+}
+
+/// Sets `value` at the dotted `key` in nested maps.
+fn insert_path(map: &mut serde_json::Map<String, Value>, key: &str, value: Value) {
+    match key.split_once('.') {
+        None => {
+            map.insert(key.to_string(), value);
+        }
+        Some((head, rest)) => {
+            let child = map
+                .entry(head.to_string())
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if !child.is_object() {
+                *child = Value::Object(serde_json::Map::new());
+            }
+            if let Value::Object(child) = child {
+                insert_path(child, rest, value);
+            }
+        }
+    }
 }
 
 /// Launch flags of a Code session. Unlike Research sessions, omp's dialog
@@ -871,4 +952,4 @@ impl CodeBranchStore {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

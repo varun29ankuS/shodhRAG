@@ -202,11 +202,15 @@ impl OmpLayout {
         }
     }
 
-    /// Write Code mode's overlay and guard hook. Files whose content is
+    /// Write Code mode's overlay (pinning every one of omp's `settings`, see
+    /// [`code_overlay_config`]) and guard hook. Files whose content is
     /// already current are left alone (another Code session may be loading
     /// them).
-    pub fn prepare_code(&self) -> Result<(), HarnessError> {
-        let overlay = serde_json::to_string_pretty(&code_overlay_config())?;
+    pub fn prepare_code(
+        &self,
+        settings: &serde_json::Map<String, Value>,
+    ) -> Result<(), HarnessError> {
+        let overlay = serde_json::to_string_pretty(&code_overlay_config(settings))?;
         write_if_changed(&self.code_overlay, &overlay)?;
         write_if_changed(&self.guard_hook, GUARD_HOOK)?;
         Ok(())
@@ -222,6 +226,13 @@ impl OmpLayout {
         std::fs::write(&tmp, overlay)?;
         std::fs::rename(&tmp, &self.overlay)?;
         Ok(())
+    }
+
+    /// Where [`omp_settings`] caches omp's settings (per omp version).
+    pub fn code_settings_cache(&self) -> PathBuf {
+        self.root
+            .join("code")
+            .join(format!("settings-{OMP_VERSION}.json"))
     }
 
     /// An empty working directory for one session.
@@ -427,19 +438,16 @@ impl LaunchSpec {
                 ),
                 self.layout.session_dir(&self.session_id)?,
             )),
-            Some(folder) => {
-                self.layout.prepare_code()?;
-                Ok((
-                    code_launch_args(
-                        &self.model.model_arg,
-                        &self.layout.overlay,
-                        &self.layout.code_overlay,
-                        &self.layout.guard_hook,
-                        &self.system_prompt,
-                    ),
-                    folder.root().to_path_buf(),
-                ))
-            }
+            Some(folder) => Ok((
+                code_launch_args(
+                    &self.model.model_arg,
+                    &self.layout.overlay,
+                    &self.layout.code_overlay,
+                    &self.layout.guard_hook,
+                    &self.system_prompt,
+                ),
+                folder.root().to_path_buf(),
+            )),
         }
     }
 
@@ -466,12 +474,82 @@ pub struct SidecarProcess {
     pub stderr: ChildStderr,
 }
 
+/// omp's settings as `omp config list --json` reports them in an empty folder
+/// of the isolated home (each key with its `value`, if set, and `type`). Read
+/// once per omp version and cached in the layout; Code sessions pin all of
+/// them ([`code_overlay_config`]), so a Code session does not start without.
+pub async fn omp_settings(
+    binary: &Path,
+    layout: &OmpLayout,
+) -> Result<serde_json::Map<String, Value>, HarnessError> {
+    let cache = layout.code_settings_cache();
+    if let Some(settings) = std::fs::read_to_string(&cache)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Map<String, Value>>(&text).ok())
+        .filter(|settings| !settings.is_empty())
+    {
+        return Ok(settings);
+    }
+    let cwd = layout.root.join("code").join("empty");
+    std::fs::create_dir_all(&cwd)?;
+    // No model and no credentials: listing settings needs neither.
+    let no_model = OmpModel {
+        model_arg: String::new(),
+        provider_label: "none",
+        is_local: true,
+        env: Vec::new(),
+        warning: None,
+    };
+    let mut command = Command::new(binary);
+    command
+        .args(["config", "list", "--json"])
+        .env_clear()
+        .current_dir(&cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    for (name, value) in child_env(layout, &no_model, |n| std::env::var(n).ok()) {
+        command.env(name, value.as_str());
+    }
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let failed = |reason: String| {
+        HarnessError::CodeGuard(format!("omp's settings could not be read: {reason}"))
+    };
+    let output = tokio::time::timeout(Duration::from_secs(60), command.output())
+        .await
+        .map_err(|_| failed("it did not answer in time".to_string()))?
+        .map_err(|e| failed(e.to_string()))?;
+    if !output.status.success() {
+        return Err(failed(format!(
+            "{} ({})",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let settings: serde_json::Map<String, Value> =
+        serde_json::from_slice(&output.stdout).map_err(|e| failed(e.to_string()))?;
+    if settings.is_empty() {
+        return Err(failed("it listed none".to_string()));
+    }
+    write_if_changed(&cache, &serde_json::to_string(&settings)?)?;
+    Ok(settings)
+}
+
 /// Verify the binary, prepare the isolated layout and start omp.
 pub async fn spawn(spec: &LaunchSpec) -> Result<SidecarProcess, HarnessError> {
     let started = std::time::Instant::now();
     verify_binary(&spec.binary).await?;
     let verify_ms = started.elapsed().as_millis();
     spec.layout.prepare()?;
+    if spec.code.is_some() {
+        let settings = omp_settings(&spec.binary, &spec.layout).await?;
+        spec.layout.prepare_code(&settings)?;
+    }
     let (args, cwd) = spec.command_line()?;
 
     let mut command = Command::new(&spec.binary);
@@ -768,6 +846,8 @@ mod tests {
         std::fs::write(code.path().join("main.rs"), "fn main() {}").unwrap();
         let folder = CodeFolder::open(code.path()).unwrap();
         let spec = spec(data.path(), Some(folder.clone()));
+        let settings = crate::harness::code_mode::tests::omp_settings_fixture();
+        spec.layout.prepare_code(&settings).unwrap();
         let (args, cwd) = spec.command_line().unwrap();
         assert!(args.contains(&"--tools=read,grep,glob,ast_grep,edit,write,bash".to_string()));
         assert!(!args.iter().any(|a| a == "--no-tools" || a == "--no-ui"));
@@ -784,7 +864,7 @@ mod tests {
         let overlay: Value =
             serde_json::from_str(&std::fs::read_to_string(&spec.layout.code_overlay).unwrap())
                 .unwrap();
-        assert_eq!(overlay, code_overlay_config());
+        assert_eq!(overlay, code_overlay_config(&settings));
         assert!(!spec.layout.guard_hook.starts_with(folder.root()));
         let env = spec.environment();
         let get = |k: &str| {

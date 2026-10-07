@@ -36,6 +36,9 @@ use crate::research_commands::ResearchState;
 /// created, changed, deleted, or its sources or instructions changed.
 pub const WORKSPACES_CHANGED_EVENT: &str = "workspaces-changed";
 
+/// Longest the legacy import waits for the index before trying again on a later load.
+const INDEX_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// `workspace_state` key of the one-time import of legacy spaces.
 const LEGACY_IMPORT_KEY: &str = "legacy_spaces_v1";
 
@@ -755,7 +758,11 @@ pub async fn import_legacy_spaces(
         return Ok(0);
     }
     let folders: Vec<KnownFolder> = {
-        let engine = rag.read().await;
+        // Indexing may hold the index for a while; the conversations load without
+        // waiting for it, and the import is retried on the next load.
+        let engine = tokio::time::timeout(INDEX_WAIT, rag.read())
+            .await
+            .map_err(|_| WorkspaceCommandError::unavailable("the index is busy"))?;
         load_sources(&engine)
             .await
             .map_err(|e| WorkspaceCommandError::unavailable(e.to_string()))?

@@ -143,11 +143,14 @@ pub async fn load_conversations(
         .path()
         .app_data_dir()
         .map_err(|e| format!("Failed to get app data directory: {e}"))?;
-    if let Err(e) =
-        crate::workspace_commands::import_legacy_spaces(&workspaces, &dir, &rag.rag).await
-    {
+    match crate::workspace_commands::import_legacy_spaces(&workspaces, &dir, &rag.rag).await {
+        Ok(0) => {}
+        // Views that listed workspaces before the import refresh.
+        Ok(_) => crate::workspace_commands::broadcast_change(&app, None),
         // Retried on the next load; the conversations load either way.
-        tracing::warn!(target: "shodh::workspaces", error = %e, "legacy spaces not imported yet");
+        Err(e) => {
+            tracing::warn!(target: "shodh::workspaces", error = %e, "legacy spaces not imported yet")
+        }
     }
     let mut conversations = store(&app)?.load()?;
     // Sort by updated_at descending, pinned first

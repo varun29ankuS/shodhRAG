@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
+import { removeWithUndo } from '../../lib/undoToast';
 import { researchApi, toResearchError } from './api';
 import { copyPngImage, copyText } from './snippetClipboard';
 import { insertIntoComposer, showSourceBox } from './snippetBus';
@@ -92,8 +93,7 @@ export function SnippetDetail({ snippet, mode, onChanged, onOpenTable }: Snippet
   const [note, setNote] = useState(snippet.note);
   const [tags, setTags] = useState(snippet.tags.join(', '));
   const [kind, setKind] = useState<SnippetKind>(snippet.kind);
-  const [busy, setBusy] = useState<null | 'save' | 'delete' | 'table' | 'latex'>(null);
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [busy, setBusy] = useState<null | 'save' | 'table' | 'latex'>(null);
   const [table, setTable] = useState<SnippetTable | null | 'none'>(null);
   const latex = useMemo(() => (snippet.latex ? renderLatex(snippet.latex) : null), [snippet.latex]);
 
@@ -118,16 +118,17 @@ export function SnippetDetail({ snippet, mode, onChanged, onOpenTable }: Snippet
     }
   };
 
-  const remove = async () => {
-    setBusy('delete');
-    try {
-      await researchApi.deleteSnippet(snippet.id);
-      notify.success('Snippet deleted');
-      onChanged(null);
-    } catch (error) {
-      notify.error('The snippet could not be deleted', { description: toResearchError(error).message });
-      setBusy(null);
-    }
+  // Closed at once and deleted when the undo window ends; Undo shows it again.
+  const remove = () => {
+    const kept = snippet;
+    removeWithUndo({
+      message: 'Snippet deleted',
+      description: snippetLabel(kept),
+      hide: () => onChanged(null),
+      restore: () => onChanged(kept),
+      commit: () => researchApi.deleteSnippet(kept.id),
+      onError: error => notify.error('The snippet could not be deleted', { description: toResearchError(error).message }),
+    });
   };
 
   const extractTable = async () => {
@@ -258,22 +259,10 @@ export function SnippetDetail({ snippet, mode, onChanged, onOpenTable }: Snippet
           <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
           Edit
         </button>
-        {confirmDelete ? (
-          <span className="inline-flex items-center gap-1.5" role="group" aria-label="Confirm delete">
-            <button type="button" className={cn(BUTTON, 'text-shodh-error border-shodh-error/50')} onClick={() => void remove()} disabled={busy === 'delete'} autoFocus>
-              {busy === 'delete' ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />}
-              Delete permanently
-            </button>
-            <button type="button" className={BUTTON} onClick={() => setConfirmDelete(false)}>
-              Cancel
-            </button>
-          </span>
-        ) : (
-          <button type="button" className={BUTTON} onClick={() => setConfirmDelete(true)}>
-            <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-            Delete
-          </button>
-        )}
+        <button type="button" className={BUTTON} onClick={remove}>
+          <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+          Delete
+        </button>
       </div>
       {visionReason && (
         <p id={visionReasonId} className="-mt-2 text-[12px] text-shodh-text-muted">

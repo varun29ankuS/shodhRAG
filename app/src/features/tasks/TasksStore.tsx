@@ -1,3 +1,4 @@
+import { UNDO_WINDOW_MS } from '../../lib/undoQueue';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -22,8 +23,8 @@ import type { CalendarEvent, TodoItem } from './types';
 
 export type { EventPatch, TaskPatch } from './taskStore';
 
-/** How long a deleted task or event can be restored from the toast. */
-export const UNDO_WINDOW_MS = 6000;
+/** How long a deleted task or event can be restored from the toast (the app's undo window). */
+export { UNDO_WINDOW_MS };
 
 export interface NewTaskInput {
   title: string;

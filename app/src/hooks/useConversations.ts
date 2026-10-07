@@ -1,8 +1,8 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { toast } from 'sonner';
 import { notify } from '../lib/notify';
+import { removeWithUndo } from '../lib/undoToast';
 import { markStartup } from '../lib/startupTiming';
 
 export interface ConversationMessage {
@@ -81,7 +81,9 @@ export function useConversations() {
   // be cancelled by a save for conversation B scheduled within the window.
   const saveTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const loadedRef = useRef(false);
-  const pendingDeleteRef = useRef<Map<string, { timeout: ReturnType<typeof setTimeout>; conversation: Conversation }>>(new Map());
+  // The list as last rendered, for removals that need a record's place in it.
+  const latestConversations = useRef<Conversation[]>([]);
+  latestConversations.current = conversations;
 
   // The agent renamed or pinned a conversation (organize_conversation). The
   // backend saved it already; patch the in-memory copy so the next save of
@@ -272,70 +274,47 @@ export function useConversations() {
 
   const deleteConversation = useCallback(
     (id: string) => {
-      // Cancel any existing pending delete for this ID
-      const existing = pendingDeleteRef.current.get(id);
-      if (existing) {
-        clearTimeout(existing.timeout);
-        pendingDeleteRef.current.delete(id);
-      }
-
-      // Save the conversation data for potential undo
-      let deletedConversation: Conversation | undefined;
-
-      setConversations(prev => {
-        deletedConversation = prev.find(c => c.id === id);
-        const remaining = prev.filter(c => c.id !== id);
-        if (remaining.length === 0) {
-          const freshId = generateId();
-          const now = new Date().toISOString();
-          const fresh: Conversation = {
-            id: freshId,
-            title: 'New Chat',
-            messages: [],
-            createdAt: now,
-            updatedAt: now,
-            pinned: false,
-          };
-          setActiveConversationId(freshId);
-          invoke('save_conversation', { conversation: fresh }).catch(console.error);
-          return [fresh];
-        }
-        if (id === activeConversationId) {
-          setActiveConversationId(remaining[0].id);
-        }
-        return remaining;
-      });
-
-      if (!deletedConversation) return;
-
-      // Schedule actual backend deletion after 5s
-      const conv = deletedConversation;
-      const timeout = setTimeout(() => {
-        pendingDeleteRef.current.delete(id);
-        invoke('delete_conversation', { conversationId: id }).catch(console.error);
-      }, 5000);
-
-      pendingDeleteRef.current.set(id, { timeout, conversation: conv });
-
-      toast('Conversation deleted', {
-        description: conv.title !== 'New Chat' ? conv.title : undefined,
-        action: {
-          label: 'Undo',
-          onClick: () => {
-            const pending = pendingDeleteRef.current.get(id);
-            if (pending) {
-              clearTimeout(pending.timeout);
-              pendingDeleteRef.current.delete(id);
-              setConversations(prev => {
-                // Insert back in original position (prepend for simplicity)
-                return [pending.conversation, ...prev];
-              });
-              setActiveConversationId(id);
-              notify.success('Conversation restored');
+      const index = latestConversations.current.findIndex(c => c.id === id);
+      if (index < 0) return;
+      const conversation = latestConversations.current[index];
+      const wasActive = id === activeConversationId;
+      removeWithUndo({
+        message: 'Conversation deleted',
+        description: conversation.title !== 'New Chat' ? conversation.title : undefined,
+        hide: () => {
+          setConversations(prev => {
+            const remaining = prev.filter(c => c.id !== id);
+            if (remaining.length === 0) {
+              const freshId = generateId();
+              const now = new Date().toISOString();
+              const fresh: Conversation = {
+                id: freshId,
+                title: 'New Chat',
+                messages: [],
+                createdAt: now,
+                updatedAt: now,
+                pinned: false,
+              };
+              setActiveConversationId(freshId);
+              invoke('save_conversation', { conversation: fresh }).catch(console.error);
+              return [fresh];
             }
-          },
+            if (wasActive) setActiveConversationId(remaining[0].id);
+            return remaining;
+          });
         },
-        duration: 5000,
+        // The same record at the same place in the list; it was never deleted on disk.
+        restore: () => {
+          setConversations(prev => {
+            if (prev.some(c => c.id === id)) return prev;
+            const next = [...prev];
+            next.splice(Math.min(index, next.length), 0, conversation);
+            return next;
+          });
+          if (wasActive) setActiveConversationId(id);
+        },
+        commit: () => invoke('delete_conversation', { conversationId: id }),
+        onError: err => notify.error('The conversation was not deleted', { description: String(err) }),
       });
     },
     [activeConversationId]

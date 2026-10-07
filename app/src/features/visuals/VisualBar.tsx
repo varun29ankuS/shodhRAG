@@ -5,7 +5,7 @@ import { notify } from '../../lib/notify';
 import { useChatSession } from '../ask/ChatSessionContext';
 import { useFocus } from '../focus/FocusContext';
 import type { OpenFocus } from '../focus/FocusContext';
-import { confirmDelete, goToMessage, runExport } from './actions';
+import { deleteWithUndo, goToMessage, runExport } from './actions';
 import { onVisualsChanged, toVisualError, visualsApi } from './api';
 import { EditVisualDialog } from './EditVisualDialog';
 import { KIND_NOUN } from './extract';
@@ -239,7 +239,7 @@ export function VisualBar({
           disabled={!record}
           onClick={() => {
             if (!record) return;
-            void confirmDelete(record).then(deleted => { if (deleted) onClose(); });
+            void deleteWithUndo(record).then(deleted => { if (deleted) onClose(); });
           }}
         >
           <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />

@@ -9,7 +9,6 @@ import { fromInputs, isOverdue, storedDayKey, storedTime } from '../features/tas
 import { FOCUS_RING } from '../features/tasks/fields';
 import { DueMenu, PriorityMenu } from '../features/tasks/QuickMenus';
 import { ReminderBadge } from '../features/tasks/ReminderField';
-import ConfirmDialog from '../features/tasks/ConfirmDialog';
 import { useTasksStore } from '../features/tasks/TasksStore';
 import { isDone, PRIORITIES, PRIORITY_LABELS } from '../features/tasks/types';
 import type { CalendarEvent, TodoItem } from '../features/tasks/types';
@@ -135,7 +134,7 @@ function TaskRow({
   onFocusRow: () => void;
   onStartEdit: () => void;
   onEndEdit: () => void;
-  onRequestDelete: (confirm: boolean) => void;
+  onRequestDelete: () => void;
   onMove: (to: 'prev' | 'next' | 'first' | 'last') => void;
 }) {
   const { updateTask, openTask } = useTasksStore();
@@ -159,7 +158,7 @@ function TaskRow({
       case 'Enter': e.preventDefault(); openTask(task.id); break;
       case ' ': e.preventDefault(); toggle(); break;
       case 'F2': e.preventDefault(); onStartEdit(); break;
-      case 'Delete': e.preventDefault(); onRequestDelete(true); break;
+      case 'Delete': e.preventDefault(); onRequestDelete(); break;
       case 'ArrowDown': e.preventDefault(); onMove('next'); break;
       case 'ArrowUp': e.preventDefault(); onMove('prev'); break;
       case 'Home': e.preventDefault(); onMove('first'); break;
@@ -306,7 +305,7 @@ function TaskRow({
           tabIndex={inner}
           aria-label={`Delete ${task.title}`}
           title="Delete (you can undo)"
-          onClick={e => { e.stopPropagation(); onRequestDelete(false); }}
+          onClick={e => { e.stopPropagation(); onRequestDelete(); }}
           className={cn(ICON_BUTTON, 'shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 hover:text-shodh-error')}
         >
           <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
@@ -396,7 +395,7 @@ function MiniCalendar({
  * Tasks list: quick add, filters, and rows with inline title editing and
  * quick due/priority menus. Rows are one Tab stop (arrow keys move between
  * them); Enter opens the detail sheet, Space toggles done, F2 renames and
- * Delete asks before deleting (with an undo window either way).
+ * Delete deletes at once, with an undo window.
  */
 export default function CalendarTodoPanel() {
   const { tasks, events, loading, error, refresh, deleteTask, openEvent, focusRequest } = useTasksStore();
@@ -405,7 +404,6 @@ export default function CalendarTodoPanel() {
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [confirm, setConfirm] = useState<TodoItem | null>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const focusAfterDelete = useRef<string | null>(null);
   // Agent focus requests already applied; one made before this layout mounted is not replayed.
@@ -612,7 +610,7 @@ export default function CalendarTodoPanel() {
                     onFocusRow={() => setActiveId(task.id)}
                     onStartEdit={() => { setActiveId(task.id); setEditingId(task.id); }}
                     onEndEdit={() => setEditingId(null)}
-                    onRequestDelete={ask => (ask ? setConfirm(task) : doDelete(task))}
+                    onRequestDelete={() => doDelete(task)}
                     onMove={to => move(task.id, to)}
                   />
                 ))}
@@ -689,18 +687,6 @@ export default function CalendarTodoPanel() {
         </aside>
       </div>
 
-      <ConfirmDialog
-        open={confirm !== null}
-        title="Delete this task?"
-        description={confirm ? `“${confirm.title}” will be deleted. You can undo for a few seconds afterwards.` : ''}
-        confirmLabel="Delete"
-        onCancel={() => setConfirm(null)}
-        onConfirm={() => {
-          const task = confirm;
-          setConfirm(null);
-          if (task) doDelete(task);
-        }}
-      />
     </div>
   );
 }

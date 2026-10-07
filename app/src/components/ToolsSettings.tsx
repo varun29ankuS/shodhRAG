@@ -4,6 +4,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { ChevronDown, ChevronRight, FileJson, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { notify } from '../lib/notify';
+import { removeWithUndo } from '../lib/undoToast';
 import { useWorkspaces } from '../features/workspaces/WorkspaceContext';
 import { errorText, toolsApi } from '../features/tools/api';
 import type { Approval, ServerView, StagedInstall, ToolMode, ToolsOverview } from '../features/tools/api';
@@ -78,7 +79,7 @@ interface ServerCardProps {
 function ServerCard({ server, workspaceId, onChanged, onTested }: ServerCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [hidden, setHidden] = useState(false);
   const toolsId = useId();
 
   const run = async (action: () => Promise<unknown>, failure: string) => {
@@ -90,6 +91,20 @@ function ServerCard({ server, workspaceId, onChanged, onTested }: ServerCardProp
     }
   };
 
+  // Hidden at once; its configuration is removed when the undo window ends, so Undo
+  // keeps it exactly (command, secrets, modes and tool settings).
+  const remove = () =>
+    removeWithUndo({
+      message: `Removed ${server.name}`,
+      hide: () => setHidden(true),
+      restore: () => setHidden(false),
+      commit: async () => {
+        await toolsApi.removeServer(workspaceId, server.name);
+        onChanged();
+      },
+      onError: e => notify.error('The server was not removed', { description: errorText(e) }),
+    });
+
   const test = async () => {
     setTesting(true);
     try {
@@ -100,6 +115,8 @@ function ServerCard({ server, workspaceId, onChanged, onTested }: ServerCardProp
       setTesting(false);
     }
   };
+
+  if (hidden) return null;
 
   return (
     <li className="rounded-xl border border-shodh-border-subtle bg-shodh-surface-2 p-3.5 flex flex-col gap-2.5">
@@ -161,18 +178,11 @@ function ServerCard({ server, workspaceId, onChanged, onTested }: ServerCardProp
         </button>
         <button
           type="button"
-          onClick={() => {
-            if (!confirmRemove) {
-              setConfirmRemove(true);
-              return;
-            }
-            void run(() => toolsApi.removeServer(workspaceId, server.name), 'The server was not removed');
-          }}
-          onBlur={() => setConfirmRemove(false)}
-          className={cn(BUTTON, confirmRemove && 'border-shodh-error text-shodh-error')}
+          onClick={remove}
+          className={BUTTON}
         >
           <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-          {confirmRemove ? 'Confirm remove' : 'Remove'}
+          Remove
         </button>
       </div>
       {expanded && server.tools.length > 0 && (
@@ -365,7 +375,40 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
   const [staged, setStaged] = useState<StagedInstall | null>(null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const [hiddenSkills, setHiddenSkills] = useState<ReadonlySet<string>>(() => new Set());
   const sourceId = useId();
+  const skills = overview.skills.filter(skill => !hiddenSkills.has(skill.name));
+  // A removed skill leaves the overview once it is gone; forget it then, so one
+  // installed again under the same name shows.
+  useEffect(() => {
+    setHiddenSkills(prev => {
+      const present = new Set(overview.skills.map(skill => skill.name));
+      const kept = [...prev].filter(name => present.has(name));
+      return kept.length === prev.size ? prev : new Set(kept);
+    });
+  }, [overview.skills]);
+
+  // Hidden at once; the skill's folder is deleted when the undo window ends, so
+  // Undo keeps it exactly as installed.
+  const removeSkill = (name: string) => {
+    const toggle = (on: boolean) =>
+      setHiddenSkills(prev => {
+        const next = new Set(prev);
+        if (on) next.add(name);
+        else next.delete(name);
+        return next;
+      });
+    removeWithUndo({
+      message: `Removed the skill ${name}`,
+      hide: () => toggle(true),
+      restore: () => toggle(false),
+      commit: async () => {
+        await toolsApi.removeSkill(name);
+        onChanged();
+      },
+      onError: e => notify.error('The skill was not removed', { description: errorText(e) }),
+    });
+  };
 
   const review = async (recommendedId?: string) => {
     setBusy(true);
@@ -404,9 +447,9 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
           each skill's name and description are in every answer; files a skill ships are read, never run.
         </p>
       </div>
-      {overview.skills.length > 0 && (
+      {skills.length > 0 && (
         <ul className="m-0 p-0 list-none flex flex-col gap-2">
-          {overview.skills.map(skill => (
+          {skills.map(skill => (
             <li key={skill.name} className="flex items-start gap-3 rounded-xl border border-shodh-border-subtle bg-shodh-surface-2 p-3">
               <div className="min-w-0 flex-1">
                 <p className="m-0 text-[13px] font-semibold text-shodh-text">{skill.name}</p>
@@ -455,12 +498,7 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
                 type="button"
                 aria-label={`Remove ${skill.name}`}
                 title="Remove this skill from Shodh"
-                onClick={() =>
-                  void toolsApi
-                    .removeSkill(skill.name)
-                    .then(onChanged)
-                    .catch(e => notify.error('The skill was not removed', { description: errorText(e) }))
-                }
+                onClick={() => removeSkill(skill.name)}
                 className={cn('w-8 h-8 inline-flex items-center justify-center rounded-lg text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text', FOCUS_RING)}
               >
                 <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />

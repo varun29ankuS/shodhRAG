@@ -3,6 +3,7 @@ import { ask } from '@tauri-apps/plugin-dialog';
 import { Check, Pencil, RotateCcw, ShieldAlert, Square, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { notify } from '../lib/notify';
+import { removeWithUndo } from '../lib/undoToast';
 import type { LearnMode, MemoryPrefs } from '../lib/appSettings';
 import {
   acceptSuggestion,
@@ -247,6 +248,18 @@ function SuggestionItem({ suggestion, busy, run, conversationTitle, onOpenConver
   const pending = suggestion.status === 'pending' || suggestion.status === 'failed';
   const sensitive = sensitiveLabel(suggestion.sensitive);
   const conversation = suggestion.conversationId;
+  const [hidden, setHidden] = useState(false);
+
+  // Hidden at once and rejected when the undo window ends; Undo leaves it pending.
+  const reject = () =>
+    removeWithUndo({
+      message: 'Suggestion rejected',
+      description: suggestionText(suggestion),
+      hide: () => setHidden(true),
+      restore: () => setHidden(false),
+      commit: () => rejectSuggestion(suggestion.id),
+      onError: err => notify.error('The suggestion was not rejected', { description: errorText(err) }),
+    });
 
   const accept = (edit = false) =>
     run(async () => {
@@ -254,6 +267,8 @@ function SuggestionItem({ suggestion, busy, run, conversationTitle, onOpenConver
       setEditing(false);
       notify.success('Memory saved', { description: suggestionText(suggestion) });
     }, 'The suggestion was not accepted');
+
+  if (hidden) return null;
 
   return (
     <li className="py-3 flex flex-col gap-1.5">
@@ -340,7 +355,7 @@ function SuggestionItem({ suggestion, busy, run, conversationTitle, onOpenConver
           <button
             type="button"
             className={cn(ICON_BUTTON, 'hover:text-shodh-error')}
-            onClick={() => void run(async () => { await rejectSuggestion(suggestion.id); }, 'The suggestion was not rejected')}
+            onClick={reject}
             disabled={busy}
           >
             <X aria-hidden="true" className="w-3.5 h-3.5" /> Reject

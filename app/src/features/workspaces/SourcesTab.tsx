@@ -3,6 +3,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { AlertTriangle, CheckCircle2, FileText, Folder, Loader2, Network, Plus, RefreshCw, Scissors, Search, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
+import { removeWithUndo } from '../../lib/undoToast';
 import { researchApi, toResearchError } from '../research/api';
 import { graphApi } from '../research/graphApi';
 import type { ViewNode } from '../research/graphTypes';
@@ -336,7 +337,7 @@ export function SourcesTab({
   const [health, setHealth] = useState<SourceHealth | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
-  const [removing, setRemoving] = useState<string | null>(null);
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
   const [adding, setAdding] = useState(workspace.sources.length === 0);
 
   const check = useCallback(async () => {
@@ -359,21 +360,45 @@ export function SourcesTab({
     health?.sources.find(h => h.kind === s.kind && h.ref === s.ref)?.state ?? null;
   const statusOf = (s: WorkspaceSource) => health?.sources.find(h => h.kind === s.kind && h.ref === s.ref) ?? null;
 
-  const remove = async (s: WorkspaceSource) => {
+  // Hidden at once and removed when the undo window ends, so Undo keeps the source's
+  // row exactly (who added it and when).
+  const remove = (s: WorkspaceSource) => {
     const key = `${s.kind}\u0000${s.ref}`;
-    setRemoving(key);
-    try {
-      await workspacesApi.removeSource(workspace.id, s.kind, s.ref);
-      notify.success(`Removed “${s.label}” from the workspace`, { description: 'It stays in your Library.' });
-      onChanged();
-    } catch (err) {
-      notify.error('The source was not removed', { description: workspaceError(err).message });
-    } finally {
-      setRemoving(null);
-    }
+    const workspaceId = workspace.id;
+    const toggle = (on: boolean) =>
+      setHidden(prev => {
+        const next = new Set(prev);
+        if (on) next.add(key);
+        else next.delete(key);
+        return next;
+      });
+    removeWithUndo({
+      message: `Removed “${s.label}” from the workspace`,
+      description: 'It stays in your Library.',
+      hide: () => toggle(true),
+      restore: () => toggle(false),
+      commit: async () => {
+        await workspacesApi.removeSource(workspaceId, s.kind, s.ref);
+        onChanged();
+      },
+      onError: err => notify.error('The source was not removed', { description: workspaceError(err).message }),
+    });
   };
 
-  const byKind = KIND_ORDER.map(kind => ({ kind, items: workspace.sources.filter(s => s.kind === kind) })).filter(g => g.items.length > 0);
+  // A removed source leaves the workspace once it is gone; forget it then, so one
+  // added again shows.
+  useEffect(() => {
+    setHidden(prev => {
+      const present = new Set(workspace.sources.map(s => `${s.kind}\u0000${s.ref}`));
+      const kept = [...prev].filter(key => present.has(key));
+      return kept.length === prev.size ? prev : new Set(kept);
+    });
+  }, [workspace.sources]);
+
+  const byKind = KIND_ORDER.map(kind => ({
+    kind,
+    items: workspace.sources.filter(s => s.kind === kind && !hidden.has(`${s.kind}\u0000${s.ref}`)),
+  })).filter(g => g.items.length > 0);
 
   return (
     <div className="flex flex-col gap-5">
@@ -439,11 +464,10 @@ export function SourcesTab({
                     <button
                       type="button"
                       className={cn(QUIET_BUTTON, 'h-7')}
-                      onClick={() => void remove(s)}
-                      disabled={removing === key}
+                      onClick={() => remove(s)}
                       aria-label={`Remove ${s.label} from the workspace`}
                     >
-                      {removing === key ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <X className="w-3.5 h-3.5" aria-hidden="true" />}
+                      <X className="w-3.5 h-3.5" aria-hidden="true" />
                       Remove
                     </button>
                   </li>

@@ -550,9 +550,11 @@ impl VisualStore {
                 params![root, at],
             )?;
         } else {
+            // Restored exactly as it was: `updated_at` (and so its place in the gallery)
+            // is the one it had before the delete.
             tx.execute(
-                "UPDATE generated_visuals SET deleted_at = NULL, updated_at = ?2 WHERE root_id = ?1",
-                params![root, at],
+                "UPDATE generated_visuals SET deleted_at = NULL WHERE root_id = ?1",
+                params![root],
             )?;
         }
         tx.commit()?;
@@ -708,13 +710,15 @@ mod tests {
         let (_dir, store) = store();
         let b = [block(VisualKind::Equation, "Energy", "E = mc^2")];
         let id = store.capture(&origin("m1"), &b).unwrap().created[0].clone();
+        let before = store.get(&id).unwrap();
         store.delete(&id).unwrap();
         assert!(matches!(store.get(&id), Err(VisualError::Deleted(_))));
         let again = store.capture(&origin("m1"), &b).unwrap();
         assert!(again.created.is_empty());
         assert_eq!(store.list(&VisualQuery::default()).unwrap().total, 0);
         store.restore(&id).unwrap();
-        assert_eq!(store.get(&id).unwrap().visual.title, "Energy");
+        // Undo gives back the same record, timestamps included.
+        assert_eq!(store.get(&id).unwrap(), before);
         assert!(matches!(
             store.get("missing"),
             Err(VisualError::NotFound(_))

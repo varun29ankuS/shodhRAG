@@ -6,7 +6,7 @@ import { notify } from '../../lib/notify';
 import { relativeTime } from '../../utils/time';
 import { useChatSession } from '../ask/ChatSessionContext';
 import { useFocus } from '../focus/FocusContext';
-import { confirmDelete, goToMessage, runExport } from './actions';
+import { deleteWithUndo, goToMessage, runExport } from './actions';
 import { onVisualsChanged, toVisualError, visualsApi } from './api';
 import { EditVisualDialog } from './EditVisualDialog';
 import { KIND_NOUN, VISUAL_KINDS } from './extract';
@@ -246,7 +246,7 @@ function VisualCard({
             }))}
             onGoTo={card.messageId ? () => goToMessage(card, switchConversation) : null}
             onDelete={() => {
-              void confirmDelete(card).then(deleted => {
+              void deleteWithUndo(card).then(deleted => {
                 if (deleted) onChange(null);
               });
             }}

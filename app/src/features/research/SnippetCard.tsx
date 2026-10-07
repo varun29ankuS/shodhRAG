@@ -2,6 +2,7 @@ import React, { useId, useState } from 'react';
 import { AlertTriangle, GripVertical, Loader2, Scissors, Trash2 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
+import { removeWithUndo } from '../../lib/undoToast';
 import { relativeTime } from '../../utils/time';
 import { researchApi, toResearchError } from './api';
 import { openSnippet } from './snippetBus';
@@ -38,25 +39,30 @@ function dateLabel(iso: string): string {
 
 /**
  * A snippet card: opens the snippet, drags onto a composer as context, and
- * deletes it (after a confirmation step).
+ * deletes it (with an undo window).
  */
 export function SnippetCard({ snippet, showFile = true, onChange }: { snippet: Snippet; showFile?: boolean; onChange: (next: Snippet | null) => void }) {
   const titleId = useId();
-  const [confirming, setConfirming] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const [hidden, setHidden] = useState(false);
   const label = snippetLabel(snippet);
 
-  const remove = async () => {
-    setDeleting(true);
-    try {
-      await researchApi.deleteSnippet(snippet.id);
-      onChange(null);
-      notify.success('Snippet deleted');
-    } catch (error) {
-      setDeleting(false);
-      notify.error('The snippet could not be deleted', { description: toResearchError(error).message });
-    }
+  // Hidden at once and deleted when the undo window ends; Undo shows it again.
+  const remove = () => {
+    const id = snippet.id;
+    removeWithUndo({
+      message: 'Snippet deleted',
+      description: label,
+      hide: () => setHidden(true),
+      restore: () => setHidden(false),
+      commit: async () => {
+        await researchApi.deleteSnippet(id);
+        onChange(null);
+      },
+      onError: error => notify.error('The snippet could not be deleted', { description: toResearchError(error).message }),
+    });
   };
+
+  if (hidden) return null;
 
   return (
     <li className="relative">
@@ -94,37 +100,19 @@ export function SnippetCard({ snippet, showFile = true, onChange }: { snippet: S
         >
           <GripVertical className="w-3.5 h-3.5" />
         </span>
-        {confirming ? (
-          <div className="absolute right-2 top-2 flex items-center gap-1 rounded-lg bg-shodh-surface border border-shodh-border p-1 shadow-sm" role="group" aria-label={`Delete ${label}?`}>
-            <button
-              type="button"
-              autoFocus
-              onClick={() => void remove()}
-              disabled={deleting}
-              className={cn('h-7 px-2 rounded-md text-[12px] text-shodh-error hover:bg-shodh-raised inline-flex items-center gap-1', FOCUS_RING)}
-            >
-              {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />}
-              Delete
-            </button>
-            <button type="button" onClick={() => setConfirming(false)} className={cn('h-7 px-2 rounded-md text-[12px] text-shodh-text-secondary hover:bg-shodh-raised', FOCUS_RING)}>
-              Keep
-            </button>
-          </div>
-        ) : (
-          <button
-            type="button"
-            aria-label={`Delete snippet ${label}`}
-            title="Delete"
-            onClick={() => setConfirming(true)}
-            className={cn(
-              'absolute right-2 top-2 w-7 h-7 inline-flex items-center justify-center rounded-lg bg-shodh-surface/90 border border-shodh-border text-shodh-text-muted hover:text-shodh-error',
-              'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition-opacity duration-micro',
-              FOCUS_RING,
-            )}
-          >
-            <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-          </button>
-        )}
+        <button
+          type="button"
+          aria-label={`Delete snippet ${label}`}
+          title="Delete (you can undo)"
+          onClick={remove}
+          className={cn(
+            'absolute right-2 top-2 w-7 h-7 inline-flex items-center justify-center rounded-lg bg-shodh-surface/90 border border-shodh-border text-shodh-text-muted hover:text-shodh-error',
+            'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition-opacity duration-micro',
+            FOCUS_RING,
+          )}
+        >
+          <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+        </button>
       </article>
     </li>
   );

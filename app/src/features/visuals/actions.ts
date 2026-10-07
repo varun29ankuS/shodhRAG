@@ -2,27 +2,25 @@
  * Gallery actions shared by the cards and the focus pop-out.
  */
 
-import { ask } from '@tauri-apps/plugin-dialog';
 import { toast } from 'sonner';
 import { notify } from '../../lib/notify';
+import { UNDO_WINDOW_MS } from '../../lib/undoQueue';
 import { toVisualError, visualsApi } from './api';
-import { KIND_NOUN } from './extract';
 import { exportVisual, FORMAT_LABEL } from './exportVisual';
 import type { ExportFormat } from './exportVisual';
 import type { VisualRecord } from './model';
 import { requestReveal } from './reveal';
 
-/** Ask, then delete the visual (every version), with Undo in the notice. True when deleted. */
-export async function confirmDelete(record: Pick<VisualRecord, 'id' | 'title' | 'kind'>): Promise<boolean> {
-  const noun = KIND_NOUN[record.kind].toLowerCase();
-  const confirmed = await ask(
-    `Delete the ${noun} “${record.title}” and all of its versions from the gallery? The answer it came from keeps it.`,
-    { title: `Delete ${noun}`, kind: 'warning', okLabel: 'Delete', cancelLabel: 'Keep' },
-  );
-  if (!confirmed) return false;
+/**
+ * Delete the visual (every version) at once; the notice offers Undo for the app's
+ * undo window. A deleted visual is only marked deleted, so Undo restores it exactly.
+ * True when deleted.
+ */
+export async function deleteWithUndo(record: Pick<VisualRecord, 'id' | 'title' | 'kind'>): Promise<boolean> {
   try {
     const root = await visualsApi.remove(record.id);
     toast.success(`Deleted “${record.title}”`, {
+      duration: UNDO_WINDOW_MS,
       action: {
         label: 'Undo',
         onClick: () => {

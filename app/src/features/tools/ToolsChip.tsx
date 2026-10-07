@@ -118,8 +118,8 @@ export function ToolsChip({ workspaceId, mode, answerRunning, onOpenSettings }: 
             <>
               {view.many && (
                 <p className="m-0 text-[12px] text-shodh-text-secondary bg-shodh-warning-soft rounded-lg px-2.5 py-2">
-                  {view.total} tools is a lot: models choose less well with more than 40. Turn off servers or tools you
-                  do not need here.
+                  This chat has many tools in every answer; models choose less well with more than 40. Turn off
+                  servers or tools you do not need here.
                 </p>
               )}
               <p className="m-0 text-[12.5px] text-shodh-text-secondary">

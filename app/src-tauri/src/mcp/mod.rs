@@ -38,6 +38,10 @@ use shodh_rag::harness::tools::HostTool;
 /// Longest a server may take to start and list its tools when a chat needs it.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// How long a server that failed to start is not tried again (except by
+/// "Test connection", which always starts it afresh).
+pub const RETRY_AFTER: Duration = Duration::from_secs(60);
+
 /// More tools than this in one chat make models pick worse; the composer warns.
 pub const MANY_TOOLS: usize = 40;
 
@@ -83,6 +87,9 @@ struct Live {
 struct Slot {
     scope: String,
     live: tokio::sync::Mutex<Option<Arc<Live>>>,
+    /// The last failed start: a server that does not start is not tried
+    /// again for [`RETRY_AFTER`], so chats are not held up by it each time.
+    failed: Mutex<Option<(std::time::Instant, String)>>,
 }
 
 /// What the settings page knows about a server.
@@ -323,12 +330,18 @@ impl McpManager {
                 Arc::new(Slot {
                     scope,
                     live: tokio::sync::Mutex::new(None),
+                    failed: Mutex::new(None),
                 })
             })
             .clone();
-        let mut slot = slot.live.lock().await;
-        if let Some(live) = slot.as_ref().filter(|l| l.client.is_alive()) {
+        let mut live_slot = slot.live.lock().await;
+        if let Some(live) = live_slot.as_ref().filter(|l| l.client.is_alive()) {
             return Ok(live.clone());
+        }
+        if let Some((at, error)) = lock(&slot.failed).as_ref() {
+            if at.elapsed() < RETRY_AFTER {
+                return Err(error.clone());
+            }
         }
         let started = tokio::time::timeout(CONNECT_TIMEOUT, async {
             let client = McpClient::connect(transport).await?;
@@ -348,7 +361,8 @@ impl McpManager {
                         tools: live.tools.clone(),
                     },
                 );
-                *slot = Some(live.clone());
+                *live_slot = Some(live.clone());
+                *lock(&slot.failed) = None;
                 Ok(live)
             }
             Err(e) => {
@@ -362,6 +376,7 @@ impl McpManager {
                         tools: Vec::new(),
                     },
                 );
+                *lock(&slot.failed) = Some((std::time::Instant::now(), error.clone()));
                 Err(error)
             }
         }
@@ -519,13 +534,19 @@ impl McpManager {
             tools.extend(skill_tools(skills));
         }
         let total = builtin + tools.len();
+        // Research's built-in tools are loaded on demand; Code mode's and the
+        // added ones are in the model's context on every turn.
+        let always_loaded = match mode {
+            Mode::Code => total,
+            Mode::Research => tools.len(),
+        };
         ChatTools {
             view: ChatToolsView {
                 servers: view_servers,
                 skills: summaries,
                 builtin,
                 total,
-                many: total > MANY_TOOLS,
+                many: always_loaded > MANY_TOOLS,
             },
             tools,
             fingerprint: fingerprint.finish(),
@@ -617,6 +638,16 @@ mod tests {
             .await;
         assert!(tools.view.servers.is_empty());
         assert_eq!(tools.view.total, 30);
+        assert!(!tools.view.many);
+        // Research's many built-in tools load on demand: no warning for them.
+        let research = manager
+            .chat_tools(None, Mode::Research, None, &[], 56, false)
+            .await;
+        assert!(!research.view.many);
+        let code = manager
+            .chat_tools(None, Mode::Code, None, &[], 56, false)
+            .await;
+        assert!(code.view.many);
         // A bad edit changes nothing.
         let refused = manager
             .edit(None, |doc| {
@@ -679,5 +710,12 @@ mod tests {
             manager.status_of(None, Scope::Global, "missing").state,
             "error"
         );
+        // A failed server is not started again on the next chat.
+        let again = std::time::Instant::now();
+        let tools = manager
+            .chat_tools(None, Mode::Research, None, &[], 5, true)
+            .await;
+        assert!(again.elapsed() < Duration::from_secs(1));
+        assert_eq!(tools.view.servers[0].error.as_deref(), Some(errors[0].1));
     }
 }

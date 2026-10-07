@@ -19,6 +19,7 @@ use shodh_rag::comprehensive_system::ComprehensiveRAG;
 use shodh_rag::embeddings::model_store::{
     ArtifactState, ArtifactStatus, HttpByteSource, InstallPhase, InstallProgress, ModelStore,
 };
+use shodh_rag::inbox::{InboxKind, InboxStatus};
 use shodh_rag::processing::table_model::{
     model_dir, shared_table_model, SharedTableModel, TableModel, TableModelError,
 };
@@ -28,7 +29,15 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::RwLock as AsyncRwLock;
 
 use crate::audit_commands::AuditState;
+use crate::inbox_commands;
 use crate::research_commands::{broadcast_change, ResearchState};
+
+/// The file name of `path` (the whole path when it has none).
+fn file_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
 
 /// Progress of a running install (`InstallProgress`, camelCase).
 pub const TABLE_MODEL_PROGRESS_EVENT: &str = "table-model-progress";
@@ -331,10 +340,38 @@ async fn refinement_worker(
             }
             Err(e) => {
                 tracing::warn!(error = %format!("{e:#}"), "refined tables could not be indexed: {}", path.display());
+                let file_path = path.display().to_string();
+                inbox_commands::post(
+                    &app,
+                    inbox_commands::work_item(
+                        format!("tables:{file_path}"),
+                        InboxKind::Tables,
+                        InboxStatus::Failed,
+                        format!("Tables of {} were not refined", file_name(&path)),
+                        Some(format!("{e:#}")),
+                        Some(inbox_commands::document_link(&file_path)),
+                    ),
+                )
+                .await;
                 continue;
             }
         };
         let file_path = path.display().to_string();
+        inbox_commands::post(
+            &app,
+            inbox_commands::work_item(
+                format!("tables:{file_path}"),
+                InboxKind::Tables,
+                InboxStatus::Done,
+                format!("Tables refined in {}", file_name(&path)),
+                Some(format!(
+                    "{model_tables} {} read by the table model",
+                    if model_tables == 1 { "table" } else { "tables" }
+                )),
+                Some(inbox_commands::document_link(&file_path)),
+            ),
+        )
+        .await;
         tracing::info!(
             chunks,
             model_tables,

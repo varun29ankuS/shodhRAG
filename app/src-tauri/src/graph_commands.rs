@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use shodh_rag::harness::web::SafeClient;
+use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus};
 use shodh_rag::research::citations::graph::GraphSize;
 use shodh_rag::research::citations::views::{
     concept_view, find, graph_view, paper_view, ConceptView, GraphView, PaperView,
@@ -23,12 +24,15 @@ use shodh_rag::research::snippets::{Snippet, SnippetQuery};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::agent_tools::web_block_reason;
+use crate::inbox_commands;
 use crate::research_commands::{
     broadcast_change, indexed_pdfs, ResearchCommandError, ResearchCommandResult, ResearchState,
 };
 
 /// Emitted with a [`BuildProgress`] while the graph builds.
 pub const GRAPH_PROGRESS_EVENT: &str = "citation-graph-progress";
+/// Inbox id of the graph build (one build at a time).
+const GRAPH_INBOX_ID: &str = "citation_graph";
 /// Most papers a filter returns.
 const MAX_FOUND: usize = 500;
 
@@ -134,10 +138,52 @@ pub async fn paper_graph_build(
             tracing::debug!(target: "shodh::research", error = %e, "graph progress not sent");
         }
     };
-    let report = services
+    let link = Some(InboxLink::new("library", None));
+    inbox_commands::post(
+        &app,
+        inbox_commands::work_item(
+            GRAPH_INBOX_ID.into(),
+            InboxKind::CitationGraph,
+            InboxStatus::Working,
+            "Building the citation graph",
+            Some(format!("{} indexed PDFs", files.len())),
+            link.clone(),
+        ),
+    )
+    .await;
+    let built = services
         .citations
         .build(&files, &services.results, &resolver, &progress)
-        .await?;
+        .await;
+    let item = match &built {
+        Ok(report) => inbox_commands::work_item(
+            GRAPH_INBOX_ID.into(),
+            InboxKind::CitationGraph,
+            InboxStatus::Done,
+            "Citation graph built",
+            Some(format!(
+                "{} papers, {} references{}",
+                report.files,
+                report.references,
+                if report.failed.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {} files could not be read", report.failed.len())
+                }
+            )),
+            link,
+        ),
+        Err(e) => inbox_commands::work_item(
+            GRAPH_INBOX_ID.into(),
+            InboxKind::CitationGraph,
+            InboxStatus::Failed,
+            "The citation graph was not built",
+            Some(e.to_string()),
+            link,
+        ),
+    };
+    inbox_commands::post(&app, item).await;
+    let report = built?;
     broadcast_change(&app, "graph", None);
     Ok(report)
 }

@@ -16,6 +16,7 @@ use std::time::Duration;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use shodh_rag::folder_sync::{is_temporary_file, sync_folder, ManifestStore, SyncReport};
+use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus, NewInboxItem};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
@@ -109,6 +110,56 @@ async fn keep_in_sync(
     }
 }
 
+/// The Inbox item of a sync that changed the index or failed; a sync that found
+/// nothing to do adds none.
+fn inbox_item(
+    source: &FolderSourceRef,
+    result: &Result<SyncReport, String>,
+) -> Option<NewInboxItem> {
+    let name = Path::new(&source.path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| source.path.clone());
+    let (status, title, detail) = match result {
+        Ok(report) if report.indexed + report.removed == 0 => return None,
+        Ok(report) => {
+            let mut parts = Vec::new();
+            if report.indexed > 0 {
+                parts.push(format!("{} indexed", report.indexed));
+            }
+            if report.removed > 0 {
+                parts.push(format!("{} removed", report.removed));
+            }
+            if !report.failures.is_empty() {
+                parts.push(format!("{} could not be read", report.failures.len()));
+            }
+            let status = if report.failures.is_empty() {
+                InboxStatus::Done
+            } else {
+                InboxStatus::Failed
+            };
+            (status, format!("{name} is up to date"), parts.join(", "))
+        }
+        Err(e) => (
+            InboxStatus::Failed,
+            format!("{name} was not synced"),
+            e.clone(),
+        ),
+    };
+    Some(NewInboxItem {
+        id: format!("indexing:{}", source.id),
+        kind: InboxKind::Indexing,
+        status,
+        title,
+        detail: Some(detail),
+        link: Some(InboxLink::new(
+            "library",
+            Some(serde_json::json!({ "kind": "source", "sourceId": source.id })),
+        )),
+        data: serde_json::json!({ "sourceId": source.id }),
+    })
+}
+
 async fn sync_once(app: &AppHandle, source: &FolderSourceRef) {
     app.state::<BackgroundState>().wait_until_resumed().await;
     let state = app.state::<FolderSyncState>();
@@ -120,6 +171,9 @@ async fn sync_once(app: &AppHandle, source: &FolderSourceRef) {
     let result = sync_folder(&source.path, &source.id, &state.store, &rag).await;
     if let Err(e) = &result {
         tracing::warn!(source_id = %source.id, error = %e, "folder sync failed");
+    }
+    if let Some(item) = inbox_item(source, &result) {
+        crate::inbox_commands::post(app, item).await;
     }
     let (report, error) = match result {
         Ok(report) => (Some(report), None),

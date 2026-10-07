@@ -29,6 +29,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, LocalResult, NaiveDateTime, TimeZone, Timelike, Utc};
 use serde::Serialize;
+use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus, NewInboxItem};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::Notify;
@@ -238,11 +239,34 @@ fn due_text(reminder: &DueReminder) -> String {
     }
 }
 
+/// The Inbox item of a reminder that rang (or was missed while Shodh was closed):
+/// it waits for the user until dismissed; Open shows the task.
+pub fn inbox_item(reminder: &DueReminder, missed: bool) -> NewInboxItem {
+    NewInboxItem {
+        id: format!("reminder:{}", reminder.task_id),
+        kind: InboxKind::Reminder,
+        status: InboxStatus::NeedsYou,
+        title: reminder.title.clone(),
+        detail: Some(match (missed, reminder.due_date.as_deref()) {
+            (true, Some(due)) => format!("Missed reminder, due {}", due.replace('T', " ")),
+            (true, None) => "Missed reminder".to_string(),
+            (false, Some(due)) => format!("Reminder, due {}", due.replace('T', " ")),
+            (false, None) => "Reminder".to_string(),
+        }),
+        link: Some(InboxLink::new(
+            "tasks",
+            Some(serde_json::json!({ "kind": "calendar", "taskId": reminder.task_id })),
+        )),
+        data: serde_json::json!({ "taskId": reminder.task_id }),
+    }
+}
+
 async fn ring(app: &AppHandle, store: &CalendarStore, reminder: DueReminder) {
     if !mark_fired(store, &reminder).await {
         return;
     }
     notify(app, "Reminder", &due_text(&reminder));
+    crate::inbox_commands::post(app, inbox_item(&reminder, false)).await;
     if let Err(e) = app.emit(REMINDER_FIRED_EVENT, &reminder) {
         tracing::warn!(error = %e, "could not emit {}", REMINDER_FIRED_EVENT);
     }
@@ -266,6 +290,9 @@ async fn record_missed(app: &AppHandle, store: &CalendarStore, missed: Vec<DueRe
         many => format!("{} reminders. Open Shodh to see them.", many.len()),
     };
     notify(app, "Missed while Shodh was closed", &body);
+    for reminder in &recorded {
+        crate::inbox_commands::post(app, inbox_item(reminder, true)).await;
+    }
     let state = app.state::<ReminderState>();
     let list = {
         let mut kept = state.missed.lock().unwrap_or_else(|e| e.into_inner());

@@ -18,6 +18,7 @@ use shodh_rag::harness::mcp::{
     effective_read_only, verified_for, Approval, Mode, Scope, ServerConfig, Transport,
 };
 use shodh_rag::harness::skills::{resource_files, SkillProblem};
+use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
@@ -444,6 +445,7 @@ pub async fn mcp_test_server(
 /// same). Returns the names added.
 #[tauri::command]
 pub async fn mcp_add_servers(
+    app: AppHandle,
     workspace_id: Option<String>,
     config_text: String,
     mcp: State<'_, McpState>,
@@ -457,6 +459,7 @@ pub async fn mcp_add_servers(
         })
         .await?;
     tracing::info!(target: "shodh::mcp", servers = ?names, "MCP servers added");
+    post_install(&app, "mcp", Ok(&names)).await;
     Ok(names)
 }
 
@@ -537,13 +540,19 @@ pub async fn mcp_open_config(
 
 /// Download, verify and register enola (see `mcp::enola`).
 #[tauri::command]
-pub async fn enola_install(mcp: State<'_, McpState>) -> CommandResult<String> {
+pub async fn enola_install(app: AppHandle, mcp: State<'_, McpState>) -> CommandResult<String> {
     let manager = mcp.0.clone();
-    let binary = enola::install(manager.data_dir()).await?;
-    manager
-        .edit(None, |doc| enola::register(doc, &binary))
-        .await?;
-    Ok(binary.display().to_string())
+    let installed = async {
+        let binary = enola::install(manager.data_dir()).await?;
+        manager
+            .edit(None, |doc| enola::register(doc, &binary))
+            .await?;
+        CommandResult::Ok(binary.display().to_string())
+    }
+    .await;
+    let names = ["enola".to_string()];
+    post_install(&app, "enola", installed.as_ref().map(|_| &names[..])).await;
+    installed
 }
 
 #[tauri::command]
@@ -584,13 +593,49 @@ pub async fn skills_set_modes(
 
 #[tauri::command]
 pub async fn skills_confirm_install(
+    app: AppHandle,
     token: String,
     mcp: State<'_, McpState>,
     installer: State<'_, SkillInstaller>,
 ) -> CommandResult<Vec<String>> {
-    let names = installer.confirm(mcp.0.data_dir(), &token).await?;
+    let installed = installer.confirm(mcp.0.data_dir(), &token).await;
+    post_install(&app, "skills", installed.as_deref()).await;
+    let names = installed?;
     tracing::info!(target: "shodh::mcp", skills = ?names, "skills installed");
     Ok(names)
+}
+
+/// Reports an install (`what`: `skills`, `mcp` or `enola`) to the Inbox.
+async fn post_install(app: &AppHandle, what: &str, result: Result<&[String], &String>) {
+    let noun = match what {
+        "skills" => "Skills",
+        "mcp" => "MCP servers",
+        _ => "enola",
+    };
+    let (status, title, detail) = match result {
+        Ok(names) => (
+            InboxStatus::Done,
+            format!("{noun} installed"),
+            names.join(", "),
+        ),
+        Err(e) => (
+            InboxStatus::Failed,
+            format!("{noun} could not be installed"),
+            e.clone(),
+        ),
+    };
+    crate::inbox_commands::post(
+        app,
+        crate::inbox_commands::work_item(
+            format!("install:{what}:{}", chrono::Utc::now().timestamp_millis()),
+            InboxKind::Install,
+            status,
+            title,
+            Some(detail),
+            Some(InboxLink::new("settings", None)),
+        ),
+    )
+    .await;
 }
 
 #[tauri::command]

@@ -8,6 +8,7 @@
 //! binary and launches the runtime, which takes seconds, so doing it before
 //! the first question keeps the first visible activity immediate.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -22,7 +23,7 @@ use shodh_rag::harness::code_mode::{
 };
 use shodh_rag::harness::mcp::Mode;
 use shodh_rag::harness::model::EnvValue;
-use shodh_rag::harness::profile::is_valid_slug;
+use shodh_rag::harness::profile::{app_tools, is_valid_slug};
 use shodh_rag::harness::tools::{HostTool, RunScope, ToolRegistry};
 use shodh_rag::harness::{
     fetch_omp, resolve_binary_path, select_model_with, stealth_allowed_by_env, AgentEvent,
@@ -41,6 +42,7 @@ use crate::api_key_store;
 use crate::app_settings::SettingsStore;
 use crate::audit_commands::AuditState;
 use crate::conversation_commands::ConversationMode;
+use crate::inbox_commands;
 use crate::llm_commands::LLMState;
 use crate::memory_commands::{recall_for_run, with_memories, MemoryState};
 use crate::memory_learn::{LearnState, TextOrigin};
@@ -1113,9 +1115,12 @@ More tools, from the MCP servers and skills the user connected: {}.             
     let forward_learn = learn.inner().clone();
     let last_used_ms = Arc::new(AtomicU64::new(now_ms()));
     let forward_used = last_used_ms.clone();
+    let forward_conversation = conversation_id.clone();
     tauri::async_runtime::spawn(async move {
         // Builds each run's `answer` audit event from the stream.
         let mut tap = RunAuditTap::new();
+        // Steps of the export tool, so a finished export reaches the Inbox.
+        let mut export_steps: HashSet<String> = HashSet::new();
         while let Some(event) = events.recv().await {
             // An answer in progress keeps its session in use.
             forward_used.store(now_ms(), Ordering::Relaxed);
@@ -1128,6 +1133,14 @@ More tools, from the MCP servers and skills the user connected: {}.             
                     answer.payload,
                 ));
             }
+            track_inbox(
+                &forward_app,
+                &forward_id,
+                &forward_conversation,
+                &mut export_steps,
+                &event,
+            )
+            .await;
             let envelope = AgentEventEnvelope {
                 session_id: forward_id.clone(),
                 event,
@@ -1136,6 +1149,8 @@ More tools, from the MCP servers and skills the user connected: {}.             
                 tracing::warn!(target: "shodh::harness", error = %e, "emitting agent_event failed");
             }
         }
+        // The session ended: its approvals can no longer be answered.
+        inbox_commands::resolve_session_approvals(&forward_app, &forward_id).await;
     });
 
     sessions.sessions.insert(
@@ -1168,6 +1183,66 @@ More tools, from the MCP servers and skills the user connected: {}.             
         audit.record(record);
     }
     Ok(session_id)
+}
+
+/// Keeps the Inbox in step with the session: an approval request adds an item (and a
+/// desktop notification when the window is not focused), the step finishing removes it
+/// and the end of the run removes any left; a document the assistant exported is added
+/// as ready.
+async fn track_inbox(
+    app: &AppHandle,
+    session_id: &str,
+    conversation_id: &str,
+    export_steps: &mut HashSet<String>,
+    event: &AgentEvent,
+) {
+    match event {
+        AgentEvent::StepStarted { step_id, tool, .. } if tool == app_tools::EXPORT_DOCUMENT => {
+            export_steps.insert(step_id.clone());
+        }
+        AgentEvent::ApprovalRequested {
+            step_id,
+            tool,
+            label,
+            ..
+        } => {
+            let item =
+                inbox_commands::approval_item(session_id, conversation_id, step_id, label, tool);
+            inbox_commands::notify_if_unfocused(app, &item.title);
+            inbox_commands::post(app, item).await;
+        }
+        AgentEvent::StepFinished {
+            step_id,
+            ok,
+            summary,
+            detail,
+            ..
+        } => {
+            inbox_commands::resolve(app, inbox_commands::approval_id(session_id, step_id)).await;
+            if export_steps.remove(step_id) {
+                let path = detail
+                    .as_ref()
+                    .and_then(|d| d.get("path"))
+                    .and_then(|p| p.as_str());
+                inbox_commands::post(
+                    app,
+                    inbox_commands::export_item(
+                        &format!("{session_id}:{step_id}"),
+                        *ok,
+                        summary,
+                        path,
+                        conversation_id,
+                    ),
+                )
+                .await;
+            }
+        }
+        AgentEvent::RunFinished { .. } => {
+            export_steps.clear();
+            inbox_commands::resolve_session_approvals(app, session_id).await;
+        }
+        _ => {}
+    }
 }
 
 fn emit_counts(app: &AppHandle, sessions: &AgentSessions) {
@@ -1405,11 +1480,15 @@ pub async fn agent_approve(
     session_id: String,
     step_id: String,
     approved: bool,
+    app: AppHandle,
     sessions: State<'_, AgentSessions>,
 ) -> CommandResult<()> {
     check_id("step id", &step_id)?;
     let session = sessions.get(&session_id)?;
-    Ok(session.approve(&step_id, approved)?)
+    session.approve(&step_id, approved)?;
+    // Answered here (the chat or the Inbox): the Inbox item is done with.
+    inbox_commands::resolve(&app, inbox_commands::approval_id(&session_id, &step_id)).await;
+    Ok(())
 }
 
 /// The code folder among a workspace's folder sources: Code mode needs

@@ -42,7 +42,7 @@ const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 /// generated-visuals gallery (3), learned-memory suggestions (4), research objects (5: snippet
 /// images, Result extraction records and rejections), the citation graph (6: the scholarly
 /// API cache, per-file scans and the build report), the model catalog cache (7) and
-/// workspaces (8: workspaces, their versioned instructions and sources) use one version
+/// workspaces (8: workspaces, their versioned instructions and sources) and the Inbox (9) use one version
 /// sequence, so every component that opens it sees the same schema.
 const MIGRATIONS: &[(i64, &str)] = &[
     (
@@ -313,6 +313,26 @@ const MIGRATIONS: &[(i64, &str)] = &[
             value TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );",
+    ),
+    (
+        9,
+        // The Inbox: approvals waiting on the user and background work that finished or
+        // failed. `data_json` holds what an item's actions need (a session and step,
+        // a task id); `link_json` what Open shows. Done and failed items are pruned after
+        // their retention (see `crate::inbox`).
+        "CREATE TABLE inbox_items (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK (kind IN ('approval', 'memory', 'reminder', 'indexing',
+                'tables', 'citation_graph', 'export', 'install')),
+            status TEXT NOT NULL CHECK (status IN ('working', 'needs_you', 'done', 'failed')),
+            title TEXT NOT NULL,
+            detail TEXT NULL,
+            link_json TEXT NULL,
+            data_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX inbox_items_status ON inbox_items(status, updated_at);",
     ),
 ];
 
@@ -1645,6 +1665,7 @@ mod tests {
                  DROP TABLE workspace_instructions;
                  DROP TABLE workspace_sources;
                  DROP TABLE workspace_state;
+                 DROP TABLE inbox_items;
                  DELETE FROM schema_version WHERE version > 1;",
             )
             .unwrap();

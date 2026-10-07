@@ -9,6 +9,7 @@ pub mod config;
 pub mod embeddings;
 pub mod folder_sync;
 pub mod harness;
+pub mod inbox;
 pub mod indexing;
 pub mod lazy_model;
 pub mod processing;

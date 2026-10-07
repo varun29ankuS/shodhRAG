@@ -165,6 +165,8 @@
     "agent_abort": { "excluded": "Interrupts the assistant's run; only the user stops it." },
     "agent_close_session": { "excluded": "Stops the assistant's own session process (a closed side discussion); it manages the assistant itself, not anything the assistant acts on." },
     "agent_session_counts": { "excluded": "Counts the assistant's own live session processes for the activity tray; nothing the assistant acts on." },
+    "inbox_list": { "excluded": "The Inbox lists what waits on the user (approvals of the assistant's own steps, its memory suggestions) for the user to decide; the assistant learns its pending steps from the run itself." },
+    "inbox_dismiss": { "excluded": "Clears the user's own Inbox; what the user has seen and set aside is not the assistant's to decide." },
     "agent_approve": { "excluded": "Approves the assistant's own actions; an assistant that could approve itself would make approvals meaningless." },
     "agent_code_status": { "excluded": "Reports whether the assistant's own Code mode can run and on which branch; it describes the assistant's sandbox, not anything the assistant acts on." },
     "agent_code_discard": { "excluded": "Undoes the assistant's own Code changes; only the user may decide to throw away what the assistant did." },

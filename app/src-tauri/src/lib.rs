@@ -14,6 +14,7 @@ mod file_watcher;
 mod graph_commands;
 mod history_commands;
 mod image_upload_commands;
+mod inbox_commands;
 mod library_commands;
 mod llm_bootstrap;
 mod llm_commands;
@@ -366,6 +367,11 @@ pub fn run() {
             app.manage(workspace_commands::WorkspaceState::new(
                 &app.state::<audit_commands::AuditState>(),
             ));
+            // The Inbox (approvals, finished background work), in shodh.db.
+            app.manage(inbox_commands::InboxState::new(
+                &app.state::<audit_commands::AuditState>(),
+            ));
+            inbox_commands::recover_on_launch(app.handle());
             // Learning from conversations (needs the memory, LLM and audit states).
             memory_learn::manage(app, &app_data_dir);
 
@@ -711,6 +717,8 @@ pub fn run() {
             memory_learn::memory_consolidate_now,
             // Generated visuals (the gallery and the focus pop-out)
             visual_commands::visuals_capture,
+            inbox_commands::inbox_list,
+            inbox_commands::inbox_dismiss,
             workspace_commands::workspaces_list,
             workspace_commands::workspaces_templates,
             workspace_commands::workspaces_get,

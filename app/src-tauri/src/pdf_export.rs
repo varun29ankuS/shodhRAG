@@ -561,6 +561,7 @@ pub struct PdfExportOutcome {
 /// or open the system print dialog where the app cannot write PDFs itself.
 #[tauri::command]
 pub async fn export_pdf(
+    app: tauri::AppHandle,
     state: tauri::State<'_, PdfExportState>,
     document: PrintDocument,
     path: Option<String>,
@@ -583,6 +584,12 @@ pub async fn export_pdf(
     let (written, bytes) = write_pdf(printer.as_ref(), &document, &folder, &stem)
         .await
         .map_err(|e| e.to_string())?;
+    let shown = written.display().to_string();
+    crate::inbox_commands::post(
+        &app,
+        crate::inbox_commands::export_item(&shown, true, "Exported", Some(&shown), ""),
+    )
+    .await;
     Ok(PdfExportOutcome {
         path: Some(written.display().to_string()),
         bytes: Some(bytes),

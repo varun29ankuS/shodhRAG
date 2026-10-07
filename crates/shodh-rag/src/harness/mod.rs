@@ -14,6 +14,7 @@ pub mod code_mode;
 pub mod error;
 pub mod events;
 pub mod grounding;
+pub mod mcp;
 pub mod model;
 pub mod model_catalog;
 pub mod model_choice;
@@ -25,6 +26,7 @@ pub mod protocol;
 pub mod provider_error;
 pub mod session;
 pub mod sidecar;
+pub mod skills;
 pub mod tools;
 pub mod web;
 

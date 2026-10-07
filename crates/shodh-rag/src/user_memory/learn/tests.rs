@@ -592,6 +592,51 @@ async fn automatic_mode_applies_confident_suggestions_with_undo_and_audit() {
 }
 
 #[tokio::test]
+async fn accepting_several_suggestions_stores_and_audits_each() {
+    let e = env().await;
+    e.model.answer(json!({"memories": [
+        lives_in("pune", "I moved to Pune", 0.9),
+        coffee("dark roast", "I prefer dark roast coffee", 0.8),
+        {"turn": "T1", "class": "Preference", "subject": null,
+         "properties": {"preferenceTopic": "tea", "preferenceValue": "green"},
+         "confidence": 0.8, "evidence": "I drink green tea"}
+    ]}));
+    let report = e
+        .learn("I moved to Pune. I prefer dark roast coffee. I drink green tea.")
+        .await;
+    assert_eq!(report.proposed.len(), 3, "{report:?}");
+    let mut ids = report.proposed.clone();
+    // The same suggestion twice (two windows): applied once.
+    ids.push(report.proposed[0].clone());
+
+    let results = e.learner.accept_many(&ids, &Actor::ui()).await;
+    assert_eq!(
+        results.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+        ids
+    );
+    for (_, result) in &results[..3] {
+        let view = result.as_ref().unwrap();
+        assert_eq!(view.status, ProposalStatus::Accepted);
+        let memory_id = view.outcome.as_ref().unwrap().memory_id.clone().unwrap();
+        e.service.get(&memory_id).await.unwrap();
+    }
+    assert!(matches!(
+        results[3].1,
+        Err(LearnError::InvalidTransition { .. })
+    ));
+    let approvals: Vec<serde_json::Value> = e
+        .memory_writes()
+        .into_iter()
+        .filter(|w| w["authority"] == "user_approval")
+        .map(|w| w["approval"].clone())
+        .collect();
+    assert_eq!(approvals.len(), 3);
+    for id in &report.proposed {
+        assert!(approvals.contains(&json!(id)), "{id} not audited");
+    }
+}
+
+#[tokio::test]
 async fn inbox_transitions_are_enforced_and_rejections_are_remembered() {
     use ProposalStatus as S;
     use StatusEvent as E;

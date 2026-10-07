@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use shodh_ontology::ExtractorKind;
+use shodh_ontology::{ExtractorKind, Statement};
 
 use super::decide::{self, DecidedBy, Decision, DecisionRecord, Deterministic, Judged};
 use super::extract::{self, Candidate, SourceText, TurnInput, MAX_SOURCE_CHARS};
@@ -21,7 +21,7 @@ use super::{
 };
 use crate::audit::{AuditEventType, LOCAL_OWNER};
 use crate::statements::dynamics::LinkState;
-use crate::statements::{render_text, PutOutcome, StatementError};
+use crate::statements::{render_text, PutIntent, PutOutcome, Scope, StatementError};
 use crate::user_memory::guard::{Origin, WriteAuthority};
 use crate::user_memory::{Actor, MemoryContent, MemoryError, MemoryService};
 
@@ -462,7 +462,107 @@ impl Learner {
         actor: &Actor,
     ) -> LearnResult<ProposalView> {
         let proposal = self.inbox.transition(id, StatusEvent::Accept, self.now())?;
-        match self.apply(&proposal, Authority::User, edit, actor).await {
+        self.finish_accept(&proposal, edit, actor).await
+    }
+
+    /// Accepts several suggestions as they are. New memories are stored together
+    /// ([`MemoryService::put_learned_many`]); other suggestions are applied one by one.
+    /// Returns each one's result, in order.
+    pub async fn accept_many(
+        &self,
+        ids: &[String],
+        actor: &Actor,
+    ) -> Vec<(String, LearnResult<ProposalView>)> {
+        let mut out: Vec<(String, Option<LearnResult<ProposalView>>)> = Vec::new();
+        let mut batch = Vec::new();
+        let mut batched = Vec::new();
+        for id in ids {
+            // Moved to accepted before anything is written, as in `accept`.
+            let proposal = match self.inbox.transition(id, StatusEvent::Accept, self.now()) {
+                Ok(proposal) => proposal,
+                Err(e) => {
+                    out.push((id.clone(), Some(Err(e))));
+                    continue;
+                }
+            };
+            match self.remember_write(&proposal) {
+                Some(Ok(item)) => {
+                    batch.push(item);
+                    batched.push(out.len());
+                    out.push((id.clone(), None));
+                }
+                Some(Err(e)) => {
+                    let result = self.settle_failure(id, &e).and(Err(e));
+                    out.push((id.clone(), Some(result)));
+                }
+                None => {
+                    let result = self.finish_accept(&proposal, None, actor).await;
+                    out.push((id.clone(), Some(result)));
+                }
+            }
+        }
+        if !batch.is_empty() {
+            match self.service.put_learned_many(batch, actor).await {
+                Ok(outcomes) => {
+                    for (slot, outcome) in batched.into_iter().zip(outcomes) {
+                        let id = out[slot].0.clone();
+                        let result = match outcome {
+                            Ok(written) => match &written.outcome {
+                                PutOutcome::Conflict { existing, .. } => Err(LearnError::Stale(
+                                    format!("it now conflicts with memory `{existing}`"),
+                                )),
+                                outcome => Ok((applied(outcome), None)),
+                            },
+                            Err(e) => Err(e.into()),
+                        };
+                        out[slot].1 = Some(self.record_accept(&id, result));
+                    }
+                }
+                Err(e) => {
+                    let message = e.to_string();
+                    for slot in batched {
+                        let id = out[slot].0.clone();
+                        let result = self.record_accept(
+                            &id,
+                            Err(LearnError::Memory(MemoryError::InvalidInput(
+                                message.clone(),
+                            ))),
+                        );
+                        out[slot].1 = Some(result);
+                    }
+                }
+            }
+        }
+        out.into_iter()
+            .map(|(id, result)| {
+                let result = result.unwrap_or_else(|| {
+                    Err(LearnError::Memory(MemoryError::InvalidInput(
+                        "the suggestion was not applied".to_string(),
+                    )))
+                });
+                (id, result)
+            })
+            .collect()
+    }
+
+    /// Applies an accepted suggestion and records the result (see [`Self::accept`]).
+    async fn finish_accept(
+        &self,
+        proposal: &Proposal,
+        edit: Option<MemoryContent>,
+        actor: &Actor,
+    ) -> LearnResult<ProposalView> {
+        let result = self.apply(proposal, Authority::User, edit, actor).await;
+        self.record_accept(&proposal.id, result)
+    }
+
+    /// Records what applying accepted suggestion `id` did.
+    fn record_accept(
+        &self,
+        id: &str,
+        result: LearnResult<(AppliedOutcome, Option<ProposalAction>)>,
+    ) -> LearnResult<ProposalView> {
+        match result {
             Ok((outcome, edited)) => {
                 self.inbox.record_outcome(id, &outcome, edited.as_ref())?;
                 Ok(self.inbox.get(id)?.into())
@@ -474,18 +574,40 @@ impl Learner {
         }
     }
 
-    /// Accepts several suggestions as they are. Returns each one's result.
-    pub async fn accept_many(
+    /// The write of an accepted, unedited new-memory suggestion, as [`Self::apply`]
+    /// makes it. `None` for other suggestions.
+    #[allow(clippy::type_complexity)]
+    fn remember_write(
         &self,
-        ids: &[String],
-        actor: &Actor,
-    ) -> Vec<(String, LearnResult<ProposalView>)> {
-        let mut out = Vec::new();
-        for id in ids {
-            let result = self.accept(id, None, actor).await;
-            out.push((id.clone(), result));
-        }
-        out
+        proposal: &Proposal,
+    ) -> Option<LearnResult<(Statement, Scope, PutIntent, Origin)>> {
+        let ProposalAction::Remember {
+            content,
+            decision,
+            at,
+            source,
+            model,
+            ..
+        } = &proposal.action
+        else {
+            return None;
+        };
+        let origin = Origin {
+            source: source.clone(),
+            extractor: ExtractorKind::Llm,
+            extractor_version: model.clone(),
+            confidence: proposal.confidence,
+            authority: WriteAuthority::UserApproval {
+                step_id: proposal.id.clone(),
+            },
+        };
+        let content = with_valid_from(content.clone(), *at);
+        Some(
+            self.service
+                .build_statement_at(content, &origin, *at)
+                .map(|statement| (statement, proposal.scope.clone(), decision.intent(), origin))
+                .map_err(Into::into),
+        )
     }
 
     /// The user rejects suggestion `id`; the same suggestion is not made again for a while.

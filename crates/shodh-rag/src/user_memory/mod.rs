@@ -716,10 +716,57 @@ impl MemoryService {
         origin: &Origin,
         actor: &Actor,
     ) -> MemoryResult<RememberOutcome> {
+        self.check_learned(&statement, origin)?;
+        let outcome = self.store.put(statement, scope.clone(), intent).await?;
+        self.after_write("learn", &outcome, &scope, origin, actor)
+            .await
+    }
+
+    /// [`put_learned`](Self::put_learned) for several statements, stored together
+    /// ([`StatementStore::put_many`]); each is checked and audited as if written alone.
+    /// Returns each one's result in order.
+    pub async fn put_learned_many(
+        &self,
+        items: Vec<(Statement, Scope, PutIntent, Origin)>,
+        actor: &Actor,
+    ) -> MemoryResult<Vec<MemoryResult<RememberOutcome>>> {
+        let mut results: Vec<Option<MemoryResult<RememberOutcome>>> = Vec::new();
+        let mut batch = Vec::new();
+        let mut written = Vec::new();
+        for (index, (statement, scope, intent, origin)) in items.into_iter().enumerate() {
+            match self.check_learned(&statement, &origin) {
+                Ok(()) => {
+                    batch.push((statement, scope.clone(), intent));
+                    written.push((index, scope, origin));
+                    results.push(None);
+                }
+                Err(e) => results.push(Some(Err(e))),
+            }
+        }
+        let outcomes = self.store.put_many(batch).await?;
+        for ((index, scope, origin), outcome) in written.into_iter().zip(outcomes) {
+            results[index] = Some(match outcome {
+                Ok(outcome) => {
+                    self.after_write("learn", &outcome, &scope, &origin, actor)
+                        .await
+                }
+                Err(e) => Err(e.into()),
+            });
+        }
+        Ok(results
+            .into_iter()
+            // The store returns one outcome per statement, so every slot is filled.
+            .map(|r| r.unwrap_or_else(|| Err(MemoryError::InvalidInput("not written".into()))))
+            .collect())
+    }
+
+    /// The checks of a learned write: its origin ([`check_write_origin`]), the ontology,
+    /// and under the automatic-learning policy, that it is not sensitive.
+    fn check_learned(&self, statement: &Statement, origin: &Origin) -> MemoryResult<()> {
         check_write_origin(origin)?;
         let ontology = self.store.ontology();
         let valid = ontology
-            .validate(&statement)
+            .validate(statement)
             .map_err(|v| MemoryError::Statement(StatementError::Invalid(v)))?;
         if matches!(origin.authority, WriteAuthority::LearnPolicy { .. }) {
             let reasons = learn::sensitivity::classify(ontology, &valid);
@@ -734,9 +781,7 @@ impl MemoryService {
                 )));
             }
         }
-        let outcome = self.store.put(statement, scope.clone(), intent).await?;
-        self.after_write("learn", &outcome, &scope, origin, actor)
-            .await
+        Ok(())
     }
 
     /// Undoes a learned write: forgets the stored memory `id` and reopens what it

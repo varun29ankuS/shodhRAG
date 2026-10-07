@@ -32,8 +32,8 @@ function safeStorage(): Storage | null {
 
 // Core components
 import { LibraryView } from './features/library/LibraryView';
-import { parseStoredSources, readIndexingResult, serializeSources, SOURCES_STORAGE_KEY } from './features/library/sources';
-import type { LibrarySource } from './features/library/sources';
+import { applyFolderSync, parseStoredSources, readIndexingResult, serializeSources, SOURCES_STORAGE_KEY, syncedFolders } from './features/library/sources';
+import type { FolderSyncOutcome, LibrarySource } from './features/library/sources';
 import type { FileNode } from './features/library/fileTree';
 import { errorMessage as searchErrorMessage } from './features/setup/searchModels';
 import Sidebar from './components/shell/Sidebar';
@@ -176,6 +176,29 @@ function AppSplitView() {
       // Storage unavailable: sources last for this session only.
     }
   }, [sources]);
+  // Keep finished folders in sync with the index (watched, and checked once
+  // the index is open); each sync updates its source's card.
+  const syncedFoldersKey = JSON.stringify(syncedFolders(sources));
+  useEffect(() => {
+    if (isLoading) return;
+    invoke('sync_folder_sources', { sources: JSON.parse(syncedFoldersKey) }).catch(error => {
+      console.error('Folder sync could not start:', error);
+    });
+  }, [isLoading, syncedFoldersKey]);
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    listen<FolderSyncOutcome>('folder-sync', event => {
+      setSources(prev => prev.map(s => applyFolderSync(s, event.payload)));
+    }).then(fn => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
   const [isDraggingImage, setIsDraggingImage] = useState(false);
   const lastProcessedImageTimeRef = useRef(0);
 

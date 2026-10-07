@@ -325,7 +325,9 @@ pub async fn index_folder(
             .unwrap_or("unknown")
             .to_lowercase();
 
-        if is_selected_file_type(options, &extension) {
+        if is_selected_file_type(options, &extension)
+            && !crate::folder_sync::is_temporary_file(file_path)
+        {
             files_to_process.push(file_path.to_path_buf());
         }
 
@@ -478,7 +480,8 @@ fn is_selected_file_type(options: &IndexingOptions, extension: &str) -> bool {
                 .any(|t| t.trim_start_matches('.').eq_ignore_ascii_case(extension)))
 }
 
-async fn process_file_with_options(
+/// Index one file of a folder source (the metadata every folder file gets).
+pub(crate) async fn process_file_with_options(
     file_path: &Path,
     space_id: &str,
     rag: &RwLock<RAGEngine>,

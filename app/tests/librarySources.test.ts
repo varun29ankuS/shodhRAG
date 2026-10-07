@@ -5,11 +5,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  applyFolderSync,
   groupSourcesByKind,
   parseStoredSources,
   progressPercent,
   readIndexingResult,
   serializeSources,
+  syncedFolders,
 } from '../src/features/library/sources.ts';
 
 const stored = (over: Record<string, unknown> = {}) => ({
@@ -92,4 +94,45 @@ test('source kinds: only kinds with sources are shown', () => {
   const sources = parseStoredSources(JSON.stringify([stored(), stored({ id: 'folder-2' })]));
   const groups = groupSourcesByKind(sources);
   assert.deepEqual(groups.map(g => [g.id, g.label, g.sources.length]), [['folders', 'Folders', 2]]);
+});
+
+test('only finished sources are kept in sync', () => {
+  const sources = parseStoredSources(JSON.stringify([
+    stored(),
+    stored({ id: 'folder-2', path: 'D:\\Docs', status: 'error' }),
+    stored({ id: 'folder-3', path: 'E:\\Papers', status: 'indexing' }),
+  ]));
+  assert.deepEqual(syncedFolders(sources), [{ id: 'folder-1', path: 'C:\\Contracts' }]);
+});
+
+test('a sync updates the count, failures and time of its source only', () => {
+  const [source] = parseStoredSources(JSON.stringify([stored({ failures: [{ file: 'C:\\Contracts\\old.pdf', reason: 'x' }] })]));
+  const at = '2026-10-07T10:00:00.000Z';
+  const synced = applyFolderSync(source, {
+    sourceId: 'folder-1', at, indexed: 2, removed: 1, files: 14,
+    failures: [{ file: 'C:\\Contracts\\scan.pdf', reason: 'No text' }],
+  });
+  assert.equal(synced.fileCount, 13);
+  assert.equal(synced.indexedAt, at);
+  assert.deepEqual(synced.failures, [{ file: 'C:\\Contracts\\scan.pdf', reason: 'No text' }]);
+  // Nothing changed: the time stays; fixed files leave the failures.
+  const quiet = applyFolderSync(source, { sourceId: 'folder-1', at, indexed: 0, removed: 0, files: 12, failures: [] });
+  assert.equal(quiet.indexedAt, source.indexedAt);
+  assert.equal(quiet.failures, undefined);
+  assert.equal(quiet.fileCount, 12);
+  // Another source's sync, or one during indexing, changes nothing.
+  assert.equal(applyFolderSync(source, { sourceId: 'other', at, files: 1 }), source);
+  const indexing = { ...source, status: 'indexing' as const };
+  assert.equal(applyFolderSync(indexing, { sourceId: 'folder-1', at, files: 1 }), indexing);
+});
+
+test('a failed sync is shown and cleared by the next one, never stored', () => {
+  const [source] = parseStoredSources(JSON.stringify([stored()]));
+  const at = '2026-10-07T10:00:00.000Z';
+  const failed = applyFolderSync(source, { sourceId: 'folder-1', at, error: 'D:\\Docs is not available' });
+  assert.equal(failed.syncError, 'D:\\Docs is not available');
+  assert.equal(failed.fileCount, source.fileCount);
+  assert.ok(!serializeSources([failed]).includes('syncError'));
+  const recovered = applyFolderSync(failed, { sourceId: 'folder-1', at, indexed: 0, removed: 0, files: 12, failures: [] });
+  assert.equal(recovered.syncError, undefined);
 });

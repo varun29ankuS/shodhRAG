@@ -7,6 +7,7 @@ pub mod audit;
 pub mod chat;
 pub mod config;
 pub mod embeddings;
+pub mod folder_sync;
 pub mod harness;
 pub mod indexing;
 pub mod lazy_model;

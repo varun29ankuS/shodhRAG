@@ -29,6 +29,8 @@ export interface LibrarySource {
   failures?: FileFailure[];
   /** Why the last indexing run failed as a whole. */
   lastError?: string;
+  /** Why the folder could not be kept in sync (this session only). */
+  syncError?: string;
 }
 
 export const SOURCES_STORAGE_KEY = 'indexedSources';
@@ -85,11 +87,55 @@ export function parseStoredSources(raw: string | null): LibrarySource[] {
   return out;
 }
 
-/** The persisted form: live progress fields are not stored. */
+/** The persisted form: live progress and sync fields are not stored. */
 export function serializeSources(sources: readonly LibrarySource[]): string {
   return JSON.stringify(
-    sources.map(({ progress: _p, currentFile: _c, processedCount: _n, ...rest }) => rest),
+    sources.map(({ progress: _p, currentFile: _c, processedCount: _n, syncError: _s, ...rest }) => rest),
   );
+}
+
+/** A folder the backend keeps in sync (`sync_folder_sources`). */
+export interface FolderSourceRef {
+  id: string;
+  path: string;
+}
+
+/**
+ * The sources to keep in sync: those whose index is complete. A source being
+ * indexed is left out until its run ends, so a sync never races it.
+ */
+export function syncedFolders(sources: readonly LibrarySource[]): FolderSourceRef[] {
+  return sources.filter(s => s.status === 'ready').map(s => ({ id: s.id, path: s.path }));
+}
+
+/** The `folder-sync` event: one sync of a folder source. */
+export interface FolderSyncOutcome {
+  sourceId: string;
+  at: string;
+  indexed?: number;
+  removed?: number;
+  files?: number;
+  failures?: unknown;
+  error?: string | null;
+}
+
+/**
+ * A source after a sync: its file count and failures as the folder has them
+ * now, `indexedAt` moved when files were indexed or removed, or the reason it
+ * could not be synced.
+ */
+export function applyFolderSync(source: LibrarySource, outcome: FolderSyncOutcome): LibrarySource {
+  if (source.id !== outcome.sourceId || source.status !== 'ready') return source;
+  if (outcome.error) return { ...source, syncError: outcome.error };
+  const failures = toFailures(outcome.failures);
+  const changed = (outcome.indexed ?? 0) + (outcome.removed ?? 0) > 0;
+  const { syncError: _s, failures: _f, ...rest } = source;
+  return {
+    ...rest,
+    fileCount: Math.max(0, (outcome.files ?? source.fileCount) - failures.length),
+    ...(changed ? { indexedAt: outcome.at } : {}),
+    ...(failures.length > 0 ? { failures } : {}),
+  };
 }
 
 export interface IndexingOutcome {

@@ -166,6 +166,7 @@
     "pause_indexing": { "excluded": "Resource control for the user over background indexing; indexing the assistant starts is audited and runs in the background." },
     "resume_indexing": { "excluded": "Resource control for the user over background indexing; indexing the assistant starts is audited and runs in the background." },
     "index_single_file": { "excluded": "Indexes a file the user dropped or uploaded; the assistant indexes whole folders with add_folder and its downloads automatically." },
+    "sync_folder_sources": { "excluded": "Tells the backend which Library folders to keep in sync; syncing then runs on its own, and the assistant adds, re-indexes and removes folders with add_folder, reindex_source and remove_source." },
     "check_path_type": { "excluded": "Drag-and-drop helper deciding whether a dropped path is a file or folder; add_folder validates paths itself." },
     "optimize_storage": { "excluded": "Whole-index maintenance; bulk index operations are user-only." },
     "cleanup_orphaned_documents": { "excluded": "Bulk deletion across the whole index; the assistant removes single sources with remove_source, with approval." },

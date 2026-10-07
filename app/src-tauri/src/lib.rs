@@ -380,6 +380,9 @@ pub fn run() {
             });
 
             app.manage(IndexingState::default());
+            app.manage(file_watcher::FolderSyncState::new(
+                app_data_dir.join("folder_sync"),
+            ));
             // Task reminders: native notifications while the app runs.
             app.manage(reminders::ReminderState::default());
             reminders::spawn(app.handle().clone());
@@ -541,9 +544,7 @@ pub fn run() {
             template_commands::update_template,
             template_commands::preview_template,
             // File watcher commands
-            file_watcher::start_watching_folder,
-            file_watcher::stop_watching_folder,
-            file_watcher::get_watched_folders,
+            file_watcher::sync_folder_sources,
             // LLM commands
             llm_commands::switch_llm_mode,
             llm_commands::llm_generate,

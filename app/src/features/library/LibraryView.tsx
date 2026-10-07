@@ -380,10 +380,18 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
     );
   } else {
     statusLine = (
-      <p className="text-[12.5px] text-shodh-text-secondary">
-        {`${(source.fileCount || 0).toLocaleString()} file${source.fileCount === 1 ? '' : 's'}`}
-        {source.indexedAt && <span className="text-shodh-text-faint">{` · indexed ${relativeTime(source.indexedAt)}`}</span>}
-      </p>
+      <div className="flex flex-col gap-1">
+        <p className="text-[12.5px] text-shodh-text-secondary">
+          {`${(source.fileCount || 0).toLocaleString()} file${source.fileCount === 1 ? '' : 's'}`}
+          {source.indexedAt && <span className="text-shodh-text-faint">{` · indexed ${relativeTime(source.indexedAt)}`}</span>}
+        </p>
+        {source.syncError && (
+          <p className="m-0 text-[12px] text-shodh-warning flex items-start gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0" aria-hidden="true" />
+            <span className="break-words">{`Not kept in sync: ${source.syncError}`}</span>
+          </p>
+        )}
+      </div>
     );
   }
 

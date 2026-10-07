@@ -11,7 +11,7 @@ import { Input } from "./components/ui/input";
 import { Progress } from "./components/ui/progress";
 import {
   MessageSquare, Settings, Bot, FolderOpen, FileText, Code, Terminal, Plus, Check, X, Loader2, Pencil, Download, ChevronDown, ChevronUp, Database, FileCode, BookOpen, FileSpreadsheet, Presentation, Trash2, Braces, Coffee,
-  FolderPlus, PanelLeftOpen, PanelLeftClose, Sun, Moon, Bug, Search, Sparkles, AlertTriangle, RotateCcw, Layers, MessageCircle
+  FolderPlus, PanelLeftOpen, PanelLeftClose, Sun, Moon, Bug, Search, Sparkles, AlertTriangle, RotateCcw, Layers, MessageCircle, Bell
 } from 'lucide-react';
 
 const IS_MAC = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
@@ -68,10 +68,10 @@ import { markStartup } from './lib/startupTiming';
 import { FeedbackDialog } from './components/FeedbackDialog';
 import { UpdateNotification } from './components/UpdateNotification';
 import { toast } from 'sonner';
-import { notify, setNotificationHandler } from './lib/notify';
+import { notify } from './lib/notify';
+import { removeWithUndo } from './lib/undoToast';
 import { migrateLegacyApiKeys } from './lib/apiKeyMigration';
-import { useNotifications } from './hooks/useNotifications';
-import NotificationCenter from './components/NotificationCenter';
+import { InboxButton, OPEN_INBOX_EVENT } from './features/inbox/InboxButton';
 import { useNavigationTarget } from './features/agent/useNavigationTarget';
 
 // Debug logging — set to true during development, false for demo/production
@@ -116,23 +116,6 @@ function AppSplitView() {
     openWorkspaceId,
     requestNewWorkspace,
   } = useWorkspaces();
-
-  // Notification center
-  const {
-    notifications,
-    unreadCount,
-    add: addNotification,
-    markRead: markNotifRead,
-    markAllRead: markAllNotifsRead,
-    remove: removeNotif,
-    clearAll: clearAllNotifs,
-  } = useNotifications();
-
-  // Wire notification handler so notify.success() etc. push to bell
-  useEffect(() => {
-    setNotificationHandler(addNotification);
-    return () => setNotificationHandler(null);
-  }, [addNotification]);
 
   // Move API keys saved by older builds out of localStorage into the OS keychain.
   useEffect(() => {
@@ -268,7 +251,6 @@ function AppSplitView() {
   const [newInstructionText, setNewInstructionText] = useState('');
   const [editingInstructionIdx, setEditingInstructionIdx] = useState<number | null>(null);
   const [editingInstructionText, setEditingInstructionText] = useState('');
-  const pendingSourceDeleteRef = useRef<Map<string, { timeout: ReturnType<typeof setTimeout>; source: Source }>>(new Map());
 
   // Derive the system prompt from the active conversation
   const spaceSystemPrompt = activeConversation?.systemPrompt || '';
@@ -377,6 +359,7 @@ function AppSplitView() {
     { id: 'choose-model', label: 'Choose model', description: 'Provider and model that answer', icon: Bot, keywords: 'model llm provider ai settings api key', run: () => setActiveTab('settings') },
     { id: 'toggle-sidebar', label: collapsed ? 'Expand sidebar' : 'Collapse sidebar', icon: collapsed ? PanelLeftOpen : PanelLeftClose, keywords: 'sidebar toggle hide show collapse expand', shortcut: IS_MAC ? '⌘B' : 'Ctrl+B', run: toggleSidebar },
     { id: 'toggle-theme', label: theme === 'dark' ? 'Use light theme' : 'Use dark theme', icon: theme === 'dark' ? Sun : Moon, keywords: 'theme dark light mode appearance', run: toggleTheme },
+    { id: 'inbox', label: 'Inbox', description: 'Approvals, suggestions, reminders and finished work', icon: Bell, keywords: 'inbox notifications approvals approve pending reminders suggestions done finished', run: () => window.dispatchEvent(new Event(OPEN_INBOX_EVENT)) },
     { id: 'feedback', label: 'Send feedback', icon: Bug, keywords: 'feedback bug report problem', run: () => setShowFeedback(true) },
     ...(searchNeedsSetup
       ? [{ id: 'set-up-search', label: 'Set up search', description: 'Download the search models (one time)', icon: Search, keywords: 'search models download install embedding reranker setup', run: () => openFirstRun('search') }]
@@ -1092,47 +1075,20 @@ function AppSplitView() {
       setCurrentlyIndexing(null);
     }
 
-    // Cancel any existing pending delete for this source
-    const existing = pendingSourceDeleteRef.current.get(id);
-    if (existing) {
-      clearTimeout(existing.timeout);
-      pendingSourceDeleteRef.current.delete(id);
-    }
-
-    // Optimistically remove from UI
-    setSources(prev => {
-      const updated = prev.filter(s => s.id !== id);
-      return updated;
-    });
-
-    // Schedule actual backend deletion after 5s (undo window)
-    const timeout = setTimeout(() => {
-      pendingSourceDeleteRef.current.delete(id);
-      invoke<string>("delete_folder_source", { folderPath: source.path })
-        .catch(err => console.warn('Backend source deletion failed:', err));
-    }, 5000);
-
-    pendingSourceDeleteRef.current.set(id, { timeout, source });
-
-    toast('Source removed', {
+    // Removed from the list now and from the index when the undo window ends.
+    const index = sources.findIndex(s => s.id === id);
+    removeWithUndo({
+      message: 'Source removed',
       description: source.name,
-      action: {
-        label: 'Undo',
-        onClick: () => {
-          const pending = pendingSourceDeleteRef.current.get(id);
-          if (pending) {
-            clearTimeout(pending.timeout);
-            pendingSourceDeleteRef.current.delete(id);
-            // Restore source to UI
-            setSources(prev => {
-              const restored = [...prev, pending.source];
-              return restored;
-            });
-            notify.success('Source restored');
-          }
-        },
-      },
-      duration: 5000,
+      hide: () => setSources(prev => prev.filter(s => s.id !== id)),
+      restore: () => setSources(prev => {
+        if (prev.some(s => s.id === id)) return prev;
+        const next = [...prev];
+        next.splice(Math.min(index, next.length), 0, source);
+        return next;
+      }),
+      commit: () => invoke<string>('delete_folder_source', { folderPath: source.path }),
+      onError: err => notify.error('The source was not removed', { description: String(err) }),
     });
   };
 
@@ -1213,13 +1169,9 @@ function AppSplitView() {
             )}
           </div>
           <div className="flex items-center gap-2">
-            <NotificationCenter
-              notifications={notifications}
-              unreadCount={unreadCount}
-              onMarkRead={markNotifRead}
-              onMarkAllRead={markAllNotifsRead}
-              onRemove={removeNotif}
-              onClearAll={clearAllNotifs}
+            <InboxButton
+              onNavigate={setActiveTab}
+              onOpenConversation={id => { switchConversation(id); setActiveTab('ask'); }}
             />
             {activeTab === 'ask' && messages.length > 0 && (
               <>

@@ -31,6 +31,223 @@ struct PreparedDocument {
     chunk_ids: Vec<Uuid>,
 }
 
+/// Parses, chunks and embeds files apart from the engine: copies of its parser,
+/// chunkers and embedder (all cheap to clone). Indexing prepares files with it outside
+/// the engine lock and takes the lock only to store them ([`RAGEngine::commit_file`]),
+/// so searches are not blocked while files are parsed and embedded.
+#[derive(Clone)]
+pub struct FilePreparer {
+    parser: DocumentParser,
+    chunker: TextChunker,
+    structure_chunker: StructureChunker,
+    embeddings: Arc<dyn EmbeddingModel>,
+}
+
+/// A file parsed, chunked and embedded, ready for [`RAGEngine::commit_file`].
+pub struct PreparedFile {
+    path: std::path::PathBuf,
+    source: String,
+    document: PreparedDocument,
+    /// The file has table-candidate pages the table model has not read yet.
+    refine: bool,
+    parse_ms: u128,
+    chunk_ms: u128,
+    embed_ms: u128,
+}
+
+impl FilePreparer {
+    /// Parses, chunks and embeds the file at `path` (blocking).
+    pub fn prepare(&self, path: &Path, metadata: HashMap<String, String>) -> Result<PreparedFile> {
+        let parse_started = std::time::Instant::now();
+        let parsed = self.parser.parse_file(path)?;
+        let parse_ms = parse_started.elapsed().as_millis();
+        self.prepare_parsed(path, parsed, metadata, parse_ms)
+    }
+
+    /// Chunks and embeds a parsed file (blocking).
+    pub fn prepare_parsed(
+        &self,
+        path: &Path,
+        parsed: ParsedDocument,
+        metadata: HashMap<String, String>,
+        parse_ms: u128,
+    ) -> Result<PreparedFile> {
+        let refine = parsed.metadata.contains_key(TABLE_CANDIDATES_KEY)
+            && !parsed.metadata.contains_key(TABLE_MODEL_KEY);
+        let source = normalize_source_path(path);
+        let mut merged_metadata = parsed.metadata;
+        for (k, v) in metadata {
+            merged_metadata.insert(k, v);
+        }
+        // Ensure file_path in metadata matches the canonical source used for
+        // deletion when the file is stored. This prevents mismatches if the
+        // caller passes a differently-formatted path string.
+        merged_metadata.insert("file_path".to_string(), source.clone());
+
+        let citation = Citation {
+            title: parsed.title.clone(),
+            source: source.clone(),
+            ..Citation::default()
+        };
+        let title = merged_metadata
+            .get("title")
+            .cloned()
+            .unwrap_or_else(|| parsed.title.clone());
+
+        // Documents parsed into semantic blocks (PDF, LaTeX, Markdown) are
+        // chunked by unit: sections, tables with headers, theorems with their
+        // proofs, single references. Form fields and relationships extracted
+        // from PDFs, and spreadsheet tables, use the section chunker; other
+        // formats fall back to sliding windows.
+        let chunk_started = std::time::Instant::now();
+        let mut chunks = Vec::new();
+        if let Some(doc) = parsed.document.as_ref().filter(|d| !d.blocks.is_empty()) {
+            let embedder = self.embeddings.as_ref();
+            let count = |text: &str| {
+                embedder
+                    .count_tokens(text)
+                    .unwrap_or_else(|| crate::embeddings::estimate_tokens(text))
+            };
+            chunks = self.structure_chunker.chunk(doc, &title, &count);
+            merged_metadata.insert("chunker".to_string(), STRUCTURE_CHUNKER_VERSION.to_string());
+        }
+        if !parsed.structured_sections.is_empty() {
+            chunks.extend(self.chunker.chunk_structured(
+                &parsed.structured_sections,
+                &title,
+                &source,
+            ));
+        }
+        if chunks.is_empty() && parsed.document.is_none() {
+            chunks = self
+                .chunker
+                .chunk_with_context(&parsed.content, &title, &source);
+        }
+        for (index, chunk) in chunks.iter_mut().enumerate() {
+            chunk.index = index;
+        }
+        let chunk_ms = chunk_started.elapsed().as_millis();
+
+        let embed_started = std::time::Instant::now();
+        let document = prepare_chunks(
+            self.embeddings.as_ref(),
+            chunks,
+            title,
+            source.clone(),
+            &merged_metadata,
+            &citation,
+        )?;
+        Ok(PreparedFile {
+            path: path.to_path_buf(),
+            source,
+            document,
+            refine,
+            parse_ms,
+            chunk_ms,
+            embed_ms: embed_started.elapsed().as_millis(),
+        })
+    }
+}
+
+/// Embed chunks and build the storage records for one document without
+/// touching the stores. Fails (with nothing written) if embedding fails.
+fn prepare_chunks(
+    embedder: &dyn EmbeddingModel,
+    chunks: Vec<ContextualChunkResult>,
+    title: String,
+    source: String,
+    metadata: &HashMap<String, String>,
+    citation: &Citation,
+) -> Result<PreparedDocument> {
+    let space_id = metadata.get("space_id").cloned().unwrap_or_default();
+    if chunks.is_empty() {
+        return Ok(PreparedDocument {
+            title,
+            space_id,
+            records: Vec::new(),
+            fts_batch: Vec::new(),
+            chunk_ids: Vec::new(),
+        });
+    }
+
+    // Embed the contextualized text (with document context prefix) for better
+    // vector representation
+    let chunk_texts: Vec<&str> = chunks
+        .iter()
+        .map(|c| c.contextualized_text.as_str())
+        .collect();
+    let embeddings = embedder.embed_documents(&chunk_texts)?;
+
+    let doc_id = Uuid::new_v4();
+    let metadata_json = serde_json::to_string(metadata).unwrap_or_else(|_| "{}".to_string());
+    let now = chrono::Utc::now().timestamp();
+
+    let mut records = Vec::with_capacity(chunks.len());
+    let mut fts_batch = Vec::with_capacity(chunks.len());
+    let mut chunk_ids = Vec::with_capacity(chunks.len());
+
+    for (i, (chunk, embedding)) in chunks.iter().zip(embeddings).enumerate() {
+        let chunk_id = chunk.id;
+        chunk_ids.push(chunk_id);
+
+        let mut per_chunk_meta = metadata.clone();
+        if let Some(heading) = &chunk.heading {
+            per_chunk_meta.insert("chunk_type".to_string(), heading.clone());
+            per_chunk_meta.insert("heading".to_string(), heading.clone());
+        }
+        match &chunk.layout {
+            Some(layout) => insert_layout_metadata(&mut per_chunk_meta, layout),
+            None => insert_page_metadata(&mut per_chunk_meta, chunk.page),
+        }
+        // Extract structured fields (emails, phones, etc.) at ingest time
+        for (k, v) in extract_structured_fields(&chunk.text) {
+            per_chunk_meta.insert(k, v);
+        }
+        let per_chunk_meta_json =
+            serde_json::to_string(&per_chunk_meta).unwrap_or_else(|_| metadata_json.clone());
+
+        // Citation is stored per chunk so its page survives into search results.
+        let chunk_citation = Citation {
+            page_numbers: page_numbers_from_metadata(&per_chunk_meta),
+            ..citation.clone()
+        };
+        let citation_json =
+            serde_json::to_string(&chunk_citation).unwrap_or_else(|_| "{}".to_string());
+
+        // Store the original text (without context prefix) for display
+        records.push(ChunkRecord {
+            id: chunk_id.to_string(),
+            doc_id: doc_id.to_string(),
+            chunk_index: i as u32,
+            text: chunk.text.clone(),
+            title: title.clone(),
+            source: source.clone(),
+            heading: chunk.heading.clone().unwrap_or_default(),
+            vector: embedding,
+            space_id: space_id.clone(),
+            metadata_json: per_chunk_meta_json,
+            citation_json,
+            created_at: now,
+        });
+
+        // Index contextualized text in FTS for richer BM25 matching
+        fts_batch.push((
+            chunk_id.to_string(),
+            chunk.contextualized_text.clone(),
+            title.clone(),
+            source.clone(),
+        ));
+    }
+
+    Ok(PreparedDocument {
+        title,
+        space_id,
+        records,
+        fts_batch,
+        chunk_ids,
+    })
+}
+
 /// One native spelling of a path, applied where paths enter the indexer
 /// (folder walks, single files, uploads): the platform separator throughout
 /// (a folder typed as `C:/Papers` and walked to `C:/Papers\a.pdf` becomes
@@ -558,7 +775,14 @@ impl RAGEngine {
         // Contextual chunking: prepend document-level context to each chunk
         // before embedding for better retrieval (Anthropic's contextual retrieval approach)
         let chunks = self.chunker.chunk_with_context(content, &title, &source);
-        let prepared = self.prepare_chunks(chunks, title, source, &metadata, &citation)?;
+        let prepared = prepare_chunks(
+            self.require_embeddings()?,
+            chunks,
+            title,
+            source,
+            &metadata,
+            &citation,
+        )?;
         self.store_prepared(prepared).await
     }
 
@@ -569,22 +793,60 @@ impl RAGEngine {
     /// embed leaves its existing index entries intact. Once the replacement is
     /// ready, old chunks are deleted and the new ones inserted, which keeps
     /// re-indexing idempotent (no duplicate copies of the same file).
+    ///
+    /// This parses and embeds while the caller holds the engine. Indexing that
+    /// shares the engine prepares with [`Self::file_preparer`] instead and stores
+    /// with [`Self::commit_file`].
     pub async fn add_document_from_file(
         &mut self,
         path: &Path,
         metadata: HashMap<String, String>,
     ) -> Result<Vec<Uuid>> {
-        self.require_embeddings()?;
-        let parse_started = std::time::Instant::now();
-        let parsed = self.parser.parse_file(path)?;
-        let parse_ms = parse_started.elapsed().as_millis();
-        let refine = parsed.metadata.contains_key(TABLE_CANDIDATES_KEY)
-            && !parsed.metadata.contains_key(TABLE_MODEL_KEY);
-        let ids = self.index_parsed(path, parsed, metadata, parse_ms).await?;
-        if refine {
+        let file = self.file_preparer()?.prepare(path, metadata)?;
+        self.commit_file(file).await
+    }
+
+    /// What prepares files apart from the engine. Fails with [`SearchModelsMissing`]
+    /// until the search models are attached.
+    pub fn file_preparer(&self) -> Result<FilePreparer> {
+        let embeddings = self
+            .embeddings
+            .clone()
+            .ok_or_else(|| anyhow::Error::from(SearchModelsMissing))?;
+        Ok(FilePreparer {
+            parser: self.parser.clone(),
+            chunker: self.chunker.clone(),
+            structure_chunker: self.structure_chunker.clone(),
+            embeddings,
+        })
+    }
+
+    /// Stores a prepared file, replacing its previous chunks, and queues it for the
+    /// table model when it has table-candidate pages.
+    pub async fn commit_file(&mut self, file: PreparedFile) -> Result<Vec<Uuid>> {
+        // Replacement is fully prepared — now drop the previous version of this file.
+        // Rows written before paths were canonicalized may carry another
+        // spelling of the same file; remove those too so nothing duplicates.
+        let store_started = std::time::Instant::now();
+        self.remove_source_chunks(&file.source).await?;
+        for legacy in legacy_source_spellings(&file.path, &file.source) {
+            self.remove_source_chunks(&legacy).await?;
+        }
+
+        let ids = self.store_prepared(file.document).await?;
+        tracing::info!(
+            source = %file.source,
+            chunks = ids.len(),
+            parse_ms = file.parse_ms,
+            chunk_ms = file.chunk_ms,
+            embed_ms = file.embed_ms,
+            store_ms = store_started.elapsed().as_millis(),
+            "Indexed file"
+        );
+        if file.refine {
             if let Some(queue) = &self.refinement_queue {
                 // A closed queue only means no refinement runs; the index is complete.
-                let _ = queue.send(path.to_path_buf());
+                let _ = queue.send(file.path);
             }
         }
         Ok(ids)
@@ -623,15 +885,40 @@ impl RAGEngine {
     /// re-parsed with the table model), keeping the document-level metadata the
     /// file was indexed with. Nothing is written when the file changed since it was
     /// re-parsed or is no longer indexed.
+    ///
+    /// This embeds while the caller holds the engine; the refinement worker uses
+    /// [`Self::refined_metadata`], [`FilePreparer::prepare_parsed`] and
+    /// [`Self::commit_refined`] to embed without it.
     pub async fn apply_refined_tables(
         &mut self,
         refined: crate::table_refinement::RefinedTables,
     ) -> Result<crate::table_refinement::RefineOutcome> {
+        let metadata = match self.refined_metadata(&refined).await? {
+            Ok(metadata) => metadata,
+            Err(outcome) => return Ok(outcome),
+        };
+        let file = self.file_preparer()?.prepare_parsed(
+            &refined.path,
+            refined.parsed,
+            metadata,
+            refined.parse_ms,
+        )?;
+        self.commit_refined(file, refined.stamp, refined.model_tables)
+            .await
+    }
+
+    /// The document-level metadata a refinement of `refined.path` keeps, or why it is
+    /// not applied (the file changed since it was re-parsed, or is no longer indexed).
+    pub async fn refined_metadata(
+        &self,
+        refined: &crate::table_refinement::RefinedTables,
+    ) -> Result<std::result::Result<HashMap<String, String>, crate::table_refinement::RefineOutcome>>
+    {
         use crate::table_refinement::{document_metadata, FileStamp, RefineOutcome};
         self.require_embeddings()?;
         match FileStamp::of(&refined.path) {
             Ok(stamp) if stamp == refined.stamp => {}
-            _ => return Ok(RefineOutcome::FileChanged),
+            _ => return Ok(Err(RefineOutcome::FileChanged)),
         }
         let source = normalize_source_path(&refined.path);
         let predicate = format!("source = '{}'", source.replace('\'', "''"));
@@ -642,108 +929,42 @@ impl RAGEngine {
             .into_iter()
             .next()
         else {
-            return Ok(RefineOutcome::NotIndexed);
+            return Ok(Err(RefineOutcome::NotIndexed));
         };
         let stored: HashMap<String, String> =
             serde_json::from_str(&existing.metadata_json).unwrap_or_default();
-        let metadata = document_metadata(&stored, &existing.space_id);
-        let model_tables = refined.model_tables;
-        let ids = self
-            .index_parsed(&refined.path, refined.parsed, metadata, refined.parse_ms)
-            .await?;
+        Ok(Ok(document_metadata(&stored, &existing.space_id)))
+    }
+
+    /// Stores a refinement prepared from a re-parse of the file at `stamp`, unless the
+    /// file changed or was removed from the index meanwhile.
+    pub async fn commit_refined(
+        &mut self,
+        mut file: PreparedFile,
+        stamp: crate::table_refinement::FileStamp,
+        model_tables: usize,
+    ) -> Result<crate::table_refinement::RefineOutcome> {
+        use crate::table_refinement::{FileStamp, RefineOutcome};
+        match FileStamp::of(&file.path) {
+            Ok(now) if now == stamp => {}
+            _ => return Ok(RefineOutcome::FileChanged),
+        }
+        let predicate = format!("source = '{}'", file.source.replace('\'', "''"));
+        if self
+            .store
+            .list_chunks(Some(&predicate), 1)
+            .await?
+            .is_empty()
+        {
+            return Ok(RefineOutcome::NotIndexed);
+        }
+        // A refinement is never queued for refinement again.
+        file.refine = false;
+        let ids = self.commit_file(file).await?;
         Ok(RefineOutcome::Replaced {
             chunks: ids.len(),
             model_tables,
         })
-    }
-
-    /// Chunks, embeds and stores a parsed file, replacing its previous chunks.
-    async fn index_parsed(
-        &mut self,
-        path: &Path,
-        parsed: ParsedDocument,
-        metadata: HashMap<String, String>,
-        parse_ms: u128,
-    ) -> Result<Vec<Uuid>> {
-        let source = normalize_source_path(path);
-        let mut merged_metadata = parsed.metadata;
-        for (k, v) in metadata {
-            merged_metadata.insert(k, v);
-        }
-        // Ensure file_path in metadata matches the canonical source used for
-        // deletion below. This prevents mismatches if the caller passes a
-        // differently-formatted path string.
-        merged_metadata.insert("file_path".to_string(), source.clone());
-
-        let citation = Citation {
-            title: parsed.title.clone(),
-            source: source.clone(),
-            ..Citation::default()
-        };
-        let title = merged_metadata
-            .get("title")
-            .cloned()
-            .unwrap_or_else(|| parsed.title.clone());
-
-        // Documents parsed into semantic blocks (PDF, LaTeX, Markdown) are
-        // chunked by unit: sections, tables with headers, theorems with their
-        // proofs, single references. Form fields and relationships extracted
-        // from PDFs, and spreadsheet tables, use the section chunker; other
-        // formats fall back to sliding windows.
-        let chunk_started = std::time::Instant::now();
-        let mut chunks = Vec::new();
-        if let Some(doc) = parsed.document.as_ref().filter(|d| !d.blocks.is_empty()) {
-            let embedder = self.require_embeddings()?;
-            let count = |text: &str| {
-                embedder
-                    .count_tokens(text)
-                    .unwrap_or_else(|| crate::embeddings::estimate_tokens(text))
-            };
-            chunks = self.structure_chunker.chunk(doc, &title, &count);
-            merged_metadata.insert("chunker".to_string(), STRUCTURE_CHUNKER_VERSION.to_string());
-        }
-        if !parsed.structured_sections.is_empty() {
-            chunks.extend(self.chunker.chunk_structured(
-                &parsed.structured_sections,
-                &title,
-                &source,
-            ));
-        }
-        if chunks.is_empty() && parsed.document.is_none() {
-            chunks = self
-                .chunker
-                .chunk_with_context(&parsed.content, &title, &source);
-        }
-        for (index, chunk) in chunks.iter_mut().enumerate() {
-            chunk.index = index;
-        }
-        let chunk_ms = chunk_started.elapsed().as_millis();
-
-        let embed_started = std::time::Instant::now();
-        let prepared =
-            self.prepare_chunks(chunks, title, source.clone(), &merged_metadata, &citation)?;
-        let embed_ms = embed_started.elapsed().as_millis();
-
-        // Replacement is fully prepared — now drop the previous version of this file.
-        // Rows written before paths were canonicalized may carry another
-        // spelling of the same file; remove those too so nothing duplicates.
-        let store_started = std::time::Instant::now();
-        self.remove_source_chunks(&source).await?;
-        for legacy in legacy_source_spellings(path, &source) {
-            self.remove_source_chunks(&legacy).await?;
-        }
-
-        let ids = self.store_prepared(prepared).await?;
-        tracing::info!(
-            source = %source,
-            chunks = ids.len(),
-            parse_ms,
-            chunk_ms,
-            embed_ms,
-            store_ms = store_started.elapsed().as_millis(),
-            "Indexed file"
-        );
-        Ok(ids)
     }
 
     /// Remove every stored chunk for `source` from both LanceDB and Tantivy.
@@ -758,105 +979,6 @@ impl RAGEngine {
         self.text_search.delete_by_source(source)?;
         self.text_search.commit()?;
         Ok(())
-    }
-
-    /// Embed chunks and build the storage records for one document without
-    /// touching the stores. Fails (with nothing written) if embedding fails.
-    fn prepare_chunks(
-        &self,
-        chunks: Vec<ContextualChunkResult>,
-        title: String,
-        source: String,
-        metadata: &HashMap<String, String>,
-        citation: &Citation,
-    ) -> Result<PreparedDocument> {
-        let space_id = metadata.get("space_id").cloned().unwrap_or_default();
-        if chunks.is_empty() {
-            return Ok(PreparedDocument {
-                title,
-                space_id,
-                records: Vec::new(),
-                fts_batch: Vec::new(),
-                chunk_ids: Vec::new(),
-            });
-        }
-
-        // Embed the contextualized text (with document context prefix) for better
-        // vector representation
-        let chunk_texts: Vec<&str> = chunks
-            .iter()
-            .map(|c| c.contextualized_text.as_str())
-            .collect();
-        let embeddings = self.require_embeddings()?.embed_documents(&chunk_texts)?;
-
-        let doc_id = Uuid::new_v4();
-        let metadata_json = serde_json::to_string(metadata).unwrap_or_else(|_| "{}".to_string());
-        let now = chrono::Utc::now().timestamp();
-
-        let mut records = Vec::with_capacity(chunks.len());
-        let mut fts_batch = Vec::with_capacity(chunks.len());
-        let mut chunk_ids = Vec::with_capacity(chunks.len());
-
-        for (i, (chunk, embedding)) in chunks.iter().zip(embeddings).enumerate() {
-            let chunk_id = chunk.id;
-            chunk_ids.push(chunk_id);
-
-            let mut per_chunk_meta = metadata.clone();
-            if let Some(heading) = &chunk.heading {
-                per_chunk_meta.insert("chunk_type".to_string(), heading.clone());
-                per_chunk_meta.insert("heading".to_string(), heading.clone());
-            }
-            match &chunk.layout {
-                Some(layout) => insert_layout_metadata(&mut per_chunk_meta, layout),
-                None => insert_page_metadata(&mut per_chunk_meta, chunk.page),
-            }
-            // Extract structured fields (emails, phones, etc.) at ingest time
-            for (k, v) in extract_structured_fields(&chunk.text) {
-                per_chunk_meta.insert(k, v);
-            }
-            let per_chunk_meta_json =
-                serde_json::to_string(&per_chunk_meta).unwrap_or_else(|_| metadata_json.clone());
-
-            // Citation is stored per chunk so its page survives into search results.
-            let chunk_citation = Citation {
-                page_numbers: page_numbers_from_metadata(&per_chunk_meta),
-                ..citation.clone()
-            };
-            let citation_json =
-                serde_json::to_string(&chunk_citation).unwrap_or_else(|_| "{}".to_string());
-
-            // Store the original text (without context prefix) for display
-            records.push(ChunkRecord {
-                id: chunk_id.to_string(),
-                doc_id: doc_id.to_string(),
-                chunk_index: i as u32,
-                text: chunk.text.clone(),
-                title: title.clone(),
-                source: source.clone(),
-                heading: chunk.heading.clone().unwrap_or_default(),
-                vector: embedding,
-                space_id: space_id.clone(),
-                metadata_json: per_chunk_meta_json,
-                citation_json,
-                created_at: now,
-            });
-
-            // Index contextualized text in FTS for richer BM25 matching
-            fts_batch.push((
-                chunk_id.to_string(),
-                chunk.contextualized_text.clone(),
-                title.clone(),
-                source.clone(),
-            ));
-        }
-
-        Ok(PreparedDocument {
-            title,
-            space_id,
-            records,
-            fts_batch,
-            chunk_ids,
-        })
     }
 
     /// Write prepared records to LanceDB and Tantivy.

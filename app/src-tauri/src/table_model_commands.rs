@@ -300,7 +300,7 @@ async fn refinement_worker(
         };
         let document = refined.parsed.document.clone();
         let parse_ms = refined.parse_ms;
-        let outcome = rag.write().await.apply_refined_tables(refined).await;
+        let outcome = shodh_rag::table_refinement::apply_refinement(&rag, refined).await;
         let (chunks, model_tables) = match outcome {
             Ok(RefineOutcome::Replaced {
                 chunks,

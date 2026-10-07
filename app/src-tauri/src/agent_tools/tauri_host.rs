@@ -67,20 +67,17 @@ impl HostEffects for TauriEffects {
         let app = self.app.clone();
         let ctx = ctx.clone();
         tokio::spawn(async move {
-            // Paused from the tray: wait before taking the index lock, so
-            // searches never queue behind a held job.
+            // Paused from the tray: wait before starting.
             app.state::<BackgroundState>().wait_until_resumed().await;
             let rag = app.state::<RagState>().rag.clone();
             let emitter = TauriEventEmitter::new(app.clone());
-            let mut engine = rag.write().await;
             let result = shodh_rag::indexing::index_single_file(
                 &job.path,
                 &job.source_id,
-                &mut engine,
+                &rag,
                 Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
             )
             .await;
-            drop(engine);
             if let Err(e) = &result {
                 tracing::warn!(target: "shodh::harness", path = %job.path, error = %e, "indexing a downloaded file failed");
             }
@@ -193,9 +190,9 @@ impl HostEffects for TauriEffects {
         crate::reminders::wake(&self.app);
     }
 
-    /// Folder indexing holds the RAG engine's write lock for the whole job,
-    /// so it runs in the background instead of blocking the agent (and every
-    /// search) until it finishes.
+    /// Folder indexing takes minutes, so it runs in the background instead of
+    /// blocking the agent until it finishes. It holds the engine's write lock only
+    /// while storing each file, so searches keep working meanwhile.
     fn start_indexing(&self, ctx: &ToolContext, job: IndexJob) {
         let app = self.app.clone();
         let ctx = ctx.clone();
@@ -204,17 +201,15 @@ impl HostEffects for TauriEffects {
             let rag = app.state::<RagState>().rag.clone();
             let indexing_state = app.state::<IndexingState>();
             let emitter = TauriEventEmitter::new(app.clone());
-            let mut engine = rag.write().await;
             let result = shodh_rag::indexing::index_folder(
                 &job.folder,
                 &job.source_id,
                 &agent_indexing_options(),
-                &mut engine,
+                &rag,
                 &indexing_state,
                 Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
             )
             .await;
-            drop(engine);
             if let Err(e) = &result {
                 tracing::warn!(target: "shodh::harness", source_id = %job.source_id, error = %e, "agent-started indexing failed");
             }

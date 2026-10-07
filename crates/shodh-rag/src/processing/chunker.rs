@@ -11,6 +11,7 @@ pub struct ChunkResult {
     pub end_offset: usize,
 }
 
+#[derive(Clone)]
 pub struct TextChunker {
     chunk_size: usize,
     chunk_overlap: usize,

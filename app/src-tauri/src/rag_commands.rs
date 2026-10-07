@@ -892,10 +892,7 @@ async fn link_folder_inner(
     tracing::info!("Folder path: {}", folder_path);
     tracing::info!("Metadata: {:?}", metadata);
 
-    let mut rag_guard = state.rag.write().await;
-    let rag = &mut *rag_guard;
-
-    tracing::info!("RAG system is initialized");
+    let rag = &*state.rag;
 
     let folder_path = PathBuf::from(&folder_path);
 
@@ -1025,7 +1022,7 @@ async fn link_folder_inner(
 async fn process_single_file(
     file_path: &PathBuf,
     base_metadata: &HashMap<String, String>,
-    rag: &mut ComprehensiveRAG,
+    rag: &tokio::sync::RwLock<ComprehensiveRAG>,
 ) -> Result<usize, String> {
     tracing::info!("  → Processing file: {}", file_path.display());
 
@@ -1086,8 +1083,7 @@ async fn process_single_file(
 
     // Add document from file
     tracing::info!("     Calling add_document_from_file...");
-    let ids = rag
-        .add_document_from_file(file_path, file_metadata)
+    let ids = shodh_rag::indexing::index_file(rag, file_path, file_metadata)
         .await
         .map_err(|e| {
             let err_msg = format!("Parsing failed: {}", e);

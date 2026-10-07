@@ -3,8 +3,8 @@
 //! when the model structured any table, the file's chunks are replaced.
 //!
 //! The re-parse ([`refine_file`]) runs without the engine (it is blocking work of about
-//! a second per candidate page), and the replacement
-//! ([`crate::rag_engine::RAGEngine::apply_refined_tables`]) only writes when the file is
+//! a second per candidate page), and the replacement ([`apply_refinement`]) embeds
+//! without the engine lock and only writes when the file is
 //! still the one that was re-parsed ([`FileStamp`]) and still indexed, so a refinement
 //! never overwrites a newer index of the file.
 
@@ -78,6 +78,37 @@ pub fn refine_file(path: &Path, model: Arc<TableModel>) -> anyhow::Result<Option
         model_tables,
         parse_ms,
     }))
+}
+
+/// Applies `refined` to the shared engine: it is chunked and embedded on a blocking
+/// thread without the engine lock, and only stored under the write lock (see
+/// [`crate::rag_engine::RAGEngine::commit_refined`]), so searches keep running.
+pub async fn apply_refinement(
+    rag: &tokio::sync::RwLock<crate::rag_engine::RAGEngine>,
+    refined: RefinedTables,
+) -> anyhow::Result<RefineOutcome> {
+    let (metadata, preparer) = {
+        let engine = rag.read().await;
+        match engine.refined_metadata(&refined).await? {
+            Ok(metadata) => (metadata, engine.file_preparer()?),
+            Err(outcome) => return Ok(outcome),
+        }
+    };
+    let RefinedTables {
+        path,
+        stamp,
+        parsed,
+        model_tables,
+        parse_ms,
+    } = refined;
+    let file = tokio::task::spawn_blocking(move || {
+        preparer.prepare_parsed(&path, parsed, metadata, parse_ms)
+    })
+    .await??;
+    rag.write()
+        .await
+        .commit_refined(file, stamp, model_tables)
+        .await
 }
 
 /// Document-level metadata keys the indexer's callers set; they are carried over when
@@ -189,7 +220,10 @@ mod tests {
             model_tables: 1,
             parse_ms: 0,
         };
-        let outcome = engine.apply_refined_tables(refined(&path)).await.unwrap();
+        // As the worker applies it: embedded without the engine lock.
+        let rag = tokio::sync::RwLock::new(engine);
+        let outcome = apply_refinement(&rag, refined(&path)).await.unwrap();
+        let mut engine = rag.into_inner();
         assert!(matches!(
             outcome,
             RefineOutcome::Replaced {

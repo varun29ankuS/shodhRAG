@@ -27,18 +27,15 @@ pub async fn link_folder_enhanced(
     audit: State<'_, AuditState>,
 ) -> Result<IndexingResult, String> {
     let emitter = TauriEventEmitter::new(app);
-    let mut rag_guard = state.rag.write().await;
-
     let result = shodh_rag::indexing::index_folder(
         &folder_path,
         &space_id,
         &options,
-        &mut *rag_guard,
+        &state.rag,
         &indexing_state,
         Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
     )
     .await;
-    drop(rag_guard);
     audit.record(AuditRecord::new(
         AuditEventType::SourceChange,
         source_change(
@@ -94,16 +91,13 @@ pub async fn index_single_file(
     audit: State<'_, AuditState>,
 ) -> Result<IndexingResult, String> {
     let emitter = TauriEventEmitter::new(app);
-    let mut rag_guard = state.rag.write().await;
-
     let result = shodh_rag::indexing::index_single_file(
         &file_path,
         &space_id,
-        &mut *rag_guard,
+        &state.rag,
         Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
     )
     .await;
-    drop(rag_guard);
     audit.record(AuditRecord::new(
         AuditEventType::SourceChange,
         source_change(

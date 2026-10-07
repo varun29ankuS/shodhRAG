@@ -108,6 +108,7 @@ struct Unit {
 }
 
 /// Packs a [`StructuredDocument`] into chunks of semantic units.
+#[derive(Clone)]
 pub struct StructureChunker {
     max_tokens: usize,
 }

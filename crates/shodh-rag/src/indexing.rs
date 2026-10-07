@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 use walkdir::WalkDir;
 
 use crate::chat::EventEmitter;
@@ -209,10 +210,10 @@ pub fn check_path_type(path: &str) -> Result<(bool, bool), String> {
 pub async fn index_single_file(
     file_path: &str,
     space_id: &str,
-    rag: &mut RAGEngine,
+    rag: &RwLock<RAGEngine>,
     emitter: Option<&dyn EventEmitter>,
 ) -> Result<IndexingResult, String> {
-    if !rag.has_search_models() {
+    if !rag.read().await.has_search_models() {
         return Err(SearchModelsMissing.to_string());
     }
     let start_time = Instant::now();
@@ -253,10 +254,9 @@ pub async fn index_single_file(
     metadata.insert("doc_type".to_string(), "document".to_string());
     metadata.insert("indexed_at".to_string(), Utc::now().to_rfc3339());
 
-    let ids = rag
-        .add_document_from_file(&path, metadata)
+    let ids = index_file(rag, &path, metadata)
         .await
-        .map_err(|e| format!("Failed to index file: {:#}", e))?;
+        .map_err(|e| format!("Failed to index file: {e}"))?;
 
     let chunks_created = ids.len();
 
@@ -278,12 +278,12 @@ pub async fn index_folder(
     folder_path: &str,
     space_id: &str,
     options: &IndexingOptions,
-    rag: &mut RAGEngine,
+    rag: &RwLock<RAGEngine>,
     indexing_state: &IndexingState,
     emitter: Option<&dyn EventEmitter>,
 ) -> Result<IndexingResult, String> {
     // Without the embedding model every file would be parsed and then fail.
-    if !rag.has_search_models() {
+    if !rag.read().await.has_search_models() {
         return Err(SearchModelsMissing.to_string());
     }
     let start_time = Instant::now();
@@ -400,16 +400,7 @@ pub async fn index_folder(
                 std::panic::AssertUnwindSafe(process_file_with_options(file_path, space_id, rag));
             match result.catch_unwind().await {
                 Ok(r) => r,
-                Err(panic_info) => {
-                    let msg = if let Some(s) = panic_info.downcast_ref::<String>() {
-                        s.clone()
-                    } else if let Some(s) = panic_info.downcast_ref::<&str>() {
-                        s.to_string()
-                    } else {
-                        "Unknown panic during file processing".to_string()
-                    };
-                    Err(format!("Panic: {}", msg))
-                }
+                Err(panic_info) => Err(format!("Panic: {}", panic_message(panic_info.as_ref()))),
             }
         };
 
@@ -490,7 +481,7 @@ fn is_selected_file_type(options: &IndexingOptions, extension: &str) -> bool {
 async fn process_file_with_options(
     file_path: &Path,
     space_id: &str,
-    rag: &mut RAGEngine,
+    rag: &RwLock<RAGEngine>,
 ) -> Result<usize, String> {
     if !file_path.exists() {
         return Err(format!("File does not exist: {}", file_path.display()));
@@ -525,12 +516,49 @@ async fn process_file_with_options(
         }
     }
 
-    let ids = rag
-        .add_document_from_file(file_path, metadata)
+    let ids = index_file(rag, file_path, metadata)
         .await
-        .map_err(|e| format!("Failed to process file: {:#}", e))?;
+        .map_err(|e| format!("Failed to process file: {e}"))?;
 
     Ok(ids.len())
+}
+
+/// Indexes one file into the shared engine. The file is parsed, chunked and embedded on
+/// a blocking thread without the engine lock; only storing it takes the write lock, so
+/// searches run while files are indexed.
+pub async fn index_file(
+    rag: &RwLock<RAGEngine>,
+    path: &Path,
+    metadata: HashMap<String, String>,
+) -> Result<Vec<uuid::Uuid>, String> {
+    let preparer = rag
+        .read()
+        .await
+        .file_preparer()
+        .map_err(|e| format!("{e:#}"))?;
+    let owned = path.to_path_buf();
+    let prepared = tokio::task::spawn_blocking(move || preparer.prepare(&owned, metadata))
+        .await
+        .map_err(|e| match e.try_into_panic() {
+            Ok(panic) => format!("Panic: {}", panic_message(panic.as_ref())),
+            Err(e) => format!("Indexing task failed: {e}"),
+        })?
+        .map_err(|e| format!("{e:#}"))?;
+    rag.write()
+        .await
+        .commit_file(prepared)
+        .await
+        .map_err(|e| format!("{e:#}"))
+}
+
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = panic.downcast_ref::<&str>() {
+        s.to_string()
+    } else {
+        "Unknown panic during file processing".to_string()
+    }
 }
 
 fn emit_progress(
@@ -633,5 +661,116 @@ mod tests {
         .join();
         state.cancel();
         assert!(state.is_cancelled());
+    }
+
+    /// Embeds like the word embedder, but a document batch containing `HOLD` waits
+    /// until the test releases it: an index job stuck in embedding.
+    struct GatedEmbedder {
+        words: crate::statements::testing::WordEmbedder,
+        entered: std::sync::Mutex<std::sync::mpsc::Sender<()>>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl crate::embeddings::EmbeddingModel for GatedEmbedder {
+        fn embed_query(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+            self.words.embed_query(text)
+        }
+        fn embed_document(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+            if text.contains("HOLD") {
+                let _ = self
+                    .entered
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .send(());
+                let _ = self
+                    .release
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .recv();
+            }
+            self.words.embed_document(text)
+        }
+        fn dimension(&self) -> usize {
+            crate::statements::testing::DIM
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn searches_run_while_a_folder_is_indexed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.path().join("data");
+        config.embedding.model_dir = dir.path().join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        config.search.min_score_threshold = 0.0;
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let mut engine = RAGEngine::new(config).await.expect("engine");
+        engine
+            .attach_search_models(crate::rag_engine::SearchModels::from_embedder(Arc::new(
+                GatedEmbedder {
+                    words: Default::default(),
+                    entered: std::sync::Mutex::new(entered_tx),
+                    release: std::sync::Mutex::new(release_rx),
+                },
+            )))
+            .expect("models");
+        engine
+            .add_document(
+                "The lease notice period is sixty days. Rent is reviewed every spring, and the landlord repairs the roof and the heating when they fail.",
+                crate::types::DocumentFormat::TXT,
+                HashMap::from([("title".to_string(), "lease".to_string())]),
+                crate::types::Citation::default(),
+            )
+            .await
+            .expect("indexed");
+        let rag = Arc::new(RwLock::new(engine));
+
+        let folder = dir.path().join("folder");
+        std::fs::create_dir_all(&folder).expect("folder");
+        std::fs::write(
+            folder.join("slow.txt"),
+            "HOLD this file in embedding. It describes the parking rules of the building:              visitors park on the street, residents in the garage below the courtyard.",
+        )
+        .expect("file");
+        let job = {
+            let rag = rag.clone();
+            let folder = folder.to_string_lossy().to_string();
+            tokio::spawn(async move {
+                index_folder(
+                    &folder,
+                    "space-1",
+                    &options(&[]),
+                    &rag,
+                    &IndexingState::default(),
+                    None,
+                )
+                .await
+            })
+        };
+        // The job is embedding the file now.
+        tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(60)))
+            .await
+            .expect("join")
+            .expect("the index job reached embedding");
+
+        let search = async { rag.read().await.search("lease notice period", 3).await };
+        let found = tokio::time::timeout(Duration::from_secs(10), search)
+            .await
+            .expect("search waited for the index job")
+            .expect("search");
+        assert!(found.iter().any(|r| r.text.contains("sixty days")));
+
+        release_tx.send(()).expect("release");
+        let result = job.await.expect("join").expect("indexed");
+        assert_eq!(result.files_processed, 1);
+        let after = rag
+            .read()
+            .await
+            .search("HOLD file embedding", 3)
+            .await
+            .expect("search");
+        assert!(after.iter().any(|r| r.text.contains("HOLD")));
     }
 }

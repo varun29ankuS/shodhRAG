@@ -40,9 +40,10 @@ const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 /// Ordered schema migrations of `shodh.db`. Never edit an applied entry; append a new one.
 /// The database is shared: the audit chain (1), the dynamics of typed statements (2), the
 /// generated-visuals gallery (3), learned-memory suggestions (4), research objects (5: snippet
-/// images, Result extraction records and rejections) and the citation graph (6: the scholarly
-/// API cache, per-file scans and the build report) use one version sequence, so every
-/// component that opens it sees the same schema.
+/// images, Result extraction records and rejections), the citation graph (6: the scholarly
+/// API cache, per-file scans and the build report), the model catalog cache (7) and
+/// workspaces (8: workspaces, their versioned instructions and sources) use one version
+/// sequence, so every component that opens it sees the same schema.
 const MIGRATIONS: &[(i64, &str)] = &[
     (
         1,
@@ -266,6 +267,51 @@ const MIGRATIONS: &[(i64, &str)] = &[
             source TEXT PRIMARY KEY,
             models_json TEXT NOT NULL,
             fetched_at_ms INTEGER NOT NULL CHECK (fetched_at_ms >= 0)
+        );",
+    ),
+    (
+        8,
+        // Workspaces: a named set of sources (folders, files, snippets, papers) with
+        // instructions, where chats search only those sources. Instructions are versioned:
+        // every edit is a new row, never an update. `workspace_state` holds one-time
+        // bookkeeping (the import of conversations saved with a legacy space).
+        "CREATE TABLE workspaces (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL,
+            icon TEXT NOT NULL,
+            color TEXT NOT NULL,
+            template TEXT NOT NULL,
+            pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
+            archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_active_at TEXT NULL
+        );
+        CREATE TABLE workspace_instructions (
+            workspace_id TEXT NOT NULL,
+            version INTEGER NOT NULL CHECK (version >= 1),
+            text TEXT NOT NULL,
+            author TEXT NOT NULL CHECK (author IN ('user', 'agent', 'template', 'migration')),
+            note TEXT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, version)
+        );
+        CREATE TABLE workspace_sources (
+            workspace_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('folder', 'file', 'snippet', 'paper')),
+            ref TEXT NOT NULL,
+            label TEXT NOT NULL,
+            path TEXT NULL,
+            added_by TEXT NOT NULL CHECK (added_by IN ('user', 'agent', 'migration')),
+            added_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, kind, ref)
+        );
+        CREATE INDEX workspace_sources_ref ON workspace_sources(kind, ref);
+        CREATE TABLE workspace_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         );",
     ),
 ];
@@ -1595,6 +1641,10 @@ mod tests {
                  DROP TABLE citation_scans;
                  DROP TABLE citation_graph_state;
                  DROP TABLE model_catalog_cache;
+                 DROP TABLE workspaces;
+                 DROP TABLE workspace_instructions;
+                 DROP TABLE workspace_sources;
+                 DROP TABLE workspace_state;
                  DELETE FROM schema_version WHERE version > 1;",
             )
             .unwrap();
@@ -1640,6 +1690,16 @@ mod tests {
             )
             .unwrap();
         assert_eq!(citations, 3);
+        let workspaces: i64 = shared
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table'
+                 AND name IN ('workspaces', 'workspace_instructions', 'workspace_sources',
+                              'workspace_state')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(workspaces, 4);
         // Opening again (the audit log after the statement store) applies nothing twice.
         let log = AuditLog::open(&path, None).unwrap();
         let versions: i64 = raw(&dir)

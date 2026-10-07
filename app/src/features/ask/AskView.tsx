@@ -38,6 +38,8 @@ import { clearReveal, pendingReveal, subscribeReveal } from '../visuals/reveal';
 import type { MessageReveal } from '../visuals/reveal';
 import { scrollBehavior } from './viewer/sourceAccess';
 import type { ChatMessage, SearchHit, SendOptions } from './types';
+import { useWorkspaces } from '../workspaces/WorkspaceContext';
+import { scopeChip } from '../workspaces/model';
 import { SnippetDropZone } from '../research/SnippetDropZone';
 import { exportPdf } from '../print/exportPdf';
 import { answerTitle, buildPrintDocument } from '../print/printModel';
@@ -588,18 +590,19 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
       : null;
 
   const indexedCount = sources.filter(s => s.status !== 'error').length;
-  const scopeLabel = indexedCount === 0
-    ? 'No sources yet'
-    : `All sources · ${indexedCount}`;
-  const scopeTitle = indexedCount === 0
-    ? 'Add a folder in Library'
-    : 'Answers search everything you have indexed. Manage sources in Library.';
+  // In a workspace chat, answers search only the workspace's sources unless "Search all my
+  // library" is on for the next question (it switches off again once that is sent).
+  const { byId: workspaceById, openWorkspace } = useWorkspaces();
+  const workspace = workspaceById(session.activeConversation?.workspaceId);
+  const [searchAll, setSearchAll] = useState(false);
+  const chip = scopeChip(workspace, searchAll, indexedCount);
 
   // Reset per-conversation UI when the conversation changes.
   const conversationId = session.activeConversationId;
   useEffect(() => {
     setPreview(null);
     setOpenArtifactId(null);
+    setSearchAll(false);
     lastCountRef.current = 0;
   }, [conversationId]);
 
@@ -685,9 +688,10 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     const text = draft.trim();
     if (!text || isStreaming || busyElsewhere) return;
     setDraft('');
-    void send(text, sendOptions);
+    void send(text, { ...sendOptions, searchAll: workspace !== null && searchAll });
+    setSearchAll(false);
     composerRef.current?.focus();
-  }, [draft, isStreaming, busyElsewhere, send, sendOptions]);
+  }, [draft, isStreaming, busyElsewhere, send, sendOptions, workspace, searchAll]);
 
   const submitSteer = useCallback(() => {
     const text = draft.trim();
@@ -839,9 +843,26 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
         blockedReason={blockedReason}
         placeholder={messages.length === 0 ? 'Ask about your files…' : 'Ask a follow-up…'}
         modelChip={<ModelChip answerRunning={isStreaming} onOpenSettings={() => onNavigate('settings')} />}
-        scopeLabel={scopeLabel}
-        scopeTitle={scopeTitle}
-        onOpenLibrary={() => onNavigate('library')}
+        scopeLabel={chip.label}
+        scopeTitle={chip.title}
+        onOpenLibrary={() => (workspace ? openWorkspace(workspace.id, 'sources') : onNavigate('library'))}
+        scopeAction={workspace && (
+          <button
+            type="button"
+            aria-pressed={searchAll}
+            onClick={() => setSearchAll(on => !on)}
+            title="For the next question only: search your whole library instead of this workspace's sources"
+            className={cn(
+              'h-7 px-2.5 inline-flex items-center gap-1 rounded-full text-[11.5px] font-medium border transition-colors duration-micro focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              searchAll
+                ? 'bg-shodh-accent-soft border-shodh-accent text-shodh-accent-text'
+                : 'border-shodh-border text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised',
+            )}
+          >
+            <Globe className="w-3 h-3" aria-hidden="true" />
+            Search all my library
+          </button>
+        )}
         onPickImage={onPickImage}
         autoFocus={autoFocus}
       />

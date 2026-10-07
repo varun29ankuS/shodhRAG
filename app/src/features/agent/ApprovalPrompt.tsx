@@ -2,6 +2,8 @@ import React, { useEffect, useRef } from 'react';
 import { ShieldAlert } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { StepApproval } from './reducer';
+import { DiffView } from '../workspaces/DiffView';
+import { parseDiff } from '../workspaces/model';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -57,7 +59,8 @@ export function previewChanges(preview: unknown): FieldChange[] {
 function previewRows(preview: unknown): Array<[string, string]> {
   if (isRecord(preview)) {
     return Object.entries(preview)
-      .filter(([k]) => k !== 'changes')
+      // Shown as their own blocks: field changes and an instruction diff.
+      .filter(([k]) => k !== 'changes' && k !== 'instructionsDiff' && k !== 'diff')
       .filter(([, v]) => v !== null && v !== undefined && v !== '' && v !== false)
       .map(([k, v]) => [humanKey(k), displayValue(v)]);
   }
@@ -90,6 +93,7 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
   const destructive = approval.tier === 'destructive';
   const rows = previewRows(approval.preview);
   const changes = previewChanges(approval.preview);
+  const diff = isRecord(approval.preview) ? parseDiff(approval.preview.instructionsDiff) : null;
 
   useEffect(() => {
     if (!pending) return;
@@ -132,7 +136,7 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
           {rows.map(([key, value]) => (
             <React.Fragment key={key}>
               <dt className="text-shodh-text-muted whitespace-nowrap">{key}</dt>
-              <dd className="text-shodh-text break-words min-w-0">{value}</dd>
+              <dd className="text-shodh-text break-words whitespace-pre-wrap min-w-0">{value}</dd>
             </React.Fragment>
           ))}
         </dl>
@@ -157,6 +161,7 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
           ))}
         </dl>
       )}
+      {diff && <DiffView lines={diff} label="Proposed change to the instructions" />}
       <div className="flex items-center gap-2">
         <button
           ref={approveRef}

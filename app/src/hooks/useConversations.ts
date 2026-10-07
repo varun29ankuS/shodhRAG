@@ -27,8 +27,11 @@ export interface Conversation {
   createdAt: string;
   updatedAt: string;
   pinned: boolean;
+  /** Legacy: the Library source a chat was started from (kept as saved; see workspaceId). */
   spaceId?: string;
   spaceName?: string;
+  /** The workspace the chat belongs to; absent is "No workspace". */
+  workspaceId?: string;
   systemPrompt?: string;
   /**
    * Side discussions not tied to a message (e.g. about a task). Opaque here;
@@ -187,7 +190,7 @@ export function useConversations() {
     };
   }, []);
 
-  const createConversation = useCallback((opts?: { spaceId?: string; spaceName?: string }): string => {
+  const createConversation = useCallback((opts?: { workspaceId?: string | null }): string => {
     const id = generateId();
     const now = new Date().toISOString();
     const fresh: Conversation = {
@@ -197,8 +200,7 @@ export function useConversations() {
       createdAt: now,
       updatedAt: now,
       pinned: false,
-      spaceId: opts?.spaceId,
-      spaceName: opts?.spaceName,
+      ...(opts?.workspaceId ? { workspaceId: opts.workspaceId } : {}),
     };
     setConversations(prev => [fresh, ...prev]);
     setActiveConversationId(id);
@@ -335,7 +337,7 @@ export function useConversations() {
     [activeConversationId]
   );
 
-  const updateConversationMeta = useCallback((id: string, meta: Partial<Pick<Conversation, 'spaceId' | 'spaceName' | 'systemPrompt'>>) => {
+  const updateConversationMeta = useCallback((id: string, meta: Partial<Pick<Conversation, 'workspaceId' | 'systemPrompt'>>) => {
     setConversations(prev =>
       prev.map(c => {
         if (c.id !== id) return c;
@@ -370,6 +372,20 @@ export function useConversations() {
       })
     );
   }, [scheduleSave]);
+
+  /**
+   * A workspace was deleted: its chats move to "No workspace". The backend already saved
+   * that; the in-memory copies change so their next save keeps it.
+   */
+  const detachWorkspace = useCallback((workspaceId: string) => {
+    setConversations(prev =>
+      prev.map(c => {
+        if (c.workspaceId !== workspaceId) return c;
+        const { workspaceId: _removed, ...rest } = c;
+        return rest;
+      })
+    );
+  }, []);
 
   const pinConversation = useCallback((id: string) => {
     setConversations(prev =>
@@ -406,5 +422,6 @@ export function useConversations() {
     updateConversationMeta,
     updateFocusThreads,
     reorderConversations,
+    detachWorkspace,
   };
 }

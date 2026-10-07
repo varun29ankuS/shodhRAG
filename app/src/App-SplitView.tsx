@@ -11,7 +11,7 @@ import { Input } from "./components/ui/input";
 import { Progress } from "./components/ui/progress";
 import {
   MessageSquare, Settings, Bot, FolderOpen, FileText, Code, Terminal, Plus, Check, X, Loader2, Pencil, Download, ChevronDown, ChevronUp, Database, FileCode, BookOpen, FileSpreadsheet, Presentation, Trash2, Braces, Coffee,
-  FolderPlus, PanelLeftOpen, PanelLeftClose, Sun, Moon, Bug, Search, Sparkles, AlertTriangle, RotateCcw
+  FolderPlus, PanelLeftOpen, PanelLeftClose, Sun, Moon, Bug, Search, Sparkles, AlertTriangle, RotateCcw, Layers, MessageCircle
 } from 'lucide-react';
 
 const IS_MAC = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
@@ -20,6 +20,7 @@ const IS_MAC = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platfor
 const TasksView = lazy(() => import('./features/tasks/TasksView'));
 const ActivityView = lazy(() => import('./features/activity/ActivityView'));
 const SettingsView = lazy(() => import('./components/shell/SettingsView'));
+const WorkspacesView = lazy(() => import('./features/workspaces/WorkspacesView'));
 
 function safeStorage(): Storage | null {
   try {
@@ -44,6 +45,9 @@ import type { ViewTab } from './lib/viewTabs';
 import { useTheme } from './contexts/ThemeContext';
 import { useSidebar } from './contexts/SidebarContext';
 import { ChatSessionProvider, useChatSession } from './features/ask/ChatSessionContext';
+import { WorkspaceProvider, useWorkspaces } from './features/workspaces/WorkspaceContext';
+import { sourceSummary, workspaceForNewChat } from './features/workspaces/model';
+import { WorkspaceIcon } from './features/workspaces/WorkspaceIcon';
 import { FocusProvider } from './features/focus/FocusContext';
 import { VisualsButton } from './features/visuals/GalleryDialog';
 import { VisualNavigator } from './features/visuals/VisualNavigator';
@@ -102,6 +106,15 @@ function AppSplitView() {
     appendMessage,
     updateMessage,
   } = useChatSession();
+
+  // Workspaces: the sidebar groups chats by them, new chats start in the current one.
+  const {
+    workspaces,
+    byId: workspaceById,
+    openWorkspace,
+    openWorkspaceId,
+    requestNewWorkspace,
+  } = useWorkspaces();
 
   // Notification center
   const {
@@ -233,9 +246,7 @@ function AppSplitView() {
   const [editingInstructionText, setEditingInstructionText] = useState('');
   const pendingSourceDeleteRef = useRef<Map<string, { timeout: ReturnType<typeof setTimeout>; source: Source }>>(new Map());
 
-  // Derive system prompt and active space from the active conversation
-  const activeSpaceId = sources.find(s => s.selected)?.id || null;
-  const activeSourceName = sources.find(s => s.selected)?.name || null;
+  // Derive the system prompt from the active conversation
   const spaceSystemPrompt = activeConversation?.systemPrompt || '';
 
   // Parse instructions from newline-separated string into array
@@ -275,18 +286,24 @@ function AppSplitView() {
     setEditingInstructionText('');
   };
 
-  // Create new conversation with current source association and show it.
-  // An untouched active conversation is reused rather than piling up blanks.
-  const handleNewConversation = () => {
+  // Start a chat in `workspaceId` (null: no workspace) and show it. An untouched active
+  // conversation is reused (moved to that workspace) rather than piling up blanks.
+  const startChat = (workspaceId: string | null) => {
     if (activeConversation && isBlankConversation(activeConversation)) {
+      if ((activeConversation.workspaceId ?? null) !== workspaceId) {
+        updateConversationMeta(activeConversation.id, { workspaceId: workspaceId ?? undefined });
+      }
       setActiveTab('ask');
       return;
     }
-    createConversation({
-      spaceId: activeSpaceId || undefined,
-      spaceName: activeSourceName || undefined,
-    });
+    createConversation({ workspaceId });
     setActiveTab('ask');
+  };
+
+  // "New chat" starts in the current workspace: the workspace page being shown, else the
+  // workspace of the chat in use.
+  const handleNewConversation = () => {
+    startChat(workspaceForNewChat(activeTab === 'workspaces' ? openWorkspaceId : null, activeConversation?.workspaceId));
   };
 
   const saveFirstRun = useCallback((next: FirstRunState) => {
@@ -330,6 +347,8 @@ function AppSplitView() {
   // Primary actions offered by the command palette.
   const paletteActions: PaletteAction[] = [
     { id: 'new-chat', label: 'New chat', icon: Plus, keywords: 'new chat conversation ask create', shortcut: IS_MAC ? '⌘N' : 'Ctrl+N', run: handleNewConversation },
+    { id: 'new-chat-plain', label: 'New chat outside workspaces', description: 'Searches your whole library', icon: MessageCircle, keywords: 'new chat no workspace library all', run: () => startChat(null) },
+    { id: 'new-workspace', label: 'New workspace', description: 'Sources, instructions and chats for one piece of work', icon: Layers, keywords: 'new create workspace project template', run: requestNewWorkspace },
     { id: 'add-folder', label: 'Add folder to Library', description: 'Index a folder of documents', icon: FolderPlus, keywords: 'add source folder documents index import', run: () => { setActiveTab('library'); void handleAddSource(); } },
     { id: 'choose-model', label: 'Choose model', description: 'Provider and model that answer', icon: Bot, keywords: 'model llm provider ai settings api key', run: () => setActiveTab('settings') },
     { id: 'toggle-sidebar', label: collapsed ? 'Expand sidebar' : 'Collapse sidebar', icon: collapsed ? PanelLeftOpen : PanelLeftClose, keywords: 'sidebar toggle hide show collapse expand', shortcut: IS_MAC ? '⌘B' : 'Ctrl+B', run: toggleSidebar },
@@ -1023,8 +1042,9 @@ function AppSplitView() {
   };
 
   /** Start a chat about a Library file: a new conversation with the file named in the composer. */
-  const handleAskAboutFile = (file: FileNode, source: LibrarySource) => {
-    createConversation({ spaceId: source.id, spaceName: source.name });
+  const handleAskAboutFile = (file: FileNode, _source: LibrarySource) => {
+    // Outside workspaces: a workspace may not contain this file.
+    createConversation({ workspaceId: null });
     setAskDraft(prev => ({ text: `About ${file.name} (${file.path}): `, seq: (prev?.seq ?? 0) + 1 }));
     setActiveTab('ask');
   };
@@ -1120,6 +1140,16 @@ function AppSplitView() {
         llmStatus={llmStatus}
         onOpenCommandPalette={openPalette}
         onShowFeedback={() => setShowFeedback(true)}
+        workspaces={workspaces}
+        onOpenWorkspace={id => openWorkspace(id)}
+        onNewChatInWorkspace={id => startChat(id)}
+        onMoveToWorkspace={(conversationId, workspaceId) => {
+          updateConversationMeta(conversationId, { workspaceId: workspaceId ?? undefined });
+          const name = workspaceId ? workspaceById(workspaceId)?.name : null;
+          notify.success(name ? `Moved to “${name}”` : 'Moved out of its workspace', {
+            description: name ? 'Its next answers search only this workspace’s sources.' : 'Its next answers search your whole library.',
+          });
+        }}
       />
 
 
@@ -1134,31 +1164,19 @@ function AppSplitView() {
             <span className="text-xs font-semibold tracking-wide" style={{ color: colors.text }}>
               {VIEW_TAB_LABELS[activeTab]}
             </span>
-            {activeTab === 'ask' && activeConversation?.spaceName && (() => {
-              const name = activeConversation.spaceName!;
-              // FNV-1a hash — must match sourceColor() in utils/colors
-              let hash = 2166136261;
-              for (let i = 0; i < name.length; i++) {
-                hash ^= name.charCodeAt(i);
-                hash = (hash * 16777619) >>> 0;
-              }
-              const hue = (hash * 137.508) % 360;
-              const s = 0.6, l = 0.5;
-              const a = s * Math.min(l, 1 - l);
-              const f = (n: number) => {
-                const k = (n + hue / 30) % 12;
-                const c = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
-                return Math.round(255 * c).toString(16).padStart(2, '0');
-              };
-              const clr = `#${f(0)}${f(8)}${f(4)}`;
+            {activeTab === 'ask' && (() => {
+              const workspace = workspaceById(activeConversation?.workspaceId);
+              if (!workspace) return null;
               return (
-                <span
-                  className="text-[10px] px-2 py-0.5 rounded-full font-medium truncate max-w-[120px]"
-                  style={{ backgroundColor: `${clr}18`, color: clr, border: `1px solid ${clr}30` }}
-                  title={`Source: ${name}`}
+                <button
+                  type="button"
+                  onClick={() => openWorkspace(workspace.id)}
+                  className="text-[10px] px-2 py-0.5 rounded-full font-medium inline-flex items-center gap-1 max-w-[180px] bg-shodh-raised text-shodh-text-secondary hover:text-shodh-text transition-colors duration-micro focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  title={`Workspace: ${workspace.name} (${sourceSummary(workspace.sourceCounts)}). Open it.`}
                 >
-                  {name}
-                </span>
+                  <WorkspaceIcon icon={workspace.icon} color={workspace.color} className="w-3 h-3" />
+                  <span className="truncate">{workspace.name}</span>
+                </button>
               );
             })()}
             {llmStatus.connected && (
@@ -1439,6 +1457,15 @@ function AppSplitView() {
             />
           )}
 
+          {/* Workspaces: sources, instructions, chats and memory of one piece of work */}
+          {activeTab === 'workspaces' && (
+            <WorkspacesView
+              library={sources.map(s => ({ id: s.id, name: s.name, path: s.path }))}
+              onNewChat={id => startChat(id)}
+              onOpenChat={id => { switchConversation(id); setActiveTab('ask'); }}
+            />
+          )}
+
           {/* Tasks: list first, calendar as a view */}
           {activeTab === 'tasks' && <TasksView />}
 
@@ -1490,9 +1517,17 @@ function AppSplitView() {
         onClose={closePalette}
         onNavigate={setActiveTab}
         actions={paletteActions}
-        conversations={conversations}
+        conversations={conversations.map(c => ({
+          id: c.id,
+          title: c.title,
+          updatedAt: c.updatedAt,
+          workspaceName: workspaceById(c.workspaceId)?.name,
+        }))}
         onOpenConversation={(id: string) => { switchConversation(id); setActiveTab('ask'); }}
         sources={sources.map(s => ({ id: s.id, name: s.name, path: s.path }))}
+        workspaces={workspaces.map(w => ({ id: w.id, name: w.name, summary: sourceSummary(w.sourceCounts) }))}
+        onOpenWorkspace={id => openWorkspace(id)}
+        onNewChatInWorkspace={id => startChat(id)}
       />
 
       {/* First-run setup */}
@@ -1529,13 +1564,15 @@ function AppSplitView() {
 /** App shell with the chat session (and the focus pop-out it hosts) mounted above it. */
 function AppSplitViewRoot() {
   return (
-    <ChatSessionProvider>
-      <FocusProvider>
-        <AppSplitView />
-        <VisualNavigator />
-        <SnippetHost />
-      </FocusProvider>
-    </ChatSessionProvider>
+    <WorkspaceProvider>
+      <ChatSessionProvider>
+        <FocusProvider>
+          <AppSplitView />
+          <VisualNavigator />
+          <SnippetHost />
+        </FocusProvider>
+      </ChatSessionProvider>
+    </WorkspaceProvider>
   );
 }
 

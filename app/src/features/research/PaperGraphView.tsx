@@ -5,9 +5,9 @@ import { AlertTriangle, Globe, List, Loader2, Maximize2, Minus, Network, Plus, R
 import { cn } from '../../lib/utils';
 import { onResearchChanged, toResearchError } from './api';
 import { graphApi, onGraphProgress } from './graphApi';
-import { DEFAULT_FILTERS, graphList, nodeRadius, progressLabel, shapeGraph, shortLabel, yearBounds } from './graphModel';
+import { DEFAULT_FILTERS, graphList, nodeRadius, progressLabel, restrictGraph, shapeGraph, shortLabel, yearBounds } from './graphModel';
 import type { DrawnNode, GraphFilters } from './graphModel';
-import type { BuildProgress, GraphStatus, GraphViewData } from './graphTypes';
+import type { BuildProgress, GraphStatus, GraphViewData, ViewNode } from './graphTypes';
 import {
   IDENTITY,
   clampGraphView,
@@ -154,7 +154,14 @@ const FILL: Record<DrawnNode['kind'], string> = {
  * the same papers. Filters: library only, year range, method. A paper opens
  * its page.
  */
-export function PaperGraphView({ onOpenPaper }: { onOpenPaper: (id: string) => void }) {
+export function PaperGraphView({
+  onOpenPaper,
+  restrict = null,
+}: {
+  onOpenPaper: (id: string) => void;
+  /** Only these library papers (a workspace's) and the works they cite; null shows all. */
+  restrict?: ((node: ViewNode) => boolean) | null;
+}) {
   const ids = { library: useId(), from: useId(), to: useId(), method: useId(), online: useId(), title: useId(), help: useId() };
   const [status, setStatus] = useState<Load<GraphStatus>>({ status: 'loading' });
   const [data, setData] = useState<Load<GraphViewData>>({ status: 'loading' });
@@ -213,7 +220,10 @@ export function PaperGraphView({ onOpenPaper }: { onOpenPaper: (id: string) => v
     }
   }, [online]);
 
-  const view = data.status === 'ready' ? data.value : null;
+  const view = useMemo(
+    () => (data.status === 'ready' ? (restrict ? restrictGraph(data.value, restrict) : data.value) : null),
+    [data, restrict],
+  );
   const shaped = useMemo(() => (view ? shapeGraph(view, filters) : null), [view, filters]);
   const rows = useMemo(() => (view ? graphList(view, filters) : []), [view, filters]);
   const bounds = useMemo(() => (view ? yearBounds(view.nodes) : null), [view]);

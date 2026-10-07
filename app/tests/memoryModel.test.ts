@@ -112,8 +112,8 @@ test('relative times', () => {
 test('scopes and property labels in words', () => {
   const names = (id: string) => (id === 'src-1' ? 'Tax 2026' : undefined);
   assert.equal(scopeLabel('global', names), 'All conversations');
-  assert.equal(scopeLabel('workspace:src-1', names), 'Conversations about Tax 2026');
-  assert.equal(scopeLabel('workspace:gone', names), 'Conversations about a removed source');
+  assert.equal(scopeLabel('workspace:src-1', names), 'Chats in the workspace “Tax 2026”');
+  assert.equal(scopeLabel('workspace:gone', names), 'Chats in an archived or deleted workspace');
   assert.equal(propertyLabel('preferenceTopic'), 'Preference topic');
   assert.equal(propertyLabel('name'), 'Name');
 });

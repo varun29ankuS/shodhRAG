@@ -39,6 +39,8 @@ export interface CaptureReport {
 
 export interface VisualListQuery {
   conversationId?: string | null;
+  /** Only visuals of these conversations; an empty list matches nothing. */
+  conversationIds?: string[] | null;
   kind?: VisualKind | null;
   text?: string | null;
   pinnedOnly?: boolean;

@@ -1,9 +1,12 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { MoreHorizontal, Pencil, Pin, PinOff, Trash2 } from 'lucide-react';
+import { ChevronRight, FolderInput, MoreHorizontal, Pencil, Pin, PinOff, Plus, Trash2 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { groupConversations } from '../../lib/conversationGroups';
 import { relativeTime } from '../../utils/time';
 import type { Conversation } from '../../hooks/useConversations';
+import { groupChatsByWorkspace } from '../../features/workspaces/model';
+import type { ChatGroup, GroupableWorkspace } from '../../features/workspaces/model';
+import { WorkspaceIcon } from '../../features/workspaces/WorkspaceIcon';
 import { ConversationPreviewCard, usePreviewVisibility } from './ConversationPreviewCard';
 
 const FOCUS_RING =
@@ -21,6 +24,33 @@ interface ConversationHistoryProps {
   onRename: (id: string, title: string) => void;
   onPin: (id: string) => void;
   onDelete: (id: string) => void;
+  /** Workspaces that are not archived (chats are grouped under them). */
+  workspaces: GroupableWorkspace[];
+  onOpenWorkspace: (id: string) => void;
+  onNewChatInWorkspace: (id: string) => void;
+  /** Move a chat to a workspace, or out of one (null). */
+  onMoveToWorkspace: (conversationId: string, workspaceId: string | null) => void;
+}
+
+/** Collapsed workspace groups (per viewer; the sidebar works without it). */
+const COLLAPSED_KEY = 'shodh.sidebar.collapsedWorkspaces';
+
+function readCollapsed(): Set<string> {
+  try {
+    const raw = window.localStorage.getItem(COLLAPSED_KEY);
+    const list: unknown = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(list) ? list.filter((x): x is string => typeof x === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeCollapsed(ids: Set<string>) {
+  try {
+    window.localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...ids]));
+  } catch {
+    // Not remembered (private window or blocked storage); the toggle still works.
+  }
 }
 
 function useNow(intervalMs: number): Date {
@@ -33,8 +63,10 @@ function useNow(intervalMs: number): Date {
 }
 
 /**
- * Conversation history under Ask: Pinned, Today, Yesterday, Previous 7 days,
- * Older. Arrow keys move between conversations, Home/End jump to the ends.
+ * Conversation history under Ask, grouped by workspace (each collapsible, with a "new
+ * chat" button), then the chats in no workspace by date: Pinned, Today, Yesterday,
+ * Previous 7 days, Older. Arrow keys move between conversations, Home/End jump to the
+ * ends.
  */
 export function ConversationHistory({
   conversations,
@@ -44,11 +76,32 @@ export function ConversationHistory({
   onRename,
   onPin,
   onDelete,
+  workspaces,
+  onOpenWorkspace,
+  onNewChatInWorkspace,
+  onMoveToWorkspace,
 }: ConversationHistoryProps) {
   const now = useNow(REGROUP_INTERVAL_MS);
-  const groups = useMemo(() => groupConversations(conversations, now), [conversations, now]);
+  const workspaceGroups = useMemo(() => groupChatsByWorkspace(conversations, workspaces), [conversations, workspaces]);
+  const looseChats = useMemo(
+    () => workspaceGroups.find(g => g.workspace === null)?.items ?? [],
+    [workspaceGroups],
+  );
+  const groups = useMemo(() => groupConversations(looseChats, now), [looseChats, now]);
+  const named = workspaceGroups.filter((g): g is ChatGroup<Conversation> & { workspace: GroupableWorkspace } => g.workspace !== null);
+  const [collapsed, setCollapsed] = useState<Set<string>>(readCollapsed);
+  const toggle = useCallback((id: string) => {
+    setCollapsed(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      writeCollapsed(next);
+      return next;
+    });
+  }, []);
   const listRef = useRef<HTMLDivElement>(null);
   const headingId = useId();
+  const rowProps = { activeConversationId, askActive, onOpen, onRename, onPin, onDelete, workspaces, onMoveToWorkspace };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
@@ -74,7 +127,7 @@ export function ConversationHistory({
       >
         Chats
       </h2>
-      {groups.length === 0 ? (
+      {groups.length === 0 && named.length === 0 ? (
         // The list always holds at least one conversation once loaded, so empty means loading.
         <div className="px-5 py-2 flex flex-col gap-2.5" role="status" aria-label="Loading conversations">
           {[72, 54, 64].map(w => (
@@ -87,6 +140,72 @@ export function ConversationHistory({
           onKeyDown={handleKeyDown}
           className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-2 pb-2"
         >
+          {named.map(group => {
+            const id = group.workspace.id;
+            const open = !collapsed.has(id);
+            const listId = `${headingId}-ws-${id}`;
+            return (
+              <div key={id} role="group" aria-label={`Workspace ${group.workspace.name}`} className="pt-2 first:pt-0">
+                <div className="group/ws flex items-center gap-0.5 pr-1">
+                  <button
+                    type="button"
+                    onClick={() => toggle(id)}
+                    aria-expanded={open}
+                    aria-controls={listId}
+                    aria-label={`${group.workspace.name}, ${group.items.length} ${group.items.length === 1 ? 'chat' : 'chats'}`}
+                    className={cn(
+                      'flex-1 min-w-0 flex items-center gap-1.5 h-7 pl-1.5 pr-2 rounded-md text-left text-[12px] font-medium text-shodh-text-secondary hover:bg-shodh-raised/60 hover:text-shodh-text transition-colors duration-micro',
+                      FOCUS_RING,
+                    )}
+                  >
+                    <ChevronRight
+                      className={cn('w-3.5 h-3.5 shrink-0 text-shodh-text-faint transition-transform duration-micro motion-reduce:transition-none', open && 'rotate-90')}
+                      aria-hidden="true"
+                    />
+                    <WorkspaceIcon icon={group.workspace.icon} color={group.workspace.color} className="w-3.5 h-3.5" />
+                    <span className="truncate">{group.workspace.name}</span>
+                    <span className="ml-auto text-[11px] font-normal text-shodh-text-faint" aria-hidden="true">{group.items.length}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onOpenWorkspace(id)}
+                    aria-label={`Open workspace ${group.workspace.name}`}
+                    title="Open workspace"
+                    className={cn(
+                      'w-6 h-6 rounded-md inline-flex items-center justify-center text-shodh-text-muted hover:bg-shodh-raised-2 hover:text-shodh-text opacity-0 group-hover/ws:opacity-100 group-focus-within/ws:opacity-100 focus-visible:opacity-100 transition-opacity duration-micro',
+                      FOCUS_RING,
+                    )}
+                  >
+                    <FolderInput className="w-3.5 h-3.5" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onNewChatInWorkspace(id)}
+                    aria-label={`New chat in ${group.workspace.name}`}
+                    title="New chat in this workspace"
+                    className={cn(
+                      'w-6 h-6 rounded-md inline-flex items-center justify-center text-shodh-text-muted hover:bg-shodh-raised-2 hover:text-shodh-text opacity-0 group-hover/ws:opacity-100 group-focus-within/ws:opacity-100 focus-visible:opacity-100 transition-opacity duration-micro',
+                      FOCUS_RING,
+                    )}
+                  >
+                    <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                  </button>
+                </div>
+                {open && (
+                  <ul id={listId} className="flex flex-col gap-px pl-2">
+                    {group.items.map(conv => (
+                      <ConversationRow key={conv.id} conversation={conv} {...rowProps} />
+                    ))}
+                  </ul>
+                )}
+              </div>
+            );
+          })}
+          {named.length > 0 && groups.length > 0 && (
+            <h3 className="px-3 pt-3 pb-0.5 text-[11px] font-semibold tracking-[0.06em] uppercase text-shodh-text-faint">
+              No workspace
+            </h3>
+          )}
           {groups.map(group => (
             <div key={group.id} role="group" aria-labelledby={`${headingId}-${group.id}`} className="pt-2 first:pt-0">
               <h3
@@ -97,16 +216,7 @@ export function ConversationHistory({
               </h3>
               <ul className="flex flex-col gap-px">
                 {group.items.map(conv => (
-                  <ConversationRow
-                    key={conv.id}
-                    conversation={conv}
-                    isActive={conv.id === activeConversationId}
-                    isCurrentPage={askActive && conv.id === activeConversationId}
-                    onOpen={onOpen}
-                    onRename={onRename}
-                    onPin={onPin}
-                    onDelete={onDelete}
-                  />
+                  <ConversationRow key={conv.id} conversation={conv} {...rowProps} />
                 ))}
               </ul>
             </div>
@@ -119,24 +229,32 @@ export function ConversationHistory({
 
 interface ConversationRowProps {
   conversation: Conversation;
-  isActive: boolean;
-  isCurrentPage: boolean;
+  activeConversationId: string | null;
+  askActive: boolean;
   onOpen: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onPin: (id: string) => void;
   onDelete: (id: string) => void;
+  workspaces: GroupableWorkspace[];
+  onMoveToWorkspace: (conversationId: string, workspaceId: string | null) => void;
 }
 
 function ConversationRow({
   conversation,
-  isActive,
-  isCurrentPage,
+  activeConversationId,
+  askActive,
   onOpen,
   onRename,
   onPin,
   onDelete,
+  workspaces,
+  onMoveToWorkspace,
 }: ConversationRowProps) {
+  const isActive = conversation.id === activeConversationId;
+  const isCurrentPage = askActive && isActive;
   const [menuOpen, setMenuOpen] = useState(false);
+  // The menu shows the workspaces to move the chat to instead of its actions.
+  const [moving, setMoving] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState(conversation.title);
   const rowRef = useRef<HTMLLIElement>(null);
@@ -151,6 +269,7 @@ function ConversationRow({
 
   const closeMenu = useCallback((restoreFocus: boolean) => {
     setMenuOpen(false);
+    setMoving(false);
     if (restoreFocus) menuButtonRef.current?.focus();
   }, []);
 
@@ -167,7 +286,7 @@ function ConversationRow({
   // Move focus into the menu when it opens.
   useEffect(() => {
     if (menuOpen) menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
-  }, [menuOpen]);
+  }, [menuOpen, moving]);
 
   useEffect(() => {
     if (editing) {
@@ -220,7 +339,8 @@ function ConversationRow({
     }
   };
 
-  const meta = [conversation.spaceName, relativeTime(conversation.updatedAt)].filter(Boolean).join(' · ');
+  const meta = relativeTime(conversation.updatedAt);
+  const currentWorkspace = conversation.workspaceId ?? null;
 
   return (
     <li ref={rowRef} className="relative group">
@@ -312,9 +432,42 @@ function ConversationRow({
           onKeyDown={handleMenuKeyDown}
           className="shell-pop absolute right-1.5 top-8 z-50 min-w-[152px] py-1 rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg"
         >
+          {moving ? (
+            <>
+              {workspaces.filter(w => w.id !== currentWorkspace).map(w => (
+                <MenuItem
+                  key={w.id}
+                  onSelect={() => {
+                    onMoveToWorkspace(conversation.id, w.id);
+                    closeMenu(true);
+                  }}
+                  icon={<WorkspaceIcon icon={w.icon} color={w.color} className="w-3.5 h-3.5" />}
+                >
+                  {w.name}
+                </MenuItem>
+              ))}
+              {currentWorkspace !== null && (
+                <MenuItem
+                  onSelect={() => {
+                    onMoveToWorkspace(conversation.id, null);
+                    closeMenu(true);
+                  }}
+                  icon={<FolderInput className="w-3.5 h-3.5" aria-hidden="true" />}
+                >
+                  No workspace
+                </MenuItem>
+              )}
+            </>
+          ) : (
+            <>
           <MenuItem onSelect={startRename} icon={<Pencil className="w-3.5 h-3.5" aria-hidden="true" />} hint="F2">
             Rename
           </MenuItem>
+          {(workspaces.length > 0 || currentWorkspace !== null) && (
+            <MenuItem onSelect={() => setMoving(true)} icon={<FolderInput className="w-3.5 h-3.5" aria-hidden="true" />}>
+              Move to workspace…
+            </MenuItem>
+          )}
           <MenuItem
             onSelect={() => {
               onPin(conversation.id);
@@ -335,6 +488,8 @@ function ConversationRow({
           >
             Delete
           </MenuItem>
+            </>
+          )}
         </div>
       )}
     </li>

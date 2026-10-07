@@ -375,6 +375,11 @@ interface SuggestedMemoriesProps {
   onMemoriesChanged: () => void;
   conversationTitle: (id: string) => string | undefined;
   onOpenConversation: (id: string) => void;
+  /**
+   * Only suggestions for this scope (`workspace:<id>`, a workspace's Memory tab); the
+   * learning controls then stay in Settings. Null shows every suggestion.
+   */
+  scope?: string | null;
 }
 
 /**
@@ -388,6 +393,7 @@ export default function SuggestedMemories({
   onMemoriesChanged,
   conversationTitle,
   onOpenConversation,
+  scope = null,
 }: SuggestedMemoriesProps) {
   const [status, setStatus] = useState<LearnStatus | null>(null);
   const [pending, setPending] = useState<Suggestion[]>([]);
@@ -400,16 +406,17 @@ export default function SuggestedMemories({
       const [s, waiting, recent] = await Promise.all([
         learnStatus(),
         listSuggestions(['pending', 'failed']),
-        listSuggestions(['learned', 'accepted'], 30),
+        listSuggestions(['learned', 'accepted'], scope ? 200 : 30),
       ]);
+      const inScope = (list: Suggestion[]) => (scope ? list.filter(x => x.scope === scope) : list);
       setStatus(s);
-      setPending(waiting);
-      setDecided(recent);
+      setPending(inScope(waiting));
+      setDecided(inScope(recent).slice(0, 30));
       setLoadError(null);
     } catch (err) {
       setLoadError(errorText(err));
     }
-  }, []);
+  }, [scope]);
 
   useEffect(() => {
     void refresh();
@@ -437,13 +444,15 @@ export default function SuggestedMemories({
 
   return (
     <div className="flex flex-col gap-5">
-      <LearningControls
-        prefs={prefs}
-        saving={savingPrefs}
-        onChange={onChangePrefs}
-        status={status}
-        onStopped={() => void refresh()}
-      />
+      {scope === null && (
+        <LearningControls
+          prefs={prefs}
+          saving={savingPrefs}
+          onChange={onChangePrefs}
+          status={status}
+          onStopped={() => void refresh()}
+        />
+      )}
 
       {loadError && (
         <p role="alert" className="m-0 text-[12.5px] text-shodh-error">

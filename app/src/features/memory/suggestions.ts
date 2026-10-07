@@ -64,6 +64,8 @@ export interface Suggestion {
   sensitive: SensitiveReason[];
   conversationId: string | null;
   turnId: string | null;
+  /** Where the memory goes: `global` or `workspace:<id>`. */
+  scope: string;
   error: string | null;
   undoable: boolean;
   createdAt: string;
@@ -200,6 +202,8 @@ export function parseSuggestion(value: unknown): Suggestion | null {
     sensitive: v.sensitive as SensitiveReason[],
     conversationId: conversationId ?? null,
     turnId: turnId ?? null,
+    // Builds before workspaces did not send a scope: everything was global then.
+    scope: str(v.scope) && v.scope.length > 0 ? v.scope : 'global',
     error: error ?? null,
     undoable: v.undoable === true,
     createdAt: v.createdAt,

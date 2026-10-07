@@ -160,3 +160,22 @@ export function progressLabel(p: BuildProgress): string {
 export function shortLabel(label: string, max = 60): string {
   return label.length <= max ? label : `${label.slice(0, max - 1)}…`;
 }
+
+/**
+ * The graph limited to some library papers (a workspace's): those papers, the works they
+ * cite, and the citations between them. Library papers outside the limit are left out,
+ * also as cited works. Methods stay (they are filters, not papers).
+ */
+export function restrictGraph(data: GraphViewData, keepLibrary: (node: ViewNode) => boolean): GraphViewData {
+  const library = new Set(data.nodes.filter(n => n.inLibrary && keepLibrary(n)).map(n => n.id));
+  const keep = new Set(library);
+  const inLibrary = new Set(data.nodes.filter(n => n.inLibrary).map(n => n.id));
+  for (const [from, to] of data.edges) {
+    if (library.has(from) && !inLibrary.has(to)) keep.add(to);
+  }
+  return {
+    ...data,
+    nodes: data.nodes.filter(n => keep.has(n.id)),
+    edges: data.edges.filter(([from, to]) => keep.has(from) && keep.has(to)),
+  };
+}

@@ -220,11 +220,12 @@ export function formatDate(iso: string | null): string {
   return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-/** Where a memory is visible, in words. `sourceName` resolves a source id. */
-export function scopeLabel(scope: string, sourceName: (id: string) => string | undefined): string {
+/** Where a memory is visible, in words. `workspaceName` resolves a workspace id. */
+export function scopeLabel(scope: string, workspaceName: (id: string) => string | undefined): string {
   if (scope === 'global') return 'All conversations';
   const id = scope.startsWith('workspace:') ? scope.slice('workspace:'.length) : scope;
-  return `Conversations about ${sourceName(id) ?? 'a removed source'}`;
+  const name = workspaceName(id);
+  return name ? `Chats in the workspace “${name}”` : 'Chats in an archived or deleted workspace';
 }
 
 /** "preferenceTopic" → "Preference topic". */

@@ -14,7 +14,7 @@ import {
 } from '../src/lib/viewTabs.ts';
 
 test('the shell has exactly the shipped views, in sidebar order', () => {
-  assert.deepEqual([...VIEW_TABS], ['ask', 'library', 'tasks', 'activity', 'settings']);
+  assert.deepEqual([...VIEW_TABS], ['ask', 'workspaces', 'library', 'tasks', 'activity', 'settings']);
 });
 
 test('every view has a label, a description and keywords', () => {
@@ -42,7 +42,7 @@ test('legacy and agent ids resolve through aliases', () => {
 });
 
 test('unknown, hidden and non-string ids are not navigable', () => {
-  for (const value of ['graph', 'terminal', 'workspaces', 'automations', '', 'Ask', 'toString', '__proto__', null, undefined, 3, {}]) {
+  for (const value of ['graph', 'terminal', 'automations', '', 'Ask', 'toString', '__proto__', null, undefined, 3, {}]) {
     assert.equal(normalizeViewTab(value), null, `value ${String(value)}`);
   }
 });

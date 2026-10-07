@@ -63,9 +63,7 @@ pub const ICONS: &[&str] = &[
 /// Colours a workspace may use: tokens of the app's theme (`--c-text-muted` for neutral,
 /// `--c-accent`, `--c-info`, `--c-success`, `--c-warning`, `--c-violet`), so every one
 /// has a checked contrast in both themes.
-pub const COLORS: &[&str] = &[
-    "neutral", "accent", "info", "success", "warning", "violet",
-];
+pub const COLORS: &[&str] = &["neutral", "accent", "info", "success", "warning", "violet"];
 
 /// Errors of the workspace store.
 #[derive(Debug, thiserror::Error)]

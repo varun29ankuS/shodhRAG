@@ -46,8 +46,14 @@ export function CompareResults({
   workspace = null,
   initialMethod = '',
   initialDataset = '',
+  paperFilter = null,
 }: {
   workspace?: string | null;
+  /**
+   * Only papers whose file passes (a workspace's papers): the paper choice lists them
+   * alone, and with none chosen the comparison covers them, never every paper.
+   */
+  paperFilter?: ((filePath: string) => boolean) | null;
   /** Method id to start with (a method page compares its results). */
   initialMethod?: string;
   /** Dataset id to start with (a dataset page). */
@@ -99,10 +105,18 @@ export function CompareResults({
     };
   }, []);
 
+  // The papers a restricted comparison may cover (null: every paper).
+  const allowedPapers = useMemo(
+    () => (paperFilter && facets.status === 'ready' ? facets.value.papers.map(p => p.filePath).filter(paperFilter) : null),
+    [paperFilter, facets],
+  );
+
   const filter = useMemo<ResultFilter | null>(() => {
     if (!metric && !dataset && !method) return null;
-    return { metric: metric || null, dataset: dataset || null, method: method || null, papers: papers.length > 0 ? papers : null, workspace };
-  }, [metric, dataset, method, papers, workspace]);
+    if (allowedPapers !== null && allowedPapers.length === 0) return null;
+    const chosen = papers.length > 0 ? papers : allowedPapers;
+    return { metric: metric || null, dataset: dataset || null, method: method || null, papers: chosen && chosen.length > 0 ? chosen : null, workspace };
+  }, [metric, dataset, method, papers, workspace, allowedPapers]);
 
   useEffect(() => {
     if (!filter) {
@@ -153,6 +167,14 @@ export function CompareResults({
     );
   }
   const f = facets.value;
+  if (allowedPapers !== null && allowedPapers.length === 0) {
+    return (
+      <p className="text-[12.5px] text-shodh-text-muted">
+        None of this workspace's papers have extracted results yet. Open one of its papers in Library, choose Results and extract them; then compare them here.
+      </p>
+    );
+  }
+  const paperChoices = allowedPapers === null ? f.papers : f.papers.filter(p => allowedPapers.includes(p.filePath));
   if (f.metrics.length === 0) {
     return (
       <p className="text-[12.5px] text-shodh-text-muted">
@@ -180,11 +202,13 @@ export function CompareResults({
         {select(datasetId, 'Dataset', dataset, setDataset, f.datasets, 'Any dataset')}
         {select(methodId, 'Method (optional)', method, setMethod, f.methods, 'Every method')}
       </div>
-      {f.papers.length > 1 && (
+      {paperChoices.length > 1 && (
         <fieldset className="flex flex-col gap-1.5">
-          <legend className="text-[12px] font-medium text-shodh-text-secondary">Papers (none selected means all)</legend>
+          <legend className="text-[12px] font-medium text-shodh-text-secondary">
+            {allowedPapers === null ? 'Papers (none selected means all)' : "Papers (none selected means all of this workspace's)"}
+          </legend>
           <div className="flex flex-wrap gap-1.5">
-            {f.papers.map(p => {
+            {paperChoices.map(p => {
               const on = papers.includes(p.filePath);
               return (
                 <button

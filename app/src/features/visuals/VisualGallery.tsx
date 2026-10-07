@@ -270,10 +270,13 @@ function VisualCard({
  */
 export function VisualGallery({
   conversationId,
+  conversationIds = null,
   autoFocusSearch = false,
   emptyText,
 }: {
   conversationId: string | null;
+  /** Only visuals of these conversations (a workspace's chats); null applies no limit. */
+  conversationIds?: readonly string[] | null;
   autoFocusSearch?: boolean;
   emptyText?: string;
 }) {
@@ -290,6 +293,12 @@ export function VisualGallery({
   const [debounced, setDebounced] = useState('');
   const [reload, setReload] = useState(0);
   const [backfilled, setBackfilled] = useState(false);
+  // A stable key, so a new array with the same ids does not reload the gallery.
+  const conversationIdsKey = conversationIds === null ? null : conversationIds.join(String.fromCharCode(31));
+  const conversationIdList = useMemo(
+    () => (conversationIdsKey === null ? null : conversationIdsKey === '' ? [] : conversationIdsKey.split(String.fromCharCode(31))),
+    [conversationIdsKey],
+  );
 
   // Conversations saved before the gallery existed are recorded once.
   useEffect(() => {
@@ -308,7 +317,7 @@ export function VisualGallery({
   useEffect(() => {
     let cancelled = false;
     setStatus(s => (s === 'ready' ? s : 'loading'));
-    visualsApi.list({ conversationId, text: debounced || null, limit: PAGE })
+    visualsApi.list({ conversationId, conversationIds: conversationIdList, text: debounced || null, limit: PAGE })
       .then(page => {
         if (cancelled) return;
         setItems(page.items);
@@ -322,7 +331,7 @@ export function VisualGallery({
         setError(toVisualError(err).message);
       });
     return () => { cancelled = true; };
-  }, [conversationId, debounced, reload, backfilled]);
+  }, [conversationId, conversationIdsKey, debounced, reload, backfilled]);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;

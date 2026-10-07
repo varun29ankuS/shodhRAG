@@ -43,6 +43,8 @@ interface AgentComposerProps {
   scopeLabel?: string;
   scopeTitle?: string;
   onOpenLibrary?: () => void;
+  /** A control next to the scope chip (e.g. "Search all my library" in a workspace). */
+  scopeAction?: React.ReactNode;
   onPickImage?: () => void;
   autoFocus?: boolean;
   /** Dense variant for the conversation dock: no chips, smaller type. */
@@ -74,6 +76,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     scopeLabel,
     scopeTitle,
     onOpenLibrary,
+    scopeAction,
     onPickImage,
     autoFocus = false,
     compact = false,
@@ -203,6 +206,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
             <span className="truncate max-w-[200px]">{scopeLabel}</span>
           </button>
         )}
+        {!compact && scopeAction}
         <div className="ml-auto flex items-center gap-1.5">
           {running && hasText && (
             <button

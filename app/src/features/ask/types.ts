@@ -146,8 +146,11 @@ export interface ChatMessage {
 
 /** Options that scope a request; supplied by the caller at send time. */
 export interface SendOptions {
+  /** Legacy fields of callers that predate workspaces; not sent to the backend. */
   spaceId: string | null;
   spaceName: string | null;
+  /** "Search all my library" for this question in a workspace chat. */
+  searchAll?: boolean;
   /** Sources the answer may search; empty or absent means every source. */
   sourceIds?: string[];
   /** Files the answer is about ("Ask about this file"); limits search to them. */

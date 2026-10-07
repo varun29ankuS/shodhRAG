@@ -52,8 +52,13 @@ export interface AnswerScope {
   sourceFiles: string[];
   /** 1-based pages of `sourceFiles` (only with files); absent means every page. */
   pages?: number[];
-  /** The conversation's source (workspace): scopes which memories are recalled. Never limits search. */
+  /**
+   * The conversation's workspace: the backend limits search to its sources (unless
+   * `searchAll`), puts its instructions in front of the question and scopes memories.
+   */
   workspaceId?: string;
+  /** "Search all my library" for this one question (only with `workspaceId`). */
+  searchAll?: boolean;
 }
 
 export interface HistoryTurn {

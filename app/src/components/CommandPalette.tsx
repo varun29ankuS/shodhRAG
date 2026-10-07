@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ArrowRight, FileText, MessageCircle, Search } from 'lucide-react';
+import { ArrowRight, FileText, Layers, MessageCircle, MessageSquarePlus, Search } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { ENTER_TRANSITION, EXIT_TRANSITION } from '../lib/motion';
 import { filterEntries, groupBySection } from '../lib/paletteFilter';
@@ -26,7 +26,15 @@ export interface PaletteConversation {
   id: string;
   title: string;
   updatedAt: string;
-  spaceName?: string;
+  /** Name of the chat's workspace, if any. */
+  workspaceName?: string;
+}
+
+export interface PaletteWorkspace {
+  id: string;
+  name: string;
+  /** "2 folders · 5 files", shown under the name. */
+  summary: string;
 }
 
 export interface PaletteSource {
@@ -43,10 +51,13 @@ interface CommandPaletteProps {
   conversations: PaletteConversation[];
   onOpenConversation: (id: string) => void;
   sources: PaletteSource[];
+  workspaces: PaletteWorkspace[];
+  onOpenWorkspace: (id: string) => void;
+  onNewChatInWorkspace: (id: string) => void;
 }
 
-type Section = 'Actions' | 'Go to' | 'Chats' | 'Library';
-const SECTION_ORDER: readonly Section[] = ['Actions', 'Go to', 'Chats', 'Library'];
+type Section = 'Actions' | 'Go to' | 'Workspaces' | 'Chats' | 'Library';
+const SECTION_ORDER: readonly Section[] = ['Actions', 'Go to', 'Workspaces', 'Chats', 'Library'];
 
 /** Chats listed before anything is typed. */
 const RECENT_CHATS = 5;
@@ -62,8 +73,8 @@ interface Entry extends PaletteEntry {
 }
 
 /**
- * Ctrl+K: every view, the primary actions, chats (recent first, all of them
- * searchable by title) and Library folders.
+ * Ctrl+K: every view, the primary actions, workspaces (open one, or start a chat in it),
+ * chats (recent first, all of them searchable by title) and Library folders.
  */
 export default function CommandPalette({
   open,
@@ -73,6 +84,9 @@ export default function CommandPalette({
   conversations,
   onOpenConversation,
   sources,
+  workspaces,
+  onOpenWorkspace,
+  onNewChatInWorkspace,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -122,14 +136,35 @@ export default function CommandPalette({
       });
     }
 
+    for (const workspace of workspaces) {
+      items.push({
+        id: `workspace-${workspace.id}`,
+        section: 'Workspaces',
+        label: workspace.name,
+        description: workspace.summary,
+        keywords: `workspace open switch project ${workspace.name}`,
+        icon: Layers,
+        run: close(() => onOpenWorkspace(workspace.id)),
+      });
+      items.push({
+        id: `workspace-chat-${workspace.id}`,
+        section: 'Workspaces',
+        label: `New chat in ${workspace.name}`,
+        description: 'Searches only this workspace’s sources',
+        keywords: `new chat ask switch workspace ${workspace.name}`,
+        icon: MessageSquarePlus,
+        run: close(() => onNewChatInWorkspace(workspace.id)),
+      });
+    }
+
     const byRecency = [...conversations].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     for (const conv of byRecency) {
       items.push({
         id: `chat-${conv.id}`,
         section: 'Chats',
         label: conv.title,
-        description: [conv.spaceName, relativeTime(conv.updatedAt)].filter(Boolean).join(' · '),
-        keywords: `chat conversation ${conv.spaceName ?? ''}`,
+        description: [conv.workspaceName, relativeTime(conv.updatedAt)].filter(Boolean).join(' · '),
+        keywords: `chat conversation ${conv.workspaceName ?? ''}`,
         icon: MessageCircle,
         run: close(() => onOpenConversation(conv.id)),
       });
@@ -147,13 +182,20 @@ export default function CommandPalette({
       });
     }
     return items;
-  }, [actions, conversations, sources, onNavigate, onOpenConversation, onClose]);
+  }, [actions, conversations, sources, workspaces, onNavigate, onOpenConversation, onOpenWorkspace, onNewChatInWorkspace, onClose]);
 
   const groups = useMemo(() => {
     const matched = filterEntries(entries, query, SECTION_ORDER);
     const limit = query.trim() ? MATCHING_CHATS : RECENT_CHATS;
     let chats = 0;
-    return groupBySection(matched.filter(e => e.section !== 'Chats' || chats++ < limit));
+    let spaces = 0;
+    // Without a query, "new chat in …" entries would crowd the list: workspaces only.
+    const typed = query.trim().length > 0;
+    return groupBySection(matched.filter(e => {
+      if (e.section === 'Chats') return chats++ < limit;
+      if (e.section === 'Workspaces') return (typed || !e.id.startsWith('workspace-chat-')) && spaces++ < (typed ? MATCHING_CHATS : RECENT_CHATS);
+      return true;
+    }));
   }, [entries, query]);
 
   const flat = useMemo(() => groups.flatMap(g => g.items), [groups]);

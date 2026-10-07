@@ -11,6 +11,7 @@ import {
   methodNeighbourhood,
   nodeRadius,
   progressLabel,
+  restrictGraph,
   shapeGraph,
   shortLabel,
   yearBounds,
@@ -97,4 +98,13 @@ test('helpers', () => {
   assert.ok(nodeRadius({ id: 'a', label: 'a', kind: 'library', year: null, weight: 0 }) > nodeRadius({ id: 'b', label: 'b', kind: 'external', year: null, weight: 0 }));
   assert.equal(progressLabel({ stage: 'scanning', done: 0, total: 3, file: 'a.pdf' }), 'Reading a.pdf (1 of 3)');
   assert.equal(shortLabel('abcdef', 4), 'abc…');
+});
+
+test('a workspace graph keeps its library papers and what they cite, nothing else from the library', () => {
+  const kept = restrictGraph(data, n => n.id === 'delta');
+  assert.deepEqual(kept.nodes.map(n => n.id).sort(), ['attention', 'delta', 'linear']);
+  // delta cites fwp, a library paper outside the workspace: left out, with the edge.
+  assert.deepEqual(kept.edges, [['delta', 'attention'], ['delta', 'linear']]);
+  assert.equal(restrictGraph(data, () => false).nodes.length, 0);
+  assert.equal(kept.methods.length, 1);
 });

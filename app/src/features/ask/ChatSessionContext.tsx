@@ -18,6 +18,7 @@ import {
 import type { TranscriptAction, TranscriptState } from '../agent/reducer';
 import { toAgentError, useAgentSession } from '../agent/useAgentSession';
 import type { AnswerScope, HistoryTurn } from '../agent/useAgentSession';
+import { answerScope } from '../workspaces/model';
 import type { FocusThread } from '../focus/focusTypes';
 import { metadataWithThreads, metadataWithoutThreads, threadsFromMetadata } from '../focus/threadStore';
 import { metadataWithSummary, readSideSummary, summaryPrompt } from '../focus/summary';
@@ -108,6 +109,8 @@ export interface ChatSessionValue {
   deleteConversation: ConversationsApi['deleteConversation'];
   pinConversation: ConversationsApi['pinConversation'];
   updateConversationMeta: ConversationsApi['updateConversationMeta'];
+  /** Move the chats of a deleted workspace to "No workspace" (in memory). */
+  detachWorkspace: ConversationsApi['detachWorkspace'];
 
   /** Messages of the active conversation, including a live answer. */
   messages: ChatMessage[];
@@ -250,15 +253,15 @@ function isPersistable(m: ChatMessage): boolean {
 }
 
 /**
- * The answer's search limit from the send options, plus the conversation's workspace
- * (which scopes memories); null when neither applies.
+ * The answer's search limit from the send options and the conversation's workspace (whose
+ * sources the backend limits search to, unless "search all my library" is on); null when
+ * neither applies.
  */
 function scopeOf(options: SendOptions | null, workspaceId: string | null): AnswerScope | null {
   const sourceIds = options?.sourceIds?.filter(id => id.trim().length > 0) ?? [];
   const sourceFiles = options?.sourceFiles?.filter(f => f.trim().length > 0) ?? [];
-  const workspace = workspaceId?.trim() || null;
-  if (sourceIds.length === 0 && sourceFiles.length === 0 && !workspace) return null;
-  return workspace ? { sourceIds, sourceFiles, workspaceId: workspace } : { sourceIds, sourceFiles };
+  const limit = sourceIds.length === 0 && sourceFiles.length === 0 ? null : { sourceIds, sourceFiles };
+  return answerScope(limit, workspaceId, options?.searchAll === true);
 }
 
 function historyOf(messages: readonly ChatMessage[]): HistoryTurn[] {
@@ -275,7 +278,6 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     activeConversationId,
     activeConversation,
     updateConversationMessages,
-    updateConversationMeta,
   } = conv;
 
   const [view, setView] = useState<ViewState>({ conversationId: null, messages: [] });
@@ -500,7 +502,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       if (live.settled) return;
       live.sessionId = sessionId;
       setRuntimeInstalled(true);
-      const workspaceId = conversation?.spaceId ?? options?.spaceId ?? null;
+      const workspaceId = conversation?.workspaceId ?? null;
       await api.send(sessionId, prompt, runId, historyOf(history), scopeOf(options, workspaceId), textOrigin);
     } catch (error) {
       const failure = toAgentError(error);
@@ -526,13 +528,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     const prompt = sideSummary ? summaryPrompt(sideSummary, content) : content;
     publish(conversationId, userMessage, true);
 
-    const active = activeConversationRef.current;
-    if (active && active.id === conversationId && !active.spaceId && options.spaceId && options.spaceName) {
-      updateConversationMeta(conversationId, { spaceId: options.spaceId, spaceName: options.spaceName });
-    }
-
     await runAgent(conversationId, prompt, history, options, sideSummary ? 'composed' : 'typed', extra?.fallback ?? null);
-  }, [publish, runAgent, updateConversationMeta]);
+  }, [publish, runAgent]);
 
   const retry = useCallback((assistantMessageId: string, options: SendOptions, fallback: FallbackRun | null = null) => {
     const { conversationId, messages } = viewRef.current;
@@ -680,6 +677,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     deleteConversation: conv.deleteConversation,
     pinConversation: conv.pinConversation,
     updateConversationMeta: conv.updateConversationMeta,
+    detachWorkspace: conv.detachWorkspace,
     messages: view.conversationId === conv.activeConversationId ? view.messages : [],
     isStreaming: streamingConversationId !== null && streamingConversationId === conv.activeConversationId,
     streamingConversationId,

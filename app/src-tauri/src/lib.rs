@@ -40,8 +40,8 @@ mod system_commands;
 mod table_model_commands;
 mod template_commands;
 mod visual_commands;
-mod workspace_commands;
 mod window_commands;
+mod workspace_commands;
 
 // Unified chat system modules
 mod agent_coverage;

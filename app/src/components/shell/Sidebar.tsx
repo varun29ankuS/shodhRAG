@@ -3,6 +3,7 @@ import {
   Activity,
   Bug,
   Folder,
+  Layers,
   ListChecks,
   MessageCircle,
   Moon,
@@ -19,6 +20,7 @@ import { cn } from '../../lib/utils';
 import { VIEW_TABS, VIEW_TAB_LABELS } from '../../lib/viewTabs';
 import type { ViewTab } from '../../lib/viewTabs';
 import type { Conversation } from '../../hooks/useConversations';
+import type { GroupableWorkspace } from '../../features/workspaces/model';
 import { ActivityTray } from './ActivityTray';
 import { ConversationHistory } from './ConversationHistory';
 
@@ -51,11 +53,16 @@ interface SidebarProps {
   llmStatus: SidebarLLMStatus;
   onOpenCommandPalette: () => void;
   onShowFeedback: () => void;
+  workspaces: GroupableWorkspace[];
+  onOpenWorkspace: (id: string) => void;
+  onNewChatInWorkspace: (id: string) => void;
+  onMoveToWorkspace: (conversationId: string, workspaceId: string | null) => void;
 }
 
 /** Icon for each view; shared with the command palette. */
 export const NAV_ICONS: Record<ViewTab, React.ElementType> = {
   ask: MessageCircle,
+  workspaces: Layers,
   library: Folder,
   tasks: ListChecks,
   activity: Activity,
@@ -106,6 +113,10 @@ export default function Sidebar({
   llmStatus,
   onOpenCommandPalette,
   onShowFeedback,
+  workspaces,
+  onOpenWorkspace,
+  onNewChatInWorkspace,
+  onMoveToWorkspace,
 }: SidebarProps) {
   const { collapsed, toggleSidebar } = useSidebar();
   const { theme, toggleTheme } = useTheme();
@@ -219,6 +230,10 @@ export default function Sidebar({
           onRename={onRenameConversation}
           onPin={onPinConversation}
           onDelete={onDeleteConversation}
+          workspaces={workspaces}
+          onOpenWorkspace={onOpenWorkspace}
+          onNewChatInWorkspace={onNewChatInWorkspace}
+          onMoveToWorkspace={onMoveToWorkspace}
         />
       )}
 

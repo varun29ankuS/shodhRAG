@@ -177,3 +177,11 @@ test('memory settings keep every field and default the learning ones', () => {
   });
   assert.equal(settings?.memory.learnMode, 'off');
 });
+
+test('suggestions carry their scope; older builds sent none and were global', () => {
+  const scoped = parseSuggestion(view({ scope: 'workspace:ws-1' }));
+  assert.equal(scoped?.scope, 'workspace:ws-1');
+  const old = view();
+  delete (old as Record<string, unknown>).scope;
+  assert.equal(parseSuggestion(old)?.scope, 'global');
+});

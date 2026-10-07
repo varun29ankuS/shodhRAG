@@ -10,6 +10,7 @@ import MemorySettings from '../MemorySettings';
 import AnswerCheckSettings from '../AnswerCheckSettings';
 import TableModelSettings from '../TableModelSettings';
 import { cn } from '../../lib/utils';
+import { useWorkspaces } from '../../features/workspaces/WorkspaceContext';
 
 export type SettingsSection = 'models' | 'search' | 'general' | 'privacy' | 'memory' | 'data';
 
@@ -84,6 +85,7 @@ export default function SettingsView({
   conversations,
   onOpenConversation,
 }: SettingsViewProps) {
+  const { byId: workspaceById } = useWorkspaces();
   const [section, setSection] = useState<SettingsSection>(() => takeRequestedSection() ?? 'models');
   // Another view (the suggested-memories badge) asks for a section.
   useEffect(() => {
@@ -174,7 +176,7 @@ export default function SettingsView({
                 <MemorySettings
                   conversationTitle={id => conversations.find(c => c.id === id)?.title}
                   onOpenConversation={onOpenConversation}
-                  sourceName={id => sources.find(s => s.id === id)?.name}
+                  workspaceName={id => workspaceById(id)?.name}
                 />
               ) : (
                 <DataManagement

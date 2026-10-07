@@ -59,6 +59,7 @@ export function defaultDockRequest(view: ViewTab): DockRequest {
   // the conversation itself and never mounts the dock.
   switch (view) {
     case 'ask':
+    case 'workspaces':
     case 'library':
     case 'tasks':
     case 'activity':

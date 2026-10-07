@@ -6,6 +6,7 @@ import type { TranscriptAction, TranscriptState } from '../agent/reducer';
 import { toAgentError, useAgentSession } from '../agent/useAgentSession';
 import { useChatSession } from '../ask/ChatSessionContext';
 import { composeSideQuestion } from './contextBlock';
+import { answerScope } from '../workspaces/model';
 import type { FocusExtras, FocusTarget, FocusThread, ThreadAnchor, ThreadTurn } from './focusTypes';
 import { canPush, initialStack, stackReducer } from './focusStack';
 import type { StackState } from './focusStack';
@@ -307,6 +308,9 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
 
   const conversationsRef = useRef(conversations);
   conversationsRef.current = conversations;
+  /** The workspace of a conversation: side questions search what its chats search. */
+  const workspaceOf = (conversationId: string): string | null =>
+    conversationsRef.current.find(c => c.id === conversationId)?.workspaceId ?? null;
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
   const activeIdRef = useRef(activeConversationId);
@@ -619,7 +623,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       live.sessionId = sessionId;
       setRuntimeInstalled(true);
       const message = composeSideQuestion(level.target, text, extras, { ancestors, notes, followups: true });
-      await api.send(sessionId, message, live.runId, history, scopeForLevels(scopeTargets, extras));
+      await api.send(sessionId, message, live.runId, history, answerScope(scopeForLevels(scopeTargets, extras), workspaceOf(conversationId), false));
     } catch (error) {
       const failure = toAgentError(error);
       enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);
@@ -647,7 +651,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
           if (live.settled) return;
           live.sessionId = sessionId;
           setRuntimeInstalled(true);
-          await api.send(sessionId, composeSummaryRequest(thread, destination), live.runId, []);
+          await api.send(sessionId, composeSummaryRequest(thread, destination), live.runId, [], answerScope(null, workspaceOf(level.conversationId), false));
         } catch (error) {
           const failure = toAgentError(error);
           enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);
@@ -691,7 +695,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
           if (live.settled) return;
           live.sessionId = sessionId;
           setRuntimeInstalled(true);
-          await api.send(sessionId, request, live.runId, []);
+          await api.send(sessionId, request, live.runId, [], answerScope(null, workspaceOf(level.conversationId), false));
         } catch (error) {
           const failure = toAgentError(error);
           enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);

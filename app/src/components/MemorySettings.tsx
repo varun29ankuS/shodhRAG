@@ -56,8 +56,13 @@ interface MemorySettingsProps {
   conversationTitle: (id: string) => string | undefined;
   /** Open a conversation in Ask. */
   onOpenConversation: (id: string) => void;
-  /** Source names by id, for workspace-scoped memories. */
-  sourceName: (id: string) => string | undefined;
+  /** Name of a workspace, by id (memories learned in a workspace are scoped to it). */
+  workspaceName: (id: string) => string | undefined;
+  /**
+   * Only memories and suggestions of this scope (`workspace:<id>`): a workspace's Memory
+   * tab. The memory settings themselves stay in Settings → Memory.
+   */
+  scope?: string | null;
 }
 
 function StrengthBar({ memory }: { memory: MemoryRecord }) {
@@ -87,7 +92,7 @@ interface MemoryItemProps extends MemorySettingsProps {
   setBusy: (busy: boolean) => void;
 }
 
-function MemoryItem({ memory, busy, onChanged, setBusy, conversationTitle, onOpenConversation, sourceName }: MemoryItemProps) {
+function MemoryItem({ memory, busy, onChanged, setBusy, conversationTitle, onOpenConversation, workspaceName }: MemoryItemProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [history, setHistory] = useState<MemoryRecord[] | null>(null);
@@ -176,7 +181,7 @@ function MemoryItem({ memory, busy, onChanged, setBusy, conversationTitle, onOpe
           </>
         )}
         <span aria-hidden="true">·</span>
-        <span>{scopeLabel(memory.scope, sourceName)}</span>
+        <span>{scopeLabel(memory.scope, workspaceName)}</span>
         <span aria-hidden="true">·</span>
         {fromConversation ? (
           <button
@@ -365,13 +370,19 @@ export default function MemorySettings(props: MemorySettingsProps) {
     }
   };
 
+  const scope = props.scope ?? null;
+  const scoped = useMemo(
+    () => (memories === null ? null : scope ? memories.filter(m => m.scope === scope) : memories),
+    [memories, scope],
+  );
   const groups = useMemo(
-    () => groupByClass((memories ?? []).filter(m => matchesFilter(m, filter))),
-    [memories, filter],
+    () => groupByClass((scoped ?? []).filter(m => matchesFilter(m, filter))),
+    [scoped, filter],
   );
 
   return (
     <div className="flex flex-col gap-6">
+      {scope === null && (
       <SwitchRow
         label="Use memories in answers"
         description="Before each answer, Shodh recalls what it remembers that is relevant to your question and tells the model, marked as possibly outdated. Turn off to answer without them; your memories are kept."
@@ -379,6 +390,7 @@ export default function MemorySettings(props: MemorySettingsProps) {
         disabled={prefs === null || savingPrefs}
         onChange={next => prefs && void changePrefs({ ...prefs, injectMemories: next })}
       />
+      )}
 
       {prefs && (
         <SuggestedMemories
@@ -388,6 +400,7 @@ export default function MemorySettings(props: MemorySettingsProps) {
           onMemoriesChanged={() => void refresh()}
           conversationTitle={props.conversationTitle}
           onOpenConversation={props.onOpenConversation}
+          scope={scope}
         />
       )}
 
@@ -407,10 +420,12 @@ export default function MemorySettings(props: MemorySettingsProps) {
             )}
           />
         </div>
-        <button type="button" className={BUTTON} onClick={() => void runExport()} disabled={exporting || !memories?.length}>
-          <Download aria-hidden="true" className="w-3.5 h-3.5" />
-          Export JSON
-        </button>
+        {scope === null && (
+          <button type="button" className={BUTTON} onClick={() => void runExport()} disabled={exporting || !memories?.length}>
+            <Download aria-hidden="true" className="w-3.5 h-3.5" />
+            Export JSON
+          </button>
+        )}
         <button type="button" className={BUTTON} onClick={() => void refresh()} aria-label="Refresh memories">
           <RefreshCw aria-hidden="true" className="w-3.5 h-3.5" />
         </button>
@@ -420,9 +435,18 @@ export default function MemorySettings(props: MemorySettingsProps) {
         <p role="alert" className="m-0 rounded-lg border border-shodh-error/40 bg-shodh-surface px-3 py-2 text-[13px] text-shodh-error">
           Memories could not be loaded: {loadError}
         </p>
-      ) : memories === null ? (
+      ) : scoped === null ? (
         <p className="m-0 text-[13px] text-shodh-text-muted">Loading…</p>
-      ) : memories.length === 0 ? (
+      ) : scoped.length === 0 && scope !== null ? (
+        <div className="rounded-lg border border-dashed border-shodh-border px-4 py-5 flex flex-col gap-2">
+          <p className="m-0 text-[13.5px] font-semibold text-shodh-text">Nothing remembered in this workspace yet</p>
+          <p className="m-0 text-[12.5px] text-shodh-text-muted">
+            What Shodh learns from this workspace’s chats, and what you ask it to remember in them, is kept here and
+            used only in this workspace’s chats (memories about you in general apply everywhere). Settings → Memory
+            controls learning and shows every memory.
+          </p>
+        </div>
+      ) : scoped.length === 0 ? (
         <div className="rounded-lg border border-dashed border-shodh-border px-4 py-5 flex flex-col gap-2">
           <p className="m-0 text-[13.5px] font-semibold text-shodh-text">Shodh doesn’t remember anything about you yet</p>
           <p className="m-0 text-[12.5px] text-shodh-text-muted">

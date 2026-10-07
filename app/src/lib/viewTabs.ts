@@ -5,13 +5,14 @@
  * Pure module (no runtime imports) so it is unit-tested directly with Node
  * (`app/tests/viewTabs.test.ts`).
  */
-export const VIEW_TABS = ['ask', 'library', 'tasks', 'activity', 'settings'] as const;
+export const VIEW_TABS = ['ask', 'workspaces', 'library', 'tasks', 'activity', 'settings'] as const;
 
 export type ViewTab = typeof VIEW_TABS[number];
 
 /** Visible label for each view (sidebar, title bar, command palette). */
 export const VIEW_TAB_LABELS: Record<ViewTab, string> = {
   ask: 'Ask',
+  workspaces: 'Workspaces',
   library: 'Library',
   tasks: 'Tasks',
   activity: 'Activity',
@@ -21,6 +22,7 @@ export const VIEW_TAB_LABELS: Record<ViewTab, string> = {
 /** One-line description of each view, used by the command palette. */
 export const VIEW_TAB_DESCRIPTIONS: Record<ViewTab, string> = {
   ask: 'Ask questions about your sources',
+  workspaces: 'Sources, instructions and chats for one piece of work',
   library: 'Folders and files Shodh can search',
   tasks: 'Tasks and events, as a list or a calendar',
   activity: 'Usage and the tamper-evident audit log',
@@ -30,6 +32,7 @@ export const VIEW_TAB_DESCRIPTIONS: Record<ViewTab, string> = {
 /** Extra words the command palette matches for each view. */
 export const VIEW_TAB_KEYWORDS: Record<ViewTab, string> = {
   ask: 'ask chat messages conversation question',
+  workspaces: 'workspaces workspace project projects instructions sources scope',
   library: 'library documents files sources folders index',
   tasks: 'tasks todo calendar events schedule agenda',
   activity: 'activity audit usage log history tools retrieved',

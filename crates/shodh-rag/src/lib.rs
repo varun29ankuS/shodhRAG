@@ -10,6 +10,7 @@ pub mod context;
 pub mod embeddings;
 pub mod harness;
 pub mod indexing;
+pub mod lazy_model;
 pub mod processing;
 pub mod rag_engine;
 pub mod reranking;

@@ -20,7 +20,7 @@ use shodh_rag::embeddings::model_store::{
     ArtifactState, ArtifactStatus, HttpByteSource, InstallPhase, InstallProgress, ModelStore,
 };
 use shodh_rag::processing::table_model::{
-    loaded, model_dir, SharedTableModel, TableModel, TableModelError,
+    model_dir, shared_table_model, SharedTableModel, TableModel, TableModelError,
 };
 use shodh_rag::table_refinement::{refine_file, RefineOutcome};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -66,7 +66,7 @@ impl TableModelState {
     pub fn new(model_root: PathBuf) -> Self {
         Self {
             model_root,
-            model: SharedTableModel::default(),
+            model: shared_table_model(),
             queue: std::sync::Mutex::new(None),
             install_lock: tokio::sync::Mutex::new(()),
             suggested: std::sync::atomic::AtomicBool::new(false),
@@ -77,8 +77,9 @@ impl TableModelState {
         ModelStore::table_model(self.model_root.clone())
     }
 
-    /// Load the model when its files are present and verified. Blocking: call from a
-    /// blocking thread. `Ok(false)` when it is not installed.
+    /// Make the model available when its files are present and verified; it loads on
+    /// first use. Blocking: call from a blocking thread. `Ok(false)` when it is not
+    /// installed.
     pub fn load_if_installed(&self) -> Result<bool, String> {
         let status = self.store().status(true).map_err(|e| e.to_string())?;
         if !status
@@ -88,14 +89,22 @@ impl TableModelState {
         {
             return Ok(false);
         }
-        self.load()?;
+        self.make_available();
         Ok(true)
     }
 
-    fn load(&self) -> Result<(), String> {
-        let model = TableModel::load(&model_dir(&self.model_root), model_threads())
+    fn make_available(&self) {
+        let dir = model_dir(&self.model_root);
+        self.model
+            .set_loader(move || Ok(TableModel::load(&dir, model_threads())?));
+    }
+
+    /// Loads the model once to report a broken install, then makes it available (it
+    /// loads again on first use). Blocking.
+    fn verify_and_make_available(&self) -> Result<(), String> {
+        TableModel::load(&model_dir(&self.model_root), model_threads())
             .map_err(|e| e.to_string())?;
-        *self.model.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(model));
+        self.make_available();
         Ok(())
     }
 
@@ -125,7 +134,7 @@ impl TableModelState {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableModelStatus {
-    /// The model is loaded and refines tables.
+    /// The model is installed and refines tables (it loads on first use).
     pub ready: bool,
     pub installing: bool,
     /// Whether the model can run on this system.
@@ -135,7 +144,7 @@ pub struct TableModelStatus {
 }
 
 async fn read_status(state: &TableModelState) -> Result<TableModelStatus, String> {
-    let ready = loaded(&state.model).is_some();
+    let ready = state.model.available();
     let installing = state.install_lock.try_lock().is_err();
     let store = state.store();
     let verify = !ready && !installing;
@@ -216,9 +225,13 @@ pub async fn install_table_model(
         }),
     ));
     let handle = app.clone();
-    tokio::task::spawn_blocking(move || handle.state::<TableModelState>().load())
-        .await
-        .map_err(|e| format!("Loading the table model failed: {e}"))??;
+    tokio::task::spawn_blocking(move || {
+        handle
+            .state::<TableModelState>()
+            .verify_and_make_available()
+    })
+    .await
+    .map_err(|e| format!("Loading the table model failed: {e}"))??;
     if let Err(e) = app.emit(TABLE_MODEL_READY_EVENT, ()) {
         tracing::debug!(error = %e, "emitting table model ready failed");
     }
@@ -274,7 +287,7 @@ async fn refinement_worker(
 ) {
     while let Some(path) = rx.recv().await {
         let state = app.state::<TableModelState>();
-        let Some(model) = loaded(&state.model) else {
+        if !state.model.available() {
             // A PDF with table-candidate pages and no model: offer the install once.
             if state.suggest_install() {
                 let payload = json!({ "filePath": path.display().to_string() });
@@ -283,9 +296,15 @@ async fn refinement_worker(
                 }
             }
             continue;
-        };
+        }
         let file = path.clone();
-        let refined = tokio::task::spawn_blocking(move || refine_file(&file, model)).await;
+        let shared = state.model.clone();
+        // The model loads here, off the async runtime, on first use.
+        let refined = tokio::task::spawn_blocking(move || match shared.get() {
+            Some(model) => refine_file(&file, model),
+            None => Ok(None),
+        })
+        .await;
         let refined = match refined {
             Ok(Ok(Some(refined))) => refined,
             Ok(Ok(None)) => continue,

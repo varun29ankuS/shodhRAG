@@ -376,7 +376,7 @@ pub(crate) mod testing {
             research: ResearchState::at(
                 memory.clone(),
                 Some((dir.path().join("shodh.db"), None)),
-                Default::default(),
+                shodh_rag::processing::table_model::shared_table_model(),
                 Default::default(),
             ),
             memory,

@@ -192,8 +192,8 @@ pub fn run() {
             app.manage(search_models_commands::SearchModelsState::new(
                 model_dir.clone(),
             ));
-            // The optional answer checking model: loaded in the background when
-            // its files are installed and verify, so startup does not wait.
+            // The optional answer checking model: made available in the background
+            // when its files are installed and verify (it loads on first use).
             app.manage(answer_check_commands::AnswerCheckState::new(
                 model_dir.clone(),
             ));
@@ -206,7 +206,7 @@ pub fn run() {
                 })
                 .await;
                 match loaded {
-                    Ok(Ok(true)) => tracing::info!("Answer checking model loaded"),
+                    Ok(Ok(true)) => tracing::info!("Answer checking model available"),
                     Ok(Ok(false)) => tracing::info!(
                         "Answer checking model not installed; answers are checked for topic and numbers only"
                     ),
@@ -226,7 +226,7 @@ pub fn run() {
                 })
                 .await;
                 match loaded {
-                    Ok(Ok(true)) => tracing::info!("Table model loaded"),
+                    Ok(Ok(true)) => tracing::info!("Table model available"),
                     Ok(Ok(false)) => tracing::info!(
                         "Table model not installed; tables are read with the layout heuristics only"
                     ),
@@ -325,6 +325,22 @@ pub fn run() {
             )));
             // PDFs indexed with table-candidate pages are refined in the background.
             let refinement = table_model_commands::spawn_refinement(app.handle(), &mut default_rag);
+            // The reranker, answer checking and table models load on first use;
+            // unload them when idle (the embedding model stays loaded).
+            if let Some(idle) = shodh_rag::lazy_model::idle_period() {
+                let models: Vec<Arc<dyn shodh_rag::lazy_model::IdleUnload>> = vec![
+                    default_rag.reranker_handle(),
+                    app.state::<answer_check_commands::AnswerCheckState>()
+                        .model
+                        .clone(),
+                    app.state::<table_model_commands::TableModelState>()
+                        .model
+                        .clone(),
+                ];
+                tauri::async_runtime::spawn(shodh_rag::lazy_model::unload_idle_models(
+                    models, idle,
+                ));
+            }
             let rag_engine = Arc::new(AsyncRwLock::new(default_rag));
             table_model_commands::start_worker(app.handle().clone(), rag_engine.clone(), refinement);
             // Long-term memory: typed statements next to the document index, dynamics in

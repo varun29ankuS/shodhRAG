@@ -45,6 +45,19 @@ impl CrossEncoderReranker {
         })
     }
 
+    /// Whether the model and tokenizer files exist in `model_dir`, without loading them.
+    pub fn check_files(model_dir: &Path) -> Result<()> {
+        Self::find_model(model_dir)?;
+        let tokenizer_path = model_dir.join("tokenizer.json");
+        if !tokenizer_path.exists() {
+            return Err(anyhow!(
+                "Tokenizer not found at: {}",
+                tokenizer_path.display()
+            ));
+        }
+        Ok(())
+    }
+
     fn find_model(model_dir: &Path) -> Result<PathBuf> {
         let candidates = [
             model_dir.join("model_O4.onnx"),

@@ -31,7 +31,7 @@ use super::{
 };
 use crate::processing::document_model::{is_table_caption, BBox, BlockKind, StructuredDocument};
 use crate::processing::pdf_layout::{parse_pdf_layout_with, TableMode};
-use crate::processing::table_model::{loaded, SharedTableModel, TABLE_MODEL_ID};
+use crate::processing::table_model::{shared_table_model, SharedTableModel, TABLE_MODEL_ID};
 use crate::statements::{
     PropertyFilter, PutIntent, PutOutcome, Scope, StatementError, StatementQuery, StatementStore,
     StoredStatement,
@@ -567,7 +567,7 @@ impl ResultService {
             store,
             db,
             app_version: app_version.to_string(),
-            tables: SharedTableModel::default(),
+            tables: shared_table_model(),
         }
     }
 
@@ -613,18 +613,20 @@ impl ResultService {
     ) -> ResearchResult<ExtractionReport> {
         let path = canonical_file(path);
         let read_path = path.clone();
-        let table_model = loaded(&self.tables);
-        let used = table_model.as_ref().map(|_| TABLE_MODEL_ID.to_string());
-        let doc = blocking(move || {
+        let tables = self.tables.clone();
+        let (doc, used) = blocking(move || {
             let bytes = std::fs::read(&read_path).map_err(|e| {
                 ResearchError::Pdf(format!("{} could not be read: {e}", file_name(&read_path)))
             })?;
+            // Loaded here, off the async runtime, on first use.
+            let table_model = tables.get();
+            let used = table_model.as_ref().map(|_| TABLE_MODEL_ID.to_string());
             let mode = match &table_model {
                 Some(m) => TableMode::Model(m),
                 None => TableMode::Heuristic,
             };
             parse_pdf_layout_with(&bytes, mode)
-                .map(|parsed| parsed.document)
+                .map(|parsed| (parsed.document, used))
                 .map_err(|e| ResearchError::Pdf(format!("The PDF could not be parsed: {e}")))
         })
         .await?;

@@ -74,8 +74,12 @@ impl WebEnv for AppWebEnv {
             .reranker
             .get_or_init(|| async { self.rag.read().await.reranker_handle() })
             .await;
-        let reranker = slot.read().clone()?;
-        Some(Arc::new(reranker))
+        // Loads on first use: off the async runtime.
+        let slot = slot.clone();
+        let reranker: SharedScorer = tokio::task::spawn_blocking(move || slot.get())
+            .await
+            .ok()??;
+        Some(reranker)
     }
 
     async fn search_config(&self) -> SearchConfig {

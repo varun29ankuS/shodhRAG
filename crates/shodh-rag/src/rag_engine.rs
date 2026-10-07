@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::config::RAGConfig;
 use crate::embeddings::e5::{E5Config, E5Embeddings};
 use crate::embeddings::{EmbeddingModel, SearchModelsMissing};
+use crate::lazy_model::LazyModel;
 use crate::processing::chunker::{ContextualChunkResult, TextChunker};
 use crate::processing::parser::{
     DocumentParser, ParsedDocument, TABLE_CANDIDATES_KEY, TABLE_MODEL_KEY,
@@ -535,12 +536,13 @@ fn extract_structured_fields(text: &str) -> HashMap<String, String> {
 }
 
 /// The ONNX models the engine searches with: the E5 embedder (required) and
-/// the cross-encoder reranker (optional). Loading takes seconds and reads
-/// ~600 MB, so it is separate from [`RAGEngine::new`] and can run on a
-/// blocking thread before [`RAGEngine::attach_search_models`].
+/// the cross-encoder reranker (optional). Loading the embedder takes seconds and
+/// reads ~600 MB, so it is separate from [`RAGEngine::new`] and can run on a
+/// blocking thread before [`RAGEngine::attach_search_models`]. The reranker is
+/// only located here; it loads on first use (see [`SharedReranker`]).
 pub struct SearchModels {
     embeddings: Arc<dyn EmbeddingModel>,
-    reranker: Option<CrossEncoderReranker>,
+    reranker_dir: Option<std::path::PathBuf>,
 }
 
 impl SearchModels {
@@ -549,7 +551,7 @@ impl SearchModels {
     pub(crate) fn from_embedder(embeddings: Arc<dyn EmbeddingModel>) -> Self {
         Self {
             embeddings,
-            reranker: None,
+            reranker_dir: None,
         }
     }
 
@@ -566,21 +568,14 @@ impl SearchModels {
         let embeddings: Arc<dyn EmbeddingModel> =
             Arc::new(E5Embeddings::new(e5_config).context("Failed to load E5 embeddings")?);
 
-        let reranker = if config.features.enable_reranking || config.features.enable_cross_encoder {
-            let reranker_dir = config.embedding.model_dir.join("ms-marco-MiniLM-L6-v2");
-            match CrossEncoderReranker::new(&reranker_dir) {
-                Ok(r) => {
-                    tracing::info!(
-                        "Cross-encoder reranker loaded from {}",
-                        reranker_dir.display()
-                    );
-                    Some(r)
-                }
+        let reranker_dir = if config.features.enable_reranking
+            || config.features.enable_cross_encoder
+        {
+            let dir = config.embedding.model_dir.join("ms-marco-MiniLM-L6-v2");
+            match CrossEncoderReranker::check_files(&dir) {
+                Ok(()) => Some(dir),
                 Err(e) => {
-                    tracing::warn!(
-                        "Reranker not available ({}), continuing without reranking",
-                        e
-                    );
+                    tracing::warn!("Reranker not available ({e}), continuing without reranking");
                     None
                 }
             }
@@ -589,7 +584,7 @@ impl SearchModels {
         };
         Ok(Self {
             embeddings,
-            reranker,
+            reranker_dir,
         })
     }
 
@@ -598,14 +593,14 @@ impl SearchModels {
     }
 
     pub fn has_reranker(&self) -> bool {
-        self.reranker.is_some()
+        self.reranker_dir.is_some()
     }
 }
 
-/// The engine's cross-encoder, shared so other rankers use the loaded model
-/// without taking the engine lock (indexing holds it for long stretches).
-/// `None` until the search models are attached, or when reranking is off.
-pub type SharedReranker = Arc<parking_lot::RwLock<Option<CrossEncoderReranker>>>;
+/// The engine's cross-encoder, shared so other rankers use the model without
+/// taking the engine lock. Loaded on first use and dropped when idle; not
+/// available until the search models are attached, or when reranking is off.
+pub type SharedReranker = Arc<LazyModel<CrossEncoderReranker>>;
 
 pub struct RAGEngine {
     store: LanceStore,
@@ -687,7 +682,7 @@ impl RAGEngine {
             structure_chunker,
             parser: DocumentParser::new(),
             config,
-            reranker: SharedReranker::default(),
+            reranker: Arc::new(LazyModel::new("reranker")),
             refinement_queue: None,
             source_ranker: None,
         };
@@ -738,10 +733,15 @@ impl RAGEngine {
             );
         }
         self.embeddings = Some(models.embeddings);
-        *self.reranker.write() = models.reranker;
+        match models.reranker_dir {
+            Some(dir) => self
+                .reranker
+                .set_loader(move || CrossEncoderReranker::new(&dir)),
+            None => self.reranker.uninstall(),
+        }
         tracing::info!(
             dimension,
-            reranker = self.reranker.read().is_some(),
+            reranker = self.reranker.available(),
             "Search models attached"
         );
         Ok(())
@@ -1318,7 +1318,7 @@ impl RAGEngine {
         Self::deduplicate_results(&mut results, 0.75);
 
         // Apply cross-encoder reranking if available (before MMR so diversity uses final scores)
-        let reranker = self.reranker.read().clone();
+        let reranker = self.reranker.get();
         if let Some(reranker) = &reranker {
             if results.len() > 1 {
                 let candidates: Vec<(String, String)> = results

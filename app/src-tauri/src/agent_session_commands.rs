@@ -491,8 +491,8 @@ fn grounding_config(
     nli: SharedNli,
     follow_ups: bool,
 ) -> GroundingConfig {
-    // The engine lock is held for long stretches while indexing; its
-    // reranker slot is fetched once, without waiting for the lock.
+    // The engine lock may be held while indexing stores a file; its reranker
+    // slot is fetched once, without waiting for the lock.
     let reranker_slot: Arc<std::sync::OnceLock<SharedReranker>> =
         Arc::new(std::sync::OnceLock::new());
     GroundingConfig {
@@ -504,14 +504,11 @@ fn grounding_config(
                     reranker_slot.get_or_init(|| handle).clone()
                 }),
             };
+            // Both load on first use.
             let relevance = slot
-                .and_then(|slot| slot.read().clone())
-                .map(|reranker| Arc::new(reranker) as SharedScorer);
-            let entailment = nli
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone()
-                .map(|model| Arc::new(model) as SharedEntailment);
+                .and_then(|slot| slot.get())
+                .map(|reranker| reranker as SharedScorer);
+            let entailment = nli.get().map(|model| model as SharedEntailment);
             ScorerSet {
                 relevance,
                 entailment,

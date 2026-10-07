@@ -42,13 +42,13 @@ pub enum TableModelError {
 /// Id of the model set, recorded on the chunks and Results whose tables it structured.
 pub const TABLE_MODEL_ID: &str = "docling-heron-int8+tableformer/models-v1";
 
-/// The table model when it is installed and loaded, shared by the parsers and the
-/// background refinement.
-pub type SharedTableModel = std::sync::Arc<std::sync::RwLock<Option<std::sync::Arc<TableModel>>>>;
+/// The table model when it is installed, shared by the parsers and the background
+/// refinement. Loaded on first use and dropped when idle.
+pub type SharedTableModel = std::sync::Arc<crate::lazy_model::LazyModel<TableModel>>;
 
-/// The loaded model of a shared handle, if any.
-pub fn loaded(shared: &SharedTableModel) -> Option<std::sync::Arc<TableModel>> {
-    shared.read().unwrap_or_else(|e| e.into_inner()).clone()
+/// A handle for a table model that is not installed yet.
+pub fn shared_table_model() -> SharedTableModel {
+    std::sync::Arc::new(crate::lazy_model::LazyModel::new("table model"))
 }
 
 /// Files of the model set, relative to the model directory (`docling-tables/`).

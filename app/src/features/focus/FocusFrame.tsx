@@ -21,6 +21,30 @@ export interface FocusFrameProps {
 }
 
 /**
+ * Opens a target in the focus pop-out from where the caller is: a level of
+ * the pop-out inside a side answer, else a discussion of the answer. Null
+ * where nothing can be opened (no answer around, e.g. a side answer still
+ * being written).
+ */
+export function useOpenFocus(): ((target: FocusTarget, trigger: HTMLElement | null) => void) | null {
+  const focus = useFocus();
+  const drill = useFocusDrill();
+  const answerAnchor = useFocusAnchor();
+  const anchor = drill ? null : answerAnchor;
+  const open = useCallback((target: FocusTarget, trigger: HTMLElement | null) => {
+    if (!focus) return;
+    if (drill) {
+      const result = focus.drillDown({ target, parentThreadId: drill.parentThreadId, parentTurnId: drill.parentTurnId });
+      if (result === 'depth') notifyDepthLimit();
+      return;
+    }
+    if (!anchor) return;
+    focus.openFocus({ target, conversationId: anchor.conversationId, parentMessageId: anchor.messageId, trigger });
+  }, [focus, anchor, drill]);
+  return focus && (anchor || drill) ? open : null;
+}
+
+/**
  * Gives a visual in an answer its way into the focus pop-out: an always
  * visible "Expand & ask" button (Tab reaches it, Enter opens), plus
  * double-click. It stays subdued until hovered so it does not compete
@@ -29,35 +53,19 @@ export interface FocusFrameProps {
  * (no anchor), e.g. a side answer still being written.
  */
 export function FocusFrame({ noun, getTarget, doubleClick = true, inline = false, className, children }: FocusFrameProps) {
-  const focus = useFocus();
-  const drill = useFocusDrill();
-  const answerAnchor = useFocusAnchor();
-  // Inside a side answer the drill context wins: the pop-out's own levels.
-  const anchor = drill ? null : answerAnchor;
+  const openFocus = useOpenFocus();
   const frameRef = useRef<HTMLElement>(null);
   const Wrapper = inline ? 'span' : 'div';
   const buttonRef = useRef<HTMLButtonElement>(null);
 
   const open = useCallback((trigger: HTMLElement | null) => {
     const el = frameRef.current;
-    if (!focus || (!anchor && !drill) || !el) return;
+    if (!openFocus || !el) return;
     const target = getTarget(el);
-    if (!target) return;
-    if (drill) {
-      const result = focus.drillDown({ target, parentThreadId: drill.parentThreadId, parentTurnId: drill.parentTurnId });
-      if (result === 'depth') notifyDepthLimit();
-      return;
-    }
-    if (!anchor) return;
-    focus.openFocus({
-      target,
-      conversationId: anchor.conversationId,
-      parentMessageId: anchor.messageId,
-      trigger: trigger ?? buttonRef.current,
-    });
-  }, [focus, anchor, drill, getTarget]);
+    if (target) openFocus(target, trigger ?? buttonRef.current);
+  }, [openFocus, getTarget]);
 
-  if (!focus || (!anchor && !drill)) return <Wrapper className={cn(inline && 'inline-block', className)}>{children}</Wrapper>;
+  if (!openFocus) return <Wrapper className={cn(inline && 'inline-block', className)}>{children}</Wrapper>;
 
   const onDoubleClick = (e: React.MouseEvent<HTMLElement>) => {
     if (e.target instanceof Element && e.target.closest('button, a, input, textarea, select')) return;

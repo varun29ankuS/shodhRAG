@@ -47,6 +47,7 @@ import { COMPOSER_INSERT_EVENT, onWindowEvent, takePendingInserts } from '../res
 import { appendToDraft } from '../research/snippetModel';
 import { ModelChip } from '../modelPicker/ModelChip';
 import { CodeModeSwitch } from '../agent/CodeModeSwitch';
+import { DiagramHostContext } from './visual/diagramHost';
 import { ToolsChip } from '../tools/ToolsChip';
 import type { ConversationMode } from '../../hooks/useConversations';
 
@@ -588,6 +589,8 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
   // Research or Code, per conversation (Code works in the workspace's code folder).
   const mode = session.activeConversation?.mode ?? 'research';
   const [codeProblem, setCodeProblem] = useState<string | null>(null);
+  const codeWorkspaceId = mode === 'code' ? session.activeConversation?.workspaceId ?? null : null;
+  const diagramHost = useMemo(() => ({ codeWorkspaceId }), [codeWorkspaceId]);
   const { updateConversationMeta } = session;
   const changeMode = useCallback((next: ConversationMode) => {
     const id = session.activeConversationId;
@@ -979,6 +982,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
           aria-label="Conversation"
           aria-live="off"
         >
+          <DiagramHostContext.Provider value={diagramHost}>
           {messages.map((message, index) => {
             if (message.role === 'user') {
               const summary = message.sideSummary;
@@ -1026,6 +1030,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
               />
             );
           })}
+          </DiagramHostContext.Provider>
         </div>
       </div>
 

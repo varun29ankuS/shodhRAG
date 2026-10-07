@@ -19,9 +19,16 @@ export interface AnswerBlocks {
    * back to the model for one correction.
    */
   modelAnswer: boolean;
+  /**
+   * The source numbers of the answer, which a diagram may cite; null for
+   * text without sources (citations are then refused).
+   */
+  citations: ReadonlySet<number> | null;
+  /** Open source `n` of the answer (as its citation pill does). */
+  openCitation: ((n: number, trigger: HTMLElement) => void) | null;
 }
 
-const NONE: AnswerBlocks = { symbols: [], renderInline: text => text, modelAnswer: false };
+const NONE: AnswerBlocks = { symbols: [], renderInline: text => text, modelAnswer: false, citations: null, openCitation: null };
 
 export const AnswerBlocksContext = createContext<AnswerBlocks>(NONE);
 

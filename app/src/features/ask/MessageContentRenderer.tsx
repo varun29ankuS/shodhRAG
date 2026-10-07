@@ -22,6 +22,7 @@ import { PlotBlock } from './visual/PlotView';
 import { SimulationBlock } from './visual/SimulationView';
 import { FigureBlock } from './visual/FigureBlock';
 import { DerivationBlock, SymbolsBlock } from './visual/MathBlocks';
+import { DiagramBlock } from './visual/DiagramBlock';
 import { SymbolLayer } from './visual/SymbolLayer';
 import { AnswerBlocksContext } from './visual/answerContext';
 import type { AnswerBlocks } from './visual/answerContext';
@@ -67,7 +68,7 @@ function isCitationOnly(line: string): boolean {
 }
 
 /** Fenced languages drawn as visuals, which draw their own frame. */
-const VISUAL_LANGUAGES = new Set(['chart', 'svg', 'plot', 'simulation', 'figure', 'derivation', 'symbols']);
+const VISUAL_LANGUAGES = new Set(['chart', 'svg', 'plot', 'simulation', 'figure', 'derivation', 'symbols', 'diagram']);
 
 /** Target of a rendered table (header row first). */
 function tableFromElement(el: HTMLElement) {
@@ -336,6 +337,7 @@ export function MessageContentRenderer({
         if (match[1] === 'figure') return <FigureBlock source={codeString} />;
         if (match[1] === 'derivation') return <DerivationBlock source={codeString} />;
         if (match[1] === 'symbols') return <SymbolsBlock source={codeString} />;
+        if (match[1] === 'diagram') return <DiagramBlock source={codeString} />;
         return (
           <div>
             <div className="flex items-center justify-between pl-3 pr-1.5 h-8 border-b border-shodh-border-subtle bg-shodh-raised">
@@ -416,14 +418,25 @@ export function MessageContentRenderer({
     hr: () => <hr className="my-6 border-shodh-border" />,
   }), [codeComponents, processChildren]);
 
+  const citationNumbers = useMemo<ReadonlySet<number> | null>(
+    () => (citations ? new Set(hitsByNumber.keys()) : null),
+    [citations, hitsByNumber],
+  );
+  const openCitationNumber = useCallback((n: number, trigger: HTMLElement) => {
+    const hit = hitsByNumber.get(n);
+    if (hit) onOpenCitation(hit, trigger);
+  }, [hitsByNumber, onOpenCitation]);
+
   const answerBlocks = useMemo<AnswerBlocks>(
     () => ({
       symbols,
       renderInline: text => renderWithCitations(citations ? citationPlaceholders(text) : text),
       // Text the reader wrote and summary cards turn citations off; printouts are not interactive.
       modelAnswer: citations && !print,
+      citations: citationNumbers,
+      openCitation: citations && !print ? openCitationNumber : null,
     }),
-    [symbols, renderWithCitations, citations, print],
+    [symbols, renderWithCitations, citations, print, citationNumbers, openCitationNumber],
   );
 
   const { charts, tables, others } = useMemo(() => {

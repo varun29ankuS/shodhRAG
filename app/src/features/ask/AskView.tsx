@@ -891,7 +891,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
             onClick={() => setSearchAll(on => !on)}
             title="For the next question only: search your whole library instead of this workspace's sources"
             className={cn(
-              'h-7 px-2.5 inline-flex items-center gap-1 rounded-full text-[11.5px] font-medium border transition-colors duration-micro focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              'h-7 px-2.5 shrink-0 whitespace-nowrap inline-flex items-center gap-1 rounded-full text-[11.5px] font-medium border transition-colors duration-micro focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               searchAll
                 ? 'bg-shodh-accent-soft border-shodh-accent text-shodh-accent-text'
                 : 'border-shodh-border text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised',

@@ -100,7 +100,7 @@ export function CodeModeSwitch({ conversationId, workspaceId, mode, onChange, an
     : status?.problem ?? undefined;
 
   return (
-    <div className="flex items-center gap-1.5 min-w-0">
+    <div className="flex items-center gap-1.5 shrink-0">
       <div
         role="radiogroup"
         aria-label="Answer mode"

@@ -169,7 +169,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
         )}
         style={{ maxHeight }}
       />
-      <div className={cn('flex items-center gap-1.5 min-w-0', compact ? 'px-2 pt-1 pb-2' : 'px-2.5 pt-1.5 pb-2.5')}>
+      <div className={cn('flex flex-wrap items-center gap-x-1.5 gap-y-2 min-w-0', compact ? 'px-2 pt-1 pb-2' : 'px-2.5 pt-1.5 pb-2.5')}>
         {!compact && onPickImage && (
           <button
             type="button"

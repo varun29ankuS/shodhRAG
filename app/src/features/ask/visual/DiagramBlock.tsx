@@ -41,7 +41,8 @@ export function DiagramBlock({ source }: { source: string }) {
   );
   const spec = 'spec' in parsed ? parsed.spec : null;
   const pathsKey = 'paths' in parsed ? parsed.paths.join('\n') : '';
-  const [files, setFiles] = useState<Files>({ status: 'none' });
+  // Paths are checked before the first drawing, so a missing file never flashes a diagram.
+  const [files, setFiles] = useState<Files>(() => (pathsKey && codeWorkspaceId ? { status: 'checking' } : { status: 'none' }));
 
   useEffect(() => {
     const paths = pathsKey ? pathsKey.split('\n') : [];

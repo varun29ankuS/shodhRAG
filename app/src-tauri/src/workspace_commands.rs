@@ -783,16 +783,32 @@ pub async fn import_legacy_spaces(
         .map(|w| w.id)
         .collect();
     let plan = plan_legacy_import(&conversations, &folders, &existing);
+    apply_legacy_plan(state, data_dir, &plan).await
+}
+
+/// Applies an import plan: creates each workspace (keeping the space id; one that already
+/// exists, from an interrupted run, is kept as it is), assigns the conversations that are
+/// still in no workspace, and marks the import done. Returns the workspaces planned plus the
+/// conversations moved (non-zero: open views should refresh).
+pub async fn apply_legacy_plan(
+    state: &WorkspaceState,
+    data_dir: &Path,
+    plan: &LegacyPlan,
+) -> WorkspaceCommandResult<usize> {
     let create = plan.create.clone();
     state
         .run(move |s| {
             for space in &create {
+                match s.get(&space.id) {
+                    Ok(_) => continue,
+                    Err(WorkspaceError::NotFound(_)) => {}
+                    Err(e) => return Err(e),
+                }
                 s.create_with_id(
                     &space.id,
                     &NewWorkspace {
                         name: space.name.clone(),
-                        description: "Chats that were asked about this folder before \
-                                      workspaces existed."
+                        description: "Chats that were asked about this folder before                                       workspaces existed."
                             .to_string(),
                         ..NewWorkspace::default()
                     },
@@ -836,7 +852,7 @@ pub async fn import_legacy_spaces(
         .run(move |s| s.set_state(LEGACY_IMPORT_KEY, &note))
         .await?;
     tracing::info!(target: "shodh::workspaces", workspaces = plan.create.len(), conversations = assigned, "legacy spaces imported as workspaces");
-    Ok(assigned)
+    Ok(assigned + plan.create.len())
 }
 
 #[cfg(test)]
@@ -974,6 +990,69 @@ mod tests {
                 .await
                 .unwrap(),
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn applying_the_import_keeps_space_ids_assigns_chats_and_resumes() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = WorkspaceState::at(Some((dir.path().join("shodh.db"), None)));
+        let store = ConversationStore::in_dir(dir.path());
+        let saved = vec![
+            conversation("a", Some(("src-1", "Contracts")), None),
+            conversation("bb", Some(("src-1", "Contracts")), None),
+            conversation("ccc", Some(("src-gone", "Old")), None),
+        ];
+        store
+            .update(|all| {
+                all.extend(saved.clone());
+                Ok(())
+            })
+            .unwrap();
+        let folders = vec![known("src-1", "C:/Docs/Contracts")];
+        let plan = plan_legacy_import(&saved, &folders, &HashSet::new());
+        // One workspace created, two chats moved.
+        assert_eq!(
+            apply_legacy_plan(&state, dir.path(), &plan).await.unwrap(),
+            3
+        );
+        let detail = state.run(|s| s.detail("src-1")).await.unwrap();
+        assert_eq!(detail.workspace.name, "Contracts");
+        assert_eq!(detail.sources.len(), 1);
+        assert_eq!(detail.sources[0].kind, SourceKind::Folder);
+        assert_eq!(detail.sources[0].added_by, WorkspaceAuthor::Migration);
+        assert_eq!(detail.sources[0].path.as_deref(), Some("C:/Docs/Contracts"));
+        let after = store.load().unwrap();
+        let workspace_of = |id: &str| {
+            after
+                .iter()
+                .find(|c| c.id == id)
+                .and_then(|c| c.workspace_id.clone())
+        };
+        assert_eq!(workspace_of("a").as_deref(), Some("src-1"));
+        assert_eq!(workspace_of("bb").as_deref(), Some("src-1"));
+        assert_eq!(workspace_of("ccc"), None);
+        // The legacy fields are kept as saved.
+        assert!(after.iter().all(|c| c.space_id.is_some()));
+        assert!(state
+            .run(|s| s.state(LEGACY_IMPORT_KEY))
+            .await
+            .unwrap()
+            .is_some());
+        // Applying again (an interrupted run resumed) neither duplicates nor fails.
+        assert_eq!(
+            apply_legacy_plan(&state, dir.path(), &plan).await.unwrap(),
+            1
+        );
+        assert_eq!(state.run(|s| s.list(true)).await.unwrap().len(), 1);
+        assert_eq!(
+            state
+                .run(|s| s.detail("src-1"))
+                .await
+                .unwrap()
+                .sources
+                .len(),
+            1
         );
     }
 

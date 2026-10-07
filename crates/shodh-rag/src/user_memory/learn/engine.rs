@@ -257,8 +257,20 @@ impl Learner {
         learned: &mut Vec<String>,
         suppressed: &mut usize,
     ) -> LearnResult<()> {
-        let scope = candidate.source.scope.clone();
         let record = self.decide(candidate, model).await?;
+        // A new memory goes where it was learned (the conversation's workspace, or global);
+        // a change to an existing memory stays in that memory's scope, so a fact learned in
+        // a workspace never moves a global memory out of every other chat.
+        let scope = match record.decision.target() {
+            Some(target) => match self.service.get(target).await {
+                Ok(existing) => existing.scope,
+                Err(e) => {
+                    tracing::debug!(target: "shodh::memory", error = %e, "target memory unreadable; learned scope used");
+                    candidate.source.scope.clone()
+                }
+            },
+            None => candidate.source.scope.clone(),
+        };
         if matches!(record.decision, Decision::Noop { .. })
             && record.decided_by != DecidedBy::Undecided
         {
@@ -297,12 +309,7 @@ impl Learner {
         };
         let new = NewProposal {
             origin,
-            fingerprint: fingerprint(&[
-                "remember",
-                &scope.as_key(),
-                candidate.valid.class(),
-                &text,
-            ]),
+            fingerprint: remember_fingerprint(&scope, candidate.valid.class(), &text),
             scope,
             conversation_id: Some(candidate.source.conversation_id.clone()),
             turn_id: Some(candidate.source.turn_id.clone()),
@@ -904,4 +911,20 @@ pub(crate) fn fingerprint(parts: &[&str]) -> String {
         hasher.update([0x1f]);
     }
     hex::encode(&hasher.finalize()[..16])
+}
+
+/// Fingerprint of a "remember" suggestion. Global ones are unchanged from before
+/// workspaces (so suggestions already rejected or waiting are not offered again); a
+/// workspace's include its scope, so the same text in two workspaces is two suggestions.
+pub(crate) fn remember_fingerprint(
+    scope: &crate::statements::Scope,
+    class: &str,
+    text: &str,
+) -> String {
+    match scope {
+        crate::statements::Scope::Global => fingerprint(&["remember", class, text]),
+        crate::statements::Scope::Workspace(_) => {
+            fingerprint(&["remember", &scope.as_key(), class, text])
+        }
+    }
 }

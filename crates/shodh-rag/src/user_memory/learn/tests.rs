@@ -1078,3 +1078,56 @@ async fn memories_learned_in_a_workspace_chat_default_to_that_workspace() {
         .unwrap();
     assert_eq!(global.scope, Scope::Global);
 }
+
+#[tokio::test]
+async fn a_change_learned_in_a_workspace_stays_in_the_changed_memorys_scope() {
+    let e = env().await;
+    let delhi = e
+        .remember_fact(
+            "Person",
+            &[(
+                "livesIn",
+                RawValue::Entity(EntityRef::typed("place:delhi", "Place")),
+            )],
+        )
+        .await;
+    e.f.clock.advance_days(30);
+    e.model
+        .answer(json!({"memories": [lives_in("pune", "I moved to Pune", 0.95)]}));
+    let mut turn = e.turn("I moved to Pune last week");
+    turn.scope = Scope::Workspace("ws-1".into());
+    e.learner.learn_from_turns(&[turn]).await.unwrap();
+    let pending = e.pending();
+    assert_eq!(pending.len(), 1);
+    let ProposalAction::Remember { decision, .. } = &pending[0].action else {
+        panic!("not a remember suggestion");
+    };
+    assert_eq!(decision.target(), Some(delhi.as_str()));
+    // The global home is changed globally, not moved into the workspace.
+    assert_eq!(pending[0].scope, Scope::Global);
+    let accepted = e
+        .learner
+        .accept(&pending[0].id, None, &Actor::ui())
+        .await
+        .unwrap();
+    let memory = e
+        .service
+        .get(&accepted.outcome.unwrap().memory_id.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(memory.scope, Scope::Global);
+    assert!(memory.text.contains("pune"), "{}", memory.text);
+}
+
+#[test]
+fn global_suggestion_fingerprints_are_unchanged_by_workspaces() {
+    use super::engine::{fingerprint, remember_fingerprint};
+    assert_eq!(
+        remember_fingerprint(&Scope::Global, "Person", "lives in Pune"),
+        fingerprint(&["remember", "Person", "lives in Pune"])
+    );
+    let a = remember_fingerprint(&Scope::Workspace("a".into()), "Person", "x");
+    let b = remember_fingerprint(&Scope::Workspace("b".into()), "Person", "x");
+    assert_ne!(a, b);
+    assert_ne!(a, remember_fingerprint(&Scope::Global, "Person", "x"));
+}

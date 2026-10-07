@@ -437,6 +437,7 @@ mod tests {
             space_name: None,
             workspace_id: None,
             system_prompt: None,
+            mode: None,
             focus_threads: None,
         }
     }

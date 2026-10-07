@@ -712,6 +712,8 @@ pub fn run() {
             agent_session_commands::agent_steer,
             agent_session_commands::agent_abort,
             agent_session_commands::agent_approve,
+            agent_session_commands::agent_code_status,
+            agent_session_commands::agent_code_discard,
             agent_session_commands::agent_install_runtime,
             audit_commands::audit_query,
             audit_commands::audit_verify,

@@ -50,12 +50,45 @@ pub struct ConversationRecord {
     pub workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    /// How the conversation's answers work; absent (or a mode this version
+    /// does not know) is Research.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "known_mode"
+    )]
+    pub mode: Option<ConversationMode>,
     /// Side discussions that belong to the conversation but not to one of
     /// its messages (e.g. about a task), as the focus pop-out stores them.
     /// Opaque to the backend. Threads about a message live in that
     /// message's `metadata`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus_threads: Option<serde_json::Value>,
+}
+
+/// How a conversation's answers work.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConversationMode {
+    /// Answers from the library and the web with Shodh's own tools.
+    #[default]
+    Research,
+    /// The agent reads and changes the workspace's code folder (Code mode).
+    Code,
+}
+
+/// A stored mode; one this version does not know must not stop every
+/// conversation from loading.
+fn known_mode<'de, D>(deserializer: D) -> Result<Option<ConversationMode>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let stored: Option<String> = Option::deserialize(deserializer)?;
+    Ok(match stored.as_deref() {
+        Some("research") => Some(ConversationMode::Research),
+        Some("code") => Some(ConversationMode::Code),
+        _ => None,
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -248,5 +281,35 @@ mod tests {
             })
             .unwrap();
         assert_eq!(store.load().unwrap()[0].focus_threads, record.focus_threads);
+    }
+
+    #[test]
+    fn the_mode_is_kept_with_the_conversation() {
+        let old = r#"{"id": "c1", "title": "Build", "messages": [],
+            "createdAt": "2026-10-01T00:00:00Z", "updatedAt": "2026-10-01T00:00:00Z",
+            "pinned": false}"#;
+        let record: ConversationRecord = serde_json::from_str(old).unwrap();
+        // Saved before modes existed: Research, and nothing new is written.
+        assert_eq!(record.mode.unwrap_or_default(), ConversationMode::Research);
+        assert!(!serde_json::to_string(&record).unwrap().contains("mode"));
+
+        let mut code = record.clone();
+        code.mode = Some(ConversationMode::Code);
+        let text = serde_json::to_string(&code).unwrap();
+        assert!(text.contains(r#""mode":"code""#));
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = ConversationStore::in_dir(dir.path());
+        store
+            .update(|all| {
+                all.push(code.clone());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.load().unwrap()[0].mode, Some(ConversationMode::Code));
+
+        let unknown = old.replace(r#""pinned": false"#, r#""pinned": false, "mode": "turbo""#);
+        let read: ConversationRecord = serde_json::from_str(&unknown).unwrap();
+        assert_eq!(read.mode, None);
     }
 }

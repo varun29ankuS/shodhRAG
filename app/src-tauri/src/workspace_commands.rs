@@ -875,6 +875,7 @@ mod tests {
             space_name: space.map(|s| s.1.to_string()),
             workspace_id: workspace.map(str::to_string),
             system_prompt: None,
+            mode: None,
             focus_threads: None,
         }
     }

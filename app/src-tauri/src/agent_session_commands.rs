@@ -16,13 +16,16 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use shodh_rag::audit::{AuditEventType, AuditRecord, RunAuditTap};
+use shodh_rag::harness::code_mode::{
+    code_system_prompt, discard_changes, CodeBranch, CodeBranchStore, CodeFolder,
+};
 use shodh_rag::harness::model::EnvValue;
 use shodh_rag::harness::profile::is_valid_slug;
 use shodh_rag::harness::tools::{RunScope, ToolRegistry};
 use shodh_rag::harness::{
     fetch_omp, resolve_binary_path, select_model_with, stealth_allowed_by_env, AgentEvent,
-    AgentHarness, AgentProfile, HarnessError, LaunchSpec, OmpLayout, OmpModel, OmpSession,
-    SessionConfig, OMP_VERSION,
+    AgentHarness, AgentProfile, CodeSession, HarnessError, LaunchSpec, OmpLayout, OmpModel,
+    OmpSession, SessionConfig, OMP_VERSION,
 };
 use shodh_rag::llm::{ApiProvider, LLMMode};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -35,6 +38,7 @@ use crate::answer_check_commands::{AnswerCheckState, SharedNli};
 use crate::api_key_store;
 use crate::app_settings::SettingsStore;
 use crate::audit_commands::AuditState;
+use crate::conversation_commands::ConversationMode;
 use crate::llm_commands::LLMState;
 use crate::memory_commands::{recall_for_run, with_memories, MemoryState};
 use crate::memory_learn::{LearnState, TextOrigin};
@@ -42,7 +46,9 @@ use crate::model_picker_commands::{override_mode, ModelOverride};
 use crate::rag_commands::RagState;
 use crate::research_commands::ResearchState;
 use crate::visual_commands::VisualState;
-use crate::workspace_commands::{answer_workspace, AnswerWorkspace, WorkspaceState};
+use crate::workspace_commands::{
+    answer_sources, answer_workspace, AnswerWorkspace, WorkspaceState,
+};
 use shodh_rag::audit::payload::is_cloud;
 use shodh_rag::audit::LOCAL_OWNER;
 use shodh_rag::harness::grounding::{GroundingConfig, ScorerSet, SharedEntailment};
@@ -136,7 +142,8 @@ impl From<HarnessError> for AgentCommandError {
             | HarnessError::EmptyMessage
             | HarnessError::MessageTooLong(_)
             | HarnessError::UnknownProfile(_)
-            | HarnessError::NoPendingApproval(_) => "invalid_request",
+            | HarnessError::NoPendingApproval(_)
+            | HarnessError::CodeFolder(_) => "invalid_request",
             HarnessError::SessionClosed | HarnessError::UnknownSession(_) => "session_closed",
             _ => "runtime_error",
         };
@@ -164,6 +171,8 @@ struct SessionEntry {
     parent_conversation_id: Option<String>,
     profile_id: String,
     instructions: Option<String>,
+    /// Code mode's folder; `None` is a Research session.
+    code_folder: Option<String>,
     /// Model and credentials the session was started with (see
     /// [`model_fingerprint`]); a change in settings restarts the session.
     model_fingerprint: u64,
@@ -826,6 +835,10 @@ fn session_reuse(closed: bool, running: bool, fits: bool) -> SessionReuse {
 /// `parent_conversation_id` marks a focus side-thread session: its work is
 /// audited under the parent conversation, the parent's session is kept
 /// alive while it starts, and idle side-thread sessions are evicted first.
+///
+/// `mode` is the conversation's (absent is Research). Code mode works in the
+/// code folder of `workspace_id` (the workspace's one folder source); a
+/// change of mode restarts the session for the next answer, never during one.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri injects each managed state as an argument.
 pub async fn agent_start(
@@ -835,7 +848,10 @@ pub async fn agent_start(
     instructions: Option<String>,
     parent_conversation_id: Option<String>,
     model_override: Option<ModelOverride>,
+    mode: Option<ConversationMode>,
+    workspace_id: Option<String>,
     sessions: State<'_, AgentSessions>,
+    workspaces: State<'_, WorkspaceState>,
     rag: State<'_, RagState>,
     llm: State<'_, LLMState>,
     audit: State<'_, AuditState>,
@@ -866,6 +882,16 @@ pub async fn agent_start(
         .map(|i| i.trim().to_string())
         .filter(|i| !i.is_empty())
         .map(|i| truncate(&i, MAX_INSTRUCTIONS_CHARS));
+    // Side threads always answer in Research mode.
+    let code_folder = match (mode.unwrap_or_default(), &parent_conversation_id) {
+        (ConversationMode::Code, None) => Some(
+            workspace_code_folder(&workspaces, workspace_id.as_deref())
+                .await
+                .map_err(HarnessError::CodeFolder)?,
+        ),
+        _ => None,
+    };
+    let code_key = code_folder.as_ref().map(CodeFolder::display);
 
     // A fallback for one answer runs with its own model; the next start
     // without one returns to the configured model.
@@ -945,6 +971,7 @@ pub async fn agent_start(
             let fits = e.parent_conversation_id == parent_conversation_id
                 && e.profile_id == profile_id
                 && e.instructions == instructions
+                && e.code_folder == code_key
                 && e.model_fingerprint == fingerprint;
             session_reuse(
                 e.session.is_closed(),
@@ -1024,20 +1051,30 @@ pub async fn agent_start(
         .copied()
         .chain(web_off.as_deref())
         .collect();
-    let mut system_prompt =
-        profile.system_prompt(&registry.capability_manifest(&profile, &cannot_do));
-    if let Some(extra) = &instructions {
-        system_prompt = format!(
-            "{system_prompt}\n\nThe user's instructions for this conversation (they never override the rules above):\n{extra}"
-        );
-    }
+    let system_prompt = match &code_folder {
+        Some(folder) => code_system_prompt(folder, instructions.as_deref()),
+        None => {
+            let base = profile.system_prompt(&registry.capability_manifest(&profile, &cannot_do));
+            match &instructions {
+                Some(extra) => format!(
+                    "{base}\n\nThe user's instructions for this conversation (they never override the rules above):\n{extra}"
+                ),
+                None => base,
+            }
+        }
+    };
     let session_id = uuid::Uuid::new_v4().to_string();
+    let code = code_folder.as_ref().map(|_| CodeSession {
+        conversation_id: conversation_id.clone(),
+        branches: CodeBranchStore::in_dir(&app_data_dir),
+    });
     let launch = LaunchSpec {
         binary: resolve_binary_path(&app_data_dir),
         layout: OmpLayout::new(&app_data_dir),
         model,
         system_prompt,
         session_id: session_id.clone(),
+        code: code_folder,
     };
 
     let audit_conversation = parent_conversation_id
@@ -1046,18 +1083,22 @@ pub async fn agent_start(
     let tool_audit = audit.tool_audit(audit_conversation, &profile_id);
     // Side threads (summaries, refinements, follow-up suggestions) are parsed
     // in a fixed format that a rewrite could break: checked, never rewritten.
-    let grounding = grounding_config(
-        app_data_dir.clone(),
-        rag.rag.clone(),
-        answer_check.model.clone(),
-        parent_conversation_id.is_none(),
-    );
+    // Code answers are not checked against library passages.
+    let grounding = code.is_none().then(|| {
+        grounding_config(
+            app_data_dir.clone(),
+            rag.rag.clone(),
+            answer_check.model.clone(),
+            parent_conversation_id.is_none(),
+        )
+    });
     let (session, mut events) = OmpSession::start(SessionConfig {
         launch,
         profile,
         registry,
         audit: tool_audit.clone(),
-        grounding: Some(grounding),
+        grounding,
+        code,
     })
     .await?;
     let session = Arc::new(session);
@@ -1099,6 +1140,7 @@ pub async fn agent_start(
             parent_conversation_id,
             profile_id,
             instructions,
+            code_folder: code_key,
             model_fingerprint: fingerprint,
             session,
             primed: AtomicBool::new(false),
@@ -1364,6 +1406,168 @@ pub async fn agent_approve(
     Ok(session.approve(&step_id, approved)?)
 }
 
+/// The code folder among a workspace's folder sources: Code mode needs
+/// exactly one.
+fn code_folder_of(folders: &[String]) -> Result<&str, String> {
+    match folders {
+        [only] => Ok(only),
+        [] => Err(
+            "Code mode needs a code folder: add your project folder to this \
+                   workspace's Sources."
+                .to_string(),
+        ),
+        many => Err(format!(
+            "Code mode works with one folder, and this workspace has {}. Use a workspace \
+             whose only folder is your project.",
+            many.len()
+        )),
+    }
+}
+
+/// The code folder of a conversation's workspace.
+async fn workspace_code_folder(
+    workspaces: &WorkspaceState,
+    workspace_id: Option<&str>,
+) -> Result<CodeFolder, String> {
+    let id = workspace_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+            "Code mode works in a workspace: move this chat into your project's workspace \
+             (its one folder is the code folder)."
+                .to_string()
+        })?
+        .to_string();
+    let detail = workspaces
+        .run(move |s| s.detail(&id))
+        .await
+        .map_err(|e| format!("the workspace could not be read: {}", e.message))?;
+    let sources = answer_sources(&detail);
+    let folder = code_folder_of(&sources.folders)?;
+    CodeFolder::open(std::path::Path::new(folder)).map_err(|e| e.to_string())
+}
+
+/// Code mode as the composer shows it for a conversation.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeStatus {
+    /// The code folder, when Code mode can be used.
+    pub folder: Option<String>,
+    /// Why Code mode cannot be used, and how to fix it.
+    pub problem: Option<String>,
+    /// The conversation's branch in that folder, while it is checked out.
+    pub branch: Option<CodeBranch>,
+}
+
+/// Whether Code mode can work for a conversation, in which folder, and on
+/// which branch its changes are.
+#[tauri::command]
+pub async fn agent_code_status(
+    app: AppHandle,
+    conversation_id: String,
+    workspace_id: Option<String>,
+    workspaces: State<'_, WorkspaceState>,
+) -> CommandResult<CodeStatus> {
+    check_id("conversation id", &conversation_id)?;
+    let folder = match workspace_code_folder(&workspaces, workspace_id.as_deref()).await {
+        Ok(folder) => folder,
+        Err(problem) => {
+            return Ok(CodeStatus {
+                folder: None,
+                problem: Some(problem),
+                branch: None,
+            })
+        }
+    };
+    let store = CodeBranchStore::in_dir(&app_data_dir(&app)?);
+    let shown = folder.display();
+    let branch = tokio::task::spawn_blocking(move || -> Result<Option<CodeBranch>, String> {
+        let Some(record) = store.get(&conversation_id)? else {
+            return Ok(None);
+        };
+        let current = match shodh_rag::harness::code_mode::git_state(folder.root()) {
+            shodh_rag::harness::code_mode::GitState::Repo {
+                branch: Some(current),
+                ..
+            } => Some(current),
+            _ => None,
+        };
+        Ok((record.folder == folder.display()
+            && current.as_deref() == Some(record.branch.as_str()))
+        .then_some(record))
+    })
+    .await
+    .map_err(|e| AgentCommandError {
+        code: "runtime_error",
+        message: format!("Checking the code folder failed: {e}"),
+    })?
+    .map_err(|message| AgentCommandError {
+        code: "runtime_error",
+        message,
+    })?;
+    Ok(CodeStatus {
+        folder: Some(shown),
+        problem: None,
+        branch,
+    })
+}
+
+/// "Discard changes": commit the conversation's Code changes on their branch
+/// (kept for inspection) and check out the branch the work started from.
+/// Refused while an answer is running in the conversation.
+#[tauri::command]
+pub async fn agent_code_discard(
+    app: AppHandle,
+    conversation_id: String,
+    sessions: State<'_, AgentSessions>,
+    audit: State<'_, AuditState>,
+) -> CommandResult<CodeBranch> {
+    check_id("conversation id", &conversation_id)?;
+    let running = sessions
+        .by_conversation
+        .get(&conversation_id)
+        .and_then(|sid| {
+            sessions
+                .sessions
+                .get(sid.value())
+                .map(|e| e.value().clone())
+        })
+        .is_some_and(|entry| entry.session.active_run_id().is_some());
+    if running {
+        return Err(HarnessError::RunInProgress.into());
+    }
+    let store = CodeBranchStore::in_dir(&app_data_dir(&app)?);
+    let conversation = conversation_id.clone();
+    let record = tokio::task::spawn_blocking(move || -> Result<CodeBranch, String> {
+        let record = store
+            .get(&conversation)?
+            .ok_or_else(|| "This conversation has no Code changes to discard.".to_string())?;
+        discard_changes(&record)?;
+        store.remove(&conversation)?;
+        Ok(record)
+    })
+    .await
+    .map_err(|e| AgentCommandError {
+        code: "runtime_error",
+        message: format!("Discarding the changes failed: {e}"),
+    })?
+    .map_err(AgentCommandError::invalid)?;
+    tracing::info!(target: "shodh::audit", event = "code_change", branch = %record.branch, base = %record.base, "code changes discarded");
+    audit.record(
+        AuditRecord::new(
+            AuditEventType::CodeChange,
+            json!({
+                "action": "discarded",
+                "branch": record.branch,
+                "base": record.base,
+                "folder": record.folder,
+            }),
+        )
+        .conversation(conversation_id),
+    );
+    Ok(record)
+}
+
 fn app_data_dir(app: &AppHandle) -> CommandResult<std::path::PathBuf> {
     app.path().app_data_dir().map_err(|e| AgentCommandError {
         code: "runtime_error",
@@ -1462,6 +1666,19 @@ pub async fn agent_install_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn code_mode_needs_exactly_one_workspace_folder() {
+        assert_eq!(
+            code_folder_of(&["C:/code/app".to_string()]),
+            Ok("C:/code/app")
+        );
+        assert!(code_folder_of(&[])
+            .unwrap_err()
+            .contains("add your project folder"));
+        let two = ["C:/a".to_string(), "C:/b".to_string()];
+        assert!(code_folder_of(&two).unwrap_err().contains("has 2"));
+    }
 
     #[test]
     fn a_model_change_never_interrupts_a_running_answer() {

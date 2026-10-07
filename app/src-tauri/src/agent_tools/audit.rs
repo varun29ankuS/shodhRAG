@@ -129,6 +129,13 @@ pub(crate) fn summarize(row: &AuditRow) -> String {
             s(p, "to"),
             s(p, "reason")
         ),
+        "code_change" => format!(
+            "Code mode {} branch {} (from {}) in {}",
+            s(p, "action"),
+            s(p, "branch"),
+            s(p, "base"),
+            s(p, "folder")
+        ),
         other => other.to_string(),
     };
     truncate(text.trim(), MAX_SUMMARY_CHARS)

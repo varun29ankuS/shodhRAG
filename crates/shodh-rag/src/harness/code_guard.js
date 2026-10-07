@@ -2,7 +2,9 @@
 //
 // omp has no setting that keeps its file tools inside one folder, so every
 // tool call passes through this `tool_call` handler first:
-// - only the Code mode tools are allowed; any other tool is blocked;
+// - only the Code mode tools are allowed, plus the host tools Shodh registered
+//   for the session (named in SHODH_HOST_TOOLS; Shodh asks for and audits
+//   those itself); any other tool is blocked;
 // - every path a tool would touch must resolve (through symlinks and
 //   junctions) inside the code folder; URLs and omp's internal resources
 //   (`local://`, `ssh://`, `proc://`, web pages, ...) are blocked;
@@ -17,6 +19,7 @@ import { existsSync, realpathSync } from "node:fs";
 import * as path from "node:path";
 
 export const ROOT_ENV = "SHODH_CODE_ROOT";
+export const HOST_TOOLS_ENV = "SHODH_HOST_TOOLS";
 export const APPROVAL_TITLE = "shodh-approval";
 export const GUARD_COMMAND = "shodh-guard";
 export const ALLOW = "allow";
@@ -24,6 +27,17 @@ export const ALLOW = "allow";
 const SINGLE_PATH_TOOLS = new Set(["read", "write", "edit"]);
 const PATH_LIST_TOOLS = new Set(["grep", "glob", "ast_grep"]);
 const CHANGE_TOOLS = new Set(["edit", "write", "bash"]);
+const CODE_TOOLS = new Set([...SINGLE_PATH_TOOLS, ...PATH_LIST_TOOLS, "bash"]);
+
+/** The session's host tools: names from `value` (comma-separated), never a Code mode tool. */
+export function hostTools(value) {
+  return new Set(
+    (typeof value === "string" ? value : "")
+      .split(",")
+      .map((name) => name.trim())
+      .filter((name) => name !== "" && !CODE_TOOLS.has(name)),
+  );
+}
 
 const isWindows = process.platform === "win32";
 
@@ -124,6 +138,8 @@ export default function guard(pi) {
     handler: async () => {},
   });
   pi.on("tool_call", async (event, ctx) => {
+    // Shodh runs these itself, behind its own approval and audit.
+    if (hostTools(process.env[HOST_TOOLS_ENV]).has(event.toolName)) return undefined;
     const configured = process.env[ROOT_ENV];
     if (!configured) return { block: true, reason: "Code mode has no code folder." };
     let root;

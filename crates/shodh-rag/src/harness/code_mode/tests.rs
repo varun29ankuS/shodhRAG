@@ -192,17 +192,32 @@ fn code_launch_args_enable_exactly_the_code_tools_with_the_guard() {
 #[test]
 fn the_tool_inventory_must_be_exact() {
     let exact: Vec<String> = CODE_TOOLS.iter().map(|t| t.to_string()).collect();
-    assert!(inventory_matches(&exact));
+    assert!(inventory_matches(&exact, &[]));
     let mut reordered = exact.clone();
     reordered.reverse();
-    assert!(inventory_matches(&reordered));
+    assert!(inventory_matches(&reordered, &[]));
     let mut extra = exact.clone();
     extra.push("task".into());
-    assert!(!inventory_matches(&extra));
-    assert!(!inventory_matches(&exact[1..]));
+    assert!(!inventory_matches(&extra, &[]));
+    assert!(!inventory_matches(&exact[1..], &[]));
     let mut duplicate = exact[1..].to_vec();
     duplicate.push("grep".into());
-    assert!(!inventory_matches(&duplicate));
+    assert!(!inventory_matches(&duplicate, &[]));
+    // The session's host tools, exactly.
+    let host = vec!["enola__explore".to_string()];
+    let mut with_host = exact.clone();
+    with_host.push("enola__explore".into());
+    assert!(inventory_matches(&with_host, &host));
+    assert!(!inventory_matches(&exact, &host), "a host tool is missing");
+    assert!(!inventory_matches(&with_host, &[]), "an unexpected tool");
+}
+
+#[test]
+fn host_tools_are_allowed_without_omp_asking() {
+    let overlay = host_tools_overlay_config(&["enola__explore".into(), "load_skill".into()]);
+    assert_eq!(overlay["tools"]["approval"]["enola__explore"], "allow");
+    assert_eq!(overlay["tools"]["approval"]["load_skill"], "allow");
+    assert_eq!(overlay["tools"].as_object().unwrap().len(), 1);
 }
 
 #[test]

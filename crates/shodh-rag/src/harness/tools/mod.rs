@@ -313,13 +313,13 @@ pub enum RegistryError {
 #[async_trait]
 pub trait HostTool: Send + Sync {
     /// Unique tool name, as the model calls it.
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
     /// Short human label (sent to omp as the tool's `label`).
-    fn label(&self) -> &'static str;
+    fn label(&self) -> &str;
     /// Plain-language step label template, e.g. `"Searching {query}"`.
-    fn label_template(&self) -> &'static str;
+    fn label_template(&self) -> &str;
     /// Description for the model.
-    fn description(&self) -> &'static str;
+    fn description(&self) -> &str;
     /// JSON schema of the arguments.
     fn schema(&self) -> Value;
     fn tier(&self) -> RiskTier;
@@ -746,16 +746,17 @@ impl Drop for PendingApprovalGuard<'_> {
     }
 }
 
+#[derive(Clone)]
 struct Registered {
     tool: Arc<dyn HostTool>,
-    validator: jsonschema::Validator,
+    validator: Arc<jsonschema::Validator>,
 }
 
 /// The set of host tools available to sessions.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct ToolRegistry {
     tools: Vec<Registered>,
-    by_name: HashMap<&'static str, usize>,
+    by_name: HashMap<String, usize>,
 }
 
 impl std::fmt::Debug for ToolRegistry {
@@ -782,23 +783,42 @@ impl ToolRegistry {
 
     /// Register a tool, compiling its schema once.
     pub fn register(&mut self, tool: Arc<dyn HostTool>) -> Result<(), RegistryError> {
-        let name = tool.name();
-        if self.by_name.contains_key(name) {
-            return Err(RegistryError::Duplicate(name.to_string()));
+        let name = tool.name().to_string();
+        if self.by_name.contains_key(&name) {
+            return Err(RegistryError::Duplicate(name));
         }
         let validator = jsonschema::validator_for(&tool.schema()).map_err(|e| {
             RegistryError::InvalidSchema {
-                tool: name.to_string(),
+                tool: name.clone(),
                 reason: e.to_string(),
             }
         })?;
         self.by_name.insert(name, self.tools.len());
-        self.tools.push(Registered { tool, validator });
+        self.tools.push(Registered {
+            tool,
+            validator: Arc::new(validator),
+        });
         Ok(())
     }
 
-    pub fn names(&self) -> Vec<&'static str> {
+    pub fn names(&self) -> Vec<&str> {
         self.tools.iter().map(|r| r.tool.name()).collect()
+    }
+
+    /// A registered tool's label, description and tier.
+    pub fn describe(&self, name: &str) -> Option<(String, String, RiskTier)> {
+        self.get(name).map(|r| {
+            (
+                r.tool.label().to_string(),
+                r.tool.description().to_string(),
+                r.tool.tier(),
+            )
+        })
+    }
+
+    /// Whether no tool is registered.
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty()
     }
 
     fn get(&self, name: &str) -> Option<&Registered> {

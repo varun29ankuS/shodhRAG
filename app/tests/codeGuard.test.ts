@@ -12,8 +12,10 @@ import guard, {
   ALLOW,
   APPROVAL_TITLE,
   GUARD_COMMAND,
+  HOST_TOOLS_ENV,
   ROOT_ENV,
   filePart,
+  hostTools,
   isWithin,
   pathProblem,
   toolCallProblem,
@@ -180,6 +182,35 @@ test('changes wait for the approval answer; reads do not ask', async () => {
   } finally {
     if (previous === undefined) delete process.env[ROOT_ENV];
     else process.env[ROOT_ENV] = previous;
+    cleanup();
+  }
+});
+
+test('host tools of the session pass to Shodh; nothing else does', async () => {
+  assert.deepEqual([...hostTools('enola__explore, load_skill,,')], ['enola__explore', 'load_skill']);
+  // A host tool can never take the name of a Code tool and skip its checks.
+  assert.deepEqual([...hostTools('bash,read,x__y')], ['x__y']);
+  assert.deepEqual([...hostTools(undefined)], []);
+
+  const { root, cleanup } = fixture();
+  const previous = { root: process.env[ROOT_ENV], host: process.env[HOST_TOOLS_ENV] };
+  process.env[ROOT_ENV] = root;
+  process.env[HOST_TOOLS_ENV] = 'enola__explore,bash';
+  try {
+    const guarded = loadGuard(async () => ALLOW);
+    // Shodh asks and audits host tools itself: no dialog here, no path check.
+    assert.equal(await guarded.call(root, 'enola__explore', { repo_path: '..' }), undefined);
+    assert.equal(guarded.asked.length, 0);
+    // A tool not named for this session is still blocked.
+    assert.equal((await guarded.call(root, 'other__tool', {}) as { block: boolean }).block, true);
+    // bash stays guarded although the variable names it.
+    assert.equal(await guarded.call(root, 'bash', { command: 'ls' }), undefined);
+    assert.equal(guarded.asked.length, 1);
+  } finally {
+    for (const [name, value] of [[ROOT_ENV, previous.root], [HOST_TOOLS_ENV, previous.host]] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
     cleanup();
   }
 });

@@ -16,8 +16,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 
 use super::code_mode::{
-    code_launch_args, code_overlay_config, CodeFolder, CODE_ROOT_ENV, DISABLED_DISCOVERY,
-    EDIT_VARIANT_ENV, GUARD_HOOK,
+    code_launch_args, code_overlay_config, host_tools_overlay_config, CodeFolder, CODE_ROOT_ENV,
+    DISABLED_DISCOVERY, EDIT_VARIANT_ENV, GUARD_HOOK, HOST_TOOLS_ENV,
 };
 use super::error::HarnessError;
 use super::model::{EnvValue, OmpModel};
@@ -329,6 +329,15 @@ impl OmpLayout {
         self.root.join(format!("providers-{safe}.yml"))
     }
 
+    /// The overlay allowing a Code session's `host` tools
+    /// ([`host_tools_overlay_config`]), named by the hash of the names.
+    pub fn host_tools_overlay(&self, host: &[String]) -> PathBuf {
+        let digest = hex::encode(Sha256::digest(host.join(",").as_bytes()));
+        self.root
+            .join("code")
+            .join(format!("host-tools-{}.yml", &digest[..16]))
+    }
+
     /// Where [`omp_settings`] caches omp's settings (per omp version).
     pub fn code_settings_cache(&self) -> PathBuf {
         self.root
@@ -524,6 +533,8 @@ pub struct LaunchSpec {
     /// Code mode: omp's coding tools, confined to this folder. `None` is a
     /// Research session (host tools only).
     pub code: Option<CodeFolder>,
+    /// Code mode: the session's host tools (set by `OmpSession::start`).
+    pub host_tools: Vec<String>,
 }
 
 impl LaunchSpec {
@@ -582,6 +593,14 @@ impl LaunchSpec {
                 folder.root().to_path_buf(),
             ),
         };
+        if self.code.is_some() && !self.host_tools.is_empty() {
+            let overlay = self.layout.host_tools_overlay(&self.host_tools);
+            write_if_changed(
+                &overlay,
+                &serde_json::to_string_pretty(&host_tools_overlay_config(&self.host_tools))?,
+            )?;
+            args.push(format!("--config={}", overlay.display()));
+        }
         args.push(format!("--config={}", providers.display()));
         Ok((args, cwd))
     }
@@ -595,6 +614,10 @@ impl LaunchSpec {
             env.push((
                 EDIT_VARIANT_ENV.0.to_string(),
                 EnvValue::Plain(EDIT_VARIANT_ENV.1.to_string()),
+            ));
+            env.push((
+                HOST_TOOLS_ENV.to_string(),
+                EnvValue::Plain(self.host_tools.join(",")),
             ));
         }
         env
@@ -939,6 +962,7 @@ mod tests {
             system_prompt: "private instructions".into(),
             session_id: "s1".into(),
             code: None,
+            host_tools: Vec::new(),
         };
         let text = spec.describe();
         assert!(text.contains("ANTHROPIC_API_KEY"));
@@ -954,6 +978,7 @@ mod tests {
             system_prompt: "prompt".into(),
             session_id: "s1".into(),
             code,
+            host_tools: Vec::new(),
         }
     }
 
@@ -1012,6 +1037,45 @@ mod tests {
         assert_eq!(get(EDIT_VARIANT_ENV.0).as_deref(), Some("replace"));
         assert!(spec.describe().contains("code in"));
         assert_provider_overlay_is_last(&spec, &args);
+    }
+
+    #[test]
+    fn code_sessions_name_their_host_tools_to_omp_and_the_guard() {
+        let data = tempfile::tempdir().unwrap();
+        let code = tempfile::tempdir().unwrap();
+        let host = vec!["enola__explore".to_string(), "load_skill".to_string()];
+        let launch = LaunchSpec {
+            host_tools: host.clone(),
+            ..spec(data.path(), Some(CodeFolder::open(code.path()).unwrap()))
+        };
+        let (args, _) = launch.command_line().unwrap();
+        let overlay = launch.layout.host_tools_overlay(&host);
+        let flag = format!("--config={}", overlay.display());
+        let code_overlay = format!("--config={}", launch.layout.code_overlay.display());
+        let at = |flag: &str| args.iter().position(|a| a == flag).unwrap();
+        assert!(at(&code_overlay) < at(&flag), "after Code mode's overlay");
+        assert_provider_overlay_is_last(&launch, &args);
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&overlay).unwrap()).unwrap();
+        assert_eq!(written, host_tools_overlay_config(&host));
+        let env = launch.environment();
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == HOST_TOOLS_ENV && v.as_str() == "enola__explore,load_skill"));
+        // Without host tools there is no overlay; Research sessions never get one.
+        let plain = spec(data.path(), Some(CodeFolder::open(code.path()).unwrap()));
+        let (args, _) = plain.command_line().unwrap();
+        assert!(!args.iter().any(|a| a.contains("host-tools-")));
+        let research = LaunchSpec {
+            host_tools: host,
+            ..spec(data.path(), None)
+        };
+        let (args, _) = research.command_line().unwrap();
+        assert!(!args.iter().any(|a| a.contains("host-tools-")));
+        assert!(!research
+            .environment()
+            .iter()
+            .any(|(k, _)| k == HOST_TOOLS_ENV));
     }
 
     /// The provider overlay is written and loaded after every other overlay

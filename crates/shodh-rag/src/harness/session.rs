@@ -29,7 +29,7 @@ use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 use super::code_mode::{
     approval_for, code_catalog, create_branch, git_state, inventory_matches, parse_guard_request,
     plan_change, ChangePlan, CodeBranch, CodeBranchStore, CodeFolder, GuardRequest, ALLOW_ANSWER,
-    GUARD_COMMAND,
+    CODE_TOOLS, GUARD_COMMAND,
 };
 use super::error::HarnessError;
 use super::events::{AgentEvent, ClaimCheck, GroundingReport, NeedCheck, RiskTier, ScoringMethod};
@@ -323,7 +323,10 @@ impl Inner {
                     code.guard_loaded.send_replace(loaded);
                 }
             }
-            InboundFrame::ToolExecutionStart(start) => {
+            // Host tools are audited by the registry; these are omp's own.
+            InboundFrame::ToolExecutionStart(start)
+                if CODE_TOOLS.contains(&start.tool_name.as_str()) =>
+            {
                 if let Some(code) = &self.code {
                     lock(&code.calls).insert(
                         start.tool_call_id.clone(),
@@ -1171,7 +1174,7 @@ impl OmpSession {
         config: SessionConfig,
     ) -> Result<(OmpSession, mpsc::UnboundedReceiver<AgentEvent>), HarnessError> {
         let SessionConfig {
-            launch,
+            mut launch,
             profile,
             registry,
             audit,
@@ -1195,6 +1198,21 @@ impl OmpSession {
                 ))
             }
         };
+        // A Code session's host tools (MCP servers, skills) are named to the
+        // guard, which lets them through to Shodh's own approval and audit.
+        if code.is_some() {
+            let names: Vec<String> = registry
+                .definitions(&profile)
+                .into_iter()
+                .map(|d| d.name)
+                .collect();
+            if let Some(clash) = names.iter().find(|n| CODE_TOOLS.contains(&n.as_str())) {
+                return Err(HarnessError::CodeGuard(format!(
+                    "the host tool {clash} has the name of a Code mode tool"
+                )));
+            }
+            launch.host_tools = names;
+        }
         let started = std::time::Instant::now();
         let process = sidecar::spawn(&launch).await?;
         let spawn_ms = started.elapsed().as_millis();
@@ -1217,9 +1235,11 @@ impl OmpSession {
             session_id: launch.session_id.clone(),
             model: launch.model.model_arg.clone(),
             state: Mutex::new({
-                // A Code session's steps are omp's own tools.
+                // A Code session's steps are omp's own tools and its host tools.
                 let catalog = if code.is_some() {
-                    code_catalog()
+                    let mut catalog = registry.catalog();
+                    catalog.extend(code_catalog());
+                    catalog
                 } else {
                     registry.catalog()
                 };
@@ -1330,18 +1350,31 @@ impl OmpSession {
         ready_ms: u128,
     ) -> Result<(), HarnessError> {
         let inner = &self.inner;
-        let (_, state) = tokio::try_join!(
-            inner.command(OutboundFrame::SetEventFilter {
+        let host = inner.registry.definitions(&inner.profile);
+        let host_names: Vec<String> = host.iter().map(|d| d.name.clone()).collect();
+        inner
+            .command(OutboundFrame::SetEventFilter {
                 id: inner.next_id("c"),
                 events: None,
                 message_updates: MessageUpdateMode::Delta,
-            }),
-            inner.command(OutboundFrame::GetState {
+            })
+            .await?;
+        // The inventory is read after the host tools are set.
+        if !host.is_empty() {
+            inner
+                .command(OutboundFrame::SetHostTools {
+                    id: inner.next_id("c"),
+                    tools: host,
+                })
+                .await?;
+        }
+        let state = inner
+            .command(OutboundFrame::GetState {
                 id: inner.next_id("c"),
-            }),
-        )?;
+            })
+            .await?;
         let tools = tool_inventory(state.data.as_ref());
-        if !inventory_matches(&tools) {
+        if !inventory_matches(&tools, &host_names) {
             return Err(HarnessError::CodeGuard(format!(
                 "the runtime offered the tools {tools:?}"
             )));

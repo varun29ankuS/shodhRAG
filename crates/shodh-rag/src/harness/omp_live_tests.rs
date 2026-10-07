@@ -227,6 +227,7 @@ fn spec(data: &std::path::Path, provider: u16, proxy: u16, code: Option<CodeFold
         system_prompt: "Reply briefly.".into(),
         session_id: "live".into(),
         code,
+        host_tools: Vec::new(),
     }
 }
 
@@ -360,4 +361,191 @@ async fn sessions_contact_only_the_configured_provider_and_ignore_the_folders_mo
         "the folder's models were used: {seen:?}"
     );
     assert_only_the_provider_was_contacted(&network);
+}
+
+/// A scripted Anthropic provider whose first answer calls `tool` and whose
+/// next answers are text. Logs the tools each request offered.
+async fn calling_provider(log: Log, tool: &'static str) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let answered = Arc::new(Mutex::new(0usize));
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let (log, answered) = (log.clone(), answered.clone());
+            tokio::spawn(async move {
+                let mut stream = BufReader::new(stream);
+                let Some((line, body)) = read_request(&mut stream).await else {
+                    return;
+                };
+                if !line.starts_with("POST /v1/messages") {
+                    respond(&mut stream, "404 Not Found", "text/plain", "").await;
+                    return;
+                }
+                let request: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                let offered: Vec<&str> = request["tools"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|t| t["name"].as_str())
+                    .collect();
+                record(&log, format!("tools {}", offered.join(",")));
+                let first = {
+                    let mut answered = answered.lock().unwrap_or_else(|e| e.into_inner());
+                    *answered += 1;
+                    *answered == 1
+                };
+                let model = request["model"].as_str().unwrap_or_default().to_string();
+                let body = if first {
+                    let events = [
+                        (
+                            "message_start",
+                            json!({"type": "message_start", "message": {"id": "msg_1", "type": "message", "role": "assistant", "model": model, "content": [], "stop_reason": null, "usage": {"input_tokens": 5, "output_tokens": 1}}}),
+                        ),
+                        (
+                            "content_block_start",
+                            json!({"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "toolu_1", "name": tool, "input": {}}}),
+                        ),
+                        (
+                            "content_block_delta",
+                            json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"q\":\"x\"}"}}),
+                        ),
+                        (
+                            "content_block_stop",
+                            json!({"type": "content_block_stop", "index": 0}),
+                        ),
+                        (
+                            "message_delta",
+                            json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 2}}),
+                        ),
+                        ("message_stop", json!({"type": "message_stop"})),
+                    ];
+                    events
+                        .iter()
+                        .map(|(name, data)| format!("event: {name}\ndata: {data}\n\n"))
+                        .collect()
+                } else {
+                    reply_stream(&model)
+                };
+                respond(&mut stream, "200 OK", "text/event-stream", &body).await;
+            });
+        }
+    });
+    port
+}
+
+/// A host tool that records its calls.
+struct Ping {
+    calls: Arc<Mutex<Vec<Value>>>,
+}
+
+#[async_trait::async_trait]
+impl crate::harness::tools::HostTool for Ping {
+    fn name(&self) -> &str {
+        "probe__ping"
+    }
+    fn label(&self) -> &str {
+        "Ping"
+    }
+    fn label_template(&self) -> &str {
+        "Pinging"
+    }
+    fn description(&self) -> &str {
+        "Ping the probe."
+    }
+    fn schema(&self) -> Value {
+        json!({"type": "object", "properties": {"q": {"type": "string"}}})
+    }
+    fn tier(&self) -> crate::harness::RiskTier {
+        crate::harness::RiskTier::Read
+    }
+    fn load_mode(&self) -> crate::harness::protocol::ToolLoadMode {
+        crate::harness::protocol::ToolLoadMode::Essential
+    }
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &crate::harness::tools::ToolContext,
+    ) -> Result<crate::harness::tools::ToolOutput, crate::harness::tools::ToolError> {
+        self.calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(args);
+        Ok(crate::harness::tools::ToolOutput {
+            text_for_model: "pong".into(),
+            summary_for_ui: "pong".into(),
+            detail: None,
+        })
+    }
+}
+
+/// A Code session offers its host tools next to omp's own, the guard lets
+/// them through, and calls reach the registry.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the omp binary at SHODH_OMP_PATH"]
+async fn code_sessions_run_their_host_tools() {
+    use crate::harness::code_mode::CodeBranchStore;
+    use crate::harness::profile::AgentProfile;
+    use crate::harness::session::{CodeSession, OmpSession, SessionConfig};
+    use crate::harness::tools::ToolRegistry;
+    use crate::harness::{AgentEvent, AgentHarness};
+
+    let log: Log = Arc::default();
+    let port = calling_provider(log.clone(), "probe__ping").await;
+    let data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(folder.path().join("main.rs"), "fn main() {}").unwrap();
+    let calls: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let mut registry = ToolRegistry::new();
+    registry
+        .register(Arc::new(Ping {
+            calls: calls.clone(),
+        }))
+        .unwrap();
+    let profile = AgentProfile {
+        allowed_tools: vec!["probe__ping".into()],
+        ..AgentProfile::assistant()
+    };
+    // Port 9 refuses connections: nothing but the scripted provider answers.
+    let launch = spec(
+        data.path(),
+        port,
+        9,
+        Some(CodeFolder::open(folder.path()).unwrap()),
+    );
+    let (session, mut events) = OmpSession::start(SessionConfig {
+        launch,
+        profile,
+        registry: Arc::new(registry),
+        audit: None,
+        grounding: None,
+        code: Some(CodeSession {
+            conversation_id: "conv".into(),
+            branches: CodeBranchStore::in_dir(data.path()),
+        }),
+    })
+    .await
+    .unwrap();
+    session.prompt("Ping the probe.", None).await.unwrap();
+    let finished = tokio::time::timeout(Duration::from_secs(120), async {
+        while let Some(event) = events.recv().await {
+            if let AgentEvent::RunFinished { status, .. } = event {
+                return Some(status);
+            }
+        }
+        None
+    })
+    .await
+    .unwrap();
+    session.shutdown().await;
+    assert!(finished.is_some());
+    let seen = entries(&log);
+    let offered = seen.iter().find(|e| e.starts_with("tools ")).unwrap();
+    assert!(
+        offered.contains("probe__ping") && offered.contains("bash"),
+        "{offered}"
+    );
+    assert_eq!(
+        calls.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        [json!({"q": "x"})]
+    );
 }

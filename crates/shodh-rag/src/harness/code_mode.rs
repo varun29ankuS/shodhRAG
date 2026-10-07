@@ -336,14 +336,35 @@ pub fn code_catalog() -> HashMap<String, StepMeta> {
         .collect()
 }
 
-/// Whether `tools` (a session's tool inventory) is exactly [`CODE_TOOLS`].
-pub fn inventory_matches(tools: &[String]) -> bool {
+/// Whether `tools` (a session's tool inventory) is exactly [`CODE_TOOLS`]
+/// plus the session's `host` tools.
+pub fn inventory_matches(tools: &[String], host: &[String]) -> bool {
     let mut have: Vec<&str> = tools.iter().map(String::as_str).collect();
     have.sort_unstable();
     have.dedup();
-    let mut want: Vec<&str> = CODE_TOOLS.to_vec();
+    let mut want: Vec<&str> = CODE_TOOLS
+        .iter()
+        .copied()
+        .chain(host.iter().map(String::as_str))
+        .collect();
     want.sort_unstable();
+    want.dedup();
     have.len() == tools.len() && have == want
+}
+
+/// Environment variable naming a Code session's host tools to the guard
+/// (comma-separated).
+pub const HOST_TOOLS_ENV: &str = "SHODH_HOST_TOOLS";
+
+/// The overlay that lets omp run a Code session's `host` tools without
+/// its own prompt: Shodh asks for them (per tool setting) and audits them.
+/// Its content depends only on the names, so sessions share files safely.
+pub fn host_tools_overlay_config(host: &[String]) -> Value {
+    let approvals: serde_json::Map<String, Value> = host
+        .iter()
+        .map(|tool| (tool.clone(), json!("allow")))
+        .collect();
+    json!({ "tools": { "approval": approvals } })
 }
 
 /// A guarded call waiting for the user's decision.

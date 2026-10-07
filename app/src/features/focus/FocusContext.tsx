@@ -38,6 +38,7 @@ import { recordAnswerVisuals } from '../visuals/recording';
 import { FocusOverlay } from './FocusOverlay';
 import { SelectionAsk } from './SelectionAsk';
 import { currentValues } from './liveValues';
+import { onApprovalAnswered } from '../inbox/approvalBus';
 
 /** How long an interrupt may take before the side answer is closed locally. */
 const INTERRUPT_TIMEOUT_MS = 5_000;
@@ -833,6 +834,13 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     api.approve(live.sessionId, stepId, approved)
       .catch(error => notify.error('The decision did not reach the agent', { description: toAgentError(error).message }));
   }, [api, enqueue]);
+
+  // Answered in the Inbox: show the decision here too.
+  useEffect(() => onApprovalAnswered(({ sessionId, stepId, approved }) => {
+    const live = liveRef.current;
+    if (!live || live.settled || live.sessionId !== sessionId) return;
+    enqueue(live, { type: 'local_approval', stepId, approved }, true);
+  }), [enqueue]);
 
   /** The levels from a root thread down to `threadId`, or null when it is not kept. */
   const levelsFor = useCallback((

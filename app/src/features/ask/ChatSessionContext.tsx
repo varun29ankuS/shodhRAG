@@ -33,6 +33,7 @@ import type {
   RunStep,
   SendOptions,
 } from './types';
+import { onApprovalAnswered } from '../inbox/approvalBus';
 
 /**
  * The answer being produced. Events are queued and folded into the
@@ -628,6 +629,13 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     api.approve(live.sessionId, stepId, approved)
       .catch(error => notify.error('The decision did not reach the agent', { description: toAgentError(error).message }));
   }, [api, enqueue]);
+
+  // Answered in the Inbox: show the decision here too.
+  useEffect(() => onApprovalAnswered(({ sessionId, stepId, approved }) => {
+    const live = liveRef.current;
+    if (!live || live.settled || live.sessionId !== sessionId) return;
+    enqueue(live, { type: 'local_approval', stepId, approved }, true);
+  }), [enqueue]);
 
   const appendMessage = useCallback((message: ChatMessage) => {
     const conversationId = viewRef.current.conversationId;

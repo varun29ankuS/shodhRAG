@@ -8,6 +8,7 @@ import { removeWithUndo, undoLast } from '../../lib/undoToast';
 import { relativeTime } from '../../utils/time';
 import { acceptSuggestion, errorText, rejectSuggestion } from '../memory/api';
 import { parseTarget, publishTarget } from '../agent/navigation';
+import { announceApproval } from './approvalBus';
 import { normalizeViewTab } from '../../lib/viewTabs';
 import type { ViewTab } from '../../lib/viewTabs';
 import {
@@ -140,14 +141,21 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
     }
   };
 
+  // Answer an approval, and let the chat that shows the step know.
+  const decide = (item: InboxItem, approved: boolean) => {
+    const sessionId = str(item.data.sessionId);
+    const stepId = str(item.data.stepId);
+    if (!sessionId || !stepId) return;
+    void run(item, async () => {
+      await invoke('agent_approve', { sessionId, stepId, approved });
+      announceApproval({ sessionId, stepId, approved });
+    }, approved ? 'The step was not approved' : 'The step was not denied');
+  };
+
   const primary = (item: InboxItem) => {
     const { primary: action } = actionsFor(item);
     if (action === 'approve') {
-      void run(item, () => invoke('agent_approve', {
-        sessionId: str(item.data.sessionId),
-        stepId: str(item.data.stepId),
-        approved: true,
-      }), 'The step was not approved');
+      decide(item, true);
     } else if (action === 'accept') {
       const id = str(item.data.suggestionId);
       if (id) void run(item, () => acceptSuggestion(id), 'The suggestion was not accepted');
@@ -157,11 +165,7 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
   const secondary = (item: InboxItem) => {
     const { secondary: action } = actionsFor(item);
     if (action === 'deny') {
-      void run(item, () => invoke('agent_approve', {
-        sessionId: str(item.data.sessionId),
-        stepId: str(item.data.stepId),
-        approved: false,
-      }), 'The step was not denied');
+      decide(item, false);
       return;
     }
     if (action !== 'dismiss') return;

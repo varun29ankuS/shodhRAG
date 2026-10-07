@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { notify } from '../lib/notify';
-import { removeWithUndo } from '../lib/undoToast';
+import { removeWithUndo, restoreAt } from '../lib/undoToast';
 import { markStartup } from '../lib/startupTiming';
 
 export interface ConversationMessage {
@@ -305,12 +305,7 @@ export function useConversations() {
         },
         // The same record at the same place in the list; it was never deleted on disk.
         restore: () => {
-          setConversations(prev => {
-            if (prev.some(c => c.id === id)) return prev;
-            const next = [...prev];
-            next.splice(Math.min(index, next.length), 0, conversation);
-            return next;
-          });
+          setConversations(prev => restoreAt(prev, conversation, index));
           if (wasActive) setActiveConversationId(id);
         },
         commit: () => invoke('delete_conversation', { conversationId: id }),

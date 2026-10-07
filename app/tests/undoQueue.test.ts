@@ -6,7 +6,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { UNDO_WINDOW_MS, UndoQueue } from '../src/lib/undoQueue.ts';
+import { UNDO_WINDOW_MS, UndoQueue, restoreAt } from '../src/lib/undoQueue.ts';
 
 /** Manual clock: timers run only when the test advances it. */
 function manualTimers() {
@@ -147,4 +147,16 @@ test('flush carries out every pending removal', async () => {
   await queue.flush();
   assert.deepEqual([...list.store.keys()], ['c']);
   assert.equal(queue.size, 0);
+});
+
+test('restoreAt puts the same record back at its place, once', () => {
+  const [a, b, c] = ROWS;
+  const restored = restoreAt([a, c], b, 1);
+  assert.deepEqual(restored.map(r => r.id), ['a', 'b', 'c']);
+  assert.strictEqual(restored[1], b, 'the same object, timestamps and all');
+  // The list got shorter meanwhile (another removal): it goes at the end.
+  assert.deepEqual(restoreAt([a], c, 2).map(r => r.id), ['a', 'c']);
+  // Already back (restored twice, or reloaded): unchanged.
+  const list = [a, b, c];
+  assert.strictEqual(restoreAt(list, b, 0), list);
 });

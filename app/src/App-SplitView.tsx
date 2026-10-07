@@ -69,7 +69,7 @@ import { FeedbackDialog } from './components/FeedbackDialog';
 import { UpdateNotification } from './components/UpdateNotification';
 import { toast } from 'sonner';
 import { notify } from './lib/notify';
-import { removeWithUndo } from './lib/undoToast';
+import { removeWithUndo, restoreAt } from './lib/undoToast';
 import { migrateLegacyApiKeys } from './lib/apiKeyMigration';
 import { InboxButton, OPEN_INBOX_EVENT } from './features/inbox/InboxButton';
 import { useNavigationTarget } from './features/agent/useNavigationTarget';
@@ -1081,12 +1081,7 @@ function AppSplitView() {
       message: 'Source removed',
       description: source.name,
       hide: () => setSources(prev => prev.filter(s => s.id !== id)),
-      restore: () => setSources(prev => {
-        if (prev.some(s => s.id === id)) return prev;
-        const next = [...prev];
-        next.splice(Math.min(index, next.length), 0, source);
-        return next;
-      }),
+      restore: () => setSources(prev => restoreAt(prev, source, index)),
       commit: () => invoke<string>('delete_folder_source', { folderPath: source.path }),
       onError: err => notify.error('The source was not removed', { description: String(err) }),
     });

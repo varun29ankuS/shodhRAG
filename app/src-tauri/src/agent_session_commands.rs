@@ -1115,7 +1115,10 @@ More tools, from the MCP servers and skills the user connected: {}.             
     let forward_learn = learn.inner().clone();
     let last_used_ms = Arc::new(AtomicU64::new(now_ms()));
     let forward_used = last_used_ms.clone();
-    let forward_conversation = conversation_id.clone();
+    // Open on an approval shows the chat: a side thread's is its parent conversation.
+    let forward_conversation = parent_conversation_id
+        .clone()
+        .unwrap_or_else(|| conversation_id.clone());
     tauri::async_runtime::spawn(async move {
         // Builds each run's `answer` audit event from the stream.
         let mut tap = RunAuditTap::new();

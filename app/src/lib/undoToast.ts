@@ -1,16 +1,18 @@
 /**
  * The app's undo window: `removeWithUndo` hides a record, shows a notice with
  * Undo for {@link UNDO_WINDOW_MS}, and carries out the removal when the notice
- * ends or is closed. One queue for the whole app, so `undoLast` (U in the Inbox)
- * reaches the most recent removal wherever it was made, and a card that
- * unmounts inside the window neither drops nor repeats its removal.
+ * ends or is closed. One queue for every removal made through it, so `undoLast`
+ * (U in the Inbox) reaches the most recent of them wherever it was made, and a
+ * card that unmounts inside the window neither drops nor repeats its removal.
+ * (Task and event deletes keep their own queue in the Tasks store; a deleted
+ * visual is restored from the database.)
  */
 
 import { toast } from 'sonner';
-import { UNDO_WINDOW_MS, UndoQueue } from './undoQueue';
+import { UNDO_WINDOW_MS, UndoQueue, restoreAt } from './undoQueue';
 import type { Undoable } from './undoQueue';
 
-export { UNDO_WINDOW_MS };
+export { UNDO_WINDOW_MS, restoreAt };
 
 const toasts = new Map<number, string | number>();
 

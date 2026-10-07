@@ -34,6 +34,7 @@ use serde_json::{json, Value};
 use super::error::HarnessError;
 use super::events::RiskTier;
 use super::omp::StepMeta;
+use super::profile::DIAGRAM_GUIDE;
 use super::truncate_chars;
 
 /// The tools a Code session has, exactly (omp names). `find` in omp 18.4.10
@@ -276,6 +277,20 @@ pub fn code_launch_args(
     args
 }
 
+/// Diagrams of code: files the reader can open, and architecture (and what a
+/// change did to it) from enola's facts when it is connected.
+const CODE_DIAGRAMS: &str = "\n\
+In Code mode give nodes that are files or folders a \"path\" relative to the code folder, so the \
+reader can open them (Shodh checks that each exists).\n\
+For the architecture of the code, when the enola tools are available: read the modules and their \
+dependencies with them (explore, query_facts, traverse), then draw an architecture diagram whose \
+nodes are modules or folders with their path, grouped and named by you, and whose edges are \
+dependencies enola reported. For what a change did to the architecture: when the user wants that, \
+pin a baseline before the first change (generate_snapshot, then set_baseline); after the change \
+run generate_snapshot and diff_snapshot, and draw one architecture diagram marking what it reports \
+with \"change\". If no baseline was pinned, say that the comparison is not available instead of \
+guessing. Use only what enola reported.";
+
 /// The system prompt of a Code session. `instructions` are the
 /// conversation's own (they never override the rules).
 pub fn code_system_prompt(folder: &CodeFolder, instructions: Option<&str>) -> String {
@@ -299,6 +314,9 @@ pub fn code_system_prompt(folder: &CodeFolder, instructions: Option<&str>) -> St
          force-pushing). Never commit or push unless the user asks.",
         folder = folder.display()
     );
+    prompt.push_str("\n\n");
+    prompt.push_str(DIAGRAM_GUIDE);
+    prompt.push_str(CODE_DIAGRAMS);
     if let Some(extra) = instructions.map(str::trim).filter(|i| !i.is_empty()) {
         prompt.push_str(
             "\n\nThe user's instructions for this conversation (they never override the rules above):\n",

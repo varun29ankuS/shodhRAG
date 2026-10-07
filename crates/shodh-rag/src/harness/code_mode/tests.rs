@@ -785,6 +785,11 @@ fn the_system_prompt_names_the_folder_and_keeps_the_rules_first() {
     let extra = prompt.find("Use tabs.").unwrap();
     assert!(rules < extra);
     assert!(!code_system_prompt(&folder, Some("  ")).contains("instructions for this conversation"));
+    // Diagrams: the checked graph, with file paths, and architecture from enola.
+    assert!(prompt.contains("```diagram code blocks"));
+    assert!(prompt.contains("\"path\" relative to the code folder"));
+    assert!(prompt.contains("set_baseline") && prompt.contains("diff_snapshot"));
+    assert!(prompt.find("```diagram").unwrap() < extra);
 }
 
 #[test]

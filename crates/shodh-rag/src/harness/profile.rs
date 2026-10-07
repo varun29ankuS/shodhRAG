@@ -148,12 +148,37 @@ pub struct AgentProfile {
     pub max_tool_calls: u32,
 }
 
+/// How diagrams are written: a typed graph that the app checks and lays out
+/// (`app/src/features/ask/visual/diagramSpec.ts`), never drawing code. Shared
+/// by the Research and Code prompts.
+macro_rules! diagram_guide {
+    () => {
+        "Diagrams in ```diagram code blocks holding JSON; Shodh checks the graph and draws it: \
+{\"layout\": \"flow\", \"title\": \"...\", \"nodes\": [{\"id\": \"parse\", \"label\": \"Parse PDF\", \
+\"kind\": \"step\", \"cite\": 2}, {\"id\": \"embed\", \"label\": \"Embed chunks\", \"emphasis\": true}], \
+\"edges\": [{\"from\": \"parse\", \"to\": \"embed\", \"label\": \"chunks\"}]}. Layouts: flow (a process, top \
+to bottom), architecture (components left to right; nodes may share a \"group\"), sequence (nodes are \
+the participants, edges the messages in order), layers (a stack, top first, no edges), timeline \
+(nodes in order, each with \"at\", no edges), quadrant (nodes with \"x\" and \"y\" from 0 to 1, and \
+\"axes\": {\"x\": [\"low\", \"high\"], \"y\": [\"low\", \"high\"]}), loop (feedback: every edge has \
+\"sign\": \"+\" or \"-\"; Shodh labels each cycle reinforcing or balancing). Every edge joins declared \
+ids; \"cite\" only a source [n] of this answer. Delete before you add: at most 9 nodes, only parts the \
+reader needs, no edge the layout already shows, \"emphasis\" on the one or two nodes that matter most. \
+\"change\": \"added\", \"removed\" or \"changed\" on nodes and edges shows a before and after in one \
+diagram. Class, state and entity relationship diagrams and mind maps stay in ```mermaid blocks."
+    };
+}
+
+/// The diagram guide, for prompts built at run time.
+pub const DIAGRAM_GUIDE: &str = diagram_guide!();
+
 /// How the assistant behaves. What it can do is not described here: the
 /// capability section is generated from the registered tools at session
 /// start ([`super::tools::ToolRegistry::capability_manifest`]), so the two
 /// can never disagree. Tool names mentioned here must be tools the profile
 /// allows (a test enforces it).
-const ASSISTANT_INSTRUCTIONS: &str = "\
+const ASSISTANT_INSTRUCTIONS: &str = concat!(
+    "\
 You are Shodh, a private assistant that answers questions from the user's own indexed documents \
 and helps them act on what they find, using the tools listed below.
 
@@ -201,7 +226,9 @@ when the user asks you to forget something.
 How answers are displayed (the chat renders all of these inline):
 1. GitHub-flavoured Markdown, including tables.
 2. Math with $...$ inline and $$...$$ on its own lines (KaTeX).
-3. Diagrams in ```mermaid code blocks: flowchart, sequence, class, state and mindmap.
+3. ",
+    diagram_guide!(),
+    "
 4. Charts in ```chart code blocks holding JSON: {\"type\": \"line\" | \"bar\" | \"area\" | \"scatter\" \
 | \"pie\", \"title\": \"...\", \"xKey\": \"year\", \"series\": [{\"key\": \"score\", \"label\": \
 \"Score\"}], \"data\": [{\"year\": 2023, \"score\": 71.2}]}.
@@ -236,7 +263,8 @@ Use them when they make an explanation clearer, especially for papers, methods, 
 algorithms and comparisons: a flowchart of a method or pipeline, the key equations typeset and \
 explained term by term, a table comparing options, a chart of reported results. Build charts and \
 tables only from numbers in passages you retrieved, and cite every number. Never invent data to \
-fill a chart.";
+fill a chart."
+);
 
 impl AgentProfile {
     /// The default profile: every v1 tool, approval for every write.
@@ -309,6 +337,28 @@ mod tests {
         assert_eq!(p.max_tool_calls, DEFAULT_MAX_TOOL_CALLS);
         assert_eq!(AgentProfile::builtin("assistant"), Some(p));
         assert_eq!(AgentProfile::builtin("../etc"), None);
+    }
+
+    #[test]
+    fn diagrams_are_asked_for_as_a_checked_graph() {
+        let p = AgentProfile::assistant();
+        assert!(p
+            .instructions
+            .contains("3. Diagrams in ```diagram code blocks holding JSON"));
+        assert!(p.instructions.contains(DIAGRAM_GUIDE));
+        for layout in [
+            "flow",
+            "architecture",
+            "sequence",
+            "layers",
+            "timeline",
+            "quadrant",
+            "loop",
+        ] {
+            assert!(DIAGRAM_GUIDE.contains(&format!("{layout} (")), "{layout}");
+        }
+        assert!(!p.instructions.contains("C4"));
+        assert!(!p.instructions.contains("```mermaid code blocks: flowchart"));
     }
 
     #[test]

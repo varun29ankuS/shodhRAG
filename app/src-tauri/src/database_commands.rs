@@ -250,7 +250,7 @@ pub async fn save_backup_file(
 /// Read a backup file
 #[tauri::command]
 pub async fn read_backup_file(
-    state: State<'_, RagState>,
+    _state: State<'_, RagState>,
     backup_path: String,
 ) -> Result<String, String> {
     tracing::info!("=== Reading backup file: {} ===", backup_path);
@@ -330,7 +330,7 @@ pub async fn list_backup_files(state: State<'_, RagState>) -> Result<Vec<BackupF
         }
     }
 
-    backups.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    backups.sort_by_key(|b| std::cmp::Reverse(b.created_at));
 
     Ok(backups)
 }
@@ -349,11 +349,11 @@ pub async fn update_space_metadata(
     // Convert JSON value to HashMap<String, String>
     let metadata_map: HashMap<String, String> = if let serde_json::Value::Object(map) = metadata {
         map.into_iter()
-            .filter_map(|(k, v)| {
+            .map(|(k, v)| {
                 if let serde_json::Value::String(s) = v {
-                    Some((k, s))
+                    (k, s)
                 } else {
-                    Some((k, v.to_string()))
+                    (k, v.to_string())
                 }
             })
             .collect()

@@ -153,7 +153,7 @@ pub fn execute_bash(command: &str, description: Option<&str>) -> Result<CommandR
             }
         }
 
-        return Err(anyhow!("Bash not found. Install Git Bash or WSL."));
+        Err(anyhow!("Bash not found. Install Git Bash or WSL."))
     }
 
     #[cfg(not(target_os = "windows"))]

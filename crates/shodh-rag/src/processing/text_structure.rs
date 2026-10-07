@@ -491,7 +491,9 @@ pub fn parse_markdown(source: &str) -> StructuredDocument {
         if trimmed.starts_with("$$") {
             flush(&mut paragraph, &mut blocks);
             let mut eq = vec![trimmed];
-            let closed = trimmed.len() > 2 && trimmed[2..].contains("$$");
+            let closed = trimmed
+                .strip_prefix("$$")
+                .is_some_and(|rest| rest.contains("$$"));
             i += 1;
             if !closed {
                 while i < lines.len() {

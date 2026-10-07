@@ -701,10 +701,12 @@ fn strip_html_tags(html: &str) -> String {
             }
 
             // <td> / <th> get a tab separator
-            if tag_lower.starts_with("<td") || tag_lower.starts_with("<th") {
-                if !result.is_empty() && !result.ends_with('\n') && !result.ends_with('\t') {
-                    result.push('\t');
-                }
+            if (tag_lower.starts_with("<td") || tag_lower.starts_with("<th"))
+                && !result.is_empty()
+                && !result.ends_with('\n')
+                && !result.ends_with('\t')
+            {
+                result.push('\t');
             }
 
             i += 1;

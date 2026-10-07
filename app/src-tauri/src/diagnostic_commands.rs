@@ -45,7 +45,7 @@ pub async fn get_index_diagnostics(
         .await
         .map_err(|e| format!("List error: {}", e))?;
 
-    let mut total_chunks = 0;
+    let _total_chunks = 0;
     let mut documents_with_content = 0;
     let mut empty_documents = 0;
     let mut file_types: HashMap<String, usize> = HashMap::new();
@@ -148,15 +148,12 @@ pub async fn get_document_content(
     // Find matching document
     for result in results {
         let matches = if let Some(ref t) = title {
-            result
-                .metadata
-                .get("title")
-                .map_or(false, |v| v.contains(t))
+            result.metadata.get("title").is_some_and(|v| v.contains(t))
         } else if let Some(ref p) = file_path {
             result
                 .metadata
                 .get("file_path")
-                .map_or(false, |v| v.contains(p))
+                .is_some_and(|v| v.contains(p))
         } else {
             false
         };
@@ -233,25 +230,5 @@ pub async fn debug_rag_state(state: State<'_, RagState>) -> Result<String, Strin
          - Data Dir: {}\n\
          - Search: Hybrid (LanceDB + Tantivy)",
         total_chunks, fts_indexed, dimension, data_dir
-    ))
-}
-
-/// Recalculate storage statistics from actual data
-#[tauri::command]
-pub async fn recalculate_stats(state: State<'_, RagState>) -> Result<String, String> {
-    tracing::debug!("Recalculating storage statistics...");
-
-    let rag_guard = state.rag.read().await;
-    let rag = &*rag_guard;
-
-    let stats = rag.get_statistics().await.unwrap_or_default();
-    let total_chunks = stats.get("total_chunks").cloned().unwrap_or_default();
-    let fts_indexed = stats.get("fts_indexed").cloned().unwrap_or_default();
-
-    Ok(format!(
-        "Stats calculated:\n\
-         - Total Chunks: {}\n\
-         - FTS Indexed: {}",
-        total_chunks, fts_indexed
     ))
 }

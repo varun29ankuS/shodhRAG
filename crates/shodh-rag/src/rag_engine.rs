@@ -1390,7 +1390,7 @@ impl RAGEngine {
     /// For each result, fetches ±window adjacent chunks by chunk_index and
     /// concatenates them in reading order (prev + current + next). Structure
     /// chunks are left as they are (see [`wants_neighbor_expansion`]).
-    async fn expand_with_neighbors(&self, results: &mut Vec<ComprehensiveResult>, window: u32) {
+    async fn expand_with_neighbors(&self, results: &mut [ComprehensiveResult], window: u32) {
         for result in results.iter_mut() {
             if !wants_neighbor_expansion(&result.metadata) {
                 continue;
@@ -1413,12 +1413,12 @@ impl RAGEngine {
                     for neighbor in &neighbors {
                         if neighbor.chunk_index < chunk_index {
                             if !before.is_empty() {
-                                before.push_str("\n");
+                                before.push('\n');
                             }
                             before.push_str(&neighbor.text);
                         } else if neighbor.chunk_index > chunk_index {
                             if !after.is_empty() {
-                                after.push_str("\n");
+                                after.push('\n');
                             }
                             after.push_str(&neighbor.text);
                         }
@@ -1427,11 +1427,11 @@ impl RAGEngine {
                     let mut expanded = String::new();
                     if !before.is_empty() {
                         expanded.push_str(&before);
-                        expanded.push_str("\n");
+                        expanded.push('\n');
                     }
                     expanded.push_str(&result.snippet);
                     if !after.is_empty() {
-                        expanded.push_str("\n");
+                        expanded.push('\n');
                         expanded.push_str(&after);
                     }
 
@@ -1809,7 +1809,7 @@ impl RAGEngine {
     /// Each additional chunk from the same source gets score *= lambda^count.
     /// This naturally balances depth (multiple chunks from one file) vs diversity
     /// (spreading across files) without any hard cap.
-    fn apply_mmr_diversity(results: &mut Vec<ComprehensiveResult>, lambda: f32) {
+    fn apply_mmr_diversity(results: &mut [ComprehensiveResult], lambda: f32) {
         let mut source_seen: HashMap<String, u32> = HashMap::new();
         for result in results.iter_mut() {
             let source = result

@@ -221,7 +221,7 @@ pub fn build_tiered_context(tier: ContextTier) -> String {
             }
         }
 
-        context.push_str("\n");
+        context.push('\n');
     }
 
     context

@@ -3,7 +3,7 @@
 //! MCP provides a standardized protocol for integrating external tools and resources
 //! into the RAG system. Following the specification from Anthropic/ModelContextProtocol.
 
-use anyhow::{Context as AnyhowContext, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

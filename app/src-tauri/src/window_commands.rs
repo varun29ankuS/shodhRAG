@@ -24,20 +24,17 @@ pub async fn create_floating_widget(app: tauri::AppHandle) -> Result<(), String>
             .map_err(|e| e.to_string())?;
 
     // Position in top-right corner
-    if let Ok(monitor) = widget_window.current_monitor() {
-        if let Some(monitor) = monitor {
-            let size = monitor.size();
-            let scale = monitor.scale_factor();
-            let logical_size =
-                LogicalSize::new(size.width as f64 / scale, size.height as f64 / scale);
+    if let Ok(Some(monitor)) = widget_window.current_monitor() {
+        let size = monitor.size();
+        let scale = monitor.scale_factor();
+        let logical_size = LogicalSize::new(size.width as f64 / scale, size.height as f64 / scale);
 
-            widget_window
-                .set_position(tauri::Position::Logical(LogicalPosition::new(
-                    logical_size.width - 100.0,
-                    20.0,
-                )))
-                .map_err(|e| e.to_string())?;
-        }
+        widget_window
+            .set_position(tauri::Position::Logical(LogicalPosition::new(
+                logical_size.width - 100.0,
+                20.0,
+            )))
+            .map_err(|e| e.to_string())?;
     }
 
     Ok(())
@@ -82,19 +79,5 @@ pub async fn watch_global_folder(path: String) -> Result<(), String> {
 pub async fn scan_global_folder(path: String) -> Result<(), String> {
     // TODO: Scan and import existing files from global folder
     tracing::info!("Scanning global folder: {}", path);
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn delete_space(space_id: String) -> Result<(), String> {
-    // TODO: Delete space from database
-    tracing::info!("Deleting space: {}", space_id);
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn rename_space(space_id: String, new_name: String) -> Result<(), String> {
-    // TODO: Rename space in database
-    tracing::info!("Renaming space {} to {}", space_id, new_name);
     Ok(())
 }

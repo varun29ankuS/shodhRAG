@@ -1,6 +1,5 @@
 mod analytics_commands;
 mod answer_check_commands;
-mod answer_validator;
 mod api_key_store;
 mod app_settings;
 mod audit_commands;

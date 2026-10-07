@@ -1,7 +1,6 @@
 //! Thin Tauri wrapper for backend system operations
 //! Just bridges frontend ↔ backend, all logic is in shodh_rag::system
 
-use serde::{Deserialize, Serialize};
 use shodh_rag::system::{command_executor::*, file_ops::*, os_integration::*};
 use tauri::command;
 

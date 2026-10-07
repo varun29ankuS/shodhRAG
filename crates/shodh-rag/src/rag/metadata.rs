@@ -136,25 +136,13 @@ pub enum SourceType {
 }
 
 /// Compliance flags for regulatory requirements
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ComplianceFlags {
     pub pii_present: bool,           // Contains Personally Identifiable Information
     pub gdpr_relevant: bool,         // Subject to GDPR
     pub hipaa_relevant: bool,        // Subject to HIPAA
     pub financial_data: bool,        // Contains financial information
     pub retention_days: Option<u32>, // Data retention period
-}
-
-impl Default for ComplianceFlags {
-    fn default() -> Self {
-        Self {
-            pii_present: false,
-            gdpr_relevant: false,
-            hipaa_relevant: false,
-            financial_data: false,
-            retention_days: None,
-        }
-    }
 }
 
 /// Filter for metadata-based search

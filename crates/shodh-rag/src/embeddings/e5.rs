@@ -301,8 +301,8 @@ impl E5Embeddings {
                     }
 
                     if mask_sum > 0.0 {
-                        for dim in 0..hidden_dim {
-                            pooled[dim] /= mask_sum;
+                        for value in pooled.iter_mut().take(hidden_dim) {
+                            *value /= mask_sum;
                         }
                     }
 

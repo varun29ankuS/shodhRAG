@@ -82,7 +82,7 @@ impl SearchHistoryManager {
 
         // Add to space-specific history
         if let Some(space_id) = space_id {
-            let space_history = self.history.entry(space_id).or_insert_with(VecDeque::new);
+            let space_history = self.history.entry(space_id).or_default();
 
             // Remove duplicate if exists
             space_history.retain(|e| e.query != query);

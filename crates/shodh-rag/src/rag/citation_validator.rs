@@ -185,7 +185,7 @@ impl CitationValidator {
             if !doc.line_ranges.is_empty() {
                 file_line_ranges
                     .entry(normalized)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .extend(doc.line_ranges.iter().cloned());
             }
         }

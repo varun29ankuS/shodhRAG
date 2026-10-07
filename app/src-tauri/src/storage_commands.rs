@@ -41,7 +41,7 @@ pub async fn get_storage_stats(
     let rag_guard = state.rag.read().await;
     let rag = &*rag_guard;
     let stats = rag.get_statistics().await.unwrap_or_default();
-    let total_chunks: usize = stats
+    let _total_chunks: usize = stats
         .get("total_chunks")
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
@@ -241,7 +241,7 @@ pub async fn optimize_storage(state: State<'_, RagState>) -> Result<String, Stri
 
 /// Create a backup of the current database
 #[tauri::command]
-pub async fn create_backup(state: State<'_, RagState>) -> Result<String, String> {
+pub async fn create_backup(_state: State<'_, RagState>) -> Result<String, String> {
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
     let backup_name = format!("backup_{}", timestamp);
 

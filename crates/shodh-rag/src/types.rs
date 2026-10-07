@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Citation {
     pub title: String,
     pub authors: Vec<String>,
@@ -11,20 +11,6 @@ pub struct Citation {
     pub url: Option<String>,
     pub doi: Option<String>,
     pub page_numbers: Option<String>,
-}
-
-impl Default for Citation {
-    fn default() -> Self {
-        Self {
-            title: String::new(),
-            authors: Vec::new(),
-            source: String::new(),
-            year: String::new(),
-            url: None,
-            doi: None,
-            page_numbers: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

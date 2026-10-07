@@ -167,9 +167,9 @@ impl FileWatcherManager {
 
             // Auto-index new or modified files
             if change_type == "created" || change_type == "modified" {
-                Self::auto_index_file(&app_handle, &path, space_id).await;
+                Self::auto_index_file(app_handle, &path, space_id).await;
             } else if change_type == "deleted" {
-                Self::remove_from_index(&app_handle, &path, space_id).await;
+                Self::remove_from_index(app_handle, &path, space_id).await;
             }
         }
     }

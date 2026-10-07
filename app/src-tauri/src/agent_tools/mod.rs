@@ -51,7 +51,7 @@ use crate::visual_commands::VisualState;
 use crate::workspace_commands::WorkspaceState;
 
 pub use files::{IndexedRoots, SourceRoot, SourceRoots};
-pub use research::{list_directory_in, DirEntry, Listing};
+pub use research::{list_directory_in, Listing};
 pub use tauri_host::TauriEffects;
 pub use web::web_block_reason;
 

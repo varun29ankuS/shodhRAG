@@ -474,7 +474,7 @@ pub async fn llm_generate(state: State<'_, LLMState>, prompt: String) -> Result<
     let llm_response = LLMResponse::new(response, input_tokens, output_tokens, duration_ms)
         .with_intent(format!("{:?}", query_intent));
 
-    Ok(serde_json::to_string(&llm_response).map_err(|e| e.to_string())?)
+    serde_json::to_string(&llm_response).map_err(|e| e.to_string())
 }
 
 /// Stream generation (returns stream ID)

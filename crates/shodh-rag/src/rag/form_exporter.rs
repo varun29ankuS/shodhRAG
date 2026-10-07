@@ -175,7 +175,7 @@ pub fn export_form_as_html(
 
     // Generate form fields
     for field in fields {
-        html.push_str(&format!("            <div class=\"form-group\">\n"));
+        html.push_str("            <div class=\"form-group\">\n");
         html.push_str(&format!(
             "                <label for=\"{}\">{}{}</label>\n",
             field.id,

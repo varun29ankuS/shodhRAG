@@ -133,7 +133,7 @@ pub fn build_system_context_with_data(rich_data: Option<&RichContextData>) -> St
                     proc.memory_mb.unwrap_or(0)
                 ));
             }
-            context.push_str("\n");
+            context.push('\n');
             context.push_str("Inference: User is likely working on ");
 
             // Smart inference from running apps
@@ -179,7 +179,7 @@ pub fn build_system_context_with_data(rich_data: Option<&RichContextData>) -> St
                 for (idx, conv) in conversations.iter().take(5).enumerate() {
                     context.push_str(&format!("{}. {}\n", idx + 1, conv));
                 }
-                context.push_str("\n");
+                context.push('\n');
             }
         }
 
@@ -198,7 +198,7 @@ pub fn build_system_context_with_data(rich_data: Option<&RichContextData>) -> St
                 for path in paths.iter().take(8) {
                     context.push_str(&format!("- {}\n", path));
                 }
-                context.push_str("\n");
+                context.push('\n');
             }
         }
 
@@ -225,7 +225,7 @@ pub fn build_system_context_with_data(rich_data: Option<&RichContextData>) -> St
                 for (idx, activity) in activities.iter().take(5).enumerate() {
                     context.push_str(&format!("{}. {}\n", idx + 1, activity));
                 }
-                context.push_str("\n");
+                context.push('\n');
             }
         }
     }
@@ -442,7 +442,7 @@ pub fn build_prompt_prefix(query_type: QueryType, system_context: &str) -> Strin
             prompt.push_str("- Generate artifacts for: function implementations, API handlers, refactored code, flowcharts, architecture diagrams\n");
             prompt.push_str("- Each artifact gets a unique ID (use descriptive names like 'rest-api-handler' or 'rag-flowchart')\n");
             prompt.push_str("- DO NOT use markdown code fences (```) inside artifact tags\n");
-            prompt.push_str("\n");
+            prompt.push('\n');
             prompt.push_str("**CRITICAL MERMAID SYNTAX RULES:**\n");
             prompt.push_str("- Node labels MUST NOT contain: () parentheses, , commas, or any special characters\n");
             prompt.push_str("- Use hyphens (-) or spaces instead\n");
@@ -456,7 +456,7 @@ pub fn build_prompt_prefix(query_type: QueryType, system_context: &str) -> Strin
             prompt.push_str(
                 "- CORRECT: \"E[Document Encoder - Model]\" or \"E[Document Encoder Model]\"\n",
             );
-            prompt.push_str("\n");
+            prompt.push('\n');
             prompt.push_str(
                 "- Artifacts are displayed in a separate panel with syntax highlighting\n\n",
             );

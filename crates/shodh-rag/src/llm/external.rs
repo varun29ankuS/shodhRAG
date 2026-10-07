@@ -590,8 +590,7 @@ async fn stream_openai_compatible(
             Ok(chunk) => {
                 let chunk_str = String::from_utf8_lossy(&chunk);
                 for line in chunk_str.lines() {
-                    if line.starts_with("data: ") {
-                        let data = &line[6..];
+                    if let Some(data) = line.strip_prefix("data: ") {
                         if data == "[DONE]" {
                             return;
                         }
@@ -665,8 +664,7 @@ async fn stream_anthropic(
             Ok(chunk) => {
                 let chunk_str = String::from_utf8_lossy(&chunk);
                 for line in chunk_str.lines() {
-                    if line.starts_with("data: ") {
-                        let data = &line[6..];
+                    if let Some(data) = line.strip_prefix("data: ") {
                         // Anthropic uses "message_stop" event, not "[DONE]"
                         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
                             if let Some(event_type) = parsed["type"].as_str() {
@@ -744,8 +742,7 @@ async fn stream_huggingface(
             Ok(chunk) => {
                 let chunk_str = String::from_utf8_lossy(&chunk);
                 for line in chunk_str.lines() {
-                    if line.starts_with("data: ") {
-                        let data = &line[6..];
+                    if let Some(data) = line.strip_prefix("data: ") {
                         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
                             if let Some(token) = parsed["token"]["text"].as_str() {
                                 if tx.send(token.to_string()).await.is_err() {
@@ -829,8 +826,7 @@ async fn stream_replicate(
             Ok(chunk) => {
                 let chunk_str = String::from_utf8_lossy(&chunk);
                 for line in chunk_str.lines() {
-                    if line.starts_with("data: ") {
-                        let data = &line[6..];
+                    if let Some(data) = line.strip_prefix("data: ") {
                         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
                             if let Some(text) = parsed.as_str() {
                                 if tx.send(text.to_string()).await.is_err() {

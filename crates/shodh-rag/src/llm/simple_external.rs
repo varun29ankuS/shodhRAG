@@ -146,15 +146,16 @@ impl LLMProvider for SimpleExternalProvider {
                 let (sender, receiver) = tokio::sync::mpsc::channel(256);
                 tokio::spawn(async move {
                     // Split on whitespace boundaries to avoid breaking UTF-8 chars
-                    let mut chars = response.chars().peekable();
+                    let chars = response.chars();
                     let mut chunk = String::with_capacity(40);
-                    while let Some(c) = chars.next() {
+                    for c in chars {
                         chunk.push(c);
                         // Flush at word boundaries (~30 chars per chunk)
-                        if chunk.len() >= 30 && (c == ' ' || c == '\n') {
-                            if sender.send(std::mem::take(&mut chunk)).await.is_err() {
-                                break;
-                            }
+                        if chunk.len() >= 30
+                            && (c == ' ' || c == '\n')
+                            && sender.send(std::mem::take(&mut chunk)).await.is_err()
+                        {
+                            break;
                         }
                     }
                     // Flush remainder
@@ -352,10 +353,10 @@ impl SimpleExternalProvider {
 
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
                         if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
-                            if !content.is_empty() {
-                                if sender.send(content.to_string()).await.is_err() {
-                                    return;
-                                }
+                            if !content.is_empty()
+                                && sender.send(content.to_string()).await.is_err()
+                            {
+                                return;
                             }
                         }
                     }
@@ -802,14 +803,13 @@ impl SimpleExternalProvider {
 
                         // Content delta
                         if let Some(content) = delta["content"].as_str() {
-                            if !content.is_empty() {
-                                if tx
+                            if !content.is_empty()
+                                && tx
                                     .send(ChatStreamEvent::ContentDelta(content.to_string()))
                                     .await
                                     .is_err()
-                                {
-                                    return;
-                                }
+                            {
+                                return;
                             }
                         }
 
@@ -1126,16 +1126,15 @@ impl SimpleExternalProvider {
                                 match delta["type"].as_str() {
                                     Some("text_delta") => {
                                         if let Some(text) = delta["text"].as_str() {
-                                            if !text.is_empty() {
-                                                if tx
+                                            if !text.is_empty()
+                                                && tx
                                                     .send(ChatStreamEvent::ContentDelta(
                                                         text.to_string(),
                                                     ))
                                                     .await
                                                     .is_err()
-                                                {
-                                                    return;
-                                                }
+                                            {
+                                                return;
                                             }
                                         }
                                     }

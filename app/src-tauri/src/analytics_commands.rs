@@ -10,7 +10,7 @@ use std::time::Instant;
 use tauri::State;
 
 /// Persistent analytics record — saved to disk
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PersistentAnalytics {
     pub total_queries: u64,
     pub total_errors: u64,
@@ -19,20 +19,6 @@ pub struct PersistentAnalytics {
     pub hourly_queries: HashMap<String, u32>,
     pub hourly_response_times: HashMap<String, Vec<f64>>,
     pub query_counts: HashMap<String, QueryAgg>,
-}
-
-impl Default for PersistentAnalytics {
-    fn default() -> Self {
-        Self {
-            total_queries: 0,
-            total_errors: 0,
-            total_indexing_ops: 0,
-            query_log: Vec::new(),
-            hourly_queries: HashMap::new(),
-            hourly_response_times: HashMap::new(),
-            query_counts: HashMap::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,7 +246,7 @@ pub async fn get_dashboard_data(
             last_used: agg.last_used,
         })
         .collect();
-    top_queries.sort_by(|a, b| b.count.cmp(&a.count));
+    top_queries.sort_by_key(|q| std::cmp::Reverse(q.count));
     top_queries.truncate(10);
 
     Ok(DashboardData {

@@ -109,7 +109,7 @@ impl LlamaCppProvider {
         token_sender: Option<mpsc::Sender<String>>,
     ) -> Result<String> {
         // Limit context to a reasonable size for inference (not the model's max)
-        let n_ctx = 4096u32.min(8192);
+        let n_ctx = 4096u32;
 
         let ctx_params = LlamaContextParams::default().with_n_ctx(std::num::NonZeroU32::new(n_ctx));
         let mut ctx = model
@@ -151,10 +151,10 @@ impl LlamaCppProvider {
             batch.clear();
             let chunk_end = (processed + n_batch).min(n_prompt);
 
-            for i in processed..chunk_end {
+            for (i, &token) in tokens.iter().enumerate().take(chunk_end).skip(processed) {
                 let is_last = i == n_prompt - 1;
                 batch
-                    .add(tokens[i], i as i32, &[0], is_last)
+                    .add(token, i as i32, &[0], is_last)
                     .map_err(|_| anyhow!("Failed to add token to batch"))?;
             }
 
@@ -260,7 +260,7 @@ impl LlamaCppProvider {
             }
 
             // Detect repetition: if the last 200 chars repeat a pattern 3+ times, stop
-            if n_decoded > 100 && n_decoded % 50 == 0 {
+            if n_decoded > 100 && n_decoded.is_multiple_of(50) {
                 let tail = if output.len() > 300 {
                     &output[output.len() - 300..]
                 } else {

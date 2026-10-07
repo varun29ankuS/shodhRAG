@@ -115,7 +115,7 @@ impl LoPdfParser {
         match contents {
             Object::Reference(ref_id) => {
                 let obj = doc.get_object(*ref_id)?;
-                Self::extract_content_text(doc, &obj)
+                Self::extract_content_text(doc, obj)
             }
             Object::Array(arr) => {
                 let mut text = String::new();
@@ -169,12 +169,10 @@ impl LoPdfParser {
                         current.push(' ');
                     }
                 }
-            } else if line == "ET" {
-                if !current.is_empty() {
-                    result.push_str(current.trim());
-                    result.push('\n');
-                    current.clear();
-                }
+            } else if line == "ET" && !current.is_empty() {
+                result.push_str(current.trim());
+                result.push('\n');
+                current.clear();
             }
         }
         if !current.is_empty() {
@@ -201,7 +199,7 @@ pub fn decode_pdf_string(bytes: &[u8]) -> String {
     }
 
     // Heuristic: detect UTF-16 without BOM by null-byte pattern
-    if bytes.len() >= 4 && bytes.len() % 2 == 0 {
+    if bytes.len() >= 4 && bytes.len().is_multiple_of(2) {
         let odd_nulls = bytes.iter().skip(1).step_by(2).filter(|&&b| b == 0).count();
         let even_nulls = bytes.iter().step_by(2).filter(|&&b| b == 0).count();
         if odd_nulls > bytes.len() / 4 && odd_nulls > even_nulls {

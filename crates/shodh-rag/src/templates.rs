@@ -232,8 +232,7 @@ impl TemplateExtractor {
             }
         }
 
-        let mut order = 0;
-        for (section_name, contents) in section_map {
+        for (order, (section_name, contents)) in section_map.into_iter().enumerate() {
             let content_type = self.infer_content_type(&contents);
             let placeholder = self.create_placeholder(&section_name, &contents);
 
@@ -245,7 +244,6 @@ impl TemplateExtractor {
                 is_required: true,
                 formatting_rules: vec![],
             });
-            order += 1;
         }
 
         sections.sort_by_key(|s| s.order);

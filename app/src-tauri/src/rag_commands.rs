@@ -282,12 +282,11 @@ pub async fn search_documents(
                 .metadata
                 .get("line_start")
                 .and_then(|start| start.parse::<u32>().ok())
-                .and_then(|start| {
+                .zip(
                     r.metadata
                         .get("line_end")
-                        .and_then(|end| end.parse::<u32>().ok())
-                        .map(|end| (start, end))
-                });
+                        .and_then(|end| end.parse::<u32>().ok()),
+                );
 
             // Get surrounding context (200 chars before/after)
             let full_text = r
@@ -720,7 +719,7 @@ pub async fn update_note(
         note.updated_at = chrono::Utc::now().to_rfc3339();
 
         // Save to disk with the updated notes
-        save_notes_to_disk(&*notes_guard)?;
+        save_notes_to_disk(&notes_guard)?;
         Ok(format!(
             "Note '{}' updated successfully",
             title_for_response
@@ -948,7 +947,7 @@ async fn link_folder_inner(
             file_path.display()
         );
 
-        match process_single_file(&file_path, &metadata, rag).await {
+        match process_single_file(file_path, &metadata, rag).await {
             Ok(chunk_count) => {
                 files_processed += 1;
                 total_chunks += chunk_count;
@@ -988,7 +987,7 @@ async fn link_folder_inner(
             space_id,
             files_processed
         );
-        if let Ok(space_manager) = state.space_manager.lock() {
+        if let Ok(_space_manager) = state.space_manager.lock() {
             // Note: space_manager tracks individual documents, but we're adding in bulk
             // The count will be updated when documents are queried
             tracing::info!("✓ Documents associated with space: {}", space_id);
@@ -1304,7 +1303,7 @@ pub async fn get_knowledge_map(
     }
 
     // Create edges between documents of the same type
-    for (_doc_type, node_ids) in &type_groups {
+    for node_ids in type_groups.values() {
         for i in 0..node_ids.len() {
             for j in (i + 1)..node_ids.len().min(i + 3) {
                 edges.push(json!({
@@ -1356,7 +1355,7 @@ pub async fn open_original_document(file_path: String) -> Result<String, String>
     #[cfg(target_os = "windows")]
     {
         let mut cmd = Command::new("cmd");
-        cmd.args(&["/C", "start", "", &file_path]);
+        cmd.args(["/C", "start", "", &file_path]);
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         cmd.spawn()
             .map_err(|e| format!("Failed to open file: {}", e))?;
@@ -1417,7 +1416,7 @@ pub async fn open_file_at_location(
     #[cfg(target_os = "windows")]
     {
         let mut cmd = Command::new("cmd");
-        cmd.args(&["/C", "start", "", &file_path]);
+        cmd.args(["/C", "start", "", &file_path]);
 
         #[cfg(target_os = "windows")]
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
@@ -1828,7 +1827,7 @@ pub async fn get_source_files(
 
     // Convert to vector and sort by name
     let mut files: Vec<FileInfo> = files_map.into_values().collect();
-    files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    files.sort_by_key(|a| a.name.to_lowercase());
 
     tracing::info!(
         "📊 Matched {} chunks, found {} unique files for source '{}'",

@@ -1,12 +1,12 @@
 use crate::llm_commands::LLMState;
 use crate::rag_commands::RagState;
+use base64::Engine;
 use docx_rs::*;
 use printpdf::*;
 use rust_xlsxwriter::*;
 use serde::{Deserialize, Serialize};
 use shodh_rag::comprehensive_system::SimpleSearchResult;
 use shodh_rag::llm::{ApiProvider, LLMMode};
-use std::fs::File;
 use std::io::BufWriter;
 use tauri::{Emitter, State};
 use uuid::Uuid;
@@ -26,15 +26,6 @@ impl DocumentLength {
             DocumentLength::Standard => 8_192,
             DocumentLength::Detailed => 32_768,
             DocumentLength::Maximum => 128_000, // Will be capped by provider
-        }
-    }
-
-    fn description(&self) -> &str {
-        match self {
-            DocumentLength::Brief => "1-2 pages, quick summary",
-            DocumentLength::Standard => "4-8 pages, standard report",
-            DocumentLength::Detailed => "16-32 pages, comprehensive analysis",
-            DocumentLength::Maximum => "Maximum length, full deep-dive",
         }
     }
 }
@@ -120,7 +111,7 @@ pub async fn generate_document(
             let pdf_bytes =
                 generate_pdf_report(request.clone(), rag_state.clone(), llm_state.clone()).await?;
             // Return base64 encoded PDF
-            base64::encode(pdf_bytes)
+            base64::engine::general_purpose::STANDARD.encode(pdf_bytes)
         }
         "txt" => {
             generate_text_report(request.clone(), rag_state.clone(), llm_state.clone()).await?
@@ -130,23 +121,21 @@ pub async fn generate_document(
                 generate_docx_content(request.clone(), rag_state.clone(), llm_state.clone())
                     .await?;
             // Return base64 encoded DOCX
-            base64::encode(docx_bytes)
+            base64::engine::general_purpose::STANDARD.encode(docx_bytes)
         }
         "xlsx" | "csv" => {
             let xlsx_bytes =
                 generate_spreadsheet_content(request.clone(), rag_state.clone(), llm_state.clone())
                     .await?;
             // Return base64 encoded Excel
-            base64::encode(xlsx_bytes)
+            base64::engine::general_purpose::STANDARD.encode(xlsx_bytes)
         }
         "json" => {
             generate_json_report(request.clone(), rag_state.clone(), llm_state.clone()).await?
         }
-        "md" | _ => {
+        _ => {
             // Generate markdown format
-            if request.use_rag && request.query.is_some() {
-                let query = request.query.as_ref().unwrap();
-
+            if let Some(query) = request.query.as_ref().filter(|_| request.use_rag) {
                 // First, perform RAG search with more results for comprehensive generation
                 let search_results = {
                     let rag_guard = rag_state.rag.read().await;
@@ -237,7 +226,7 @@ pub async fn generate_document(
                                     || c.contains("[Type: JavaScript/TypeScript]")
                             });
 
-                        let has_docs = has_sources
+                        let _has_docs = has_sources
                             && context
                                 .iter()
                                 .any(|c| c.contains("[Type: Markdown Documentation]"));
@@ -434,9 +423,8 @@ FORMATTING RULES (produce a pristine, publication-ready document):
     };
 
     // Extract source IDs for metadata
-    let source_ids = if request.use_rag && request.query.is_some() {
+    let source_ids = if let Some(query) = request.query.as_ref().filter(|_| request.use_rag) {
         // We need to get the search results again to extract source IDs
-        let query = request.query.as_ref().unwrap();
         let rag_guard = rag_state.rag.read().await;
         let rag = &*rag_guard;
         match rag.search(query, 5).await {
@@ -455,7 +443,7 @@ FORMATTING RULES (produce a pristine, publication-ready document):
         size: content.len(),
         pages: Some((content.len() / 2000).max(1)), // Estimate ~2000 chars per page
         preview: Some(content.clone()),             // Full content, no truncation
-        content_base64: Some(base64::encode(content.as_bytes())),
+        content_base64: Some(base64::engine::general_purpose::STANDARD.encode(content.as_bytes())),
         metadata: DocumentMetadata {
             created_at: chrono::Utc::now().to_rfc3339(),
             sources: source_ids,
@@ -598,7 +586,7 @@ pub async fn get_source_documents(
         }
 
         // Parse the UUID if possible
-        if let Ok(doc_id) = Uuid::parse_str(id_str) {
+        if let Ok(_doc_id) = Uuid::parse_str(id_str) {
             // Get document statistics to find metadata
             let _stats = rag.get_statistics().await.unwrap_or_default();
 
@@ -631,7 +619,7 @@ pub async fn get_source_documents(
                     .metadata
                     .get("size")
                     .and_then(|s| s.parse::<usize>().ok())
-                    .unwrap_or_else(|| result.text.len());
+                    .unwrap_or(result.text.len());
 
                 let sections = if let Some(heading) = &result.heading {
                     vec![heading.clone()]
@@ -1111,11 +1099,9 @@ fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
             let mut current_line = String::new();
 
             for word in words {
-                if current_line.len() + word.len() + 1 > max_chars {
-                    if !current_line.is_empty() {
-                        lines.push(current_line.clone());
-                        current_line.clear();
-                    }
+                if current_line.len() + word.len() + 1 > max_chars && !current_line.is_empty() {
+                    lines.push(current_line.clone());
+                    current_line.clear();
                 }
                 if !current_line.is_empty() {
                     current_line.push(' ');
@@ -1145,7 +1131,7 @@ async fn generate_pdf_report(
 
     // Create PDF document
     let (doc, page1, layer1) = PdfDocument::new(
-        &format!("{} Report", query),
+        format!("{} Report", query),
         Mm(210.0), // A4 width
         Mm(297.0), // A4 height
         "Layer 1",
@@ -1166,7 +1152,7 @@ async fn generate_pdf_report(
 
     // Title
     current_layer.use_text(
-        &format!("{} Report", query),
+        format!("{} Report", query),
         24.0,
         Mm(20.0),
         y_position,
@@ -1176,7 +1162,7 @@ async fn generate_pdf_report(
 
     // Date
     current_layer.use_text(
-        &format!("Generated: {}", chrono::Utc::now().format("%B %d, %Y")),
+        format!("Generated: {}", chrono::Utc::now().format("%B %d, %Y")),
         10.0,
         Mm(20.0),
         y_position,
@@ -1214,7 +1200,7 @@ async fn generate_pdf_report(
                 .unwrap_or_else(|| format!("Source {}", i + 1));
 
             current_layer.use_text(
-                &format!("• {} (Score: {:.2})", title, result.score),
+                format!("• {} (Score: {:.2})", title, result.score),
                 10.0,
                 Mm(25.0),
                 y_position,
@@ -1251,7 +1237,7 @@ async fn generate_docx_content(
     docx = docx.add_paragraph(
         Paragraph::new().add_run(
             Run::new()
-                .add_text(&format!("{} Report", query))
+                .add_text(format!("{} Report", query))
                 .size(32)
                 .bold(),
         ),
@@ -1261,7 +1247,7 @@ async fn generate_docx_content(
     docx = docx.add_paragraph(
         Paragraph::new().add_run(
             Run::new()
-                .add_text(&format!(
+                .add_text(format!(
                     "Generated: {}",
                     chrono::Utc::now().format("%B %d, %Y at %I:%M %p UTC")
                 ))
@@ -1293,12 +1279,7 @@ async fn generate_docx_content(
             docx = docx.add_paragraph(
                 Paragraph::new().add_run(
                     Run::new()
-                        .add_text(&format!(
-                            "{}. {} (Score: {:.2})",
-                            i + 1,
-                            title,
-                            result.score
-                        ))
+                        .add_text(format!("{}. {} (Score: {:.2})", i + 1, title, result.score))
                         .size(20),
                 ),
             );
@@ -1357,7 +1338,7 @@ async fn generate_spreadsheet_content(
         .write_string(2, 0, "Generated")
         .map_err(|e| e.to_string())?;
     worksheet
-        .write_string(2, 1, &chrono::Utc::now().to_string())
+        .write_string(2, 1, chrono::Utc::now().to_string())
         .map_err(|e| e.to_string())?;
 
     // Add summary
@@ -1828,7 +1809,7 @@ pub async fn get_comparable_documents(
     }
 
     let mut docs: Vec<ComparableDocumentInfo> = doc_map.into_values().collect();
-    docs.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    docs.sort_by_key(|a| a.title.to_lowercase());
 
     tracing::info!("Returning {} documents", docs.len());
     Ok(docs)

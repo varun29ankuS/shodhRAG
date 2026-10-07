@@ -12,16 +12,6 @@ use tauri::State;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UploadProgress {
-    pub stage: String, // "parsing", "chunking", "embedding", "indexing", "complete"
-    pub progress: f32, // 0.0 to 1.0
-    pub message: String,
-    pub chunks_processed: usize,
-    pub total_chunks: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct UploadResult {
     pub success: bool,
     pub file_name: String,

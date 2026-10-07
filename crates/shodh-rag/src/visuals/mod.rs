@@ -38,6 +38,8 @@ pub const MAX_CAPTURE_BLOCKS: usize = 64;
 /// Default and largest page of a listing.
 pub const DEFAULT_LIST_LIMIT: u32 = 60;
 pub const MAX_LIST_LIMIT: u32 = 500;
+/// Most conversations one listing may be limited to.
+pub const MAX_LIST_CONVERSATIONS: usize = 5_000;
 
 /// Errors of the visuals store.
 #[derive(Debug, thiserror::Error)]
@@ -261,6 +263,10 @@ pub struct VisualDetail {
 pub struct VisualQuery {
     #[serde(default)]
     pub conversation_id: Option<String>,
+    /// Only visuals of these conversations (a workspace's chats). An empty list matches
+    /// nothing; `None` applies no such limit.
+    #[serde(default)]
+    pub conversation_ids: Option<Vec<String>>,
     #[serde(default)]
     pub kind: Option<VisualKind>,
     /// Words to find in titles, notes and sources (every word must match; prefixes count).

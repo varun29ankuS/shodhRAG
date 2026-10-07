@@ -185,6 +185,7 @@ impl HostTool for ListVisualsTool {
         let limit = limit_arg(&args, DEFAULT_RESULTS, MAX_RESULTS);
         let query = VisualQuery {
             conversation_id: str_arg(&args, "conversation_id").map(str::to_string),
+            conversation_ids: None,
             kind,
             text: str_arg(&args, "query").map(str::to_string),
             pinned_only: args.get("pinned").and_then(Value::as_bool).unwrap_or(false),

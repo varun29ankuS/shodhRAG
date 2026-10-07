@@ -47,9 +47,15 @@ pub mod app_tools {
     pub const FIND_PAPERS: &str = "find_papers";
     pub const SHOW_FIGURE: &str = "show_figure";
     pub const GET_EQUATION: &str = "get_equation";
+    pub const LIST_WORKSPACES: &str = "list_workspaces";
+    pub const OPEN_WORKSPACE: &str = "open_workspace";
+    pub const CREATE_WORKSPACE: &str = "create_workspace";
+    pub const UPDATE_WORKSPACE: &str = "update_workspace";
+    pub const ADD_TO_WORKSPACE: &str = "add_to_workspace";
+    pub const REMOVE_FROM_WORKSPACE: &str = "remove_from_workspace";
 
     /// Every app-layer tool, in registration order.
-    pub const ALL: [&str; 39] = [
+    pub const ALL: [&str; 45] = [
         CREATE_TASK,
         CREATE_EVENT,
         LIST_TASKS,
@@ -89,6 +95,12 @@ pub mod app_tools {
         FIND_PAPERS,
         SHOW_FIGURE,
         GET_EQUATION,
+        LIST_WORKSPACES,
+        OPEN_WORKSPACE,
+        CREATE_WORKSPACE,
+        UPDATE_WORKSPACE,
+        ADD_TO_WORKSPACE,
+        REMOVE_FROM_WORKSPACE,
     ];
 }
 

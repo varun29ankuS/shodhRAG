@@ -216,7 +216,10 @@ fn preview_details(text: &str, scope: &Scope, ctx: &ToolContext, extra: Value) -
         "memory": text,
         "scope": match scope {
             Scope::Global => "All conversations".to_string(),
-            Scope::Workspace(id) => format!("Conversations about source {id}"),
+            Scope::Workspace(id) => match ctx.scope().workspace_name.as_deref() {
+                Some(name) => format!("Chats in the workspace “{name}”"),
+                None => format!("Chats in workspace {id}"),
+            },
         },
     });
     if let (Some(map), Value::Object(extra)) = (details.as_object_mut(), extra) {

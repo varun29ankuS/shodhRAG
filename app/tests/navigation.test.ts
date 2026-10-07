@@ -123,3 +123,17 @@ test('documents opened by the agent become viewer targets', () => {
   assert.equal(hit.url, null);
   assert.equal(documentHit('https://example.org/a', null, null).url, 'https://example.org/a');
 });
+
+test('workspace targets carry the workspace and a known tab', () => {
+  assert.deepEqual(parseTarget({ kind: 'workspace', workspaceId: 'ws-1', tab: 'sources' }), {
+    kind: 'workspace',
+    workspaceId: 'ws-1',
+    tab: 'sources',
+  });
+  assert.deepEqual(parseTarget({ kind: 'workspace', workspaceId: 'ws-1', tab: 'settings' }), {
+    kind: 'workspace',
+    workspaceId: 'ws-1',
+    tab: null,
+  });
+  assert.equal(parseTarget({ kind: 'workspace', workspaceId: '', tab: null }), null);
+});

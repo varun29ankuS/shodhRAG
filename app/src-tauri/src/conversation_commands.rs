@@ -44,6 +44,10 @@ pub struct ConversationRecord {
     pub space_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space_name: Option<String>,
+    /// The workspace the conversation belongs to; `None` is "No workspace". Conversations
+    /// saved with a legacy space (`space_id`) are assigned once by the workspace import.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     /// Side discussions that belong to the conversation but not to one of
@@ -126,8 +130,25 @@ fn store(app: &AppHandle) -> Result<ConversationStore, String> {
     Ok(ConversationStore::in_dir(&dir))
 }
 
+/// The saved conversations, pinned first, then most recently updated. Conversations saved
+/// with a legacy space are assigned to the workspace made from it first (once), so the UI
+/// reads and saves records that already carry their workspace.
 #[tauri::command]
-pub async fn load_conversations(app: AppHandle) -> Result<Vec<ConversationRecord>, String> {
+pub async fn load_conversations(
+    app: AppHandle,
+    workspaces: tauri::State<'_, crate::workspace_commands::WorkspaceState>,
+    rag: tauri::State<'_, crate::rag_commands::RagState>,
+) -> Result<Vec<ConversationRecord>, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data directory: {e}"))?;
+    if let Err(e) =
+        crate::workspace_commands::import_legacy_spaces(&workspaces, &dir, &rag.rag).await
+    {
+        // Retried on the next load; the conversations load either way.
+        tracing::warn!(target: "shodh::workspaces", error = %e, "legacy spaces not imported yet");
+    }
     let mut conversations = store(&app)?.load()?;
     // Sort by updated_at descending, pinned first
     conversations.sort_by(|a, b| {

@@ -31,6 +31,7 @@ use shodh_rag::llm::{
     SimpleExternalProvider,
 };
 use shodh_rag::user_memory::learn::engine::ModelSource;
+use shodh_rag::user_memory::learn::extract::learned_scope;
 use shodh_rag::user_memory::learn::{
     ConsolidationReport, Inbox, LearnCaps, LearnError, LearnMode, LearnModel, LearnPolicy, Learner,
     PolicySource, ProposalStatus, ProposalView, TurnInput, UsageToday,
@@ -328,6 +329,8 @@ impl ModelSource for AppModels {
 /// A run whose answer is streaming.
 struct PendingRun {
     conversation_id: String,
+    /// The conversation's workspace: what is learned from the turn goes there.
+    workspace: Option<String>,
     user_text: String,
     /// Answer text by text block (a revised answer drops the draft it replaced).
     answer: Vec<(String, String)>,
@@ -422,7 +425,13 @@ impl LearnState {
 
     /// `agent_send` registers the user's words of a run. Only text the user typed in the
     /// main conversation is passed here (see the module docs).
-    pub fn record_question(&self, conversation_id: &str, run_id: &str, user_text: &str) {
+    pub fn record_question(
+        &self,
+        conversation_id: &str,
+        run_id: &str,
+        user_text: &str,
+        workspace: Option<&str>,
+    ) {
         self.touch();
         if self.policy().mode == LearnMode::Off || user_text.trim().is_empty() {
             return;
@@ -443,6 +452,7 @@ impl LearnState {
             run_id.to_string(),
             PendingRun {
                 conversation_id: conversation_id.to_string(),
+                workspace: workspace.map(str::to_string),
                 user_text: user_text.trim().to_string(),
                 answer: Vec::new(),
                 answer_len: 0,
@@ -500,6 +510,7 @@ impl LearnState {
                     )
                     .filter(|a| !a.trim().is_empty()),
                     at: run.at,
+                    scope: learned_scope(run.workspace.as_deref()),
                 });
             }
             _ => {}

@@ -40,6 +40,7 @@ mod system_commands;
 mod table_model_commands;
 mod template_commands;
 mod visual_commands;
+mod workspace_commands;
 mod window_commands;
 
 // Unified chat system modules
@@ -350,6 +351,10 @@ pub fn run() {
             let visual_state =
                 visual_commands::VisualState::new(&app.state::<audit_commands::AuditState>());
             app.manage(visual_state);
+            // Workspaces (sources, instructions), in shodh.db. Opens on first use.
+            app.manage(workspace_commands::WorkspaceState::new(
+                &app.state::<audit_commands::AuditState>(),
+            ));
             // Learning from conversations (needs the memory, LLM and audit states).
             memory_learn::manage(app, &app_data_dir);
 
@@ -747,6 +752,18 @@ pub fn run() {
             memory_learn::memory_consolidate_now,
             // Generated visuals (the gallery and the focus pop-out)
             visual_commands::visuals_capture,
+            workspace_commands::workspaces_list,
+            workspace_commands::workspaces_templates,
+            workspace_commands::workspaces_get,
+            workspace_commands::workspaces_create,
+            workspace_commands::workspaces_update,
+            workspace_commands::workspaces_set_archived,
+            workspace_commands::workspaces_set_instructions,
+            workspace_commands::workspaces_instruction_history,
+            workspace_commands::workspaces_add_sources,
+            workspace_commands::workspaces_remove_source,
+            workspace_commands::workspaces_delete,
+            workspace_commands::workspaces_source_health,
             visual_commands::visuals_backfill_status,
             visual_commands::visuals_backfill,
             visual_commands::visuals_list,

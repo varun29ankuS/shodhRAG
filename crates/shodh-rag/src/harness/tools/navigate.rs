@@ -28,7 +28,14 @@ pub const SHOW_AUDIT: &str = "show_audit";
 pub const SHOW_SOURCE: &str = "show_source";
 
 /// Views the agent may open.
-pub const VIEWS: [&str; 5] = ["ask", "library", "tasks", "activity", "settings"];
+pub const VIEWS: [&str; 6] = [
+    "ask",
+    "workspaces",
+    "library",
+    "tasks",
+    "activity",
+    "settings",
+];
 
 /// Earlier view ids, still accepted: `calendar` is now `tasks` and `audit`
 /// is now `activity`.

@@ -12,7 +12,7 @@ use super::{
     CaptureReport, NewVersion, NewVisual, SkippedBlock, VisualAuthor, VisualDetail, VisualError,
     VisualKind, VisualOrigin, VisualPage, VisualQuery, VisualRecord, VisualResult, VisualSummary,
     VisualVersionInfo, DEFAULT_LIST_LIMIT, MAX_CAPTURE_BLOCKS, MAX_INSTRUCTION_CHARS,
-    MAX_LIST_LIMIT,
+    MAX_LIST_CONVERSATIONS, MAX_LIST_LIMIT,
 };
 use crate::audit::{open_shared_connection, AuditKey};
 
@@ -244,6 +244,23 @@ impl VisualStore {
         {
             args.push(SqlValue::Text(conversation.to_string()));
             filters.push(format!("v.conversation_id = ?{}", args.len()));
+        }
+        if let Some(ids) = &query.conversation_ids {
+            if ids.len() > MAX_LIST_CONVERSATIONS {
+                return Err(VisualError::Invalid(format!(
+                    "at most {MAX_LIST_CONVERSATIONS} conversations can limit a listing"
+                )));
+            }
+            if ids.is_empty() {
+                filters.push("0".to_string());
+            } else {
+                let mut marks = Vec::with_capacity(ids.len());
+                for id in ids {
+                    args.push(SqlValue::Text(id.trim().to_string()));
+                    marks.push(format!("?{}", args.len()));
+                }
+                filters.push(format!("v.conversation_id IN ({})", marks.join(", ")));
+            }
         }
         if let Some(kind) = query.kind {
             args.push(SqlValue::Text(kind.as_str().to_string()));
@@ -889,6 +906,19 @@ mod tests {
             })
             .unwrap();
         assert_eq!(by_conversation.total, 1);
+        // A workspace's chats: any of several conversations; none matches nothing.
+        let of = |ids: &[&str]| {
+            store
+                .list(&VisualQuery {
+                    conversation_ids: Some(ids.iter().map(|s| s.to_string()).collect()),
+                    ..VisualQuery::default()
+                })
+                .unwrap()
+                .total
+        };
+        assert_eq!(of(&["c2", "c-none"]), 1);
+        assert_eq!(of(&["c1", "c2"]), 4);
+        assert_eq!(of(&[]), 0);
         let by_kind = store
             .list(&VisualQuery {
                 kind: Some(VisualKind::Mermaid),

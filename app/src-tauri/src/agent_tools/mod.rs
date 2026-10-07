@@ -24,6 +24,7 @@ mod sources;
 mod tauri_host;
 mod visuals;
 mod web;
+mod workspaces;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -47,6 +48,7 @@ use crate::calendar_store::{CalendarEvent, TodoItem};
 use crate::memory_commands::MemoryState;
 use crate::research_commands::ResearchState;
 use crate::visual_commands::VisualState;
+use crate::workspace_commands::WorkspaceState;
 
 pub use files::{IndexedRoots, SourceRoot, SourceRoots};
 pub use research::{list_directory_in, DirEntry, Listing};
@@ -150,6 +152,8 @@ pub trait HostEffects: Send + Sync {
     /// Snippets, results or the citation graph (`kind` `snippet`, `result` or `graph`) of
     /// `file_path` changed: refresh the Library and the gallery.
     fn research_changed(&self, kind: &str, file_path: &str);
+    /// A workspace (its fields, instructions or sources) changed: refresh open views.
+    fn workspaces_changed(&self, workspace_id: &str);
 }
 
 /// Everything an app tool can reach.
@@ -170,6 +174,8 @@ pub struct AgentHost {
     pub research: ResearchState,
     /// Prints documents to PDF (`export_document` with format `pdf`).
     pub pdf: Arc<dyn crate::pdf_export::PdfPrinter>,
+    /// Workspaces (opened on first use).
+    pub workspaces: WorkspaceState,
 }
 
 /// Build the registry with every agent tool. Fails if two tools share a
@@ -211,6 +217,7 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     papers::register(&mut registry, &host)?;
     graph::register(&mut registry, &host)?;
     figures::register(&mut registry, &host)?;
+    workspaces::register(&mut registry, &host)?;
     Ok(registry)
 }
 
@@ -255,6 +262,7 @@ pub(crate) mod testing {
         pub library: Mutex<Vec<String>>,
         pub visuals: Mutex<Vec<String>>,
         pub research: Mutex<Vec<(String, String)>>,
+        pub workspaces: Mutex<Vec<String>>,
     }
 
     impl HostEffects for Recorder {
@@ -315,6 +323,12 @@ pub(crate) mod testing {
                 .unwrap_or_else(|e| e.into_inner())
                 .push((kind.to_string(), file_path.to_string()));
         }
+        fn workspaces_changed(&self, workspace_id: &str) {
+            self.workspaces
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(workspace_id.to_string());
+        }
     }
 
     pub struct TestHost {
@@ -347,6 +361,7 @@ pub(crate) mod testing {
             library: Mutex::default(),
             visuals: Mutex::default(),
             research: Mutex::default(),
+            workspaces: Mutex::default(),
         });
         std::fs::create_dir_all(&effects.documents).unwrap();
         let roots = Arc::new(FixedRoots::default());
@@ -367,6 +382,7 @@ pub(crate) mod testing {
             memory,
             visuals: VisualState::at(Some((dir.path().join("shodh.db"), None))),
             pdf: printer.clone(),
+            workspaces: WorkspaceState::at(Some((dir.path().join("shodh.db"), None))),
         });
         TestHost {
             dir,
@@ -416,6 +432,7 @@ pub(crate) mod testing {
             visuals: t.host.visuals.clone(),
             research: t.host.research.clone(),
             pdf: t.host.pdf.clone(),
+            workspaces: t.host.workspaces.clone(),
         })
     }
 
@@ -435,6 +452,7 @@ pub(crate) mod testing {
             visuals: t.host.visuals.clone(),
             research: t.host.research.clone(),
             pdf,
+            workspaces: t.host.workspaces.clone(),
         })
     }
 

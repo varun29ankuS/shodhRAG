@@ -187,6 +187,7 @@ pub async fn search_documents(
             date_from: None,
             date_to: None,
             custom: None,
+            any_of: None,
         };
 
         let mut custom_fields: HashMap<String, String> = HashMap::new();
@@ -1511,6 +1512,7 @@ pub async fn read_original_file(
         date_from: None,
         date_to: None,
         custom: None,
+        any_of: None,
     };
 
     let results = rag

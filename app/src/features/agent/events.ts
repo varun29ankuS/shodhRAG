@@ -217,13 +217,22 @@ export interface VisualTarget {
   version: number | null;
 }
 
+/** A workspace's page, at a tab (the overview when null). */
+export interface WorkspaceTarget {
+  kind: "workspace";
+  workspaceId: string;
+  /** "overview", "sources", "chats", "memory", "visuals" or "results". */
+  tab: string | null;
+}
+
 export type NavigationTarget =
   | DocumentTarget
   | CalendarTarget
   | ConversationTarget
   | AuditTarget
   | SourceTarget
-  | VisualTarget;
+  | VisualTarget
+  | WorkspaceTarget;
 
 export interface NavigatedEvent {
   type: "navigated";

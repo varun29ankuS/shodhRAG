@@ -102,6 +102,30 @@ fn clip(text: &str, max: usize) -> String {
     out
 }
 
+/// Whether `paper` may appear in this answer: always, unless the answer is limited to a
+/// workspace, where library papers outside its sources are left out (works outside the
+/// library are public bibliographic records and stay).
+fn shown(ctx: &ToolContext, paper: &PaperNode) -> bool {
+    !ctx.scope().restricted
+        || !paper.in_library
+        || paper
+            .file_path
+            .as_deref()
+            .is_some_and(|f| ctx.scope().allows_path(f))
+}
+
+/// Refuses a paper the answer may not use.
+fn require_shown(ctx: &ToolContext, paper: &PaperNode) -> Result<(), ToolError> {
+    if shown(ctx, paper) {
+        Ok(())
+    } else {
+        Err(ToolError::Forbidden(ctx.scope().outside_message(&format!(
+            "The paper \"{}\"",
+            paper.label()
+        ))))
+    }
+}
+
 /// Numbers a reference entry as a checkable passage of the citing library paper.
 fn cite_evidence(
     ctx: &ToolContext,
@@ -109,6 +133,9 @@ fn cite_evidence(
     evidence: &CitationEvidence,
     passages: &mut Vec<Value>,
 ) -> Option<u32> {
+    if !shown(ctx, citing) {
+        return None;
+    }
     let path = citing.file_path.clone()?;
     let n = ctx.reserve_passages(1);
     let text = clip(&evidence.text, EVIDENCE_CHARS);
@@ -237,7 +264,14 @@ impl HostTool for PaperGraphTool {
                     lines.push("No work is cited by two or more library papers.".to_string());
                 }
                 for hit in &hits {
-                    let citers = graph.citers(&hit.paper.id);
+                    let citers: Vec<&PaperNode> = graph
+                        .citers(&hit.paper.id)
+                        .into_iter()
+                        .filter(|c| shown(ctx, c))
+                        .collect();
+                    if citers.is_empty() {
+                        continue;
+                    }
                     let first = citers.iter().find_map(|c| {
                         graph
                             .evidence(&c.id, &hit.paper.id)
@@ -252,7 +286,7 @@ impl HostTool for PaperGraphTool {
                         "{}{} — cited by {} library papers: {}",
                         n.map(|n| format!("[{n}] ")).unwrap_or_default(),
                         describe(&hit.paper),
-                        hit.count,
+                        citers.len(),
                         names.join(", ")
                     ));
                 }
@@ -264,12 +298,14 @@ impl HostTool for PaperGraphTool {
                     tool,
                     str_arg(&args, "paper").ok_or_else(|| invalid(tool, "`paper` is required"))?,
                 )?;
+                require_shown(ctx, paper)?;
                 lines.push(format!("Paper: {}", describe(paper)));
                 if op != "citers" {
                     let cited: Vec<&PaperNode> = graph
                         .cited(&paper.id)
                         .into_iter()
                         .filter(|p| !library_only || p.in_library)
+                        .filter(|p| shown(ctx, p))
                         .collect();
                     lines.push(format!(
                         "Cites {} works ({} in the library):",
@@ -290,7 +326,11 @@ impl HostTool for PaperGraphTool {
                     }
                 }
                 if op != "cited" {
-                    let citers = graph.citers(&paper.id);
+                    let citers: Vec<&PaperNode> = graph
+                        .citers(&paper.id)
+                        .into_iter()
+                        .filter(|c| shown(ctx, c))
+                        .collect();
                     lines.push(format!("Cited by {} library papers:", citers.len()));
                     for c in citers.into_iter().take(limit) {
                         let n = graph
@@ -304,7 +344,8 @@ impl HostTool for PaperGraphTool {
                     }
                 }
                 if op == "neighbors" {
-                    let related = graph.related(&paper.id, limit.min(10));
+                    let mut related = graph.related(&paper.id, limit.min(10));
+                    related.retain(|r| shown(ctx, &r.paper));
                     if !related.is_empty() {
                         lines.push("Library papers sharing references:".to_string());
                         for r in related {
@@ -340,8 +381,11 @@ impl HostTool for PaperGraphTool {
                     tool,
                     str_arg(&args, "other").ok_or_else(|| invalid(tool, "`other` is required"))?,
                 )?;
+                require_shown(ctx, a)?;
+                require_shown(ctx, b)?;
                 if op == "shared_references" {
-                    let shared = graph.shared_references(&a.id, &b.id);
+                    let mut shared = graph.shared_references(&a.id, &b.id);
+                    shared.retain(|s| shown(ctx, s));
                     lines.push(format!(
                         "{} and {} both cite {} works:",
                         a.label(),
@@ -364,7 +408,10 @@ impl HostTool for PaperGraphTool {
                     }
                     summary = "Shared references".to_string();
                 } else {
-                    match lineage(&graph, &a.id, &b.id) {
+                    // A chain through a library paper outside the workspace is not shown.
+                    let chain = lineage(&graph, &a.id, &b.id)
+                        .filter(|path| path.iter().all(|step| shown(ctx, &step.paper)));
+                    match chain {
                         Some(path) => {
                             lines.push(format!("A chain of {} citations:", path.len().saturating_sub(1)));
                             for (k, step) in path.iter().enumerate() {
@@ -447,6 +494,7 @@ impl HostTool for GetPaperTool {
         let query = str_arg(&args, "paper").ok_or_else(|| invalid(tool, "`paper` is required"))?;
         let graph = graph_of(&self.host).await?;
         let paper = find_paper(&graph, tool, query)?.clone();
+        require_shown(ctx, &paper)?;
         let view = paper_view(&graph, &paper.id).ok_or_else(|| {
             ToolError::NotFound(format!("{tool}: \"{query}\" is not in the graph"))
         })?;
@@ -476,7 +524,12 @@ impl HostTool for GetPaperTool {
             view.cites_elsewhere.len(),
             view.cited_by_in_library.len()
         ));
-        for linked in view.cited_by_in_library.iter().take(10) {
+        for linked in view
+            .cited_by_in_library
+            .iter()
+            .filter(|l| shown(ctx, &l.paper))
+            .take(10)
+        {
             let n = linked
                 .evidence
                 .as_ref()
@@ -671,7 +724,8 @@ impl HostTool for FindPapersTool {
             return Err(ToolError::Failed(NOT_BUILT.to_string()));
         }
         let limit = limit_arg(&args, DEFAULT_LIMIT, MAX_LIMIT);
-        let found = find(&graph, &filter, limit);
+        let mut found = find(&graph, &filter, limit);
+        found.retain(|p| shown(ctx, p));
         let mut passages = Vec::new();
         let mut lines = Vec::new();
         if found.is_empty() {

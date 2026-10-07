@@ -60,9 +60,11 @@ pub const ICONS: &[&str] = &[
     "clipboard-check",
 ];
 
-/// Colours a workspace may use (accent tokens of the app's theme).
+/// Colours a workspace may use: tokens of the app's theme (`--c-text-muted` for neutral,
+/// `--c-accent`, `--c-info`, `--c-success`, `--c-warning`, `--c-violet`), so every one
+/// has a checked contrast in both themes.
 pub const COLORS: &[&str] = &[
-    "slate", "blue", "teal", "green", "amber", "orange", "rose", "violet",
+    "neutral", "accent", "info", "success", "warning", "violet",
 ];
 
 /// Errors of the workspace store.

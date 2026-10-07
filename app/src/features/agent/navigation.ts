@@ -34,6 +34,9 @@ function reqString(value: unknown): string | null {
   return optString(value);
 }
 
+/** Tabs of a workspace page a target may open. */
+const WORKSPACE_TABS: readonly string[] = ['overview', 'sources', 'chats', 'memory', 'visuals', 'results'];
+
 /** A valid target, or null for anything malformed or unknown. */
 export function parseTarget(value: unknown): NavigationTarget | null {
   if (!isRecord(value)) return null;
@@ -74,6 +77,13 @@ export function parseTarget(value: unknown): NavigationTarget | null {
       const visualId = reqString(value.visualId);
       const version = typeof value.version === 'number' && Number.isInteger(value.version) && value.version > 0 ? value.version : null;
       return visualId ? { kind: 'visual', visualId, version } : null;
+    }
+    case 'workspace': {
+      const workspaceId = reqString(value.workspaceId);
+      const tab = optString(value.tab);
+      return workspaceId
+        ? { kind: 'workspace', workspaceId, tab: tab && WORKSPACE_TABS.includes(tab) ? tab : null }
+        : null;
     }
     default:
       return null;

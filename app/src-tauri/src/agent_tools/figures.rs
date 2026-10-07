@@ -89,8 +89,16 @@ async fn paper_pdf(host: &AgentHost, tool: &str, paper: &str) -> Result<String, 
     }
 }
 
-async fn parts_of(host: &AgentHost, tool: &str, paper: &str) -> Result<Arc<PaperParts>, ToolError> {
+async fn parts_of(
+    host: &AgentHost,
+    ctx: &ToolContext,
+    tool: &str,
+    paper: &str,
+) -> Result<Arc<PaperParts>, ToolError> {
     let pdf = paper_pdf(host, tool, paper).await?;
+    if !ctx.scope().allows_path(&pdf) {
+        return Err(ToolError::Forbidden(ctx.scope().outside_message(&pdf)));
+    }
     host.research
         .paper_parts(&host.rag, &pdf)
         .await
@@ -397,7 +405,7 @@ impl HostTool for ShowFigureTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = self.name();
         let paper = str_arg(&args, "paper").ok_or_else(|| invalid(tool, "`paper` is required"))?;
-        let parts = parts_of(&self.host, tool, paper).await?;
+        let parts = parts_of(&self.host, ctx, tool, paper).await?;
         Ok(figure_output(ctx, &parts, str_arg(&args, "figure")))
     }
 }
@@ -442,7 +450,7 @@ impl HostTool for GetEquationTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = self.name();
         let paper = str_arg(&args, "paper").ok_or_else(|| invalid(tool, "`paper` is required"))?;
-        let parts = parts_of(&self.host, tool, paper).await?;
+        let parts = parts_of(&self.host, ctx, tool, paper).await?;
         Ok(equation_output(ctx, &parts, str_arg(&args, "equation")))
     }
 }

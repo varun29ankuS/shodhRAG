@@ -435,6 +435,7 @@ mod tests {
             pinned: false,
             space_id: None,
             space_name: None,
+            workspace_id: None,
             system_prompt: None,
             focus_threads: None,
         }

@@ -135,7 +135,16 @@ impl HostTool for ListSnippetsTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let services = self.host.research.services().await.map_err(tool_error)?;
         let snippets: Vec<Snippet> = match str_arg(&args, "snippet_id") {
-            Some(id) => vec![services.snippets.get(id).await.map_err(research_error)?],
+            Some(id) => {
+                let snippet = services.snippets.get(id).await.map_err(research_error)?;
+                if !ctx.scope().allows_path(&snippet.file_path) {
+                    return Err(ToolError::Forbidden(ctx.scope().outside_message(&format!(
+                        "The snippet from {}",
+                        snippet.file_name
+                    ))));
+                }
+                vec![snippet]
+            }
             None => services
                 .snippets
                 .list(&SnippetQuery {
@@ -145,7 +154,11 @@ impl HostTool for ListSnippetsTool {
                     limit: Some(limit_arg(&args, DEFAULT_SNIPPETS, MAX_SNIPPETS)),
                 })
                 .await
-                .map_err(research_error)?,
+                .map_err(research_error)?
+                .into_iter()
+                // In a workspace chat, only snippets of the workspace's files.
+                .filter(|s| ctx.scope().allows_path(&s.file_path))
+                .collect(),
         };
         if snippets.is_empty() {
             return Ok(ToolOutput {
@@ -618,7 +631,31 @@ impl HostTool for QueryResultsTool {
                 .map(str::to_string)
                 .collect()
         });
-        let known = indexed_pdfs(&self.host.rag).await;
+        let mut known = indexed_pdfs(&self.host.rag).await;
+        let mut papers = papers;
+        if ctx.scope().restricted {
+            // In a workspace chat, only results of the workspace's papers.
+            known.retain(|p| ctx.scope().allows_path(p));
+            if known.is_empty() {
+                return Ok(ToolOutput {
+                    text_for_model: ctx
+                        .scope()
+                        .outside_message("Every paper with extracted results"),
+                    summary_for_ui: "No results in this workspace".to_string(),
+                    detail: Some(json!({ "passages": [] })),
+                });
+            }
+            match restrict_papers(papers.unwrap_or_default(), &known) {
+                Some(kept) => papers = Some(kept),
+                None => {
+                    return Ok(ToolOutput {
+                        text_for_model: ctx.scope().outside_message("The papers you named"),
+                        summary_for_ui: "Papers outside this workspace".to_string(),
+                        detail: Some(json!({ "passages": [] })),
+                    })
+                }
+            }
+        }
         let mut filter = ResultFilterInput {
             method: str_arg(&args, "method").map(str::to_string),
             dataset: str_arg(&args, "dataset").map(str::to_string),
@@ -671,6 +708,28 @@ impl HostTool for QueryResultsTool {
             })),
         })
     }
+}
+
+/// The papers a workspace-limited result query may cover: the requested ones that are
+/// among `allowed` (by path or file name), or every allowed one when none was requested.
+/// `None` when every requested paper is outside `allowed`. Never an empty list, so the
+/// query cannot fall back to every paper.
+fn restrict_papers(requested: Vec<String>, allowed: &[String]) -> Option<Vec<String>> {
+    use shodh_rag::workspaces::normalize_path;
+    if requested.is_empty() {
+        return Some(allowed.to_vec());
+    }
+    let kept: Vec<String> = allowed
+        .iter()
+        .filter(|a| {
+            let name = a.rsplit(['/', '\\']).next().unwrap_or(a).to_lowercase();
+            requested
+                .iter()
+                .any(|r| normalize_path(r) == normalize_path(a) || r.trim().to_lowercase() == name)
+        })
+        .cloned()
+        .collect();
+    (!kept.is_empty()).then_some(kept)
 }
 
 #[cfg(test)]

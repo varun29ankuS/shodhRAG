@@ -42,6 +42,7 @@ use crate::model_picker_commands::{override_mode, ModelOverride};
 use crate::rag_commands::RagState;
 use crate::research_commands::ResearchState;
 use crate::visual_commands::VisualState;
+use crate::workspace_commands::{answer_workspace, AnswerWorkspace, WorkspaceState};
 use shodh_rag::audit::payload::is_cloud;
 use shodh_rag::audit::LOCAL_OWNER;
 use shodh_rag::harness::grounding::{GroundingConfig, ScorerSet, SharedEntailment};
@@ -49,6 +50,7 @@ use shodh_rag::harness::web::relevance::SharedScorer;
 use shodh_rag::harness::web::SafeClient;
 use shodh_rag::rag_engine::{RAGEngine, SharedReranker};
 use shodh_rag::user_memory::Actor;
+use shodh_rag::workspaces::instructions_block;
 
 /// Tauri event name for agent events.
 pub const AGENT_EVENT: &str = "agent_event";
@@ -564,8 +566,12 @@ pub struct SendScope {
     pub source_files: Vec<String>,
     /// 1-based pages of `source_files`; absent or empty means every page.
     pub pages: Option<Vec<u32>>,
-    /// The conversation's workspace (source / space id). Scopes memories, not search.
+    /// The conversation's workspace. Its sources limit search (unless `search_all`), its
+    /// instructions go with the question, and it scopes memories.
     pub workspace_id: Option<String>,
+    /// "Search all my library" for this one question: the workspace's instructions and
+    /// memories still apply, its source limit does not.
+    pub search_all: bool,
 }
 
 impl SendScope {
@@ -617,7 +623,71 @@ impl SendScope {
             files,
             pages,
             workspace,
+            ..RunScope::default()
         })
+    }
+}
+
+/// `scope` for an answer in `workspace` (when the conversation has one). The workspace's
+/// sources become the limit and it is restricted, so the model cannot widen it; a narrower
+/// limit the user chose for this question (a file, a page) is kept and restricted too.
+/// "Search all my library" (`search_all`) lifts the limit for this question only.
+pub(crate) fn scope_for_workspace(
+    mut scope: RunScope,
+    workspace: Option<&AnswerWorkspace>,
+    search_all: bool,
+) -> RunScope {
+    let Some(workspace) = workspace else {
+        return scope;
+    };
+    scope.workspace = Some(workspace.id.clone());
+    scope.workspace_name = Some(workspace.name.clone());
+    if search_all {
+        return scope;
+    }
+    if scope.source_ids.is_empty() && scope.files.is_empty() {
+        scope.source_ids = workspace.source_ids.clone();
+        scope.files = workspace.files.clone();
+        scope.folders = workspace.folders.clone();
+        scope.snippets = workspace.snippets.clone();
+    }
+    scope.restricted = true;
+    scope
+}
+
+/// The note put in front of a question asked with "search all my library".
+const SEARCH_ALL_NOTE: &str = "For this question the user turned on \"search all my library\": \
+     search all of their sources, not only this workspace's.";
+
+/// The message sent to the model: the workspace's instructions and the recalled memories
+/// (each a delimited block), then the conversation so far when it is replayed into a new
+/// session, then the user's message. The `question` audit event never sees the blocks.
+pub(crate) fn compose_message(
+    text: &str,
+    replay: Option<&[HistoryTurn]>,
+    memories: Option<&str>,
+    workspace_block: Option<&str>,
+    search_all: bool,
+) -> String {
+    let mut preamble: Vec<&str> = Vec::new();
+    if let Some(block) = workspace_block {
+        preamble.push(block);
+    }
+    if search_all {
+        preamble.push(SEARCH_ALL_NOTE);
+    }
+    if let Some(block) = memories {
+        preamble.push(block);
+    }
+    let with_turns = replay.map(|history| with_history(text, history));
+    match (preamble.is_empty(), with_turns) {
+        (true, Some(with_turns)) => with_turns,
+        (true, None) => text.to_string(),
+        // The history preamble already labels the current message.
+        (false, Some(with_turns)) if with_turns != text => {
+            format!("{}\n\n{with_turns}", preamble.join("\n\n"))
+        }
+        (false, _) => with_memories(Some(&preamble.join("\n\n")), text),
     }
 }
 
@@ -930,6 +1000,7 @@ pub async fn agent_start(
                     .state::<crate::pdf_export::PdfExportState>()
                     .printer
                     .clone(),
+                workspaces: app.state::<WorkspaceState>().inner().clone(),
             });
             build_registry(host)
                 .map(Arc::new)
@@ -1123,12 +1194,36 @@ pub async fn agent_send(
     audit: State<'_, AuditState>,
     memory: State<'_, MemoryState>,
     learn: State<'_, LearnState>,
+    workspaces: State<'_, WorkspaceState>,
+    research: State<'_, ResearchState>,
 ) -> CommandResult<String> {
     check_id("request id", &request_id)?;
+    let search_all = scope.as_ref().is_some_and(|s| s.search_all);
     let scope = scope
         .map(SendScope::validated)
         .transpose()?
         .unwrap_or_default();
+    // A workspace chat must never fall back to searching everything: when the workspace
+    // cannot be read, the question fails instead.
+    let workspace = match scope.workspace.as_deref() {
+        Some(id) => answer_workspace(&workspaces, &research, id)
+            .await
+            .map_err(|e| AgentCommandError {
+                code: "runtime_error",
+                message: format!(
+                    "This chat's workspace could not be read, so its sources cannot be \
+                     limited: {e}"
+                ),
+            })?,
+        None => None,
+    };
+    if scope.workspace.is_some() && workspace.is_none() {
+        tracing::info!(target: "shodh::workspaces", "the conversation's workspace no longer exists; answering without it");
+    }
+    let scope = scope_for_workspace(scope, workspace.as_ref(), search_all);
+    let workspace_block = workspace
+        .as_ref()
+        .and_then(|w| instructions_block(&w.name, &w.instructions));
     let entry = sessions.entry(&session_id)?;
     entry.touch();
     // Checked here because the history preamble would hide a leading '/'.
@@ -1147,27 +1242,25 @@ pub async fn agent_send(
     } else {
         None
     };
-    let message = match &history {
-        Some(history) if replay => {
-            let with_turns = with_history(&text, history);
-            match &memories {
-                Some(block) => format!(
-                    "{block}
-
-{with_turns}"
-                ),
-                None => with_turns,
-            }
-        }
-        _ => with_memories(memories.as_deref(), &text),
-    };
+    let message = compose_message(
+        &text,
+        history.as_deref().filter(|_| replay),
+        memories.as_deref(),
+        workspace_block.as_deref(),
+        search_all && workspace.is_some(),
+    );
     let scoped = !scope.is_empty();
     // Registered before prompting: the run id is `request_id`, and the first events may
     // arrive before `prompt_scoped` returns.
     let learnable =
         text_origin == Some(TextOrigin::Typed) && entry.parent_conversation_id.is_none();
     if learnable {
-        learn.record_question(&entry.conversation_id, &request_id, &text);
+        learn.record_question(
+            &entry.conversation_id,
+            &request_id,
+            &text,
+            scope.workspace.as_deref(),
+        );
     }
     let run_id = match entry
         .session
@@ -1534,6 +1627,80 @@ mod tests {
         assert_eq!(wire.validated().unwrap().pages, vec![2]);
         let old: SendScope = serde_json::from_str(r#"{"sourceFiles": ["a.pdf"]}"#).unwrap();
         assert!(old.validated().unwrap().pages.is_empty());
+    }
+
+    fn thesis() -> AnswerWorkspace {
+        AnswerWorkspace {
+            id: "ws-1".into(),
+            name: "Thesis".into(),
+            instructions: "Cite page numbers.".into(),
+            source_ids: vec!["src-1".into()],
+            folders: vec!["C:/docs/thesis".into()],
+            files: vec!["C:/papers/a.pdf".into()],
+            snippets: Vec::new(),
+            unavailable_snippets: 0,
+        }
+    }
+
+    #[test]
+    fn a_workspace_limits_the_answer_unless_the_user_searches_everything() {
+        let asked: SendScope =
+            serde_json::from_str(r#"{"workspaceId": "ws-1", "searchAll": false}"#).unwrap();
+        let scope = scope_for_workspace(asked.validated().unwrap(), Some(&thesis()), false);
+        assert!(scope.restricted);
+        assert_eq!(scope.source_ids, vec!["src-1"]);
+        assert_eq!(scope.files, vec!["C:/papers/a.pdf"]);
+        assert_eq!(scope.workspace.as_deref(), Some("ws-1"));
+        assert_eq!(scope.workspace_name.as_deref(), Some("Thesis"));
+
+        // "Search all my library": no limit, but still the workspace's memories.
+        let all = scope_for_workspace(RunScope::default(), Some(&thesis()), true);
+        assert!(!all.restricted && all.source_ids.is_empty() && all.files.is_empty());
+        assert!(all.is_empty());
+        assert_eq!(all.workspace.as_deref(), Some("ws-1"));
+
+        // A narrower limit the user chose (a file) is kept, and restricted.
+        let file = SendScope {
+            source_files: vec!["C:/papers/b.pdf".into()],
+            workspace_id: Some("ws-1".into()),
+            ..SendScope::default()
+        };
+        let narrowed = scope_for_workspace(file.validated().unwrap(), Some(&thesis()), false);
+        assert!(narrowed.restricted);
+        assert_eq!(narrowed.files, vec!["C:/papers/b.pdf"]);
+        assert!(narrowed.source_ids.is_empty());
+
+        // No workspace: unchanged (the whole library).
+        let plain = scope_for_workspace(RunScope::default(), None, false);
+        assert_eq!(plain, RunScope::default());
+        // The UI cannot widen anything: searchAll alone is not a scope.
+        let wire: SendScope = serde_json::from_str(r#"{"searchAll": true}"#).unwrap();
+        assert!(wire.validated().unwrap().is_empty());
+    }
+
+    #[test]
+    fn instructions_and_memories_come_before_the_question_in_every_path() {
+        let block = instructions_block("Thesis", "Cite page numbers.").unwrap();
+        let plain = compose_message("What is X?", None, None, None, false);
+        assert_eq!(plain, "What is X?");
+        let with_block = compose_message("What is X?", None, Some("MEM"), Some(&block), false);
+        let ws = with_block.find("<workspace_instructions").unwrap();
+        let mem = with_block.find("MEM").unwrap();
+        let question = with_block.find("Current message:\nWhat is X?").unwrap();
+        assert!(ws < mem && mem < question, "{with_block}");
+        // Replayed history: the same order, history before the question.
+        let history = vec![HistoryTurn {
+            role: "user".into(),
+            content: "Earlier question".into(),
+        }];
+        let replayed = compose_message("What is X?", Some(&history), None, Some(&block), false);
+        let earlier = replayed.find("Earlier question").unwrap();
+        assert!(replayed.find("<workspace_instructions").unwrap() < earlier);
+        assert!(earlier < replayed.find("What is X?").unwrap());
+        assert_eq!(replayed.matches("Cite page numbers.").count(), 1);
+        // Search all: the note says so.
+        let all = compose_message("What is X?", None, None, Some(&block), true);
+        assert!(all.contains("search all my library"));
     }
 
     #[test]

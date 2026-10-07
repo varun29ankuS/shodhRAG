@@ -251,6 +251,12 @@ pub enum NavigationTarget {
         visual_id: String,
         version: Option<u32>,
     },
+    /// Open a workspace's page, at a tab (`overview`, `sources`, `chats`, `memory`,
+    /// `visuals`, `results`; the overview when absent).
+    Workspace {
+        workspace_id: String,
+        tab: Option<String>,
+    },
 }
 
 /// A normalised agent event. Produced from omp frames and from host-tool
@@ -759,6 +765,14 @@ mod tests {
                 },
                 "visual",
                 vec!["visualId", "version"],
+            ),
+            (
+                NavigationTarget::Workspace {
+                    workspace_id: "ws-1".into(),
+                    tab: Some("sources".into()),
+                },
+                "workspace",
+                vec!["workspaceId", "tab"],
             ),
         ]
     }

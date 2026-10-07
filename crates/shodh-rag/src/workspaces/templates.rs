@@ -27,7 +27,7 @@ pub const TEMPLATES: &[WorkspaceTemplate] = &[
         name: "Blank",
         description: "No instructions; add sources and write your own.",
         icon: "folder",
-        color: "slate",
+        color: "neutral",
         instructions: "",
     },
     WorkspaceTemplate {
@@ -35,7 +35,7 @@ pub const TEMPLATES: &[WorkspaceTemplate] = &[
         name: "Literature review",
         description: "Survey papers on a question: methods, findings, disagreements and gaps.",
         icon: "book-open",
-        color: "blue",
+        color: "info",
         instructions: "This workspace is a literature review.\n\
 - Answer from the papers in this workspace and cite every claim to a passage.\n\
 - When comparing papers, give each paper's method, data, main result and stated limitations; use a table when more than two papers are compared.\n\
@@ -48,7 +48,7 @@ pub const TEMPLATES: &[WorkspaceTemplate] = &[
         name: "Grant proposal",
         description: "Draft aims, significance and approach from your prior work and the call.",
         icon: "landmark",
-        color: "amber",
+        color: "warning",
         instructions: "This workspace is for writing a grant proposal.\n\
 - Treat the funding call in the sources as the requirements: check every draft against its sections, page limits and review criteria, and point out anything missing.\n\
 - Ground preliminary results and claims of prior work in the sources, with citations; mark anything not supported by a source as needing evidence.\n\
@@ -72,7 +72,7 @@ pub const TEMPLATES: &[WorkspaceTemplate] = &[
         name: "Client audit",
         description: "Review a client's documents against requirements and record findings.",
         icon: "clipboard-check",
-        color: "teal",
+        color: "success",
         instructions: "This workspace is an audit of one client's documents.\n\
 - Only use this workspace's documents; never bring in other clients' material.\n\
 - For each finding give: the requirement, what the documents show (cited, with page), the gap, and its severity (high, medium or low).\n\

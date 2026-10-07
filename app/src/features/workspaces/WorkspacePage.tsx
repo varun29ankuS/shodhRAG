@@ -140,6 +140,7 @@ export function WorkspacePage({
   const [menuOpen, setMenuOpen] = useState(false);
   const tabRefs = useRef<Partial<Record<WorkspaceTab, HTMLButtonElement | null>>>({});
   const menuRef = useRef<HTMLDivElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
 
   const load = useCallback(async () => {
     try {
@@ -266,6 +267,7 @@ export function WorkspacePage({
         </button>
         <div ref={menuRef} className="relative shrink-0">
           <button
+            ref={menuButtonRef}
             type="button"
             className={cn(QUIET_BUTTON, 'w-9 h-9 justify-center px-0')}
             aria-label="Workspace options"
@@ -281,8 +283,19 @@ export function WorkspacePage({
               aria-label="Workspace options"
               className="shell-pop absolute right-0 top-10 z-50 min-w-[180px] py-1 rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg"
               onKeyDown={e => {
+                const items = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+                const index = items.indexOf(document.activeElement as HTMLButtonElement);
                 if (e.key === 'Escape') {
                   e.preventDefault();
+                  setMenuOpen(false);
+                  menuButtonRef.current?.focus();
+                } else if (e.key === 'ArrowDown') {
+                  e.preventDefault();
+                  items[(index + 1) % items.length]?.focus();
+                } else if (e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  items[(index - 1 + items.length) % items.length]?.focus();
+                } else if (e.key === 'Tab') {
                   setMenuOpen(false);
                 }
               }}

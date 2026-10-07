@@ -24,7 +24,7 @@ interface ConversationHistoryProps {
   onRename: (id: string, title: string) => void;
   onPin: (id: string) => void;
   onDelete: (id: string) => void;
-  /** Workspaces that are not archived (chats are grouped under them). */
+  /** Every workspace (chats are grouped under them; archived ones' chats are hidden). */
   workspaces: GroupableWorkspace[];
   onOpenWorkspace: (id: string) => void;
   onNewChatInWorkspace: (id: string) => void;
@@ -434,7 +434,7 @@ function ConversationRow({
         >
           {moving ? (
             <>
-              {workspaces.filter(w => w.id !== currentWorkspace).map(w => (
+              {workspaces.filter(w => !w.archived && w.id !== currentWorkspace).map(w => (
                 <MenuItem
                   key={w.id}
                   onSelect={() => {
@@ -463,7 +463,7 @@ function ConversationRow({
           <MenuItem onSelect={startRename} icon={<Pencil className="w-3.5 h-3.5" aria-hidden="true" />} hint="F2">
             Rename
           </MenuItem>
-          {(workspaces.length > 0 || currentWorkspace !== null) && (
+          {(workspaces.some(w => !w.archived) || currentWorkspace !== null) && (
             <MenuItem onSelect={() => setMoving(true)} icon={<FolderInput className="w-3.5 h-3.5" aria-hidden="true" />}>
               Move to workspace…
             </MenuItem>

@@ -110,6 +110,7 @@ function AppSplitView() {
   // Workspaces: the sidebar groups chats by them, new chats start in the current one.
   const {
     workspaces,
+    allWorkspaces,
     byId: workspaceById,
     openWorkspace,
     openWorkspaceId,
@@ -1140,7 +1141,7 @@ function AppSplitView() {
         llmStatus={llmStatus}
         onOpenCommandPalette={openPalette}
         onShowFeedback={() => setShowFeedback(true)}
-        workspaces={workspaces}
+        workspaces={allWorkspaces}
         onOpenWorkspace={id => openWorkspace(id)}
         onNewChatInWorkspace={id => startChat(id)}
         onMoveToWorkspace={(conversationId, workspaceId) => {

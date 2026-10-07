@@ -1,9 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Archive, Layers, MessageSquare, Pin, Plus } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { relativeTime } from '../../utils/time';
 import { useNavigationTarget } from '../agent/useNavigationTarget';
-import { workspaceError, workspacesApi } from './api';
+import { workspacesApi } from './api';
 import { CreateWorkspaceDialog } from './CreateWorkspaceDialog';
 import { orderTemplates, sortWorkspaces, sourceSummary, WORKSPACE_TABS } from './model';
 import type { WorkspaceListing, WorkspaceTab, WorkspaceTemplate } from './types';
@@ -71,13 +71,13 @@ export default function WorkspacesView({
   onNewChat: (workspaceId: string) => void;
   onOpenChat: (conversationId: string) => void;
 }) {
-  const { workspaces, status, error, refresh, setOpenWorkspaceId, newWorkspacePending, takeNewWorkspaceRequest } = useWorkspaces();
+  const { workspaces, allWorkspaces, status, error, refresh, setOpenWorkspaceId, newWorkspacePending, takeNewWorkspaceRequest } = useWorkspaces();
   const [selected, setSelected] = useState<string | null>(null);
   const [tab, setTab] = useState<WorkspaceTab>('overview');
   const [creating, setCreating] = useState(false);
   const [createTemplate, setCreateTemplate] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
-  const [archived, setArchived] = useState<WorkspaceListing[]>([]);
+  const archived = useMemo(() => sortWorkspaces(allWorkspaces.filter(w => w.archived)), [allWorkspaces]);
   const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
 
   useNavigationTarget('workspace', target => {
@@ -104,20 +104,6 @@ export default function WorkspacesView({
     workspacesApi.templates().then(list => { if (!cancelled) setTemplates(orderTemplates(list)); }).catch(() => undefined);
     return () => { cancelled = true; };
   }, []);
-
-  const loadArchived = useCallback(async () => {
-    try {
-      const all = await workspacesApi.list(true);
-      setArchived(all.filter(w => w.archived));
-    } catch (err) {
-      setArchived([]);
-      console.warn('Archived workspaces could not be listed:', workspaceError(err).message);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (showArchived) void loadArchived();
-  }, [showArchived, loadArchived, workspaces]);
 
   const sorted = useMemo(() => sortWorkspaces(workspaces), [workspaces]);
 

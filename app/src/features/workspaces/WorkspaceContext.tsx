@@ -6,6 +6,8 @@ import type { WorkspaceListing, WorkspaceTab } from './types';
 interface WorkspaceContextValue {
   /** Workspaces that are not archived, as listed (pinned, then most recent). */
   workspaces: WorkspaceListing[];
+  /** Every workspace, archived ones included (their chats are hidden, not unfiled). */
+  allWorkspaces: WorkspaceListing[];
   status: 'loading' | 'ready' | 'error';
   error: string | null;
   refresh: () => void;
@@ -27,7 +29,7 @@ const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
 
 /** Workspaces for the shell: the list (refreshed on `workspaces-changed`) and navigation. */
 export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
-  const [workspaces, setWorkspaces] = useState<WorkspaceListing[]>([]);
+  const [allWorkspaces, setAllWorkspaces] = useState<WorkspaceListing[]>([]);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
   const [openWorkspaceId, setOpenWorkspaceId] = useState<string | null>(null);
@@ -37,10 +39,10 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const refresh = useCallback(() => {
     const run = ++generation.current;
     workspacesApi
-      .list(false)
+      .list(true)
       .then(list => {
         if (run !== generation.current) return;
-        setWorkspaces(list);
+        setAllWorkspaces(list);
         setStatus('ready');
         setError(null);
       })
@@ -56,9 +58,10 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     return onWorkspacesChanged(() => refresh());
   }, [refresh]);
 
+  const workspaces = useMemo(() => allWorkspaces.filter(w => !w.archived), [allWorkspaces]);
   const byId = useCallback(
-    (id: string | null | undefined) => (id ? workspaces.find(w => w.id === id) ?? null : null),
-    [workspaces],
+    (id: string | null | undefined) => (id ? allWorkspaces.find(w => w.id === id) ?? null : null),
+    [allWorkspaces],
   );
 
   const openWorkspace = useCallback((id: string, tab?: WorkspaceTab) => {
@@ -75,6 +78,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<WorkspaceContextValue>(
     () => ({
       workspaces,
+      allWorkspaces,
       status,
       error,
       refresh,
@@ -86,7 +90,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       requestNewWorkspace,
       takeNewWorkspaceRequest,
     }),
-    [workspaces, status, error, refresh, byId, openWorkspaceId, openWorkspace, newWorkspacePending, requestNewWorkspace, takeNewWorkspaceRequest],
+    [workspaces, allWorkspaces, status, error, refresh, byId, openWorkspaceId, openWorkspace, newWorkspacePending, requestNewWorkspace, takeNewWorkspaceRequest],
   );
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

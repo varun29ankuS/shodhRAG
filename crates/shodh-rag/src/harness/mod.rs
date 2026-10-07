@@ -18,6 +18,8 @@ pub mod model;
 pub mod model_catalog;
 pub mod model_choice;
 pub mod omp;
+#[cfg(test)]
+mod omp_live_tests;
 pub mod profile;
 pub mod protocol;
 pub mod provider_error;

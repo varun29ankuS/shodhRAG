@@ -72,7 +72,7 @@ const MAX_LABEL_CHARS: usize = 80;
 
 /// Discovery sources whose project files (settings, hooks, MCP servers,
 /// context files) are ignored in Code sessions.
-const DISABLED_DISCOVERY: [&str; 10] = [
+pub(crate) const DISABLED_DISCOVERY: [&str; 10] = [
     "native",
     "agents",
     "agents-md",
@@ -139,6 +139,9 @@ fn code_settings() -> Value {
         .collect();
     json!({
         "tools": { "approvalMode": "always-ask", "approval": approvals },
+        // No fallback models: a folder's chains (merged entry by entry into
+        // any the overlays set) could route the session to another model.
+        "retry": { "fallbackChains": null },
         "edit": { "mode": "replace" },
         "grep": { "enabled": true },
         "glob": { "enabled": true },
@@ -165,9 +168,14 @@ fn code_settings() -> Value {
 /// ([`super::sidecar::overlay_config`]), else omp's own. Unset keys are
 /// pinned to null, which keeps a folder's value out. Records (maps, which omp
 /// merges entry by entry across layers) are pinned to null as well, which omp
-/// reads as empty; the records the overlays fill (tool approvals, fallback
-/// chains) keep their entries and still accept a folder's entries for other
-/// names.
+/// reads as empty: model roles too, which omp also reads straight from the
+/// folder's `.omp/config.yml` (into the same layer), and fallback chains. The
+/// one record kept is the tool approvals Code mode sets: without them omp
+/// would ask about every edit, write and command itself, and its own prompts
+/// are declined. A folder can add approval entries for other names; omp
+/// consults those only for tools a Code session does not have (its tool list
+/// is exact) and for `xd://` device writes, which the guard blocks like every
+/// internal URL.
 pub fn code_overlay_config(settings: &serde_json::Map<String, Value>) -> Value {
     let mut pinned: std::collections::BTreeMap<String, Value> = settings
         .iter()

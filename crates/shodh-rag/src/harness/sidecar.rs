@@ -16,7 +16,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 
 use super::code_mode::{
-    code_launch_args, code_overlay_config, CodeFolder, CODE_ROOT_ENV, EDIT_VARIANT_ENV, GUARD_HOOK,
+    code_launch_args, code_overlay_config, CodeFolder, CODE_ROOT_ENV, DISABLED_DISCOVERY,
+    EDIT_VARIANT_ENV, GUARD_HOOK,
 };
 use super::error::HarnessError;
 use super::model::{EnvValue, OmpModel};
@@ -50,6 +51,95 @@ pub const BASE_FLAGS: [&str; 12] = [
     "--no-session",
     "--thinking",
     "off",
+];
+
+/// Every model provider omp 18.4.10 discovers models from at startup
+/// (its catalog's provider descriptors, the special Google/Codex providers and
+/// the implicit local servers). Discovery runs in the background of every
+/// session and contacts each provider that needs no key: third-party model
+/// catalogs (Venice, ZenMux, Kilo, Alibaba, Charm, CommandCode) and local
+/// servers (Ollama, llama.cpp, LM Studio). Every one but the session's own is
+/// disabled ([`provider_overlay_config`]).
+pub const OMP_MODEL_PROVIDERS: [&str; 79] = [
+    "abliteration",
+    "aiand",
+    "aimlapi",
+    "alibaba-coding-plan",
+    "alibaba-token-plan",
+    "anthropic",
+    "apple",
+    "baseten",
+    "bedrock-mantle",
+    "cerebras",
+    "charm-hyper",
+    "cline-pass",
+    "cloudflare-ai-gateway",
+    "commandcode",
+    "coreweave",
+    "cursor",
+    "deepinfra",
+    "deepseek",
+    "devin",
+    "factory-droid",
+    "firepass",
+    "fireworks",
+    "github-copilot",
+    "gitlab-duo-agent",
+    "gmi-cloud",
+    "google",
+    "google-antigravity",
+    "google-gemini-cli",
+    "google-vertex",
+    "groq",
+    "helmcode",
+    "huggingface",
+    "kilo",
+    "kimi-code",
+    "litellm",
+    "llama.cpp",
+    "lm-studio",
+    "local",
+    "meta",
+    "mistral",
+    "moonshot",
+    "muse-code",
+    "nanogpt",
+    "novita",
+    "nvidia",
+    "ollama",
+    "ollama-cloud",
+    "openai",
+    "openai-codex",
+    "opencode-go",
+    "opencode-zen",
+    "openrouter",
+    "qianfan",
+    "qwen-portal",
+    "sakana",
+    "siliconflow",
+    "siliconflow-cn",
+    "singularityapi-dev",
+    "singularityapi-tech",
+    "stepfun",
+    "synthetic",
+    "together",
+    "typesafe",
+    "umans",
+    "venice",
+    "vercel-ai-gateway",
+    "vllm",
+    "wafer-serverless",
+    "web",
+    "xai",
+    "xai-oauth",
+    "xiaomi",
+    "xiaomi-token-plan-ams",
+    "xiaomi-token-plan-cn",
+    "xiaomi-token-plan-sgp",
+    "yolo-auto",
+    "zai",
+    "zenmux",
+    "zhipu-coding-plan",
 ];
 
 /// Release asset for the platform this binary was built for.
@@ -228,6 +318,17 @@ impl OmpLayout {
         Ok(())
     }
 
+    /// The last `--config` overlay of every session with `provider`'s model
+    /// ([`provider_overlay_config`]). Its content depends only on the
+    /// provider, so concurrent sessions never write different content to it.
+    pub fn provider_overlay(&self, provider: &str) -> PathBuf {
+        let safe: String = provider
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.'))
+            .collect();
+        self.root.join(format!("providers-{safe}.yml"))
+    }
+
     /// Where [`omp_settings`] caches omp's settings (per omp version).
     pub fn code_settings_cache(&self) -> PathBuf {
         self.root
@@ -283,6 +384,7 @@ pub fn overlay_config() -> Value {
         "lsp": { "enabled": false },
         "marketplace": { "autoUpdate": "off" },
         "dev": { "autoqa": false, "autoqaConsent": "denied" },
+        "telemetry": { "otlpExportEnabled": false },
         "skills": {
             "enabled": false,
             "enableCodexUser": false,
@@ -301,6 +403,22 @@ pub fn overlay_config() -> Value {
             "enableOpencodeProject": false
         }
     })
+}
+
+/// The provider overlay of a session using `provider` (omp's provider id):
+/// every model provider but `provider` is disabled, so background model
+/// discovery contacts only the configured provider. omp's `disabledProviders`
+/// also names the discovery sources Code mode turns off
+/// ([`DISABLED_DISCOVERY`]); it is one list (overlays replace lists), so it
+/// carries both, in Research sessions too (they work in an empty folder).
+pub fn provider_overlay_config(provider: &str) -> Value {
+    let disabled: Vec<&str> = DISABLED_DISCOVERY
+        .iter()
+        .chain(OMP_MODEL_PROVIDERS.iter())
+        .copied()
+        .filter(|id| *id != provider)
+        .collect();
+    json!({ "disabledProviders": disabled })
 }
 
 /// Full argument list for one session.
@@ -426,19 +544,34 @@ impl LaunchSpec {
         )
     }
 
+    /// omp's id of the session's provider (`anthropic/claude-x` → `anthropic`).
+    fn omp_provider(&self) -> &str {
+        self.model
+            .model_arg
+            .split_once('/')
+            .map_or(self.model.model_arg.as_str(), |(provider, _)| provider)
+    }
+
     /// The process's arguments and working directory. A Code session works in
-    /// its folder; a Research session gets an empty one of its own.
+    /// its folder; a Research session gets an empty one of its own. The
+    /// provider overlay is written here and loaded last in both.
     fn command_line(&self) -> Result<(Vec<String>, PathBuf), HarnessError> {
-        match &self.code {
-            None => Ok((
+        let provider = self.omp_provider();
+        let providers = self.layout.provider_overlay(provider);
+        write_if_changed(
+            &providers,
+            &serde_json::to_string_pretty(&provider_overlay_config(provider))?,
+        )?;
+        let (mut args, cwd) = match &self.code {
+            None => (
                 launch_args(
                     &self.model.model_arg,
                     &self.layout.overlay,
                     &self.system_prompt,
                 ),
                 self.layout.session_dir(&self.session_id)?,
-            )),
-            Some(folder) => Ok((
+            ),
+            Some(folder) => (
                 code_launch_args(
                     &self.model.model_arg,
                     &self.layout.overlay,
@@ -447,8 +580,10 @@ impl LaunchSpec {
                     &self.system_prompt,
                 ),
                 folder.root().to_path_buf(),
-            )),
-        }
+            ),
+        };
+        args.push(format!("--config={}", providers.display()));
+        Ok((args, cwd))
     }
 
     /// The child's environment: [`child_env`], plus the guard's folder and
@@ -833,6 +968,7 @@ mod tests {
             .any(|a| a.starts_with("--tools") || a.starts_with("--hook")));
         assert_eq!(cwd, spec.layout.sessions.join("s1"));
         assert_eq!(std::fs::read_dir(&cwd).unwrap().count(), 0);
+        assert_provider_overlay_is_last(&spec, &args);
         let env = spec.environment();
         assert!(!env
             .iter()
@@ -875,6 +1011,77 @@ mod tests {
         assert_eq!(get(CODE_ROOT_ENV), Some(folder.display()));
         assert_eq!(get(EDIT_VARIANT_ENV.0).as_deref(), Some("replace"));
         assert!(spec.describe().contains("code in"));
+        assert_provider_overlay_is_last(&spec, &args);
+    }
+
+    /// The provider overlay is written and loaded after every other overlay
+    /// (lists are replaced, so the last `disabledProviders` is the one used).
+    fn assert_provider_overlay_is_last(spec: &LaunchSpec, args: &[String]) {
+        let path = spec.layout.provider_overlay("anthropic");
+        let configs: Vec<&String> = args.iter().filter(|a| a.starts_with("--config=")).collect();
+        assert_eq!(
+            configs.last().map(|a| a.as_str()),
+            Some(format!("--config={}", path.display()).as_str())
+        );
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written, provider_overlay_config("anthropic"));
+    }
+
+    #[test]
+    fn only_the_configured_provider_stays_enabled() {
+        let overlay = provider_overlay_config("anthropic");
+        let disabled: Vec<&str> = overlay["disabledProviders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(!disabled.contains(&"anthropic"));
+        // Keyless catalogs and local servers observed during discovery.
+        for other in [
+            "venice",
+            "zenmux",
+            "kilo",
+            "commandcode",
+            "charm-hyper",
+            "alibaba-coding-plan",
+            "ollama",
+            "llama.cpp",
+            "lm-studio",
+            "openrouter",
+            "openai",
+            "google",
+            "xai",
+        ] {
+            assert!(disabled.contains(&other), "{other} enabled");
+        }
+        // Code mode's discovery sources share the list.
+        for source in DISABLED_DISCOVERY {
+            assert!(disabled.contains(&source), "{source} enabled");
+        }
+        assert_eq!(
+            disabled.len(),
+            DISABLED_DISCOVERY.len() + OMP_MODEL_PROVIDERS.len() - 1
+        );
+        // Every provider Shodh maps to omp is one omp knows.
+        for provider in [
+            "openrouter",
+            "anthropic",
+            "openai",
+            "google",
+            "xai",
+            "ollama",
+        ] {
+            assert!(OMP_MODEL_PROVIDERS.contains(&provider), "{provider}");
+        }
+        let layout = OmpLayout::new(Path::new("/data"));
+        assert!(layout
+            .provider_overlay("ollama")
+            .ends_with("providers-ollama.yml"));
+        assert!(layout
+            .provider_overlay("../x")
+            .ends_with("providers-..x.yml"));
     }
 
     #[test]
@@ -884,6 +1091,7 @@ mod tests {
         assert_eq!(overlay["retry"]["fallbackChains"]["judge"], json!([]));
         assert_eq!(overlay["memory"]["backend"], "off");
         assert_eq!(overlay["skills"]["enabled"], false);
+        assert_eq!(overlay["telemetry"]["otlpExportEnabled"], false);
     }
 
     #[test]

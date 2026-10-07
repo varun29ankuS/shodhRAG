@@ -53,6 +53,39 @@ impl EmbeddingModel for WordEmbedder {
     }
 }
 
+/// Hashes each lower-cased word into one of [`DIM`] dimensions and L2-normalises: any
+/// vocabulary size (for fixtures larger than [`WordEmbedder`] allows).
+#[derive(Default)]
+pub(crate) struct HashEmbedder;
+
+impl EmbeddingModel for HashEmbedder {
+    fn embed_query(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        self.embed_document(text)
+    }
+    fn embed_document(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        use std::hash::{Hash, Hasher};
+        let mut v = vec![0.0f32; DIM];
+        for word in text.split(|c: char| !c.is_alphanumeric()) {
+            if word.is_empty() {
+                continue;
+            }
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            word.to_lowercase().hash(&mut hasher);
+            v[(hasher.finish() % DIM as u64) as usize] += 1.0;
+        }
+        let norm = v
+            .iter()
+            .map(|x| x * x)
+            .sum::<f32>()
+            .sqrt()
+            .max(f32::EPSILON);
+        Ok(v.into_iter().map(|x| x / norm).collect())
+    }
+    fn dimension(&self) -> usize {
+        DIM
+    }
+}
+
 pub(crate) struct FixedEmbedder(pub Arc<dyn EmbeddingModel>);
 
 #[async_trait::async_trait]

@@ -47,6 +47,8 @@ use crate::statements::{
 pub const GRAPH_CLASSES: [&str; 4] = ["Paper", "Author", "Venue", "Method"];
 /// Most library files ranked for one search.
 const RANKED_FILES: usize = 20;
+/// Graph statements stored per write (one embedding call and one table append each).
+const WRITE_BATCH: usize = 100;
 /// `citation_graph_state` keys.
 const STATE_REPORT: &str = "report";
 const STATE_SOURCES: &str = "sources";
@@ -636,69 +638,76 @@ impl CitationService {
             .iter()
             .map(|d| (d.class.to_string(), d.subject.clone()))
             .collect();
-        for (done, d) in desired.iter().enumerate() {
-            if done % 25 == 0 {
-                progress(BuildProgress::Writing {
-                    done,
-                    total: desired.len(),
-                });
+        for (chunk_index, chunk) in desired.chunks(WRITE_BATCH).enumerate() {
+            progress(BuildProgress::Writing {
+                done: chunk_index * WRITE_BATCH,
+                total: desired.len(),
+            });
+            let mut batch = Vec::with_capacity(chunk.len());
+            let mut batched = Vec::with_capacity(chunk.len());
+            for d in chunk {
+                let key = (d.class.to_string(), d.subject.clone());
+                let existing = by_key.get(&key);
+                if let Some(e) = existing {
+                    let same_source = e
+                        .statement
+                        .provenance
+                        .as_ref()
+                        .is_some_and(|p| p.source == d.source);
+                    if e.statement.properties == d.properties && same_source {
+                        written.unchanged += 1;
+                        written
+                            .ids
+                            .insert((d.class, d.subject.clone()), e.id().to_string());
+                        continue;
+                    }
+                }
+                let statement = Statement {
+                    id: format!("graph-{}", uuid::Uuid::new_v4()),
+                    class: d.class.to_string(),
+                    subject: Some(shodh_ontology::EntityRef::typed(d.subject.clone(), d.class)),
+                    properties: d.properties.clone(),
+                    ontology_version: self.version_of(d.class),
+                    valid_from: Some(now),
+                    provenance: Some(d.provenance(now)),
+                };
+                let intent = match existing {
+                    Some(e) => PutIntent::Supersede {
+                        target: e.id().to_string(),
+                    },
+                    None => PutIntent::Auto,
+                };
+                batch.push((statement, Scope::Global, intent));
+                batched.push(d);
             }
-            let key = (d.class.to_string(), d.subject.clone());
-            let existing = by_key.get(&key);
-            if let Some(e) = existing {
-                let same_source = e
-                    .statement
-                    .provenance
-                    .as_ref()
-                    .is_some_and(|p| p.source == d.source);
-                if e.statement.properties == d.properties && same_source {
-                    written.unchanged += 1;
-                    written
-                        .ids
-                        .insert((d.class, d.subject.clone()), e.id().to_string());
-                    continue;
+            let outcomes = self.store.put_many(batch).await?;
+            for (d, outcome) in batched.into_iter().zip(outcomes) {
+                match outcome {
+                    Ok(PutOutcome::Added { id }) => {
+                        written.added += 1;
+                        written.ids.insert((d.class, d.subject.clone()), id);
+                    }
+                    Ok(PutOutcome::Updated { id, .. }) => {
+                        written.updated += 1;
+                        written.ids.insert((d.class, d.subject.clone()), id);
+                    }
+                    Ok(PutOutcome::Unchanged { existing })
+                    | Ok(PutOutcome::Historical {
+                        current: existing, ..
+                    }) => {
+                        written.unchanged += 1;
+                        written.ids.insert((d.class, d.subject.clone()), existing);
+                    }
+                    Ok(PutOutcome::Conflict { existing, .. }) => {
+                        tracing::warn!(target: "shodh::research", subject = %d.subject, %existing, "graph statement conflicts with a statement made elsewhere; left as it is");
+                        written.refused += 1;
+                    }
+                    Err(StatementError::Invalid(violations)) => {
+                        tracing::warn!(target: "shodh::research", subject = %d.subject, violations = violations.len(), "graph statement refused by the ontology");
+                        written.refused += 1;
+                    }
+                    Err(e) => return Err(e.into()),
                 }
-            }
-            let statement = Statement {
-                id: format!("graph-{}", uuid::Uuid::new_v4()),
-                class: d.class.to_string(),
-                subject: Some(shodh_ontology::EntityRef::typed(d.subject.clone(), d.class)),
-                properties: d.properties.clone(),
-                ontology_version: self.version_of(d.class),
-                valid_from: Some(now),
-                provenance: Some(d.provenance(now)),
-            };
-            let intent = match existing {
-                Some(e) => PutIntent::Supersede {
-                    target: e.id().to_string(),
-                },
-                None => PutIntent::Auto,
-            };
-            match self.store.put(statement, Scope::Global, intent).await {
-                Ok(PutOutcome::Added { id }) => {
-                    written.added += 1;
-                    written.ids.insert((d.class, d.subject.clone()), id);
-                }
-                Ok(PutOutcome::Updated { id, .. }) => {
-                    written.updated += 1;
-                    written.ids.insert((d.class, d.subject.clone()), id);
-                }
-                Ok(PutOutcome::Unchanged { existing })
-                | Ok(PutOutcome::Historical {
-                    current: existing, ..
-                }) => {
-                    written.unchanged += 1;
-                    written.ids.insert((d.class, d.subject.clone()), existing);
-                }
-                Ok(PutOutcome::Conflict { existing, .. }) => {
-                    tracing::warn!(target: "shodh::research", subject = %d.subject, %existing, "graph statement conflicts with a statement made elsewhere; left as it is");
-                    written.refused += 1;
-                }
-                Err(StatementError::Invalid(violations)) => {
-                    tracing::warn!(target: "shodh::research", subject = %d.subject, violations = violations.len(), "graph statement refused by the ontology");
-                    written.refused += 1;
-                }
-                Err(e) => return Err(e.into()),
             }
         }
         for (key, row) in &by_key {

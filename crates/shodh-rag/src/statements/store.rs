@@ -1,7 +1,7 @@
 //! [`StatementStore`]: validated writes with supersede semantics, reads, hybrid search and
 //! history over the LanceDB table, with dynamics in SQLite.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -62,6 +62,108 @@ impl std::fmt::Debug for StatementStore {
     }
 }
 
+/// Writes decided in a [`StatementStore::put_many`] call and not stored yet.
+#[derive(Default)]
+struct Pending {
+    /// New rows; embedded and appended together.
+    rows: Vec<Row>,
+    /// Stored rows to close: `(id, valid_to, superseded_by)`.
+    closes: Vec<(String, i64, Option<String>)>,
+    /// Dynamics to write: `(id, scope, class, state)`.
+    states: Vec<(String, String, String, DynamicsState)>,
+    /// Ids of the new rows.
+    inserted: HashSet<String>,
+    /// Ids of every row a pending write creates or changes.
+    touched: HashSet<String>,
+    /// Scope, class, identity tokens and text of those rows: what a later statement's
+    /// supersede candidates are matched on.
+    keys: Vec<(String, String, Vec<String>, String)>,
+}
+
+impl Pending {
+    fn insert(&mut self, row: Row, state: DynamicsState) {
+        self.inserted.insert(row.id.clone());
+        self.states
+            .push((row.id.clone(), row.scope.clone(), row.class.clone(), state));
+        self.touch(&row);
+        self.rows.push(row);
+    }
+
+    fn close(&mut self, row: &Row, valid_to: i64, superseded_by: Option<&str>) {
+        self.closes
+            .push((row.id.clone(), valid_to, superseded_by.map(str::to_string)));
+        self.touch(row);
+    }
+
+    fn reinforce(&mut self, row: &Row, state: DynamicsState) {
+        self.states
+            .push((row.id.clone(), row.scope.clone(), row.class.clone(), state));
+        self.touch(row);
+    }
+
+    fn touch(&mut self, row: &Row) {
+        self.touched.insert(row.id.clone());
+        let tokens = row
+            .identity
+            .split('|')
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .collect();
+        self.keys.push((
+            row.scope.clone(),
+            row.class.clone(),
+            tokens,
+            row.text.clone(),
+        ));
+    }
+
+    /// Whether deciding `valid` (in `scope`, superseding `target` if given) would read a
+    /// row a pending write creates or changes, so the pending writes must be stored
+    /// first. Mirrors what `put_superseding` reads (the target and its dynamics) and
+    /// what `put_auto` reads (current rows in the scope and class family that share an
+    /// identity token, or have the same class and text when there are no tokens).
+    fn affects(
+        &self,
+        store: &StatementStore,
+        valid: &ValidStatement,
+        scope: &Scope,
+        target: Option<&str>,
+    ) -> bool {
+        if let Some(target) = target {
+            return self.touched.contains(target);
+        }
+        if self.keys.is_empty() {
+            return false;
+        }
+        let scope = scope.as_key();
+        let class = valid.class();
+        let tokens = identity_tokens(&store.ontology, valid);
+        let text = tokens
+            .is_empty()
+            .then(|| render_text(&store.ontology, valid));
+        self.keys.iter().any(|(s, c, t, x)| {
+            *s == scope
+                && (c == class || store.related(c, class))
+                && match &text {
+                    None => t.iter().any(|token| tokens.contains(token)),
+                    Some(text) => c == class && x == text,
+                }
+        })
+    }
+}
+
+/// Whether `error` concerns one statement of a batch (the others are still written)
+/// rather than the store.
+fn concerns_one_statement(error: &StatementError) -> bool {
+    matches!(
+        error,
+        StatementError::Invalid(_)
+            | StatementError::NotFound(_)
+            | StatementError::DuplicateId(_)
+            | StatementError::InvalidSupersede { .. }
+    )
+}
+
 /// How one candidate relates to the incoming statement.
 enum Relation {
     Unchanged,
@@ -100,6 +202,12 @@ impl StatementStore {
         &self.ontology
     }
 
+    /// The statement table's version: every append or update makes a new one.
+    #[cfg(test)]
+    pub(crate) async fn table_version(&self) -> StatementResult<u64> {
+        self.table.version().await
+    }
+
     /// The dynamics store (strength, use, links).
     pub fn dynamics(&self) -> &Arc<DynamicsStore> {
         &self.dynamics
@@ -118,22 +226,111 @@ impl StatementStore {
         scope: Scope,
         intent: PutIntent,
     ) -> StatementResult<PutOutcome> {
+        let mut outcomes = self.put_many(vec![(statement, scope, intent)]).await?;
+        outcomes
+            .pop()
+            .unwrap_or_else(|| Err(StatementError::Task("a write returned no outcome".into())))
+    }
+
+    /// [`put`](Self::put) for several statements, in order, with the same validation and
+    /// supersede semantics: each statement is decided against the store as the earlier
+    /// ones in `items` left it. The writes are stored together (one embedding call, one
+    /// table append, one dynamics transaction) instead of one by one; a statement that
+    /// must see an earlier one of the batch first stores what is pending. Closing a
+    /// superseded row stays one table update per row.
+    ///
+    /// Returns each statement's outcome in order. A statement the ontology rejects, or
+    /// whose id or supersede target is wrong, gets its error there and the others are
+    /// still written. `Err` is a storage failure: writes of this call may then be
+    /// partially stored.
+    pub async fn put_many(
+        &self,
+        items: Vec<(Statement, Scope, PutIntent)>,
+    ) -> StatementResult<Vec<StatementResult<PutOutcome>>> {
+        let _guard = self.write_lock.lock().await;
+        let now = self.clock.now();
+        let mut pending = Pending::default();
+        let mut outcomes = Vec::with_capacity(items.len());
+        for (statement, scope, intent) in items {
+            match self
+                .put_one(statement, scope, intent, now, &mut pending)
+                .await
+            {
+                Err(e) if !concerns_one_statement(&e) => return Err(e),
+                outcome => outcomes.push(outcome),
+            }
+        }
+        self.flush(&mut pending, now).await?;
+        Ok(outcomes)
+    }
+
+    async fn put_one(
+        &self,
+        statement: Statement,
+        scope: Scope,
+        intent: PutIntent,
+        now: DateTime<Utc>,
+        pending: &mut Pending,
+    ) -> StatementResult<PutOutcome> {
         let valid = self
             .ontology
             .validate(&statement)
             .map_err(StatementError::Invalid)?;
-        let _guard = self.write_lock.lock().await;
-        if self.row(&statement.id).await?.is_some() {
+        let target = match &intent {
+            PutIntent::Supersede { target } => Some(target.as_str()),
+            PutIntent::Auto => None,
+        };
+        if pending.affects(self, &valid, &scope, target) {
+            self.flush(pending, now).await?;
+        }
+        if pending.inserted.contains(&statement.id) || self.row(&statement.id).await?.is_some() {
             return Err(StatementError::DuplicateId(statement.id.clone()));
         }
-        let now = self.clock.now();
         match intent {
             PutIntent::Supersede { target } => {
-                self.put_superseding(statement, valid, scope, &target, now)
+                self.put_superseding(statement, valid, scope, &target, now, pending)
                     .await
             }
-            PutIntent::Auto => self.put_auto(statement, valid, scope, now).await,
+            PutIntent::Auto => self.put_auto(statement, valid, scope, now, pending).await,
         }
+    }
+
+    /// Stores the pending writes: one embedding call and one append for the new rows,
+    /// the closes of the rows they supersede, then all dynamics in one transaction.
+    async fn flush(&self, pending: &mut Pending, now: DateTime<Utc>) -> StatementResult<()> {
+        let Pending {
+            rows,
+            closes,
+            states,
+            ..
+        } = std::mem::take(pending);
+        if !rows.is_empty() {
+            let embedder = self.embedder.embedder().await?;
+            if embedder.dimension() != self.table.dimension() {
+                return Err(StatementError::DimensionMismatch {
+                    expected: self.table.dimension(),
+                    found: embedder.dimension(),
+                });
+            }
+            let texts: Vec<String> = rows.iter().map(|r| r.text.clone()).collect();
+            let vectors = tokio::task::spawn_blocking(move || {
+                let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+                embedder.embed_documents(&texts)
+            })
+            .await
+            .map_err(|e| StatementError::Task(e.to_string()))?
+            .map_err(|e| StatementError::Embedding(format!("{e:#}")))?;
+            self.table.insert_many(&rows, &vectors).await?;
+        }
+        for (id, valid_to, superseded_by) in &closes {
+            self.table
+                .close(id, *valid_to, superseded_by.as_deref())
+                .await?;
+        }
+        if !states.is_empty() {
+            self.dynamics.put_many(&states, now)?;
+        }
+        Ok(())
     }
 
     async fn put_superseding(
@@ -143,6 +340,7 @@ impl StatementStore {
         scope: Scope,
         target: &str,
         now: DateTime<Utc>,
+        pending: &mut Pending,
     ) -> StatementResult<PutOutcome> {
         let invalid = |reason: &str| StatementError::InvalidSupersede {
             target: target.to_string(),
@@ -171,12 +369,16 @@ impl StatementStore {
             .effective_from()
             .max(old_from + Duration::microseconds(1));
         let carried = self.dynamics.get(&old.id)?;
-        let id = self
-            .insert(&statement, &valid, &scope, None, carried.as_ref(), now)
-            .await?;
-        self.table
-            .close(&old.id, micros(valid_to), Some(&id))
-            .await?;
+        let id = self.stage(
+            &statement,
+            &valid,
+            &scope,
+            None,
+            carried.as_ref(),
+            now,
+            pending,
+        )?;
+        pending.close(&old, micros(valid_to), Some(&id));
         Ok(PutOutcome::Updated {
             id,
             superseded: vec![old.id],
@@ -189,6 +391,7 @@ impl StatementStore {
         valid: ValidStatement,
         scope: Scope,
         now: DateTime<Utc>,
+        pending: &mut Pending,
     ) -> StatementResult<PutOutcome> {
         let tokens = identity_tokens(&self.ontology, &valid);
         let text = render_text(&self.ontology, &valid);
@@ -219,14 +422,12 @@ impl StatementStore {
                 .into_iter()
                 .next()
             {
-                self.reinforce(&existing, now)?;
+                self.reinforce(&existing, now, pending)?;
                 return Ok(PutOutcome::Unchanged {
                     existing: existing.id,
                 });
             }
-            let id = self
-                .insert(&statement, &valid, &scope, None, None, now)
-                .await?;
+            let id = self.stage(&statement, &valid, &scope, None, None, now, pending)?;
             return Ok(PutOutcome::Added { id });
         }
 
@@ -281,44 +482,47 @@ impl StatementStore {
                 .map_err(StatementError::Invalid)?;
             // Carry pin and use history over from the newest superseded version.
             let carried = self.dynamics.get(&updates[0].0.id)?;
-            let id = self
-                .insert(&merged, &merged_valid, &scope, None, carried.as_ref(), now)
-                .await?;
+            let id = self.stage(
+                &merged,
+                &merged_valid,
+                &scope,
+                None,
+                carried.as_ref(),
+                now,
+                pending,
+            )?;
             let closed_at = valid.effective_from();
             let mut superseded = Vec::new();
             for (row, _) in updates {
                 let from = from_micros(row.valid_from).unwrap_or(closed_at);
                 let end = closed_at.max(from + Duration::microseconds(1));
-                self.table.close(&row.id, micros(end), Some(&id)).await?;
+                pending.close(&row, micros(end), Some(&id));
                 superseded.push(row.id);
             }
             return Ok(PutOutcome::Updated { id, superseded });
         }
         if let Some((current_row, valid_to)) = historical {
-            let id = self
-                .insert(
-                    &statement,
-                    &valid,
-                    &scope,
-                    Some((valid_to, current_row.id.clone())),
-                    None,
-                    now,
-                )
-                .await?;
+            let id = self.stage(
+                &statement,
+                &valid,
+                &scope,
+                Some((valid_to, current_row.id.clone())),
+                None,
+                now,
+                pending,
+            )?;
             return Ok(PutOutcome::Historical {
                 id,
                 current: current_row.id,
             });
         }
         if let Some(existing) = unchanged {
-            self.reinforce(&existing, now)?;
+            self.reinforce(&existing, now, pending)?;
             return Ok(PutOutcome::Unchanged {
                 existing: existing.id,
             });
         }
-        let id = self
-            .insert(&statement, &valid, &scope, None, None, now)
-            .await?;
+        let id = self.stage(&statement, &valid, &scope, None, None, now, pending)?;
         Ok(PutOutcome::Added { id })
     }
 
@@ -361,7 +565,9 @@ impl StatementStore {
         merged
     }
 
-    async fn insert(
+    /// Builds the row and dynamics of a new statement and adds them to `pending`.
+    #[allow(clippy::too_many_arguments)]
+    fn stage(
         &self,
         statement: &Statement,
         valid: &ValidStatement,
@@ -369,21 +575,9 @@ impl StatementStore {
         closed: Option<(DateTime<Utc>, String)>,
         carried: Option<&DynamicsState>,
         now: DateTime<Utc>,
+        pending: &mut Pending,
     ) -> StatementResult<String> {
         let text = render_text(&self.ontology, valid);
-        let embedder = self.embedder.embedder().await?;
-        if embedder.dimension() != self.table.dimension() {
-            return Err(StatementError::DimensionMismatch {
-                expected: self.table.dimension(),
-                found: embedder.dimension(),
-            });
-        }
-        let to_embed = text.clone();
-        let vector = tokio::task::spawn_blocking(move || embedder.embed_document(&to_embed))
-            .await
-            .map_err(|e| StatementError::Task(e.to_string()))?
-            .map_err(|e| StatementError::Embedding(format!("{e:#}")))?;
-
         let class = self.ontology.class(valid.class());
         let ontology_source = class.map(|c| c.source.clone()).unwrap_or_default();
         let expires_at = class.and_then(|c| dynamics::expires_at(&c.dynamics, valid));
@@ -415,8 +609,6 @@ impl StatementStore {
             forgotten_at: None,
             created_at: micros(now),
         };
-        self.table.insert(&row, &vector).await?;
-
         let importance = dynamics::importance(&self.ontology, valid, &text);
         let mut state = DynamicsState::fresh(now, importance);
         if let Some(carried) = carried {
@@ -424,13 +616,18 @@ impl StatementStore {
             state.use_count = carried.use_count;
             state.last_used_at = carried.last_used_at;
         }
-        self.dynamics
-            .put(&row.id, &row.scope, &row.class, &state, now)?;
-        Ok(row.id)
+        let id = row.id.clone();
+        pending.insert(row, state);
+        Ok(id)
     }
 
     /// Re-assertion of a current fact: reinforce it under its class dynamics.
-    fn reinforce(&self, row: &Row, now: DateTime<Utc>) -> StatementResult<()> {
+    fn reinforce(
+        &self,
+        row: &Row,
+        now: DateTime<Utc>,
+        pending: &mut Pending,
+    ) -> StatementResult<()> {
         let Some(class) = self.ontology.class(&row.class) else {
             return Ok(());
         };
@@ -440,8 +637,8 @@ impl StatementStore {
             .get(&row.id)?
             .unwrap_or_else(|| DynamicsState::fresh(created, dynamics::IMPORTANCE_FLOOR));
         state.reinforce(&class.dynamics, now);
-        self.dynamics
-            .put(&row.id, &row.scope, &row.class, &state, now)
+        pending.reinforce(row, state);
+        Ok(())
     }
 
     /// The class, its ancestors and its descendants: every class a statement of `class`

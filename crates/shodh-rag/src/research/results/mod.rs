@@ -865,11 +865,18 @@ impl ResultService {
         let existing = self.current_of(&path).await?;
         let mut kept: HashSet<String> = HashSet::new();
         let (mut added, mut unchanged, mut review, mut conflicts) = (0, 0, 0, 0);
-        for item in prepared {
-            let outcome = self
-                .store
-                .put(item.statement.clone(), scope.clone(), PutIntent::Auto)
-                .await;
+        // Stored together; a value that conflicts with an earlier extraction is resolved
+        // after the batch.
+        let outcomes = self
+            .store
+            .put_many(
+                prepared
+                    .iter()
+                    .map(|item| (item.statement.clone(), scope.clone(), PutIntent::Auto))
+                    .collect(),
+            )
+            .await?;
+        for (item, outcome) in prepared.into_iter().zip(outcomes) {
             let outcome = match outcome {
                 Ok(o) => o,
                 Err(StatementError::Invalid(violations)) => {
@@ -900,16 +907,37 @@ impl ResultService {
                         kept.insert(existing);
                         continue;
                     }
-                    let outcome = self
+                    let superseding = self
                         .store
                         .put(
-                            item.statement,
+                            item.statement.clone(),
                             scope.clone(),
                             PutIntent::Supersede {
                                 target: existing.clone(),
                             },
                         )
-                        .await?;
+                        .await;
+                    let outcome = match superseding {
+                        // An equal value earlier in this extraction superseded it already:
+                        // this one is decided against that value, as if written after it.
+                        Err(StatementError::InvalidSupersede { .. }) => {
+                            self.store
+                                .put(item.statement, scope.clone(), PutIntent::Auto)
+                                .await?
+                        }
+                        other => other?,
+                    };
+                    match &outcome {
+                        PutOutcome::Unchanged { existing } => {
+                            unchanged += 1;
+                            kept.insert(existing.clone());
+                        }
+                        PutOutcome::Conflict { existing, .. } => {
+                            conflicts += 1;
+                            kept.insert(existing.clone());
+                        }
+                        _ => {}
+                    }
                     if let Some(id) = outcome.stored_id() {
                         added += 1;
                         if item.review {

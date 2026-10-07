@@ -118,49 +118,72 @@ impl StatementTable {
         Ok(())
     }
 
-    pub(crate) async fn insert(&self, row: &Row, vector: &[f32]) -> StatementResult<()> {
-        if vector.len() != self.dimension {
+    /// Appends `rows` with their `vectors` (same order) in one write.
+    pub(crate) async fn insert_many(
+        &self,
+        rows: &[Row],
+        vectors: &[Vec<f32>],
+    ) -> StatementResult<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        if rows.len() != vectors.len() {
+            return Err(StatementError::Embedding(format!(
+                "{} vectors for {} statements",
+                vectors.len(),
+                rows.len()
+            )));
+        }
+        if let Some(v) = vectors.iter().find(|v| v.len() != self.dimension) {
             return Err(StatementError::DimensionMismatch {
                 expected: self.dimension,
-                found: vector.len(),
+                found: v.len(),
             });
         }
         let schema = schema(self.dimension);
         let item = Arc::new(Field::new("item", DataType::Float32, true));
+        let flat: Vec<f32> = vectors.iter().flatten().copied().collect();
         let vectors = FixedSizeListArray::try_new(
             item,
             self.dimension as i32,
-            Arc::new(Float32Array::from(vector.to_vec())) as Arc<dyn Array>,
+            Arc::new(Float32Array::from(flat)) as Arc<dyn Array>,
             None,
         )?;
-        let text = |s: &str| Arc::new(StringArray::from(vec![s])) as Arc<dyn Array>;
-        let opt_text =
-            |s: &Option<String>| Arc::new(StringArray::from(vec![s.clone()])) as Arc<dyn Array>;
-        let int = |v: i64| Arc::new(Int64Array::from(vec![v])) as Arc<dyn Array>;
-        let opt_int = |v: Option<i64>| Arc::new(Int64Array::from(vec![v])) as Arc<dyn Array>;
+        let text = |f: fn(&Row) -> &str| {
+            Arc::new(StringArray::from(rows.iter().map(f).collect::<Vec<_>>())) as Arc<dyn Array>
+        };
+        let opt_text = |f: fn(&Row) -> Option<&str>| {
+            Arc::new(StringArray::from(rows.iter().map(f).collect::<Vec<_>>())) as Arc<dyn Array>
+        };
+        let int = |f: fn(&Row) -> i64| {
+            Arc::new(Int64Array::from(rows.iter().map(f).collect::<Vec<_>>())) as Arc<dyn Array>
+        };
+        let opt_int = |f: fn(&Row) -> Option<i64>| {
+            Arc::new(Int64Array::from(rows.iter().map(f).collect::<Vec<_>>())) as Arc<dyn Array>
+        };
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                text(&row.id),
-                text(&row.class),
-                text(&row.subject),
-                text(&row.identity),
-                text(&row.scope),
-                text(&row.text),
-                text(&row.terms),
-                text(&row.statement_json),
-                text(&row.properties_json),
-                text(&row.provenance_json),
-                text(&row.extractor),
-                text(&row.source),
-                text(&row.ontology_source),
-                text(&row.ontology_version),
-                int(row.valid_from),
-                opt_int(row.valid_to),
-                opt_text(&row.superseded_by),
-                opt_int(row.expires_at),
-                opt_int(row.forgotten_at),
-                int(row.created_at),
+                text(|r| &r.id),
+                text(|r| &r.class),
+                text(|r| &r.subject),
+                text(|r| &r.identity),
+                text(|r| &r.scope),
+                text(|r| &r.text),
+                text(|r| &r.terms),
+                text(|r| &r.statement_json),
+                text(|r| &r.properties_json),
+                text(|r| &r.provenance_json),
+                text(|r| &r.extractor),
+                text(|r| &r.source),
+                text(|r| &r.ontology_source),
+                text(|r| &r.ontology_version),
+                int(|r| r.valid_from),
+                opt_int(|r| r.valid_to),
+                opt_text(|r| r.superseded_by.as_deref()),
+                opt_int(|r| r.expires_at),
+                opt_int(|r| r.forgotten_at),
+                int(|r| r.created_at),
                 Arc::new(vectors) as Arc<dyn Array>,
             ],
         )?;
@@ -170,6 +193,12 @@ impl StatementTable {
     }
 
     /// Closes a statement: sets `valid_to` and `superseded_by`. Content is never rewritten.
+    /// The table's version: each write (append, update) makes a new one.
+    #[cfg(test)]
+    pub(crate) async fn version(&self) -> StatementResult<u64> {
+        Ok(self.table.version().await?)
+    }
+
     pub(crate) async fn close(
         &self,
         id: &str,

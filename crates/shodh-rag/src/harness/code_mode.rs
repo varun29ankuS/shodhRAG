@@ -822,6 +822,49 @@ pub fn git_state(folder: &Path) -> GitState {
     }
 }
 
+/// Keep `pattern` out of git for the repository holding `folder`, through
+/// its local exclude file (`info/exclude`, never committed or shared), so
+/// files a tool keeps there (enola's `.enola/` index) neither make the folder
+/// look changed nor end up in "Discard changes" commits (blocking). Returns
+/// whether the file was changed; a folder outside git is left alone.
+pub fn exclude_locally(folder: &Path, pattern: &str) -> Result<bool, String> {
+    if pattern.trim().is_empty() || pattern.contains(['\n', '\r']) {
+        return Err("invalid exclude pattern".to_string());
+    }
+    if git_state(folder) == GitState::NotRepo {
+        return Ok(false);
+    }
+    // `.git` is a file in linked worktrees: ask git where the file lives.
+    let listed = run_git(folder, &["rev-parse", "--git-path", "info/exclude"])?;
+    let path = folder.join(listed.trim());
+    let current = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("{} could not be read: {e}", path.display())),
+    };
+    if current.lines().any(|line| line.trim() == pattern) {
+        return Ok(false);
+    }
+    let newline = if current.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let mut text = current;
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push_str(newline);
+    }
+    text.push_str(pattern);
+    text.push_str(newline);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("{} could not be created: {e}", dir.display()))?;
+    }
+    std::fs::write(&path, text)
+        .map_err(|e| format!("{} could not be written: {e}", path.display()))?;
+    Ok(true)
+}
+
 fn branch_exists(folder: &Path, name: &str) -> bool {
     run_git(
         folder,

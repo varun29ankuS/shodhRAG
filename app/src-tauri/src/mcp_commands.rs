@@ -6,6 +6,7 @@
 //! reach.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -13,7 +14,9 @@ use shodh_rag::audit::{AuditEventType, AuditQuery};
 use shodh_rag::harness::code_mode::CODE_TOOLS;
 use shodh_rag::harness::events::RiskTier;
 use shodh_rag::harness::mcp::config::{self, ServerProblem};
-use shodh_rag::harness::mcp::{Approval, Mode, Scope, ServerConfig, Transport};
+use shodh_rag::harness::mcp::{
+    effective_read_only, verified_for, Approval, Mode, Scope, ServerConfig, Transport,
+};
 use shodh_rag::harness::skills::{resource_files, SkillProblem};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_opener::OpenerExt;
@@ -69,7 +72,15 @@ pub struct ServerView {
     pub needs_folder: bool,
 }
 
-fn server_view(server: &ServerConfig, status: ServerStatus) -> ServerView {
+/// A server for the settings page. Approvals are shown as Code mode applies
+/// them when the server is offered there (the stricter of the two modes).
+fn server_view(server: &ServerConfig, status: ServerStatus, data_dir: &Path) -> ServerView {
+    let mode = if server.in_mode(Mode::Code) {
+        Mode::Code
+    } else {
+        Mode::Research
+    };
+    let verified = enola::verified(server, data_dir);
     ServerView {
         name: server.name.clone(),
         kind: match server.transport {
@@ -92,9 +103,13 @@ fn server_view(server: &ServerConfig, status: ServerStatus) -> ServerView {
                     .clone()
                     .or_else(|| t.annotations.as_ref().and_then(|a| a.title.clone())),
                 description: t.description.clone(),
-                read_only: t.read_only(),
+                read_only: effective_read_only(t, verified_for(verified, &t.name)),
                 enabled: server.tool_enabled(&t.name),
-                approval: server.approval_for(&t.name, t.read_only()),
+                approval: server.approval_for(
+                    &t.name,
+                    effective_read_only(t, verified_for(verified, &t.name)),
+                    mode,
+                ),
             })
             .collect(),
     }
@@ -265,7 +280,13 @@ pub async fn tools_overview(
             config
                 .servers
                 .iter()
-                .map(|s| server_view(s, manager.status_of(workspace.as_deref(), scope, &s.name)))
+                .map(|s| {
+                    server_view(
+                        s,
+                        manager.status_of(workspace.as_deref(), scope, &s.name),
+                        manager.data_dir(),
+                    )
+                })
                 .collect(),
             config.problems,
             None,
@@ -416,7 +437,7 @@ pub async fn mcp_test_server(
     let status = manager
         .test(workspace.as_deref(), scope, server, folder.as_deref())
         .await;
-    Ok(server_view(server, status))
+    Ok(server_view(server, status, manager.data_dir()))
 }
 
 /// Add servers from pasted `mcp.json` text (or the form, which sends the
@@ -657,7 +678,7 @@ mod tests {
             &serde_json::json!({"command": "npx", "args": ["-y", "gh"], "env": {"TOKEN": "ghp_secret"}}),
         )
         .unwrap();
-        let view = server_view(&server, ServerStatus::default());
+        let view = server_view(&server, ServerStatus::default(), Path::new("C:/data"));
         let text = serde_json::to_string(&view).unwrap();
         assert!(!text.contains("ghp_secret"));
         assert_eq!(view.target, "npx -y gh");

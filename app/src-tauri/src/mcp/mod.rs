@@ -26,6 +26,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use serde::Serialize;
 use serde_json::Value;
+use shodh_rag::harness::code_mode::exclude_locally;
 use shodh_rag::harness::mcp::config::{self, ConfigError};
 use shodh_rag::harness::mcp::{
     server_tools, Approval, CallResult, McpCaller, McpClient, McpConfig, McpError, Mode, Scope,
@@ -382,6 +383,31 @@ impl McpManager {
         }
     }
 
+    /// How `server` is started in `folder`: `${workspaceFolder}` filled in,
+    /// and for the pinned enola its dashboard and update check off and its
+    /// index excluded from git in the folder's repository.
+    async fn launch(
+        &self,
+        server: &ServerConfig,
+        folder: Option<&str>,
+    ) -> Result<Transport, String> {
+        let transport = server.transport.resolved(folder)?;
+        if !enola::is_pinned(server, &self.data_dir) {
+            return Ok(transport);
+        }
+        if let Some(folder) = folder {
+            let root = PathBuf::from(folder);
+            let excluded =
+                tokio::task::spawn_blocking(move || exclude_locally(&root, enola::INDEX_EXCLUDE))
+                    .await
+                    .map_err(|e| e.to_string())?;
+            // Without the exclusion enola's index would block Code mode's
+            // changes and end up in "Discard changes" commits.
+            excluded.map_err(|e| format!("enola's index could not be kept out of git: {e}"))?;
+        }
+        Ok(enola::harden(transport))
+    }
+
     /// Start (or reuse) `server` of `scope` and list its tools. `folder`
     /// fills in `${workspaceFolder}`; without one, a server that needs it is
     /// started in an empty folder so its tools can still be listed.
@@ -409,7 +435,7 @@ impl McpManager {
         };
         let skey = scope_key(scope, workspace);
         let status = status_key(&skey, &server.name);
-        let transport = match server.transport.resolved(folder.as_deref()) {
+        let transport = match self.launch(server, folder.as_deref()).await {
             Ok(t) => t,
             Err(e) => {
                 return ServerStatus {
@@ -470,7 +496,7 @@ impl McpManager {
                         "Local-only mode is on, and this server is on another computer".to_string(),
                     )
                 }
-                t => t.resolved(folder)?,
+                _ => self.launch(server, folder).await?,
             };
             let key = connection_key(&skey, &server.name, &transport);
             let live = self.live(key, &status, &transport).await?;
@@ -491,7 +517,15 @@ impl McpManager {
                         status,
                         transport,
                     });
-                    let made = server_tools(server, &live.tools, caller, load_mode, &mut taken);
+                    let made = server_tools(
+                        server,
+                        &live.tools,
+                        caller,
+                        load_mode,
+                        mode,
+                        enola::verified(server, &self.data_dir),
+                        &mut taken,
+                    );
                     let names: Vec<String> = made.iter().map(|t| t.name().to_string()).collect();
                     for tool in &made {
                         (

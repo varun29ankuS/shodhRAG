@@ -4,8 +4,9 @@
 //! approval, audit).
 //!
 //! Approval: a tool set to `ask` (the default unless the server marks it
-//! read-only) waits for the user on every call, whatever the profile's
-//! write setting; `auto` runs without asking.
+//! read-only, or Shodh verified it read-only for a pinned build) waits for
+//! the user on every call, whatever the profile's write setting; `auto` runs
+//! without asking.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use super::client::{CallResult, McpClient, McpError, ToolInfo};
-use super::config::{Approval, ServerConfig};
+use super::config::{Approval, Mode, ServerConfig};
 use crate::harness::events::RiskTier;
 use crate::harness::protocol::ToolLoadMode;
 use crate::harness::tools::{HostTool, ToolContext, ToolError, ToolOutput};
@@ -84,6 +85,41 @@ fn unique_name(server: &str, tool: &str, taken: &mut HashSet<String>) -> String 
     name
 }
 
+/// What Shodh verified about a tool of a pinned server build (by reading
+/// its source and observing its calls), which outranks the server's own
+/// annotations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verified {
+    /// Changes nothing in the code folder.
+    ReadOnly,
+    /// Changes nothing, but `arg` with a value outside `allowed` makes it
+    /// read outside the code folder, so such a call asks.
+    ReadOnlyUnless {
+        arg: &'static str,
+        allowed: &'static [&'static str],
+    },
+    /// Writes files or runs programs.
+    Writes,
+}
+
+/// The verified classification of `tool` in `verified`, if listed.
+pub fn verified_for(verified: &[(&str, Verified)], tool: &str) -> Option<Verified> {
+    verified
+        .iter()
+        .find(|(name, _)| *name == tool)
+        .map(|(_, v)| *v)
+}
+
+/// Whether a tool counts as read-only: Shodh's verified classification when
+/// it has one, else the server's annotation.
+pub fn effective_read_only(info: &ToolInfo, verified: Option<Verified>) -> bool {
+    match verified {
+        Some(Verified::ReadOnly | Verified::ReadOnlyUnless { .. }) => true,
+        Some(Verified::Writes) => false,
+        None => info.read_only(),
+    }
+}
+
 /// One MCP tool exposed to the agent.
 pub struct McpTool {
     name: String,
@@ -93,6 +129,9 @@ pub struct McpTool {
     server: String,
     tool: String,
     approval: Approval,
+    /// An argument that makes an otherwise automatic call ask (and the
+    /// values it may have without asking).
+    ask_when: Option<(&'static str, &'static [&'static str])>,
     destructive: bool,
     load_mode: ToolLoadMode,
     caller: Arc<dyn McpCaller>,
@@ -140,8 +179,20 @@ impl HostTool for McpTool {
     fn load_mode(&self) -> ToolLoadMode {
         self.load_mode
     }
-    async fn must_confirm(&self, _args: &Value) -> Result<bool, ToolError> {
-        Ok(self.approval == Approval::Ask)
+    async fn must_confirm(&self, args: &Value) -> Result<bool, ToolError> {
+        if self.approval == Approval::Ask {
+            return Ok(true);
+        }
+        Ok(self.ask_when.is_some_and(|(arg, allowed)| {
+            args.get(arg).is_some_and(|value| match value {
+                Value::Null => false,
+                Value::String(text) => {
+                    let text = text.trim();
+                    !text.is_empty() && !allowed.iter().any(|a| a.eq_ignore_ascii_case(text))
+                }
+                _ => true,
+            })
+        }))
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         ctx.progress(format!("Asking {}", self.server));
@@ -172,13 +223,17 @@ impl HostTool for McpTool {
     }
 }
 
-/// The host tools for `server`'s enabled `tools`. Names already in `taken`
-/// (other servers' tools, built-in tools) are avoided.
+/// The host tools for `server`'s enabled `tools` in `mode`. `verified` is
+/// Shodh's classification of the server's tools (empty for servers it has
+/// not verified). Names already in `taken` (other servers' tools, built-in
+/// tools) are avoided.
 pub fn server_tools(
     server: &ServerConfig,
     tools: &[ToolInfo],
     caller: Arc<dyn McpCaller>,
     load_mode: ToolLoadMode,
+    mode: Mode,
+    verified: &[(&str, Verified)],
     taken: &mut HashSet<String>,
 ) -> Vec<McpTool> {
     tools
@@ -201,6 +256,12 @@ pub fn server_tools(
             } else {
                 json!({ "type": "object" })
             };
+            let checked = verified_for(verified, &info.name);
+            let read_only = effective_read_only(info, checked);
+            let ask_when = match (checked, server.tool_approval(&info.name)) {
+                (Some(Verified::ReadOnlyUnless { arg, allowed }), None) => Some((arg, allowed)),
+                _ => None,
+            };
             McpTool {
                 name,
                 label: truncate_chars(&format!("{}: {title}", server.name), 80),
@@ -208,8 +269,9 @@ pub fn server_tools(
                 schema,
                 server: server.name.clone(),
                 tool: info.name.clone(),
-                approval: server.approval_for(&info.name, info.read_only()),
-                destructive: info.destructive(),
+                approval: server.approval_for(&info.name, read_only, mode),
+                ask_when,
+                destructive: !read_only && info.destructive(),
                 load_mode,
                 caller: caller.clone(),
             }
@@ -308,6 +370,8 @@ mod tests {
             ],
             fake,
             ToolLoadMode::Essential,
+            Mode::Research,
+            &[],
             &mut HashSet::new(),
         );
         let summary: Vec<(&str, Approval, RiskTier)> = tools
@@ -385,10 +449,87 @@ mod tests {
             &[info("lookup", read_only)],
             fake.clone(),
             ToolLoadMode::Discoverable,
+            Mode::Research,
+            &[],
             &mut HashSet::new(),
         )
         .remove(0);
         (tool, fake)
+    }
+
+    #[tokio::test]
+    async fn verified_classification_outranks_annotations_and_guards_arguments() {
+        const VERIFIED: [(&str, Verified); 3] = [
+            ("snapshot", Verified::Writes),
+            ("explore", Verified::ReadOnly),
+            (
+                "diff",
+                Verified::ReadOnlyUnless {
+                    arg: "baseline",
+                    allowed: &["pinned", "previous"],
+                },
+            ),
+        ];
+        let fake: Arc<dyn McpCaller> = Arc::new(Fake {
+            calls: Mutex::default(),
+            reply: CallResult {
+                text: "ok".into(),
+                is_error: false,
+            },
+        });
+        let make = |config: Value| {
+            server_tools(
+                &server(config),
+                &[
+                    info("snapshot", Some(true)),
+                    info("explore", None),
+                    info("diff", None),
+                    info("other", None),
+                ],
+                fake.clone(),
+                ToolLoadMode::Essential,
+                Mode::Code,
+                &VERIFIED,
+                &mut HashSet::new(),
+            )
+        };
+        // A server-wide auto (as older Shodh builds registered enola) covers
+        // only the tools verified read-only in Code mode.
+        let tools = make(json!({"shodh": {"approval": "auto"}}));
+        let summary: Vec<(&str, Approval, RiskTier)> = tools
+            .iter()
+            .map(|t| (t.tool(), t.approval(), t.tier()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("snapshot", Approval::Ask, RiskTier::Write),
+                ("explore", Approval::Auto, RiskTier::Read),
+                ("diff", Approval::Auto, RiskTier::Read),
+                ("other", Approval::Ask, RiskTier::Destructive),
+            ]
+        );
+        let diff = &tools[2];
+        assert!(!diff.must_confirm(&json!({})).await.unwrap());
+        assert!(!diff
+            .must_confirm(&json!({"baseline": "Previous"}))
+            .await
+            .unwrap());
+        assert!(!diff.must_confirm(&json!({"baseline": " "})).await.unwrap());
+        assert!(diff
+            .must_confirm(&json!({"baseline": "C:/elsewhere"}))
+            .await
+            .unwrap());
+        assert!(diff.must_confirm(&json!({"baseline": 3})).await.unwrap());
+        // The user can still let a writing tool run by itself.
+        let tools = make(
+            json!({"shodh": {"tools": {"snapshot": {"approval": "auto"}, "diff": {"approval": "auto"}}}}),
+        );
+        assert_eq!(tools[0].approval(), Approval::Auto);
+        assert!(!tools[2]
+            .must_confirm(&json!({"baseline": "C:/elsewhere"}))
+            .await
+            .unwrap());
     }
 
     #[tokio::test]

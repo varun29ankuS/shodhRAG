@@ -7,7 +7,8 @@
 //! everything:
 //! - `disabled: true` turns the server off (the key other clients use);
 //! - `shodh.modes`: `["research"]`, `["code"]` or both (the default);
-//! - `shodh.approval`: the default for the server's tools, `ask` or `auto`;
+//! - `shodh.approval`: the default for the server's tools, `ask` or `auto`
+//!   (in Code mode `auto` covers only tools known to be read-only);
 //! - `shodh.tools.<tool>`: `{ "enabled": false }` and/or `{ "approval": ... }`.
 //!
 //! A config is kept as JSON and edited in place, so keys Shodh does not know
@@ -176,18 +177,32 @@ impl ServerConfig {
         self.tools.get(tool).and_then(|s| s.enabled).unwrap_or(true)
     }
 
-    /// Whether calls of `tool` wait for the user: the tool's setting, else
-    /// the server's, else `auto` only for tools the server marks read-only.
-    pub fn approval_for(&self, tool: &str, read_only_hint: bool) -> Approval {
-        self.tools
-            .get(tool)
-            .and_then(|s| s.approval)
-            .or(self.approval)
-            .unwrap_or(if read_only_hint {
-                Approval::Auto
-            } else {
-                Approval::Ask
-            })
+    /// The approval set for `tool` itself, if any.
+    pub fn tool_approval(&self, tool: &str) -> Option<Approval> {
+        self.tools.get(tool).and_then(|s| s.approval)
+    }
+
+    /// Whether calls of `tool` wait for the user in `mode`: the tool's own
+    /// setting, else the server's, else `auto` only for read-only tools.
+    /// `read_only` is the server's annotation or a verified classification.
+    ///
+    /// In Code mode a tool that is not read-only asks unless the tool itself
+    /// is set to `auto`: a server-wide `auto` does not cover it, since Code
+    /// mode works in the user's repository.
+    pub fn approval_for(&self, tool: &str, read_only: bool, mode: Mode) -> Approval {
+        if let Some(approval) = self.tool_approval(tool) {
+            return approval;
+        }
+        let fallback = if read_only {
+            Approval::Auto
+        } else {
+            Approval::Ask
+        };
+        match (mode, self.approval) {
+            (_, Some(Approval::Ask)) => Approval::Ask,
+            (Mode::Code, _) => fallback,
+            (Mode::Research, approval) => approval.unwrap_or(fallback),
+        }
     }
 }
 
@@ -687,14 +702,44 @@ mod tests {
             }}}),
         )
         .unwrap();
-        assert_eq!(server.approval_for("read_file", true), Approval::Auto);
-        assert_eq!(server.approval_for("delete", false), Approval::Ask);
-        assert_eq!(server.approval_for("write_file", false), Approval::Auto);
+        for mode in [Mode::Research, Mode::Code] {
+            assert_eq!(server.approval_for("read_file", true, mode), Approval::Auto);
+            assert_eq!(server.approval_for("delete", false, mode), Approval::Ask);
+            assert_eq!(
+                server.approval_for("write_file", false, mode),
+                Approval::Auto
+            );
+        }
         assert!(!server.tool_enabled("hidden"));
         assert!(server.tool_enabled("read_file"));
-        let all_auto =
-            parse_server("s", &json!({"command": "x", "shodh": {"approval": "auto"}})).unwrap();
-        assert_eq!(all_auto.approval_for("anything", false), Approval::Auto);
+        let all_auto = parse_server(
+            "s",
+            &json!({"command": "x", "shodh": {"approval": "auto", "tools": {"w": {"approval": "auto"}}}}),
+        )
+        .unwrap();
+        assert_eq!(
+            all_auto.approval_for("anything", false, Mode::Research),
+            Approval::Auto
+        );
+        // Code mode: a server-wide auto covers read-only tools only; a tool
+        // set to auto itself still runs without asking.
+        assert_eq!(
+            all_auto.approval_for("anything", false, Mode::Code),
+            Approval::Ask
+        );
+        assert_eq!(
+            all_auto.approval_for("lookup", true, Mode::Code),
+            Approval::Auto
+        );
+        assert_eq!(
+            all_auto.approval_for("w", false, Mode::Code),
+            Approval::Auto
+        );
+        let all_ask =
+            parse_server("s", &json!({"command": "x", "shodh": {"approval": "ask"}})).unwrap();
+        for mode in [Mode::Research, Mode::Code] {
+            assert_eq!(all_ask.approval_for("lookup", true, mode), Approval::Ask);
+        }
     }
 
     #[test]
@@ -727,7 +772,7 @@ mod tests {
         assert!(server.disabled);
         assert_eq!(server.modes, [Mode::Code]);
         assert!(!server.tool_enabled("t"));
-        assert_eq!(server.approval_for("t", false), Approval::Auto);
+        assert_eq!(server.approval_for("t", false, Mode::Code), Approval::Auto);
         set_server_enabled(&mut doc, "a", true).unwrap();
         set_server_modes(&mut doc, "a", &[Mode::Research, Mode::Code]).unwrap();
         set_tool(&mut doc, "a", "t", Some(true), None).unwrap();

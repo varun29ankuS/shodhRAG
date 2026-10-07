@@ -8,4 +8,6 @@ pub mod tool;
 
 pub use client::{CallResult, McpClient, McpError, ToolInfo};
 pub use config::{Approval, McpConfig, Mode, Scope, ServerConfig, Transport};
-pub use tool::{host_tool_name, server_tools, McpCaller, McpTool};
+pub use tool::{
+    effective_read_only, host_tool_name, server_tools, verified_for, McpCaller, McpTool, Verified,
+};

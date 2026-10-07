@@ -562,6 +562,59 @@ fn a_detached_head_is_returned_to_as_a_commit() {
 }
 
 #[test]
+fn a_tool_index_is_excluded_locally_so_the_tree_stays_clean() {
+    let dir = repo();
+    std::fs::create_dir_all(dir.path().join(".enola")).unwrap();
+    std::fs::write(dir.path().join(".enola").join("facts.jsonl"), "{}\n").unwrap();
+    assert!(matches!(
+        git_state(dir.path()),
+        GitState::Repo { dirty: true, .. }
+    ));
+    // An exclude file written on Windows, without a final newline.
+    let exclude = dir.path().join(".git").join("info").join("exclude");
+    std::fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+    std::fs::write(&exclude, "# mine\r\n*.log").unwrap();
+
+    assert!(exclude_locally(dir.path(), ".enola/").unwrap());
+    assert_eq!(
+        std::fs::read_to_string(&exclude).unwrap(),
+        "# mine\r\n*.log\r\n.enola/\r\n"
+    );
+    assert!(matches!(
+        git_state(dir.path()),
+        GitState::Repo { dirty: false, .. }
+    ));
+    // Idempotent, and nothing is staged or committed.
+    assert!(!exclude_locally(dir.path(), ".enola/").unwrap());
+    assert_eq!(git_ok(dir.path(), &["status", "--porcelain"]), "");
+
+    // "Discard changes" commits the agent's work without the index.
+    let folder = CodeFolder::open(dir.path()).unwrap();
+    let record = create_branch(&folder, "now").unwrap();
+    std::fs::write(dir.path().join("lib.rs"), "fn b() {}\n").unwrap();
+    discard_changes(&record).unwrap();
+    let committed = git_ok(
+        dir.path(),
+        &["show", "--name-only", "--format=", &record.branch],
+    );
+    assert_eq!(committed.trim(), "lib.rs");
+    assert!(dir.path().join(".enola").join("facts.jsonl").exists());
+
+    // A code folder inside the repository, with no exclude file yet.
+    let other = repo();
+    std::fs::remove_file(other.path().join(".git").join("info").join("exclude")).ok();
+    std::fs::create_dir_all(other.path().join("app").join(".enola")).unwrap();
+    std::fs::write(other.path().join("app").join(".enola").join("x"), "1").unwrap();
+    assert!(exclude_locally(&other.path().join("app"), ".enola/").unwrap());
+    assert_eq!(git_ok(other.path(), &["status", "--porcelain"]), "");
+
+    let plain = tempfile::tempdir().unwrap();
+    assert!(!exclude_locally(plain.path(), ".enola/").unwrap());
+    assert!(!plain.path().join(".git").exists());
+    assert!(exclude_locally(dir.path(), "a\nb").is_err());
+}
+
+#[test]
 fn a_folder_outside_git_is_not_a_repository() {
     let dir = tempfile::tempdir().unwrap();
     assert_eq!(git_state(dir.path()), GitState::NotRepo);

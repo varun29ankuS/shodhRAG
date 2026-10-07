@@ -4,10 +4,33 @@
 //! "Add enola" downloads the pinned release for this platform, checks the
 //! archive against the SHA-256 pinned here and against the release's own
 //! `.sha256` file, unpacks only the binary into the app data directory and
-//! registers it in the global `mcp.json`: `enola` with no arguments is its
-//! stdio MCP server, run in the workspace's code folder, offered in Code
-//! mode only, every tool `auto` (it reads code and writes only its own
-//! `.enola/` index).
+//! registers it in the global `mcp.json`: `enola --no-dashboard` is its stdio
+//! MCP server, run in the workspace's code folder and offered in Code mode
+//! only.
+//!
+//! Approval ([`TOOLS`], from reading the v0.4.27 source,
+//! `internal/server/*.go` and `internal/{metrics,orphans,perf}`, and calling
+//! each of the 22 tools alone on a scratch repository with the repository and
+//! `~/.enola` listed before and after): `generate_snapshot` writes the
+//! `.enola/` index in the code folder (and `~/.enola/receipt.json`) and runs
+//! the "providers" a repository's `mcp-arch.yaml` declares, which are
+//! programs; `set_baseline` writes `.enola/baseline/`. Both ask. The other 20
+//! change nothing in the code folder ("read-only" here; every call updates
+//! enola's own bookkeeping under `~/.enola/usage` and `~/.enola/instances`)
+//! and run by themselves, except when an argument points them at another
+//! folder: `repo_path` of the history tools, a directory as `baseline`.
+//!
+//! Network (observed with a recording proxy that refuses every connection
+//! and the process's sockets sampled every 100 ms while all 22 tools were
+//! called on a scratch repository): by default enola fetches its update
+//! manifest from `github.com:443` when it starts and serves a dashboard on
+//! `127.0.0.1:7171` and an ephemeral loopback port. With `--no-dashboard`
+//! and `ENOLA_NO_UPDATE_CHECK=1`, as Shodh starts it ([`harden`]), none was
+//! observed: no proxied request and no socket at all.
+//!
+//! `.enola/` is added to the repository's local exclude file before enola
+//! starts in a folder, so Code mode's clean-tree check and "Discard changes"
+//! ignore the index.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -16,6 +39,7 @@ use std::time::Duration;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use shodh_rag::harness::mcp::config::{self, WORKSPACE_FOLDER_VAR};
+use shodh_rag::harness::mcp::{ServerConfig, Transport, Verified};
 use shodh_rag::harness::sidecar::hash_from_sums;
 
 /// Pinned enola release.
@@ -48,6 +72,67 @@ const PINNED: [(&str, &str); 5] = [
         "darwin-arm64",
         "59c2e30de948b5b70af9715f0a3adfb86162531e527e779b036b8483d73ae34d",
     ),
+];
+
+/// Starts the MCP server without its loopback dashboard.
+pub const NO_DASHBOARD: &str = "--no-dashboard";
+
+/// Turns off the update check (a request to github.com at start-up).
+pub const NO_UPDATE_CHECK: (&str, &str) = ("ENOLA_NO_UPDATE_CHECK", "1");
+
+/// enola's index in the code folder, kept out of git locally.
+pub const INDEX_EXCLUDE: &str = ".enola/";
+
+const BASELINES: &[&str] = &["pinned", "previous"];
+
+/// Every tool of the pinned build and what it does to the code folder.
+pub const TOOLS: [(&str, Verified); 22] = [
+    ("analyze_performance", Verified::ReadOnly),
+    (
+        "architecture_blame",
+        Verified::ReadOnlyUnless {
+            arg: "repo_path",
+            allowed: &[],
+        },
+    ),
+    (
+        "architecture_history",
+        Verified::ReadOnlyUnless {
+            arg: "repo_path",
+            allowed: &[],
+        },
+    ),
+    (
+        "compare_receipts",
+        Verified::ReadOnlyUnless {
+            arg: "baseline",
+            allowed: BASELINES,
+        },
+    ),
+    ("constraints_for", Verified::ReadOnly),
+    ("coverage_report", Verified::ReadOnly),
+    (
+        "diff_snapshot",
+        Verified::ReadOnlyUnless {
+            arg: "baseline",
+            allowed: BASELINES,
+        },
+    ),
+    ("endpoint_impact", Verified::ReadOnly),
+    ("explore", Verified::ReadOnly),
+    ("find_orphans", Verified::ReadOnly),
+    ("find_path", Verified::ReadOnly),
+    ("generate_snapshot", Verified::Writes),
+    ("governing_intent", Verified::ReadOnly),
+    ("impact_analysis", Verified::ReadOnly),
+    ("package_metrics", Verified::ReadOnly),
+    ("plan_check", Verified::ReadOnly),
+    ("query_facts", Verified::ReadOnly),
+    ("query_insights", Verified::ReadOnly),
+    ("set_baseline", Verified::Writes),
+    ("show_symbol", Verified::ReadOnly),
+    ("snapshot_receipt", Verified::ReadOnly),
+    ("traverse", Verified::ReadOnly),
 ];
 
 /// Largest archive accepted (the releases are about 12 MB).
@@ -203,13 +288,73 @@ pub async fn install(data_dir: &Path) -> Result<PathBuf, String> {
     Ok(dest)
 }
 
-/// The `mcp.json` entry for the installed binary.
+/// The `mcp.json` entry for the installed binary. Approval comes from
+/// [`TOOLS`], not from the entry.
 pub fn server_entry(binary: &Path) -> serde_json::Value {
     json!({
         "command": binary.display().to_string(),
+        "args": [NO_DASHBOARD],
+        "env": { NO_UPDATE_CHECK.0: NO_UPDATE_CHECK.1 },
         "cwd": WORKSPACE_FOLDER_VAR,
-        "shodh": { "modes": ["code"], "approval": "auto" }
+        "shodh": { "modes": ["code"] }
     })
+}
+
+/// A path compared the way the file system does (case and separators do
+/// not matter on Windows).
+fn path_key(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if cfg!(windows) {
+        text.replace('/', "\\").to_lowercase()
+    } else {
+        text.into_owned()
+    }
+}
+
+/// Whether `server` runs the binary "Add enola" installed (the build
+/// [`TOOLS`] describes), whatever the server is called.
+pub fn is_pinned(server: &ServerConfig, data_dir: &Path) -> bool {
+    match &server.transport {
+        Transport::Stdio { command, .. } => {
+            path_key(Path::new(command.trim())) == path_key(&binary_path(data_dir))
+        }
+        Transport::Http { .. } => false,
+    }
+}
+
+/// The verified classification of `server`'s tools (none unless it runs the
+/// pinned build).
+pub fn verified(server: &ServerConfig, data_dir: &Path) -> &'static [(&'static str, Verified)] {
+    if is_pinned(server, data_dir) {
+        &TOOLS
+    } else {
+        &[]
+    }
+}
+
+/// The pinned build's launch with the dashboard and the update check off,
+/// also for entries registered before Shodh set them or edited since.
+pub fn harden(transport: Transport) -> Transport {
+    match transport {
+        Transport::Stdio {
+            command,
+            mut args,
+            mut env,
+            cwd,
+        } => {
+            if !args.iter().any(|a| a == NO_DASHBOARD) {
+                args.insert(0, NO_DASHBOARD.to_string());
+            }
+            env.insert(NO_UPDATE_CHECK.0.to_string(), NO_UPDATE_CHECK.1.to_string());
+            Transport::Stdio {
+                command,
+                args,
+                env,
+                cwd,
+            }
+        }
+        other => other,
+    }
 }
 
 /// Add (or update) the enola entry of a config document.
@@ -220,7 +365,7 @@ pub fn register(doc: &mut serde_json::Value, binary: &Path) -> Result<(), config
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shodh_rag::harness::mcp::{Approval, Mode};
+    use shodh_rag::harness::mcp::{effective_read_only, verified_for, Approval, Mode, ToolInfo};
 
     fn archive_with(files: &[(&str, &[u8])]) -> Vec<u8> {
         let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
@@ -292,21 +437,86 @@ mod tests {
     }
 
     #[test]
-    fn enola_is_registered_for_code_mode_with_every_tool_auto() {
+    fn enola_is_registered_for_code_mode_without_dashboard_or_update_check() {
+        let data = Path::new("C:/data");
         let mut doc = config::empty_doc();
-        register(&mut doc, Path::new("C:/data/tools/enola-0.4.27/enola.exe")).unwrap();
+        register(&mut doc, &binary_path(data)).unwrap();
         let server = config::parse_doc(&doc).unwrap().servers.remove(0);
         assert_eq!(server.name, "enola");
         assert!(server.in_mode(Mode::Code) && !server.in_mode(Mode::Research));
-        assert_eq!(
-            server.approval_for("generate_snapshot", false),
-            Approval::Auto
-        );
+        assert_eq!(server.approval, None);
         assert!(server.transport.needs_workspace_folder());
+        match &server.transport {
+            Transport::Stdio { args, env, .. } => {
+                assert_eq!(args, &[NO_DASHBOARD.to_string()]);
+                assert_eq!(env.get(NO_UPDATE_CHECK.0).map(String::as_str), Some("1"));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(is_pinned(&server, data));
+        assert_eq!(verified(&server, data).len(), 22);
+        let elsewhere = Path::new("C:/other");
+        assert!(!is_pinned(&server, elsewhere));
+        assert!(verified(&server, elsewhere).is_empty());
+    }
+
+    #[test]
+    fn only_the_tools_that_write_ask() {
+        let mut names: Vec<&str> = TOOLS.iter().map(|(n, _)| *n).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), TOOLS.len());
+        let writes: Vec<&str> = TOOLS
+            .iter()
+            .filter(|(_, v)| *v == Verified::Writes)
+            .map(|(n, _)| *n)
+            .collect();
+        assert_eq!(writes, ["generate_snapshot", "set_baseline"]);
+        let guarded: Vec<&str> = TOOLS
+            .iter()
+            .filter(|(_, v)| matches!(v, Verified::ReadOnlyUnless { .. }))
+            .map(|(n, _)| *n)
+            .collect();
         assert_eq!(
-            server.transport.summary(),
-            "C:/data/tools/enola-0.4.27/enola.exe"
+            guarded,
+            [
+                "architecture_blame",
+                "architecture_history",
+                "compare_receipts",
+                "diff_snapshot"
+            ]
         );
+
+        // An entry registered by an older build (server-wide auto, no flags).
+        let data = Path::new("C:/data");
+        let entry = json!({
+            "command": binary_path(data).display().to_string(),
+            "cwd": WORKSPACE_FOLDER_VAR,
+            "shodh": { "modes": ["code"], "approval": "auto" }
+        });
+        let server = config::parse_server("enola", &entry).unwrap();
+        let info = |name: &str| -> ToolInfo {
+            serde_json::from_value(json!({"name": name, "inputSchema": {"type": "object"}}))
+                .unwrap()
+        };
+        let approval = |name: &str| {
+            let checked = verified_for(verified(&server, data), name);
+            let read_only = effective_read_only(&info(name), checked);
+            server.approval_for(name, read_only, Mode::Code)
+        };
+        assert_eq!(approval("generate_snapshot"), Approval::Ask);
+        assert_eq!(approval("set_baseline"), Approval::Ask);
+        assert_eq!(approval("explore"), Approval::Auto);
+        assert_eq!(approval("diff_snapshot"), Approval::Auto);
+        match harden(server.transport.clone()) {
+            Transport::Stdio { args, env, .. } => {
+                assert_eq!(args, [NO_DASHBOARD]);
+                assert_eq!(env.get(NO_UPDATE_CHECK.0).map(String::as_str), Some("1"));
+            }
+            other => panic!("{other:?}"),
+        }
+        let hardened = harden(harden(server.transport.clone()));
+        assert!(matches!(hardened, Transport::Stdio { ref args, .. } if args.len() == 1));
     }
 
     /// Against GitHub: the pinned release downloads, verifies and serves its

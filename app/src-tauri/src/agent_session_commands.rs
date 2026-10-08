@@ -4,9 +4,12 @@
 //! emitted to the WebView as `"agent_event"` with `{ sessionId, event }`.
 //! `agent_send` is the Ask path that replaces `unified_chat`.
 //!
-//! Call `agent_start` when a conversation opens: starting omp verifies the
-//! binary and launches the runtime, which takes seconds, so doing it before
-//! the first question keeps the first visible activity immediate.
+//! The runtime is never started with the app: each omp process holds hundreds
+//! of megabytes. The UI calls `agent_start` once the user starts typing a
+//! question (starting omp verifies the binary and launches the runtime, which
+//! takes seconds) and again before each send; sessions idle past the user's
+//! agent idle period (default five minutes) are stopped and start again on
+//! the next question, with the conversation's recent turns replayed.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -79,10 +82,11 @@ const MAX_LIVE_SESSIONS: usize = 4;
 /// process holds about 320 MB; side threads restart cheaply (history is replayed).
 const MAX_SIDE_SESSIONS: usize = 2;
 
-/// A side-thread session idle this long is stopped.
+/// A side-thread session idle this long is stopped (sooner when the user's
+/// agent idle period is shorter).
 const SIDE_IDLE_CLOSE: Duration = Duration::from_secs(5 * 60);
 
-/// How often idle side-thread sessions are looked for.
+/// How often idle sessions are looked for.
 const IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Tauri event carrying [`SessionCounts`] whenever sessions start or stop.
@@ -281,16 +285,35 @@ fn side_evictions(
         .collect()
 }
 
-/// Side-thread sessions idle for at least `timeout` at `now_ms` (never a busy one).
-fn expired_side_sessions(
+/// How long a session may sit idle: side threads [`SIDE_IDLE_CLOSE`] (or the
+/// main period when that is shorter), conversations `main` (the user's agent
+/// idle period; `None` keeps them).
+fn idle_limit(focus: bool, main: Option<Duration>) -> Option<Duration> {
+    if focus {
+        Some(main.map_or(SIDE_IDLE_CLOSE, |m| m.min(SIDE_IDLE_CLOSE)))
+    } else {
+        main
+    }
+}
+
+/// Whether a session last used at `last_used_ms` is past its limit at `now_ms`.
+fn idle_expired(focus: bool, last_used_ms: u64, now_ms: u64, main: Option<Duration>) -> bool {
+    idle_limit(focus, main).is_some_and(|limit| {
+        let limit_ms = u64::try_from(limit.as_millis()).unwrap_or(u64::MAX);
+        now_ms.saturating_sub(last_used_ms) >= limit_ms
+    })
+}
+
+/// Sessions idle past their [`idle_limit`] at `now_ms`; never one with an answer
+/// running (an answer waiting for an approval is running).
+fn expired_sessions(
     candidates: &[EvictionCandidate],
     now_ms: u64,
-    timeout: Duration,
+    main: Option<Duration>,
 ) -> Vec<String> {
-    let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
     candidates
         .iter()
-        .filter(|c| c.focus && !c.busy && now_ms.saturating_sub(c.last_used_ms) >= timeout_ms)
+        .filter(|c| !c.busy && idle_expired(c.focus, c.last_used_ms, now_ms, main))
         .map(|c| c.session_id.clone())
         .collect()
 }
@@ -372,6 +395,11 @@ impl AgentSessions {
             .iter()
             .map(|e| e.value().candidate(e.key()))
             .collect()
+    }
+
+    /// No session is live.
+    pub fn is_empty(&self) -> bool {
+        self.sessions.is_empty()
     }
 
     /// Live sessions by kind.
@@ -458,15 +486,22 @@ impl AgentSessions {
             .await
     }
 
-    /// Stop side-thread sessions idle for [`SIDE_IDLE_CLOSE`]. Returns how many.
-    pub async fn close_idle_side_sessions(&self) -> usize {
-        let timeout_ms = u64::try_from(SIDE_IDLE_CLOSE.as_millis()).unwrap_or(u64::MAX);
+    /// Stop sessions idle past their limit (see [`idle_limit`]; `main` is the
+    /// user's agent idle period). A conversation's agent runtime starts again
+    /// on its next question, which replays the conversation's recent turns.
+    /// Returns how many were stopped.
+    pub async fn close_idle_sessions(&self, main: Option<Duration>) -> usize {
         let mut closed = 0;
-        for session_id in expired_side_sessions(&self.candidates(), now_ms(), SIDE_IDLE_CLOSE) {
+        for session_id in expired_sessions(&self.candidates(), now_ms(), main) {
             // Re-checked under the lock: a send in between makes it in use again.
             let stopped = self
-                .stop_if_idle(&session_id, "idle side-thread session stopped", |e| {
-                    now_ms().saturating_sub(e.last_used_ms.load(Ordering::Relaxed)) >= timeout_ms
+                .stop_if_idle(&session_id, "idle agent session stopped", |e| {
+                    idle_expired(
+                        e.is_side(),
+                        e.last_used_ms.load(Ordering::Relaxed),
+                        now_ms(),
+                        main,
+                    )
                 })
                 .await;
             if stopped {
@@ -1295,7 +1330,20 @@ pub async fn agent_session_counts(
     Ok(sessions.counts())
 }
 
-/// Stops side-thread sessions idle for five minutes, checking every 30 seconds.
+/// The user's agent idle period (Settings → General), read at each sweep so a
+/// change applies without a restart. Unreadable settings use the default.
+fn agent_idle_period(app: &AppHandle) -> Option<Duration> {
+    crate::profile::app_data_dir(app)
+        .ok()
+        .and_then(|dir| SettingsStore::in_dir(&dir).load().ok())
+        .map(|settings| settings.background)
+        .unwrap_or_default()
+        .agent_idle_timeout()
+}
+
+/// Stops sessions idle past their limit (five minutes unless the user chose
+/// another; see [`AgentSessions::close_idle_sessions`]), checking every 30
+/// seconds.
 pub fn start_idle_reaper(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut tick = tokio::time::interval(IDLE_SWEEP_INTERVAL);
@@ -1303,7 +1351,10 @@ pub fn start_idle_reaper(app: AppHandle) {
         loop {
             tick.tick().await;
             let sessions = app.state::<AgentSessions>();
-            if sessions.close_idle_side_sessions().await > 0 {
+            if sessions.is_empty() {
+                continue;
+            }
+            if sessions.close_idle_sessions(agent_idle_period(&app)).await > 0 {
                 emit_counts(&app, &sessions);
             }
         }
@@ -2202,19 +2253,59 @@ mod tests {
     }
 
     #[test]
-    fn only_idle_side_sessions_expire() {
+    fn idle_sessions_expire_after_their_limit_and_busy_ones_never() {
         let minute = 60_000;
         let now = 100 * minute;
         let live = [
-            candidate("s-main", "c-main", false, false, now - 60 * minute),
+            candidate("s-main-old", "c-main-a", false, false, now - 6 * minute),
+            candidate("s-main-edge", "c-main-b", false, false, now - 5 * minute),
+            candidate("s-main-recent", "c-main-c", false, false, now - 4 * minute),
+            // An answer running (or waiting for an approval) for an hour.
+            candidate("s-main-busy", "c-main-d", false, true, now - 60 * minute),
             candidate("s-old", "c--focus--a", true, false, now - 6 * minute),
             candidate("s-edge", "c--focus--b", true, false, now - 5 * minute),
             candidate("s-recent", "c--focus--c", true, false, now - 4 * minute),
             candidate("s-busy", "c--focus--d", true, true, now - 50 * minute),
         ];
-        let mut expired = expired_side_sessions(&live, now, SIDE_IDLE_CLOSE);
-        expired.sort();
-        assert_eq!(expired, vec!["s-edge", "s-old"]);
+        let expired = |main: Option<Duration>| {
+            let mut ids = expired_sessions(&live, now, main);
+            ids.sort();
+            ids
+        };
+        // The default five minutes: conversations and side threads alike.
+        assert_eq!(
+            expired(Some(Duration::from_secs(5 * 60))),
+            vec!["s-edge", "s-main-edge", "s-main-old", "s-old"]
+        );
+        // "Keep running": conversations stay; side threads still close after five minutes.
+        assert_eq!(expired(None), vec!["s-edge", "s-old"]);
+        // A longer period keeps conversations longer, never side threads.
+        assert_eq!(
+            expired(Some(Duration::from_secs(30 * 60))),
+            vec!["s-edge", "s-old"]
+        );
+        // A shorter one applies to side threads too.
+        assert_eq!(
+            expired(Some(Duration::from_secs(4 * 60))),
+            vec![
+                "s-edge",
+                "s-main-edge",
+                "s-main-old",
+                "s-main-recent",
+                "s-old",
+                "s-recent"
+            ]
+        );
+    }
+
+    #[test]
+    fn idle_limits_follow_the_setting() {
+        let minute = Duration::from_secs(60);
+        assert_eq!(idle_limit(false, None), None);
+        assert_eq!(idle_limit(true, None), Some(SIDE_IDLE_CLOSE));
+        assert_eq!(idle_limit(false, Some(5 * minute)), Some(5 * minute));
+        assert_eq!(idle_limit(true, Some(minute)), Some(minute));
+        assert_eq!(idle_limit(true, Some(60 * minute)), Some(SIDE_IDLE_CLOSE));
     }
 
     #[test]

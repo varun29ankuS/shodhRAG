@@ -835,6 +835,7 @@ pub fn run() {
             // Background mode (tray, start with Windows)
             background::get_background_status,
             background::set_close_to_tray,
+            background::set_agent_idle_minutes,
             background::set_start_with_windows,
         ])
         .build(tauri::generate_context!());

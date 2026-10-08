@@ -122,13 +122,34 @@ pub struct BackgroundPrefs {
     pub close_to_tray: bool,
     /// The user has been told, once, where the window went.
     pub close_to_tray_explained: bool,
+    /// Minutes an agent runtime (one omp process per conversation, hundreds
+    /// of megabytes each) may sit idle before it is stopped; the next
+    /// question starts it again. `0` keeps runtimes running.
+    pub agent_idle_minutes: u32,
 }
+
+/// Default for [`BackgroundPrefs::agent_idle_minutes`].
+pub const DEFAULT_AGENT_IDLE_MINUTES: u32 = 5;
+/// Longest idle period the user may choose (a day).
+pub const MAX_AGENT_IDLE_MINUTES: u32 = 24 * 60;
 
 impl Default for BackgroundPrefs {
     fn default() -> Self {
         Self {
             close_to_tray: true,
             close_to_tray_explained: false,
+            agent_idle_minutes: DEFAULT_AGENT_IDLE_MINUTES,
+        }
+    }
+}
+
+impl BackgroundPrefs {
+    /// How long an idle agent runtime is kept; `None`: until the app exits.
+    /// A value above the limit (a hand-edited file) is capped.
+    pub fn agent_idle_timeout(&self) -> Option<std::time::Duration> {
+        match self.agent_idle_minutes.min(MAX_AGENT_IDLE_MINUTES) {
+            0 => None,
+            minutes => Some(std::time::Duration::from_secs(u64::from(minutes) * 60)),
         }
     }
 }
@@ -275,7 +296,7 @@ pub const AGENT_WRITABLE: [SettingKey; 2] = [SettingKey::Theme, SettingKey::Sear
 /// these by name (in addition to its schema only listing [`AGENT_WRITABLE`]),
 /// so a prompt-injected request gets a clear refusal rather than a
 /// best-effort match.
-pub const AGENT_DENIED: [(&str, &str); 21] = [
+pub const AGENT_DENIED: [(&str, &str); 22] = [
     ("api_keys", "API keys are secrets; a manipulated agent could leak or replace them."),
     ("provider", "Switching the model provider changes who receives the user's documents."),
     ("model", "Switching the model changes who receives the user's documents and what it costs."),
@@ -288,6 +309,7 @@ pub const AGENT_DENIED: [(&str, &str); 21] = [
     ("web_access", "Web access decides whether the agent may contact the internet; only the user may grant it."),
     ("close_to_tray", "Whether Shodh keeps running after its window closes is the user's call about their computer."),
     ("start_with_windows", "Adding a program to Windows startup changes the user's system; only the user may do that."),
+    ("agent_idle_minutes", "How long the agent runtime stays in memory is the user's call about their computer's resources."),
     ("inject_memories", "Whether remembered facts about the user are given to the model is the user's privacy decision."),
     ("learn_mode", "Whether the assistant learns memories from conversations, and whether it may store them without asking, is the user's decision."),
     ("learn_model", "The learning model receives what the user says; choosing who receives it is the user's decision."),
@@ -672,6 +694,28 @@ mod tests {
         assert!(old.background.close_to_tray);
         assert!(!old.background.close_to_tray_explained);
         assert_eq!(old.preferences.theme, Theme::Light);
+        assert_eq!(
+            old.background.agent_idle_minutes,
+            DEFAULT_AGENT_IDLE_MINUTES
+        );
+    }
+
+    #[test]
+    fn agent_idle_timeout_defaults_to_five_minutes_and_zero_keeps_runtimes() {
+        let mut prefs = BackgroundPrefs::default();
+        assert_eq!(
+            prefs.agent_idle_timeout(),
+            Some(std::time::Duration::from_secs(300))
+        );
+        prefs.agent_idle_minutes = 0;
+        assert_eq!(prefs.agent_idle_timeout(), None);
+        prefs.agent_idle_minutes = u32::MAX;
+        assert_eq!(
+            prefs.agent_idle_timeout(),
+            Some(std::time::Duration::from_secs(
+                u64::from(MAX_AGENT_IDLE_MINUTES) * 60
+            ))
+        );
     }
 
     #[test]

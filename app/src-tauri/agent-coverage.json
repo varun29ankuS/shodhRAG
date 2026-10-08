@@ -142,6 +142,7 @@
     "paper_concept": { "tool": "find_papers" },
     "get_background_status": { "excluded": "Close-to-tray and start-with-Windows are user-only settings about the user's computer (AGENT_DENIED); the agent has no tool to read or change them." },
     "set_close_to_tray": { "excluded": "Whether Shodh keeps running after its window closes is the user's decision (AGENT_DENIED: close_to_tray)." },
+    "set_agent_idle_minutes": { "excluded": "How long the agent runtime stays in memory is the user's call about their computer's resources (AGENT_DENIED: agent_idle_minutes)." },
     "set_start_with_windows": { "excluded": "Adding a program to Windows startup changes the user's system; only the user may do it (AGENT_DENIED: start_with_windows)." },
     "get_llm_info": { "tool": "get_settings" },
     "switch_llm_mode": { "excluded": "Switching the model or provider changes who receives the user's documents; user-only." },

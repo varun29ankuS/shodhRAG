@@ -240,6 +240,8 @@ pub struct BackgroundStatus {
     /// Task Manager), not from the settings file.
     pub start_with_windows: bool,
     pub paused: bool,
+    /// See [`crate::app_settings::BackgroundPrefs::agent_idle_minutes`].
+    pub agent_idle_minutes: u32,
 }
 
 fn settings_store(app: &AppHandle) -> Result<SettingsStore, String> {
@@ -257,6 +259,7 @@ fn status(app: &AppHandle, settings: &AppSettings) -> BackgroundStatus {
         close_to_tray: settings.background.close_to_tray,
         start_with_windows,
         paused: app.state::<BackgroundState>().is_paused(),
+        agent_idle_minutes: settings.background.agent_idle_minutes,
     }
 }
 
@@ -286,6 +289,38 @@ pub async fn set_close_to_tray(
         audit.record(AuditRecord::new(
             AuditEventType::SettingsChange,
             json!({"action": "close_to_tray", "old": before, "new": enabled, "via": "ui"}),
+        ));
+    }
+    broadcast(&app, &settings);
+    Ok(status(&app, &settings))
+}
+
+/// How many minutes an idle agent runtime is kept (`0`: until the app exits).
+/// User-only.
+#[tauri::command]
+pub async fn set_agent_idle_minutes(
+    app: AppHandle,
+    minutes: u32,
+    audit: State<'_, AuditState>,
+) -> Result<BackgroundStatus, String> {
+    if minutes > crate::app_settings::MAX_AGENT_IDLE_MINUTES {
+        return Err(format!(
+            "The idle period is at most {} minutes",
+            crate::app_settings::MAX_AGENT_IDLE_MINUTES
+        ));
+    }
+    let (settings, before) = settings_store(&app)?
+        .update(|s| {
+            Ok(std::mem::replace(
+                &mut s.background.agent_idle_minutes,
+                minutes,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    if before != minutes {
+        audit.record(AuditRecord::new(
+            AuditEventType::SettingsChange,
+            json!({"action": "agent_idle_minutes", "old": before, "new": minutes, "via": "ui"}),
         ));
     }
     broadcast(&app, &settings);

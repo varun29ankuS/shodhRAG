@@ -95,3 +95,70 @@ jobs:
       - name: Unit tests
         working-directory: app
         run: npm test
+
+  # Memory and startup budget of the release build: idle on a fresh profile
+  # with the search models installed (they load only when used). Five runs,
+  # the median is gated; scripts/measure-footprint.ps1 documents what is
+  # measured. Budgets are the measured release build plus at most 10%
+  # (148.6 MB idle, 0.65 s to a usable window, median of 3 runs on a
+  # developer machine) and never above the targets (350 MB, 1.5 s). The idle
+  # figure assumes WebView2 runs with --disable-gpu (profile.rs); with GPU
+  # compositing it would be about 115 MB more.
+  footprint:
+    name: Footprint budget
+    runs-on: windows-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+
+      - name: Install Protobuf compiler
+        run: choco install protoc -y
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Build frontend
+        working-directory: app
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build release app
+        run: cargo build --release -p shodh-rag-app --features tauri/custom-protocol
+
+      # The pinned search models (installed by the app itself, SHA-256 checked),
+      # cached by the file that pins them.
+      - name: Cache search models
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/shodh-models
+          key: search-models-${{ hashFiles('crates/shodh-rag/src/embeddings/model_store.rs') }}
+
+      - name: Measure footprint
+        shell: pwsh
+        run: >
+          ./scripts/measure-footprint.ps1
+          -Exe target/release/shodh-rag-app.exe
+          -ModelPath "${{ runner.temp }}/shodh-models" -InstallModels
+          -Scenario idle -Runs 5 -IdleSeconds 60
+          -BudgetIdleMB 163 -BudgetWindowSeconds 0.72
+          -Output footprint.json
+
+      - name: Upload footprint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: footprint
+          path: footprint.json
+          if-no-files-found: ignore

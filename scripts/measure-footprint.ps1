@@ -46,10 +46,6 @@
     download and verify its pinned search models there first (Settings ->
     Search does the same). Used by CI to fill its model cache.
 
-.PARAMETER WebViewArgsOverride
-    WebView2 flags to measure with instead of the app's own (to compare
-    flags; the DevTools port is added). Never used for the budget.
-
 .PARAMETER BudgetIdleMB
     When above zero, exit with code 1 if the median idle total of the idle
     scenario exceeds it.
@@ -97,9 +93,7 @@ param(
 
     [switch]$KeepProfiles,
 
-    [switch]$InstallModels,
-
-    [string]$WebViewArgsOverride
+    [switch]$InstallModels
 )
 
 Set-StrictMode -Version 3.0
@@ -120,17 +114,14 @@ function Test-Models {
     [bool]((Test-Path -LiteralPath (Join-Path $e5 'tokenizer.json')) -and (Get-ChildItem -LiteralPath $e5 -Filter '*.onnx' -ErrorAction SilentlyContinue))
 }
 
-# WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS replaces the flags the app gives
-# WebView2, so the app's own flags (WEBVIEW_BROWSER_ARGS in profile.rs, read
-# from this checkout) are repeated next to the DevTools port.
+# WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS opens the DevTools port. The app's own
+# flags (WEBVIEW_BROWSER_ARGS in profile.rs, read from this checkout) are
+# repeated in it, so the measured WebView runs with them whether a WebView2
+# version merges the variable with the app's flags or lets it replace them.
 $ProfileSource = Join-Path $PSScriptRoot '../app/src-tauri/src/profile.rs'
 $AppWebViewArgs = [regex]::Match((Get-Content -Raw -LiteralPath $ProfileSource), 'WEBVIEW_BROWSER_ARGS: &str =\s*"([^"]+)"')
 if (-not $AppWebViewArgs.Success) { throw "WEBVIEW_BROWSER_ARGS not found in $ProfileSource" }
-$BaseWebViewArgs = if ($WebViewArgsOverride) { $WebViewArgsOverride } else { $AppWebViewArgs.Groups[1].Value }
-$WebViewArgs = "$BaseWebViewArgs --remote-debugging-port=$CdpPort"
-if ($WebViewArgsOverride -and ($BudgetIdleMB -gt 0 -or $BudgetWindowSeconds -gt 0)) {
-    throw 'Budgets apply to the app as built: -WebViewArgsOverride cannot be combined with them.'
-}
+$WebViewArgs = "$($AppWebViewArgs.Groups[1].Value) --remote-debugging-port=$CdpPort"
 
 # Environment variables never passed to the measured app: provider keys and
 # tokens of whoever runs this, and settings that would change what is measured.

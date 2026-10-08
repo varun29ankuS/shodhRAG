@@ -2,10 +2,13 @@
 //! the fallback offered when a model is rate-limited or unavailable.
 //!
 //! - The list combines OpenRouter's public model list (cached in `shodh.db`
-//!   with a TTL, so prices show offline), the known models of providers with
-//!   a key, the models installed in a local Ollama and the llama.cpp file if
-//!   one is configured. Models without tool calling are left out: the agent
-//!   needs tools.
+//!   with a TTL, so prices show offline), the curated models of connected
+//!   key and subscription providers (`model_picks.json`) and the models
+//!   loaded in LM Studio. Models without tool calling are left out: the
+//!   agent needs tools. Ollama's models are reported but cannot be chosen.
+//! - The four picks (Best quality, Fast & cheap, Free, Private) resolve
+//!   from the connected providers; a pick's list is its automatic fallback
+//!   order.
 //! - A selection is saved in the settings file ([`ModelPrefs`]; keys stay in
 //!   the OS keychain) and used from the next answer: the agent session of a
 //!   conversation restarts with the new model when it next starts, never in
@@ -21,7 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use shodh_rag::audit::{AuditEventType, AuditRecord};
 use shodh_rag::harness::catalog_cache::{CachedCatalog, CatalogCache, CATALOG_TTL};
-use shodh_rag::harness::catalog_fetch::{fetch_ollama, fetch_openrouter};
+use shodh_rag::harness::catalog_fetch::fetch_openrouter;
 use shodh_rag::harness::model::OLLAMA_DEFAULT_HOST;
 use shodh_rag::harness::model_catalog::{
     build_catalog, choose_fallback, CatalogInputs, CatalogModel, FallbackContext, ModelRef,
@@ -31,6 +34,9 @@ use shodh_rag::harness::model_choice::{
     check_selection, model_change_payload, resolve_active, ActiveModel, ChangeReason, ModelPrefs,
     ModelSource, Selection, SelectionContext,
 };
+use shodh_rag::harness::model_picks::{
+    model_name, next_in_chain, provider_order, resolve_chain, table, Pick, PickContext,
+};
 use shodh_rag::harness::stealth_allowed_by_env;
 use shodh_rag::llm::{ApiProvider, LLMMode};
 use tauri::{AppHandle, Manager, State};
@@ -38,6 +44,10 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::app_settings::{broadcast, SettingsStore};
 use crate::audit_commands::AuditState;
+use crate::connect_commands::{
+    key_statuses, refresh_local, refresh_subscriptions, ConnectState, KeyStatus, LocalServer,
+    SubscriptionStatus, OLLAMA_NOTE,
+};
 use crate::llm_commands::{activate_mode, LLMState};
 
 /// Cache key of OpenRouter's list in `model_catalog_cache`.
@@ -48,8 +58,8 @@ const OPENROUTER_SOURCE: &str = "openrouter";
 #[serde(rename_all = "camelCase")]
 #[error("{message}")]
 pub struct PickerError {
-    /// `invalid`, `local_only`, `missing_key`, `stealth_confirmation`,
-    /// `environment_set` or `failed`.
+    /// `invalid`, `local_only`, `missing_key`, `not_connected`,
+    /// `stealth_confirmation`, `environment_set` or `failed`.
     pub code: &'static str,
     pub message: String,
 }
@@ -70,6 +80,8 @@ impl From<shodh_rag::harness::model_choice::SelectionError> for PickerError {
             E::Invalid(_) => "invalid",
             E::LocalOnly(_) => "local_only",
             E::MissingKey(_) => "missing_key",
+            E::NotConnected(_) => "not_connected",
+            E::Unsupported => "invalid",
             E::StealthNeedsConfirmation(_) => "stealth_confirmation",
             E::EnvironmentSet(_) => "environment_set",
         };
@@ -166,7 +178,7 @@ fn env_key_vars(provider: ProviderId) -> &'static [&'static str] {
         ProviderId::OpenAI => &["OPENAI_API_KEY"],
         ProviderId::Google => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         ProviderId::Grok => &["XAI_API_KEY"],
-        ProviderId::Ollama => &[],
+        _ => &[],
     }
 }
 
@@ -186,12 +198,23 @@ fn provider_key(llm: &LLMState, provider: ProviderId) -> Option<String> {
     })
 }
 
-/// Providers that have a key (Ollama needs none and is not listed).
+/// Providers that have a key.
 fn keyed_providers(llm: &LLMState) -> Vec<ProviderId> {
-    ProviderId::ALL
+    ProviderId::KEYED
         .into_iter()
-        .filter(|p| p.needs_key() && provider_key(llm, *p).is_some())
+        .filter(|p| provider_key(llm, *p).is_some())
         .collect()
+}
+
+/// Providers that can answer now: a key, a signed-in subscription, LM
+/// Studio running (as last detected).
+pub(crate) fn connected_providers(llm: &LLMState, connect: &ConnectState) -> Vec<ProviderId> {
+    let mut out = keyed_providers(llm);
+    out.extend(connect.signed_in());
+    if connect.lmstudio().running {
+        out.push(ProviderId::LmStudio);
+    }
+    out
 }
 
 fn ollama_host() -> String {
@@ -219,7 +242,7 @@ fn configured_model(llm: &LLMState) -> Option<ModelRef> {
     }
 }
 
-/// The LLM mode for `model`, with its key.
+/// The LLM mode for `model`, with its key (subscriptions and local servers need none).
 fn mode_for(llm: &LLMState, model: &ModelRef) -> PickerResult<LLMMode> {
     let api_key = if model.provider.needs_key() {
         provider_key(llm, model.provider).ok_or_else(|| PickerError {
@@ -230,7 +253,11 @@ fn mode_for(llm: &LLMState, model: &ModelRef) -> PickerResult<LLMMode> {
             ),
         })?
     } else {
-        "ollama".to_string()
+        match model.provider {
+            ProviderId::Ollama => "ollama".to_string(),
+            ProviderId::LmStudio => "lm-studio".to_string(),
+            _ => String::new(),
+        }
     };
     Ok(LLMMode::External {
         provider: model.provider.api_provider(),
@@ -281,10 +308,71 @@ pub struct PickerView {
     /// person knows why it is not offered.
     pub llama_cpp_file: Option<String>,
     pub keyed: Vec<ProviderId>,
+    /// Providers that can answer now (keys, signed-in subscriptions, LM Studio running).
+    pub connected: Vec<ProviderId>,
     pub local_only: bool,
     /// `SHODH_ALLOW_STEALTH_MODELS=1` is set.
     pub env_allows_stealth: bool,
     pub prefs: ModelPrefs,
+    /// The four picks, resolved from the connected providers.
+    pub picks: Vec<PickOption>,
+    pub subscriptions: Vec<SubscriptionStatus>,
+    pub keys: Vec<KeyStatus>,
+    pub lmstudio: LocalServer,
+    pub ollama: LocalServer,
+    /// Why Ollama's models cannot be chosen.
+    pub ollama_note: &'static str,
+    /// The fallback order of providers (saved order first, then the default).
+    pub provider_order: Vec<ProviderId>,
+}
+
+/// One of the four picks, resolved.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PickOption {
+    pub pick: Pick,
+    pub label: &'static str,
+    /// The model that answers for this pick, `None` when no connected
+    /// provider offers it.
+    pub model: Option<ModelRef>,
+    pub name: Option<String>,
+    /// The models tried after it, in order.
+    pub fallbacks: Vec<ModelRef>,
+}
+
+/// The pick chains for `catalog` and the connection state.
+fn pick_context<'a>(
+    connected: &'a [ProviderId],
+    order: &'a [ProviderId],
+    catalog: &'a [CatalogModel],
+    local_only: bool,
+) -> PickContext<'a> {
+    PickContext {
+        table: table(),
+        connected,
+        order,
+        catalog,
+        local_only,
+    }
+}
+
+fn pick_options(ctx: &PickContext<'_>) -> Vec<PickOption> {
+    Pick::ALL
+        .into_iter()
+        .map(|pick| {
+            let mut chain = resolve_chain(pick, ctx);
+            let model = (!chain.is_empty()).then(|| chain.remove(0));
+            PickOption {
+                pick,
+                label: pick.label(),
+                name: model
+                    .as_ref()
+                    .map(|m| model_name(m, ctx.catalog, ctx.table)),
+                model,
+                fallbacks: chain,
+            }
+        })
+        .collect()
 }
 
 async fn openrouter_list(
@@ -358,21 +446,26 @@ async fn build_view(
     let prefs = settings.models.clone().sanitized();
     let local_only = settings.policy.local_only;
     let keyed = keyed_providers(llm);
+    let connect = app.state::<ConnectState>();
 
     let host = ollama_host();
-    let (openrouter, ollama) = tokio::join!(
+    let (openrouter, (), ()) = tokio::join!(
         openrouter_list(picker, audit, local_only, force_refresh),
-        fetch_ollama(&host)
+        refresh_local(app, &connect, &host),
+        refresh_subscriptions(app, &connect, force_refresh),
     );
     let (list, catalog_status, catalog_error) = openrouter;
-    let ollama_running = ollama.is_ok();
-    let installed = ollama.unwrap_or_default();
+    let lmstudio = connect.lmstudio();
+    let ollama = connect.ollama();
+    let connected = connected_providers(llm, &connect);
     let models = build_catalog(&CatalogInputs {
         openrouter: list.as_ref().map(|c| c.models.as_slice()),
-        keyed: &keyed,
-        ollama: &installed,
+        connected: &connected,
+        lmstudio: &lmstudio.models,
         local_only,
     });
+    let order = provider_order(&prefs.provider_order, &table().order);
+    let picks = pick_options(&pick_context(&connected, &order, &models, local_only));
     let llama_cpp_file = lock(&llm.custom_model_path)
         .as_ref()
         .and_then(|p| p.file_name())
@@ -385,12 +478,20 @@ async fn build_view(
         catalog_status,
         catalog_fetched_at_ms: list.map(|c| c.fetched_at_ms),
         catalog_error,
-        ollama_running,
+        ollama_running: ollama.running,
         llama_cpp_file,
         keyed,
+        connected,
         local_only,
         env_allows_stealth: stealth_allowed_by_env(),
         prefs,
+        picks,
+        subscriptions: connect.subscription_statuses(),
+        keys: key_statuses(llm),
+        lmstudio,
+        ollama,
+        ollama_note: OLLAMA_NOTE,
+        provider_order: order,
     })
 }
 
@@ -430,28 +531,55 @@ pub async fn model_select(
     llm: State<'_, LLMState>,
     audit: State<'_, AuditState>,
 ) -> PickerResult<PickerView> {
-    let store = SettingsStore::in_dir(&data_dir(&app)?);
+    select_model(
+        &app,
+        &picker,
+        &llm,
+        &audit,
+        request.model,
+        None,
+        request.confirm_stealth,
+        request.session_override,
+    )
+    .await?;
+    build_view(&app, &picker, &llm, &audit, false).await
+}
+
+/// Check, apply and save a selection. `pick`: the pick it came from
+/// (`None`: chosen by id).
+#[allow(clippy::too_many_arguments)]
+async fn select_model(
+    app: &AppHandle,
+    picker: &ModelPickerState,
+    llm: &LLMState,
+    audit: &AuditState,
+    requested: ModelRef,
+    pick: Option<Pick>,
+    confirm_stealth: bool,
+    session_override: bool,
+) -> PickerResult<ModelRef> {
+    let store = SettingsStore::in_dir(&data_dir(app)?);
     let settings = store
         .load()
         .map_err(|e| PickerError::failed(e.to_string()))?;
     let prefs = settings.models.clone().sanitized();
-    let keyed = keyed_providers(&llm);
+    let connected = connected_providers(llm, &app.state::<ConnectState>());
     let environment = picker.environment();
     let (model, selection) = check_selection(
-        request.model,
+        requested,
         &SelectionContext {
             prefs: &prefs,
-            keyed: &keyed,
+            connected: &connected,
             local_only: settings.policy.local_only,
             env_allows_stealth: stealth_allowed_by_env(),
             environment: environment.as_ref(),
         },
-        request.confirm_stealth,
-        request.session_override,
+        confirm_stealth,
+        session_override,
     )?;
-    let from = configured_model(&llm);
+    let from = configured_model(llm);
 
-    apply(&llm, &model).await?;
+    apply(llm, &model).await?;
 
     let reason = match selection {
         Selection::Saved => ChangeReason::UserChoice,
@@ -462,12 +590,17 @@ pub async fn model_select(
             ChangeReason::SessionOverride
         }
     };
-    let confirmed_stealth = request.confirm_stealth && model.is_stealth();
+    let confirmed_stealth = confirm_stealth && model.is_stealth();
     let (saved, _) = store
         .update(|s| {
             let mut prefs = std::mem::take(&mut s.models).sanitized();
             if selection == Selection::Saved {
                 prefs.chosen = Some(model.clone());
+                prefs.pick = pick;
+                if pick.is_some() {
+                    // A pick falls back down its own list without asking.
+                    prefs.always_fall_back = true;
+                }
             }
             if confirmed_stealth {
                 prefs.accept_stealth(&model);
@@ -477,14 +610,99 @@ pub async fn model_select(
             Ok(())
         })
         .map_err(|e| PickerError::failed(e.to_string()))?;
-    broadcast(&app, &saved);
+    broadcast(app, &saved);
     if from.as_ref() != Some(&model) {
         audit.record(AuditRecord::new(
             AuditEventType::ModelChange,
             model_change_payload(from.as_ref(), &model, reason, None),
         ));
     }
+    Ok(model)
+}
+
+/// Use one of the four picks: its first model answers from the next answer
+/// and the rest of its list is the automatic fallback.
+#[tauri::command]
+pub async fn model_use_pick(
+    app: AppHandle,
+    pick: Pick,
+    session_override: Option<bool>,
+    picker: State<'_, ModelPickerState>,
+    llm: State<'_, LLMState>,
+    audit: State<'_, AuditState>,
+) -> PickerResult<PickerView> {
+    let view = build_view(&app, &picker, &llm, &audit, false).await?;
+    let model = view
+        .picks
+        .iter()
+        .find(|p| p.pick == pick)
+        .and_then(|p| p.model.clone())
+        .ok_or_else(|| PickerError {
+            code: "not_connected",
+            message: format!(
+                "No connected provider offers {}. Connect one above.",
+                pick.label()
+            ),
+        })?;
+    select_model(
+        &app,
+        &picker,
+        &llm,
+        &audit,
+        model,
+        Some(pick),
+        false,
+        session_override.unwrap_or(false),
+    )
+    .await?;
     build_view(&app, &picker, &llm, &audit, false).await
+}
+
+/// The fallback order of providers (Advanced).
+#[tauri::command]
+pub async fn model_set_provider_order(
+    app: AppHandle,
+    order: Vec<ProviderId>,
+) -> PickerResult<ModelPrefs> {
+    let (saved, _) = SettingsStore::in_dir(&data_dir(&app)?)
+        .update(|s| {
+            let mut prefs = std::mem::take(&mut s.models).sanitized();
+            prefs.provider_order = order.clone();
+            s.models = prefs.sanitized();
+            Ok(())
+        })
+        .map_err(|e| PickerError::failed(e.to_string()))?;
+    broadcast(&app, &saved);
+    Ok(saved.models)
+}
+
+/// A provider's base URL (Advanced); empty or `None` clears it.
+#[tauri::command]
+pub async fn model_set_base_url(
+    app: AppHandle,
+    provider: ProviderId,
+    url: Option<String>,
+) -> PickerResult<ModelPrefs> {
+    let store = SettingsStore::in_dir(&data_dir(&app)?);
+    let mut prefs = store
+        .load()
+        .map_err(|e| PickerError::failed(e.to_string()))?
+        .models
+        .sanitized();
+    prefs
+        .set_base_url(provider, url.as_deref())
+        .map_err(|e| PickerError {
+            code: "invalid",
+            message: e.to_string(),
+        })?;
+    let (saved, _) = store
+        .update(|s| {
+            s.models = prefs.clone();
+            Ok(())
+        })
+        .map_err(|e| PickerError::failed(e.to_string()))?;
+    broadcast(&app, &saved);
+    Ok(saved.models)
 }
 
 /// Star or unstar a model.
@@ -560,36 +778,47 @@ pub async fn model_fallback_offer(
     llm: State<'_, LLMState>,
     audit: State<'_, AuditState>,
 ) -> PickerResult<Option<FallbackOffer>> {
+    let failed = run_model(failed, configured_model(&llm).as_ref());
     let settings = SettingsStore::in_dir(&data_dir(&app)?)
         .load()
         .map_err(|e| PickerError::failed(e.to_string()))?;
     let prefs = settings.models.clone().sanitized();
     let local_only = settings.policy.local_only;
-    let keyed = keyed_providers(&llm);
+    let connect = app.state::<ConnectState>();
+    let connected = connected_providers(&llm, &connect);
     let cached = picker
         .cache(&audit)
         .and_then(|c| c.get(OPENROUTER_SOURCE).ok().flatten());
-    let installed = if local_only || failed.provider.is_local() {
-        fetch_ollama(&ollama_host()).await.unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let lmstudio = connect.lmstudio();
     let catalog = build_catalog(&CatalogInputs {
         openrouter: cached.as_ref().map(|c| c.models.as_slice()),
-        keyed: &keyed,
-        ollama: &installed,
+        connected: &connected,
+        lmstudio: &lmstudio.models,
         local_only,
     });
     let allow_stealth = stealth_allowed_by_env();
-    let offer = choose_fallback(&FallbackContext {
-        current: &failed,
-        preferred: prefs.fallback.as_ref(),
-        keyed: &keyed,
-        catalog: &catalog,
-        local_only,
-        allow_stealth,
-    })
-    .filter(|m| prefs.stealth_ok(m, allow_stealth));
+    // A pick falls back down its own list, automatically.
+    let order = provider_order(&prefs.provider_order, &table().order);
+    let from_pick = prefs.pick.and_then(|pick| {
+        let chain = resolve_chain(
+            pick,
+            &pick_context(&connected, &order, &catalog, local_only),
+        );
+        next_in_chain(&chain, &failed).filter(|m| *m != failed)
+    });
+    let automatic = from_pick.is_some() || prefs.always_fall_back;
+    let offer = from_pick
+        .or_else(|| {
+            choose_fallback(&FallbackContext {
+                current: &failed,
+                preferred: prefs.fallback.as_ref(),
+                connected: &connected,
+                catalog: &catalog,
+                local_only,
+                allow_stealth,
+            })
+        })
+        .filter(|m| prefs.stealth_ok(m, allow_stealth));
     Ok(offer.map(|model| {
         let name = catalog
             .iter()
@@ -599,9 +828,26 @@ pub async fn model_fallback_offer(
         FallbackOffer {
             model,
             name,
-            automatic: prefs.always_fall_back,
+            automatic,
         }
     }))
+}
+
+/// The picker entry of a run's model. A run names its runtime provider
+/// (`anthropic/…`), which a Claude Pro/Max sign-in shares with the Anthropic
+/// API key: when the active model is the subscription's, it is that one.
+fn run_model(failed: ModelRef, active: Option<&ModelRef>) -> ModelRef {
+    match active {
+        Some(active)
+            if active.model == failed.model
+                && active.provider != failed.provider
+                && active.provider.api_provider_omp_id()
+                    == failed.provider.api_provider_omp_id() =>
+        {
+            active.clone()
+        }
+        _ => failed,
+    }
 }
 
 /// One answer run with another model than the active one (a fallback).
@@ -629,12 +875,12 @@ pub(crate) fn override_mode(
         .load()
         .map_err(|e| PickerError::failed(e.to_string()))?;
     let prefs = settings.models.sanitized();
-    let keyed = keyed_providers(llm);
+    let connected = connected_providers(llm, &app.state::<ConnectState>());
     let (model, _) = check_selection(
         request.model.clone(),
         &SelectionContext {
             prefs: &prefs,
-            keyed: &keyed,
+            connected: &connected,
             local_only: settings.policy.local_only,
             env_allows_stealth: stealth_allowed_by_env(),
             environment: None,
@@ -850,6 +1096,18 @@ mod tests {
         let json = serde_json::to_value(&e).unwrap();
         assert_eq!(json["code"], "missing_key");
         assert!(json["message"].as_str().unwrap().contains("OpenAI"));
+    }
+
+    #[test]
+    fn a_failed_run_is_matched_to_the_subscription_it_used() {
+        let sub = ModelRef::new(ProviderId::ClaudeSub, "claude-opus-5-5");
+        let from_run = ModelRef::new(ProviderId::Anthropic, "claude-opus-5-5");
+        assert_eq!(run_model(from_run.clone(), Some(&sub)), sub);
+        let keyed = ModelRef::new(ProviderId::Anthropic, "claude-opus-5-5");
+        assert_eq!(run_model(from_run.clone(), Some(&keyed)), keyed);
+        let other = ModelRef::new(ProviderId::ClaudeSub, "claude-haiku-4-5");
+        assert_eq!(run_model(from_run.clone(), Some(&other)), from_run);
+        assert_eq!(run_model(from_run.clone(), None), from_run);
     }
 
     #[test]

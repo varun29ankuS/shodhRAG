@@ -23,6 +23,8 @@ use shodh_rag::harness::code_mode::{
 };
 use shodh_rag::harness::mcp::Mode;
 use shodh_rag::harness::model::EnvValue;
+use shodh_rag::harness::model_catalog::ProviderId;
+use shodh_rag::harness::model_choice::base_url_var;
 use shodh_rag::harness::profile::{app_tools, is_valid_slug};
 use shodh_rag::harness::tools::{HostTool, RunScope, ToolRegistry};
 use shodh_rag::harness::{
@@ -944,11 +946,25 @@ pub async fn agent_start(
             .any(|id| id == model.trim()),
         _ => false,
     };
-    let model = select_model_with(
+    let mut model = select_model_with(
         &mode,
         |_| None,
         stealth_allowed_by_env() || stealth_accepted,
     )?;
+    // A base URL set in Settings → Model → Advanced (the runtime's own
+    // variable for that provider).
+    if let LLMMode::External { provider, .. } = &mode {
+        if let Some(provider) = ProviderId::from_api(provider) {
+            if let (Some(var), Some(url)) =
+                (base_url_var(provider), settings.models.base_url(provider))
+            {
+                model.env.retain(|(name, _)| name != var);
+                model
+                    .env
+                    .push((var.to_string(), EnvValue::Plain(url.to_string())));
+            }
+        }
+    }
     // Local-only mode: refuse any model whose provider is off this computer.
     let local_only = settings.policy.local_only;
     if local_only && is_cloud(&model.model_arg) {

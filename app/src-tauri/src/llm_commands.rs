@@ -55,6 +55,13 @@ impl ApiKeys {
         }
     }
 
+    /// Set (or clear) the key of a provider id. Unknown ids are ignored.
+    pub fn set(&mut self, provider: &str, key: Option<String>) {
+        if let Some(slot) = self.slot_mut(provider) {
+            *slot = key;
+        }
+    }
+
     /// The key of a provider id, if one is set. Never log the result.
     pub fn get(&self, provider: &str) -> Option<String> {
         let value = match provider {

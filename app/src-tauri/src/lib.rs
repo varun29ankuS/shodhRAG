@@ -5,6 +5,7 @@ mod app_settings;
 mod audit_commands;
 mod background;
 mod chat_history;
+mod connect_commands;
 mod database_commands;
 mod diagnostic_commands;
 mod doc_gen_commands;
@@ -244,6 +245,7 @@ pub fn run() {
             let shared_llm_manager = Arc::new(AsyncRwLock::new(None));
 
             app.manage(model_picker_commands::ModelPickerState::default());
+            app.manage(connect_commands::ConnectState::default());
             app.manage(LLMState {
                 manager: shared_llm_manager.clone(),
                 config: Arc::new(Mutex::new(LLMConfig::default())),
@@ -257,6 +259,16 @@ pub fn run() {
             let llm_bootstrap_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let llm_state = llm_bootstrap_handle.state::<LLMState>();
+                // Once: keys from the environment are saved in the OS
+                // credential store (the environment still wins at run time).
+                let migrate_handle = llm_bootstrap_handle.clone();
+                if let Err(e) = tokio::task::spawn_blocking(move || {
+                    connect_commands::migrate_env_keys_once(&migrate_handle)
+                })
+                .await
+                {
+                    tracing::warn!("Environment key migration failed: {}", e);
+                }
                 match tokio::task::spawn_blocking(api_key_store::load_all).await {
                     Ok(stored) => {
                         let merged = llm_state
@@ -559,6 +571,14 @@ pub fn run() {
             model_picker_commands::model_set_favourite,
             model_picker_commands::model_set_fallback,
             model_picker_commands::model_fallback_offer,
+            model_picker_commands::model_use_pick,
+            model_picker_commands::model_set_provider_order,
+            model_picker_commands::model_set_base_url,
+            connect_commands::connect_sign_in,
+            connect_commands::connect_sign_in_cancel,
+            connect_commands::connect_sign_out,
+            connect_commands::connect_save_key,
+            connect_commands::connect_remove_key,
             // Space commands
             space_commands::create_space,
             space_commands::get_spaces,

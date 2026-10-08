@@ -44,6 +44,8 @@ fn get_provider_max_tokens(llm_mode: &LLMMode) -> usize {
             ApiProvider::Replicate => 8_192,   // Replicate typical max
             ApiProvider::Baseten => 16_384,    // GPT-OSS-120B supports 16K output
             ApiProvider::Ollama => 8_192,      // Ollama, depends on model
+            ApiProvider::LmStudio => 8_192,    // LM Studio, depends on model
+            ApiProvider::Subscription(_) => 8_192, // answers through the assistant only
             ApiProvider::HuggingFace { .. } => 4_096, // HuggingFace varies by model
             ApiProvider::Custom { .. } => 8_192, // Custom endpoints, conservative default
         },

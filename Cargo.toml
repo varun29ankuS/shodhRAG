@@ -58,3 +58,11 @@ opt-level = 3
 # this package keeps the whole link on the release dynamic CRT.
 [profile.dev.package.llama-cpp-sys-2]
 debug-assertions = false
+
+# Release builds are what users run: smaller and faster code, no symbols.
+# panic stays "unwind": PDF parsing and the table model catch parser panics
+# (catch_unwind) so one malformed file never takes the app down.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

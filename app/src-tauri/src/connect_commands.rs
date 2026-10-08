@@ -298,7 +298,7 @@ pub async fn connect_sign_in(
     let binary = resolve_binary_path(&dir);
     verify_binary(&binary).await?;
     let layout = OmpLayout::new(&dir);
-    let mut command = omp_auth::command(&binary, &layout, &omp_auth::login_args(service))?;
+    let mut command = omp_auth::command(&binary, &layout, service, &omp_auth::login_args(service))?;
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -330,26 +330,24 @@ pub async fn connect_sign_in(
             step: None,
             message,
         };
-        match outcome {
-            LoginOutcome::Saved => {
-                refresh_subscriptions(&handle, &state, true).await;
-                let connected = state.signed_in().contains(&provider);
-                if connected {
-                    record(&handle, provider, "sign_in");
-                    emit(&handle, event("connected", None));
-                } else {
-                    emit(
-                        &handle,
-                        event(
-                            "failed",
-                            Some("The account was saved but cannot be used yet. Try signing in again.".into()),
-                        ),
-                    );
-                }
-            }
-            LoginOutcome::Cancelled => emit(&handle, event("cancelled", None)),
-            LoginOutcome::Failed(message) => emit(&handle, event("failed", Some(message))),
+        if matches!(outcome, LoginOutcome::Cancelled) {
+            emit(&handle, event("cancelled", None));
+            return;
         }
+        // omp's own status decides: an account saved by a login that then
+        // exited with an error still counts, and a failure is re-checked so
+        // the row shows the truth.
+        refresh_subscriptions(&handle, &state, true).await;
+        if state.signed_in().contains(&provider) {
+            record(&handle, provider, "sign_in");
+            emit(&handle, event("connected", None));
+            return;
+        }
+        let message = match outcome {
+            LoginOutcome::Failed(message) => message,
+            _ => "The account was saved but cannot be used yet. Try signing in again.".into(),
+        };
+        emit(&handle, event("failed", Some(message)));
     });
     Ok(())
 }
@@ -468,7 +466,7 @@ async fn drive_login(
     };
     let stderr = stderr_task.await.unwrap_or_default();
     match status {
-        Ok(status) if status.success() && saved => LoginOutcome::Saved,
+        Ok(_) if saved => LoginOutcome::Saved,
         Ok(status) if status.success() => {
             LoginOutcome::Failed("The sign-in ended without saving an account.".into())
         }

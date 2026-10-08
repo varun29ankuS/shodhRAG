@@ -254,8 +254,15 @@ pub async fn verify_key(
     let check = key_check(provider).ok_or(KeyCheckError::NoKey(label))?;
     let value = reqwest::header::HeaderValue::from_str(&format!("{}{}", check.prefix, key.trim()))
         .map_err(|_| KeyCheckError::Rejected(label))?;
-    let client =
-        client(KEY_CHECK_TIMEOUT).map_err(|e| KeyCheckError::Unreachable(label, e.to_string()))?;
+    // No redirects: a key header (`x-api-key`, `x-goog-api-key`) must never
+    // follow a redirect to another host.
+    let client = reqwest::Client::builder()
+        .user_agent(CATALOG_USER_AGENT)
+        .timeout(KEY_CHECK_TIMEOUT)
+        .connect_timeout(KEY_CHECK_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| KeyCheckError::Unreachable(label, e.without_url().to_string()))?;
     let mut request = client
         .get(check.url)
         .header(reqwest::header::ACCEPT, "application/json")
@@ -270,6 +277,10 @@ pub async fn verify_key(
     match response.status().as_u16() {
         200..=299 => Ok(()),
         400 | 401 | 403 => Err(KeyCheckError::Rejected(label)),
+        300..=399 => Err(KeyCheckError::Unreachable(
+            label,
+            "the provider answered with a redirect, which is not followed with a key".into(),
+        )),
         status => Err(KeyCheckError::Unreachable(label, format!("HTTP {status}"))),
     }
 }

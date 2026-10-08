@@ -596,11 +596,10 @@ async fn select_model(
             let mut prefs = std::mem::take(&mut s.models).sanitized();
             if selection == Selection::Saved {
                 prefs.chosen = Some(model.clone());
+                // A pick falls back down its own list without asking
+                // (`model_fallback_offer`); a model chosen by id keeps the
+                // "ask first" default.
                 prefs.pick = pick;
-                if pick.is_some() {
-                    // A pick falls back down its own list without asking.
-                    prefs.always_fall_back = true;
-                }
             }
             if confirmed_stealth {
                 prefs.accept_stealth(&model);

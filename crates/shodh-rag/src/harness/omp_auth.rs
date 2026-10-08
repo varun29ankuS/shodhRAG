@@ -302,6 +302,7 @@ pub fn accounts_env(
 pub fn command(
     binary: &Path,
     layout: &OmpLayout,
+    service: SubscriptionService,
     args: &[String],
 ) -> Result<Command, HarnessError> {
     std::fs::create_dir_all(&layout.accounts_dir)?;
@@ -315,6 +316,13 @@ pub fn command(
         .kill_on_drop(true);
     for (name, value) in accounts_env(layout, |n| std::env::var(n).ok()) {
         command.env(name, value.as_str());
+    }
+    if service == SubscriptionService::Gemini {
+        for var in super::model::GEMINI_PROJECT_VARS {
+            if let Some(value) = std::env::var(var).ok().filter(|v| !v.trim().is_empty()) {
+                command.env(var, value.trim());
+            }
+        }
     }
     #[cfg(windows)]
     {
@@ -330,7 +338,7 @@ pub async fn status(
     layout: &OmpLayout,
     service: SubscriptionService,
 ) -> Result<(SignInState, Vec<String>), HarnessError> {
-    let mut list = command(binary, layout, &accounts_args(service))?;
+    let mut list = command(binary, layout, service, &accounts_args(service))?;
     list.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -346,7 +354,7 @@ pub async fn status(
         return Ok((SignInState::SignedOut, accounts));
     }
     // The token is printed on stdout: never read it.
-    let mut check = command(binary, layout, &token_check_args(service))?;
+    let mut check = command(binary, layout, service, &token_check_args(service))?;
     check
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -365,7 +373,7 @@ pub async fn sign_out(
     layout: &OmpLayout,
     service: SubscriptionService,
 ) -> Result<(), HarnessError> {
-    let mut logout = command(binary, layout, &logout_args(service))?;
+    let mut logout = command(binary, layout, service, &logout_args(service))?;
     logout
         .stdin(Stdio::null())
         .stdout(Stdio::null())

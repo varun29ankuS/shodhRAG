@@ -76,6 +76,10 @@ pub const STEALTH_WARNING: &str =
 
 static STEALTH_WARNED: std::sync::Once = std::sync::Once::new();
 
+/// Google Cloud project for a Gemini sign-in on a Workspace account (omp
+/// asks for it by name). Not secrets; passed only to Gemini.
+pub const GEMINI_PROJECT_VARS: [&str; 2] = ["GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_PROJECT_ID"];
+
 /// LM Studio's address for the runtime (and the user's override of it).
 pub const LM_STUDIO_URL_VAR: &str = "LM_STUDIO_BASE_URL";
 
@@ -274,7 +278,19 @@ pub fn select_model_with(
             env.push((LM_STUDIO_URL_VAR.to_string(), EnvValue::Plain(url)));
             (true, false)
         }
-        ProviderAuth::Account => (false, true),
+        ProviderAuth::Account => {
+            if matches!(
+                provider,
+                ApiProvider::Subscription(crate::llm::SubscriptionService::Gemini)
+            ) {
+                for var in GEMINI_PROJECT_VARS {
+                    if let Some(value) = env_value(var) {
+                        env.push((var.to_string(), EnvValue::Plain(value)));
+                    }
+                }
+            }
+            (false, true)
+        }
     };
 
     Ok(OmpModel {

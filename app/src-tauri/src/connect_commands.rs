@@ -172,7 +172,7 @@ impl ConnectState {
 }
 
 fn data_dir(app: &AppHandle) -> ConnectResult<PathBuf> {
-    app.path().app_data_dir().map_err(|e| {
+    crate::profile::app_data_dir(app).map_err(|e| {
         ConnectError::new("failed", format!("The app data folder is unavailable: {e}"))
     })
 }

@@ -183,7 +183,7 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
     if state.quitting.load(Ordering::SeqCst) || !state.tray_ready.load(Ordering::SeqCst) {
         return;
     }
-    let store = match app.path().app_data_dir() {
+    let store = match crate::profile::app_data_dir(app) {
         Ok(dir) => SettingsStore::in_dir(&dir),
         Err(e) => {
             tracing::warn!(error = %e, "no app data directory; closing normally");
@@ -243,8 +243,7 @@ pub struct BackgroundStatus {
 }
 
 fn settings_store(app: &AppHandle) -> Result<SettingsStore, String> {
-    app.path()
-        .app_data_dir()
+    crate::profile::app_data_dir(app)
         .map(|dir| SettingsStore::in_dir(&dir))
         .map_err(|e| format!("Failed to get app data directory: {e}"))
 }
@@ -300,6 +299,13 @@ pub async fn set_start_with_windows(
     enabled: bool,
     audit: State<'_, AuditState>,
 ) -> Result<BackgroundStatus, String> {
+    // The startup entry is one per app; a separate profile must not change it.
+    if crate::profile::active().is_separate() {
+        return Err(format!(
+            "The startup entry belongs to the normal profile; it cannot be changed while {} is set.",
+            crate::profile::DATA_DIR_ENV
+        ));
+    }
     let launcher = app.autolaunch();
     let before = launcher.is_enabled().unwrap_or(false);
     let result = if enabled {

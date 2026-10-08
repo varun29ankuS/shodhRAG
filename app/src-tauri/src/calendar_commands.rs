@@ -15,9 +15,7 @@ pub use crate::calendar_store::{CalendarEvent, NewEvent, NewTask, TodoItem};
 pub const CALENDAR_CHANGED_EVENT: &str = "calendar-changed";
 
 fn store(app: &AppHandle) -> Result<CalendarStore, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
+    let dir = crate::profile::app_data_dir(app)
         .map_err(|e| format!("Failed to get app data directory: {e}"))?;
     Ok(CalendarStore::in_dir(&dir))
 }

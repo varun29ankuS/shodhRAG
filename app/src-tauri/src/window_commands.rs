@@ -10,18 +10,21 @@ pub async fn create_floating_widget(app: tauri::AppHandle) -> Result<(), String>
     }
 
     // Create the floating widget window using Tauri v2 API
-    let widget_window =
-        tauri::WebviewWindowBuilder::new(&app, "widget", WebviewUrl::App("widget.html".into()))
-            .title("Vectora Widget")
-            .inner_size(80.0, 80.0)
-            .resizable(false)
-            .decorations(false)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .transparent(true)
-            .position(100.0, 100.0)
-            .build()
-            .map_err(|e| e.to_string())?;
+    let widget_window = crate::profile::webview_storage(tauri::WebviewWindowBuilder::new(
+        &app,
+        "widget",
+        WebviewUrl::App("widget.html".into()),
+    ))
+    .title("Vectora Widget")
+    .inner_size(80.0, 80.0)
+    .resizable(false)
+    .decorations(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .transparent(true)
+    .position(100.0, 100.0)
+    .build()
+    .map_err(|e| e.to_string())?;
 
     // Position in top-right corner
     if let Ok(Some(monitor)) = widget_window.current_monitor() {

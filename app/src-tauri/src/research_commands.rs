@@ -30,7 +30,7 @@ use shodh_rag::research::snippets::{
 use shodh_rag::research::vision::{self, VisionModel};
 use shodh_rag::research::{ResearchDb, ResearchError};
 use shodh_rag::statements::{Scope, StatementError};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 use tokio::sync::OnceCell;
 
 use crate::app_settings::SettingsStore;
@@ -488,8 +488,7 @@ fn current_mode(llm: &LLMState) -> LLMMode {
 }
 
 fn local_only(app: &AppHandle) -> bool {
-    app.path()
-        .app_data_dir()
+    crate::profile::app_data_dir(app)
         .ok()
         .and_then(|dir| SettingsStore::in_dir(&dir).load().ok())
         .map(|s| s.policy.local_only)
@@ -567,9 +566,7 @@ pub async fn results_extract(
 ) -> ResearchCommandResult<ExtractionReport> {
     let file_path = require_pdf(&file_path)?;
     let model = if use_model.unwrap_or(false) {
-        let dir = app
-            .path()
-            .app_data_dir()
+        let dir = crate::profile::app_data_dir(&app)
             .map_err(|e| ResearchCommandError::unavailable(e.to_string()))?;
         Some(
             crate::memory_learn::configured_model(&dir, &llm)

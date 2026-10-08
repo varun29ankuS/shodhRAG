@@ -165,8 +165,7 @@ fn now_ms() -> u64 {
 }
 
 fn data_dir(app: &AppHandle) -> PickerResult<PathBuf> {
-    app.path()
-        .app_data_dir()
+    crate::profile::app_data_dir(app)
         .map_err(|e| PickerError::failed(format!("The app data folder is unavailable: {e}")))
 }
 

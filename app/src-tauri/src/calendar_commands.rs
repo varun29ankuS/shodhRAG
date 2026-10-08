@@ -365,8 +365,9 @@ pub async fn delete_event(app: AppHandle, id: String) -> Result<bool, String> {
 
 // ── Bulk Reindex ─────────────────────────────────────────────────
 
-/// Re-index all existing calendar data into the RAG engine.
-/// Called on startup to ensure the search index is populated.
+/// Index calendar items that are missing from the search index (startup, and
+/// after the search models are installed). Items already indexed are not
+/// re-embedded; edits are indexed as they are made.
 pub async fn reindex_all_calendar_data(app: &AppHandle) {
     let data = match store(app).and_then(|s| s.load().map_err(|e| e.to_string())) {
         Ok(d) => d,
@@ -386,7 +387,7 @@ pub async fn reindex_all_calendar_data(app: &AppHandle) {
 
     tokio::spawn(async move {
         let mut engine = rag.write().await;
-        match shodh_rag::agent::calendar_indexer::reindex_all(
+        match shodh_rag::agent::calendar_indexer::index_missing(
             &mut engine,
             &rag_tasks,
             &rag_events,
@@ -397,9 +398,9 @@ pub async fn reindex_all_calendar_data(app: &AppHandle) {
             Ok((t, e)) => tracing::info!(
                 tasks = t,
                 events = e,
-                "Calendar data reindexed into RAG on startup"
+                "Calendar items missing from the index were indexed"
             ),
-            Err(e) => tracing::warn!(error = %e, "Failed to reindex calendar data into RAG"),
+            Err(e) => tracing::warn!(error = %e, "Failed to index calendar data into RAG"),
         }
     });
 }

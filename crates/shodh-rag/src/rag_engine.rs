@@ -536,13 +536,20 @@ fn extract_structured_fields(text: &str) -> HashMap<String, String> {
 }
 
 /// The ONNX models the engine searches with: the E5 embedder (required) and
-/// the cross-encoder reranker (optional). Loading the embedder takes seconds and
-/// reads ~600 MB, so it is separate from [`RAGEngine::new`] and can run on a
-/// blocking thread before [`RAGEngine::attach_search_models`]. The reranker is
-/// only located here; it loads on first use (see [`SharedReranker`]).
+/// the cross-encoder reranker (optional). Both are only located here (cheap);
+/// they load on first use and are dropped again when idle (see
+/// [`SharedEmbedder`], [`SharedReranker`]). The E5 model reads ~600 MB, so an
+/// app that is only opened, or only browses its library, never holds it.
 pub struct SearchModels {
-    embeddings: Arc<dyn EmbeddingModel>,
+    embeddings: EmbedderSource,
     reranker_dir: Option<std::path::PathBuf>,
+}
+
+enum EmbedderSource {
+    /// The installed E5 model, loaded on first use.
+    E5(E5Config),
+    /// A model that is already loaded (tests).
+    Loaded(Arc<dyn EmbeddingModel>),
 }
 
 impl SearchModels {
@@ -550,7 +557,7 @@ impl SearchModels {
     #[cfg(test)]
     pub(crate) fn from_embedder(embeddings: Arc<dyn EmbeddingModel>) -> Self {
         Self {
-            embeddings,
+            embeddings: EmbedderSource::Loaded(embeddings),
             reranker_dir: None,
         }
     }
@@ -560,13 +567,11 @@ impl SearchModels {
         E5Config::auto_detect(&config.embedding.model_dir).is_some()
     }
 
-    /// Load the models from `config.embedding.model_dir` (blocking).
-    /// Fails with [`SearchModelsMissing`] when the E5 files are absent.
+    /// Locate the models under `config.embedding.model_dir` (nothing is
+    /// loaded). Fails with [`SearchModelsMissing`] when the E5 files are absent.
     pub fn load(config: &RAGConfig) -> Result<Self> {
         let e5_config =
             E5Config::auto_detect(&config.embedding.model_dir).ok_or(SearchModelsMissing)?;
-        let embeddings: Arc<dyn EmbeddingModel> =
-            Arc::new(E5Embeddings::new(e5_config).context("Failed to load E5 embeddings")?);
 
         let reranker_dir = if config.features.enable_reranking
             || config.features.enable_cross_encoder
@@ -583,17 +588,70 @@ impl SearchModels {
             None
         };
         Ok(Self {
-            embeddings,
+            embeddings: EmbedderSource::E5(e5_config),
             reranker_dir,
         })
     }
 
     pub fn dimension(&self) -> usize {
-        self.embeddings.dimension()
+        match &self.embeddings {
+            EmbedderSource::E5(config) => config.dimension,
+            EmbedderSource::Loaded(model) => model.dimension(),
+        }
     }
 
     pub fn has_reranker(&self) -> bool {
         self.reranker_dir.is_some()
+    }
+}
+
+/// The engine's E5 embedder, loaded on first use and dropped when idle;
+/// shared so the idle unloader and the install check reach it without the
+/// engine lock.
+pub type SharedEmbedder = Arc<LazyModel<E5Embeddings>>;
+
+/// [`EmbeddingModel`] over the lazily loaded E5 model: the first call loads
+/// it (seconds, on the calling thread), later calls reuse it until it has
+/// been idle long enough to be dropped.
+struct LazyEmbeddings {
+    model: SharedEmbedder,
+    dimension: usize,
+}
+
+impl LazyEmbeddings {
+    fn loaded(&self) -> Result<Arc<E5Embeddings>> {
+        self.model.get().ok_or_else(|| {
+            anyhow::anyhow!(
+                "The search model could not be loaded (see the log); reinstall it in Settings → Search"
+            )
+        })
+    }
+}
+
+impl EmbeddingModel for LazyEmbeddings {
+    fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+        self.loaded()?.embed_query(text)
+    }
+
+    fn embed_document(&self, text: &str) -> Result<Vec<f32>> {
+        self.loaded()?.embed_document(text)
+    }
+
+    fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        // Text too short to chunk (a one-line calendar item) reaches here
+        // with no passages: never load the model for nothing.
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.loaded()?.embed_documents(texts)
+    }
+
+    fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    fn count_tokens(&self, text: &str) -> Option<usize> {
+        self.model.get()?.count_tokens(text)
     }
 }
 
@@ -606,10 +664,16 @@ pub struct RAGEngine {
     store: LanceStore,
     text_search: TextSearch,
     /// `None` until the search models are installed and attached; search and
-    /// indexing then fail with [`SearchModelsMissing`].
+    /// indexing then fail with [`SearchModelsMissing`]. The installed E5 model
+    /// sits behind [`Self::embedder`] and loads on first use.
     /// Shared (`Arc`) so other stores, such as the statement store, embed with the same
     /// model without holding the engine lock during inference.
     embeddings: Option<Arc<dyn EmbeddingModel>>,
+    /// The E5 model behind `embeddings` (empty for a test embedder); its slot
+    /// lives as long as the engine, so the idle unloader keeps one handle.
+    embedder: SharedEmbedder,
+    /// `embeddings` is the E5 model in [`Self::embedder`] (not a test embedder).
+    embedder_e5: bool,
     chunker: TextChunker,
     structure_chunker: StructureChunker,
     parser: DocumentParser,
@@ -627,12 +691,14 @@ pub struct RAGEngine {
 }
 
 impl RAGEngine {
-    /// Open the stores and, when the model files are present, load the
-    /// search models. Without them (first run) the engine starts in a
-    /// degraded state: stores, listing and deletion work; search and indexing
-    /// return [`SearchModelsMissing`] until [`Self::attach_search_models`].
-    /// A model that is present but fails to load is logged and treated the
-    /// same way, so a damaged model never prevents the app from starting.
+    /// Open the stores and, when the model files are present, attach the
+    /// search models (located, not loaded: they load on first search or
+    /// indexing). Without them (first run) the engine starts in a degraded
+    /// state: stores, listing and deletion work; search and indexing return
+    /// [`SearchModelsMissing`] until [`Self::attach_search_models`]. A model
+    /// that is present but fails to load is logged when first used and then
+    /// treated the same way, so a damaged model never prevents the app from
+    /// starting.
     pub async fn new(config: RAGConfig) -> Result<Self> {
         std::fs::create_dir_all(&config.data_dir).ok();
 
@@ -678,6 +744,8 @@ impl RAGEngine {
             store,
             text_search,
             embeddings: None,
+            embedder: Arc::new(LazyModel::new("embedder")),
+            embedder_e5: false,
             chunker,
             structure_chunker,
             parser: DocumentParser::new(),
@@ -717,9 +785,18 @@ impl RAGEngine {
         self.reranker.clone()
     }
 
-    /// Whether the search models are loaded (search and indexing work).
+    /// The slot holding the E5 model once it is loaded (for idle unloading and
+    /// the install check). Valid for the engine's life; models attached later
+    /// fill the same slot.
+    pub fn embedder_handle(&self) -> SharedEmbedder {
+        self.embedder.clone()
+    }
+
+    /// Whether the search models are attached (search and indexing work). The
+    /// E5 model may not be in memory yet: it loads on first use. A model that
+    /// failed to load counts as missing, so setup is offered again.
     pub fn has_search_models(&self) -> bool {
-        self.embeddings.is_some()
+        self.embeddings.is_some() && (!self.embedder_e5 || self.embedder.available())
     }
 
     /// Attach models loaded with [`SearchModels::load`]. Fails when the
@@ -732,7 +809,22 @@ impl RAGEngine {
                 self.config.embedding.dimension
             );
         }
-        self.embeddings = Some(models.embeddings);
+        self.embeddings = Some(match models.embeddings {
+            EmbedderSource::E5(config) => {
+                self.embedder
+                    .set_loader(move || E5Embeddings::new(config.clone()));
+                self.embedder_e5 = true;
+                Arc::new(LazyEmbeddings {
+                    model: self.embedder.clone(),
+                    dimension,
+                })
+            }
+            EmbedderSource::Loaded(model) => {
+                self.embedder.uninstall();
+                self.embedder_e5 = false;
+                model
+            }
+        });
         match models.reranker_dir {
             Some(dir) => self
                 .reranker
@@ -2105,5 +2197,57 @@ Language models trained on long documents reach lower perplexity.
         let mut blank = HashMap::new();
         blank.insert("page".to_string(), "  ".to_string());
         assert_eq!(page_numbers_from_metadata(&blank), None);
+    }
+}
+
+#[cfg(test)]
+mod lazy_embedder_tests {
+    use super::*;
+
+    /// An installed E5 model is located at startup and loaded only by the first
+    /// embedding; a model that cannot load turns search setup back on.
+    #[tokio::test]
+    async fn the_embedder_loads_on_first_use_not_at_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let e5 = dir.path().join("models").join("multilingual-e5-base");
+        std::fs::create_dir_all(&e5).unwrap();
+        // Present but not a model: loading it fails, which shows when it is tried.
+        std::fs::write(e5.join("model_O4.onnx"), b"not an onnx model").unwrap();
+        std::fs::write(e5.join("tokenizer.json"), b"{}").unwrap();
+        let mut config = RAGConfig::default();
+        config.data_dir = dir.path().join("data");
+        config.embedding.model_dir = dir.path().join("models");
+        config.embedding.use_e5 = true;
+        config.embedding.dimension = 768;
+
+        let engine = RAGEngine::new(config).await.unwrap();
+        let handle = engine.embedder_handle();
+        assert!(
+            engine.has_search_models(),
+            "installed models count as set up"
+        );
+        assert!(!handle.is_loaded(), "opening the engine loads nothing");
+        assert_eq!(engine.embeddings().unwrap().dimension(), 768);
+
+        // Nothing to embed (text too short to chunk): no load either.
+        assert!(engine
+            .embeddings()
+            .unwrap()
+            .embed_documents(&[])
+            .unwrap()
+            .is_empty());
+        assert!(handle.available() && !handle.is_loaded());
+
+        // The first real embedding tries to load it.
+        assert!(engine
+            .embeddings()
+            .unwrap()
+            .embed_query("tide pools")
+            .is_err());
+        assert!(!handle.available());
+        assert!(
+            !engine.has_search_models(),
+            "a model that cannot load offers setup again"
+        );
     }
 }

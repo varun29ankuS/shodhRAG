@@ -105,7 +105,13 @@ impl E5Embeddings {
             .map_err(|e| anyhow!("Intra threads: {:?}", e))?
             .with_inter_threads(1)
             .map_err(|e| anyhow!("Inter threads: {:?}", e))?
-            .with_memory_pattern(true)
+            // No arena and no memory pattern: activation buffers are freed after
+            // each batch. With the arena, indexing a few pages left the largest
+            // batch's buffers (about a gigabyte) resident until the model was
+            // unloaded.
+            .with_execution_providers([ort::ep::CPU::default().with_arena_allocator(false).build()])
+            .map_err(|e| anyhow!("CPU execution provider: {:?}", e))?
+            .with_memory_pattern(false)
             .map_err(|e| anyhow!("Memory pattern: {:?}", e))?
             .commit_from_memory(&model_bytes)
             .map_err(|e| anyhow!("Failed to load model: {:?}", e))?;

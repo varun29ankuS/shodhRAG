@@ -224,38 +224,49 @@ pub async fn deindex_event(rag: &mut RAGEngine, event_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Bulk re-index all tasks and events. Used on startup to ensure
-/// the RAG index is populated even after a fresh index build.
-pub async fn reindex_all(
+/// Index the tasks and events that have no entry in the index yet. Run at
+/// startup and after the search models are installed, so the calendar is
+/// searchable after a fresh index build. Items already indexed are left as
+/// they are: edits are indexed when they are made (see [`index_task`] and
+/// [`index_event`]), and re-embedding the whole calendar at every start
+/// would load the embedding model even when nothing is searched.
+/// Returns how many tasks and events were indexed.
+pub async fn index_missing(
     rag: &mut RAGEngine,
     tasks: &[TodoItem],
     events: &[CalendarEvent],
     space_id: &str,
 ) -> Result<(usize, usize)> {
+    let indexed: std::collections::HashSet<String> = rag
+        .document_sources()
+        .await?
+        .into_iter()
+        .map(|row| row.source)
+        .collect();
     let mut tasks_indexed = 0usize;
     let mut events_indexed = 0usize;
 
-    for task in tasks {
+    for task in tasks
+        .iter()
+        .filter(|t| !indexed.contains(&format!("calendar://task/{}", t.id)))
+    {
         if let Err(e) = index_task(rag, task, space_id).await {
-            tracing::warn!(task_id = %task.id, error = %e, "Failed to index task during bulk reindex");
+            tracing::warn!(task_id = %task.id, error = %e, "Failed to index a calendar task");
         } else {
             tasks_indexed += 1;
         }
     }
 
-    for event in events {
+    for event in events
+        .iter()
+        .filter(|e| !indexed.contains(&format!("calendar://event/{}", e.id)))
+    {
         if let Err(e) = index_event(rag, event, space_id).await {
-            tracing::warn!(event_id = %event.id, error = %e, "Failed to index event during bulk reindex");
+            tracing::warn!(event_id = %event.id, error = %e, "Failed to index a calendar event");
         } else {
             events_indexed += 1;
         }
     }
-
-    tracing::info!(
-        tasks = tasks_indexed,
-        events = events_indexed,
-        "Bulk re-indexed calendar data into RAG"
-    );
 
     Ok((tasks_indexed, events_indexed))
 }
@@ -274,5 +285,81 @@ mod tests {
         assert!(!event_to_indexable_text(&event).contains("Location"));
         event.location = Some(" Room 4B ".into());
         assert!(event_to_indexable_text(&event).contains("Location: Room 4B."));
+    }
+
+    /// Counts the texts it embeds.
+    struct CountingEmbedder(std::sync::atomic::AtomicUsize);
+
+    impl crate::embeddings::EmbeddingModel for CountingEmbedder {
+        fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+            crate::statements::testing::HashEmbedder.embed_query(text)
+        }
+        fn embed_document(&self, text: &str) -> Result<Vec<f32>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            crate::statements::testing::HashEmbedder.embed_document(text)
+        }
+        fn dimension(&self) -> usize {
+            crate::statements::testing::DIM
+        }
+    }
+
+    fn task(id: &str, title: &str) -> TodoItem {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "title": title,
+            "description": format!("{title}: a task on the weekly list, with notes on what to bring, who to call first and when the office opens."),
+            "createdAt": "2026-10-01T00:00:00Z", "updatedAt": "2026-10-01T00:00:00Z"
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn startup_indexing_embeds_only_items_missing_from_the_index() {
+        use crate::embeddings::EmbeddingModel as _;
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.path().join("data");
+        config.embedding.model_dir = dir.path().join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        let mut engine = RAGEngine::new(config).await.unwrap();
+        let embedder = std::sync::Arc::new(CountingEmbedder(Default::default()));
+        engine
+            .attach_search_models(crate::rag_engine::SearchModels::from_embedder(
+                embedder.clone(),
+            ))
+            .unwrap();
+        let embedded = || embedder.0.load(std::sync::atomic::Ordering::SeqCst);
+
+        let first = [task("t1", "Renew the library card")];
+        assert_eq!(
+            index_missing(&mut engine, &first, &[], "calendar")
+                .await
+                .unwrap(),
+            (1, 0)
+        );
+        let after_first = embedded();
+        assert!(after_first > 0);
+
+        // The next start: nothing new, nothing embedded.
+        assert_eq!(
+            index_missing(&mut engine, &first, &[], "calendar")
+                .await
+                .unwrap(),
+            (0, 0)
+        );
+        assert_eq!(embedded(), after_first);
+
+        // A task added while the index did not have it is indexed; the known one is not.
+        let both = [
+            task("t1", "Renew the library card"),
+            task("t2", "Water the plants"),
+        ];
+        assert_eq!(
+            index_missing(&mut engine, &both, &[], "calendar")
+                .await
+                .unwrap(),
+            (1, 0)
+        );
+        assert_eq!(engine.document_sources().await.unwrap().len(), 2);
     }
 }

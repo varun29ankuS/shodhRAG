@@ -1,7 +1,6 @@
-//! Optional models (reranker, answer checking, table structure) loaded on first use and
-//! dropped again after an idle period, so a session that never needs them does not keep
-//! hundreds of megabytes resident. The embedding model is not handled here: search and
-//! indexing need it all the time.
+//! Models (the search embedder, reranker, answer checking, table structure) loaded on
+//! first use and dropped again after an idle period, so a session that never needs them
+//! does not keep hundreds of megabytes resident.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};

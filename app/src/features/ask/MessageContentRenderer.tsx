@@ -361,62 +361,76 @@ export function MessageContentRenderer({
     },
   }), [isDark, theme]);
 
-  const markdownComponents = useMemo<Record<string, React.FC<any>>>(() => ({
-    h1: ({ children }) => <h2 className="text-[20px] font-semibold leading-snug text-shodh-text mt-6 mb-2 first:mt-0">{processChildren(children)}</h2>,
-    h2: ({ children }) => <h3 className="text-[17px] font-semibold leading-snug text-shodh-text mt-5 mb-1.5 first:mt-0">{processChildren(children)}</h3>,
-    h3: ({ children }) => <h4 className="text-[16px] font-semibold text-shodh-text mt-4 mb-1 first:mt-0">{processChildren(children)}</h4>,
-    h4: ({ children }) => <h5 className="text-[15px] font-semibold text-shodh-text-secondary mt-3 mb-1 first:mt-0">{processChildren(children)}</h5>,
-    p: ({ children }) => <p className="my-3 first:mt-0 last:mb-0">{processChildren(children)}</p>,
-    ul: ({ children }) => <ul className="my-3 pl-6 list-disc space-y-1 marker:text-shodh-text-faint">{children}</ul>,
-    ol: ({ children }) => <ol className="my-3 pl-6 list-decimal space-y-1 marker:text-shodh-text-faint">{children}</ol>,
-    li: ({ children }) => <li className="pl-1">{processChildren(children)}</li>,
-    strong: ({ children }) => <strong className="font-semibold text-shodh-text">{processChildren(children)}</strong>,
-    em: ({ children }) => <em className="italic">{processChildren(children)}</em>,
-    a: ({ href, children }) => (
-      <a
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        className={cn('text-shodh-accent-text underline underline-offset-2 decoration-shodh-accent-text/40 hover:decoration-shodh-accent-text rounded-sm', FOCUS_RING)}
-      >
-        {children}
-      </a>
-    ),
-    ...codeComponents,
-    blockquote: ({ children }) => (
-      <blockquote className="my-4 pl-4 border-l-2 border-shodh-border-strong text-shodh-text-tertiary">{children}</blockquote>
-    ),
-    table: ({ children }) => (
-      <FocusFrame noun="table" getTarget={tableFromElement} doubleClick={false} className="my-4">
-        <div className="overflow-x-auto rounded-xl border border-shodh-border">
-          <table className="w-full text-[14px] border-collapse">{children}</table>
-        </div>
-      </FocusFrame>
-    ),
-    img: ({ src, alt }) => (
-      <FocusFrame noun="image" getTarget={imageFromElement} inline className="my-1 max-w-full align-top">
-        <img src={src} alt={alt ?? ''} loading="lazy" className="block max-w-full h-auto rounded-lg border border-shodh-border" />
-      </FocusFrame>
-    ),
-    [FOCUS_EQUATION_TAG]: ({ node, children }) => {
-      const tex = typeof node?.properties?.dataTex === 'string' ? node.properties.dataTex : '';
-      if (!tex) return <>{children}</>;
-      return (
-        <FocusFrame noun="equation" getTarget={() => equationTarget(tex, symbolsRef.current)}>
+  // The renderers below must keep their identity: a new renderer is a new
+  // component type to ReactMarkdown, which would remount every block of the
+  // answer (charts, diagrams, frames) on each citation hover or new citation
+  // list. They read the latest citation rendering through this ref instead.
+  const processChildrenRef = useRef(processChildren);
+  processChildrenRef.current = processChildren;
+  const processLatest = useCallback(
+    (children: React.ReactNode): React.ReactNode => processChildrenRef.current(children),
+    [],
+  );
+
+  const markdownComponents = useMemo<Record<string, React.FC<any>>>(() => {
+    const processChildren = processLatest;
+    return {
+      h1: ({ children }) => <h2 className="text-[20px] font-semibold leading-snug text-shodh-text mt-6 mb-2 first:mt-0">{processChildren(children)}</h2>,
+      h2: ({ children }) => <h3 className="text-[17px] font-semibold leading-snug text-shodh-text mt-5 mb-1.5 first:mt-0">{processChildren(children)}</h3>,
+      h3: ({ children }) => <h4 className="text-[16px] font-semibold text-shodh-text mt-4 mb-1 first:mt-0">{processChildren(children)}</h4>,
+      h4: ({ children }) => <h5 className="text-[15px] font-semibold text-shodh-text-secondary mt-3 mb-1 first:mt-0">{processChildren(children)}</h5>,
+      p: ({ children }) => <p className="my-3 first:mt-0 last:mb-0">{processChildren(children)}</p>,
+      ul: ({ children }) => <ul className="my-3 pl-6 list-disc space-y-1 marker:text-shodh-text-faint">{children}</ul>,
+      ol: ({ children }) => <ol className="my-3 pl-6 list-decimal space-y-1 marker:text-shodh-text-faint">{children}</ol>,
+      li: ({ children }) => <li className="pl-1">{processChildren(children)}</li>,
+      strong: ({ children }) => <strong className="font-semibold text-shodh-text">{processChildren(children)}</strong>,
+      em: ({ children }) => <em className="italic">{processChildren(children)}</em>,
+      a: ({ href, children }) => (
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={cn('text-shodh-accent-text underline underline-offset-2 decoration-shodh-accent-text/40 hover:decoration-shodh-accent-text rounded-sm', FOCUS_RING)}
+        >
           {children}
+        </a>
+      ),
+      ...codeComponents,
+      blockquote: ({ children }) => (
+        <blockquote className="my-4 pl-4 border-l-2 border-shodh-border-strong text-shodh-text-tertiary">{children}</blockquote>
+      ),
+      table: ({ children }) => (
+        <FocusFrame noun="table" getTarget={tableFromElement} doubleClick={false} className="my-4">
+          <div className="overflow-x-auto rounded-xl border border-shodh-border">
+            <table className="w-full text-[14px] border-collapse">{children}</table>
+          </div>
         </FocusFrame>
-      );
-    },
-    thead: ({ children }) => <thead className="bg-shodh-raised">{children}</thead>,
-    th: ({ children }) => (
-      <th className="px-3 py-2 text-left font-semibold text-shodh-text border-b border-shodh-border">{processChildren(children)}</th>
-    ),
-    td: ({ children }) => (
-      <td className="px-3 py-2 align-top text-shodh-text-secondary border-b border-shodh-border-subtle">{processChildren(children)}</td>
-    ),
-    tr: ({ children }) => <tr>{children}</tr>,
-    hr: () => <hr className="my-6 border-shodh-border" />,
-  }), [codeComponents, processChildren]);
+      ),
+      img: ({ src, alt }) => (
+        <FocusFrame noun="image" getTarget={imageFromElement} inline className="my-1 max-w-full align-top">
+          <img src={src} alt={alt ?? ''} loading="lazy" className="block max-w-full h-auto rounded-lg border border-shodh-border" />
+        </FocusFrame>
+      ),
+      [FOCUS_EQUATION_TAG]: ({ node, children }) => {
+        const tex = typeof node?.properties?.dataTex === 'string' ? node.properties.dataTex : '';
+        if (!tex) return <>{children}</>;
+        return (
+          <FocusFrame noun="equation" getTarget={() => equationTarget(tex, symbolsRef.current)}>
+            {children}
+          </FocusFrame>
+        );
+      },
+      thead: ({ children }) => <thead className="bg-shodh-raised">{children}</thead>,
+      th: ({ children }) => (
+        <th className="px-3 py-2 text-left font-semibold text-shodh-text border-b border-shodh-border">{processChildren(children)}</th>
+      ),
+      td: ({ children }) => (
+        <td className="px-3 py-2 align-top text-shodh-text-secondary border-b border-shodh-border-subtle">{processChildren(children)}</td>
+      ),
+      tr: ({ children }) => <tr>{children}</tr>,
+      hr: () => <hr className="my-6 border-shodh-border" />,
+    };
+  }, [codeComponents, processLatest]);
 
   const citationNumbers = useMemo<ReadonlySet<number> | null>(
     () => (citations ? new Set(hitsByNumber.keys()) : null),

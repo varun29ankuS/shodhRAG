@@ -251,8 +251,8 @@ pub fn failure_message(stderr: &str) -> String {
     let line = clean
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with("at "))
-        .last()
+        .rev()
+        .find(|l| !l.is_empty() && !l.starts_with("at "))
         .unwrap_or("The sign-in did not finish.");
     let line = line
         .strip_prefix("Login failed: ")

@@ -6,6 +6,7 @@ import { FOCUS_OVERLAY_SELECTOR } from './focusDom';
 import { notifyDepthLimit, useFocus } from './FocusContext';
 import type { DrillResult } from './FocusContext';
 import { MAX_SELECTED_CHARS, selectionTarget } from './targets';
+import { createFrameSlot } from './frameSlot';
 
 /** Attribute marking where selected text can be asked about. */
 export const ASK_SCOPE_ATTR = 'data-ask-scope';
@@ -140,10 +141,9 @@ export function SelectionAsk() {
   const focusRef = useRef(focus);
   focusRef.current = focus;
   const pointerDown = useRef(false);
-  const frame = useRef<number | null>(null);
+  const frame = useRef(createFrameSlot());
 
   const update = useCallback(() => {
-    frame.current = null;
     const api = focusRef.current;
     if (!api || pointerDown.current) {
       setPending(null);
@@ -159,8 +159,7 @@ export function SelectionAsk() {
   }, []);
 
   const schedule = useCallback(() => {
-    if (frame.current !== null) return;
-    frame.current = requestAnimationFrame(update);
+    frame.current.schedule(update);
   }, [update]);
 
   useEffect(() => {
@@ -197,7 +196,7 @@ export function SelectionAsk() {
       document.removeEventListener('keydown', onKeyDown, true);
       window.removeEventListener('scroll', schedule, true);
       window.removeEventListener('resize', schedule);
-      if (frame.current !== null) cancelAnimationFrame(frame.current);
+      frame.current.cancel();
     };
   }, [schedule]);
 

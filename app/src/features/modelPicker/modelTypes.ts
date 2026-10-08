@@ -5,9 +5,32 @@
  * check it before use.
  */
 
-export type ProviderId = 'openrouter' | 'anthropic' | 'openai' | 'google' | 'grok' | 'ollama';
+export type ProviderId =
+  | 'openrouter'
+  | 'anthropic'
+  | 'openai'
+  | 'google'
+  | 'grok'
+  | 'ollama'
+  | 'claude-sub'
+  | 'chatgpt-sub'
+  | 'copilot-sub'
+  | 'gemini-sub'
+  | 'lmstudio';
 
-export const PROVIDERS: readonly ProviderId[] = ['openrouter', 'anthropic', 'openai', 'google', 'grok', 'ollama'];
+export const PROVIDERS: readonly ProviderId[] = [
+  'openrouter',
+  'anthropic',
+  'openai',
+  'google',
+  'grok',
+  'ollama',
+  'claude-sub',
+  'chatgpt-sub',
+  'copilot-sub',
+  'gemini-sub',
+  'lmstudio',
+];
 
 export const PROVIDER_LABELS: Record<ProviderId, string> = {
   openrouter: 'OpenRouter',
@@ -16,7 +39,15 @@ export const PROVIDER_LABELS: Record<ProviderId, string> = {
   google: 'Google',
   grok: 'xAI',
   ollama: 'Ollama',
+  'claude-sub': 'Claude (Pro/Max)',
+  'chatgpt-sub': 'ChatGPT (Plus/Pro)',
+  'copilot-sub': 'GitHub Copilot',
+  'gemini-sub': 'Google Gemini',
+  lmstudio: 'LM Studio',
 };
+
+/** Providers connected with an API key. */
+export const KEY_PROVIDERS: readonly ProviderId[] = ['openrouter', 'anthropic', 'openai', 'google', 'grok'];
 
 export interface ModelRef {
   provider: ProviderId;
@@ -24,7 +55,7 @@ export interface ModelRef {
 }
 
 export type ToolSupport = 'yes' | 'no' | 'unknown';
-export type ModelTier = 'free' | 'paid' | 'local';
+export type ModelTier = 'free' | 'paid' | 'local' | 'subscription';
 export type PrivacyNote = 'may_log_prompts' | 'provider_terms' | 'on_device';
 
 export interface CatalogModel {
@@ -49,6 +80,15 @@ export interface ActiveModel {
   source: ModelSource;
 }
 
+export type PickId = 'best' | 'fast' | 'free' | 'private';
+
+export const PICKS: readonly PickId[] = ['best', 'fast', 'free', 'private'];
+
+export interface BaseUrl {
+  provider: ProviderId;
+  url: string;
+}
+
 export interface ModelPrefs {
   chosen: ModelRef | null;
   fallback: ModelRef | null;
@@ -56,6 +96,10 @@ export interface ModelPrefs {
   stealthAccepted: string[];
   recent: ModelRef[];
   favourites: ModelRef[];
+  /** The pick the chosen model came from; null for a model chosen by id. */
+  pick: PickId | null;
+  providerOrder: ProviderId[];
+  baseUrls: BaseUrl[];
 }
 
 export const EMPTY_MODEL_PREFS: ModelPrefs = {
@@ -65,7 +109,41 @@ export const EMPTY_MODEL_PREFS: ModelPrefs = {
   stealthAccepted: [],
   recent: [],
   favourites: [],
+  pick: null,
+  providerOrder: [],
+  baseUrls: [],
 };
+
+/** One of the four picks, resolved from the connected providers. */
+export interface PickOption {
+  pick: PickId;
+  label: string;
+  model: ModelRef | null;
+  name: string | null;
+  fallbacks: ModelRef[];
+}
+
+export type SignInState = 'connected' | 'expired' | 'signed_out';
+
+export interface SubscriptionStatus {
+  provider: ProviderId;
+  label: string;
+  state: SignInState;
+  accounts: string[];
+  note: string | null;
+}
+
+export interface KeyStatus {
+  provider: ProviderId;
+  label: string;
+  /** `vault` (OS credential store) or `environment` (cannot be removed here). */
+  source: 'vault' | 'environment';
+}
+
+export interface LocalServer {
+  running: boolean;
+  models: string[];
+}
 
 export type CatalogStatus = 'fresh' | 'cached' | 'unavailable' | 'local_only';
 
@@ -79,9 +157,17 @@ export interface PickerView {
   ollamaRunning: boolean;
   llamaCppFile: string | null;
   keyed: ProviderId[];
+  connected: ProviderId[];
   localOnly: boolean;
   envAllowsStealth: boolean;
   prefs: ModelPrefs;
+  picks: PickOption[];
+  subscriptions: SubscriptionStatus[];
+  keys: KeyStatus[];
+  lmstudio: LocalServer;
+  ollama: LocalServer;
+  ollamaNote: string;
+  providerOrder: ProviderId[];
 }
 
 export type ProviderErrorKind = 'rate_limited' | 'quota_exhausted' | 'model_unavailable' | 'auth' | 'other';
@@ -106,7 +192,14 @@ export interface ModelOverride {
   failure: ProviderErrorKind | null;
 }
 
-export type PickerErrorCode = 'invalid' | 'local_only' | 'missing_key' | 'stealth_confirmation' | 'environment_set' | 'failed';
+export type PickerErrorCode =
+  | 'invalid'
+  | 'local_only'
+  | 'missing_key'
+  | 'not_connected'
+  | 'stealth_confirmation'
+  | 'environment_set'
+  | 'failed';
 
 export interface PickerError {
   code: PickerErrorCode;
@@ -130,6 +223,18 @@ function refs(value: unknown): ModelRef[] {
   return Array.isArray(value) ? value.map(readModelRef).filter((r): r is ModelRef => r !== null) : [];
 }
 
+export function isPickId(value: unknown): value is PickId {
+  return typeof value === 'string' && (PICKS as readonly string[]).includes(value);
+}
+
+function baseUrls(value: unknown): BaseUrl[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(isRecord)
+    .filter(v => isProviderId(v.provider) && typeof v.url === 'string')
+    .map(v => ({ provider: v.provider as ProviderId, url: v.url as string }));
+}
+
 /** The `models` section of the settings (from `app-settings-changed`); defaults for anything missing. */
 export function readModelPrefs(value: unknown): ModelPrefs {
   if (!isRecord(value)) return EMPTY_MODEL_PREFS;
@@ -140,6 +245,9 @@ export function readModelPrefs(value: unknown): ModelPrefs {
     stealthAccepted: Array.isArray(value.stealthAccepted) ? value.stealthAccepted.filter((s): s is string => typeof s === 'string') : [],
     recent: refs(value.recent),
     favourites: refs(value.favourites),
+    pick: isPickId(value.pick) ? value.pick : null,
+    providerOrder: Array.isArray(value.providerOrder) ? value.providerOrder.filter(isProviderId) : [],
+    baseUrls: baseUrls(value.baseUrls),
   };
 }
 
@@ -152,7 +260,15 @@ export function readProviderError(value: unknown): ProviderError | null {
   return { kind: value.kind as ProviderErrorKind, status: whole(value.status), retryAfterSecs: whole(value.retryAfterSecs) };
 }
 
-const PICKER_CODES: readonly PickerErrorCode[] = ['invalid', 'local_only', 'missing_key', 'stealth_confirmation', 'environment_set', 'failed'];
+const PICKER_CODES: readonly PickerErrorCode[] = [
+  'invalid',
+  'local_only',
+  'missing_key',
+  'not_connected',
+  'stealth_confirmation',
+  'environment_set',
+  'failed',
+];
 
 /** Normalise anything a picker command rejected with. */
 export function toPickerError(error: unknown): PickerError {
@@ -172,6 +288,10 @@ const RUNTIME_PROVIDERS: Record<string, ProviderId> = {
   google: 'google',
   xai: 'grok',
   ollama: 'ollama',
+  'openai-codex': 'chatgpt-sub',
+  'github-copilot': 'copilot-sub',
+  'google-gemini-cli': 'gemini-sub',
+  'lm-studio': 'lmstudio',
 };
 
 /** The model a run used, from its `run_started` model (`provider/model-id`). */

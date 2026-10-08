@@ -4,13 +4,13 @@ import { ChevronDown } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import { OPEN_MODEL_PICKER_EVENT, useModelPicker } from './modelApi';
-import { ModelPickerPanel } from './ModelPicker';
+import { ChipMenu } from './ChipMenu';
 import { modelName, sourceText } from './modelFormat';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
 
-const PANEL_WIDTH = 440;
+const PANEL_WIDTH = 340;
 const EDGE = 8;
 
 interface ModelChipProps {
@@ -22,9 +22,10 @@ interface ModelChipProps {
 
 /**
  * The model chip in the Ask composer: the model the next answer uses (and
- * whether the environment or this session set it). Opens the model picker
- * above the composer; a choice applies from the next answer, without a
- * restart, and never interrupts the answer in progress.
+ * whether the environment or this session set it). Opens a short menu above
+ * the composer with the connected picks and recently used models, and
+ * "Manage…" (Settings → Model); a choice applies from the next answer,
+ * without a restart, and never interrupts the answer in progress.
  */
 export function ModelChip({ answerRunning, onOpenSettings }: ModelChipProps) {
   const picker = useModelPicker();
@@ -126,18 +127,17 @@ export function ModelChip({ answerRunning, onOpenSettings }: ModelChipProps) {
               visibility: pos ? 'visible' : 'hidden',
             }}
           >
-            <ModelPickerPanel
+            <ChipMenu
               picker={picker}
               answerRunning={answerRunning}
-              autoFocus
-              onOpenSettings={() => {
+              onManage={() => {
                 close(false);
                 onOpenSettings();
               }}
-              onSelected={(model, changed) => {
+              onSelected={(name, changed) => {
                 close(true);
                 if (changed) {
-                  notify.success(answerRunning ? `${model.name} will answer your next question` : `${model.name} will answer from now on`);
+                  notify.success(answerRunning ? `${name} will answer your next question` : `${name} will answer from now on`);
                 }
               }}
             />

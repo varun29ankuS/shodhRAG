@@ -1,7 +1,9 @@
 import React, { useEffect, useId, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ArrowLeft, Check, CheckCircle2, FolderPlus, Loader2, Lock, MessageCircle, Quote, Search } from 'lucide-react';
-import LLMSettings from '../../LLMSettings';
+import { useModelPicker } from '../modelPicker/modelApi';
+import { ConnectPanel } from '../modelPicker/ConnectPanel';
+import { ModelPicks } from '../modelPicker/ModelPicks';
 import { cn } from '../../lib/utils';
 import { ENTER_TRANSITION, EXIT_TRANSITION } from '../../lib/motion';
 import { SearchSetupCard } from './SearchSetupCard';
@@ -44,7 +46,6 @@ interface FirstRunFlowProps {
   /** Closed before the end; it can be resumed from the command palette. */
   onSkip: () => void;
   llmStatus: { connected: boolean; model: string; provider: string };
-  onModelStatusChange: () => void;
   sources: FirstRunSource[];
   onAddFolder: () => void;
 }
@@ -62,12 +63,12 @@ export function FirstRunFlow(props: FirstRunFlowProps) {
   );
 }
 
-function FlowDialog({ step, onStepChange, onFinish, onSkip, llmStatus, onModelStatusChange, sources, onAddFolder }: FirstRunFlowProps) {
+function FlowDialog({ step, onStepChange, onFinish, onSkip, llmStatus, sources, onAddFolder }: FirstRunFlowProps) {
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const index = stepIndex(step);
-  const wide = step === 'model' && !llmStatus.connected;
+  const wide = step === 'model';
 
   // Each step announces itself: focus its heading.
   useEffect(() => {
@@ -152,7 +153,7 @@ function FlowDialog({ step, onStepChange, onFinish, onSkip, llmStatus, onModelSt
           {step === 'welcome' && <WelcomeStep titleId={titleId} headingRef={headingRef} />}
           {step === 'search' && <SearchStep titleId={titleId} headingRef={headingRef} />}
           {step === 'model' && (
-            <ModelStep titleId={titleId} headingRef={headingRef} llmStatus={llmStatus} onModelStatusChange={onModelStatusChange} />
+            <ModelStep titleId={titleId} headingRef={headingRef} llmStatus={llmStatus} />
           )}
           {step === 'folder' && <FolderStep titleId={titleId} headingRef={headingRef} sources={sources} onAddFolder={onAddFolder} />}
           {step === 'done' && <DoneStep titleId={titleId} headingRef={headingRef} llmReady={llmStatus.connected} folders={sources.length} />}
@@ -280,20 +281,17 @@ function SearchStep(props: StepProps) {
   );
 }
 
-function ModelStep({
-  llmStatus,
-  onModelStatusChange,
-  ...props
-}: StepProps & { llmStatus: FirstRunFlowProps['llmStatus']; onModelStatusChange: () => void }) {
+function ModelStep({ llmStatus, ...props }: StepProps & { llmStatus: FirstRunFlowProps['llmStatus'] }) {
+  const picker = useModelPicker();
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-1">
         <StepHeading {...props}>Choose the model that answers</StepHeading>
         <p className="text-[13px] text-shodh-text-muted">
-          Search finds the passages; a language model writes the answer from them. You can change this any time in Settings.
+          Search finds the passages; a language model writes the answer from them. Connect one way below, then pick a model. You can change this any time in Settings.
         </p>
       </div>
-      {llmStatus.connected ? (
+      {llmStatus.connected && (
         <p role="status" className="flex items-center gap-2 p-3 rounded-xl bg-shodh-success-soft text-[13px] text-shodh-text">
           <CheckCircle2 className="w-[18px] h-[18px] text-shodh-success shrink-0" aria-hidden="true" />
           <span>
@@ -301,11 +299,14 @@ function ModelStep({
             {llmStatus.provider && llmStatus.provider !== 'none' && ` via ${llmStatus.provider}`}.
           </span>
         </p>
-      ) : (
-        <div className="rounded-xl border border-shodh-border p-4">
-          <LLMSettings embedded onClose={() => {}} onStatusChange={onModelStatusChange} />
-        </div>
       )}
+      <div className="rounded-xl border border-shodh-border p-4">
+        <ConnectPanel picker={picker} />
+      </div>
+      <div className="rounded-xl border border-shodh-border p-4 flex flex-col gap-2">
+        <h3 className="m-0 text-[13.5px] font-semibold text-shodh-text">Model</h3>
+        <ModelPicks picker={picker} />
+      </div>
     </div>
   );
 }

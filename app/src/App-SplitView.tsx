@@ -235,16 +235,7 @@ function AppSplitView() {
     return () => window.removeEventListener(MODEL_CHANGED_EVENT, onModelChanged);
   }, [refreshLlmStatus]);
 
-  // Remember the last non-settings view so dismissing model settings returns there.
-  const lastContentTabRef = useRef<ViewTab>('ask');
-  useEffect(() => {
-    if (activeTab !== 'settings') lastContentTabRef.current = activeTab;
-  }, [activeTab]);
 
-  const closeModelSettings = useCallback(() => {
-    refreshLlmStatus();
-    setActiveTab(lastContentTabRef.current);
-  }, [refreshLlmStatus]);
 
 
   const [showSystemPromptEditor, setShowSystemPromptEditor] = useState(false);
@@ -1446,8 +1437,6 @@ function AppSplitView() {
           {/* Settings Tab */}
           {activeTab === 'settings' && (
             <SettingsView
-              onModelStatusChange={refreshLlmStatus}
-              onCloseModelSettings={closeModelSettings}
               searchConfig={searchConfig}
               onUpdateSearchConfig={updateSearchConfig}
               onResetSearchConfig={resetSearchConfig}
@@ -1509,7 +1498,6 @@ function AppSplitView() {
         onFinish={finishFirstRun}
         onSkip={skipFirstRun}
         llmStatus={llmStatus}
-        onModelStatusChange={refreshLlmStatus}
         sources={sources}
         onAddFolder={() => void handleAddSource()}
       />

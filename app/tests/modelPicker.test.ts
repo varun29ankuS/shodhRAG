@@ -7,6 +7,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   catalogNotice,
+  chipEntries,
+  pickUnavailableText,
   formatContext,
   formatPrice,
   formatUsd,
@@ -215,4 +217,58 @@ test('fallback: one click by default, automatic only when asked, never chained',
   assert.equal(fallbackDecision({ kind: 'other', status: 400, retryAfterSecs: null }, offer, false), 'none');
   assert.ok(fallbackHelps({ kind: 'quota_exhausted', status: 402, retryAfterSecs: null }));
   assert.ok(fallbackHelps({ kind: 'model_unavailable', status: 503, retryAfterSecs: null }));
+});
+
+test('subscriptions and local servers: prices, sections and run names', () => {
+  const plan = model({ id: 'claude-opus-5-5', name: 'Claude Opus 5.5', provider: 'claude-sub', tier: 'subscription' });
+  assert.equal(formatPrice(plan), 'Included in your plan');
+  const sections = pickerSections([plan, HAIKU], EMPTY_MODEL_PREFS, '');
+  assert.deepEqual(sections.map(s => s.id), ['subscription', 'paid']);
+  assert.equal(sections[0].title, 'Your plans');
+  assert.deepEqual(modelRefFromRun('github-copilot/gpt-5.5'), { provider: 'copilot-sub', model: 'gpt-5.5' });
+  assert.deepEqual(modelRefFromRun('lm-studio/qwen3-8b'), { provider: 'lmstudio', model: 'qwen3-8b' });
+  assert.deepEqual(modelRefFromRun('google-gemini-cli/gemini-3.1-pro-preview'), { provider: 'gemini-sub', model: 'gemini-3.1-pro-preview' });
+});
+
+test('picks, fallback order and base URLs are read from settings', () => {
+  const prefs = readModelPrefs({
+    pick: 'fast',
+    providerOrder: ['claude-sub', 'acme', 'openai'],
+    baseUrls: [{ provider: 'openai', url: 'https://gw.example.com/v1' }, { provider: 'acme', url: 'x' }, { provider: 'openai' }],
+  });
+  assert.equal(prefs.pick, 'fast');
+  assert.deepEqual(prefs.providerOrder, ['claude-sub', 'openai']);
+  assert.deepEqual(prefs.baseUrls, [{ provider: 'openai', url: 'https://gw.example.com/v1' }]);
+  assert.equal(readModelPrefs({ pick: 'cheapest' }).pick, null);
+});
+
+test('the composer menu lists only connected picks and recent models', () => {
+  const best = { provider: 'claude-sub' as const, model: 'claude-opus-5-5' };
+  const fast = { provider: 'openai' as const, model: 'gpt-5.4-mini' };
+  const view = {
+    picks: [
+      { pick: 'best' as const, label: 'Best quality', model: best, name: 'Claude Opus 5.5', fallbacks: [] },
+      { pick: 'fast' as const, label: 'Fast & cheap', model: fast, name: 'GPT-5.4 mini', fallbacks: [] },
+      { pick: 'free' as const, label: 'Free', model: null, name: null, fallbacks: [] },
+      { pick: 'private' as const, label: 'Private (local)', model: null, name: null, fallbacks: [] },
+    ],
+    prefs: {
+      ...EMPTY_MODEL_PREFS,
+      recent: [
+        best,
+        { provider: 'openai' as const, model: 'gpt-5' },
+        { provider: 'google' as const, model: 'gemini-2.5-pro' },
+        { provider: 'openai' as const, model: 'gpt-5.5' },
+      ],
+    },
+    models: [GPT],
+    connected: ['claude-sub' as const, 'openai' as const],
+  };
+  const entries = chipEntries(view);
+  assert.deepEqual(entries.map(e => e.kind), ['pick', 'pick', 'recent', 'recent']);
+  assert.deepEqual(entries.map(e => e.model.model), ['claude-opus-5-5', 'gpt-5.4-mini', 'gpt-5', 'gpt-5.5']);
+  assert.ok(!entries.some(e => e.model.provider === 'google'), 'a provider that is no longer connected is left out');
+  assert.equal(chipEntries(view, 1).length, 3);
+  assert.equal(pickUnavailableText('free', { localOnly: false, lmstudio: { running: false, models: [] } }), 'Connect OpenRouter for free models.');
+  assert.equal(pickUnavailableText('private', { localOnly: false, lmstudio: { running: true, models: [] } }), 'Load a model in LM Studio.');
 });

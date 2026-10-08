@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import { OPEN_SETTINGS_SECTION, takeRequestedSection } from '../../features/memory/navigation';
-import LLMSettings from '../../LLMSettings';
 import { ModelSettingsSection } from '../../features/modelPicker/ModelSettingsSection';
 import SearchSettings from '../SearchSettings';
 import DataManagement from '../DataManagement';
@@ -57,10 +56,6 @@ type SearchSettingsProps = React.ComponentProps<typeof SearchSettings>;
 type DataManagementProps = React.ComponentProps<typeof DataManagement>;
 
 interface SettingsViewProps {
-  /** Re-check the active LLM after its configuration changes. */
-  onModelStatusChange: () => void;
-  /** Called when the model configuration panel is dismissed. */
-  onCloseModelSettings: () => void;
   searchConfig: SearchSettingsProps['config'];
   onUpdateSearchConfig: SearchSettingsProps['onUpdate'];
   onResetSearchConfig: SearchSettingsProps['onReset'];
@@ -73,15 +68,10 @@ interface SettingsViewProps {
   onOpenConversation: (id: string) => void;
 }
 
-/** Anchor of the provider keys and local model panel (the picker's "Add a key" scrolls to it). */
-const MODEL_KEYS_ID = 'settings-model-keys';
-
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background';
 
 export default function SettingsView({
-  onModelStatusChange,
-  onCloseModelSettings,
   searchConfig,
   onUpdateSearchConfig,
   onResetSearchConfig,
@@ -145,12 +135,7 @@ export default function SettingsView({
               </h2>
               <p className="text-sm text-shodh-text-muted">{active.description}</p>
             </header>
-            <ModelSettingsSection
-              onOpenKeys={() => document.getElementById(MODEL_KEYS_ID)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-            />
-            <div id={MODEL_KEYS_ID} className="scroll-mt-6">
-              <LLMSettings embedded onClose={onCloseModelSettings} onStatusChange={onModelStatusChange} />
-            </div>
+            <ModelSettingsSection />
           </div>
         </section>
       ) : (

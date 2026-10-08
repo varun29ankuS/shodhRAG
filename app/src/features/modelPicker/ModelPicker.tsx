@@ -266,8 +266,8 @@ export function ModelPickerPanel({ picker, answerRunning, onSelected, onOpenSett
           <p className="px-3 py-6 text-center text-[12.5px] text-shodh-text-muted">
             {query.trim()
               ? 'No model matches.'
-              : view.keyed.length === 0 && !view.ollamaRunning
-                ? 'No provider is set up. Add an API key in Settings → Model, or start Ollama for local models.'
+              : view.connected.length === 0
+                ? 'Nothing is connected. Sign in, paste an API key or start LM Studio in Settings → Model.'
                 : 'No model with tool calling is available.'}
           </p>
         )}
@@ -341,7 +341,7 @@ export function ModelPickerPanel({ picker, answerRunning, onSelected, onOpenSett
             <Cpu className="w-3.5 h-3.5 mt-0.5 shrink-0" aria-hidden="true" />
             <span>
               <span className="font-medium text-shodh-text-secondary">{view.llamaCppFile}</span> (llama.cpp) is not listed: the
-              agent needs tool calling, which in-process models do not provide. Serve a local model with Ollama to answer on this computer.
+              agent needs tool calling, which in-process models do not provide. Serve a local model with LM Studio to answer on this computer.
             </span>
           </div>
         )}

@@ -4,7 +4,7 @@
  *
  * Pure module (no React), unit-tested with Node (`app/tests/modelPicker.test.ts`).
  */
-import type { ActiveModel, CatalogModel, ModelRef, ModelPrefs, PickerView, PrivacyNote } from './modelTypes.ts';
+import type { ActiveModel, CatalogModel, ModelRef, ModelPrefs, PickId, PickerView, PrivacyNote, ProviderId } from './modelTypes.ts';
 import { PROVIDER_LABELS, sameModel } from './modelTypes.ts';
 
 /** USD per million tokens as shown: "$0.18", "$3", "$15", "<$0.01"; null is unknown. */
@@ -17,9 +17,10 @@ export function formatUsd(perMillion: number | null): string | null {
   return `$${fixed.endsWith('.00') ? fixed.slice(0, -3) : fixed}`;
 }
 
-/** The price line of a model: "Free", "On this device", "$1 in · $5 out per 1M tokens" or "Price unknown". */
+/** The price line of a model: "Free", "On this device", "Included in your plan", "$1 in · $5 out per 1M tokens" or "Price unknown". */
 export function formatPrice(model: Pick<CatalogModel, 'tier' | 'promptPerMillion' | 'completionPerMillion'>): string {
   if (model.tier === 'local') return 'On this device';
+  if (model.tier === 'subscription') return 'Included in your plan';
   if (model.tier === 'free') return 'Free';
   const input = formatUsd(model.promptPerMillion);
   const output = formatUsd(model.completionPerMillion);
@@ -82,7 +83,7 @@ export function modelKey(ref: ModelRef): string {
   return `${ref.provider}:${ref.model}`;
 }
 
-export type SectionId = 'favourites' | 'recent' | 'free' | 'paid' | 'local';
+export type SectionId = 'favourites' | 'recent' | 'subscription' | 'free' | 'paid' | 'local';
 
 export interface PickerSection {
   id: SectionId;
@@ -93,6 +94,7 @@ export interface PickerSection {
 const SECTION_TITLES: Record<SectionId, string> = {
   favourites: 'Favourites',
   recent: 'Recent',
+  subscription: 'Your plans',
   free: 'Free',
   paid: 'Paid',
   local: 'Local',
@@ -129,7 +131,7 @@ export function pickerSections(models: readonly CatalogModel[], prefs: ModelPref
     if (favourites.length > 0) sections.push({ id: 'favourites', title: SECTION_TITLES.favourites, models: favourites });
     if (recent.length > 0) sections.push({ id: 'recent', title: SECTION_TITLES.recent, models: recent });
   }
-  for (const tier of ['free', 'paid', 'local'] as const) {
+  for (const tier of ['subscription', 'free', 'paid', 'local'] as const) {
     const inTier = matching.filter(m => m.tier === tier).sort(byName);
     if (inTier.length > 0) sections.push({ id: tier, title: SECTION_TITLES[tier], models: inTier });
   }
@@ -153,4 +155,59 @@ export function catalogNotice(view: Pick<PickerView, 'catalogStatus' | 'catalogF
       return `Offline: prices from a list saved ${hours === 1 ? 'an hour' : `${hours} hours`} ago.`;
     }
   }
+}
+
+/** One of the four picks, as described under its name. */
+export const PICK_HINTS: Record<PickId, string> = {
+  best: 'The strongest model you have connected.',
+  fast: 'Quick answers that cost less.',
+  free: 'No cost. The provider may log prompts.',
+  private: 'Runs on this computer. Nothing leaves it.',
+};
+
+/** Why a pick has no model, for its disabled row. */
+export function pickUnavailableText(pick: PickId, view: Pick<PickerView, 'localOnly' | 'lmstudio'>): string {
+  switch (pick) {
+    case 'free':
+      return view.localOnly ? 'Off in Local-only mode.' : 'Connect OpenRouter for free models.';
+    case 'private':
+      return view.lmstudio.running ? 'Load a model in LM Studio.' : 'Start LM Studio to run a model here.';
+    default:
+      return view.localOnly ? 'Off in Local-only mode.' : 'Connect a provider above.';
+  }
+}
+
+/** A row of the composer's model menu. */
+export interface ChipEntry {
+  kind: 'pick' | 'recent';
+  /** For picks. */
+  pick: PickId | null;
+  label: string;
+  model: ModelRef;
+  name: string;
+}
+
+/**
+ * The composer chip's menu: the picks that resolved, then recently used
+ * models of connected providers that are not already a pick (at most
+ * `maxRecent`).
+ */
+export function chipEntries(
+  view: Pick<PickerView, 'picks' | 'prefs' | 'models' | 'connected'>,
+  maxRecent = 4,
+): ChipEntry[] {
+  const entries: ChipEntry[] = [];
+  for (const option of view.picks) {
+    if (!option.model) continue;
+    entries.push({ kind: 'pick', pick: option.pick, label: option.label, model: option.model, name: option.name ?? option.model.model });
+  }
+  let recent = 0;
+  for (const ref of view.prefs.recent) {
+    if (recent >= maxRecent) break;
+    if (!(view.connected as readonly ProviderId[]).includes(ref.provider)) continue;
+    if (entries.some(e => sameModel(e.model, ref))) continue;
+    entries.push({ kind: 'recent', pick: null, label: 'Recent', model: ref, name: modelName(view.models, ref) });
+    recent += 1;
+  }
+  return entries;
 }

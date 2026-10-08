@@ -572,6 +572,15 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
   const scrollerRef = useRef<HTMLDivElement>(null);
   const lastCountRef = useRef(0);
 
+  // Start the agent runtime while the question is being typed (it is not
+  // started with the app); once per draft, and again after a mode or
+  // conversation change since those use another session.
+  const { prewarm } = session;
+  const hasDraft = draft.trim().length > 0;
+  useEffect(() => {
+    if (hasDraft) prewarm();
+  }, [hasDraft, prewarm]);
+
   const selectedSource = sources.find(s => s.selected) ?? null;
   // "Include this source when answering in Ask": when only some sources
   // are included, answers search just those.

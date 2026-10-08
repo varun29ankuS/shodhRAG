@@ -60,10 +60,6 @@ interface ViewState {
 /** Earlier turns replayed into a fresh agent session. */
 const HISTORY_LIMIT = 10;
 
-/** Settle time before prewarming a conversation's session, so clicking
- * through conversations does not start a runtime for each one. */
-const PREWARM_DELAY_MS = 400;
-
 /** How long an interrupt may take before the answer is closed locally. */
 const INTERRUPT_TIMEOUT_MS = 5_000;
 
@@ -126,6 +122,11 @@ export interface ChatSessionValue {
   /** Whether the agent runtime is installed (null until known). */
   runtimeInstalled: boolean | null;
   setRuntimeInstalled: (installed: boolean) => void;
+  /**
+   * Start the active conversation's agent session ahead of the question
+   * (the user started typing one). Idempotent; never needed for correctness.
+   */
+  prewarm: () => void;
 
   /**
    * Post a message and run the agent on it. `extra.sideSummary` marks it as
@@ -443,24 +444,21 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     return () => { cancelled = true; };
   }, [api]);
 
-  // Start the active conversation's agent session ahead of the first
-  // question: launching the runtime takes seconds, asking should not.
+  // The agent runtime is not started with the app or when a conversation
+  // opens: it holds hundreds of megabytes. `prewarm` starts the active
+  // conversation's session once the user begins typing a question, so it is
+  // ready (or nearly) when they send; `send` starts it anyway.
   const instructions = activeConversation?.systemPrompt?.trim() || null;
   const activeMode = activeConversation?.mode ?? 'research';
   const activeWorkspaceId = activeConversation?.workspaceId ?? null;
   const streaming = liveRun !== null;
-  useEffect(() => {
-    if (!activeConversationId || runtimeInstalled !== true) return;
-    // A mode switch during an answer applies to the next one: no restart now.
-    if (streaming) return;
-    const timer = window.setTimeout(() => {
-      api.start(activeConversationId, instructions, null, null, { mode: activeMode, workspaceId: activeWorkspaceId }).catch(error => {
-        const failure = toAgentError(error);
-        if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
-        // Other failures (no model configured, no code folder, …) surface when the user asks.
-      });
-    }, PREWARM_DELAY_MS);
-    return () => window.clearTimeout(timer);
+  const prewarm = useCallback(() => {
+    if (!activeConversationId || runtimeInstalled !== true || streaming) return;
+    api.start(activeConversationId, instructions, null, null, { mode: activeMode, workspaceId: activeWorkspaceId }).catch(error => {
+      const failure = toAgentError(error);
+      if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
+      // Other failures (no model configured, no code folder, …) surface when the user asks.
+    });
   }, [api, activeConversationId, instructions, activeMode, activeWorkspaceId, runtimeInstalled, streaming]);
 
   // `textOrigin`: `typed` when `prompt` is exactly what the user typed (learning may use it);
@@ -699,6 +697,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     navigation,
     runtimeInstalled,
     setRuntimeInstalled,
+    prewarm,
     send,
     retry,
     steer,
@@ -711,7 +710,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     releaseSideRun,
     updateThreads,
     updateFocusThreads: conv.updateFocusThreads,
-  }), [conv, view, streamingConversationId, liveRun, navigation, runtimeInstalled, send, retry, steer, cancel, approve, appendMessage, updateMessage, sideRun, claimSideRun, releaseSideRun, updateThreads]);
+  }), [conv, view, streamingConversationId, liveRun, navigation, runtimeInstalled, prewarm, send, retry, steer, cancel, approve, appendMessage, updateMessage, sideRun, claimSideRun, releaseSideRun, updateThreads]);
 
   return <ChatSessionContext.Provider value={value}>{children}</ChatSessionContext.Provider>;
 }

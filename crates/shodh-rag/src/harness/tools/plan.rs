@@ -33,9 +33,11 @@ impl HostTool for UpdatePlanTool {
         "Updating the task list"
     }
     fn description(&self) -> &'static str {
-        "Replace the task list shown to the user for this answer. Send the full list each time, \
+        "Replace the plan shown to the user for this answer. Send the full list each time, \
          with each item's status (pending, in_progress, done). Use it for work with three or more \
-         steps. For a question with several parts, list each part the answer must find in the \
+         steps. Write each item as a short step the user understands, starting with a verb and at \
+         most eight words, e.g. \"Find the training objective\" or \"Compare results with \
+         Mamba\"; never tool names, search queries, ids or file paths. For a question with several parts, list each part the answer must find in the \
          sources as an item with need: true (a short phrase naming the information, e.g. \"notice \
          period of the Acme contract\"); the app checks each need against the passages you \
          retrieve and shows whether it was covered."

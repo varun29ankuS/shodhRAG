@@ -1,4 +1,4 @@
-import React, { useId, useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import { ChevronDown, CircleCheck, SearchX } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { PlanItem, PlanStatus } from './events';
@@ -47,16 +47,20 @@ function NeedCoverage({ item }: { item: PlanItem }) {
   );
 }
 
-/** The agent's task list: ☐ to do, ◐ in progress, ☑ done; needs show whether a passage covers them. */
+/** The agent's plan for an answer: ☐ to do, ◐ in progress, ☑ done; needs show whether a passage covers them.
+ * Open while the answer runs; folds to its header once the answer is finished. */
 export function PlanPanel({ items, live, variant }: PlanPanelProps) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(!live);
   const listId = useId();
+  useEffect(() => {
+    if (!live) setCollapsed(true);
+  }, [live]);
   if (items.length === 0) return null;
   const { done, total } = planProgress(items);
 
   return (
     <section
-      aria-label="Task list"
+      aria-label="Plan for this answer"
       className={cn(
         'ask-fade-in rounded-xl border border-shodh-border bg-shodh-surface text-[12.5px]',
         variant === 'docked' ? 'w-[260px]' : 'w-full',
@@ -69,9 +73,9 @@ export function PlanPanel({ items, live, variant }: PlanPanelProps) {
         aria-controls={listId}
         className={cn('w-full flex items-center gap-2 px-3 h-9 rounded-xl text-left', FOCUS_RING)}
       >
-        <span className="font-semibold text-shodh-text">Tasks</span>
+        <span className="font-semibold text-shodh-text">Plan</span>
         <span className="text-shodh-text-muted tabular-nums" aria-live={live ? 'polite' : 'off'}>
-          {`${done} of ${total} done`}
+          {`${done} of ${total} ${total === 1 ? 'step' : 'steps'} done`}
         </span>
         <ChevronDown
           className={cn('ml-auto w-3.5 h-3.5 text-shodh-text-faint transition-transform duration-micro', collapsed && '-rotate-90')}

@@ -1049,7 +1049,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
       </div>
 
       {wide && latest?.plan && (
-        <aside className="absolute right-6 top-[18px] z-10" aria-label="Task list of the latest answer">
+        <aside className="absolute right-6 top-[18px] z-10" aria-label="Plan of the latest answer">
           <PlanPanel items={latest.plan} live={isLive(latest)} variant="docked" />
         </aside>
       )}

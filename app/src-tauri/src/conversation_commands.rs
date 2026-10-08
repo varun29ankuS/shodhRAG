@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -156,9 +156,7 @@ impl ConversationStore {
 }
 
 fn store(app: &AppHandle) -> Result<ConversationStore, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
+    let dir = crate::profile::app_data_dir(app)
         .map_err(|e| format!("Failed to get app data directory: {e}"))?;
     Ok(ConversationStore::in_dir(&dir))
 }
@@ -172,9 +170,7 @@ pub async fn load_conversations(
     workspaces: tauri::State<'_, crate::workspace_commands::WorkspaceState>,
     rag: tauri::State<'_, crate::rag_commands::RagState>,
 ) -> Result<Vec<ConversationRecord>, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
+    let dir = crate::profile::app_data_dir(&app)
         .map_err(|e| format!("Failed to get app data directory: {e}"))?;
     match crate::workspace_commands::import_legacy_spaces(&workspaces, &dir, &rag.rag).await {
         Ok(0) => {}

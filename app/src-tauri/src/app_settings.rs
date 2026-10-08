@@ -24,7 +24,7 @@ use shodh_rag::user_memory::learn::{
     LearnCaps, LearnMode, DEFAULT_AUTO_MIN_CONFIDENCE, MAX_CALLS_PER_DAY_LIMIT,
     MAX_INPUT_CHARS_LIMIT, MAX_PROPOSALS_LIMIT,
 };
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::audit_commands::AuditState;
 
@@ -428,9 +428,7 @@ pub fn preference_change_payload(key: SettingKey, old: &Value, new: &Value, via:
 // ── Commands ─────────────────────────────────────────────────────
 
 fn store(app: &AppHandle) -> Result<SettingsStore, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
+    let dir = crate::profile::app_data_dir(app)
         .map_err(|e| format!("Failed to get app data directory: {e}"))?;
     Ok(SettingsStore::in_dir(&dir))
 }

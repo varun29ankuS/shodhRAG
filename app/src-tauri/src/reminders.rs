@@ -308,7 +308,7 @@ async fn record_missed(app: &AppHandle, store: &CalendarStore, missed: Vec<DueRe
 }
 
 async fn run(app: AppHandle) {
-    let store = match app.path().app_data_dir() {
+    let store = match crate::profile::app_data_dir(&app) {
         Ok(dir) => CalendarStore::in_dir(&dir),
         Err(e) => {
             tracing::error!(error = %e, "reminders are off: no app data directory");
@@ -399,9 +399,7 @@ pub async fn snooze_reminder(
             "A snooze is 1 to {MAX_SNOOZE_MINUTES} minutes, not {minutes}"
         ));
     }
-    let dir = app
-        .path()
-        .app_data_dir()
+    let dir = crate::profile::app_data_dir(&app)
         .map_err(|e| format!("Failed to get app data directory: {e}"))?;
     let until = snooze_until(chrono::Local::now().naive_local(), minutes);
     let task = CalendarStore::in_dir(&dir)

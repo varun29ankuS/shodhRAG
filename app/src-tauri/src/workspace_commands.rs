@@ -25,7 +25,7 @@ use shodh_rag::workspaces::{
     WorkspaceStore, WorkspaceTemplate, TEMPLATES,
 };
 use shodh_rag::RAGEngine;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{OnceCell, RwLock};
 
 use crate::audit_commands::AuditState;
@@ -166,7 +166,7 @@ pub fn broadcast_change(app: &AppHandle, workspace_id: Option<&str>) {
 }
 
 fn data_dir(app: &AppHandle) -> WorkspaceCommandResult<PathBuf> {
-    app.path().app_data_dir().map_err(|e| {
+    crate::profile::app_data_dir(app).map_err(|e| {
         WorkspaceCommandError::unavailable(format!("App data directory unavailable: {e}"))
     })
 }

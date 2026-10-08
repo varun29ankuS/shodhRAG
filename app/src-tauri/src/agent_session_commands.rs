@@ -1789,7 +1789,7 @@ pub async fn agent_code_discard(
 }
 
 fn app_data_dir(app: &AppHandle) -> CommandResult<std::path::PathBuf> {
-    app.path().app_data_dir().map_err(|e| AgentCommandError {
+    crate::profile::app_data_dir(app).map_err(|e| AgentCommandError {
         code: "runtime_error",
         message: format!("App data directory unavailable: {e}"),
     })

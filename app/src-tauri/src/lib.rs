@@ -26,6 +26,7 @@ mod memory_commands;
 mod memory_learn;
 mod model_picker_commands;
 mod pdf_export;
+mod profile;
 mod rag_commands;
 mod reminders;
 mod research_commands;
@@ -151,11 +152,26 @@ pub fn run() {
         .with_target(false)
         .init();
 
-    let app = tauri::Builder::default()
+    // The data folder decides everything below, so it is fixed first.
+    let profile = match profile::init() {
+        Ok(profile) => profile,
+        Err(e) => {
+            tracing::error!("{}", e);
+            std::process::exit(2);
+        }
+    };
+    if let Some(dir) = profile.data_dir() {
+        tracing::info!("Separate profile from {}: {:?}", profile::DATA_DIR_ENV, dir);
+    }
+
+    let mut builder = tauri::Builder::default();
+    if profile.uses_single_instance() {
         // First, so a second launch exits before it opens any data.
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             background::on_second_launch(app, &args);
-        }))
+        }));
+    }
+    let app = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
@@ -167,11 +183,19 @@ pub fn run() {
         ))
         .on_window_event(background::on_window_event)
         .setup(|app| {
+            // The main window is created here rather than from the config, so
+            // its WebView storage follows the profile.
+            for config in app.config().app.windows.iter() {
+                profile::webview_storage(tauri::WebviewWindowBuilder::from_config(
+                    app.handle(),
+                    config,
+                )?)
+                .build()?;
+            }
+
             // Get app data directory for persistent storage. Without it
             // nothing can be stored, so this is the one fatal setup error.
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
+            let app_data_dir = crate::profile::app_data_dir(app.handle())
                 .map_err(|e| setup_error("Failed to resolve the app data directory", e))?;
             std::fs::create_dir_all(&app_data_dir)
                 .map_err(|e| setup_error("Failed to create the app data directory", e))?;
@@ -234,6 +258,12 @@ pub fn run() {
 
             // Initialize SpaceManager with persistent storage
             let space_manager = SpaceManager::with_data_dir(app_data_dir.clone());
+            // Files outside a separate profile's folder belong to the normal one.
+            let space_manager = if profile::active().is_separate() {
+                space_manager.without_legacy_cleanup()
+            } else {
+                space_manager
+            };
 
             // Create app paths
             let app_paths = AppPaths {

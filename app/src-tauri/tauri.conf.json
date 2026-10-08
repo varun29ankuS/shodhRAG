@@ -12,6 +12,8 @@
   "app": {
     "windows": [
       {
+        "label": "main",
+        "create": false,
         "title": "Shodh-RAG",
         "width": 1400,
         "height": 900,

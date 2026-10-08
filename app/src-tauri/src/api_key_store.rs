@@ -6,10 +6,6 @@
 
 use keyring::Entry;
 
-/// Credential-store service name. Matches the Tauri bundle identifier so the
-/// entries are easy to identify (and remove) in the OS credential manager.
-pub const KEYRING_SERVICE: &str = "com.shodh.rag-app";
-
 /// Provider ids that can hold a stored API key. These are the ids the
 /// frontend and `switch_llm_mode` use.
 pub const KEY_PROVIDERS: &[&str] = &[
@@ -29,7 +25,7 @@ pub fn is_known_provider(provider: &str) -> bool {
 }
 
 fn entry(provider: &str) -> Result<Entry, String> {
-    Entry::new(KEYRING_SERVICE, provider)
+    Entry::new(&crate::profile::active().keyring_service(), provider)
         .map_err(|e| format!("Cannot open OS credential store entry for {provider}: {e}"))
 }
 
@@ -113,7 +109,8 @@ pub trait KeyVault {
 }
 
 /// The OS credential store (Windows Credential Manager, macOS Keychain,
-/// Secret Service), under [`KEYRING_SERVICE`].
+/// Secret Service), under this profile's service
+/// ([`crate::profile::Profile::keyring_service`]).
 pub struct OsVault;
 
 impl KeyVault for OsVault {

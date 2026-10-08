@@ -34,6 +34,9 @@ pub struct SpaceManager {
     pub space_documents: Mutex<HashMap<String, Vec<String>>>,
     pub document_spaces: Mutex<HashMap<String, String>>,
     data_dir: PathBuf,
+    /// Whether clearing also removes the legacy `vectora/spaces.json` files
+    /// in the user's config and home folders.
+    legacy_cleanup: bool,
 }
 
 impl SpaceManager {
@@ -64,7 +67,15 @@ impl SpaceManager {
             space_documents: Mutex::new(space_documents),
             document_spaces: Mutex::new(document_spaces),
             data_dir,
+            legacy_cleanup: true,
         }
+    }
+
+    /// Never touch the legacy files outside `data_dir` (for a profile kept in
+    /// its own folder, which does not own them).
+    pub fn without_legacy_cleanup(mut self) -> Self {
+        self.legacy_cleanup = false;
+        self
     }
 
     fn migrate_old_data(new_data_dir: &PathBuf) {
@@ -197,6 +208,10 @@ impl SpaceManager {
         let primary_file = self.data_dir.join("spaces.json");
         if primary_file.exists() {
             let _ = std::fs::remove_file(&primary_file);
+        }
+
+        if !self.legacy_cleanup {
+            return Ok(());
         }
 
         // Also clean up legacy locations

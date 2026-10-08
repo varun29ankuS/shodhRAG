@@ -337,7 +337,7 @@ pub async fn inbox_list(
 
 /// The calendar, or `None` when it cannot be read (reminders are then kept).
 async fn read_calendar(app: &AppHandle) -> Option<CalendarData> {
-    let dir = app.path().app_data_dir().ok()?;
+    let dir = crate::profile::app_data_dir(app).ok()?;
     let store = CalendarStore::in_dir(&dir);
     match tokio::task::spawn_blocking(move || store.load()).await {
         Ok(Ok(data)) => Some(data),

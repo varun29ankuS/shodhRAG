@@ -57,9 +57,7 @@ impl Drop for BuildingGuard {
 }
 
 fn data_dir(app: &AppHandle) -> ResearchCommandResult<std::path::PathBuf> {
-    app.path()
-        .app_data_dir()
-        .map_err(|e| ResearchCommandError::unavailable(e.to_string()))
+    crate::profile::app_data_dir(app).map_err(|e| ResearchCommandError::unavailable(e.to_string()))
 }
 
 /// The graph's state for the Library.

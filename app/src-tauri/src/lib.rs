@@ -186,7 +186,7 @@ pub fn run() {
             // The main window is created here rather than from the config, so
             // its WebView storage follows the profile.
             for config in app.config().app.windows.iter() {
-                profile::webview_storage(tauri::WebviewWindowBuilder::from_config(
+                profile::webview_defaults(tauri::WebviewWindowBuilder::from_config(
                     app.handle(),
                     config,
                 )?)

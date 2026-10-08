@@ -122,12 +122,24 @@ pub fn app_data_dir<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<PathBuf
     }
 }
 
-/// Keep a window's WebView storage inside a separate profile's folder
-/// (Windows, Linux) or its own data store (macOS 14+). No change for the
-/// normal profile.
-pub fn webview_storage<'a, R: Runtime, M: Manager<R>>(
+/// WebView2 browser flags of every Shodh window (Windows; ignored elsewhere).
+/// All windows share one WebView2 environment, so they must all use the same
+/// flags; [`webview_defaults`] applies them.
+///
+/// - wry's defaults, repeated because setting flags replaces them.
+/// - `--disable-gpu`: pages are composited in software. The GPU process held
+///   ~140 MB at idle (more than the page itself); Shodh draws text, SVG and
+///   2D canvases (no WebGL), which software rendering handles.
+pub const WEBVIEW_BROWSER_ARGS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu";
+
+/// Settings every window's WebView gets: [`WEBVIEW_BROWSER_ARGS`], and for a
+/// separate profile, storage inside its folder (Windows, Linux) or its own
+/// data store (macOS 14+).
+pub fn webview_defaults<'a, R: Runtime, M: Manager<R>>(
     builder: WebviewWindowBuilder<'a, R, M>,
 ) -> WebviewWindowBuilder<'a, R, M> {
+    let builder = builder.additional_browser_args(WEBVIEW_BROWSER_ARGS);
     let profile = active();
     match profile.webview_data_dir() {
         Some(dir) => builder

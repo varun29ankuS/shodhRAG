@@ -10,7 +10,7 @@ pub async fn create_floating_widget(app: tauri::AppHandle) -> Result<(), String>
     }
 
     // Create the floating widget window using Tauri v2 API
-    let widget_window = crate::profile::webview_storage(tauri::WebviewWindowBuilder::new(
+    let widget_window = crate::profile::webview_defaults(tauri::WebviewWindowBuilder::new(
         &app,
         "widget",
         WebviewUrl::App("widget.html".into()),

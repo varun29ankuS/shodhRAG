@@ -363,7 +363,7 @@ impl WebViewPdfPrinter {
     ) -> Result<(WebviewWindow, String), PdfExportError> {
         let label = format!("{PRINT_WINDOW_PREFIX}{}", uuid::Uuid::new_v4().simple());
         let rx = self.jobs.open(&label, document.clone(), native);
-        let builder = crate::profile::webview_storage(WebviewWindowBuilder::new(
+        let builder = crate::profile::webview_defaults(WebviewWindowBuilder::new(
             &self.app,
             &label,
             WebviewUrl::App(PRINT_VIEW_PATH.into()),

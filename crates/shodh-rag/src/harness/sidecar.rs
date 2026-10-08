@@ -267,6 +267,11 @@ pub struct OmpLayout {
     /// Used as HOME/USERPROFILE so omp never reads the user's own config.
     pub home: PathBuf,
     pub agent_dir: PathBuf,
+    /// The runtime's directory for signed-in subscriptions (`omp auth-broker
+    /// login`). Only subscription sessions and the sign-in commands use it,
+    /// so a stored account token can never stand in for an API key (omp
+    /// prefers stored credentials over key variables).
+    pub accounts_dir: PathBuf,
     pub temp: PathBuf,
     pub overlay: PathBuf,
     pub sessions: PathBuf,
@@ -282,6 +287,7 @@ impl OmpLayout {
         let code = root.join("code");
         Self {
             agent_dir: home.join(".omp").join("agent"),
+            accounts_dir: root.join("accounts"),
             temp: root.join("tmp"),
             overlay: root.join("overlay.yml"),
             sessions: root.join("sessions"),
@@ -308,7 +314,13 @@ impl OmpLayout {
 
     /// Create the directories and (re)write the overlay config.
     pub fn prepare(&self) -> Result<(), HarnessError> {
-        for dir in [&self.home, &self.agent_dir, &self.temp, &self.sessions] {
+        for dir in [
+            &self.home,
+            &self.agent_dir,
+            &self.accounts_dir,
+            &self.temp,
+            &self.sessions,
+        ] {
             std::fs::create_dir_all(dir)?;
         }
         let overlay = serde_json::to_string_pretty(&overlay_config())?;
@@ -508,7 +520,11 @@ pub fn child_env(
         ("TMPDIR".to_string(), path(layout.temp.clone())),
         (
             "PI_CODING_AGENT_DIR".to_string(),
-            path(layout.agent_dir.clone()),
+            path(if model.uses_accounts {
+                layout.accounts_dir.clone()
+            } else {
+                layout.agent_dir.clone()
+            }),
         ),
         ("PI_AUTO_QA".to_string(), EnvValue::Plain("0".into())),
         ("PI_NO_TITLE".to_string(), EnvValue::Plain("1".into())),
@@ -657,6 +673,7 @@ pub async fn omp_settings(
         is_local: true,
         env: Vec::new(),
         warning: None,
+        uses_accounts: false,
     };
     let mut command = Command::new(binary);
     command
@@ -912,6 +929,7 @@ mod tests {
                 EnvValue::Secret(Secret::new("sk-ant-secret")),
             )],
             warning: None,
+            uses_accounts: false,
         }
     }
 
@@ -951,6 +969,33 @@ mod tests {
         assert_eq!(get("OTEL_SDK_DISABLED").as_deref(), Some("true"));
         assert_eq!(get("ANTHROPIC_API_KEY").as_deref(), Some("sk-ant-secret"));
         assert!(!format!("{env:?}").contains("sk-ant-secret"));
+    }
+
+    #[test]
+    fn only_subscription_sessions_read_the_accounts_directory() {
+        let layout = OmpLayout::new(Path::new("/data"));
+        let agent_dir = |model: &OmpModel| {
+            child_env(&layout, model, |_| None)
+                .into_iter()
+                .find(|(n, _)| n == "PI_CODING_AGENT_DIR")
+                .map(|(_, v)| v.as_str().to_string())
+        };
+        assert_eq!(
+            agent_dir(&model()),
+            Some(layout.agent_dir.display().to_string()),
+            "an API-key session never sees a signed-in account"
+        );
+        let account = OmpModel {
+            model_arg: "anthropic/claude-opus-5-5".into(),
+            env: Vec::new(),
+            uses_accounts: true,
+            ..model()
+        };
+        assert_eq!(
+            agent_dir(&account),
+            Some(layout.accounts_dir.display().to_string())
+        );
+        assert_ne!(layout.accounts_dir, layout.agent_dir);
     }
 
     #[test]

@@ -223,6 +223,7 @@ fn spec(data: &std::path::Path, provider: u16, proxy: u16, code: Option<CodeFold
             is_local: false,
             env,
             warning: None,
+            uses_accounts: false,
         },
         system_prompt: "Reply briefly.".into(),
         session_id: "live".into(),

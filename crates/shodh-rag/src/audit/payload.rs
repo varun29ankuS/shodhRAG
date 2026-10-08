@@ -38,6 +38,13 @@ pub fn provider_id(provider: &ApiProvider) -> &'static str {
         ApiProvider::Replicate => "replicate",
         ApiProvider::Baseten => "baseten",
         ApiProvider::Ollama => "ollama",
+        ApiProvider::LmStudio => "lmstudio",
+        ApiProvider::Subscription(service) => match service {
+            crate::llm::SubscriptionService::Claude => "claude-sub",
+            crate::llm::SubscriptionService::ChatGpt => "chatgpt-sub",
+            crate::llm::SubscriptionService::Copilot => "copilot-sub",
+            crate::llm::SubscriptionService::Gemini => "gemini-sub",
+        },
         // The model id and endpoint can carry credentials in URLs; only the
         // kind is recorded.
         ApiProvider::HuggingFace { .. } => "huggingface",
@@ -56,7 +63,7 @@ pub fn is_cloud(provider_or_model: &str) -> bool {
         .to_ascii_lowercase();
     !matches!(
         provider.as_str(),
-        "" | "ollama" | "local" | "llamacpp" | "llama.cpp" | "lmstudio"
+        "" | "ollama" | "local" | "llamacpp" | "llama.cpp" | "lmstudio" | "lm-studio"
     )
 }
 

@@ -80,9 +80,65 @@ pub enum ApiProvider {
     Replicate,
     Baseten,
     Ollama,
-    HuggingFace { model_id: String },
-    Custom { endpoint: String },
+    /// LM Studio's OpenAI-compatible server on this computer.
+    LmStudio,
+    /// A subscription the person signed in to through the agent runtime
+    /// (omp). No API key: the runtime holds the account's token, so only the
+    /// agent can answer with it.
+    Subscription(SubscriptionService),
+    HuggingFace {
+        model_id: String,
+    },
+    Custom {
+        endpoint: String,
+    },
 }
+
+/// A subscription that can answer through the agent runtime once the person
+/// signed in to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SubscriptionService {
+    /// Claude Pro or Max.
+    Claude,
+    /// ChatGPT Plus or Pro (Codex).
+    ChatGpt,
+    /// GitHub Copilot.
+    Copilot,
+    /// Google Gemini (the Gemini CLI sign-in, Cloud Code Assist).
+    Gemini,
+}
+
+impl SubscriptionService {
+    pub const ALL: [SubscriptionService; 4] = [
+        SubscriptionService::Claude,
+        SubscriptionService::ChatGpt,
+        SubscriptionService::Copilot,
+        SubscriptionService::Gemini,
+    ];
+
+    /// The runtime's (omp 18.4.10) provider id for this subscription.
+    pub fn omp_provider(self) -> &'static str {
+        match self {
+            SubscriptionService::Claude => "anthropic",
+            SubscriptionService::ChatGpt => "openai-codex",
+            SubscriptionService::Copilot => "github-copilot",
+            SubscriptionService::Gemini => "google-gemini-cli",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SubscriptionService::Claude => "Claude (Pro/Max)",
+            SubscriptionService::ChatGpt => "ChatGPT (Plus/Pro)",
+            SubscriptionService::Copilot => "GitHub Copilot",
+            SubscriptionService::Gemini => "Google Gemini",
+        }
+    }
+}
+
+/// Default address of LM Studio's OpenAI-compatible server.
+pub const LM_STUDIO_DEFAULT_BASE_URL: &str = "http://127.0.0.1:1234/v1";
 
 /// LLM configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

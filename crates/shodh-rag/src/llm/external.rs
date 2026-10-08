@@ -86,6 +86,11 @@ impl ExternalProvider {
             ApiProvider::Replicate => "https://api.replicate.com/v1/predictions".to_string(),
             ApiProvider::Baseten => "https://inference.baseten.co/v1/chat/completions".to_string(),
             ApiProvider::Ollama => "http://localhost:11434/v1/chat/completions".to_string(),
+            ApiProvider::LmStudio => {
+                format!("{}/chat/completions", super::LM_STUDIO_DEFAULT_BASE_URL)
+            }
+            // Never called: `generate` refuses subscriptions before any request.
+            ApiProvider::Subscription(_) => String::new(),
             ApiProvider::HuggingFace { .. } => {
                 "https://api-inference.huggingface.co/models".to_string()
             }
@@ -103,7 +108,12 @@ impl LLMProvider for ExternalProvider {
             | ApiProvider::Grok
             | ApiProvider::Perplexity
             | ApiProvider::Baseten
-            | ApiProvider::Ollama => self.openai_compatible_generate(prompt, config).await,
+            | ApiProvider::Ollama
+            | ApiProvider::LmStudio => self.openai_compatible_generate(prompt, config).await,
+            ApiProvider::Subscription(service) => Err(anyhow::anyhow!(
+                "{} answers through the assistant in Ask only.",
+                service.label()
+            )),
             ApiProvider::Anthropic => self.anthropic_generate(prompt, config).await,
             ApiProvider::Google => self.google_generate(prompt, config).await,
             ApiProvider::OpenRouter => self.openai_compatible_generate(prompt, config).await,
@@ -141,6 +151,7 @@ impl LLMProvider for ExternalProvider {
                 | ApiProvider::Perplexity
                 | ApiProvider::Baseten
                 | ApiProvider::Ollama
+                | ApiProvider::LmStudio
                 | ApiProvider::Custom { .. } => {
                     stream_openai_compatible(client, endpoint, api_key, model, prompt, config, tx)
                         .await
@@ -165,6 +176,14 @@ impl LLMProvider for ExternalProvider {
                 }
                 ApiProvider::Replicate => {
                     stream_replicate(client, api_key, model, prompt, config, tx).await
+                }
+                ApiProvider::Subscription(service) => {
+                    let _ = tx
+                        .send(format!(
+                            "{} answers through the assistant in Ask only.",
+                            service.label()
+                        ))
+                        .await;
                 }
             }
         });
@@ -205,13 +224,14 @@ impl LLMProvider for ExternalProvider {
                 ApiProvider::Google => 1000000, // Gemini 2.5 Pro supports 1M context
                 ApiProvider::Replicate => 4096,
                 ApiProvider::Baseten => 128000, // GPT-OSS-120B supports 128k context
-                ApiProvider::Ollama => 32768,
+                ApiProvider::Ollama | ApiProvider::LmStudio => 32768,
+                ApiProvider::Subscription(_) => 200000,
                 ApiProvider::HuggingFace { .. } => 4096,
                 ApiProvider::Custom { .. } => 4096,
             },
             supports_streaming: true,
             supports_functions: matches!(self.provider, ApiProvider::OpenAI | ApiProvider::Ollama),
-            is_local: matches!(self.provider, ApiProvider::Ollama),
+            is_local: matches!(self.provider, ApiProvider::Ollama | ApiProvider::LmStudio),
         }
     }
 

@@ -62,6 +62,9 @@ pub struct OmpModel {
     pub env: Vec<(String, EnvValue)>,
     /// Data-handling warning the UI shows for every run with this model.
     pub warning: Option<String>,
+    /// Signed-in subscription: the session reads the account token from the
+    /// runtime's accounts directory (never from the environment).
+    pub uses_accounts: bool,
 }
 
 /// Opt-in for OpenRouter stealth models (`1` allows them).
@@ -73,13 +76,28 @@ pub const STEALTH_WARNING: &str =
 
 static STEALTH_WARNED: std::sync::Once = std::sync::Once::new();
 
+/// LM Studio's address for the runtime (and the user's override of it).
+pub const LM_STUDIO_URL_VAR: &str = "LM_STUDIO_BASE_URL";
+
 /// Default Ollama endpoint, matching the in-app Ollama provider.
 pub const OLLAMA_DEFAULT_HOST: &str = "http://127.0.0.1:11434";
+
+/// How a provider authenticates.
+enum ProviderAuth {
+    /// An API key in this environment variable.
+    Key(&'static str),
+    /// Ollama on this computer: `OLLAMA_HOST`.
+    OllamaHost,
+    /// LM Studio on this computer: `LM_STUDIO_BASE_URL`.
+    LmStudioUrl,
+    /// A signed-in subscription: the runtime holds the token.
+    Account,
+}
 
 struct ProviderMapping {
     omp_provider: &'static str,
     label: &'static str,
-    key_var: Option<&'static str>,
+    auth: ProviderAuth,
 }
 
 fn mapping(provider: &ApiProvider) -> Result<ProviderMapping, HarnessError> {
@@ -87,32 +105,42 @@ fn mapping(provider: &ApiProvider) -> Result<ProviderMapping, HarnessError> {
         ApiProvider::OpenRouter => ProviderMapping {
             omp_provider: "openrouter",
             label: "OpenRouter",
-            key_var: Some("OPENROUTER_API_KEY"),
+            auth: ProviderAuth::Key("OPENROUTER_API_KEY"),
         },
         ApiProvider::Anthropic => ProviderMapping {
             omp_provider: "anthropic",
             label: "Anthropic",
-            key_var: Some("ANTHROPIC_API_KEY"),
+            auth: ProviderAuth::Key("ANTHROPIC_API_KEY"),
         },
         ApiProvider::OpenAI => ProviderMapping {
             omp_provider: "openai",
             label: "OpenAI",
-            key_var: Some("OPENAI_API_KEY"),
+            auth: ProviderAuth::Key("OPENAI_API_KEY"),
         },
         ApiProvider::Google => ProviderMapping {
             omp_provider: "google",
             label: "Google",
-            key_var: Some("GEMINI_API_KEY"),
+            auth: ProviderAuth::Key("GEMINI_API_KEY"),
         },
         ApiProvider::Grok => ProviderMapping {
             omp_provider: "xai",
             label: "xAI",
-            key_var: Some("XAI_API_KEY"),
+            auth: ProviderAuth::Key("XAI_API_KEY"),
         },
         ApiProvider::Ollama => ProviderMapping {
             omp_provider: "ollama",
             label: "Ollama",
-            key_var: None,
+            auth: ProviderAuth::OllamaHost,
+        },
+        ApiProvider::LmStudio => ProviderMapping {
+            omp_provider: "lm-studio",
+            label: "LM Studio",
+            auth: ProviderAuth::LmStudioUrl,
+        },
+        ApiProvider::Subscription(service) => ProviderMapping {
+            omp_provider: service.omp_provider(),
+            label: service.label(),
+            auth: ProviderAuth::Account,
         },
         other => return Err(HarnessError::UnsupportedProvider(provider_name(other))),
     };
@@ -131,6 +159,8 @@ fn provider_name(provider: &ApiProvider) -> String {
         ApiProvider::Replicate => "Replicate".into(),
         ApiProvider::Baseten => "Baseten".into(),
         ApiProvider::Ollama => "Ollama".into(),
+        ApiProvider::LmStudio => "LM Studio".into(),
+        ApiProvider::Subscription(service) => service.label().into(),
         ApiProvider::HuggingFace { .. } => "Hugging Face".into(),
         ApiProvider::Custom { .. } => "custom endpoint".into(),
     }
@@ -217,31 +247,43 @@ pub fn select_model_with(
     };
 
     let mut env = Vec::new();
-    match mapping.key_var {
-        Some(var) => {
+    let env_value = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .map(|h| h.trim().to_string())
+            .filter(|h| !h.is_empty())
+    };
+    let (is_local, uses_accounts) = match mapping.auth {
+        ProviderAuth::Key(var) => {
             let key = Some(api_key.trim().to_string())
                 .filter(|k| !k.is_empty())
                 .or_else(|| fallback_key(provider).map(|k| k.trim().to_string()))
                 .filter(|k| !k.is_empty())
                 .ok_or(HarnessError::MissingApiKey(mapping.label))?;
             env.push((var.to_string(), EnvValue::Secret(Secret::new(key))));
+            (false, false)
         }
-        None => {
-            let host = std::env::var("OLLAMA_HOST")
-                .ok()
-                .map(|h| h.trim().to_string())
-                .filter(|h| !h.is_empty())
-                .unwrap_or_else(|| OLLAMA_DEFAULT_HOST.to_string());
+        ProviderAuth::OllamaHost => {
+            let host = env_value("OLLAMA_HOST").unwrap_or_else(|| OLLAMA_DEFAULT_HOST.to_string());
             env.push(("OLLAMA_HOST".to_string(), EnvValue::Plain(host)));
+            (true, false)
         }
-    }
+        ProviderAuth::LmStudioUrl => {
+            let url = env_value(LM_STUDIO_URL_VAR)
+                .unwrap_or_else(|| crate::llm::LM_STUDIO_DEFAULT_BASE_URL.to_string());
+            env.push((LM_STUDIO_URL_VAR.to_string(), EnvValue::Plain(url)));
+            (true, false)
+        }
+        ProviderAuth::Account => (false, true),
+    };
 
     Ok(OmpModel {
         model_arg: format!("{}/{}", mapping.omp_provider, model),
         provider_label: mapping.label,
-        is_local: mapping.key_var.is_none(),
+        is_local,
         env,
         warning,
+        uses_accounts,
     })
 }
 
@@ -303,6 +345,45 @@ mod tests {
         assert_eq!(selected.model_arg, "ollama/qwen3:4b");
         assert_eq!(selected.env[0].0, "OLLAMA_HOST");
         assert!(selected.is_local);
+    }
+
+    #[test]
+    fn subscriptions_use_the_accounts_directory_and_no_key() {
+        use crate::llm::SubscriptionService;
+        let cases = [
+            (SubscriptionService::Claude, "anthropic/claude-opus-5-5"),
+            (SubscriptionService::ChatGpt, "openai-codex/gpt-5.5"),
+            (SubscriptionService::Copilot, "github-copilot/gpt-5.5"),
+            (
+                SubscriptionService::Gemini,
+                "google-gemini-cli/gemini-3.1-pro-preview",
+            ),
+        ];
+        for (service, arg) in cases {
+            let model = arg.split_once('/').map(|(_, m)| m).unwrap_or(arg);
+            let selected = select_model(
+                &external(ApiProvider::Subscription(service), "", model),
+                |_| Some("never-used".into()),
+            )
+            .unwrap();
+            assert_eq!(selected.model_arg, arg);
+            assert!(selected.uses_accounts);
+            assert!(
+                selected.env.is_empty(),
+                "no key reaches a subscription session"
+            );
+            assert!(!selected.is_local);
+        }
+    }
+
+    #[test]
+    fn lm_studio_is_local_and_gets_its_address() {
+        let selected =
+            select_model(&external(ApiProvider::LmStudio, "", "qwen3-8b"), |_| None).unwrap();
+        assert_eq!(selected.model_arg, "lm-studio/qwen3-8b");
+        assert_eq!(selected.env[0].0, LM_STUDIO_URL_VAR);
+        assert!(selected.is_local);
+        assert!(!selected.uses_accounts);
     }
 
     #[test]

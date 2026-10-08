@@ -1,5 +1,6 @@
 //! Fetching the model lists the picker shows: OpenRouter's public model list
-//! (no key is sent) and the models installed in Ollama.
+//! (no key is sent), the models installed in Ollama and loaded in LM Studio,
+//! and the one request that checks a pasted API key with its provider.
 //!
 //! Both requests are bounded (time and size) and identify the app with its
 //! generic User-Agent only. Nothing about the user is sent.
@@ -143,6 +144,136 @@ pub fn is_loopback_url(url: &str) -> bool {
     }
 }
 
+/// Time allowed for LM Studio's local list.
+pub const LMSTUDIO_TIMEOUT: Duration = Duration::from_millis(1_500);
+
+#[derive(Deserialize)]
+struct OpenAiModels {
+    #[serde(default)]
+    data: Vec<OpenAiModel>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiModel {
+    #[serde(default)]
+    id: Option<String>,
+}
+
+/// An OpenAI-compatible `GET /models` response (LM Studio): model ids in
+/// the server's order, unsafe ids and duplicates skipped. Embedding models
+/// (`text-embedding-*`) are left out: they cannot answer.
+pub fn parse_openai_models(json: &str) -> Result<Vec<String>, CatalogError> {
+    let list: OpenAiModels =
+        serde_json::from_str(json).map_err(|e| CatalogError::Parse(e.to_string()))?;
+    let mut out: Vec<String> = Vec::new();
+    for id in list.data.into_iter().filter_map(|m| m.id) {
+        let id = id.trim().to_string();
+        if is_valid_model_id(&id) && !id.starts_with("text-embedding") && !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    Ok(out)
+}
+
+/// The models loaded in LM Studio at `base` (e.g. `http://127.0.0.1:1234/v1`).
+/// Only loopback addresses are asked.
+pub async fn fetch_lmstudio(base: &str) -> Result<Vec<String>, FetchError> {
+    let base = base.trim().trim_end_matches('/');
+    if !is_loopback_url(base) {
+        return Err(FetchError::Http(format!(
+            "{base} is not on this computer; only a local LM Studio is listed"
+        )));
+    }
+    let body = get_bounded(&format!("{base}/models"), LMSTUDIO_TIMEOUT).await?;
+    Ok(parse_openai_models(&body)?)
+}
+
+/// Time allowed for checking an API key.
+pub const KEY_CHECK_TIMEOUT: Duration = Duration::from_secs(12);
+
+/// The cheap authenticated request that checks a key: a models list (or,
+/// for OpenRouter, whose model list is public, its key endpoint).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyCheck {
+    pub url: &'static str,
+    /// The header carrying the key, and its value prefix.
+    pub header: &'static str,
+    pub prefix: &'static str,
+    /// Extra fixed headers.
+    pub extra: &'static [(&'static str, &'static str)],
+}
+
+/// The key check of a key provider (`None` for providers without a key).
+pub fn key_check(provider: super::model_catalog::ProviderId) -> Option<KeyCheck> {
+    use super::model_catalog::ProviderId as P;
+    let bearer = |url| KeyCheck {
+        url,
+        header: "authorization",
+        prefix: "Bearer ",
+        extra: &[],
+    };
+    Some(match provider {
+        P::OpenRouter => bearer("https://openrouter.ai/api/v1/key"),
+        P::OpenAI => bearer("https://api.openai.com/v1/models"),
+        P::Grok => bearer("https://api.x.ai/v1/models"),
+        P::Anthropic => KeyCheck {
+            url: "https://api.anthropic.com/v1/models?limit=1",
+            header: "x-api-key",
+            prefix: "",
+            extra: &[("anthropic-version", "2023-06-01")],
+        },
+        // The key goes in a header, never in the URL (errors could show it).
+        P::Google => KeyCheck {
+            url: "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
+            header: "x-goog-api-key",
+            prefix: "",
+            extra: &[],
+        },
+        _ => return None,
+    })
+}
+
+/// Why a key was not accepted.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum KeyCheckError {
+    #[error("{0} did not accept this key.")]
+    Rejected(&'static str),
+    #[error("{0} could not be reached to check the key: {1}")]
+    Unreachable(&'static str, String),
+    #[error("{0} does not use an API key.")]
+    NoKey(&'static str),
+}
+
+/// Check `key` with one request to `provider` only. The key is sent in a
+/// header and never appears in an error.
+pub async fn verify_key(
+    provider: super::model_catalog::ProviderId,
+    key: &str,
+) -> Result<(), KeyCheckError> {
+    let label = provider.label();
+    let check = key_check(provider).ok_or(KeyCheckError::NoKey(label))?;
+    let value = reqwest::header::HeaderValue::from_str(&format!("{}{}", check.prefix, key.trim()))
+        .map_err(|_| KeyCheckError::Rejected(label))?;
+    let client =
+        client(KEY_CHECK_TIMEOUT).map_err(|e| KeyCheckError::Unreachable(label, e.to_string()))?;
+    let mut request = client
+        .get(check.url)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header(check.header, value);
+    for (name, v) in check.extra {
+        request = request.header(*name, *v);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|e| KeyCheckError::Unreachable(label, e.without_url().to_string()))?;
+    match response.status().as_u16() {
+        200..=299 => Ok(()),
+        400 | 401 | 403 => Err(KeyCheckError::Rejected(label)),
+        status => Err(KeyCheckError::Unreachable(label, format!("HTTP {status}"))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +304,56 @@ mod tests {
         assert!(!is_loopback_url("http://ollama.example.com"));
         assert!(!is_loopback_url("file:///etc/passwd"));
         assert!(!is_loopback_url("127.0.0.1:11434"));
+    }
+
+    #[test]
+    fn lm_studio_models_are_parsed_in_order() {
+        let json = r#"{"object":"list","data":[
+            {"id":"qwen3-8b","object":"model"},
+            {"id":"text-embedding-nomic-embed-text-v1.5"},
+            {"id":"gemma-3-4b"},
+            {"id":"qwen3-8b"},
+            {"id":"--bad"},
+            {"object":"model"}
+        ]}"#;
+        assert_eq!(
+            parse_openai_models(json).unwrap(),
+            vec!["qwen3-8b".to_string(), "gemma-3-4b".to_string()]
+        );
+        assert!(parse_openai_models("<html>").is_err());
+    }
+
+    #[test]
+    fn keys_are_checked_with_one_authenticated_request_to_their_provider() {
+        use crate::harness::model_catalog::ProviderId as P;
+        let or = key_check(P::OpenRouter).unwrap();
+        assert_eq!(
+            or.url, "https://openrouter.ai/api/v1/key",
+            "OpenRouter's model list is public"
+        );
+        assert_eq!((or.header, or.prefix), ("authorization", "Bearer "));
+        let anthropic = key_check(P::Anthropic).unwrap();
+        assert_eq!(anthropic.header, "x-api-key");
+        assert!(anthropic
+            .extra
+            .contains(&("anthropic-version", "2023-06-01")));
+        let google = key_check(P::Google).unwrap();
+        assert_eq!(google.header, "x-goog-api-key");
+        assert!(!google.url.contains("key="), "never in the URL");
+        assert!(key_check(P::OpenAI)
+            .unwrap()
+            .url
+            .starts_with("https://api.openai.com/"));
+        assert!(key_check(P::Grok)
+            .unwrap()
+            .url
+            .starts_with("https://api.x.ai/"));
+        for p in [P::Ollama, P::LmStudio, P::ClaudeSub, P::CopilotSub] {
+            assert!(key_check(p).is_none());
+        }
+        for p in P::KEYED {
+            assert!(key_check(p).unwrap().url.starts_with("https://"));
+        }
     }
 
     #[test]

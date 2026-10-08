@@ -10,9 +10,17 @@ use tokio::sync::mpsc;
 
 use super::{
     streaming::StreamingResponse, ApiProvider, ChatMessage, ChatResponse, ChatRole,
-    ChatStreamEvent, GenerationConfig, LLMProvider, MemoryUsage, ProviderInfo, TokenStream,
-    ToolCall, ToolSchema,
+    ChatStreamEvent, GenerationConfig, LLMProvider, MemoryUsage, ProviderInfo, SubscriptionService,
+    TokenStream, ToolCall, ToolSchema, LM_STUDIO_DEFAULT_BASE_URL,
 };
+
+/// Why a subscription model cannot answer outside the agent.
+fn subscription_only(service: SubscriptionService) -> anyhow::Error {
+    anyhow!(
+        "{} answers through the assistant in Ask only. Choose a model with an API key or a local model for this feature.",
+        service.label()
+    )
+}
 
 /// External API provider (simplified for reliability)
 pub struct SimpleExternalProvider {
@@ -94,6 +102,9 @@ impl SimpleExternalProvider {
             ApiProvider::Replicate => "https://api.replicate.com/v1/predictions".to_string(),
             ApiProvider::Baseten => "https://inference.baseten.co/v1/chat/completions".to_string(),
             ApiProvider::Ollama => "http://localhost:11434/v1/chat/completions".to_string(),
+            ApiProvider::LmStudio => format!("{LM_STUDIO_DEFAULT_BASE_URL}/chat/completions"),
+            // Never called: `generate` refuses subscriptions before any request.
+            ApiProvider::Subscription(_) => String::new(),
             ApiProvider::HuggingFace { model_id } => {
                 format!("https://api-inference.huggingface.co/models/{}", model_id)
             }
@@ -112,7 +123,9 @@ impl LLMProvider for SimpleExternalProvider {
             | ApiProvider::Grok
             | ApiProvider::Perplexity
             | ApiProvider::Baseten
-            | ApiProvider::Ollama => self.openai_compatible_generate(prompt, config).await,
+            | ApiProvider::Ollama
+            | ApiProvider::LmStudio => self.openai_compatible_generate(prompt, config).await,
+            ApiProvider::Subscription(service) => Err(subscription_only(*service)),
             ApiProvider::Anthropic => self.anthropic_generate(prompt, config).await,
             ApiProvider::Google => self.google_generate(prompt, config).await,
             ApiProvider::HuggingFace { model_id } => {
@@ -138,7 +151,9 @@ impl LLMProvider for SimpleExternalProvider {
             | ApiProvider::Perplexity
             | ApiProvider::Baseten
             | ApiProvider::Ollama
+            | ApiProvider::LmStudio
             | ApiProvider::Custom { .. } => self.openai_stream(prompt, config).await,
+            ApiProvider::Subscription(service) => Err(subscription_only(*service)),
             _ => {
                 // Providers without SSE: fall back to chunked non-streaming.
                 // Send word-by-word to simulate streaming (safe for any UTF-8).
@@ -190,6 +205,8 @@ impl LLMProvider for SimpleExternalProvider {
             ApiProvider::Replicate => "Replicate",
             ApiProvider::Baseten => "Baseten",
             ApiProvider::Ollama => "Ollama",
+            ApiProvider::LmStudio => "LM Studio",
+            ApiProvider::Subscription(service) => service.label(),
             ApiProvider::HuggingFace { .. } => "HuggingFace",
             ApiProvider::Custom { .. } => "Custom",
         };
@@ -207,7 +224,8 @@ impl LLMProvider for SimpleExternalProvider {
                 ApiProvider::Google => 1000000, // Gemini 2.5 Pro supports 1M context
                 ApiProvider::Replicate => 4096,
                 ApiProvider::Baseten => 128000,
-                ApiProvider::Ollama => 32768,
+                ApiProvider::Ollama | ApiProvider::LmStudio => 32768,
+                ApiProvider::Subscription(_) => 200000,
                 ApiProvider::HuggingFace { .. } => 4096,
                 ApiProvider::Custom { .. } => 4096,
             },
@@ -222,9 +240,10 @@ impl LLMProvider for SimpleExternalProvider {
                     | ApiProvider::Google
                     | ApiProvider::Perplexity
                     | ApiProvider::Ollama
+                    | ApiProvider::LmStudio
                     | ApiProvider::Custom { .. }
             ),
-            is_local: matches!(self.provider, ApiProvider::Ollama),
+            is_local: matches!(self.provider, ApiProvider::Ollama | ApiProvider::LmStudio),
         }
     }
 

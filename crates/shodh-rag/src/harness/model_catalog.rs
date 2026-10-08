@@ -11,31 +11,75 @@
 use serde::{Deserialize, Serialize};
 
 use super::model::{is_stealth, is_valid_model_id};
-use crate::llm::ApiProvider;
+use crate::llm::{ApiProvider, SubscriptionService};
 
-/// A provider the agent runtime can use.
+/// A provider the agent runtime can use: an API key, a signed-in
+/// subscription or a model server on this computer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub enum ProviderId {
+    #[serde(rename = "openrouter")]
     OpenRouter,
+    #[serde(rename = "anthropic")]
     Anthropic,
+    #[serde(rename = "openai")]
     OpenAI,
+    #[serde(rename = "google")]
     Google,
+    #[serde(rename = "grok")]
     Grok,
+    #[serde(rename = "ollama")]
     Ollama,
+    /// Claude Pro/Max, signed in.
+    #[serde(rename = "claude-sub")]
+    ClaudeSub,
+    /// ChatGPT Plus/Pro, signed in.
+    #[serde(rename = "chatgpt-sub")]
+    ChatGptSub,
+    /// GitHub Copilot, signed in.
+    #[serde(rename = "copilot-sub")]
+    CopilotSub,
+    /// Google Gemini (Gemini CLI sign-in).
+    #[serde(rename = "gemini-sub")]
+    GeminiSub,
+    /// LM Studio on this computer.
+    #[serde(rename = "lmstudio")]
+    LmStudio,
+}
+
+/// How a provider is connected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKind {
+    ApiKey,
+    Subscription,
+    Local,
 }
 
 impl ProviderId {
-    pub const ALL: [ProviderId; 6] = [
+    pub const ALL: [ProviderId; 11] = [
         ProviderId::OpenRouter,
         ProviderId::Anthropic,
         ProviderId::OpenAI,
         ProviderId::Google,
         ProviderId::Grok,
         ProviderId::Ollama,
+        ProviderId::ClaudeSub,
+        ProviderId::ChatGptSub,
+        ProviderId::CopilotSub,
+        ProviderId::GeminiSub,
+        ProviderId::LmStudio,
     ];
 
-    /// The id used by the key store and the settings UI.
+    /// Providers connected with an API key.
+    pub const KEYED: [ProviderId; 5] = [
+        ProviderId::OpenRouter,
+        ProviderId::Anthropic,
+        ProviderId::OpenAI,
+        ProviderId::Google,
+        ProviderId::Grok,
+    ];
+
+    /// The id used by the key store, the settings file and the UI.
     pub fn as_str(self) -> &'static str {
         match self {
             ProviderId::OpenRouter => "openrouter",
@@ -44,6 +88,11 @@ impl ProviderId {
             ProviderId::Google => "google",
             ProviderId::Grok => "grok",
             ProviderId::Ollama => "ollama",
+            ProviderId::ClaudeSub => "claude-sub",
+            ProviderId::ChatGptSub => "chatgpt-sub",
+            ProviderId::CopilotSub => "copilot-sub",
+            ProviderId::GeminiSub => "gemini-sub",
+            ProviderId::LmStudio => "lmstudio",
         }
     }
 
@@ -52,6 +101,7 @@ impl ProviderId {
         match text.as_str() {
             "gemini" => Some(ProviderId::Google),
             "xai" => Some(ProviderId::Grok),
+            "lm-studio" => Some(ProviderId::LmStudio),
             _ => ProviderId::ALL.into_iter().find(|p| p.as_str() == text),
         }
     }
@@ -64,6 +114,42 @@ impl ProviderId {
             ProviderId::Google => "Google",
             ProviderId::Grok => "xAI",
             ProviderId::Ollama => "Ollama",
+            ProviderId::LmStudio => "LM Studio",
+            sub => sub
+                .subscription()
+                .map(SubscriptionService::label)
+                .unwrap_or("Subscription"),
+        }
+    }
+
+    pub fn kind(self) -> ProviderKind {
+        match self {
+            ProviderId::Ollama | ProviderId::LmStudio => ProviderKind::Local,
+            ProviderId::ClaudeSub
+            | ProviderId::ChatGptSub
+            | ProviderId::CopilotSub
+            | ProviderId::GeminiSub => ProviderKind::Subscription,
+            _ => ProviderKind::ApiKey,
+        }
+    }
+
+    /// The subscription behind a signed-in provider.
+    pub fn subscription(self) -> Option<SubscriptionService> {
+        match self {
+            ProviderId::ClaudeSub => Some(SubscriptionService::Claude),
+            ProviderId::ChatGptSub => Some(SubscriptionService::ChatGpt),
+            ProviderId::CopilotSub => Some(SubscriptionService::Copilot),
+            ProviderId::GeminiSub => Some(SubscriptionService::Gemini),
+            _ => None,
+        }
+    }
+
+    pub fn from_subscription(service: SubscriptionService) -> Self {
+        match service {
+            SubscriptionService::Claude => ProviderId::ClaudeSub,
+            SubscriptionService::ChatGpt => ProviderId::ChatGptSub,
+            SubscriptionService::Copilot => ProviderId::CopilotSub,
+            SubscriptionService::Gemini => ProviderId::GeminiSub,
         }
     }
 
@@ -75,6 +161,10 @@ impl ProviderId {
             ProviderId::Google => ApiProvider::Google,
             ProviderId::Grok => ApiProvider::Grok,
             ProviderId::Ollama => ApiProvider::Ollama,
+            ProviderId::LmStudio => ApiProvider::LmStudio,
+            sub => {
+                ApiProvider::Subscription(sub.subscription().unwrap_or(SubscriptionService::Claude))
+            }
         }
     }
 
@@ -86,19 +176,97 @@ impl ProviderId {
             ApiProvider::Google => Some(ProviderId::Google),
             ApiProvider::Grok => Some(ProviderId::Grok),
             ApiProvider::Ollama => Some(ProviderId::Ollama),
+            ApiProvider::LmStudio => Some(ProviderId::LmStudio),
+            ApiProvider::Subscription(service) => Some(Self::from_subscription(*service)),
             _ => None,
+        }
+    }
+
+    /// The runtime's (omp) provider id: a Claude Pro/Max sign-in and an
+    /// Anthropic key are both `anthropic`.
+    pub fn api_provider_omp_id(self) -> &'static str {
+        match self {
+            ProviderId::OpenRouter => "openrouter",
+            ProviderId::Anthropic => "anthropic",
+            ProviderId::OpenAI => "openai",
+            ProviderId::Google => "google",
+            ProviderId::Grok => "xai",
+            ProviderId::Ollama => "ollama",
+            ProviderId::LmStudio => "lm-studio",
+            sub => sub
+                .subscription()
+                .map(SubscriptionService::omp_provider)
+                .unwrap_or("anthropic"),
         }
     }
 
     /// Prompts stay on this computer.
     pub fn is_local(self) -> bool {
-        self == ProviderId::Ollama
+        self.kind() == ProviderKind::Local
     }
 
     /// Needs an API key.
     pub fn needs_key(self) -> bool {
-        !self.is_local()
+        self.kind() == ProviderKind::ApiKey
     }
+
+    /// Can answer through the agent. Ollama models do not work through
+    /// omp 18.4.10 yet (they are shown, disabled, with that reason).
+    pub fn works_with_agent(self) -> bool {
+        self != ProviderId::Ollama
+    }
+}
+
+/// The provider a pasted API key belongs to, from its prefix.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum KeyDetection {
+    Known {
+        provider: ProviderId,
+    },
+    /// The prefix fits several providers (or none): the person chooses.
+    Ambiguous {
+        candidates: Vec<ProviderId>,
+    },
+}
+
+/// Detect the provider of `key` from its prefix: `sk-ant-` Anthropic,
+/// `sk-or-` OpenRouter, `sk-proj-` OpenAI, `AIza` Google, `xai-` xAI. A
+/// plain `sk-` key is usually OpenAI's but other providers use it too, so it
+/// is ambiguous (OpenAI first); anything else is ambiguous among all key
+/// providers.
+pub fn detect_key_provider(key: &str) -> KeyDetection {
+    let key = key.trim();
+    let known = |provider| KeyDetection::Known { provider };
+    if key.starts_with("sk-ant-") {
+        known(ProviderId::Anthropic)
+    } else if key.starts_with("sk-or-") {
+        known(ProviderId::OpenRouter)
+    } else if key.starts_with("sk-proj-") || key.starts_with("sk-svcacct-") {
+        known(ProviderId::OpenAI)
+    } else if key.starts_with("AIza") {
+        known(ProviderId::Google)
+    } else if key.starts_with("xai-") {
+        known(ProviderId::Grok)
+    } else if key.starts_with("sk-") {
+        KeyDetection::Ambiguous {
+            candidates: vec![
+                ProviderId::OpenAI,
+                ProviderId::OpenRouter,
+                ProviderId::Anthropic,
+            ],
+        }
+    } else {
+        KeyDetection::Ambiguous {
+            candidates: ProviderId::KEYED.to_vec(),
+        }
+    }
+}
+
+/// Whether `key` looks like a key at all (one line of printable ASCII).
+pub fn is_plausible_key(key: &str) -> bool {
+    let key = key.trim();
+    (8..=512).contains(&key.len()) && key.chars().all(|c| c.is_ascii_graphic())
 }
 
 /// One model of one provider, as chosen by the user.
@@ -160,6 +328,8 @@ pub enum ModelTier {
     Free,
     Paid,
     Local,
+    /// Included in a signed-in subscription.
+    Subscription,
 }
 
 /// What happens to prompts sent to the model.
@@ -299,69 +469,6 @@ pub fn parse_openrouter(json: &str) -> Result<Vec<CatalogModel>, CatalogError> {
     Ok(models)
 }
 
-/// A known tool-capable model of a direct provider.
-struct KnownModel {
-    provider: ProviderId,
-    id: &'static str,
-    name: &'static str,
-    /// The same model's id in the OpenRouter list (for its price and context).
-    openrouter_alias: &'static str,
-    /// Fast and inexpensive: a good default fallback.
-    fast: bool,
-}
-
-const KNOWN_MODELS: &[KnownModel] = &[
-    KnownModel {
-        provider: ProviderId::Anthropic,
-        id: "claude-haiku-4-5",
-        name: "Claude Haiku 4.5",
-        openrouter_alias: "anthropic/claude-haiku-4.5",
-        fast: true,
-    },
-    KnownModel {
-        provider: ProviderId::Anthropic,
-        id: "claude-sonnet-4-5",
-        name: "Claude Sonnet 4.5",
-        openrouter_alias: "anthropic/claude-sonnet-4.5",
-        fast: false,
-    },
-    KnownModel {
-        provider: ProviderId::OpenAI,
-        id: "gpt-5-mini",
-        name: "GPT-5 mini",
-        openrouter_alias: "openai/gpt-5-mini",
-        fast: true,
-    },
-    KnownModel {
-        provider: ProviderId::OpenAI,
-        id: "gpt-5",
-        name: "GPT-5",
-        openrouter_alias: "openai/gpt-5",
-        fast: false,
-    },
-    KnownModel {
-        provider: ProviderId::Google,
-        id: "gemini-2.5-flash",
-        name: "Gemini 2.5 Flash",
-        openrouter_alias: "google/gemini-2.5-flash",
-        fast: true,
-    },
-    KnownModel {
-        provider: ProviderId::Google,
-        id: "gemini-2.5-pro",
-        name: "Gemini 2.5 Pro",
-        openrouter_alias: "google/gemini-2.5-pro",
-        fast: false,
-    },
-    KnownModel {
-        provider: ProviderId::Grok,
-        id: "grok-4",
-        name: "Grok 4",
-        openrouter_alias: "x-ai/grok-4",
-        fast: false,
-    },
-];
-
 /// The fast OpenRouter model offered as a paid fallback through an OpenRouter key.
 pub const OPENROUTER_FAST_FALLBACK: &str = "anthropic/claude-haiku-4.5";
 
@@ -370,36 +477,40 @@ pub const OPENROUTER_FAST_FALLBACK: &str = "anthropic/claude-haiku-4.5";
 pub struct CatalogInputs<'a> {
     /// The OpenRouter list, when fetched (or cached).
     pub openrouter: Option<&'a [CatalogModel]>,
-    /// Providers with a key (Ollama needs none and is listed through `ollama`).
-    pub keyed: &'a [ProviderId],
-    /// Models installed in Ollama, when it answered.
-    pub ollama: &'a [String],
+    /// Providers that can answer: a key, a signed-in subscription, LM Studio running.
+    pub connected: &'a [ProviderId],
+    /// Models loaded in LM Studio, when it answered.
+    pub lmstudio: &'a [String],
     /// Local-only mode: only models on this device.
     pub local_only: bool,
 }
 
-/// Every model the picker offers: OpenRouter models (when keyed), the known
-/// models of keyed direct providers (priced from the OpenRouter list) and the
-/// installed Ollama models. Models without tool calling are left out (the
-/// agent needs tools); unknown support is kept and shown as unknown.
+/// Every model the picker offers: the models loaded in LM Studio, the
+/// curated models of connected key and subscription providers
+/// (`model_picks.json`; key providers priced from the OpenRouter list) and
+/// OpenRouter's list (when keyed). Models without tool calling are left out
+/// (the agent needs tools); unknown support is kept and shown as unknown.
+/// Ollama models are never listed: they do not work through the agent yet.
 pub fn build_catalog(inputs: &CatalogInputs<'_>) -> Vec<CatalogModel> {
     let mut out = Vec::new();
-    for id in inputs.ollama {
-        if !is_valid_model_id(id) {
-            continue;
+    if inputs.connected.contains(&ProviderId::LmStudio) {
+        for id in inputs.lmstudio {
+            if !is_valid_model_id(id) {
+                continue;
+            }
+            out.push(CatalogModel {
+                provider: ProviderId::LmStudio,
+                id: id.clone(),
+                name: id.clone(),
+                context_length: None,
+                prompt_per_million: Some(0.0),
+                completion_per_million: Some(0.0),
+                tools: ToolSupport::Unknown,
+                tier: ModelTier::Local,
+                privacy: PrivacyNote::OnDevice,
+                stealth: false,
+            });
         }
-        out.push(CatalogModel {
-            provider: ProviderId::Ollama,
-            id: id.clone(),
-            name: id.clone(),
-            context_length: None,
-            prompt_per_million: Some(0.0),
-            completion_per_million: Some(0.0),
-            tools: ToolSupport::Unknown,
-            tier: ModelTier::Local,
-            privacy: PrivacyNote::OnDevice,
-            stealth: false,
-        });
     }
     if !inputs.local_only {
         let lookup = |alias: &str| {
@@ -407,25 +518,41 @@ pub fn build_catalog(inputs: &CatalogInputs<'_>) -> Vec<CatalogModel> {
                 .openrouter
                 .and_then(|list| list.iter().find(|m| m.id == alias))
         };
-        for known in KNOWN_MODELS {
-            if !inputs.keyed.contains(&known.provider) {
+        let table = super::model_picks::table();
+        for (provider, row) in &table.providers {
+            if provider.is_local() || !inputs.connected.contains(provider) {
                 continue;
             }
-            let priced = lookup(known.openrouter_alias);
-            out.push(CatalogModel {
-                provider: known.provider,
-                id: known.id.to_string(),
-                name: known.name.to_string(),
-                context_length: priced.and_then(|m| m.context_length),
-                prompt_per_million: priced.and_then(|m| m.prompt_per_million),
-                completion_per_million: priced.and_then(|m| m.completion_per_million),
-                tools: ToolSupport::Yes,
-                tier: ModelTier::Paid,
-                privacy: PrivacyNote::ProviderTerms,
-                stealth: false,
-            });
+            let subscription = provider.kind() == ProviderKind::Subscription;
+            for known in &row.models {
+                let priced = known.openrouter.as_deref().and_then(lookup);
+                out.push(CatalogModel {
+                    provider: *provider,
+                    id: known.id.clone(),
+                    name: known.name.clone(),
+                    context_length: priced.and_then(|m| m.context_length),
+                    prompt_per_million: if subscription {
+                        None
+                    } else {
+                        priced.and_then(|m| m.prompt_per_million)
+                    },
+                    completion_per_million: if subscription {
+                        None
+                    } else {
+                        priced.and_then(|m| m.completion_per_million)
+                    },
+                    tools: ToolSupport::Yes,
+                    tier: if subscription {
+                        ModelTier::Subscription
+                    } else {
+                        ModelTier::Paid
+                    },
+                    privacy: PrivacyNote::ProviderTerms,
+                    stealth: false,
+                });
+            }
         }
-        if inputs.keyed.contains(&ProviderId::OpenRouter) {
+        if inputs.connected.contains(&ProviderId::OpenRouter) {
             if let Some(list) = inputs.openrouter {
                 out.extend(list.iter().filter(|m| m.agent_capable()).cloned());
             }
@@ -442,8 +569,8 @@ pub struct FallbackContext<'a> {
     pub current: &'a ModelRef,
     /// The user's chosen fallback model, if any.
     pub preferred: Option<&'a ModelRef>,
-    /// Providers with a key.
-    pub keyed: &'a [ProviderId],
+    /// Providers that can answer (see [`CatalogInputs::connected`]).
+    pub connected: &'a [ProviderId],
     /// The catalog from [`build_catalog`].
     pub catalog: &'a [CatalogModel],
     pub local_only: bool,
@@ -453,7 +580,8 @@ pub struct FallbackContext<'a> {
 impl FallbackContext<'_> {
     fn usable(&self, candidate: &ModelRef) -> bool {
         candidate != self.current
-            && (candidate.provider.is_local() || self.keyed.contains(&candidate.provider))
+            && candidate.provider.works_with_agent()
+            && self.connected.contains(&candidate.provider)
             && (!self.local_only || candidate.provider.is_local())
             && (self.allow_stealth || !candidate.is_stealth())
             && is_valid_model_id(&candidate.model)
@@ -469,8 +597,8 @@ impl FallbackContext<'_> {
 /// The model to offer when the current one is rate-limited or unavailable:
 /// 1. the user's fallback model, if usable;
 /// 2. in Local-only mode, another local model;
-/// 3. a fast paid model of a provider with a key (direct providers first,
-///    then through OpenRouter);
+/// 3. a fast model of a connected provider (the curated Fast pick of
+///    subscriptions and direct providers first, then through OpenRouter);
 /// 4. another free OpenRouter model with tool calling (largest context first).
 ///
 /// `None` when nothing else is usable. Never the failing model itself.
@@ -488,10 +616,18 @@ pub fn choose_fallback(ctx: &FallbackContext<'_>) -> Option<ModelRef> {
             .map(CatalogModel::model_ref)
             .find(|r| ctx.usable(r));
     }
-    let fast_direct = KNOWN_MODELS
+    let table = super::model_picks::table();
+    let fast_direct = table
+        .order
         .iter()
-        .filter(|k| k.fast)
-        .map(|k| ModelRef::new(k.provider, k.id))
+        .filter(|p| **p != ProviderId::OpenRouter && !p.is_local())
+        .filter_map(|p| {
+            table
+                .providers
+                .get(p)
+                .and_then(|row| row.fast.first())
+                .map(|id| ModelRef::new(*p, id.clone()))
+        })
         .find(|r| ctx.usable(r));
     if fast_direct.is_some() {
         return fast_direct;
@@ -587,14 +723,17 @@ mod tests {
     }
 
     #[test]
-    fn catalog_leaves_out_models_without_tools_and_unkeyed_providers() {
+    fn catalog_leaves_out_models_without_tools_and_unconnected_providers() {
         let list = parsed();
-        let keyed = [ProviderId::OpenRouter, ProviderId::Anthropic];
-        let ollama = vec!["qwen3:4b".to_string()];
+        let connected = [
+            ProviderId::OpenRouter,
+            ProviderId::Anthropic,
+            ProviderId::ClaudeSub,
+        ];
         let catalog = build_catalog(&CatalogInputs {
             openrouter: Some(&list),
-            keyed: &keyed,
-            ollama: &ollama,
+            connected: &connected,
+            lmstudio: &["qwen3-8b".to_string()],
             local_only: false,
         });
         assert!(catalog
@@ -605,6 +744,10 @@ mod tests {
             "unknown tool support is kept"
         );
         assert!(catalog.iter().all(|m| m.provider != ProviderId::OpenAI));
+        assert!(
+            catalog.iter().all(|m| m.provider != ProviderId::LmStudio),
+            "LM Studio is listed only while it is connected (running)"
+        );
         let haiku = catalog
             .iter()
             .find(|m| m.provider == ProviderId::Anthropic && m.id == "claude-haiku-4-5")
@@ -615,70 +758,81 @@ mod tests {
             "priced from the OpenRouter alias"
         );
         assert_eq!(haiku.context_length, Some(200_000));
-        let sonnet = catalog
+        let opus = catalog
             .iter()
-            .find(|m| m.id == "claude-sonnet-4-5")
+            .find(|m| m.provider == ProviderId::Anthropic && m.id == "claude-opus-5-5")
             .unwrap();
         assert_eq!(
-            sonnet.prompt_per_million, None,
+            opus.prompt_per_million, None,
             "not in the fixture: price unknown"
         );
-        let local = catalog
+        let sub = catalog
             .iter()
-            .find(|m| m.provider == ProviderId::Ollama)
+            .find(|m| m.provider == ProviderId::ClaudeSub && m.id == "claude-haiku-4-5")
             .unwrap();
-        assert_eq!(local.tier, ModelTier::Local);
-        assert_eq!(local.privacy, PrivacyNote::OnDevice);
+        assert_eq!(sub.tier, ModelTier::Subscription);
+        assert_eq!(
+            sub.prompt_per_million, None,
+            "a subscription has no per-token price"
+        );
 
-        let offline = build_catalog(&CatalogInputs {
+        let with_lm = build_catalog(&CatalogInputs {
             openrouter: None,
-            keyed: &keyed,
-            ollama: &[],
+            connected: &[ProviderId::LmStudio, ProviderId::Anthropic],
+            lmstudio: &["qwen3-8b".to_string(), "--bad".to_string()],
             local_only: false,
         });
-        assert!(offline.iter().any(|m| m.id == "claude-haiku-4-5"));
-        assert!(offline.iter().all(|m| m.provider != ProviderId::OpenRouter));
+        let local: Vec<&CatalogModel> = with_lm
+            .iter()
+            .filter(|m| m.provider == ProviderId::LmStudio)
+            .collect();
+        assert_eq!(local.len(), 1);
+        assert_eq!(local[0].tier, ModelTier::Local);
+        assert_eq!(local[0].privacy, PrivacyNote::OnDevice);
+        assert!(with_lm.iter().any(|m| m.id == "claude-haiku-4-5"));
+        assert!(with_lm.iter().all(|m| m.provider != ProviderId::OpenRouter));
 
         let local_only = build_catalog(&CatalogInputs {
             openrouter: Some(&list),
-            keyed: &keyed,
-            ollama: &ollama,
+            connected: &[ProviderId::LmStudio, ProviderId::OpenRouter],
+            lmstudio: &["qwen3-8b".to_string()],
             local_only: true,
         });
         assert_eq!(local_only.len(), 1);
-        assert_eq!(local_only[0].provider, ProviderId::Ollama);
+        assert_eq!(local_only[0].provider, ProviderId::LmStudio);
     }
 
-    fn catalog_for(keyed: &[ProviderId], ollama: &[String]) -> Vec<CatalogModel> {
+    fn catalog_for(connected: &[ProviderId]) -> Vec<CatalogModel> {
         let list = parsed();
         build_catalog(&CatalogInputs {
             openrouter: Some(&list),
-            keyed,
-            ollama,
+            connected,
+            lmstudio: &[],
             local_only: false,
         })
     }
 
     #[test]
-    fn fallback_prefers_the_users_choice_then_a_fast_paid_model() {
+    fn fallback_prefers_the_users_choice_then_a_fast_model() {
         let nemotron = ModelRef::new(
             ProviderId::OpenRouter,
             "nvidia/nemotron-3-super-120b-a12b:free",
         );
-        let keyed = [ProviderId::OpenRouter, ProviderId::OpenAI];
-        let catalog = catalog_for(&keyed, &[]);
+        let connected = [ProviderId::OpenRouter, ProviderId::OpenAI];
+        let catalog = catalog_for(&connected);
         let base = FallbackContext {
             current: &nemotron,
             preferred: None,
-            keyed: &keyed,
+            connected: &connected,
             catalog: &catalog,
             local_only: false,
             allow_stealth: false,
         };
+        let fast_openai = ModelRef::new(ProviderId::OpenAI, "gpt-5.4-mini");
         assert_eq!(
             choose_fallback(&base),
-            Some(ModelRef::new(ProviderId::OpenAI, "gpt-5-mini")),
-            "a direct key gives a fast paid model"
+            Some(fast_openai.clone()),
+            "a direct key gives its fast pick"
         );
         let qwen = ModelRef::new(ProviderId::OpenRouter, "qwen/qwen3-coder:free");
         assert_eq!(
@@ -688,22 +842,52 @@ mod tests {
             }),
             Some(qwen.clone())
         );
-        let unkeyed = ModelRef::new(ProviderId::Google, "gemini-2.5-flash");
+        let unconnected = ModelRef::new(ProviderId::Google, "gemini-2.5-flash");
         assert_eq!(
             choose_fallback(&FallbackContext {
-                preferred: Some(&unkeyed),
+                preferred: Some(&unconnected),
                 ..base.clone()
             }),
-            Some(ModelRef::new(ProviderId::OpenAI, "gpt-5-mini")),
-            "a preferred model without a key is skipped"
+            Some(fast_openai.clone()),
+            "a preferred model of an unconnected provider is skipped"
         );
         assert_eq!(
             choose_fallback(&FallbackContext {
                 preferred: Some(&nemotron),
+                ..base.clone()
+            }),
+            Some(fast_openai),
+            "never the failing model"
+        );
+        let ollama = ModelRef::new(ProviderId::Ollama, "qwen3:4b");
+        let with_ollama = [ProviderId::Ollama];
+        assert_eq!(
+            choose_fallback(&FallbackContext {
+                preferred: Some(&ollama),
+                connected: &with_ollama,
                 ..base
             }),
-            Some(ModelRef::new(ProviderId::OpenAI, "gpt-5-mini")),
-            "never the failing model"
+            None,
+            "Ollama does not work through the agent"
+        );
+    }
+
+    #[test]
+    fn subscriptions_come_before_keys_in_the_fast_fallback() {
+        let failed = ModelRef::new(ProviderId::OpenAI, "gpt-5.5");
+        let connected = [ProviderId::OpenAI, ProviderId::CopilotSub];
+        let catalog = catalog_for(&connected);
+        let chosen = choose_fallback(&FallbackContext {
+            current: &failed,
+            preferred: None,
+            connected: &connected,
+            catalog: &catalog,
+            local_only: false,
+            allow_stealth: false,
+        });
+        assert_eq!(
+            chosen,
+            Some(ModelRef::new(ProviderId::CopilotSub, "gpt-5-mini"))
         );
     }
 
@@ -713,12 +897,12 @@ mod tests {
             ProviderId::OpenRouter,
             "nvidia/nemotron-3-super-120b-a12b:free",
         );
-        let keyed = [ProviderId::OpenRouter];
-        let catalog = catalog_for(&keyed, &[]);
+        let connected = [ProviderId::OpenRouter];
+        let catalog = catalog_for(&connected);
         let ctx = FallbackContext {
             current: &nemotron,
             preferred: None,
-            keyed: &keyed,
+            connected: &connected,
             catalog: &catalog,
             local_only: false,
             allow_stealth: false,
@@ -759,27 +943,27 @@ mod tests {
 
     #[test]
     fn fallback_in_local_only_mode_stays_local() {
-        let local = ModelRef::new(ProviderId::Ollama, "qwen3:4b");
-        let ollama = vec!["qwen3:4b".to_string(), "llama3.2:3b".to_string()];
-        let keyed = [ProviderId::OpenAI];
+        let local = ModelRef::new(ProviderId::LmStudio, "qwen3-8b");
+        let models = vec!["qwen3-8b".to_string(), "gemma-3-4b".to_string()];
+        let connected = [ProviderId::OpenAI, ProviderId::LmStudio];
         let catalog = build_catalog(&CatalogInputs {
             openrouter: None,
-            keyed: &keyed,
-            ollama: &ollama,
+            connected: &connected,
+            lmstudio: &models,
             local_only: true,
         });
         let cloud = ModelRef::new(ProviderId::OpenAI, "gpt-5-mini");
         let ctx = FallbackContext {
             current: &local,
             preferred: Some(&cloud),
-            keyed: &keyed,
+            connected: &connected,
             catalog: &catalog,
             local_only: true,
             allow_stealth: false,
         };
         assert_eq!(
             choose_fallback(&ctx),
-            Some(ModelRef::new(ProviderId::Ollama, "llama3.2:3b"))
+            Some(ModelRef::new(ProviderId::LmStudio, "gemma-3-4b"))
         );
         let only_one: Vec<CatalogModel> = catalog.iter().take(1).cloned().collect();
         assert_eq!(
@@ -788,6 +972,56 @@ mod tests {
                 ..ctx
             }),
             None
+        );
+    }
+
+    #[test]
+    fn key_prefixes_name_their_provider() {
+        let known = |p| KeyDetection::Known { provider: p };
+        assert_eq!(
+            detect_key_provider("sk-ant-api03-abc"),
+            known(ProviderId::Anthropic)
+        );
+        assert_eq!(
+            detect_key_provider(" sk-or-v1-abc "),
+            known(ProviderId::OpenRouter)
+        );
+        assert_eq!(
+            detect_key_provider("sk-proj-abc"),
+            known(ProviderId::OpenAI)
+        );
+        assert_eq!(
+            detect_key_provider("sk-svcacct-abc"),
+            known(ProviderId::OpenAI)
+        );
+        assert_eq!(detect_key_provider("AIzaSyAbc"), known(ProviderId::Google));
+        assert_eq!(detect_key_provider("xai-abc"), known(ProviderId::Grok));
+        match detect_key_provider("sk-abc123") {
+            KeyDetection::Ambiguous { candidates } => {
+                assert_eq!(candidates[0], ProviderId::OpenAI, "OpenAI is the likeliest");
+                assert!(candidates.contains(&ProviderId::OpenRouter));
+            }
+            other => panic!("{other:?}"),
+        }
+        match detect_key_provider("gsk_something") {
+            KeyDetection::Ambiguous { candidates } => {
+                assert_eq!(candidates, ProviderId::KEYED.to_vec())
+            }
+            other => panic!("{other:?}"),
+        }
+        // `sk-ant-` and `sk-or-` win over the generic `sk-`.
+        assert_ne!(detect_key_provider("sk-ant-x"), detect_key_provider("sk-x"));
+        assert!(is_plausible_key("sk-or-v1-0123456789"));
+        assert!(!is_plausible_key("short"));
+        assert!(!is_plausible_key("sk-or-v1 with spaces"));
+        assert!(!is_plausible_key(
+            "sk-or-v1-
+two-lines"
+        ));
+        let json = serde_json::to_value(detect_key_provider("xai-1")).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"kind": "known", "provider": "grok"})
         );
     }
 
@@ -808,5 +1042,17 @@ mod tests {
         assert_eq!(ProviderId::parse("Gemini"), Some(ProviderId::Google));
         assert_eq!(ProviderId::parse("xai"), Some(ProviderId::Grok));
         assert_eq!(ProviderId::parse("acme"), None);
+        assert_eq!(ProviderId::parse("claude-sub"), Some(ProviderId::ClaudeSub));
+        assert_eq!(ProviderId::parse("lm-studio"), Some(ProviderId::LmStudio));
+        for p in ProviderId::ALL {
+            let json = serde_json::to_value(p).unwrap();
+            assert_eq!(json, serde_json::json!(p.as_str()));
+            assert_eq!(ProviderId::parse(p.as_str()), Some(p));
+            assert_eq!(ProviderId::from_api(&p.api_provider()), Some(p));
+        }
+        assert!(ProviderId::ClaudeSub.subscription().is_some());
+        assert!(!ProviderId::ClaudeSub.needs_key());
+        assert!(ProviderId::LmStudio.is_local());
+        assert!(!ProviderId::Ollama.works_with_agent());
     }
 }

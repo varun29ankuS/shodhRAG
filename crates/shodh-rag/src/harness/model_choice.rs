@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::model_catalog::{CatalogError, ModelRef, ProviderId};
+use super::model_picks::Pick;
 
 /// Models kept in the picker's "Recent" list.
 pub const MAX_RECENT: usize = 6;
@@ -39,6 +40,72 @@ pub struct ModelPrefs {
     pub recent: Vec<ModelRef>,
     /// Starred models, in the order they were starred.
     pub favourites: Vec<ModelRef>,
+    /// The pick the chosen model came from (Best quality, Fast & cheap,
+    /// Free, Private); its list is the automatic fallback order. `None`
+    /// for a model chosen by id.
+    pub pick: Option<Pick>,
+    /// The person's fallback order of providers (Advanced); providers not
+    /// listed follow in the default order.
+    pub provider_order: Vec<ProviderId>,
+    /// Base URL overrides per provider (Advanced), passed to the runtime.
+    pub base_urls: Vec<BaseUrl>,
+    /// Provider keys found in the environment were copied into the OS
+    /// credential store (once, at the first start that found them).
+    pub env_keys_migrated: bool,
+}
+
+/// A provider's base URL override.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BaseUrl {
+    pub provider: ProviderId,
+    pub url: String,
+}
+
+/// The runtime's base URL variable for a provider, for providers whose
+/// address can be changed.
+pub fn base_url_var(provider: ProviderId) -> Option<&'static str> {
+    match provider {
+        ProviderId::Anthropic => Some("ANTHROPIC_BASE_URL"),
+        ProviderId::OpenAI => Some("OPENAI_BASE_URL"),
+        ProviderId::OpenRouter => Some("OPENROUTER_BASE_URL"),
+        ProviderId::Grok => Some("XAI_BASE_URL"),
+        ProviderId::LmStudio => Some(super::model::LM_STUDIO_URL_VAR),
+        _ => None,
+    }
+}
+
+/// Why a base URL is refused.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BaseUrlError {
+    #[error("The address of {0} cannot be changed.")]
+    NotSupported(&'static str),
+    #[error("Enter a full address such as https://gateway.example.com/v1.")]
+    Invalid,
+    #[error("Use https for an address that is not on this computer, so the API key is not sent unencrypted.")]
+    Insecure,
+}
+
+/// Check a base URL: http(s) without credentials, https unless it is on
+/// this computer. Returns it trimmed, without a trailing slash.
+pub fn check_base_url(provider: ProviderId, url: &str) -> Result<String, BaseUrlError> {
+    base_url_var(provider).ok_or(BaseUrlError::NotSupported(provider.label()))?;
+    let url = url.trim().trim_end_matches('/');
+    let parsed = url::Url::parse(url).map_err(|_| BaseUrlError::Invalid)?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || url.len() > 300
+    {
+        return Err(BaseUrlError::Invalid);
+    }
+    if parsed.scheme() == "http" && !super::catalog_fetch::is_loopback_url(url) {
+        return Err(BaseUrlError::Insecure);
+    }
+    Ok(url.to_string())
 }
 
 /// Why a stored list entry is dropped while reading settings.
@@ -67,7 +134,53 @@ impl ModelPrefs {
         let over = accepted.len().saturating_sub(MAX_STEALTH_ACCEPTED);
         accepted.drain(..over);
         self.stealth_accepted = accepted;
+        let mut order: Vec<ProviderId> = Vec::new();
+        for p in self.provider_order {
+            if !order.contains(&p) {
+                order.push(p);
+            }
+        }
+        self.provider_order = order;
+        let mut urls: Vec<BaseUrl> = Vec::new();
+        for b in self.base_urls {
+            if urls.iter().any(|u| u.provider == b.provider) {
+                continue;
+            }
+            if let Ok(url) = check_base_url(b.provider, &b.url) {
+                urls.push(BaseUrl {
+                    provider: b.provider,
+                    url,
+                });
+            }
+        }
+        self.base_urls = urls;
         self
+    }
+
+    /// The base URL override of `provider`, if any.
+    pub fn base_url(&self, provider: ProviderId) -> Option<&str> {
+        self.base_urls
+            .iter()
+            .find(|b| b.provider == provider)
+            .map(|b| b.url.as_str())
+    }
+
+    /// Set (or, with `None`, clear) the base URL of `provider`.
+    pub fn set_base_url(
+        &mut self,
+        provider: ProviderId,
+        url: Option<&str>,
+    ) -> Result<(), BaseUrlError> {
+        let checked = url
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+            .map(|u| check_base_url(provider, u))
+            .transpose()?;
+        self.base_urls.retain(|b| b.provider != provider);
+        if let Some(url) = checked {
+            self.base_urls.push(BaseUrl { provider, url });
+        }
+        Ok(())
     }
 
     /// Put `model` first in the recent list.
@@ -174,6 +287,10 @@ pub enum SelectionError {
     LocalOnly(String),
     #[error("{0} has no API key. Add one in Settings → Model.")]
     MissingKey(&'static str),
+    #[error("{0} is not connected. Connect it in Settings → Model.")]
+    NotConnected(&'static str),
+    #[error("Ollama models do not work through the assistant yet (a known issue in its runtime). Use LM Studio for a local model.")]
+    Unsupported,
     #[error("{0} is a stealth model: its provider may log prompts and use them for training. Confirm that you accept this to use it.")]
     StealthNeedsConfirmation(String),
     #[error("The environment sets the model for this computer ({0}). Choose \"Use for this session\" to override it until Shodh restarts.")]
@@ -184,7 +301,8 @@ pub enum SelectionError {
 #[derive(Debug, Clone)]
 pub struct SelectionContext<'a> {
     pub prefs: &'a ModelPrefs,
-    pub keyed: &'a [ProviderId],
+    /// Providers that can answer: a key, a signed-in subscription, LM Studio running.
+    pub connected: &'a [ProviderId],
     pub local_only: bool,
     /// `SHODH_ALLOW_STEALTH_MODELS=1`.
     pub env_allows_stealth: bool,
@@ -206,8 +324,15 @@ pub fn check_selection(
     if ctx.local_only && !model.provider.is_local() {
         return Err(SelectionError::LocalOnly(model.describe()));
     }
-    if model.provider.needs_key() && !ctx.keyed.contains(&model.provider) {
-        return Err(SelectionError::MissingKey(model.provider.label()));
+    if !model.provider.works_with_agent() {
+        return Err(SelectionError::Unsupported);
+    }
+    if !ctx.connected.contains(&model.provider) {
+        return Err(if model.provider.needs_key() {
+            SelectionError::MissingKey(model.provider.label())
+        } else {
+            SelectionError::NotConnected(model.provider.label())
+        });
     }
     if !confirm_stealth && !ctx.prefs.stealth_ok(&model, ctx.env_allows_stealth) {
         return Err(SelectionError::StealthNeedsConfirmation(model.model));
@@ -298,10 +423,10 @@ mod tests {
         assert_eq!(resolve_active(None, None, None), None);
     }
 
-    fn ctx<'a>(prefs: &'a ModelPrefs, keyed: &'a [ProviderId]) -> SelectionContext<'a> {
+    fn ctx<'a>(prefs: &'a ModelPrefs, connected: &'a [ProviderId]) -> SelectionContext<'a> {
         SelectionContext {
             prefs,
-            keyed,
+            connected,
             local_only: false,
             env_allows_stealth: false,
             environment: None,
@@ -330,10 +455,43 @@ mod tests {
             ),
             Err(SelectionError::MissingKey("OpenAI"))
         );
-        // Ollama needs no key.
+        // Ollama does not work through the agent; LM Studio needs it running.
+        assert_eq!(
+            check_selection(
+                ModelRef::new(ProviderId::Ollama, "qwen3:4b"),
+                &base,
+                false,
+                false
+            ),
+            Err(SelectionError::Unsupported)
+        );
+        assert_eq!(
+            check_selection(
+                ModelRef::new(ProviderId::LmStudio, "qwen3-8b"),
+                &base,
+                false,
+                false
+            ),
+            Err(SelectionError::NotConnected("LM Studio"))
+        );
+        assert_eq!(
+            check_selection(
+                ModelRef::new(ProviderId::ClaudeSub, "claude-opus-5-5"),
+                &base,
+                false,
+                false
+            ),
+            Err(SelectionError::NotConnected("Claude (Pro/Max)"))
+        );
+        let signed_in = [
+            ProviderId::OpenRouter,
+            ProviderId::ClaudeSub,
+            ProviderId::LmStudio,
+        ];
+        let with_sub = ctx(&prefs, &signed_in);
         assert!(check_selection(
-            ModelRef::new(ProviderId::Ollama, "qwen3:4b"),
-            &base,
+            ModelRef::new(ProviderId::ClaudeSub, "claude-opus-5-5"),
+            &with_sub,
             false,
             false
         )
@@ -341,14 +499,23 @@ mod tests {
 
         let local = SelectionContext {
             local_only: true,
-            ..base.clone()
+            ..with_sub.clone()
         };
         assert!(matches!(
             check_selection(or("a/b"), &local, false, false),
             Err(SelectionError::LocalOnly(_))
         ));
+        assert!(matches!(
+            check_selection(
+                ModelRef::new(ProviderId::ClaudeSub, "claude-opus-5-5"),
+                &local,
+                false,
+                false
+            ),
+            Err(SelectionError::LocalOnly(_))
+        ));
         assert!(check_selection(
-            ModelRef::new(ProviderId::Ollama, "qwen3:4b"),
+            ModelRef::new(ProviderId::LmStudio, "qwen3-8b"),
             &local,
             false,
             false
@@ -448,6 +615,16 @@ mod tests {
             "stealthAccepted": ["stealth/x", "stealth/x", "bad id"],
             "recent": [{"provider": "openai", "model": "gpt-5"}, {"provider": "openai", "model": "gpt-5"}],
             "favourites": [{"provider": "ollama", "model": "qwen3:4b"}],
+            "pick": "fast",
+            "providerOrder": ["openai", "claude-sub", "openai"],
+            "baseUrls": [
+                {"provider": "openai", "url": "https://gateway.example.com/v1/"},
+                {"provider": "openai", "url": "https://second.example.com"},
+                {"provider": "anthropic", "url": "http://10.0.0.5:8080"},
+                {"provider": "lmstudio", "url": "http://127.0.0.1:4321/v1"},
+                {"provider": "google", "url": "https://x.example.com"}
+            ],
+            "envKeysMigrated": true,
             "unknownField": 1
         }"#;
         let prefs: ModelPrefs = serde_json::from_str(json).unwrap();
@@ -460,6 +637,26 @@ mod tests {
         assert!(prefs.always_fall_back);
         assert_eq!(prefs.stealth_accepted, vec!["stealth/x".to_string()]);
         assert_eq!(prefs.recent.len(), 1);
+        assert_eq!(prefs.pick, Some(Pick::Fast));
+        assert_eq!(
+            prefs.provider_order,
+            vec![ProviderId::OpenAI, ProviderId::ClaudeSub]
+        );
+        assert_eq!(
+            prefs.base_urls,
+            vec![
+                BaseUrl {
+                    provider: ProviderId::OpenAI,
+                    url: "https://gateway.example.com/v1".into()
+                },
+                BaseUrl {
+                    provider: ProviderId::LmStudio,
+                    url: "http://127.0.0.1:4321/v1".into()
+                },
+            ],
+            "duplicates, plain http off this computer and unsupported providers are dropped"
+        );
+        assert!(prefs.env_keys_migrated);
         let again: ModelPrefs =
             serde_json::from_value(serde_json::to_value(&prefs).unwrap()).unwrap();
         assert_eq!(again, prefs);
@@ -467,6 +664,42 @@ mod tests {
             serde_json::from_str::<ModelPrefs>("{}").unwrap(),
             ModelPrefs::default()
         );
+    }
+
+    #[test]
+    fn base_urls_are_checked() {
+        let mut prefs = ModelPrefs::default();
+        prefs
+            .set_base_url(ProviderId::OpenAI, Some(" https://gw.example.com/v1/ "))
+            .unwrap();
+        assert_eq!(
+            prefs.base_url(ProviderId::OpenAI),
+            Some("https://gw.example.com/v1")
+        );
+        assert_eq!(
+            prefs.set_base_url(ProviderId::OpenAI, Some("http://gw.example.com")),
+            Err(BaseUrlError::Insecure)
+        );
+        assert_eq!(
+            prefs.set_base_url(ProviderId::Google, Some("https://x.example.com")),
+            Err(BaseUrlError::NotSupported("Google"))
+        );
+        assert_eq!(
+            prefs.set_base_url(ProviderId::OpenAI, Some("https://user:pw@gw.example.com")),
+            Err(BaseUrlError::Invalid)
+        );
+        assert_eq!(
+            prefs.set_base_url(ProviderId::OpenAI, Some("not a url")),
+            Err(BaseUrlError::Invalid)
+        );
+        assert_eq!(
+            prefs.base_url(ProviderId::OpenAI),
+            Some("https://gw.example.com/v1")
+        );
+        prefs.set_base_url(ProviderId::OpenAI, None).unwrap();
+        assert_eq!(prefs.base_url(ProviderId::OpenAI), None);
+        assert_eq!(base_url_var(ProviderId::Grok), Some("XAI_BASE_URL"));
+        assert_eq!(base_url_var(ProviderId::ClaudeSub), None);
     }
 
     #[test]

@@ -1,11 +1,13 @@
-import React, { useEffect, useId, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useId, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Images, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { isInFocusOverlay } from '../focus/focusDom';
 import { onVisualsChanged, visualsApi } from './api';
 import { subscribeReveal } from './reveal';
-import { VisualGallery } from './VisualGallery';
+
+// The gallery (thumbnails render diagrams, charts and equations) loads when it is first opened.
+const VisualGallery = lazy(() => import('./VisualGallery').then(m => ({ default: m.VisualGallery })));
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -100,7 +102,11 @@ export function VisualsButton({ conversationId, conversationTitle }: { conversat
             </Dialog.Close>
           </header>
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-5 py-4">
-            {open && <VisualGallery conversationId={conversationId} autoFocusSearch emptyText="No visuals in this conversation yet. Diagrams, charts, sketches, plots, simulations, equations and tables in its answers appear here." />}
+            {open && (
+              <Suspense fallback={<p className="m-0 text-[13px] text-shodh-text-muted" role="status">Loading visuals…</p>}>
+                <VisualGallery conversationId={conversationId} autoFocusSearch emptyText="No visuals in this conversation yet. Diagrams, charts, sketches, plots, simulations, equations and tables in its answers appear here." />
+              </Suspense>
+            )}
           </div>
         </Dialog.Content>
       </Dialog.Portal>

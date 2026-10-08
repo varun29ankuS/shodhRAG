@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Loader2 } from 'lucide-react';
 import { ImageViewer } from '../ask/viewer/ImageViewer';
-import { PdfViewer } from '../ask/viewer/PdfViewer';
+import { PdfViewer } from '../ask/viewer/LazyPdfViewer';
 import { TableViewer } from '../ask/viewer/TableViewer';
 import { TextViewer } from '../ask/viewer/TextViewer';
 import { getSourceFileInfo, toSourceError } from '../ask/viewer/sourceAccess';

@@ -1,9 +1,11 @@
 /**
  * The app's PDF document cache: `docStore` wired to pdf.js and the source
- * viewer commands. Up to 6 entries (opened documents and prefetched bytes
- * share the count) and 150 MB, keyed by path, file size and modification
- * time (`SourceFileInfo.modifiedMs`), so an edited file is never served
- * from the cache even when its size did not change.
+ * viewer commands. Up to 4 entries (opened documents and prefetched bytes
+ * share the count) and 64 MB of file bytes (each open document's parsed
+ * state in the pdf.js worker is a multiple of its file size), keyed by path,
+ * file size and modification time (`SourceFileInfo.modifiedMs`), so an
+ * edited file is never served from the cache even when its size did not
+ * change.
  */
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { pathKey } from '../../library/fileTree';
@@ -14,7 +16,7 @@ import { cleanPdfTitle, type PdfMeta } from './viewState';
 
 export type PdfDocLease = DocLease<PDFDocumentProxy>;
 
-export const PREFETCH_MAX_BYTES = 48 * 1024 * 1024;
+export const PREFETCH_MAX_BYTES = 32 * 1024 * 1024;
 
 export function pdfCacheKey(path: string, size: number, modifiedMs: number | null = null): string {
   return `${pathKey(path)}|${size}|${modifiedMs ?? ''}`;
@@ -32,8 +34,8 @@ const store = createDocStore<PDFDocumentProxy>({
     }
   },
   keyOf: pdfCacheKey,
-  maxEntries: 6,
-  maxBytes: 150 * 1024 * 1024,
+  maxEntries: 4,
+  maxBytes: 64 * 1024 * 1024,
   prefetchMaxBytes: PREFETCH_MAX_BYTES,
 });
 

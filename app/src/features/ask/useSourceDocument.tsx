@@ -4,7 +4,7 @@ import { cn } from '../../lib/utils';
 import { appRecordKind, isWebUrl } from './searchResults';
 import type { SearchHit } from './types';
 import { ImageViewer } from './viewer/ImageViewer';
-import { PdfViewer } from './viewer/PdfViewer';
+import { PdfViewer } from './viewer/LazyPdfViewer';
 import { TableViewer } from './viewer/TableViewer';
 import { TextViewer } from './viewer/TextViewer';
 import { getSourceFileInfo, toSourceError, type SourceAccessError, type SourceFileInfo } from './viewer/sourceAccess';

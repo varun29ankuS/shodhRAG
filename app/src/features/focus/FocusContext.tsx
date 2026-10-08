@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, createContext, lazy, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { notify } from '../../lib/notify';
 import type { AgentEventEnvelope } from '../agent/events';
 import { answerText, initialTranscript, isLive, reduceAll, toPersisted } from '../agent/reducer';
@@ -35,10 +35,12 @@ import type { RefineResult } from '../visuals/refine';
 import type { VisualRecord, VisualRef } from '../visuals/model';
 import { recordTarget, visualRef } from '../visuals/model';
 import { recordAnswerVisuals } from '../visuals/recording';
-import { FocusOverlay } from './FocusOverlay';
 import { SelectionAsk } from './SelectionAsk';
 import { currentValues } from './liveValues';
 import { onApprovalAnswered } from '../inbox/approvalBus';
+
+// The pop-out (stage renderers, side threads) loads when focus first opens.
+const FocusOverlay = lazy(() => import('./FocusOverlay').then(m => ({ default: m.FocusOverlay })));
 
 /** How long an interrupt may take before the side answer is closed locally. */
 const INTERRUPT_TIMEOUT_MS = 5_000;
@@ -998,7 +1000,11 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
   return (
     <FocusContext.Provider value={value}>
       {children}
-      {session && <FocusOverlay key={session.key} session={session} onClose={closeFocus} />}
+      {session && (
+        <Suspense fallback={null}>
+          <FocusOverlay key={session.key} session={session} onClose={closeFocus} />
+        </Suspense>
+      )}
       <SelectionAsk />
     </FocusContext.Provider>
   );

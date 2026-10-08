@@ -1,9 +1,8 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpRight, Check, Copy, CornerLeftUp, FileDown, FolderPlus, Globe, MessagesSquare, RotateCcw } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { cn } from '../../lib/utils';
 import type { ViewTab } from '../../lib/viewTabs';
-import { EnhancedArtifactPanel } from '../../components/EnhancedArtifactPanel';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { AgentComposer } from '../agent/AgentComposer';
 import type { AgentComposerHandle } from '../agent/AgentComposer';
@@ -50,6 +49,9 @@ import { CodeModeSwitch } from '../agent/CodeModeSwitch';
 import { DiagramHostContext } from './visual/diagramHost';
 import { ToolsChip } from '../tools/ToolsChip';
 import type { ConversationMode } from '../../hooks/useConversations';
+
+// The artifact side panel (editors, previews) loads when an artifact is first opened.
+const EnhancedArtifactPanel = lazy(() => import('../../components/EnhancedArtifactPanel').then(m => ({ default: m.EnhancedArtifactPanel })));
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -1086,13 +1088,15 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
             aria-hidden="true"
           />
           <div className="ask-slide-in absolute right-0 top-0 bottom-0 w-[55%] min-w-[360px] z-40 shadow-[-8px_0_30px_rgba(0,0,0,0.18)]">
-            <EnhancedArtifactPanel
-              artifacts={allArtifacts}
-              theme={theme}
-              selectedArtifactId={openArtifactId}
-              onSave={saveArtifact}
-              onClose={() => setOpenArtifactId(null)}
-            />
+            <Suspense fallback={<div className="h-full bg-shodh-surface" aria-busy="true" />}>
+              <EnhancedArtifactPanel
+                artifacts={allArtifacts}
+                theme={theme}
+                selectedArtifactId={openArtifactId}
+                onSave={saveArtifact}
+                onClose={() => setOpenArtifactId(null)}
+              />
+            </Suspense>
           </div>
         </>
       )}

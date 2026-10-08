@@ -1,32 +1,27 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { Check, Copy, Globe } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { cn } from '../../lib/utils';
 import { stripChartContent } from '../../utils/artifactExtractor';
 import { getArtifactKind } from '../../utils/artifactKind';
 import { ChartArtifact } from '../../components/ChartArtifact';
+import { CodeHighlight } from '../../components/CodeHighlight';
 import { TableArtifact } from '../../components/TableArtifact';
 import { ArtifactPreviewCard } from '../../components/ArtifactPreviewCard';
 import type { SearchHit } from './types';
 import { sourceLabel, webHost } from './searchResults';
 import { ChartBlock, MermaidBlock } from './visual/VisualBlocks';
-import { SvgBlock } from './visual/SvgSketch';
-import { PlotBlock } from './visual/PlotView';
-import { SimulationBlock } from './visual/SimulationView';
-import { FigureBlock } from './visual/FigureBlock';
+import { DiagramBlock, FigureBlock, PlotBlock, SimulationBlock, SvgBlock } from './visual/lazyBlocks';
 import { DerivationBlock, SymbolsBlock } from './visual/MathBlocks';
-import { DiagramBlock } from './visual/DiagramBlock';
 import { SymbolLayer } from './visual/SymbolLayer';
 import { AnswerBlocksContext } from './visual/answerContext';
 import type { AnswerBlocks } from './visual/answerContext';
 import rehypeSymbols from './visual/rehypeSymbols';
+import { useKatexWhenNeeded } from './visual/katexRuntime';
 import { safeAnnotate } from './visual/symbolTex';
 import { KATEX_SYMBOL_OPTIONS, symbolsInMessage } from './visual/symbols';
 import { FocusFrame } from '../focus/FocusFrame';
@@ -159,7 +154,23 @@ export interface MessageContentRendererProps {
  * 4. Replace `[N]` / `【N†…】` with placeholders that survive markdown parsing.
  * 5. Render markdown; text nodes swap placeholders for citation pills.
  */
-export function MessageContentRenderer({
+export function MessageContentRenderer(props: MessageContentRendererProps) {
+  // Content shown for the first time with math waits (hidden, in its final
+  // place) for KaTeX's first load instead of showing the LaTeX source.
+  return (
+    <Suspense
+      fallback={(
+        <div aria-busy="true" style={{ visibility: 'hidden' }}>
+          <MessageContent {...props} mathEnabled={false} />
+        </div>
+      )}
+    >
+      <MessageContent {...props} mathEnabled />
+    </Suspense>
+  );
+}
+
+function MessageContent({
   content,
   hits,
   artifacts,
@@ -171,7 +182,8 @@ export function MessageContentRenderer({
   claims,
   flagUnknownCitations = false,
   print = false,
-}: MessageContentRendererProps) {
+  mathEnabled,
+}: MessageContentRendererProps & { mathEnabled: boolean }) {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
 
@@ -183,16 +195,6 @@ export function MessageContentRenderer({
   const symbolsRef = useRef(symbols);
   symbolsRef.current = symbols;
   const symbolsKey = symbols.map(s => `${s.symbol}\u0001${s.meaning}`).join('\u0002');
-  const rehypePlugins = useMemo(
-    () => [
-      [rehypeSymbols, { annotate: (tex: string, display: boolean) => safeAnnotate(tex, symbols, display) }],
-      [rehypeKatex, KATEX_SYMBOL_OPTIONS],
-      rehypeFocusEquations,
-    ],
-    // symbolsKey stands for the symbols' content.
-    [symbolsKey],
-  );
-
   const hitsByNumber = useMemo(() => {
     const map = new Map<number, SearchHit>();
     for (const hit of hits) map.set(hit.number, hit);
@@ -236,6 +238,21 @@ export function MessageContentRenderer({
     text = text.replace(/\x01CODE(\d+)\x01/g, (_, idx: string) => codeBlocks[Number(idx)] ?? '');
     return text.replace(/\n{3,}/g, '\n\n');
   }, [content, hasArtifacts, citations, claims]);
+
+  // KaTeX loads with the first math of the session (`$` is what remark-math
+  // reads as math; currency is escaped above). Until then math renders as code.
+  const katex = useKatexWhenNeeded(mathEnabled && preprocessed.includes('$'));
+  const rehypePlugins = useMemo(
+    () => katex
+      ? [
+          [rehypeSymbols, { annotate: (tex: string, display: boolean) => safeAnnotate(tex, symbols, display) }],
+          [katex.rehypeKatex, KATEX_SYMBOL_OPTIONS],
+          rehypeFocusEquations,
+        ]
+      : [],
+    // symbolsKey stands for the symbols' content.
+    [symbolsKey, katex],
+  );
 
   const renderWithCitations = useCallback((text: string): React.ReactNode => {
     if (hitsByNumber.size === 0 && !flagUnknownCitations && !(claims && claims.length > 0)) {
@@ -322,7 +339,7 @@ export function MessageContentRenderer({
       const lang = React.isValidElement<{ className?: string }>(child)
         ? /language-([\w-]+)/.exec(child.props.className || '')?.[1] ?? ''
         : '';
-      if (VISUAL_LANGUAGES.has(lang) || isMermaidLanguage(lang)) return <>{children}</>;
+      if (VISUAL_LANGUAGES.has(lang) || isMermaidLanguage(lang) || lang === 'math') return <>{children}</>;
       return <div className="my-4 rounded-xl overflow-hidden border border-shodh-border bg-shodh-surface">{children}</div>;
     },
     code: ({ children, className }) => {
@@ -344,14 +361,13 @@ export function MessageContentRenderer({
               <span className="font-mono text-[11px] uppercase tracking-wider text-shodh-text-muted">{match[1]}</span>
               <CodeCopyButton text={codeString} />
             </div>
-            <SyntaxHighlighter
-              style={isDark ? oneDark : oneLight}
+            <CodeHighlight
+              code={codeString}
               language={match[1]}
-              PreTag="div"
+              dark={isDark}
+              preTag="div"
               customStyle={{ margin: 0, padding: '14px 16px', fontSize: '13px', lineHeight: 1.6, borderRadius: 0, background: 'transparent' }}
-            >
-              {codeString}
-            </SyntaxHighlighter>
+            />
           </div>
         );
       }

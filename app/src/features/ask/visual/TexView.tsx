@@ -1,5 +1,6 @@
-import React, { useMemo, useRef } from 'react';
+import React, { Suspense, useMemo, useRef } from 'react';
 import { cn } from '../../../lib/utils';
+import { useKatex } from './katexRuntime';
 import { renderTex } from './symbolTex';
 import { SymbolLayer } from './SymbolLayer';
 import type { SymbolNote } from './symbols';
@@ -17,10 +18,23 @@ export interface TexViewProps {
 }
 
 /** LaTeX rendered by KaTeX, symbols annotated when meanings are given. */
-export function TexView({ tex, display = true, symbols = [], ownLayer = false, className }: TexViewProps) {
+export function TexView(props: TexViewProps) {
+  const { tex, display = true, className } = props;
+  const Tag = display ? 'div' : 'span';
+  // The LaTeX source in place while KaTeX loads (first math of the session).
+  const loading = <Tag className={cn('relative font-mono text-[0.9em] opacity-70', !display && 'inline-block', className)}>{tex}</Tag>;
+  return (
+    <Suspense fallback={loading}>
+      <KatexTex {...props} />
+    </Suspense>
+  );
+}
+
+function KatexTex({ tex, display = true, symbols = [], ownLayer = false, className }: TexViewProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const katex = useKatex(true);
   // KaTeX output (trust limited to the symbol attribute; see symbols.ts).
-  const html = useMemo(() => renderTex(tex, display, symbols), [tex, display, symbols]);
+  const html = useMemo(() => renderTex(tex, display, symbols), [tex, display, symbols, katex]);
   const Tag = display ? 'div' : 'span';
   return (
     <Tag ref={ref as React.Ref<HTMLDivElement & HTMLSpanElement>} className={cn('relative', !display && 'inline-block', className)}>

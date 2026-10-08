@@ -1,5 +1,4 @@
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { CodeHighlight } from './CodeHighlight';
 import type { Artifact } from './EnhancedArtifactPanel';
 import { getArtifactKind, getArtifactCodeLanguage } from '../utils/artifactKind';
 
@@ -64,9 +63,10 @@ export function CodeArtifact({
   return (
     <div className="h-full flex flex-col bg-white dark:bg-gray-900">
       <div className="flex-1 overflow-auto">
-        <SyntaxHighlighter
+        <CodeHighlight
+          code={artifact.content}
           language={getLanguage()}
-          style={isDark ? oneDark : oneLight}
+          dark={isDark}
           showLineNumbers
           wrapLongLines
           customStyle={{
@@ -77,9 +77,7 @@ export function CodeArtifact({
             lineHeight: '20px',
             fontFamily: "'Fira Code', 'Cascadia Code', Consolas, monospace",
           }}
-        >
-          {artifact.content}
-        </SyntaxHighlighter>
+        />
       </div>
     </div>
   );

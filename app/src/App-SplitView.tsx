@@ -21,6 +21,7 @@ const TasksView = lazy(() => import('./features/tasks/TasksView'));
 const ActivityView = lazy(() => import('./features/activity/ActivityView'));
 const SettingsView = lazy(() => import('./components/shell/SettingsView'));
 const WorkspacesView = lazy(() => import('./features/workspaces/WorkspacesView'));
+const LibraryView = lazy(() => import('./features/library/LibraryView').then(m => ({ default: m.LibraryView })));
 
 function safeStorage(): Storage | null {
   try {
@@ -31,7 +32,6 @@ function safeStorage(): Storage | null {
 }
 
 // Core components
-import { LibraryView } from './features/library/LibraryView';
 import { applyFolderSync, parseStoredSources, readIndexingResult, serializeSources, SOURCES_STORAGE_KEY, syncedFolders } from './features/library/sources';
 import type { FolderSyncOutcome, LibrarySource } from './features/library/sources';
 import type { FileNode } from './features/library/fileTree';

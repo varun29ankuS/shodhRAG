@@ -5,7 +5,7 @@
  * streamed token).
  */
 
-import katex from 'katex';
+import { loadedKatex } from './katexRuntime';
 import { annotateTex, katexTrust } from './symbols';
 import type { SymbolNote } from './symbols';
 
@@ -19,6 +19,9 @@ function symbolsKey(symbols: readonly SymbolNote[]): string {
 /** `tex` with the symbols wrapped for KaTeX, or `tex` itself when nothing matched or KaTeX refused. */
 export function safeAnnotate(tex: string, symbols: readonly SymbolNote[], display: boolean): string {
   if (symbols.length === 0) return tex;
+  // Callers render math after `useKatex(true)`; without KaTeX nothing can be checked.
+  const katex = loadedKatex()?.katex;
+  if (!katex) return tex;
   const key = `${display ? 'd' : 'i'}\u0002${symbolsKey(symbols)}\u0002${tex}`;
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
@@ -40,8 +43,18 @@ export function safeAnnotate(tex: string, symbols: readonly SymbolNote[], displa
   return out;
 }
 
-/** KaTeX HTML for `tex` with symbol annotations; errors render as KaTeX's red source. */
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/**
+ * KaTeX HTML for `tex` with symbol annotations; errors render as KaTeX's red
+ * source. Call after `useKatex(true)`; if KaTeX could not be loaded, the
+ * LaTeX source is shown as code.
+ */
 export function renderTex(tex: string, display: boolean, symbols: readonly SymbolNote[] = []): string {
+  const katex = loadedKatex()?.katex;
+  if (!katex) return `<code>${escapeHtml(tex)}</code>`;
   const source = safeAnnotate(tex, symbols, display);
   return katex.renderToString(source, { displayMode: display, throwOnError: false, trust: katexTrust });
 }

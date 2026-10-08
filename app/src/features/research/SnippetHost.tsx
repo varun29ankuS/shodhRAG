@@ -1,18 +1,24 @@
-import React, { useEffect, useId, useMemo, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useId, useMemo, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { FileText, Scissors, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useChatSession } from '../ask/ChatSessionContext';
 import { useFocus } from '../focus/FocusContext';
 import { isInFocusOverlay } from '../focus/focusDom';
-import { FileViewer } from '../library/FileViewer';
 import type { FileHighlight } from '../library/FileViewer';
 import { OPEN_SNIPPET_EVENT, SHOW_SOURCE_EVENT, onWindowEvent } from './snippetBus';
 import type { SourceBoxRequest } from './snippetBus';
-import { SnippetDetail } from './SnippetDetail';
 import { snippetLabel, snippetTarget } from './snippetModel';
 import type { Snippet } from './types';
 import { FOCUS_RING } from './ui';
+
+// The snippet card (KaTeX, tables) and the file viewer (pdf.js) load when a dialog first opens.
+const SnippetDetail = lazy(() => import('./SnippetDetail').then(m => ({ default: m.SnippetDetail })));
+const FileViewer = lazy(() => import('../library/FileViewer').then(m => ({ default: m.FileViewer })));
+
+function DialogLoading() {
+  return <p className="m-0 text-[13px] text-shodh-text-muted" role="status">Loading…</p>;
+}
 
 function isInToast(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest('[data-sonner-toaster]') !== null;
@@ -96,14 +102,16 @@ function SnippetDialog({ snippet, onClose, onChanged }: { snippet: Snippet | nul
           </header>
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-6 py-5 flex justify-center bg-shodh-raised-2">
             {snippet && (
-              <SnippetDetail
-                key={snippet.id}
-                snippet={snippet}
-                mode="dialog"
-                onChanged={next => {
-                  onChanged(next);
-                }}
-              />
+              <Suspense fallback={<DialogLoading />}>
+                <SnippetDetail
+                  key={snippet.id}
+                  snippet={snippet}
+                  mode="dialog"
+                  onChanged={next => {
+                    onChanged(next);
+                  }}
+                />
+              </Suspense>
             )}
           </div>
         </Dialog.Content>
@@ -141,7 +149,11 @@ function SourceBoxDialog({ request, onClose }: { request: SourceBoxRequest | nul
             </Dialog.Close>
           </header>
           <div className="flex-1 min-h-0 flex flex-col">
-            {request && <FileViewer key={`${request.filePath}:${request.page}`} path={request.filePath} highlight={highlight} />}
+            {request && (
+              <Suspense fallback={<DialogLoading />}>
+                <FileViewer key={`${request.filePath}:${request.page}`} path={request.filePath} highlight={highlight} />
+              </Suspense>
+            )}
           </div>
         </Dialog.Content>
       </Dialog.Portal>

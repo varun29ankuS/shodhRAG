@@ -339,7 +339,7 @@ interface AssistantMessageProps {
 /** How long an answer reached with "Go to message" stays highlighted. */
 const REVEAL_HIGHLIGHT_MS = 2_400;
 
-function AssistantMessage({
+function AssistantMessageView({
   conversationId,
   message,
   question,
@@ -497,12 +497,17 @@ function AssistantMessage({
   );
 }
 
+// Answers re-render only when their own props change: the composer's draft
+// lives in AskView, and re-rendering every answer (markdown, math, citations)
+// on each keystroke made typing lag in long conversations.
+const AssistantMessage = React.memo(AssistantMessageView);
+
 /**
  * A summary brought back from a side discussion: a card (not a plain
  * bubble) that renders its equations and diagrams and reopens the
  * discussion it came from.
  */
-function SideSummaryCard({
+const SideSummaryCard = React.memo(function SideSummaryCard({
   summary,
   content,
   canOpen,
@@ -511,7 +516,7 @@ function SideSummaryCard({
   summary: SideSummaryRef;
   content: string;
   canOpen: boolean;
-  onOpen: (trigger: HTMLElement) => void;
+  onOpen: (summary: SideSummaryRef, trigger: HTMLElement) => void;
 }) {
   return (
     <div className="ask-rise flex justify-end">
@@ -526,7 +531,7 @@ function SideSummaryCard({
           </span>
           <button
             type="button"
-            onClick={e => onOpen(e.currentTarget)}
+            onClick={e => onOpen(summary, e.currentTarget)}
             disabled={!canOpen}
             title={canOpen ? 'Reopen the side discussion' : 'This side discussion is no longer available'}
             className={cn(
@@ -544,7 +549,7 @@ function SideSummaryCard({
       </section>
     </div>
   );
-}
+});
 
 function SystemNotice({ message }: { message: ChatMessage }) {
   return (
@@ -1004,7 +1009,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
                     summary={summary}
                     content={message.content}
                     canOpen={summaryThreadExists(summary)}
-                    onOpen={trigger => openSummaryThread(summary, trigger)}
+                    onOpen={openSummaryThread}
                   />
                 );
               }

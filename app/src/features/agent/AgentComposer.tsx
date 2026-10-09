@@ -3,6 +3,11 @@ import { ArrowUp, CornerDownRight, Folder, ImagePlus, Mic, MicOff, Square } from
 import { cn } from '../../lib/utils';
 import { useVoiceInput } from '../ask/useVoiceInput';
 
+/** The engine grows the field with its content (no per-keystroke measuring). */
+const NATIVE_FIELD_SIZING = typeof CSS !== 'undefined' && CSS.supports('field-sizing', 'content');
+const MIN_COMPACT_HEIGHT = 32;
+const MIN_TEXTAREA_HEIGHT = 66;
+
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
 
@@ -96,8 +101,12 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
   const getText = useCallback(() => valueRef.current, []);
   const voice = useVoiceInput(getText, onChange);
 
-  // Grow with content up to a cap, then scroll.
+  // Grow with content up to a cap, then scroll. Where the engine sizes the
+  // field itself (CSS field-sizing) nothing is measured per keystroke;
+  // measuring (height auto, then scrollHeight) forces a layout of the whole
+  // page, which made typing lag in long conversations.
   useLayoutEffect(() => {
+    if (NATIVE_FIELD_SIZING) return;
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
@@ -164,10 +173,10 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
         autoFocus={autoFocus}
         aria-describedby={blockedReason ? blockedId : undefined}
         className={cn(
-          'block w-full resize-none border-0 bg-transparent text-shodh-text placeholder:text-shodh-text-faint outline-none focus:outline-none scrollbar-thin',
+          'block w-full resize-none [field-sizing:content] border-0 bg-transparent text-shodh-text placeholder:text-shodh-text-faint outline-none focus:outline-none scrollbar-thin',
           compact ? 'px-3 pt-2.5 pb-0.5 text-[13.5px] leading-[1.45]' : 'px-[18px] pt-4 pb-1 text-[15px] leading-[1.5]',
         )}
-        style={{ maxHeight }}
+        style={NATIVE_FIELD_SIZING ? { maxHeight, minHeight: compact ? MIN_COMPACT_HEIGHT : MIN_TEXTAREA_HEIGHT } : { maxHeight }}
       />
       <div className={cn('flex flex-wrap items-center gap-x-1.5 gap-y-2 min-w-0', compact ? 'px-2 pt-1 pb-2' : 'px-2.5 pt-1.5 pb-2.5')}>
         {!compact && onPickImage && (

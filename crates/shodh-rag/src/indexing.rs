@@ -151,6 +151,7 @@ pub fn preview_folder(folder_path: &str) -> Result<FolderPreview, String> {
     for entry in WalkDir::new(&path)
         .max_depth(5)
         .into_iter()
+        .filter_entry(|e| !crate::folder_sync::is_hidden(e))
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
     {
@@ -315,6 +316,7 @@ pub async fn index_folder(
 
     for entry in WalkDir::new(&path)
         .into_iter()
+        .filter_entry(|e| !crate::folder_sync::is_hidden(e))
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
     {

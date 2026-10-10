@@ -168,7 +168,7 @@ async fn sync_once(app: &AppHandle, source: &FolderSourceRef) {
         return;
     }
     let rag = app.state::<RagState>().rag.clone();
-    let result = sync_folder(&source.path, &source.id, &state.store, &rag).await;
+    let result = sync_folder(&source.path, &source.id, &state.store, &rag, || false).await;
     if let Err(e) = &result {
         tracing::warn!(source_id = %source.id, error = %e, "folder sync failed");
     }

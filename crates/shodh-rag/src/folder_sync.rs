@@ -62,6 +62,12 @@ pub fn is_temporary_file(path: &Path) -> bool {
             .any(|suffix| name.ends_with(suffix))
 }
 
+/// Hidden entries below the folder (`.git`, `.claude`, `.env`): skipped with
+/// everything inside them. The folder itself is never treated as hidden.
+pub fn is_hidden(entry: &walkdir::DirEntry) -> bool {
+    entry.depth() > 0 && entry.file_name().to_string_lossy().starts_with('.')
+}
+
 /// Whether a file at `path` is one a folder source indexes.
 pub fn is_indexable(path: &Path) -> bool {
     !is_temporary_file(path)
@@ -76,6 +82,7 @@ pub fn is_indexable(path: &Path) -> bool {
 pub fn scan_folder(folder: &Path) -> BTreeMap<String, (PathBuf, FileStamp)> {
     WalkDir::new(folder)
         .into_iter()
+        .filter_entry(|e| !is_hidden(e))
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_file() && is_indexable(e.path()))
         .filter_map(|entry| {
@@ -115,6 +122,14 @@ pub fn plan(
     }
 }
 
+/// A manifest as saved, borrowing the sync's working state.
+#[derive(Serialize)]
+struct ManifestRef<'a> {
+    folder: &'a str,
+    files: &'a BTreeMap<String, FileStamp>,
+    failures: &'a BTreeMap<String, FileFailure>,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Manifest {
     folder: String,
@@ -148,7 +163,7 @@ impl ManifestStore {
         serde_json::from_str(&text).ok()
     }
 
-    fn save(&self, source_id: &str, manifest: &Manifest) -> Result<(), String> {
+    fn save(&self, source_id: &str, manifest: &ManifestRef<'_>) -> Result<(), String> {
         std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
         let path = self.path(source_id);
         let tmp = path.with_extension("json.tmp");
@@ -199,11 +214,14 @@ async fn known_from_index(
 
 /// Bring the index of `source_id` in step with `folder`. The folder must
 /// exist: a folder that is missing (an unplugged drive) changes nothing.
+/// `stop` is asked before each file; when it says so the sync ends early with
+/// its progress saved, and the next sync continues from there.
 pub async fn sync_folder(
     folder: &str,
     source_id: &str,
     store: &ManifestStore,
     rag: &RwLock<RAGEngine>,
+    stop: impl Fn() -> bool,
 ) -> Result<SyncReport, String> {
     if !rag.read().await.has_search_models() {
         return Err(SearchModelsMissing.to_string());
@@ -234,6 +252,19 @@ pub async fn sync_folder(
         .collect();
 
     failures.retain(|key, _| on_disk.contains_key(key));
+    let folder_name = root.display().to_string();
+    // Progress is saved after every file, so a sync that is interrupted (the
+    // app closed, a crash) resumes where it stopped instead of starting over.
+    let save = |files: &BTreeMap<String, FileStamp>, failures: &BTreeMap<String, FileFailure>| {
+        store.save(
+            source_id,
+            &ManifestRef {
+                folder: &folder_name,
+                files,
+                failures,
+            },
+        )
+    };
     for key in &plan.remove {
         let deleted = rag
             .write()
@@ -245,8 +276,12 @@ pub async fn sync_folder(
         if deleted > 0 {
             report.removed += 1;
         }
+        save(&files, &failures)?;
     }
     for path in &plan.index {
+        if stop() {
+            break;
+        }
         let key = normalize_source_path(path);
         match crate::indexing::process_file_with_options(path, source_id, rag).await {
             Ok(_) => {
@@ -262,16 +297,10 @@ pub async fn sync_folder(
         if let Some((_, stamp)) = on_disk.get(&key) {
             files.insert(key, *stamp);
         }
+        save(&files, &failures)?;
     }
     report.failures = failures.values().cloned().collect();
-    store.save(
-        source_id,
-        &Manifest {
-            folder: root.display().to_string(),
-            files,
-            failures,
-        },
-    )?;
+    save(&files, &failures)?;
     if report.indexed + report.removed > 0 {
         tracing::info!(
             source_id,
@@ -439,7 +468,7 @@ mod tests {
             indexed(&rag, "s1").await.keys().collect::<Vec<_>>(),
             ["lease.txt", "parking.md"]
         );
-        let first = sync_folder(&folder_text, "s1", &store, &rag)
+        let first = sync_folder(&folder_text, "s1", &store, &rag, || false)
             .await
             .expect("sync");
         assert_eq!(
@@ -467,7 +496,7 @@ mod tests {
         )
         .expect("rename");
         std::fs::write(folder.join("~$rules.docx"), "lock").expect("lock file");
-        let second = sync_folder(&folder_text, "s1", &store, &rag)
+        let second = sync_folder(&folder_text, "s1", &store, &rag, || false)
             .await
             .expect("sync");
         assert_eq!(second.indexed, 3, "{second:?}");
@@ -482,7 +511,7 @@ mod tests {
         assert!(!lease.iter().any(|t| t.contains("sixty")), "{lease:?}");
 
         // Unchanged: nothing is indexed again.
-        let third = sync_folder(&folder_text, "s1", &store, &rag)
+        let third = sync_folder(&folder_text, "s1", &store, &rag, || false)
             .await
             .expect("sync");
         assert_eq!((third.indexed, third.removed), (0, 0));
@@ -490,7 +519,7 @@ mod tests {
         // A file that cannot be indexed is reported, and tried again only
         // once it changes.
         std::fs::write(folder.join("broken.pdf"), "not a pdf").expect("broken");
-        let broken = sync_folder(&folder_text, "s1", &store, &rag)
+        let broken = sync_folder(&folder_text, "s1", &store, &rag, || false)
             .await
             .expect("sync");
         assert_eq!(
@@ -499,7 +528,7 @@ mod tests {
             "{broken:?}"
         );
         assert!(broken.failures[0].file.ends_with("broken.pdf"));
-        let again = sync_folder(&folder_text, "s1", &store, &rag)
+        let again = sync_folder(&folder_text, "s1", &store, &rag, || false)
             .await
             .expect("sync");
         assert_eq!(again.failures, broken.failures);
@@ -508,7 +537,7 @@ mod tests {
         // Deleted.
         std::fs::remove_file(folder.join("rules.txt")).expect("delete");
         std::fs::remove_file(folder.join("broken.pdf")).expect("delete");
-        let fourth = sync_folder(&folder_text, "s1", &store, &rag)
+        let fourth = sync_folder(&folder_text, "s1", &store, &rag, || false)
             .await
             .expect("sync");
         assert_eq!((fourth.indexed, fourth.removed), (0, 1));
@@ -520,9 +549,109 @@ mod tests {
 
         // A missing folder (an unplugged drive) removes nothing.
         let gone = dir.path().join("unplugged");
-        assert!(sync_folder(&gone.display().to_string(), "s1", &store, &rag)
-            .await
-            .is_err());
+        assert!(
+            sync_folder(&gone.display().to_string(), "s1", &store, &rag, || false)
+                .await
+                .is_err()
+        );
         assert_eq!(indexed(&rag, "s1").await.len(), 2);
+    }
+
+    const PASSAGE: &str = "Quiet hours begin at ten in the evening and end at seven in the morning; parties need a week of notice to the neighbours and the building manager.";
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hidden_folders_and_files_are_skipped_and_dropped() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rag = engine(dir.path()).await;
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let folder = dir.path().join("docs");
+        std::fs::create_dir_all(folder.join(".claude")).expect("hidden dir");
+        std::fs::create_dir_all(folder.join(".git").join("logs")).expect("hidden dir");
+        std::fs::write(folder.join("rules.txt"), PASSAGE).expect("file");
+        std::fs::write(folder.join(".claude").join("notes.md"), PASSAGE).expect("hidden file");
+        std::fs::write(folder.join(".git").join("logs").join("head.txt"), PASSAGE)
+            .expect("hidden file");
+        std::fs::write(folder.join(".draft.txt"), PASSAGE).expect("hidden file");
+        let folder_text = folder.display().to_string();
+
+        assert_eq!(scan_folder(&canonical_path(&folder)).len(), 1);
+        let report = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!((report.indexed, report.files), (1, 1));
+        assert_eq!(
+            indexed(&rag, "s1").await.keys().collect::<Vec<_>>(),
+            ["rules.txt"]
+        );
+
+        // A hidden file indexed before hidden entries were skipped is removed.
+        crate::indexing::process_file_with_options(
+            &folder.join(".claude").join("notes.md"),
+            "s1",
+            &rag,
+        )
+        .await
+        .expect("indexed");
+        let mut manifest = store.load("s1").expect("manifest");
+        let hidden_key =
+            normalize_source_path(&canonical_path(&folder.join(".claude").join("notes.md")));
+        manifest.files.insert(
+            hidden_key,
+            FileStamp {
+                modified_ms: 1,
+                size: 1,
+            },
+        );
+        store
+            .save(
+                "s1",
+                &ManifestRef {
+                    folder: &manifest.folder,
+                    files: &manifest.files,
+                    failures: &manifest.failures,
+                },
+            )
+            .expect("save");
+        let again = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!((again.indexed, again.removed), (0, 1));
+        assert_eq!(
+            indexed(&rag, "s1").await.keys().collect::<Vec<_>>(),
+            ["rules.txt"]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_interrupted_sync_resumes_where_it_stopped() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rag = engine(dir.path()).await;
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let folder = dir.path().join("docs");
+        std::fs::create_dir_all(&folder).expect("folder");
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(folder.join(name), format!("{name}: {PASSAGE}")).expect("file");
+        }
+        let folder_text = folder.display().to_string();
+
+        // Stopped after the first file: that file's progress is kept.
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let stop_after_one = || asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 1;
+        let partial = sync_folder(&folder_text, "s1", &store, &rag, stop_after_one)
+            .await
+            .expect("sync");
+        assert_eq!((partial.indexed, partial.files), (1, 3));
+        assert_eq!(indexed(&rag, "s1").await.len(), 1);
+
+        // The next sync indexes only what is left, then nothing.
+        let rest = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!(rest.indexed, 2);
+        assert_eq!(indexed(&rag, "s1").await.len(), 3);
+        let settled = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!((settled.indexed, settled.removed), (0, 0));
     }
 }

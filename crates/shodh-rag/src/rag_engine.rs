@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::config::RAGConfig;
 use crate::embeddings::e5::{E5Config, E5Embeddings};
 use crate::embeddings::{EmbeddingModel, SearchModelsMissing};
+use crate::harness::web::relevance::sigmoid;
 use crate::lazy_model::LazyModel;
 use crate::processing::chunker::{ContextualChunkResult, TextChunker};
 use crate::processing::parser::{
@@ -1420,20 +1421,8 @@ impl RAGEngine {
 
                 match reranker.rerank(query, &candidates, candidates.len()) {
                     Ok(reranked) => {
-                        let rerank_scores: HashMap<String, f32> = reranked.into_iter().collect();
-
-                        // Update scores where reranking succeeded; keep original score
-                        // for any candidates the cross-encoder couldn't tokenize.
-                        for result in &mut results {
-                            if let Some(&new_score) = rerank_scores.get(&result.id.to_string()) {
-                                result.score = new_score;
-                            }
-                        }
-                        results.sort_by(|a, b| {
-                            b.score
-                                .partial_cmp(&a.score)
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        });
+                        let logits: HashMap<String, f32> = reranked.into_iter().collect();
+                        Self::apply_rerank_scores(&mut results, &logits);
                         // The cross-encoder replaced every score; fuse the graph's order
                         // again so its vote survives (scores keep their scale).
                         if let Some(ranks) = graph_ranks {
@@ -1894,13 +1883,38 @@ impl RAGEngine {
         *results = head;
     }
 
-    /// Hard cap on results per source file to guarantee diversity across documents.
-    /// After scoring and MMR, retain at most `max_per_source` chunks from any single file.
-    /// Maximal Marginal Relevance — diminishing returns per source file.
-    /// Maximal Marginal Relevance — diminishing returns per source file.
-    /// Each additional chunk from the same source gets score *= lambda^count.
-    /// This naturally balances depth (multiple chunks from one file) vs diversity
-    /// (spreading across files) without any hard cap.
+    /// Replaces each result's score with the cross-encoder's relevance and sorts
+    /// by it. Candidates the cross-encoder could not tokenize keep their fused
+    /// score.
+    ///
+    /// The cross-encoder returns logits: unbounded, and negative for most
+    /// passages that do not answer the query. They are mapped through the
+    /// sigmoid to a relevance in 0..1 (the order is unchanged), the same range
+    /// as the fused scores, so that [`Self::apply_mmr_diversity`]'s
+    /// multiplicative decay lowers a repeated source's score. Applied to a
+    /// negative logit the decay raised it instead, by more for each further
+    /// chunk of the same file, and a file's weakest chunks overtook the best
+    /// passages of every other file.
+    fn apply_rerank_scores(results: &mut [ComprehensiveResult], logits: &HashMap<String, f32>) {
+        for result in results.iter_mut() {
+            if let Some(&logit) = logits.get(&result.id.to_string()) {
+                result.score = sigmoid(logit);
+            }
+        }
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+
+    /// Diminishing returns per source file: each further chunk of a file, in
+    /// score order, gets `score *= lambda^count` (count = chunks of that file
+    /// already seen), then the results are re-sorted. This balances depth
+    /// (several chunks of one file) against spreading across files without a
+    /// hard cap. Scores must be non-negative, as fused scores and the
+    /// cross-encoder relevance from [`Self::apply_rerank_scores`] are; on a
+    /// negative score the decay would raise it.
     fn apply_mmr_diversity(results: &mut [ComprehensiveResult], lambda: f32) {
         let mut source_seen: HashMap<String, u32> = HashMap::new();
         for result in results.iter_mut() {
@@ -2020,6 +2034,85 @@ mod page_metadata_tests {
             snippet: unit.to_string(),
             source_index: "hybrid".to_string(),
         }
+    }
+
+    fn chunk_of(source: &str, chunk_index: u32, fused: f32) -> ComprehensiveResult {
+        let mut metadata = HashMap::new();
+        metadata.insert("source_file".to_string(), source.to_string());
+        metadata.insert("chunk_index".to_string(), chunk_index.to_string());
+        ComprehensiveResult {
+            id: Uuid::new_v4(),
+            score: fused,
+            metadata,
+            citation: Citation::default(),
+            snippet: format!("{source} chunk {chunk_index}"),
+            source_index: "hybrid".to_string(),
+        }
+    }
+
+    #[test]
+    fn diversity_after_reranking_never_lifts_a_files_weak_chunks() {
+        // Cross-encoder logits observed for "How large is the security deposit
+        // under the Saffron Estates lease?": the lease's title chunk, then its
+        // rent-and-deposit chunk (the answer), then chunks that do not answer
+        // the question, most of them from one invoice.
+        let scored = [
+            ("lease.pdf", 0, 2.4448),
+            ("lease.pdf", 1, -3.8898),
+            ("invoice.pdf", 5, -10.4067),
+            ("lease.pdf", 2, -10.6107),
+            ("invoice.pdf", 3, -10.6670),
+            ("invoice.pdf", 6, -10.7457),
+            ("invoice.pdf", 4, -10.7980),
+            ("study.md", 1, -11.1144),
+            ("invoice.pdf", 2, -11.3587),
+            ("invoice.pdf", 0, -11.3590),
+            ("invoice.pdf", 1, -11.4041),
+        ];
+        // Fused order differs from the cross-encoder's, as in the real search.
+        let mut results: Vec<ComprehensiveResult> = scored
+            .iter()
+            .enumerate()
+            .map(|(i, (source, chunk, _))| chunk_of(source, *chunk, 1.0 - 0.05 * i as f32))
+            .rev()
+            .collect();
+        let logits: HashMap<String, f32> = results
+            .iter()
+            .zip(scored.iter().rev())
+            .map(|(r, (_, _, logit))| (r.id.to_string(), *logit))
+            .collect();
+
+        RAGEngine::apply_rerank_scores(&mut results, &logits);
+        let relevance: HashMap<Uuid, f32> = results.iter().map(|r| (r.id, r.score)).collect();
+
+        RAGEngine::apply_mmr_diversity(&mut results, 0.5);
+        let order: Vec<(&str, &str)> = results
+            .iter()
+            .map(|r| {
+                (
+                    r.metadata["source_file"].as_str(),
+                    r.metadata["chunk_index"].as_str(),
+                )
+            })
+            .collect();
+
+        // The answer stays right below the title chunk of the same lease; the
+        // invoice's repeated chunks do not climb over it.
+        assert_eq!(order[..2], [("lease.pdf", "0"), ("lease.pdf", "1")]);
+        assert_eq!(order[2], ("invoice.pdf", "5"));
+        // Diversity only ever lowers a score.
+        for r in &results {
+            assert!(r.score <= relevance[&r.id], "{:?} rose", r.metadata);
+        }
+        // Within a file, the cross-encoder's order is kept.
+        let invoice: Vec<&str> = order
+            .iter()
+            .filter(|(s, _)| *s == "invoice.pdf")
+            .map(|(_, c)| *c)
+            .collect();
+        assert_eq!(invoice, ["5", "3", "6", "4", "2", "0", "1"]);
+        // Relevance has the fused scores' range.
+        assert!(relevance.values().all(|s| (0.0..=1.0).contains(s)));
     }
 
     #[test]

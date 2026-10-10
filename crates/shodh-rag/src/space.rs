@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use uuid::Uuid;
 
 /// Space structure representing a knowledge space
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,61 +135,6 @@ impl SpaceManager {
         Ok(())
     }
 
-    pub fn create_space(&self, name: String, emoji: String) -> Result<Space, String> {
-        let mut spaces = self.spaces.lock().map_err(|e| e.to_string())?;
-
-        if spaces.iter().any(|s| s.name == name) {
-            return Err(format!("A space with the name '{}' already exists", name));
-        }
-
-        let space = Space {
-            id: Uuid::new_v4().to_string(),
-            name: name.clone(),
-            emoji: emoji.clone(),
-            document_count: 0,
-            last_active: Utc::now().to_rfc3339(),
-            is_shared: false,
-            new_insights: 0,
-            folder_path: None,
-            watching_changes: false,
-            documents: Vec::new(),
-            metadata: HashMap::new(),
-        };
-
-        spaces.push(space.clone());
-        drop(spaces);
-
-        self.save_spaces()?;
-        Ok(space)
-    }
-
-    pub fn delete_space(&self, space_id: &str) -> Result<(), String> {
-        let mut spaces = self.spaces.lock().map_err(|e| e.to_string())?;
-
-        let index = spaces
-            .iter()
-            .position(|s| s.id == space_id)
-            .ok_or_else(|| "Space not found".to_string())?;
-
-        spaces.remove(index);
-        drop(spaces);
-
-        let mut space_docs = self.space_documents.lock().map_err(|e| e.to_string())?;
-        let mut doc_spaces = self.document_spaces.lock().map_err(|e| e.to_string())?;
-
-        if let Some(doc_ids) = space_docs.remove(space_id) {
-            for doc_id in doc_ids {
-                doc_spaces.remove(&doc_id);
-            }
-        }
-
-        drop(space_docs);
-        drop(doc_spaces);
-
-        self.save_spaces()?;
-        Ok(())
-    }
-
     pub fn clear_all_spaces(&self) -> Result<(), String> {
         let mut spaces = self.spaces.lock().map_err(|e| e.to_string())?;
         let mut space_docs = self.space_documents.lock().map_err(|e| e.to_string())?;
@@ -232,42 +176,6 @@ impl SpaceManager {
         Ok(())
     }
 
-    pub fn rename_space(&self, space_id: &str, new_name: String) -> Result<(), String> {
-        let mut spaces = self.spaces.lock().map_err(|e| e.to_string())?;
-
-        let space = spaces
-            .iter_mut()
-            .find(|s| s.id == space_id)
-            .ok_or_else(|| "Space not found".to_string())?;
-
-        space.name = new_name;
-        space.last_active = Utc::now().to_rfc3339();
-
-        drop(spaces);
-        self.save_spaces()?;
-        Ok(())
-    }
-
-    pub fn update_space_folder(
-        &self,
-        space_id: &str,
-        folder_path: Option<String>,
-    ) -> Result<(), String> {
-        let mut spaces = self.spaces.lock().map_err(|e| e.to_string())?;
-
-        let space = spaces
-            .iter_mut()
-            .find(|s| s.id == space_id)
-            .ok_or_else(|| "Space not found".to_string())?;
-
-        space.folder_path = folder_path;
-        space.last_active = Utc::now().to_rfc3339();
-
-        drop(spaces);
-        self.save_spaces()?;
-        Ok(())
-    }
-
     pub fn add_document_to_space(&self, space_id: &str, document_id: String) -> Result<(), String> {
         let mut spaces = self.spaces.lock().map_err(|e| e.to_string())?;
         let mut space_docs = self.space_documents.lock().map_err(|e| e.to_string())?;
@@ -299,83 +207,9 @@ impl SpaceManager {
         Ok(())
     }
 
-    pub fn remove_document_from_space(
-        &self,
-        space_id: &str,
-        document_id: &str,
-    ) -> Result<(), String> {
-        let mut spaces = self.spaces.lock().map_err(|e| e.to_string())?;
-        let mut space_docs = self.space_documents.lock().map_err(|e| e.to_string())?;
-        let mut doc_spaces = self.document_spaces.lock().map_err(|e| e.to_string())?;
-
-        let space = spaces
-            .iter_mut()
-            .find(|s| s.id == space_id)
-            .ok_or_else(|| "Space not found".to_string())?;
-
-        space.documents.retain(|id| id != document_id);
-        space.document_count = space.documents.len();
-        space.last_active = Utc::now().to_rfc3339();
-
-        if let Some(docs) = space_docs.get_mut(space_id) {
-            docs.retain(|id| id != document_id);
-        }
-
-        doc_spaces.remove(document_id);
-
-        drop(spaces);
-        drop(space_docs);
-        drop(doc_spaces);
-
-        self.save_spaces()?;
-        Ok(())
-    }
-
     pub fn get_spaces(&self) -> Result<Vec<Space>, String> {
         let spaces = self.spaces.lock().map_err(|e| e.to_string())?;
         Ok(spaces.clone())
-    }
-
-    pub fn get_space(&self, space_id: &str) -> Result<Space, String> {
-        let spaces = self.spaces.lock().map_err(|e| e.to_string())?;
-        spaces
-            .iter()
-            .find(|s| s.id == space_id)
-            .cloned()
-            .ok_or_else(|| "Space not found".to_string())
-    }
-
-    pub fn get_space_documents(&self, space_id: &str) -> Result<Vec<String>, String> {
-        let space_docs = self.space_documents.lock().map_err(|e| e.to_string())?;
-        Ok(space_docs.get(space_id).cloned().unwrap_or_default())
-    }
-
-    pub fn set_space_metadata(&self, space_id: &str, key: &str, value: &str) -> Result<(), String> {
-        let mut spaces = self.spaces.lock().map_err(|e| e.to_string())?;
-        let space = spaces
-            .iter_mut()
-            .find(|s| s.id == space_id)
-            .ok_or_else(|| format!("Space '{}' not found", space_id))?;
-        space.metadata.insert(key.to_string(), value.to_string());
-        drop(spaces);
-        self.save_spaces()
-    }
-
-    pub fn get_space_metadata(&self, space_id: &str, key: &str) -> Option<String> {
-        let spaces = self.spaces.lock().ok()?;
-        spaces
-            .iter()
-            .find(|s| s.id == space_id)
-            .and_then(|s| s.metadata.get(key).cloned())
-    }
-
-    pub fn remove_space_metadata(&self, space_id: &str, key: &str) -> Result<(), String> {
-        let mut spaces = self.spaces.lock().map_err(|e| e.to_string())?;
-        if let Some(space) = spaces.iter_mut().find(|s| s.id == space_id) {
-            space.metadata.remove(key);
-        }
-        drop(spaces);
-        self.save_spaces()
     }
 }
 

@@ -21,15 +21,6 @@ use crate::rag_engine::RAGEngine;
 // ── Types ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FolderPreview {
-    pub path: String,
-    pub total_files: usize,
-    pub files_by_type: HashMap<String, usize>,
-    pub estimated_time: f64,
-    pub files: Vec<FileInfo>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileInfo {
     pub path: String,
     pub name: String,
@@ -136,65 +127,6 @@ impl IndexingState {
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
-
-/// Preview a folder before indexing — returns file list + stats.
-pub fn preview_folder(folder_path: &str) -> Result<FolderPreview, String> {
-    let path = PathBuf::from(folder_path);
-
-    if !path.exists() || !path.is_dir() {
-        return Err("Invalid folder path".to_string());
-    }
-
-    let mut files = Vec::new();
-    let mut files_by_type: HashMap<String, usize> = HashMap::new();
-
-    for entry in WalkDir::new(&path)
-        .max_depth(5)
-        .into_iter()
-        .filter_entry(|e| !crate::folder_sync::is_hidden(e))
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-    {
-        let file_path = entry.path();
-        let extension = file_path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or("unknown")
-            .to_lowercase();
-
-        if is_supported_file_type(&extension) {
-            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-
-            files.push(FileInfo {
-                path: file_path.to_string_lossy().to_string(),
-                name: file_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown")
-                    .to_string(),
-                file_type: extension.clone(),
-                size,
-                selected: true,
-            });
-
-            *files_by_type.entry(extension).or_insert(0) += 1;
-        }
-
-        if files.len() >= 1000 {
-            break;
-        }
-    }
-
-    let estimated_time = files.len() as f64 * 0.5;
-
-    Ok(FolderPreview {
-        path: folder_path.to_string(),
-        total_files: files.len(),
-        files_by_type,
-        estimated_time,
-        files: files.into_iter().take(100).collect(),
-    })
-}
 
 /// Check if a path is a file or directory.
 pub fn check_path_type(path: &str) -> Result<(bool, bool), String> {

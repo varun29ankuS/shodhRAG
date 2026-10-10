@@ -45,14 +45,16 @@ test('paths inside the code folder are allowed, including files that do not exis
 test('paths that leave the code folder are blocked', () => {
   const { base, root, cleanup } = fixture();
   try {
+    // Backslash separators and UNC paths only mean something on Windows; on
+    // other systems a backslash is part of a file name inside the folder.
+    const windowsOnly = process.platform === 'win32' ? ['..\\secret.txt', '\\\\server\\share\\x'] : [];
     for (const p of [
       '../secret.txt',
-      '..\\secret.txt',
+      ...windowsOnly,
       path.join(base, 'secret.txt'),
       'src/../../secret.txt',
       '**/../../secret.txt',
       '~/.ssh/id_rsa',
-      '\\\\server\\share\\x',
       '//server/share/x',
       root + '-sibling/x',
     ]) {

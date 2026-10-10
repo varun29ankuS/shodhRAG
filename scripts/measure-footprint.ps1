@@ -407,8 +407,35 @@ function Wait-Window($App, [System.Collections.ArrayList]$Samples) {
         }
         Start-Sleep -Milliseconds 250
     }
+    Write-StartupDiagnostics $App $cdp
     Close-Cdp $cdp
     throw "No usable window within $StartupTimeoutSeconds s"
+}
+
+# What a launch that never showed a window left behind: the DevTools targets,
+# the page's state and the app's own output.
+function Write-StartupDiagnostics($App, $Cdp) {
+    Write-Host '--- Startup diagnostics ---'
+    try {
+        $targets = @(Invoke-RestMethod -Uri "http://127.0.0.1:$CdpPort/json/list" -TimeoutSec 2 -UseBasicParsing)
+        if ($targets.Count -eq 0) { Write-Host 'DevTools answered with no targets' }
+        foreach ($t in $targets) { Write-Host ("DevTools target: {0} {1}" -f $t.type, $t.url) }
+    } catch {
+        Write-Host "DevTools port $CdpPort did not answer: $($_.Exception.Message)"
+    }
+    if ($null -ne $Cdp) {
+        try {
+            $state = Invoke-PageScript $Cdp "JSON.stringify({ url: location.href, readyState: document.readyState, tauri: typeof window.__TAURI_INTERNALS__, marks: performance.getEntriesByType('mark').map(m => m.name), body: (document.body ? document.body.innerText : '').slice(0, 500) })"
+            Write-Host "Page: $state"
+        } catch {
+            Write-Host "Page did not answer: $($_.Exception.Message)"
+        }
+    }
+    foreach ($file in @(Get-ChildItem -LiteralPath $App.LogDir -Filter ("app-{0}*" -f $App.LaunchMs) -ErrorAction SilentlyContinue)) {
+        Write-Host "--- $($file.Name) (last 60 lines) ---"
+        Get-Content -LiteralPath $file.FullName -Tail 60 | ForEach-Object { Write-Host $_ }
+    }
+    Write-Host '--- End of startup diagnostics ---'
 }
 
 function Invoke-Idle($App, [System.Collections.ArrayList]$Samples, [string]$Phase) {

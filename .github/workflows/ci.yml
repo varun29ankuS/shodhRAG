@@ -72,6 +72,63 @@ jobs:
       - name: Library tests (shodh-rag-app)
         run: cargo test --package shodh-rag-app --lib
 
+      - name: Tests (shodh-eval)
+        run: cargo test --package shodh-eval
+
+  # Retrieval quality on the committed synthetic corpus (no LLM): a fresh
+  # index, every question searched, gated against the committed baseline.
+  # Retrieval is deterministic, so any drop fails; latency is reported only.
+  eval-retrieval:
+    name: Retrieval eval
+    runs-on: windows-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Protobuf compiler
+        run: choco install protoc -y
+
+      # Same cache as the footprint job: the pinned search models, keyed by
+      # the file that pins them.
+      - name: Cache search models
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/shodh-models
+          key: search-models-${{ hashFiles('crates/shodh-rag/src/embeddings/model_store.rs') }}
+
+      - name: Install search models
+        run: cargo run --package shodh-eval -- models --models "${{ runner.temp }}/shodh-models"
+
+      - name: Retrieval eval
+        run: >
+          cargo run --package shodh-eval -- retrieval
+          --corpus crates/shodh-eval/data/synthetic/corpus
+          --dataset crates/shodh-eval/data/synthetic/dataset.json
+          --models "${{ runner.temp }}/shodh-models"
+          --out eval-out
+
+      - name: Compare with baseline
+        run: >
+          cargo run --package shodh-eval -- compare
+          --baseline crates/shodh-eval/data/synthetic/baseline.json
+          --report eval-out/retrieval-report.json
+
+      - name: Upload eval report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-retrieval
+          path: |
+            eval-out/retrieval-report.json
+            eval-out/retrieval-summary.md
+          if-no-files-found: ignore
+
   frontend:
     name: Frontend Typecheck + Tests
     runs-on: ubuntu-latest

@@ -1,25 +1,18 @@
-mod analytics_commands;
 mod answer_check_commands;
 mod api_key_store;
 mod app_settings;
 mod audit_commands;
 mod background;
-mod chat_history;
 mod connect_commands;
 mod database_commands;
-mod diagnostic_commands;
-mod doc_gen_commands;
 mod document_upload_commands;
 mod enhanced_rag_commands;
 mod file_watcher;
 mod graph_commands;
-mod history_commands;
 mod image_upload_commands;
 mod inbox_commands;
-mod library_commands;
 mod llm_bootstrap;
 mod llm_commands;
-mod llm_response;
 mod mcp;
 mod mcp_commands;
 mod memory_commands;
@@ -30,18 +23,12 @@ mod profile;
 mod rag_commands;
 mod reminders;
 mod research_commands;
-mod search_history;
 mod search_models_commands;
-mod smart_templates;
 mod source_viewer_commands;
-mod space_commands;
 mod space_manager;
 mod storage_commands;
-mod system_commands;
 mod table_model_commands;
-mod template_commands;
 mod visual_commands;
-mod window_commands;
 mod workspace_commands;
 
 // Unified chat system modules
@@ -55,17 +42,13 @@ mod event_emitter;
 
 use tauri::Manager;
 
-use analytics_commands::AnalyticsState;
-use chat_history::ChatHistoryManager;
 use enhanced_rag_commands::IndexingState;
 use llm_commands::{ApiKeys, LLMState};
 use rag_commands::{AppPaths, RagState};
-use search_history::SearchHistoryManager;
 use shodh_rag::llm::LLMConfig;
 use space_manager::SpaceManager;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use template_commands::TemplateStore;
 use tokio::sync::RwLock as AsyncRwLock;
 
 /// Resolve the directory holding the search models (E5 + reranker).
@@ -420,7 +403,6 @@ pub fn run() {
 
             app.manage(RagState {
                 rag: rag_engine,
-                notes: Mutex::new(Vec::new()),
                 space_manager: Mutex::new(space_manager),
                 app_paths,
                 rag_initialized: Arc::new(AsyncRwLock::new(false)),
@@ -452,22 +434,12 @@ pub fn run() {
             app.manage(agent_session_commands::AgentSessions::default());
             agent_session_commands::start_idle_reaper(app.handle().clone());
             pdf_export::manage(app.handle());
-            let analytics_path = app_data_dir.join("analytics.json");
-            app.manage(AnalyticsState::load_or_default(&analytics_path));
-            app.manage(TemplateStore::default());
 
             // MCP servers and skills for the agent (Settings → Tools & connections).
             app.manage(mcp_commands::McpState(mcp::McpManager::new(
                 app_data_dir.clone(),
             )));
             app.manage(mcp::skills::SkillInstaller::default());
-
-            // Initialize search and chat history managers
-            let search_history_manager = SearchHistoryManager::new(&app_data_dir);
-            app.manage(Arc::new(Mutex::new(search_history_manager)));
-
-            let chat_history_manager = ChatHistoryManager::new(&app_data_dir);
-            app.manage(Arc::new(Mutex::new(chat_history_manager)));
 
             // Re-index existing calendar data into RAG engine (best-effort, background)
             {
@@ -517,24 +489,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // RAG commands
             rag_commands::initialize_rag,
-            rag_commands::check_initialization_status,
             rag_commands::search_documents,
-            rag_commands::add_document,
-            rag_commands::upload_file,
             rag_commands::get_statistics,
-            rag_commands::clear_all_data,
             rag_commands::delete_folder_source,
-            rag_commands::add_test_documents,
-            rag_commands::get_all_documents,
-            rag_commands::list_space_documents,
-            rag_commands::get_notes,
-            rag_commands::save_note,
-            rag_commands::update_note,
-            rag_commands::delete_note,
-            rag_commands::add_note_to_rag,
-            rag_commands::remove_note_from_rag,
-            rag_commands::link_folder,
-            rag_commands::get_folder_stats,
             rag_commands::get_source_files,
             // First-run search model setup
             search_models_commands::search_models_status,
@@ -544,59 +501,22 @@ pub fn run() {
             table_model_commands::table_model_status,
             table_model_commands::install_table_model,
             // Enhanced RAG commands
-            enhanced_rag_commands::preview_folder,
             enhanced_rag_commands::link_folder_enhanced,
             enhanced_rag_commands::index_single_file,
-            enhanced_rag_commands::test_indexing,
             enhanced_rag_commands::pause_indexing,
             enhanced_rag_commands::resume_indexing,
-            enhanced_rag_commands::cancel_indexing,
             enhanced_rag_commands::check_path_type,
-            // Window commands
+            // PDF export and printing
             pdf_export::export_pdf,
             pdf_export::print_job,
             pdf_export::print_job_ready,
-            window_commands::create_floating_widget,
-            window_commands::show_main_window,
-            window_commands::watch_folder,
-            window_commands::unwatch_folder,
-            window_commands::watch_global_folder,
-            window_commands::scan_global_folder,
-            // Analytics commands
-            rag_commands::get_daily_brief,
-            rag_commands::get_knowledge_map,
-            // Document access commands
-            rag_commands::open_original_document,
-            rag_commands::open_file_at_location,
-            rag_commands::read_original_file,
-            rag_commands::get_document_metadata,
-            rag_commands::get_document_full_text,
             // Citation tracking commands
             rag_commands::jump_to_source,
-            // Smart Templates commands
-            template_commands::extract_template,
-            template_commands::generate_from_template,
-            template_commands::list_templates,
-            template_commands::get_template,
-            template_commands::delete_template,
-            template_commands::update_template,
-            template_commands::preview_template,
             // File watcher commands
             file_watcher::sync_folder_sources,
             // LLM commands
-            llm_commands::switch_llm_mode,
-            llm_commands::llm_generate,
-            llm_commands::llm_generate_stream,
-            llm_commands::llm_generate_stream_with_rag,
             llm_commands::get_llm_info,
             llm_commands::set_api_key,
-            llm_commands::delete_api_key,
-            llm_commands::get_configured_providers,
-            llm_commands::update_llm_config,
-            llm_commands::browse_model_file,
-            llm_commands::set_custom_model_path,
-            llm_commands::get_custom_model_path,
-            llm_commands::test_llm_inference,
             model_picker_commands::model_picker_view,
             model_picker_commands::model_select,
             model_picker_commands::model_set_favourite,
@@ -610,93 +530,24 @@ pub fn run() {
             connect_commands::connect_sign_out,
             connect_commands::connect_save_key,
             connect_commands::connect_remove_key,
-            // Space commands
-            space_commands::create_space,
-            space_commands::get_spaces,
-            space_commands::add_document_to_space,
-            space_commands::search_in_space,
-            space_commands::search_global,
-            space_commands::delete_space_with_docs,
-            space_commands::get_space_documents,
-            space_commands::remove_document,
-            space_commands::set_space_system_prompt,
-            space_commands::get_space_system_prompt,
-            // History commands
-            history_commands::add_search_history,
-            history_commands::get_search_history,
-            history_commands::get_search_suggestions,
-            history_commands::clear_search_history,
-            history_commands::add_chat_message,
-            history_commands::get_chat_history,
-            history_commands::clear_chat_history,
-            history_commands::get_chat_sessions_summary,
-            history_commands::export_chat_history,
-            history_commands::search_with_history,
-            // Graph commands
-            // Document generation commands
-            doc_gen_commands::generate_document,
-            doc_gen_commands::generate_from_rag,
-            doc_gen_commands::generate_document_stream,
-            doc_gen_commands::get_available_formats,
-            doc_gen_commands::get_available_templates,
-            doc_gen_commands::generate_document_preview,
-            doc_gen_commands::get_source_documents,
-            doc_gen_commands::get_comparable_documents,
             // Database management commands
             database_commands::reset_database,
             database_commands::clear_all_documents,
-            database_commands::delete_space_permanently,
             database_commands::get_database_stats,
             database_commands::list_indexed_sources,
             database_commands::cleanup_orphaned_documents,
-            database_commands::save_backup_file,
-            database_commands::read_backup_file,
-            database_commands::restore_space_from_backup,
-            database_commands::list_backup_files,
-            database_commands::update_space_metadata,
-            // Diagnostic commands
-            diagnostic_commands::get_index_diagnostics,
-            diagnostic_commands::get_document_content,
-            diagnostic_commands::debug_rag_state,
-            // Analytics commands
-            analytics_commands::get_dashboard_data,
-            analytics_commands::track_query,
-            analytics_commands::track_query_error,
-            analytics_commands::track_indexing,
-            analytics_commands::get_performance_metrics,
-            analytics_commands::get_usage_metrics,
-            analytics_commands::get_quality_metrics,
             // Storage commands
-            storage_commands::get_storage_stats,
-            storage_commands::get_space_documents_detailed,
-            storage_commands::delete_documents_batch,
-            storage_commands::clear_space_documents,
             storage_commands::optimize_storage,
-            storage_commands::create_backup,
-            storage_commands::restore_backup,
-            // Context accumulator commands
-            // Document commands (in rag_commands.rs)
-            rag_commands::get_document_preview,
+            // Source viewer
             source_viewer_commands::get_source_file_info,
             source_viewer_commands::read_source_bytes,
             source_viewer_commands::read_source_text,
             source_viewer_commands::read_source_table,
             source_viewer_commands::get_pdf_info,
-            rag_commands::parse_llm_response,
             // Image upload commands
             image_upload_commands::read_clipboard_image,
             image_upload_commands::process_image_from_base64,
             image_upload_commands::process_image_from_file,
-            image_upload_commands::search_images,
-            // Form export commands
-            image_upload_commands::export_form_html,
-            image_upload_commands::export_form_json,
-            // System actions (OS integration)
-            system_commands::execute_file_action,
-            system_commands::execute_command_action,
-            system_commands::open_file_manager,
-            system_commands::get_system_information,
-            system_commands::get_running_processes,
             // Tools & connections: MCP servers, skills, the composer tool chip
             mcp_commands::tools_overview,
             mcp_commands::mcp_test_server,
@@ -743,8 +594,6 @@ pub fn run() {
             conversation_commands::delete_conversation,
             conversation_commands::rename_conversation,
             conversation_commands::pin_conversation,
-            // Library file browser
-            library_commands::list_directory,
             // App settings (preferences: user and agent; policy: user only)
             app_settings::get_app_settings,
             app_settings::update_app_preferences,

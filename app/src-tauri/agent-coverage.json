@@ -34,10 +34,7 @@
     "get_statistics": { "tool": "list_sources" },
     "get_database_stats": { "tool": "list_sources" },
     "list_indexed_sources": { "tool": "list_sources" },
-    "list_space_documents": { "tool": "list_sources" },
     "get_source_files": { "tools": ["list_sources", "list_directory"] },
-    "list_directory": { "tool": "list_directory" },
-    "link_folder": { "tool": "add_folder" },
     "link_folder_enhanced": { "tool": "add_folder" },
     "delete_folder_source": { "tool": "remove_source" },
 
@@ -145,7 +142,6 @@
     "set_agent_idle_minutes": { "excluded": "How long the agent runtime stays in memory is the user's call about their computer's resources (AGENT_DENIED: agent_idle_minutes)." },
     "set_start_with_windows": { "excluded": "Adding a program to Windows startup changes the user's system; only the user may do it (AGENT_DENIED: start_with_windows)." },
     "get_llm_info": { "tool": "get_settings" },
-    "switch_llm_mode": { "excluded": "Switching the model or provider changes who receives the user's documents; user-only." },
     "model_picker_view": { "excluded": "The model picker lists models and prices for the user to choose from; choosing the model is user-only, so the assistant has no use for the list." },
     "model_select": { "excluded": "Switching the model or provider changes who receives the user's documents and what it costs; user-only." },
     "model_set_favourite": { "excluded": "Starring models only arranges the user's own model picker." },
@@ -159,14 +155,7 @@
     "connect_sign_out": { "excluded": "Removes a connected account; user-only." },
     "connect_save_key": { "excluded": "API keys are secrets; the assistant never sees, sets or deletes them." },
     "connect_remove_key": { "excluded": "API keys are secrets; the assistant never sees, sets or deletes them." },
-    "update_llm_config": { "excluded": "Model and provider configuration changes who receives the user's documents; user-only." },
-    "test_llm_inference": { "excluded": "Tests the user's provider configuration (and spends their credits); part of model setup, which is user-only." },
-    "browse_model_file": { "excluded": "Opens a native file picker for choosing a local model; model setup is user-only." },
-    "set_custom_model_path": { "excluded": "Chooses the local model file; model setup is user-only." },
-    "get_custom_model_path": { "excluded": "Part of local model setup, which is user-only; get_settings reports the active model." },
-    "get_configured_providers": { "excluded": "Reveals which API keys exist; secrets and their metadata are withheld from the assistant." },
     "set_api_key": { "excluded": "API keys are secrets; the assistant never sees, sets or deletes them." },
-    "delete_api_key": { "excluded": "API keys are secrets; the assistant never sees, sets or deletes them." },
 
     "agent_start": { "excluded": "Starts the assistant's own session; the assistant cannot start, steer or stop runs." },
     "agent_send": { "excluded": "Sends the user's message to the assistant; the assistant cannot prompt itself." },
@@ -206,7 +195,6 @@
     "save_temp_file": { "excluded": "Stores a file the user dropped into the window before indexing; part of the user's upload flow." },
     "read_clipboard_image": { "excluded": "Reads the user's clipboard on paste; the assistant has no clipboard access by design." },
     "process_image_from_base64": { "excluded": "OCR of an image the user pasted; part of the user's paste flow." },
-    "process_image_from_file": { "excluded": "OCR of an image the user dropped; part of the user's upload flow." },
-    "get_search_history": { "excluded": "Command-palette recall of the user's past queries; past conversations are covered by search_conversations." }
+    "process_image_from_file": { "excluded": "OCR of an image the user dropped; part of the user's upload flow." }
   }
 }

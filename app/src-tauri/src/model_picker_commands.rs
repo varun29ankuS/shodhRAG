@@ -938,40 +938,6 @@ pub async fn apply_startup_choice(app: &AppHandle, environment: Option<ModelRef>
     }
 }
 
-/// Keep the picker in step with a switch made in the older model settings
-/// panel (`switch_llm_mode`): saved as the choice, or a session override
-/// when the environment sets the model.
-pub fn note_settings_switch(app: &AppHandle, mode: &LLMMode) {
-    let model = match mode {
-        LLMMode::External {
-            provider, model, ..
-        } => ProviderId::from_api(provider)
-            .map(|p| ModelRef::new(p, model.clone()))
-            .and_then(|m| m.validated().ok()),
-        _ => None,
-    };
-    let picker = app.state::<ModelPickerState>();
-    if let Some(env) = picker.environment() {
-        picker.set_session_override(model.filter(|m| *m != env));
-        return;
-    }
-    let Ok(dir) = data_dir(app) else {
-        return;
-    };
-    match SettingsStore::in_dir(&dir).update(|s| {
-        let mut prefs = std::mem::take(&mut s.models).sanitized();
-        if let Some(m) = &model {
-            prefs.remember(m);
-        }
-        prefs.chosen = model.clone();
-        s.models = prefs;
-        Ok(())
-    }) {
-        Ok((saved, _)) => broadcast(app, &saved),
-        Err(e) => tracing::warn!("Model choice not saved: {e}"),
-    }
-}
-
 /// The picker entry for an `ApiProvider` and model id (the environment's
 /// model). Not validated: an environment model with an unusable id must still
 /// take precedence over the saved choice (the agent then reports the bad id).

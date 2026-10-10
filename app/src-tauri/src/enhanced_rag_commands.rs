@@ -11,12 +11,7 @@ use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus};
 use tauri::{AppHandle, State};
 
 // Re-export backend types so existing callers don't break
-pub use shodh_rag::indexing::{FolderPreview, IndexingOptions, IndexingResult, IndexingState};
-
-#[tauri::command]
-pub async fn preview_folder(folder_path: String) -> Result<FolderPreview, String> {
-    shodh_rag::indexing::preview_folder(&folder_path)
-}
+pub use shodh_rag::indexing::{IndexingOptions, IndexingResult, IndexingState};
 
 #[tauri::command]
 pub async fn link_folder_enhanced(
@@ -106,11 +101,6 @@ pub async fn link_folder_enhanced(
 }
 
 #[tauri::command]
-pub async fn test_indexing() -> Result<String, String> {
-    Ok("Backend is responding".to_string())
-}
-
-#[tauri::command]
 pub async fn pause_indexing(indexing_state: State<'_, IndexingState>) -> Result<(), String> {
     indexing_state.pause();
     Ok(())
@@ -119,12 +109,6 @@ pub async fn pause_indexing(indexing_state: State<'_, IndexingState>) -> Result<
 #[tauri::command]
 pub async fn resume_indexing(indexing_state: State<'_, IndexingState>) -> Result<(), String> {
     indexing_state.resume();
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn cancel_indexing(indexing_state: State<'_, IndexingState>) -> Result<(), String> {
-    indexing_state.cancel();
     Ok(())
 }
 

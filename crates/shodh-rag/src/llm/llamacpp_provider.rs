@@ -362,16 +362,6 @@ impl LLMProvider for LlamaCppProvider {
         Ok(TokenStream::new(rx))
     }
 
-    async fn generate_with_context(
-        &self,
-        query: &str,
-        context: Vec<String>,
-        config: &GenerationConfig,
-    ) -> Result<String> {
-        let prompt = super::format_rag_prompt(query, &context, None);
-        self.generate(&prompt, config).await
-    }
-
     fn info(&self) -> ProviderInfo {
         ProviderInfo {
             name: format!("llama.cpp ({})", self.info.name),

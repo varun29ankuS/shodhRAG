@@ -53,11 +53,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Document generation libraries
-printpdf = "0.7"  # For PDF generation
 docx-rs = "0.4"   # For Word documents
 pulldown-cmark = { version = "0.13", default-features = false }
 regex = "1"
-rust_xlsxwriter = "0.60"  # For Excel files
 
 # Include our RAG system
 shodh-rag = { path = "../../crates/shodh-rag" }

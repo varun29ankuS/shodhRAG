@@ -10,7 +10,6 @@ authors = ["Roshera Team"]
 lancedb = "0.26"
 arrow-array = "57"
 arrow-schema = "57"
-arrow = { version = "57", features = ["prettyprint"] }
 
 # Full-text search
 tantivy = "0.22"
@@ -38,7 +37,6 @@ parking_lot = "0.12"
 tracing = "0.1"
 lru = "0.12"
 futures = "0.3"
-futures-util = "0.3"
 
 # LLM providers (llama.cpp GGUF, external APIs) and the search model downloader
 llama-cpp-2 = "0.1"

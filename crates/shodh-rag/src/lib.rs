@@ -21,7 +21,6 @@ pub mod space;
 pub mod statements;
 pub mod storage;
 pub mod table_refinement;
-pub mod templates;
 pub mod types;
 pub mod user_memory;
 pub mod visuals;
@@ -31,7 +30,6 @@ pub mod workspaces;
 pub mod agent;
 pub mod llm;
 pub mod rag;
-pub mod system;
 
 // Re-export primary types for convenience
 pub use config::RAGConfig;

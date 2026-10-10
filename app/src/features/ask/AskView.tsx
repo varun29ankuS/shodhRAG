@@ -585,17 +585,18 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
   // The composer floats over the end of the conversation; the conversation
   // keeps that much room below its last answer (the composer grows with a
   // wrapped toolbar, notices and long drafts), so nothing hides behind it.
-  const composerAreaRef = useRef<HTMLDivElement>(null);
+  // A callback ref: the composer mounts after the first render (while the
+  // conversation loads), so measuring starts whenever it appears.
+  const [composerArea, setComposerArea] = useState<HTMLDivElement | null>(null);
   const [composerSpace, setComposerSpace] = useState(COMPOSER_SPACE_FALLBACK);
   useLayoutEffect(() => {
-    const el = composerAreaRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const measure = () => setComposerSpace(Math.ceil(el.getBoundingClientRect().height) + COMPOSER_GAP);
+    if (!composerArea || typeof ResizeObserver === 'undefined') return;
+    const measure = () => setComposerSpace(Math.ceil(composerArea.getBoundingClientRect().height) + COMPOSER_GAP);
     measure();
     const observer = new ResizeObserver(measure);
-    observer.observe(el);
+    observer.observe(composerArea);
     return () => observer.disconnect();
-  }, []);
+  }, [composerArea]);
   const lastCountRef = useRef(0);
 
   // Start the agent runtime while the question is being typed (it is not
@@ -1069,7 +1070,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
         </div>
       </div>
 
-      <div ref={composerAreaRef} className="absolute left-0 right-0 bottom-0 px-7 pt-10 pb-[22px] bg-gradient-to-b from-transparent via-shodh-ground via-[38%] to-shodh-ground pointer-events-none">
+      <div ref={setComposerArea} className="absolute left-0 right-0 bottom-0 px-7 pt-10 pb-[22px] bg-gradient-to-b from-transparent via-shodh-ground via-[38%] to-shodh-ground pointer-events-none">
         <div className="max-w-[700px] mx-auto pointer-events-auto flex flex-col gap-2">
           <SearchSetupCard compact />
           {runtimeCard}

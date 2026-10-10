@@ -108,6 +108,8 @@ The graph therefore uses:
   - optional grounded LLM extraction, where the LLM may only link entities that already have IDs.
 - **Background, throttled, per-folder opt-in extraction.**
 
+Every extractor, label and edge type above is drawn from the ontology (section 6a). Extraction never invents a class or relation the ontology does not define. The ontology itself is a foundation that ships with records (M4) regardless of the graph's evaluation result.
+
 The graph ships only if multi-hop evaluation shows a gain.
 
 Sub-project 0 is a hard prerequisite, for two reasons:
@@ -284,6 +286,41 @@ Pause and resume work per source.
   `{ record_type, filters: [{field, op, value}], group_by?, aggregate: sum|count|min|max|avg, field? }`.
   It is compiled to parameterized SQL with the principal's ACL filter injected.
 - **Coverage reporting is mandatory.** Every aggregate result states how many records matched and how many documents in scope lacked the requested field. For example: "14 invoices dated Jul–Sep; 3 documents in that period had no recognizable total."
+
+## 6a. Ontology (foundation)
+
+**Decision (2026-10-03).** An explicit, versioned ontology is mandatory. It is the contract for every structured thing Shodh produces: record types, entity types, graph edges, entity pages, the agent's structured query tools and the evaluation gold labels. Untyped extraction ("entity soup") is not allowed anywhere.
+
+**What it is, and what it is not.**
+- It is a schema of **classes**, **properties** (datatype and object), **constraints** (domain, range, cardinality, value patterns, units) and **identity rules** (which properties make two mentions the same entity).
+- It is **not** an RDF/OWL reasoning runtime. Queries go through typed tools over LanceDB/SQLite tables, never through LLM-authored SPARQL or SQL. OWL is an interchange format: import and export only.
+
+**Format and storage.**
+- Authored as TOML (`ontology/*.toml`), human-readable and diffable, compiled at load into an in-memory model with validation errors that name the file and line.
+- Every ontology has an `id` and a semantic `version`. Records, entities and edges store the ontology version they were extracted under. A version bump that changes a class or property marks affected documents for re-extraction (a new generation, section 5), never a silent reinterpretation.
+- **Import/export:** OWL 2 (Turtle) export of the ontology, and Turtle export of extracted facts with W3C PROV-O provenance. Import of an OWL/Turtle ontology maps the supported subset (classes, subclass, datatype/object properties, domain/range, cardinality, labels) and reports every construct it skipped.
+
+**Layers.**
+1. **Core** (ships built in): Organization, Person, Document, Invoice, LineItem, Contract, Clause, Obligation, Payment, Address, TaxId (GSTIN, PAN), Amount (decimal + currency), Date/Period, Event, Task. Relations include issuedBy, billedTo, partyTo, signedBy, effectiveOn, expiresOn, renewsOn, amountOf, paidBy, references, supersedes.
+2. **Domain packs** (opt-in): Indian tax/GST, legal (contract clause types), finance. Aligned to public standards where they exist (schema.org, FIBO, LKIF), with the alignment declared as `equivalentTo` mappings so exports interoperate.
+3. **Workspace extensions:** a workspace may add classes and properties (for example `Shipment`, `consignee`). Extensions can only add; they cannot redefine core terms. The agent may *propose* an extension from conversation (`propose_ontology_change`, `write` tier); it takes effect only after the user approves the diff, and the change is audited (`ontology_change` event).
+
+**Facts are statements, not bare triples.** An extracted fact is an n-ary statement: `{ class, properties{...}, ontology_version, provenance }`, for example one Invoice with its number, date, parties, total and page span. Statements are addressable, which is what lets an answer cite "invoice 1043, p.1" rather than a loose edge.
+
+**Provenance on every statement (PROV-O shaped):** source document, generation, page and character span, extractor (rule / GLiNER2 / grounded-LLM) with its version, confidence, and extraction time. A statement without provenance is rejected at write time.
+
+**How the ontology is used.**
+- **Extraction:** deterministic extractors and GLiNER2 labels are generated from the ontology. For each chunk only the relevant slice of the ontology (classes whose cue terms or patterns match) is passed to any LLM step, which keeps prompts small and output constrained. Output is validated against domain, range, cardinality and patterns; violations are dropped and counted, never coerced.
+- **Records (M4):** `RecordExtractor` targets ontology classes; `query_records` specs are validated against the ontology (unknown `record_type` or `field` is an error that lists valid ones). Coverage reporting counts documents in scope that lack a required property.
+- **Entity resolution:** identity rules from the ontology (a GSTIN identifies an Organization; alias and defined-term rules for names) decide merges. Every merge is reversible and recorded with its reason.
+- **Agent tools:** `describe_ontology` (read), `find_entities(class, filters)` (read), `get_entity(id)` (read; properties, statements, provenance), `query_records` (read). The capability manifest lists the classes the active workspace defines.
+- **UX:** entity pages are rendered from the ontology (properties in declared order, relations grouped by type, each value cited). Settings gains an Ontology page: browse classes, see counts and coverage, review and approve proposed extensions, export.
+
+**Evaluation.** Gold labels for M1 records and graph tasks are written against the core ontology. Per-class precision/recall and constraint-violation rates are reported; an ontology version change re-runs the affected evaluation.
+
+**Risks.**
+- *Ontology design cost.* Mitigated by a small core, standard-aligned domain packs, and agent-proposed, user-approved extensions instead of hand-authoring OWL.
+- *Over-constraining real documents.* Mitigated by counting dropped violations per class; a high drop rate is a signal to revise the ontology, surfaced on the Ontology page.
 
 ## 7. Answering
 
@@ -650,7 +687,7 @@ Each milestone is one or more PRs. Each ships independently with CI green, execu
 | M1.5 | UI foundation | Visual direction, approved via mockups. Steps: split `App-SplitView.tsx` (4,315 lines) into screens with a state store; design tokens and component library; lazy-load heavy libraries (Monaco, Mermaid, three.js, Recharts); Playwright harness with UX-budget baseline; frontend typecheck and lint in CI; Sentry made opt-in; navigation set to Ask / Library / Calendar (events + tasks unified) / Graph (designed, shipped in sub-project 3) / Settings; Generate, Analytics, Agents and Integrations removed; mockups for First run, Ask, Library, Calendar and Graph approved before implementation |
 | M2 | Store, inventory and sync | SQLite (SQLCipher plus keychain key), `sources`/`files`, reconciler, watcher, job queue, generations, failure panel, progress. Uses the current parser and chunker |
 | M3 | Parser bake-off, chunker, citations | docling.rs vs xberg ADR, `DocumentParser`, token-based structure-aware chunker, page and span citations, citation preview UI |
-| M4 | Records | `RecordExtractor` v1, records table, `query_records` with coverage reporting |
+| M4 | Ontology and records | Core ontology (TOML, versioned, validated), OWL/Turtle export, `RecordExtractor` v1 targeting ontology classes, statements with provenance, records table, `query_records` validated against the ontology with coverage reporting, `describe_ontology` tool, Ontology settings page |
 | M5 | Harness gate | omp spike against the acceptance gate (section 7.1). ADR with the decision. Loopback local model endpoint. llama.cpp truncation fix |
 | M6 | Harness integration and profiles | `AgentHarness`, `OmpHarness` (or the gated fallback), `DirectHarness`, tool registry with schema validation and risk tiers, agent profiles, budgets, cancel, streaming tool steps, citation verifier |
 | M7 | Authz, audit, conversations | `Principal`, source-level ACL filters in all stores, hash-chained audit with verify and export, conversations in SQLite, health page |

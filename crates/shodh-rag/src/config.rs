@@ -23,6 +23,14 @@ pub struct ChunkingConfig {
     pub chunk_size: usize,
     pub chunk_overlap: usize,
     pub min_chunk_size: usize,
+    /// Token budget for structure-aware chunks (PDF, LaTeX, Markdown),
+    /// counted with the embedder's tokenizer, context prefix excluded.
+    #[serde(default = "default_max_chunk_tokens")]
+    pub max_tokens: usize,
+}
+
+fn default_max_chunk_tokens() -> usize {
+    crate::processing::structure_chunker::DEFAULT_CHUNK_TOKENS
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +114,7 @@ impl Default for RAGConfig {
                 chunk_size: 1750,
                 chunk_overlap: 200,
                 min_chunk_size: 100,
+                max_tokens: default_max_chunk_tokens(),
             },
             search: SearchConfig {
                 default_k: 10,

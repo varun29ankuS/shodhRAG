@@ -1,47 +1,78 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import React, { Suspense, lazy, useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
-import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 
 // UI Components
 import { Button } from "./components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
 import { Badge } from "./components/ui/badge";
 import { Input } from "./components/ui/input";
 import { Progress } from "./components/ui/progress";
 import {
-  MessageSquare, Settings, Bot, FolderOpen, FileText, Code, Terminal, Plus, Check, X, Loader2, Pencil, Download, ChevronDown, ChevronUp, Database, FileCode, BookOpen, FileSpreadsheet, Presentation, Trash2, Braces, Coffee
+  MessageSquare, Settings, Bot, FolderOpen, FileText, Code, Terminal, Plus, Check, X, Loader2, Pencil, Download, ChevronDown, ChevronUp, Database, FileCode, BookOpen, FileSpreadsheet, Presentation, Trash2, Braces, Coffee,
+  FolderPlus, PanelLeftOpen, PanelLeftClose, Sun, Moon, Bug, Search, Sparkles, AlertTriangle, RotateCcw, Layers, MessageCircle, Bell
 } from 'lucide-react';
 
+const IS_MAC = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
+
+// Views opened less often load on first use, keeping them out of the startup bundle.
+const TasksView = lazy(() => import('./features/tasks/TasksView'));
+const ActivityView = lazy(() => import('./features/activity/ActivityView'));
+const SettingsView = lazy(() => import('./components/shell/SettingsView'));
+const WorkspacesView = lazy(() => import('./features/workspaces/WorkspacesView'));
+const LibraryView = lazy(() => import('./features/library/LibraryView').then(m => ({ default: m.LibraryView })));
+
+function safeStorage(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
 // Core components
-import { SearchSetupCard } from './features/setup/SearchSetupCard';
+import { applyFolderSync, parseStoredSources, readIndexingResult, serializeSources, SOURCES_STORAGE_KEY, syncedFolders } from './features/library/sources';
+import type { FolderSyncOutcome, LibrarySource } from './features/library/sources';
+import type { FileNode } from './features/library/fileTree';
 import { errorMessage as searchErrorMessage } from './features/setup/searchModels';
 import Sidebar from './components/shell/Sidebar';
-import SettingsView from './components/shell/SettingsView';
 import { ConversationDock } from './components/shell/ConversationDock';
+import { MODEL_CHANGED_EVENT } from './features/modelPicker/modelApi';
 import { normalizeViewTab, VIEW_TAB_LABELS } from './lib/viewTabs';
+import { isBlankConversation } from './lib/conversationGroups';
 import type { ViewTab } from './lib/viewTabs';
 import { useTheme } from './contexts/ThemeContext';
 import { useSidebar } from './contexts/SidebarContext';
 import { ChatSessionProvider, useChatSession } from './features/ask/ChatSessionContext';
+import { WorkspaceProvider, useWorkspaces } from './features/workspaces/WorkspaceContext';
+import { sourceSummary, workspaceForNewChat } from './features/workspaces/model';
+import { WorkspaceIcon } from './features/workspaces/WorkspaceIcon';
+import { FocusProvider } from './features/focus/FocusContext';
+import { VisualsButton } from './features/visuals/GalleryDialog';
+import { VisualNavigator } from './features/visuals/VisualNavigator';
+import { SnippetHost } from './features/research/SnippetHost';
+import { ReminderAlerts } from './features/tasks/ReminderAlerts';
+import { TableModelPrompt } from './features/setup/TableModelPrompt';
 import { AskView } from './features/ask/AskView';
 import { useCommandPalette } from './hooks/useCommandPalette';
 import CommandPalette from './components/CommandPalette';
-import DocumentPreviewPanel from './components/DocumentPreviewPanel';
-import CalendarTodoPanel from './components/CalendarTodoPanel';
+import type { PaletteAction } from './components/CommandPalette';
+import { ViewSkeleton } from './components/shell/ViewSkeleton';
 import { useSearchConfig } from './components/SearchSettings';
-import { OnboardingFlow } from './components/OnboardingFlow';
+import { FirstRunFlow } from './features/setup/FirstRunFlow';
+import { readFirstRun, resumeStep, writeFirstRun } from './features/setup/firstRun';
+import type { FirstRunState, FirstRunStep } from './features/setup/firstRun';
+import { useSearchModels } from './features/setup/SearchModelsContext';
+import { markStartup } from './lib/startupTiming';
 import { FeedbackDialog } from './components/FeedbackDialog';
-import { LoadingState } from './components/LoadingState';
-import { EmptyState } from './components/EmptyState';
 import { UpdateNotification } from './components/UpdateNotification';
 import { toast } from 'sonner';
-import { notify, setNotificationHandler } from './lib/notify';
+import { notify } from './lib/notify';
+import { removeWithUndo, restoreAt } from './lib/undoToast';
 import { migrateLegacyApiKeys } from './lib/apiKeyMigration';
-import { useNotifications } from './hooks/useNotifications';
-import NotificationCenter from './components/NotificationCenter';
+import { InboxButton, OPEN_INBOX_EVENT } from './features/inbox/InboxButton';
+import { useNavigationTarget } from './features/agent/useNavigationTarget';
 
 // Debug logging — set to true during development, false for demo/production
 const DEBUG = false;
@@ -50,28 +81,14 @@ const debugLog = (...args: any[]) => { if (DEBUG) console.log(...args); };
 /** Unique id for OCR / indexing notices appended to the conversation. */
 const newNoticeId = () => `notice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-// Types
-interface Source {
-  id: string;
-  name: string;
-  path: string;
-  type: 'documents';
-  fileCount: number;
-  indexedAt: string;
-  status: 'ready' | 'indexing' | 'error';
-  selected: boolean;
-  language?: string;
-  size?: string;
-  progress?: number;
-  currentFile?: string;
-  processedCount?: number;
-}
+/** A Library source (see features/library/sources). */
+type Source = LibrarySource;
 
 
 function AppSplitView() {
   // Theme
   const { theme, colors, toggleTheme } = useTheme();
-  const { collapsed } = useSidebar();
+  const { collapsed, toggleSidebar } = useSidebar();
   const { config: searchConfig, updateConfig: updateSearchConfig, resetConfig: resetSearchConfig } = useSearchConfig();
 
   // Conversations and the active chat session
@@ -90,22 +107,15 @@ function AppSplitView() {
     updateMessage,
   } = useChatSession();
 
-  // Notification center
+  // Workspaces: the sidebar groups chats by them, new chats start in the current one.
   const {
-    notifications,
-    unreadCount,
-    add: addNotification,
-    markRead: markNotifRead,
-    markAllRead: markAllNotifsRead,
-    remove: removeNotif,
-    clearAll: clearAllNotifs,
-  } = useNotifications();
-
-  // Wire notification handler so notify.success() etc. push to bell
-  useEffect(() => {
-    setNotificationHandler(addNotification);
-    return () => setNotificationHandler(null);
-  }, [addNotification]);
+    workspaces,
+    allWorkspaces,
+    byId: workspaceById,
+    openWorkspace,
+    openWorkspaceId,
+    requestNewWorkspace,
+  } = useWorkspaces();
 
   // Move API keys saved by older builds out of localStorage into the OS keychain.
   useEffect(() => {
@@ -116,19 +126,70 @@ function AppSplitView() {
   const { open: cmdPaletteOpen, openPalette, closePalette } = useCommandPalette();
 
   // Core state
+  // True until `initialize_rag` answers; the shell renders immediately regardless.
   const [isLoading, setIsLoading] = useState(true);
-  const [isFirstTime, setIsFirstTime] = useState(false);
+  const [initError, setInitError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ViewTab>('ask');
-  const prefersReducedMotion = useReducedMotion();
-  const [sources, setSources] = useState<Source[]>([]);
-  const [docsExpandedSources, setDocsExpandedSources] = useState<Set<string>>(new Set());
-  const [sourceFiles, setSourceFiles] = useState<Record<string, any[]>>({});
+  // Restored synchronously so the Library and sidebar render with the first frame.
+  const [sources, setSources] = useState<Source[]>(() => {
+    try {
+      return parseStoredSources(localStorage.getItem(SOURCES_STORAGE_KEY));
+    } catch {
+      return [];
+    }
+  });
+  /** Library source the agent pointed at (show_source); LibraryView scrolls to and highlights it. */
+  const [focusedSourceId, setFocusedSourceId] = useState<string | null>(null);
+  useNavigationTarget('source', target => setFocusedSourceId(target.sourceId));
   const [currentlyIndexing, setCurrentlyIndexing] = useState<string | null>(null);
+  // Latest sources and indexing actions for listeners registered once (drag and drop).
+  const sourcesRef = useRef<Source[]>(sources);
+  sourcesRef.current = sources;
+  const indexSourceRef = useRef<((source: Source, kind: 'folder' | 'file') => Promise<void>) | null>(null);
+  const indexingBusyRef = useRef<(() => boolean) | null>(null);
+  // Text placed in the Ask composer by another view ("Ask about this file").
+  const [askDraft, setAskDraft] = useState<{ text: string; seq: number } | null>(null);
+  const clearAskDraft = useCallback(() => setAskDraft(null), []);
+
+  // Persist sources on every change (live progress fields are not stored).
+  useEffect(() => {
+    try {
+      localStorage.setItem(SOURCES_STORAGE_KEY, serializeSources(sources));
+    } catch {
+      // Storage unavailable: sources last for this session only.
+    }
+  }, [sources]);
+  // Keep finished folders in sync with the index (watched, and checked once
+  // the index is open); each sync updates its source's card.
+  const syncedFoldersKey = JSON.stringify(syncedFolders(sources));
+  useEffect(() => {
+    if (isLoading) return;
+    invoke('sync_folder_sources', { sources: JSON.parse(syncedFoldersKey) }).catch(error => {
+      console.error('Folder sync could not start:', error);
+    });
+  }, [isLoading, syncedFoldersKey]);
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    listen<FolderSyncOutcome>('folder-sync', event => {
+      setSources(prev => prev.map(s => applyFolderSync(s, event.payload)));
+    }).then(fn => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
   const [isDraggingImage, setIsDraggingImage] = useState(false);
   const lastProcessedImageTimeRef = useRef(0);
 
   // Onboarding & Feedback
-  const [showOnboarding, setShowOnboarding] = useState(!localStorage.getItem('onboarding_completed'));
+  // First-run setup: shown over the shell until finished or skipped; resumable.
+  const [firstRun, setFirstRun] = useState<FirstRunState>(() => readFirstRun(safeStorage()));
+  const [firstRunOpen, setFirstRunOpen] = useState(() => firstRun.status === 'pending');
+  const { status: searchModelsStatus } = useSearchModels();
   const [showFeedback, setShowFeedback] = useState(false);
 
   // Ref to prevent double initialization (React Strict Mode protection)
@@ -167,29 +228,22 @@ function AppSplitView() {
     }
   }, []);
 
-  // Remember the last non-settings view so dismissing model settings returns there.
-  const lastContentTabRef = useRef<ViewTab>('ask');
+  // A model chosen in the picker (Ask chip, Settings → Model) changes the status line too.
   useEffect(() => {
-    if (activeTab !== 'settings') lastContentTabRef.current = activeTab;
-  }, [activeTab]);
-
-  const closeModelSettings = useCallback(() => {
-    refreshLlmStatus();
-    setActiveTab(lastContentTabRef.current);
+    const onModelChanged = () => void refreshLlmStatus();
+    window.addEventListener(MODEL_CHANGED_EVENT, onModelChanged);
+    return () => window.removeEventListener(MODEL_CHANGED_EVENT, onModelChanged);
   }, [refreshLlmStatus]);
 
-  // Document preview
-  const [previewFile, setPreviewFile] = useState<{ path: string; name: string; page?: number } | null>(null);
+
+
 
   const [showSystemPromptEditor, setShowSystemPromptEditor] = useState(false);
   const [newInstructionText, setNewInstructionText] = useState('');
   const [editingInstructionIdx, setEditingInstructionIdx] = useState<number | null>(null);
   const [editingInstructionText, setEditingInstructionText] = useState('');
-  const pendingSourceDeleteRef = useRef<Map<string, { timeout: ReturnType<typeof setTimeout>; source: Source }>>(new Map());
 
-  // Derive system prompt and active space from the active conversation
-  const activeSpaceId = sources.find(s => s.selected)?.id || null;
-  const activeSourceName = sources.find(s => s.selected)?.name || null;
+  // Derive the system prompt from the active conversation
   const spaceSystemPrompt = activeConversation?.systemPrompt || '';
 
   // Parse instructions from newline-separated string into array
@@ -229,16 +283,83 @@ function AppSplitView() {
     setEditingInstructionText('');
   };
 
-  // Create new conversation with current source association and show it
-  const handleNewConversation = () => {
-    createConversation({
-      spaceId: activeSpaceId || undefined,
-      spaceName: activeSourceName || undefined,
-    });
+  // Start a chat in `workspaceId` (null: no workspace) and show it. An untouched active
+  // conversation is reused (moved to that workspace) rather than piling up blanks.
+  const startChat = (workspaceId: string | null) => {
+    if (activeConversation && isBlankConversation(activeConversation)) {
+      if ((activeConversation.workspaceId ?? null) !== workspaceId) {
+        updateConversationMeta(activeConversation.id, { workspaceId: workspaceId ?? undefined });
+      }
+      setActiveTab('ask');
+      return;
+    }
+    createConversation({ workspaceId });
     setActiveTab('ask');
   };
 
-  // Search State
+  // "New chat" starts in the current workspace: the workspace page being shown, else the
+  // workspace of the chat in use.
+  const handleNewConversation = () => {
+    startChat(workspaceForNewChat(activeTab === 'workspaces' ? openWorkspaceId : null, activeConversation?.workspaceId));
+  };
+
+  const saveFirstRun = useCallback((next: FirstRunState) => {
+    setFirstRun(next);
+    writeFirstRun(safeStorage(), next);
+  }, []);
+
+  // Reopening a finished setup and closing it again must not mark it skipped.
+  const statusBeforeOpenRef = useRef(firstRun.status);
+  const openFirstRun = useCallback((step?: FirstRunStep) => {
+    statusBeforeOpenRef.current = firstRun.status;
+    saveFirstRun({ status: 'pending', step: step ?? resumeStep(firstRun) });
+    setFirstRunOpen(true);
+  }, [firstRun, saveFirstRun]);
+
+  const changeFirstRunStep = useCallback((step: FirstRunStep) => {
+    saveFirstRun({ status: 'pending', step });
+  }, [saveFirstRun]);
+
+  const finishFirstRun = useCallback(() => {
+    saveFirstRun({ status: 'completed', step: 'done' });
+    setFirstRunOpen(false);
+    setActiveTab('ask');
+  }, [saveFirstRun]);
+
+  const skipFirstRun = useCallback(() => {
+    setFirstRunOpen(false);
+    setFirstRun(prev => {
+      const next: FirstRunState = { status: statusBeforeOpenRef.current === 'completed' ? 'completed' : 'skipped', step: prev.step };
+      writeFirstRun(safeStorage(), next);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    markStartup('shell-mounted');
+  }, []);
+
+  const searchNeedsSetup = !!searchModelsStatus && !searchModelsStatus.ready;
+
+  // Primary actions offered by the command palette.
+  const paletteActions: PaletteAction[] = [
+    { id: 'new-chat', label: 'New chat', icon: Plus, keywords: 'new chat conversation ask create', shortcut: IS_MAC ? '⌘N' : 'Ctrl+N', run: handleNewConversation },
+    { id: 'new-chat-plain', label: 'New chat outside workspaces', description: 'Searches your whole library', icon: MessageCircle, keywords: 'new chat no workspace library all', run: () => startChat(null) },
+    { id: 'new-workspace', label: 'New workspace', description: 'Sources, instructions and chats for one piece of work', icon: Layers, keywords: 'new create workspace project template', run: requestNewWorkspace },
+    { id: 'add-folder', label: 'Add folder to Library', description: 'Index a folder of documents', icon: FolderPlus, keywords: 'add source folder documents index import', run: () => { setActiveTab('library'); void handleAddSource(); } },
+    { id: 'choose-model', label: 'Choose model', description: 'Provider and model that answer', icon: Bot, keywords: 'model llm provider ai settings api key', run: () => setActiveTab('settings') },
+    { id: 'toggle-sidebar', label: collapsed ? 'Expand sidebar' : 'Collapse sidebar', icon: collapsed ? PanelLeftOpen : PanelLeftClose, keywords: 'sidebar toggle hide show collapse expand', shortcut: IS_MAC ? '⌘B' : 'Ctrl+B', run: toggleSidebar },
+    { id: 'toggle-theme', label: theme === 'dark' ? 'Use light theme' : 'Use dark theme', icon: theme === 'dark' ? Sun : Moon, keywords: 'theme dark light mode appearance', run: toggleTheme },
+    { id: 'inbox', label: 'Inbox', description: 'Approvals, suggestions, reminders and finished work', icon: Bell, keywords: 'inbox notifications approvals approve pending reminders suggestions done finished', run: () => window.dispatchEvent(new Event(OPEN_INBOX_EVENT)) },
+    { id: 'feedback', label: 'Send feedback', icon: Bug, keywords: 'feedback bug report problem', run: () => setShowFeedback(true) },
+    ...(searchNeedsSetup
+      ? [{ id: 'set-up-search', label: 'Set up search', description: 'Download the search models (one time)', icon: Search, keywords: 'search models download install embedding reranker setup', run: () => openFirstRun('search') }]
+      : []),
+    firstRun.status === 'completed'
+      ? { id: 'first-run', label: 'Run setup again', description: 'Search, model and first folder', icon: Sparkles, keywords: 'setup onboarding welcome first run guide', run: () => openFirstRun('welcome') }
+      : { id: 'first-run', label: 'Resume setup', description: 'Pick up where you left off', icon: Sparkles, keywords: 'setup onboarding welcome first run guide resume', run: () => openFirstRun() },
+  ];
+
 
   // Stats
   const [stats, setStats] = useState({
@@ -494,109 +615,28 @@ function AppSplitView() {
                 const pathsToIndex = documentFiles.length > 0 ? documentFiles : files;
 
                 for (const path of pathsToIndex) {
-                  const fileName = path.split(/[\\\/]/).pop() || 'Document';
-
-                  // Check if path is a file or directory using Tauri filesystem API
+                  if (indexingBusyRef.current?.()) break;
                   let isDirectory = false;
-
                   try {
-                    // Use Tauri's stat to check if it's a directory
                     const stats = await invoke<{ isDirectory: boolean }>('check_path_type', { path });
                     isDirectory = stats.isDirectory;
                   } catch (e) {
                     console.warn('Failed to check path type, assuming file:', e);
-                    // If check fails, assume it's a file
-                    isDirectory = false;
                   }
-
-                  // Create a new source
-                  const newSource: Source = {
-                    id: Date.now().toString() + Math.random(),
-                    name: fileName,
-                    path: path,
+                  const known = sourcesRef.current.find(s => s.path.toLowerCase() === path.toLowerCase());
+                  const source: Source = known ?? {
+                    id: `${isDirectory ? 'folder' : 'file'}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                    name: path.split(/[\\/]/).filter(Boolean).pop() || path,
+                    path,
                     type: 'documents',
                     fileCount: 0,
                     indexedAt: new Date().toISOString(),
                     status: 'indexing',
-                    selected: true
+                    selected: true,
                   };
-
-                  setSources(prev => {
-                    const updated = [...prev, newSource];
-                    localStorage.setItem('indexedSources', JSON.stringify(updated));
-                    return updated;
-                  });
-
-                  setCurrentlyIndexing(newSource.id);
-
-                  // Index differently based on whether it's a file or folder
-                  let result;
-
-                  // Add timeout wrapper (5 minutes max)
-                  const timeoutPromise = new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('Indexing timeout - file too large or complex')), 5 * 60 * 1000)
-                  );
-
-                  try {
-                    if (isDirectory) {
-                      // Index entire folder
-                      debugLog(`📁 Folder detected: ${fileName}, indexing all files`);
-                      result = await Promise.race([
-                        invoke("link_folder_enhanced", {
-                          folderPath: path,
-                          spaceId: newSource.id,
-                          options: {
-                            skip_indexed: false,
-                            watch_changes: false,
-                            process_subdirs: true,
-                            priority: 'normal',
-                            file_types: ['txt', 'md', 'pdf', 'rs', 'js', 'ts', 'py', 'java', 'cpp', 'c', 'html', 'json', 'docx', 'xlsx', 'pptx', 'csv']
-                          }
-                        }),
-                        timeoutPromise
-                      ]);
-                    } else {
-                      // Index single file only
-                      debugLog(`📄 Single file detected: ${fileName}, indexing only this file`);
-                      result = await Promise.race([
-                        invoke("index_single_file", {
-                          filePath: path,
-                          spaceId: newSource.id
-                        }),
-                        timeoutPromise
-                      ]);
-                    }
-                  } catch (indexError) {
-                    console.error('❌ Indexing error:', indexError);
-
-                    // Update source to error state
-                    setSources(prev => prev.map(s =>
-                      s.id === newSource.id
-                        ? { ...s, status: 'error' as const }
-                        : s
-                    ));
-                    setCurrentlyIndexing(null);
-
-                    throw indexError; // Re-throw to be caught by outer catch
-                  }
-
-                  debugLog('✅ Document indexed:', result);
-
-                  // Update source status
-                  setSources(prev => prev.map(s =>
-                    s.id === newSource.id
-                      ? { ...s, status: 'ready' as const, fileCount: (result as any)?.file_count || 1 }
-                      : s
-                  ));
-                  setCurrentlyIndexing(null);
-
-                  // Show success message
-                  appendMessage({
-                    id: newNoticeId(),
-                    role: 'assistant',
-                    content: `📄 **${fileName} indexed successfully!**\n\nThe document has been added to your sources and is now searchable.`,
-                    timestamp: new Date().toISOString()
-                  });
+                  if (!known) setSources(prev => [...prev, source]);
+                  // Sequential: progress events carry no source id.
+                  await indexSourceRef.current?.(source, isDirectory ? 'folder' : 'file');
                 }
               }
             } catch (error) {
@@ -791,103 +831,56 @@ function AppSplitView() {
     // Store the initialization promise so concurrent calls can wait for it
     initializationPromiseRef.current = (async () => {
       try {
-        // Simulate minimum loading time for smooth UX
-        const startTime = Date.now();
+        setInitError(null);
+        await invoke("initialize_rag");
+        markStartup('index-ready');
+        // The shell is already on screen; this only unlocks index-backed views.
+        setIsLoading(false);
 
-        // Initialize RAG
-        debugLog("Initializing RAG system...");
-        const ragInitResult = await invoke("initialize_rag");
-        debugLog("RAG init result:", ragInitResult);
-
-      // Check LLM status
-      const checkLLMStatus = async () => {
-        try {
-          const info: any = await invoke("get_llm_info");
-          if (info) {
+        const checkLLMStatus = async () => {
+          try {
+            const info: any = await invoke("get_llm_info");
+            if (info) {
+              setLlmStatus({
+                connected: true,
+                model: info.model || 'Unknown',
+                provider: info.provider || 'Unknown'
+              });
+              return true;
+            }
+          } catch (e) {
+            debugLog("LLM not configured:", e);
             setLlmStatus({
-              connected: true,
-              model: info.model || 'Unknown',
-              provider: info.provider || 'Unknown'
+              connected: false,
+              model: 'Not configured',
+              provider: 'none'
             });
-            return true; // LLM is connected
           }
-        } catch (e) {
-          debugLog("LLM not configured:", e);
-          setLlmStatus({
-            connected: false,
-            model: 'Not configured',
-            provider: 'none'
-          });
+          return false;
+        };
+
+        // Model status and index statistics are independent: load them together.
+        const [isConnected] = await Promise.all([
+          checkLLMStatus().finally(() => markStartup('model-checked')),
+          updateStats().finally(() => markStartup('stats-loaded')),
+        ]);
+
+        // A model that is still starting (e.g. a local server) is picked up
+        // without a restart: poll every 2 s for up to 30 s.
+        if (!isConnected) {
+          let attempts = 0;
+          const maxAttempts = 15;
+          const pollInterval = setInterval(async () => {
+            attempts++;
+            const connected = await checkLLMStatus();
+            if (connected || attempts >= maxAttempts) clearInterval(pollInterval);
+          }, 2000);
         }
-        return false; // LLM not connected
-      };
-
-      // Initial check
-      const isConnected = await checkLLMStatus();
-
-      // If not connected, poll every 2 seconds for up to 30 seconds
-      if (!isConnected) {
-        let attempts = 0;
-        const maxAttempts = 15; // 30 seconds total
-        const pollInterval = setInterval(async () => {
-          attempts++;
-          const connected = await checkLLMStatus();
-          if (connected || attempts >= maxAttempts) {
-            clearInterval(pollInterval);
-            if (connected) {
-              debugLog("✅ LLM connected after polling");
-            } else {
-              debugLog("⏰ LLM polling timeout - LLM may need manual configuration");
-            }
-          }
-        }, 2000);
-      }
-
-      // Load saved sources
-      const savedSources = localStorage.getItem('indexedSources');
-      if (savedSources) {
-        const parsed = JSON.parse(savedSources);
-        setSources(parsed);
-        setIsFirstTime(parsed.length === 0);
-
-        // Fetch file counts for all sources
-        if (parsed.length > 0) {
-          parsed.forEach(async (source: Source) => {
-            if (source.status === 'ready') {
-              try {
-                const files = await invoke<any[]>('get_source_files', { sourceId: source.id });
-                setSources(prevSources =>
-                  prevSources.map(s =>
-                    s.id === source.id
-                      ? { ...s, fileCount: files.length }
-                      : s
-                  )
-                );
-              } catch (error) {
-                console.error(`Failed to fetch file count for source ${source.id}:`, error);
-              }
-            }
-          });
-        }
-      } else {
-        setIsFirstTime(true);
-      }
-
-      await updateStats();
-
-      // Ensure minimum loading time for smooth transition
-      const elapsed = Date.now() - startTime;
-      if (elapsed < 1500) {
-        await new Promise(resolve => setTimeout(resolve, 1500 - elapsed));
-      }
-
-      setIsLoading(false);
       } catch (error) {
         console.error("Initialization failed:", error);
-        setIsLoading(false);
-        // Reset flag on error so user can retry
+        setInitError(searchErrorMessage(error));
+        // Reset flag on error so the user can retry
         initializationRef.current = false;
-        throw error;
       }
     })();
 
@@ -935,156 +928,130 @@ function AppSplitView() {
     }
   };
 
-  const handleAddSource = async () => {
-    debugLog("=== handleAddSource START ===");
-
+  /**
+   * Index `source.path` into `source.id` and record the outcome on the
+   * source: file count, completion time and per-file failures, or the error.
+   * Re-indexing is idempotent (each file's previous chunks are replaced).
+   */
+  const indexSource = async (source: Source, kind: 'folder' | 'file' = 'folder') => {
+    setCurrentlyIndexing(source.id);
+    setSources(prev => prev.map(s => s.id === source.id
+      ? { ...s, status: 'indexing' as const, progress: 0, processedCount: 0, currentFile: undefined, lastError: undefined }
+      : s));
     try {
-      debugLog("Opening folder dialog...");
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: "Select documents folder"
-      });
-
-      debugLog("Folder selected:", selected);
-
-      if (selected) {
-        debugLog("Processing selected folder...");
-        const newSource: Source = {
-          id: newNoticeId(),
-          name: (selected as string).split(/[\\\/]/).pop() || 'Folder',
-          path: selected as string,
-          type: 'documents',
-          fileCount: 0,
-          indexedAt: new Date().toISOString(),
-          status: 'indexing',
-          selected: true,
-        };
-
-        setSources(prev => {
-          const updated = [...prev, newSource];
-          localStorage.setItem('indexedSources', JSON.stringify(updated));
-          return updated;
-        });
-
-        // Set this source as currently indexing
-        setCurrentlyIndexing(newSource.id);
-
-        // Index the folder with enhanced progress
-        // Note: Top-level params in camelCase, nested struct fields in snake_case
-        debugLog("=== Calling link_folder_enhanced ===");
-        debugLog("Parameters:", {
-          folderPath: selected as string,
-          spaceId: newSource.id,
-          options: {
-            skip_indexed: false,
-            watch_changes: false,
-            process_subdirs: true,
-            priority: 'normal',
-            file_types: ['txt', 'md', 'pdf', 'rs', 'js', 'ts', 'py', 'java', 'cpp', 'c', 'html', 'json', 'docx']
+      const raw = kind === 'file'
+        ? await invoke('index_single_file', { filePath: source.path, spaceId: source.id })
+        : await invoke('link_folder_enhanced', {
+            folderPath: source.path,
+            spaceId: source.id,
+            // Nested struct fields are snake_case. An empty file_types list
+            // means every type the indexer supports.
+            options: { skip_indexed: false, watch_changes: false, process_subdirs: true, priority: 'normal', file_types: [] },
+          });
+      const outcome = readIndexingResult(raw);
+      setSources(prev => prev.map(s => s.id === source.id
+        ? {
+            ...s,
+            status: 'ready' as const,
+            fileCount: outcome.filesProcessed,
+            indexedAt: new Date().toISOString(),
+            failures: outcome.failures.length > 0 ? outcome.failures : undefined,
+            progress: undefined,
+            currentFile: undefined,
+            processedCount: undefined,
           }
-        });
-
-        // Try both methods to see which one works
-        let result;
-        try {
-          debugLog("=== TRYING ENHANCED link_folder_enhanced METHOD ===");
-          result = await invoke("link_folder_enhanced", {
-            folderPath: selected as string,
-            spaceId: newSource.id,
-            options: {
-              skip_indexed: false,
-              watch_changes: false,
-              process_subdirs: true,
-              priority: 'normal',
-              file_types: ['txt', 'md', 'pdf', 'rs', 'js', 'ts', 'py', 'java', 'cpp', 'c', 'html', 'json', 'docx', 'xlsx', 'xls', 'xlsm', 'xlsb', 'ods', 'csv', 'tsv']
-            }
-          });
-          debugLog('Enhanced indexing succeeded:', result);
-        } catch (enhancedError) {
-          console.error("Enhanced method failed:", enhancedError);
-
-          // Fall back to old method
-          debugLog("=== FALLING BACK TO OLD link_folder METHOD ===");
-          result = await invoke("link_folder", {
-            folderPath: selected as string,
-            metadata: {
-              space_id: newSource.id,
-              source_type: 'documents'
-            }
-          });
-          debugLog('Old indexing succeeded:', result);
-        }
-
-        debugLog('Final indexing result:', result);
-        debugLog('Result type:', typeof result);
-        debugLog('Result keys:', Object.keys(result as any));
-
-        // Extract file count from result
-        const filesProcessed = (result as any).files_processed ||
-                              (result as any).filesProcessed ||
-                              (result as any).file_count ||
-                              (result as any).fileCount ||
-                              0;
-
-        debugLog('Files processed extracted:', filesProcessed);
-
-        // Update status with file count from result
-        let updatedSources: Source[] = [];
-        setSources(prev => {
-          updatedSources = prev.map(s =>
-            s.id === newSource.id ? {
-              ...s,
-              status: 'ready' as const,
-              fileCount: filesProcessed,
-              progress: undefined,
-              currentFile: undefined,
-              processedCount: undefined
-            } : s
-          );
-          localStorage.setItem('indexedSources', JSON.stringify(updatedSources));
-          return updatedSources;
-        });
-
-        setCurrentlyIndexing(null);
-        await updateStats(updatedSources);
-
-        // Get actual file count from backend
-        let actualFileCount = filesProcessed;
-        try {
-          const files = await invoke<any[]>('get_source_files', { sourceId: newSource.id });
-          actualFileCount = files.length;
-        } catch (e) {
-          console.error('Failed to get actual file count:', e);
-        }
-
-        notify.success(`Indexed ${actualFileCount} files`, { description: newSource.name });
-      }
+        : s));
+      await updateStats();
+      const failed = outcome.failures.length;
+      notify.success(`Indexed ${outcome.filesProcessed.toLocaleString()} file${outcome.filesProcessed === 1 ? '' : 's'}`, {
+        description: failed > 0 ? `${source.name} · ${failed} could not be indexed` : source.name,
+      });
     } catch (error) {
-      console.error("Failed to add source:", error);
-      notify.error('Indexing failed', { description: searchErrorMessage(error) });
-
-      // Reset indexing status on error
-      if (currentlyIndexing) {
-        setSources(prev => {
-          const updated = prev.map(s =>
-            s.id === currentlyIndexing ? { ...s, status: 'error' as const, progress: undefined } : s
-          );
-          localStorage.setItem('indexedSources', JSON.stringify(updated));
-          return updated;
-        });
-        setCurrentlyIndexing(null);
-      }
+      console.error('Indexing failed:', error);
+      const message = searchErrorMessage(error);
+      setSources(prev => prev.map(s => s.id === source.id
+        ? { ...s, status: 'error' as const, lastError: message, progress: undefined, currentFile: undefined, processedCount: undefined }
+        : s));
+      notify.error('Indexing failed', { description: message });
+    } finally {
+      setCurrentlyIndexing(null);
     }
+  };
+
+  /** Progress events carry no source id, so one index runs at a time. */
+  const indexingBusy = () => {
+    if (!sourcesRef.current.some(s => s.status === 'indexing')) return false;
+    notify.info('Indexing is already running', { description: 'Add or re-index another folder once it finishes.' });
+    return true;
+  };
+  indexSourceRef.current = indexSource;
+  indexingBusyRef.current = indexingBusy;
+
+  /** Whether a source is a single dropped file or a folder, asked of the file system. */
+  const sourceKind = async (source: Source): Promise<'folder' | 'file'> => {
+    try {
+      const info = await invoke<{ isDirectory: boolean; isFile: boolean }>('check_path_type', { path: source.path });
+      return info.isFile && !info.isDirectory ? 'file' : 'folder';
+    } catch {
+      return 'folder';
+    }
+  };
+
+  const handleAddSource = async () => {
+    if (indexingBusy()) return;
+    let selected: string | string[] | null;
+    try {
+      selected = await open({ directory: true, multiple: false, title: 'Add a folder to the Library' });
+    } catch (error) {
+      notify.error('Could not open the folder picker', { description: String(error) });
+      return;
+    }
+    if (typeof selected !== 'string' || !selected) return;
+    const picked = selected;
+    const existing = sources.find(s => s.path.toLowerCase() === picked.toLowerCase());
+    if (existing) {
+      notify.info(`${existing.name} is already in the Library`, { description: 'Indexing it again to pick up changes.' });
+      await indexSource(existing, await sourceKind(existing));
+      return;
+    }
+    const newSource: Source = {
+      id: `folder-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: picked.split(/[\\/]/).filter(Boolean).pop() || picked,
+      path: picked,
+      type: 'documents',
+      fileCount: 0,
+      indexedAt: new Date().toISOString(),
+      status: 'indexing',
+      selected: true,
+    };
+    setSources(prev => [...prev, newSource]);
+    await indexSource(newSource, 'folder');
+  };
+
+  /** The file browser counted a source's indexed files: correct a stale card count. */
+  const handleFileCount = useCallback((id: string, count: number) => {
+    setSources(prev => prev.map(s => (s.id === id && s.status === 'ready' && s.fileCount !== count ? { ...s, fileCount: count } : s)));
+  }, []);
+
+  const handleReindex = async (id: string) => {
+    const source = sources.find(s => s.id === id);
+    if (!source || indexingBusy()) return;
+    await indexSource(source, await sourceKind(source));
+  };
+
+  /** Start a chat about a Library file: a new conversation with the file named in the composer. */
+  const handleAskAboutFile = (file: FileNode, _source: LibrarySource) => {
+    // Outside workspaces: a workspace may not contain this file.
+    createConversation({ workspaceId: null });
+    setAskDraft(prev => ({ text: `About ${file.name} (${file.path}): `, seq: (prev?.seq ?? 0) + 1 }));
+    setActiveTab('ask');
   };
 
   const toggleSource = useCallback((id: string) => {
     setSources(prev => {
-      const updated = prev.map(s =>
+      return prev.map(s =>
         s.id === id ? { ...s, selected: !s.selected } : s
       );
-      localStorage.setItem('indexedSources', JSON.stringify(updated));
-      return updated;
     });
   }, []);
 
@@ -1099,257 +1066,31 @@ function AppSplitView() {
       setCurrentlyIndexing(null);
     }
 
-    // Cancel any existing pending delete for this source
-    const existing = pendingSourceDeleteRef.current.get(id);
-    if (existing) {
-      clearTimeout(existing.timeout);
-      pendingSourceDeleteRef.current.delete(id);
-    }
-
-    // Optimistically remove from UI
-    setSources(prev => {
-      const updated = prev.filter(s => s.id !== id);
-      localStorage.setItem('indexedSources', JSON.stringify(updated));
-      return updated;
-    });
-
-    // Schedule actual backend deletion after 5s (undo window)
-    const timeout = setTimeout(() => {
-      pendingSourceDeleteRef.current.delete(id);
-      invoke<string>("delete_folder_source", { folderPath: source.path })
-        .catch(err => console.warn('Backend source deletion failed:', err));
-    }, 5000);
-
-    pendingSourceDeleteRef.current.set(id, { timeout, source });
-
-    toast('Source removed', {
+    // Removed from the list now and from the index when the undo window ends.
+    const index = sources.findIndex(s => s.id === id);
+    removeWithUndo({
+      message: 'Source removed',
       description: source.name,
-      action: {
-        label: 'Undo',
-        onClick: () => {
-          const pending = pendingSourceDeleteRef.current.get(id);
-          if (pending) {
-            clearTimeout(pending.timeout);
-            pendingSourceDeleteRef.current.delete(id);
-            // Restore source to UI
-            setSources(prev => {
-              const restored = [...prev, pending.source];
-              localStorage.setItem('indexedSources', JSON.stringify(restored));
-              return restored;
-            });
-            notify.success('Source restored');
-          }
-        },
-      },
-      duration: 5000,
+      hide: () => setSources(prev => prev.filter(s => s.id !== id)),
+      restore: () => setSources(prev => restoreAt(prev, source, index)),
+      commit: () => invoke<string>('delete_folder_source', { folderPath: source.path }),
+      onError: err => notify.error('The source was not removed', { description: String(err) }),
     });
   };
 
-
-  // Toggle source file list expansion in the Library view
-  const toggleDocsSourceExpansion = async (sourceId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-
-    const newExpanded = new Set(docsExpandedSources);
-
-    if (newExpanded.has(sourceId)) {
-      newExpanded.delete(sourceId);
-    } else {
-      newExpanded.add(sourceId);
-
-      if (!sourceFiles[sourceId]) {
-        try {
-          const files = await invoke<any[]>('get_source_files', { sourceId });
-          setSourceFiles(prev => ({ ...prev, [sourceId]: files || [] }));
-          setSources(prevSources =>
-            prevSources.map(s =>
-              s.id === sourceId ? { ...s, fileCount: files.length } : s
-            )
-          );
-        } catch (error) {
-          console.error('Failed to fetch source files:', error);
-          setSourceFiles(prev => ({ ...prev, [sourceId]: [] }));
-        }
-      }
-    }
-
-    setDocsExpandedSources(newExpanded);
-  };
-
-  // Get file icon, color, and badge based on file type — stable reference
-  const getFileIconInfo = useCallback((fileType: string): { Icon: any; color: string; badge: string } => {
-    const type = fileType.toLowerCase();
-
-    // Programming languages
-    if (type.includes('rust')) return { Icon: Settings, color: '#f74c00', badge: 'RS' };
-    if (type.includes('python')) return { Icon: FileCode, color: '#3776ab', badge: 'PY' };
-    if (type.includes('javascript')) return { Icon: Braces, color: '#f7df1e', badge: 'JS' };
-    if (type.includes('typescript')) return { Icon: Braces, color: '#3178c6', badge: 'TS' };
-    if (type.includes('java')) return { Icon: Coffee, color: '#f89820', badge: 'JAVA' };
-    if (type.includes('cpp') || type.includes('c_code') || type === 'c' || type === 'h') return { Icon: Terminal, color: '#00599c', badge: 'C++' };
-    if (type.includes('csharp')) return { Icon: Code, color: '#239120', badge: 'C#' };
-    if (type.includes('go')) return { Icon: FileCode, color: '#00add8', badge: 'GO' };
-    if (type.includes('ruby')) return { Icon: FileCode, color: '#cc342d', badge: 'RB' };
-    if (type.includes('php')) return { Icon: Code, color: '#777bb4', badge: 'PHP' };
-    if (type.includes('swift')) return { Icon: Code, color: '#f05138', badge: 'SWIFT' };
-    if (type.includes('kotlin')) return { Icon: Code, color: '#7f52ff', badge: 'KT' };
-    if (type === 'sh' || type === 'bash' || type === 'zsh') return { Icon: Terminal, color: '#4eaa25', badge: 'SH' };
-
-    // Web files
-    if (type === 'html') return { Icon: Code, color: '#e34c26', badge: 'HTML' };
-    if (type === 'css' || type === 'scss' || type === 'sass') return { Icon: FileCode, color: '#264de4', badge: 'CSS' };
-    if (type === 'vue') return { Icon: Code, color: '#42b883', badge: 'VUE' };
-    if (type === 'svelte') return { Icon: Code, color: '#ff3e00', badge: 'SVELTE' };
-
-    // Data/Config files
-    if (type === 'json') return { Icon: Braces, color: '#000000', badge: 'JSON' };
-    if (type === 'yaml' || type === 'yml') return { Icon: FileCode, color: '#cb171e', badge: 'YAML' };
-    if (type === 'toml') return { Icon: FileCode, color: '#9c4221', badge: 'TOML' };
-    if (type === 'xml') return { Icon: Code, color: '#0060ac', badge: 'XML' };
-    if (type === 'sql') return { Icon: Database, color: '#f29111', badge: 'SQL' };
-
-    // Documents
-    if (type === 'pdf') return { Icon: FileText, color: '#ef4444', badge: 'PDF' };
-    if (type === 'docx' || type === 'doc') return { Icon: FileText, color: '#2b579a', badge: 'DOCX' };
-    if (type === 'xlsx' || type === 'xls') return { Icon: FileSpreadsheet, color: '#217346', badge: 'XLSX' };
-    if (type === 'pptx' || type === 'ppt') return { Icon: Presentation, color: '#d24726', badge: 'PPTX' };
-    if (type === 'md' || type === 'markdown' || type.includes('documentation')) return { Icon: BookOpen, color: '#8b5cf6', badge: 'MD' };
-    if (type === 'txt') return { Icon: FileText, color: '#6b7280', badge: 'TXT' };
-
-    // Default for unknown types
-    return { Icon: FileText, color: '#9ca3af', badge: type.toUpperCase().slice(0, 4) };
-  }, []);
-
-  // Loading Screen with animations
-  if (isLoading) {
-    return (
-      <div className="h-screen flex items-center justify-center transition-colors duration-200" style={{ backgroundColor: colors.bg }}>
-        <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.5 }}
-          className="text-center"
-        >
-          <motion.img
-            src="/shodh_logo_nobackground.svg"
-            alt="Shodh"
-            className="w-32 h-32 mx-auto mb-4"
-            animate={{
-              scale: [1, 1.1, 1],
-              opacity: [0.7, 1, 0.7]
-            }}
-            transition={{
-              duration: 2,
-              repeat: Infinity,
-              ease: "easeInOut"
-            }}
-          />
-          <motion.h1
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-            className="text-2xl font-bold mb-2"
-            style={{ color: colors.text }}
-          >
-            SHODH <span style={{ color: colors.textMuted }}>(शोध)</span>
-          </motion.h1>
-          <motion.p
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.3 }}
-            className="mb-6"
-            style={{ color: colors.textSecondary }}
-          >
-            Initializing your knowledge assistant...
-          </motion.p>
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.4 }}
-            className="flex items-center justify-center gap-2"
-          >
-            <Loader2 className="w-5 h-5 animate-spin" style={{ color: colors.primary }} />
-            <span style={{ color: colors.textMuted }}>Loading...</span>
-          </motion.div>
-        </motion.div>
-      </div>
-    );
-  }
-
-  // Welcome Screen for First Time Users
-  if (isFirstTime && sources.length === 0) {
-    return (
-      <div className="h-screen flex items-center justify-center p-8 transition-colors duration-200" style={{ backgroundColor: colors.bg }}>
-        <Card className="max-w-xl w-full card-elevated transition-colors duration-200" style={{ backgroundColor: colors.cardBg, borderColor: colors.cardBorder }}>
-          <CardHeader className="text-center pb-2">
-            <img src="/shodh_logo_nobackground.svg" alt="Shodh" className="w-14 h-14 mx-auto mb-3" />
-            <CardTitle className="text-2xl" style={{ color: colors.text }}>SHODH</CardTitle>
-            <CardDescription className="text-sm mt-1" style={{ color: colors.textSecondary }}>
-              AI-powered search and analysis for your documents
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-5 pt-2">
-            <div className="grid gap-3">
-              <div className="flex items-center gap-3 p-3 rounded-lg" style={{ backgroundColor: colors.bgSecondary }}>
-                <FolderOpen className="w-5 h-5 flex-shrink-0" style={{ color: colors.primary }} />
-                <div>
-                  <h3 className="font-medium text-sm" style={{ color: colors.text }}>Add a folder of documents</h3>
-                  <p className="text-xs" style={{ color: colors.textSecondary }}>PDF, DOCX, XLSX, PPTX, TXT, MD, CSV</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-3 p-3 rounded-lg" style={{ backgroundColor: colors.bgSecondary }}>
-                <MessageSquare className="w-5 h-5 flex-shrink-0" style={{ color: colors.primary }} />
-                <div>
-                  <h3 className="font-medium text-sm" style={{ color: colors.text }}>Ask questions in natural language</h3>
-                  <p className="text-xs" style={{ color: colors.textSecondary }}>Get answers with source citations</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-3 p-3 rounded-lg" style={{ backgroundColor: colors.bgSecondary }}>
-                <Bot className="w-5 h-5 flex-shrink-0" style={{ color: colors.primary }} />
-                <div>
-                  <h3 className="font-medium text-sm" style={{ color: colors.text }}>AI agents for deep analysis</h3>
-                  <p className="text-xs" style={{ color: colors.textSecondary }}>Build teams of agents to research and report</p>
-                </div>
-              </div>
-            </div>
-
-            <motion.button
-              className="w-full px-4 py-3 rounded-lg font-semibold flex items-center justify-center"
-              style={{ backgroundColor: colors.primary, color: colors.primaryText }}
-              onClick={() => {
-                setIsFirstTime(false);
-                handleAddSource();
-              }}
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-            >
-              <FolderOpen className="w-5 h-5 mr-2" />
-              Add Documents
-            </motion.button>
-            <motion.button
-              className="w-full px-4 py-2 rounded-lg font-medium"
-              style={{ color: colors.textSecondary }}
-              onClick={() => setIsFirstTime(false)}
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-            >
-              Skip — I'll explore first
-            </motion.button>
-
-            <p className="text-xs text-center" style={{ color: colors.textMuted }}>
-              100% local — your data never leaves your machine
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
 
   return (
     <div
       className="h-screen flex transition-colors duration-200"
       style={{ backgroundColor: colors.bg, color: colors.text }}
     >
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[10000] focus:px-3 focus:py-2 focus:rounded-lg focus:bg-shodh-raised focus:text-shodh-text focus:ring-2 focus:ring-ring"
+      >
+        Skip to content
+      </a>
+
       {/* Left Sidebar */}
       <Sidebar
         activeView={activeTab}
@@ -1365,6 +1106,16 @@ function AppSplitView() {
         llmStatus={llmStatus}
         onOpenCommandPalette={openPalette}
         onShowFeedback={() => setShowFeedback(true)}
+        workspaces={allWorkspaces}
+        onOpenWorkspace={id => openWorkspace(id)}
+        onNewChatInWorkspace={id => startChat(id)}
+        onMoveToWorkspace={(conversationId, workspaceId) => {
+          updateConversationMeta(conversationId, { workspaceId: workspaceId ?? undefined });
+          const name = workspaceId ? workspaceById(workspaceId)?.name : null;
+          notify.success(name ? `Moved to “${name}”` : 'Moved out of its workspace', {
+            description: name ? 'Its next answers search only this workspace’s sources.' : 'Its next answers search your whole library.',
+          });
+        }}
       />
 
 
@@ -1379,31 +1130,19 @@ function AppSplitView() {
             <span className="text-xs font-semibold tracking-wide" style={{ color: colors.text }}>
               {VIEW_TAB_LABELS[activeTab]}
             </span>
-            {activeTab === 'ask' && activeConversation?.spaceName && (() => {
-              const name = activeConversation.spaceName!;
-              // FNV-1a hash — must match sourceColor() in utils/colors
-              let hash = 2166136261;
-              for (let i = 0; i < name.length; i++) {
-                hash ^= name.charCodeAt(i);
-                hash = (hash * 16777619) >>> 0;
-              }
-              const hue = (hash * 137.508) % 360;
-              const s = 0.6, l = 0.5;
-              const a = s * Math.min(l, 1 - l);
-              const f = (n: number) => {
-                const k = (n + hue / 30) % 12;
-                const c = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
-                return Math.round(255 * c).toString(16).padStart(2, '0');
-              };
-              const clr = `#${f(0)}${f(8)}${f(4)}`;
+            {activeTab === 'ask' && (() => {
+              const workspace = workspaceById(activeConversation?.workspaceId);
+              if (!workspace) return null;
               return (
-                <span
-                  className="text-[10px] px-2 py-0.5 rounded-full font-medium truncate max-w-[120px]"
-                  style={{ backgroundColor: `${clr}18`, color: clr, border: `1px solid ${clr}30` }}
-                  title={`Source: ${name}`}
+                <button
+                  type="button"
+                  onClick={() => openWorkspace(workspace.id)}
+                  className="text-[10px] px-2 py-0.5 rounded-full font-medium inline-flex items-center gap-1 max-w-[180px] bg-shodh-raised text-shodh-text-secondary hover:text-shodh-text transition-colors duration-micro focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  title={`Workspace: ${workspace.name} (${sourceSummary(workspace.sourceCounts)}). Open it.`}
                 >
-                  {name}
-                </span>
+                  <WorkspaceIcon icon={workspace.icon} color={workspace.color} className="w-3 h-3" />
+                  <span className="truncate">{workspace.name}</span>
+                </button>
               );
             })()}
             {llmStatus.connected && (
@@ -1416,13 +1155,9 @@ function AppSplitView() {
             )}
           </div>
           <div className="flex items-center gap-2">
-            <NotificationCenter
-              notifications={notifications}
-              unreadCount={unreadCount}
-              onMarkRead={markNotifRead}
-              onMarkAllRead={markAllNotifsRead}
-              onRemove={removeNotif}
-              onClearAll={clearAllNotifs}
+            <InboxButton
+              onNavigate={setActiveTab}
+              onOpenConversation={id => { switchConversation(id); setActiveTab('ask'); }}
             />
             {activeTab === 'ask' && messages.length > 0 && (
               <>
@@ -1468,6 +1203,9 @@ function AppSplitView() {
                   Export
                 </button>
               </>
+            )}
+            {activeTab === 'ask' && activeConversationId && (
+              <VisualsButton conversationId={activeConversationId} conversationTitle={activeConversation?.title ?? ''} />
             )}
             {activeTab === 'ask' && activeConversationId && (
               <div className="relative">
@@ -1638,14 +1376,30 @@ function AppSplitView() {
           </div>
         </div>
 
-        {/* Content Area — screen enter transition keyed on the active view */}
-        <motion.div
+        {initError && (
+          <div role="alert" className="shrink-0 px-5 py-2 flex items-center gap-3 border-b border-shodh-border bg-shodh-warning-soft text-[12.5px] text-shodh-text">
+            <AlertTriangle className="w-4 h-4 shrink-0 text-shodh-warning" aria-hidden="true" />
+            <span className="flex-1 min-w-0 break-words">{`The local index could not be opened: ${initError}`}</span>
+            <button
+              type="button"
+              onClick={() => void initializeApp()}
+              className="h-7 px-2.5 inline-flex items-center gap-1.5 rounded-md border border-shodh-border bg-shodh-surface hover:bg-shodh-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+              Try again
+            </button>
+          </div>
+        )}
+
+        {/* Content: each view enters with the shared motion tokens (opacity and a small rise, no layout shift). */}
+        <main
+          id="main-content"
+          tabIndex={-1}
+          aria-label={VIEW_TAB_LABELS[activeTab]}
           key={activeTab}
-          className="flex-1 overflow-hidden"
-          initial={prefersReducedMotion ? false : { opacity: 0, y: 4 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: prefersReducedMotion ? 0 : 0.2, ease: [0.2, 0.7, 0.2, 1] }}
+          className="shell-view-enter flex-1 min-h-0 overflow-hidden focus:outline-none"
         >
+          <Suspense fallback={<ViewSkeleton view={activeTab} />}>
           {/* Ask Tab */}
           {activeTab === 'ask' && (
             <AskView
@@ -1653,6 +1407,8 @@ function AppSplitView() {
               llmStatus={llmStatus}
               onNavigate={setActiveTab}
               onPickImage={handlePickImage}
+              draftRequest={askDraft}
+              onDraftApplied={clearAskDraft}
               isDraggingFile={isDraggingImage}
               dropHandlers={{
                 onDrop: handleImageDrop,
@@ -1663,16 +1419,24 @@ function AppSplitView() {
             />
           )}
 
-          {/* Calendar Tab */}
-          {activeTab === 'calendar' && (
-            <CalendarTodoPanel />
+          {/* Workspaces: sources, instructions, chats and memory of one piece of work */}
+          {activeTab === 'workspaces' && (
+            <WorkspacesView
+              library={sources.map(s => ({ id: s.id, name: s.name, path: s.path }))}
+              onNewChat={id => startChat(id)}
+              onOpenChat={id => { switchConversation(id); setActiveTab('ask'); }}
+            />
           )}
+
+          {/* Tasks: list first, calendar as a view */}
+          {activeTab === 'tasks' && <TasksView />}
+
+          {/* Activity: usage and the audit log */}
+          {activeTab === 'activity' && <ActivityView />}
 
           {/* Settings Tab */}
           {activeTab === 'settings' && (
             <SettingsView
-              onModelStatusChange={refreshLlmStatus}
-              onCloseModelSettings={closeModelSettings}
               searchConfig={searchConfig}
               onUpdateSearchConfig={updateSearchConfig}
               onResetSearchConfig={resetSearchConfig}
@@ -1680,217 +1444,62 @@ function AppSplitView() {
               onRemoveSource={removeSource}
               onSourcesCleared={() => {
                 setSources([]);
-                localStorage.setItem('indexedSources', JSON.stringify([]));
               }}
+              conversations={conversations}
+              onOpenConversation={(id: string) => { switchConversation(id); setActiveTab('ask'); }}
             />
           )}
 
-          {/* Library Tab — shows indexed sources with file lists */}
+          {/* Library: folders, indexing progress and the file browser */}
           {activeTab === 'library' && (
-            <div className="h-full overflow-y-auto p-6">
-              <div className="max-w-4xl mx-auto">
-                <div className="flex items-center justify-between mb-6">
-                  <div>
-                    <h1 className="text-lg font-bold" style={{ color: colors.text }}>Library</h1>
-                    <p className="text-xs mt-0.5" style={{ color: colors.textMuted }}>
-                      {stats.totalDocs} documents indexed across {sources.length} sources
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => handleAddSource()}
-                    className="px-3 py-1.5 text-xs font-medium rounded-md text-white transition-colors"
-                    style={{ backgroundColor: colors.primary }}
-                  >
-                    Add Source
-                  </button>
-                </div>
-
-                <SearchSetupCard className="mb-6" />
-
-                {sources.length === 0 ? (
-                  <EmptyState
-                    icon={FileText}
-                    title="No document sources"
-                    description="Add a document folder to start indexing and searching your files."
-                    actions={[
-                      { label: 'Add Workspace', onClick: () => handleAddSource(), variant: 'default', icon: FileText },
-                    ]}
-                    size="md"
-                    variant="info"
-                  />
-                ) : (
-                  <div className="space-y-4">
-                    {sources.map(source => (
-                      <div
-                        key={source.id}
-                        className="rounded-lg border p-4"
-                        style={{ borderColor: colors.border, backgroundColor: colors.cardBg }}
-                      >
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-2">
-                            <FileText className="w-4 h-4" style={{ color: colors.primary }} />
-                            <span className="text-sm font-semibold" style={{ color: colors.text }}>
-                              {source.name}
-                            </span>
-                            <span
-                              className="text-[10px] px-1.5 py-0.5 rounded-full font-medium"
-                              style={{
-                                backgroundColor: source.status === 'ready' ? `${colors.success}18` : `${colors.warning}18`,
-                                color: source.status === 'ready' ? colors.success : colors.warning,
-                              }}
-                            >
-                              {source.status}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2 text-xs" style={{ color: colors.textMuted }}>
-                            <span>{source.fileCount || 0} files</span>
-                            {source.indexedAt && (
-                              <span>Indexed {new Date(source.indexedAt).toLocaleDateString()}</span>
-                            )}
-                            <label
-                              className="flex items-center gap-1.5 px-2 py-1 rounded-md border cursor-pointer select-none focus-within:ring-2 focus-within:ring-ring"
-                              style={{ borderColor: colors.border, color: colors.textSecondary }}
-                              title="Include this source when answering in Ask"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={source.selected}
-                                onChange={() => toggleSource(source.id)}
-                                className="w-3.5 h-3.5 focus:outline-none"
-                                style={{ accentColor: colors.primary }}
-                              />
-                              Use in Ask
-                            </label>
-                            <button
-                              type="button"
-                              onClick={(e) => removeSource(source.id, e)}
-                              aria-label={`Remove source ${source.name}`}
-                              title="Remove source"
-                              className="w-7 h-7 rounded-md inline-flex items-center justify-center transition-colors hover:bg-shodh-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                              style={{ color: colors.error }}
-                            >
-                              <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-                            </button>
-                          </div>
-                        </div>
-                        {source.path && (
-                          <p className="text-[11px] truncate mb-3" style={{ color: colors.textMuted }}>
-                            {source.path}
-                          </p>
-                        )}
-
-                        {/* File list toggle */}
-                        {source.status === 'ready' && (
-                          <div>
-                            <button
-                              onClick={(e) => toggleDocsSourceExpansion(source.id, e)}
-                              className="flex items-center gap-1.5 text-xs font-medium mb-2 transition-colors"
-                              style={{ color: colors.textTertiary }}
-                            >
-                              {docsExpandedSources.has(source.id) ? (
-                                <ChevronUp className="w-3.5 h-3.5" />
-                              ) : (
-                                <ChevronDown className="w-3.5 h-3.5" />
-                              )}
-                              {docsExpandedSources.has(source.id) ? 'Hide files' : 'Show files'}
-                            </button>
-
-                            <AnimatePresence>
-                              {docsExpandedSources.has(source.id) && sourceFiles[source.id] && sourceFiles[source.id].length > 0 && (
-                                <motion.div
-                                  initial={{ height: 0, opacity: 0 }}
-                                  animate={{ height: 'auto', opacity: 1 }}
-                                  exit={{ height: 0, opacity: 0 }}
-                                  transition={{ duration: 0.2 }}
-                                  className="overflow-hidden"
-                                >
-                                  <div
-                                    className="rounded-md overflow-hidden"
-                                    style={{ backgroundColor: colors.bgTertiary }}
-                                  >
-                                    {sourceFiles[source.id].slice(0, 20).map((file: any, idx: number) => {
-                                      const { Icon, color, badge } = getFileIconInfo(file.file_type);
-                                      return (
-                                        <div
-                                          key={idx}
-                                          className="flex items-center gap-2 px-3 py-1.5 text-xs transition-colors cursor-pointer"
-                                          style={{ color: colors.textSecondary, borderBottom: `1px solid ${colors.border}` }}
-                                          onClick={() => setPreviewFile({ path: file.file_path, name: file.name || file.file_path?.split(/[\\/]/).pop() })}
-                                          onMouseEnter={e => (e.currentTarget.style.backgroundColor = `${colors.primary}08`)}
-                                          onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
-                                        >
-                                          <Icon className="w-3.5 h-3.5 shrink-0" style={{ color }} />
-                                          <span
-                                            className="text-[9px] font-bold px-1 rounded shrink-0"
-                                            style={{ backgroundColor: `${color}20`, color }}
-                                          >
-                                            {badge}
-                                          </span>
-                                          <span className="flex-1 truncate">
-                                            {file.name || file.file_path?.split(/[\\/]/).pop()}
-                                          </span>
-                                          {file.status === 'indexed' && (
-                                            <Check className="w-3 h-3 shrink-0" style={{ color: colors.success }} />
-                                          )}
-                                        </div>
-                                      );
-                                    })}
-                                    {sourceFiles[source.id].length > 20 && (
-                                      <div className="px-3 py-2 text-[10px] text-center" style={{ color: colors.textMuted }}>
-                                        +{sourceFiles[source.id].length - 20} more files
-                                      </div>
-                                    )}
-                                  </div>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
-
-                            {/* Loading state */}
-                            {docsExpandedSources.has(source.id) && !sourceFiles[source.id] && (
-                              <div className="flex items-center gap-2 py-2">
-                                <Loader2 className="w-3 h-3 animate-spin" style={{ color: colors.primary }} />
-                                <span className="text-xs" style={{ color: colors.textMuted }}>Loading files...</span>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
+            <LibraryView
+              sources={sources}
+              totalDocs={stats.totalDocs}
+              indexReady={!isLoading}
+              onAddFolder={() => void handleAddSource()}
+              onReindex={id => void handleReindex(id)}
+              onToggleSource={toggleSource}
+              onRemoveSource={removeSource}
+              onAskAboutFile={handleAskAboutFile}
+              onFileCount={handleFileCount}
+              focusedSourceId={focusedSourceId}
+            />
           )}
 
-        </motion.div>
+          </Suspense>
+        </main>
       </div>
 
-      {/* Document Preview Panel */}
-      <AnimatePresence>
-        {previewFile && (
-          <DocumentPreviewPanel
-            file={previewFile}
-            onClose={() => setPreviewFile(null)}
-          />
-        )}
-      </AnimatePresence>
 
       {/* Command Palette */}
       <CommandPalette
         open={cmdPaletteOpen}
         onClose={closePalette}
         onNavigate={setActiveTab}
-        onNewConversation={handleNewConversation}
-        onToggleTheme={toggleTheme}
-        onAddSource={() => { handleAddSource(); closePalette(); }}
-        sources={sources.map(s => ({ id: s.id, name: s.name, selected: s.selected }))}
+        actions={paletteActions}
+        conversations={conversations.map(c => ({
+          id: c.id,
+          title: c.title,
+          updatedAt: c.updatedAt,
+          workspaceName: workspaceById(c.workspaceId)?.name,
+        }))}
+        onOpenConversation={(id: string) => { switchConversation(id); setActiveTab('ask'); }}
+        sources={sources.map(s => ({ id: s.id, name: s.name, path: s.path }))}
+        workspaces={workspaces.map(w => ({ id: w.id, name: w.name, summary: sourceSummary(w.sourceCounts) }))}
+        onOpenWorkspace={id => openWorkspace(id)}
+        onNewChatInWorkspace={id => startChat(id)}
       />
 
-      {/* Onboarding Flow */}
-      <OnboardingFlow
-        isOpen={showOnboarding}
-        onComplete={() => setShowOnboarding(false)}
-        onSkip={() => setShowOnboarding(false)}
+      {/* First-run setup */}
+      <FirstRunFlow
+        open={firstRunOpen}
+        step={firstRun.step}
+        onStepChange={changeFirstRunStep}
+        onFinish={finishFirstRun}
+        onSkip={skipFirstRun}
+        llmStatus={llmStatus}
+        sources={sources}
+        onAddFolder={() => void handleAddSource()}
       />
 
       {/* Feedback Dialog */}
@@ -1901,6 +1510,8 @@ function AppSplitView() {
 
       {/* Update Notification */}
       <UpdateNotification />
+      <ReminderAlerts />
+      <TableModelPrompt />
 
       {/* Active conversation while another view is open */}
       <ConversationDock activeTab={activeTab} onExpand={() => setActiveTab('ask')} />
@@ -1909,12 +1520,18 @@ function AppSplitView() {
   );
 }
 
-/** App shell with the chat session provider mounted above it. */
+/** App shell with the chat session (and the focus pop-out it hosts) mounted above it. */
 function AppSplitViewRoot() {
   return (
-    <ChatSessionProvider>
-      <AppSplitView />
-    </ChatSessionProvider>
+    <WorkspaceProvider>
+      <ChatSessionProvider>
+        <FocusProvider>
+          <AppSplitView />
+          <VisualNavigator />
+          <SnippetHost />
+        </FocusProvider>
+      </ChatSessionProvider>
+    </WorkspaceProvider>
   );
 }
 

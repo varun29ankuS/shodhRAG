@@ -5,25 +5,21 @@ import "./index.css";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App-SplitView";
-import DailyBriefWindow from "./DailyBrief";
-import MapViewWindow from "./MapView";
+import PrintView from "./features/print/PrintView";
 import { ThemeProvider, useTheme } from "./contexts/ThemeContext";
 import { SidebarProvider } from "./contexts/SidebarContext";
 import { SearchModelsProvider } from "./features/setup/SearchModelsContext";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { Toaster } from "sonner";
+import { MotionConfig } from "framer-motion";
 import { initErrorReporting } from "./lib/errorReporting";
+import { markStartup } from "./lib/startupTiming";
+
+markStartup("modules-evaluated");
 
 initErrorReporting();
 
 const path = window.location.pathname;
-let Component = App;
-
-if (path === '/daily-brief') {
-  Component = DailyBriefWindow;
-} else if (path === '/map-view') {
-  Component = MapViewWindow;
-}
 
 function ThemedToaster() {
   const { theme, colors } = useTheme();
@@ -56,21 +52,35 @@ function ThemedToaster() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <ErrorBoundary>
-      <ThemeProvider>
-        <SidebarProvider>
-          {Component === App ? (
-            <SearchModelsProvider>
-              <App />
-            </SearchModelsProvider>
-          ) : (
-            <Component />
-          )}
-          <ThemedToaster />
-        </SidebarProvider>
-      </ThemeProvider>
-    </ErrorBoundary>
-  </React.StrictMode>,
-);
+const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
+
+if (path === '/print-view') {
+  // A print window (PDF export): always light, no app shell.
+  root.render(
+    <React.StrictMode>
+      <ErrorBoundary>
+        <ThemeProvider forced="light">
+          <PrintView />
+        </ThemeProvider>
+      </ErrorBoundary>
+    </React.StrictMode>,
+  );
+} else {
+  root.render(
+    <React.StrictMode>
+      {/* Every framer-motion animation follows prefers-reduced-motion. */}
+      <MotionConfig reducedMotion="user">
+        <ErrorBoundary>
+          <ThemeProvider>
+            <SidebarProvider>
+              <SearchModelsProvider>
+                <App />
+              </SearchModelsProvider>
+              <ThemedToaster />
+            </SidebarProvider>
+          </ThemeProvider>
+        </ErrorBoundary>
+      </MotionConfig>
+    </React.StrictMode>,
+  );
+}

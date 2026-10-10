@@ -1,58 +1,55 @@
-mod analytics_commands;
-mod answer_validator;
+mod answer_check_commands;
 mod api_key_store;
+mod app_settings;
 mod audit_commands;
-mod chat_history;
-mod context_commands;
+mod background;
+mod connect_commands;
 mod database_commands;
-mod diagnostic_commands;
-mod doc_gen_commands;
 mod document_upload_commands;
 mod enhanced_rag_commands;
 mod file_watcher;
-mod history_commands;
+mod graph_commands;
 mod image_upload_commands;
+mod inbox_commands;
 mod llm_bootstrap;
 mod llm_commands;
-mod llm_response;
 mod mcp;
 mod mcp_commands;
+mod memory_commands;
+mod memory_learn;
+mod model_picker_commands;
+mod pdf_export;
+mod profile;
 mod rag_commands;
-mod search_history;
+mod reminders;
+mod research_commands;
 mod search_models_commands;
-mod smart_templates;
 mod source_viewer_commands;
-mod space_commands;
 mod space_manager;
 mod storage_commands;
-mod system_commands;
-mod template_commands;
-mod window_commands;
+mod table_model_commands;
+mod visual_commands;
+mod workspace_commands;
 
 // Unified chat system modules
+mod agent_coverage;
 mod agent_session_commands;
 mod agent_tools;
 mod calendar_commands;
+mod calendar_store;
 mod conversation_commands;
 mod event_emitter;
 
 use tauri::Manager;
 
-use analytics_commands::AnalyticsState;
-use chat_history::ChatHistoryManager;
-use context_commands::ContextState;
 use enhanced_rag_commands::IndexingState;
 use llm_commands::{ApiKeys, LLMState};
-use mcp_commands::MCPState;
 use rag_commands::{AppPaths, RagState};
-use search_history::SearchHistoryManager;
 use shodh_rag::llm::LLMConfig;
 use space_manager::SpaceManager;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use template_commands::TemplateStore;
 use tokio::sync::RwLock as AsyncRwLock;
-use uuid::Uuid;
 
 /// Resolve the directory holding the search models (E5 + reranker).
 ///
@@ -138,17 +135,50 @@ pub fn run() {
         .with_target(false)
         .init();
 
-    let app = tauri::Builder::default()
+    // The data folder decides everything below, so it is fixed first.
+    let profile = match profile::init() {
+        Ok(profile) => profile,
+        Err(e) => {
+            tracing::error!("{}", e);
+            std::process::exit(2);
+        }
+    };
+    if let Some(dir) = profile.data_dir() {
+        tracing::info!("Separate profile from {}: {:?}", profile::DATA_DIR_ENV, dir);
+    }
+
+    let mut builder = tauri::Builder::default();
+    if profile.uses_single_instance() {
+        // First, so a second launch exits before it opens any data.
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            background::on_second_launch(app, &args);
+        }));
+    }
+    let app = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![background::BACKGROUND_FLAG]),
+        ))
+        .on_window_event(background::on_window_event)
         .setup(|app| {
+            // The main window is created here rather than from the config, so
+            // its WebView storage follows the profile.
+            for config in app.config().app.windows.iter() {
+                profile::webview_defaults(tauri::WebviewWindowBuilder::from_config(
+                    app.handle(),
+                    config,
+                )?)
+                .build()?;
+            }
+
             // Get app data directory for persistent storage. Without it
             // nothing can be stored, so this is the one fatal setup error.
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
+            let app_data_dir = crate::profile::app_data_dir(app.handle())
                 .map_err(|e| setup_error("Failed to resolve the app data directory", e))?;
             std::fs::create_dir_all(&app_data_dir)
                 .map_err(|e| setup_error("Failed to create the app data directory", e))?;
@@ -166,9 +196,57 @@ pub fn run() {
             app.manage(search_models_commands::SearchModelsState::new(
                 model_dir.clone(),
             ));
+            // The optional answer checking model: made available in the background
+            // when its files are installed and verify (it loads on first use).
+            app.manage(answer_check_commands::AnswerCheckState::new(
+                model_dir.clone(),
+            ));
+            let answer_check_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let loaded = tokio::task::spawn_blocking(move || {
+                    answer_check_handle
+                        .state::<answer_check_commands::AnswerCheckState>()
+                        .load_if_installed()
+                })
+                .await;
+                match loaded {
+                    Ok(Ok(true)) => tracing::info!("Answer checking model available"),
+                    Ok(Ok(false)) => tracing::info!(
+                        "Answer checking model not installed; answers are checked for topic and numbers only"
+                    ),
+                    Ok(Err(e)) => tracing::warn!("{e}"),
+                    Err(e) => tracing::warn!("Answer checking model load task failed: {e}"),
+                }
+            });
+
+            // The optional table structure model, loaded the same way.
+            app.manage(table_model_commands::TableModelState::new(model_dir.clone()));
+            let table_model_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let loaded = tokio::task::spawn_blocking(move || {
+                    table_model_handle
+                        .state::<table_model_commands::TableModelState>()
+                        .load_if_installed()
+                })
+                .await;
+                match loaded {
+                    Ok(Ok(true)) => tracing::info!("Table model available"),
+                    Ok(Ok(false)) => tracing::info!(
+                        "Table model not installed; tables are read with the layout heuristics only"
+                    ),
+                    Ok(Err(e)) => tracing::warn!("Table model not loaded: {e}"),
+                    Err(e) => tracing::warn!("Table model load task failed: {e}"),
+                }
+            });
 
             // Initialize SpaceManager with persistent storage
             let space_manager = SpaceManager::with_data_dir(app_data_dir.clone());
+            // Files outside a separate profile's folder belong to the normal one.
+            let space_manager = if profile::active().is_separate() {
+                space_manager.without_legacy_cleanup()
+            } else {
+                space_manager
+            };
 
             // Create app paths
             let app_paths = AppPaths {
@@ -179,6 +257,8 @@ pub fn run() {
             // Initialize LLMState FIRST so RagState can reference its manager
             let shared_llm_manager = Arc::new(AsyncRwLock::new(None));
 
+            app.manage(model_picker_commands::ModelPickerState::default());
+            app.manage(connect_commands::ConnectState::default());
             app.manage(LLMState {
                 manager: shared_llm_manager.clone(),
                 config: Arc::new(Mutex::new(LLMConfig::default())),
@@ -192,6 +272,16 @@ pub fn run() {
             let llm_bootstrap_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let llm_state = llm_bootstrap_handle.state::<LLMState>();
+                // Once: keys from the environment are saved in the OS
+                // credential store (the environment still wins at run time).
+                let migrate_handle = llm_bootstrap_handle.clone();
+                if let Err(e) = tokio::task::spawn_blocking(move || {
+                    connect_commands::migrate_env_keys_once(&migrate_handle)
+                })
+                .await
+                {
+                    tracing::warn!("Environment key migration failed: {}", e);
+                }
                 match tokio::task::spawn_blocking(api_key_store::load_all).await {
                     Ok(stored) => {
                         let merged = llm_state
@@ -208,13 +298,23 @@ pub fn run() {
                     }
                     Err(e) => tracing::warn!("Loading stored API keys failed: {}", e),
                 }
-                match llm_bootstrap::configure_from_environment(&llm_state).await {
-                    Ok(Some(description)) => {
-                        tracing::info!("LLM configured from environment: {}", description)
+                let environment = match llm_bootstrap::configure_from_environment(&llm_state).await {
+                    Ok(Some(configured)) => {
+                        tracing::info!(
+                            "LLM configured from environment: {}",
+                            configured.description
+                        );
+                        configured.model
                     }
-                    Ok(None) => {}
-                    Err(e) => tracing::warn!("LLM environment configuration failed: {}", e),
-                }
+                    Ok(None) => None,
+                    Err(e) => {
+                        tracing::warn!("LLM environment configuration failed: {}", e);
+                        None
+                    }
+                };
+                // The saved model choice applies unless the environment set one.
+                model_picker_commands::apply_startup_choice(&llm_bootstrap_handle, environment)
+                    .await;
             });
 
             // Initialize the RAG engine. Without the search models (first
@@ -230,7 +330,7 @@ pub fn run() {
                     .map(|c| c.dimension)
                     .unwrap_or(768);
             rag_config.data_dir = app_data_dir.clone();
-            let default_rag = tauri::async_runtime::block_on(
+            let mut default_rag = tauri::async_runtime::block_on(
                 shodh_rag::comprehensive_system::ComprehensiveRAG::new(rag_config),
             )
             .map_err(|e| setup_error("Failed to open the document index", format!("{e:#}")))?;
@@ -238,84 +338,108 @@ pub fn run() {
                 tracing::warn!("Search models are not installed; search needs first-run setup");
             }
 
+            // The citation graph ranks library files for queries about papers and
+            // citations; search reads the same snapshot the graph commands build.
+            let graph_slot: shodh_rag::research::citations::GraphSlot = Default::default();
+            default_rag.set_source_ranker(Some(Arc::new(
+                shodh_rag::research::citations::GraphRanker::new(graph_slot.clone()),
+            )));
+            // PDFs indexed with table-candidate pages are refined in the background.
+            let refinement = table_model_commands::spawn_refinement(app.handle(), &mut default_rag);
+            // The embedding, reranker, answer checking and table models load on
+            // first use; unload them when idle.
+            if let Some(idle) = shodh_rag::lazy_model::idle_period() {
+                let models: Vec<Arc<dyn shodh_rag::lazy_model::IdleUnload>> = vec![
+                    default_rag.embedder_handle(),
+                    default_rag.reranker_handle(),
+                    app.state::<answer_check_commands::AnswerCheckState>()
+                        .model
+                        .clone(),
+                    app.state::<table_model_commands::TableModelState>()
+                        .model
+                        .clone(),
+                ];
+                tauri::async_runtime::spawn(shodh_rag::lazy_model::unload_idle_models(
+                    models, idle,
+                ));
+            }
+            let rag_engine = Arc::new(AsyncRwLock::new(default_rag));
+            table_model_commands::start_worker(app.handle().clone(), rag_engine.clone(), refinement);
+            // Long-term memory: typed statements next to the document index, dynamics in
+            // shodh.db. Opens on first use (it needs the search models' embedder).
+            let memory_state = memory_commands::MemoryState::new(
+                &app_data_dir,
+                rag_engine.clone(),
+                &app.state::<audit_commands::AuditState>(),
+            );
+            // Snippets and Result statements share the memory's statement store; images,
+            // extraction reports and rejections live in shodh.db. Opens on first use.
+            app.manage(research_commands::ResearchState::new(
+                memory_state.clone(),
+                &app.state::<audit_commands::AuditState>(),
+                app.state::<table_model_commands::TableModelState>()
+                    .model
+                    .clone(),
+                graph_slot,
+            ));
+            // Load a graph built in an earlier session, so search can use it from the start.
+            graph_commands::warm(app.handle().clone());
+            app.manage(memory_state);
+            // Generated visuals (the gallery), in shodh.db. Opens on first use.
+            let visual_state =
+                visual_commands::VisualState::new(&app.state::<audit_commands::AuditState>());
+            app.manage(visual_state);
+            // Workspaces (sources, instructions), in shodh.db. Opens on first use.
+            app.manage(workspace_commands::WorkspaceState::new(
+                &app.state::<audit_commands::AuditState>(),
+            ));
+            // The Inbox (approvals, finished background work), in shodh.db.
+            app.manage(inbox_commands::InboxState::new(
+                &app.state::<audit_commands::AuditState>(),
+            ));
+            inbox_commands::recover_on_launch(app.handle());
+            // Learning from conversations (needs the memory, LLM and audit states).
+            memory_learn::manage(app, &app_data_dir);
+
             app.manage(RagState {
-                rag: Arc::new(AsyncRwLock::new(default_rag)),
-                notes: Mutex::new(Vec::new()),
+                rag: rag_engine,
                 space_manager: Mutex::new(space_manager),
-                conversation_manager: Arc::new(AsyncRwLock::new(None)),
-                memory_system: Arc::new(AsyncRwLock::new(None)),
                 app_paths,
                 rag_initialized: Arc::new(AsyncRwLock::new(false)),
                 initialization_lock: Arc::new(tokio::sync::Mutex::new(())),
             });
 
             app.manage(IndexingState::default());
-            app.manage(agent_session_commands::AgentSessions::default());
-            let analytics_path = app_data_dir.join("analytics.json");
-            app.manage(AnalyticsState::load_or_default(&analytics_path));
-            app.manage(TemplateStore::default());
+            app.manage(file_watcher::FolderSyncState::new(
+                app_data_dir.join("folder_sync"),
+            ));
+            // Task reminders: native notifications while the app runs.
+            app.manage(reminders::ReminderState::default());
+            reminders::spawn(app.handle().clone());
 
-            // Initialize MCP (Model Context Protocol) state
-            let mcp_config_dir = app_data_dir.join("mcp");
-            if let Err(e) = std::fs::create_dir_all(&mcp_config_dir) {
-                tracing::error!(
-                    "Failed to create MCP config directory {:?}: {}; MCP settings will not be saved",
-                    mcp_config_dir,
-                    e
-                );
+            // Tray icon: the window can hide there and reminders keep ringing.
+            app.manage(background::BackgroundState::default());
+            let tray = background::create_tray(app.handle());
+            if let Err(e) = &tray {
+                // Without a tray, hiding would strand the window: closing quits.
+                tracing::error!("Tray icon unavailable: {e}");
             }
-            let mcp_manager = mcp::MCPManager::new();
-            let mcp_registry = mcp::registry::MCPRegistry::new(mcp_config_dir);
-            app.manage(MCPState {
-                manager: Arc::new(AsyncRwLock::new(mcp_manager)),
-                registry: Arc::new(AsyncRwLock::new(mcp_registry)),
-            });
-
-            // Initialize context accumulator with unique session ID
-            let session_id = Uuid::new_v4().to_string();
-            app.manage(ContextState::new(session_id));
-
-            // Initialize search and chat history managers
-            let search_history_manager = SearchHistoryManager::new(&app_data_dir);
-            app.manage(Arc::new(Mutex::new(search_history_manager)));
-
-            let chat_history_manager = ChatHistoryManager::new(&app_data_dir);
-            app.manage(Arc::new(Mutex::new(chat_history_manager)));
-
-            // Initialize conversation manager and memory system with app data directory
-            let memory_store_path = app_data_dir.join("memory_store");
-
-            let rag_state = app.state::<RagState>();
-            let conversation_manager_arc = rag_state.conversation_manager.clone();
-            let memory_system_arc_state = rag_state.memory_system.clone();
-
-            tauri::async_runtime::spawn(async move {
-                let mut memory_config = shodh_rag::memory::MemoryConfig::default();
-                memory_config.storage_path = memory_store_path;
-
-                match shodh_rag::memory::MemorySystem::new(memory_config) {
-                    Ok(memory_system) => {
-                        let memory_system_shared = Arc::new(AsyncRwLock::new(memory_system));
-                        *memory_system_arc_state.write().await = Some(memory_system_shared.clone());
-                        tracing::info!("Memory system initialized successfully");
-
-                        match shodh_rag::agent::ConversationManager::new_with_memory(
-                            memory_system_shared.clone(),
-                        ) {
-                            Ok(manager) => {
-                                *conversation_manager_arc.write().await = Some(manager);
-                                tracing::info!("Conversation manager initialized successfully");
-                            }
-                            Err(e) => {
-                                tracing::error!("Failed to initialize conversation manager: {}", e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to initialize memory system: {}", e);
+            if tray.is_ok() && background::started_in_background() {
+                if let Some(window) = app.get_webview_window(background::MAIN_WINDOW) {
+                    if let Err(e) = window.hide() {
+                        tracing::warn!("Could not start hidden: {e}");
                     }
                 }
-            });
+            }
+            app.manage(agent_session_commands::AgentSessions::default());
+            agent_session_commands::start_idle_reaper(app.handle().clone());
+            pdf_export::manage(app.handle());
+
+            // MCP servers and skills for the agent (Settings → Tools & connections).
+            app.manage(mcp_commands::McpState(mcp::McpManager::new(
+                app_data_dir.clone(),
+            )));
+            app.manage(mcp::skills::SkillInstaller::default());
 
             // Re-index existing calendar data into RAG engine (best-effort, background)
             {
@@ -365,191 +489,82 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // RAG commands
             rag_commands::initialize_rag,
-            rag_commands::check_initialization_status,
             rag_commands::search_documents,
-            rag_commands::add_document,
-            rag_commands::upload_file,
             rag_commands::get_statistics,
-            rag_commands::clear_all_data,
             rag_commands::delete_folder_source,
-            rag_commands::add_test_documents,
-            rag_commands::get_all_documents,
-            rag_commands::list_space_documents,
-            rag_commands::get_notes,
-            rag_commands::save_note,
-            rag_commands::update_note,
-            rag_commands::delete_note,
-            rag_commands::add_note_to_rag,
-            rag_commands::remove_note_from_rag,
-            rag_commands::link_folder,
-            rag_commands::get_folder_stats,
             rag_commands::get_source_files,
             // First-run search model setup
             search_models_commands::search_models_status,
             search_models_commands::install_search_models,
+            answer_check_commands::answer_check_status,
+            answer_check_commands::install_answer_check_model,
+            table_model_commands::table_model_status,
+            table_model_commands::install_table_model,
             // Enhanced RAG commands
-            enhanced_rag_commands::preview_folder,
             enhanced_rag_commands::link_folder_enhanced,
             enhanced_rag_commands::index_single_file,
-            enhanced_rag_commands::test_indexing,
             enhanced_rag_commands::pause_indexing,
             enhanced_rag_commands::resume_indexing,
-            enhanced_rag_commands::cancel_indexing,
             enhanced_rag_commands::check_path_type,
-            // Window commands
-            window_commands::create_floating_widget,
-            window_commands::show_main_window,
-            window_commands::watch_folder,
-            window_commands::unwatch_folder,
-            window_commands::watch_global_folder,
-            window_commands::scan_global_folder,
-            // Analytics commands
-            rag_commands::get_daily_brief,
-            rag_commands::get_knowledge_map,
-            // Document access commands
-            rag_commands::open_original_document,
-            rag_commands::open_file_at_location,
-            rag_commands::read_original_file,
-            rag_commands::get_document_metadata,
-            rag_commands::get_document_full_text,
+            // PDF export and printing
+            pdf_export::export_pdf,
+            pdf_export::print_job,
+            pdf_export::print_job_ready,
             // Citation tracking commands
             rag_commands::jump_to_source,
-            // Smart Templates commands
-            template_commands::extract_template,
-            template_commands::generate_from_template,
-            template_commands::list_templates,
-            template_commands::get_template,
-            template_commands::delete_template,
-            template_commands::update_template,
-            template_commands::preview_template,
             // File watcher commands
-            file_watcher::start_watching_folder,
-            file_watcher::stop_watching_folder,
-            file_watcher::get_watched_folders,
+            file_watcher::sync_folder_sources,
             // LLM commands
-            llm_commands::switch_llm_mode,
-            llm_commands::llm_generate,
-            llm_commands::llm_generate_stream,
-            llm_commands::llm_generate_stream_with_rag,
             llm_commands::get_llm_info,
             llm_commands::set_api_key,
-            llm_commands::delete_api_key,
-            llm_commands::get_configured_providers,
-            llm_commands::update_llm_config,
-            llm_commands::browse_model_file,
-            llm_commands::set_custom_model_path,
-            llm_commands::get_custom_model_path,
-            llm_commands::test_llm_inference,
-            // Space commands
-            space_commands::create_space,
-            space_commands::get_spaces,
-            space_commands::add_document_to_space,
-            space_commands::search_in_space,
-            space_commands::search_global,
-            space_commands::delete_space_with_docs,
-            space_commands::get_space_documents,
-            space_commands::remove_document,
-            space_commands::set_space_system_prompt,
-            space_commands::get_space_system_prompt,
-            // History commands
-            history_commands::add_search_history,
-            history_commands::get_search_history,
-            history_commands::get_search_suggestions,
-            history_commands::clear_search_history,
-            history_commands::add_chat_message,
-            history_commands::get_chat_history,
-            history_commands::clear_chat_history,
-            history_commands::get_chat_sessions_summary,
-            history_commands::export_chat_history,
-            history_commands::search_with_history,
-            // Graph commands
-            // Document generation commands
-            doc_gen_commands::generate_document,
-            doc_gen_commands::generate_from_rag,
-            doc_gen_commands::generate_document_stream,
-            doc_gen_commands::get_available_formats,
-            doc_gen_commands::get_available_templates,
-            doc_gen_commands::generate_document_preview,
-            doc_gen_commands::get_source_documents,
-            doc_gen_commands::get_comparable_documents,
+            model_picker_commands::model_picker_view,
+            model_picker_commands::model_select,
+            model_picker_commands::model_set_favourite,
+            model_picker_commands::model_set_fallback,
+            model_picker_commands::model_fallback_offer,
+            model_picker_commands::model_use_pick,
+            model_picker_commands::model_set_provider_order,
+            model_picker_commands::model_set_base_url,
+            connect_commands::connect_sign_in,
+            connect_commands::connect_sign_in_cancel,
+            connect_commands::connect_sign_out,
+            connect_commands::connect_save_key,
+            connect_commands::connect_remove_key,
             // Database management commands
             database_commands::reset_database,
             database_commands::clear_all_documents,
-            database_commands::delete_space_permanently,
             database_commands::get_database_stats,
             database_commands::list_indexed_sources,
             database_commands::cleanup_orphaned_documents,
-            database_commands::save_backup_file,
-            database_commands::read_backup_file,
-            database_commands::restore_space_from_backup,
-            database_commands::list_backup_files,
-            database_commands::update_space_metadata,
-            // Diagnostic commands
-            diagnostic_commands::get_index_diagnostics,
-            diagnostic_commands::get_document_content,
-            diagnostic_commands::debug_rag_state,
-            // Analytics commands
-            analytics_commands::get_dashboard_data,
-            analytics_commands::track_query,
-            analytics_commands::track_query_error,
-            analytics_commands::track_indexing,
-            analytics_commands::get_performance_metrics,
-            analytics_commands::get_usage_metrics,
-            analytics_commands::get_quality_metrics,
             // Storage commands
-            storage_commands::get_storage_stats,
-            storage_commands::get_space_documents_detailed,
-            storage_commands::delete_documents_batch,
-            storage_commands::clear_space_documents,
             storage_commands::optimize_storage,
-            storage_commands::create_backup,
-            storage_commands::restore_backup,
-            // Context accumulator commands
-            context_commands::update_context,
-            context_commands::track_user_message,
-            context_commands::track_assistant_message,
-            context_commands::track_search,
-            context_commands::track_search_refinement,
-            context_commands::track_document_view,
-            context_commands::track_filter,
-            context_commands::get_context_summary,
-            context_commands::build_llm_context,
-            context_commands::get_full_context,
-            context_commands::clear_context,
-            context_commands::start_task,
-            context_commands::save_session_to_memory,
-            context_commands::restore_session_from_memory,
-            // Document commands (in rag_commands.rs)
-            rag_commands::get_document_preview,
+            // Source viewer
             source_viewer_commands::get_source_file_info,
             source_viewer_commands::read_source_bytes,
             source_viewer_commands::read_source_text,
             source_viewer_commands::read_source_table,
-            rag_commands::parse_llm_response,
+            source_viewer_commands::get_pdf_info,
             // Image upload commands
             image_upload_commands::read_clipboard_image,
             image_upload_commands::process_image_from_base64,
             image_upload_commands::process_image_from_file,
-            image_upload_commands::search_images,
-            // Form export commands
-            image_upload_commands::export_form_html,
-            image_upload_commands::export_form_json,
-            // System actions (OS integration)
-            system_commands::execute_file_action,
-            system_commands::execute_command_action,
-            system_commands::open_file_manager,
-            system_commands::get_system_information,
-            system_commands::get_running_processes,
-            // MCP (Model Context Protocol) commands
-            mcp_commands::mcp_connect_server,
-            mcp_commands::mcp_disconnect_server,
-            mcp_commands::mcp_list_tools,
-            mcp_commands::mcp_search_tools,
-            mcp_commands::mcp_call_tool,
-            mcp_commands::mcp_list_servers,
-            mcp_commands::mcp_upsert_server,
+            // Tools & connections: MCP servers, skills, the composer tool chip
+            mcp_commands::tools_overview,
+            mcp_commands::mcp_test_server,
+            mcp_commands::mcp_add_servers,
             mcp_commands::mcp_remove_server,
-            mcp_commands::mcp_update_server_env,
+            mcp_commands::mcp_set_server,
+            mcp_commands::mcp_set_tool,
+            mcp_commands::mcp_open_config,
+            mcp_commands::enola_install,
+            mcp_commands::skills_prepare_install,
+            mcp_commands::skills_prepare_recommended,
+            mcp_commands::skills_set_modes,
+            mcp_commands::skills_confirm_install,
+            mcp_commands::skills_cancel_install,
+            mcp_commands::skills_set_enabled,
+            mcp_commands::skills_remove,
+            mcp_commands::tools_for_chat,
             // Document Upload commands
             document_upload_commands::upload_document_file,
             document_upload_commands::save_temp_file,
@@ -559,6 +574,11 @@ pub fn run() {
             agent_session_commands::agent_steer,
             agent_session_commands::agent_abort,
             agent_session_commands::agent_approve,
+            agent_session_commands::agent_code_status,
+            agent_session_commands::agent_code_discard,
+            agent_session_commands::agent_code_paths,
+            agent_session_commands::code_settings_get,
+            agent_session_commands::code_settings_set,
             agent_session_commands::agent_install_runtime,
             audit_commands::audit_query,
             audit_commands::audit_verify,
@@ -566,12 +586,84 @@ pub fn run() {
             audit_commands::audit_set_retention_days,
             audit_commands::audit_stats,
             agent_session_commands::agent_runtime_status,
+            agent_session_commands::agent_close_session,
+            agent_session_commands::agent_session_counts,
             // Conversation persistence commands
             conversation_commands::load_conversations,
             conversation_commands::save_conversation,
             conversation_commands::delete_conversation,
             conversation_commands::rename_conversation,
             conversation_commands::pin_conversation,
+            // App settings (preferences: user and agent; policy: user only)
+            app_settings::get_app_settings,
+            app_settings::update_app_preferences,
+            app_settings::set_app_policy,
+            app_settings::set_memory_preferences,
+            app_settings::set_answer_preferences,
+            // Long-term memory (Settings → Memory)
+            memory_commands::memory_list,
+            memory_commands::memory_history,
+            memory_commands::memory_update,
+            memory_commands::memory_set_pinned,
+            memory_commands::memory_forget,
+            memory_commands::memory_export,
+            memory_learn::memory_learn_status,
+            memory_learn::memory_suggestions_list,
+            memory_learn::memory_suggestion_accept,
+            memory_learn::memory_suggestions_accept_many,
+            memory_learn::memory_suggestion_reject,
+            memory_learn::memory_suggestion_undo,
+            memory_learn::memory_learning_stop,
+            memory_learn::memory_consolidate_now,
+            // Generated visuals (the gallery and the focus pop-out)
+            visual_commands::visuals_capture,
+            inbox_commands::inbox_list,
+            inbox_commands::inbox_dismiss,
+            workspace_commands::workspaces_list,
+            workspace_commands::workspaces_templates,
+            workspace_commands::workspaces_get,
+            workspace_commands::workspaces_create,
+            workspace_commands::workspaces_update,
+            workspace_commands::workspaces_set_archived,
+            workspace_commands::workspaces_set_instructions,
+            workspace_commands::workspaces_instruction_history,
+            workspace_commands::workspaces_add_sources,
+            workspace_commands::workspaces_remove_source,
+            workspace_commands::workspaces_delete,
+            workspace_commands::workspaces_source_health,
+            visual_commands::visuals_backfill_status,
+            visual_commands::visuals_backfill,
+            visual_commands::visuals_list,
+            visual_commands::visuals_count,
+            visual_commands::visuals_get,
+            visual_commands::visuals_rename,
+            visual_commands::visuals_set_pinned,
+            visual_commands::visuals_set_note,
+            visual_commands::visuals_add_version,
+            visual_commands::visuals_delete,
+            visual_commands::visuals_restore,
+            research_commands::snippets_create,
+            research_commands::snippets_list,
+            research_commands::snippets_get,
+            research_commands::snippets_image,
+            research_commands::snippets_set_image,
+            research_commands::snippets_update,
+            research_commands::snippets_delete,
+            research_commands::snippets_table,
+            research_commands::snippets_transcribe_latex,
+            research_commands::vision_capability,
+            research_commands::results_extract,
+            research_commands::results_list,
+            research_commands::results_review,
+            research_commands::results_query,
+            research_commands::results_facets,
+            research_commands::paper_objects,
+            graph_commands::paper_graph_status,
+            graph_commands::paper_graph_build,
+            graph_commands::paper_graph_view,
+            graph_commands::paper_get,
+            graph_commands::papers_find,
+            graph_commands::paper_concept,
             // Calendar/Todo commands
             calendar_commands::load_tasks,
             calendar_commands::create_task,
@@ -579,11 +671,21 @@ pub fn run() {
             calendar_commands::delete_task,
             calendar_commands::add_subtask,
             calendar_commands::toggle_subtask,
+            calendar_commands::rename_subtask,
             calendar_commands::delete_subtask,
             calendar_commands::load_events,
             calendar_commands::create_event,
             calendar_commands::update_event,
             calendar_commands::delete_event,
+            // Task reminders
+            reminders::snooze_reminder,
+            reminders::list_missed_reminders,
+            reminders::dismiss_missed_reminders,
+            // Background mode (tray, start with Windows)
+            background::get_background_status,
+            background::set_close_to_tray,
+            background::set_agent_idle_minutes,
+            background::set_start_with_windows,
         ])
         .build(tauri::generate_context!());
 

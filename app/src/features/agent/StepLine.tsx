@@ -3,8 +3,9 @@ import { ChevronRight } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { ApprovalPrompt } from './ApprovalPrompt';
 import { formatMs, prettyJson } from './format';
-import { passagesFromDetail } from './reducer';
+import { passagesFromDetail, webSourcesFromDetail } from './reducer';
 import type { TranscriptStep } from './reducer';
+import { AttributionFrame, WebSources } from './WebSources';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-ground';
@@ -29,8 +30,15 @@ function hasContent(value: unknown): boolean {
   return true;
 }
 
+function detailString(detail: unknown, key: string): string | null {
+  if (typeof detail !== 'object' || detail === null) return null;
+  const value = (detail as Record<string, unknown>)[key];
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
 function DetailView({ step }: { step: TranscriptStep }) {
-  const passages = passagesFromDetail(step.detail);
+  const webSources = webSourcesFromDetail(step.detail);
+  const passages = passagesFromDetail(step.detail).filter(p => !p.web);
   return (
     <div className="mt-1 ml-[18px] rounded-lg border border-shodh-border-subtle bg-shodh-surface px-3 py-2 font-mono text-[11.5px] leading-[1.55] text-shodh-text-secondary overflow-x-auto scrollbar-thin">
       {hasContent(step.args) && (
@@ -39,7 +47,9 @@ function DetailView({ step }: { step: TranscriptStep }) {
           <pre className="m-0 whitespace-pre-wrap break-words">{prettyJson(step.args)}</pre>
         </>
       )}
-      {passages.length > 0 ? (
+      {webSources.length > 0 ? (
+        <WebSources sources={webSources} provider={detailString(step.detail, 'provider')} />
+      ) : passages.length > 0 ? (
         <ol className="mt-1.5 list-none p-0 flex flex-col gap-0.5" aria-label="Passages found">
           {passages.map(p => (
             <li key={p.n} className="whitespace-nowrap">
@@ -86,6 +96,7 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0 }: 
   const waiting = step.status === 'awaiting_approval';
   const failed = step.status === 'failed';
   const expandable = hasContent(step.args) || hasContent(step.detail);
+  const attribution = step.status === 'done' ? detailString(step.detail, 'attributionHtml') : null;
 
   const marker = running ? (
     <Spinner className="mt-[5px]" />
@@ -149,6 +160,7 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0 }: 
         </p>
       )}
       {open && <div id={detailId}><DetailView step={step} /></div>}
+      {attribution && <AttributionFrame html={attribution} />}
       {step.approval && onDecide && (
         <div className="mt-2 ml-[17px]">
           <ApprovalPrompt approval={step.approval} onDecide={approved => onDecide(step.id, approved)} compact={compact} />

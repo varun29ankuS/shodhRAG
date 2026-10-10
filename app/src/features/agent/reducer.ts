@@ -8,7 +8,11 @@
  * request failed before the run started, or an interrupt timed out.
  */
 
-import type { AgentEvent, PlanItem, RiskTier } from './events';
+import type { AgentEvent, GroundingReport, PlanItem, RevisionReason, RiskTier } from './events';
+import type { PdfRegion } from '../ask/types';
+import { parseRegions } from '../ask/viewer/regionGeometry.ts';
+import { readProviderError } from '../modelPicker/modelTypes.ts';
+import type { ProviderError, ProviderErrorKind } from '../modelPicker/modelTypes.ts';
 
 export type StepStatus = 'running' | 'awaiting_approval' | 'done' | 'failed';
 
@@ -40,7 +44,11 @@ export interface TranscriptStep {
   children: string[];
 }
 
-/** One passage returned by `search_documents`; the model cites it as `[n]`. */
+/**
+ * One numbered source the model cites as `[n]`: a passage from the user's
+ * documents (`search_documents`) or, with `web` set, a web page or paper
+ * (`web_search`, `fetch_url`, `search_papers`) whose `path` is its URL.
+ */
 export interface Passage {
   n: number;
   file: string;
@@ -49,12 +57,28 @@ export interface Passage {
   heading: string | null;
   score: number;
   text: string;
+  /** Untrusted web content; `path` is an http(s) URL. Absent in older transcripts. */
+  web?: boolean;
+  /** Heading chain ("3 Method > 3.2 Chunkwise form"); absent for unstructured sources. */
+  section?: string | null;
+  /** Layout boxes on the cited pages; absent for unstructured sources. */
+  regions?: PdfRegion[] | null;
+}
+
+/** A web source as returned in a web tool's `detail.webSources`. */
+export interface WebSource {
+  n: number;
+  title: string;
+  url: string;
+  snippet: string;
 }
 
 export type TranscriptBlock =
   | { kind: 'text'; id: string; text: string }
   | { kind: 'step'; stepId: string }
-  | { kind: 'steer'; id: string; text: string };
+  | { kind: 'steer'; id: string; text: string }
+  /** The app asked the model to fix flagged statements or search for missing parts. */
+  | { kind: 'revision'; id: string; round: number; reason: RevisionReason; flagged: number; missingNeeds: string[] };
 
 export type TranscriptStatus = 'starting' | 'running' | 'completed' | 'aborted' | 'error';
 
@@ -95,10 +119,28 @@ export interface TranscriptState {
   usage: UsageTotals | null;
   /** Passages from every search of the run, ordered by `n`. */
   passages: Passage[];
+  /** Grounding checks of the answer, one per round; the final one describes the answer. */
+  groundings: GroundingReport[];
+  /** The answer is being checked against its sources (not persisted). */
+  checking: boolean;
   /** Latest reasoning text (not persisted). */
   thinking: string;
   /** The user asked to interrupt; waiting for the run to stop. */
   interrupting: boolean;
+  /** The provider failure behind an `error` status (absent in transcripts saved before it existed). */
+  providerError?: ProviderError | null;
+  /** This answer was retried with a fallback model (absent when it was not). */
+  fallback?: TranscriptFallback | null;
+}
+
+/** Why an answer came from a fallback model. */
+export interface TranscriptFallback {
+  /** The model that failed (`provider/model`, as runs name it). */
+  from: string;
+  /** Its failure. */
+  kind: ProviderErrorKind;
+  /** Retried by the "always fall back" setting rather than a click. */
+  automatic: boolean;
 }
 
 export type LocalAction =
@@ -110,8 +152,10 @@ export type LocalAction =
 
 export type TranscriptAction = AgentEvent | LocalAction;
 
-export function initialTranscript(runId: string, startedAtMs: number): TranscriptState {
+export function initialTranscript(runId: string, startedAtMs: number, fallback: TranscriptFallback | null = null): TranscriptState {
   return {
+    providerError: null,
+    fallback,
     runId,
     sessionId: null,
     model: null,
@@ -126,6 +170,8 @@ export function initialTranscript(runId: string, startedAtMs: number): Transcrip
     plan: null,
     usage: null,
     passages: [],
+    groundings: [],
+    checking: false,
     thinking: '',
     interrupting: false,
   };
@@ -143,10 +189,43 @@ function str(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-/** Passages carried by a `search_documents` step's detail. */
+function isHttpUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value);
+}
+
+/** Web sources carried by a web tool step's detail (only http(s) URLs). */
+export function webSourcesFromDetail(detail: unknown): WebSource[] {
+  if (!isRecord(detail) || !Array.isArray(detail.webSources)) return [];
+  const out: WebSource[] = [];
+  for (const entry of detail.webSources) {
+    if (!isRecord(entry)) continue;
+    const n = entry.n;
+    const url = str(entry.url);
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < 1 || !url || !isHttpUrl(url)) continue;
+    out.push({
+      n,
+      title: str(entry.title) ?? url,
+      url,
+      snippet: typeof entry.snippet === 'string' ? entry.snippet : '',
+    });
+  }
+  return out;
+}
+
+/** Numbered sources carried by a step's detail: document passages and web sources. */
 export function passagesFromDetail(detail: unknown): Passage[] {
-  if (!isRecord(detail) || !Array.isArray(detail.passages)) return [];
-  const out: Passage[] = [];
+  const web: Passage[] = webSourcesFromDetail(detail).map(s => ({
+    n: s.n,
+    file: s.title,
+    path: s.url,
+    page: null,
+    heading: null,
+    score: 0,
+    text: s.snippet,
+    web: true,
+  }));
+  if (!isRecord(detail) || !Array.isArray(detail.passages)) return web;
+  const out: Passage[] = web;
   for (const entry of detail.passages) {
     if (!isRecord(entry)) continue;
     const n = entry.n;
@@ -161,9 +240,23 @@ export function passagesFromDetail(detail: unknown): Passage[] {
       heading: str(entry.heading),
       score: typeof entry.score === 'number' ? entry.score : 0,
       text: typeof entry.text === 'string' ? entry.text : '',
+      section: str(entry.section),
+      regions: parseRegions(entry.regions),
     });
   }
   return out;
+}
+
+/** A plan item from an event; items from older builds lack the need fields. */
+function planItem(item: PlanItem): PlanItem {
+  return {
+    id: item.id,
+    text: item.text,
+    status: item.status,
+    need: item.need === true,
+    coverage: item.coverage === 'covered' || item.coverage === 'missing' ? item.coverage : null,
+    evidence: Array.isArray(item.evidence) ? item.evidence.filter(n => Number.isInteger(n)) : [],
+  };
 }
 
 function mergePassages(existing: Passage[], incoming: Passage[]): Passage[] {
@@ -313,7 +406,30 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
     }
 
     case 'plan_updated':
-      return { ...state, plan: action.items.length > 0 ? action.items : null };
+      return { ...state, plan: action.items.length > 0 ? action.items.map(planItem) : null };
+
+    case 'grounding_started':
+      return { ...state, checking: true };
+
+    case 'grounding':
+      return { ...state, groundings: [...state.groundings, action.report], checking: false };
+
+    case 'revision_started':
+      return {
+        ...state,
+        checking: false,
+        blocks: [
+          ...state.blocks,
+          {
+            kind: 'revision',
+            id: `revision-${action.round}`,
+            round: action.round,
+            reason: action.reason,
+            flagged: action.flagged,
+            missingNeeds: action.missingNeeds,
+          },
+        ],
+      };
 
     case 'navigated':
       return state;
@@ -339,9 +455,11 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
         durationMs: action.durationMs,
         error: action.error,
         errorCode: status === 'error' ? 'runtime_error' : null,
+        providerError: status === 'error' ? readProviderError(action.providerError) : null,
         steps: closeOpenSteps(state.steps, status === 'aborted' ? 'Interrupted' : 'Did not complete', endMs),
         thinking: '',
         interrupting: false,
+        checking: false,
       };
     }
 
@@ -394,10 +512,18 @@ export function reduceAll(state: TranscriptState, actions: readonly TranscriptAc
   return next;
 }
 
-/** The answer text: every text block of the run, in order. */
+/** Text blocks a revised answer replaced (kept in the transcript as an earlier draft). */
+export function supersededBlocks(state: TranscriptState): Set<string> {
+  const out = new Set<string>();
+  for (const report of state.groundings) for (const id of report.supersededMessageIds) out.add(id);
+  return out;
+}
+
+/** The answer text: every text block of the run, in order, without replaced drafts. */
 export function answerText(state: TranscriptState): string {
+  const superseded = supersededBlocks(state);
   return state.blocks
-    .filter((b): b is { kind: 'text'; id: string; text: string } => b.kind === 'text')
+    .filter((b): b is { kind: 'text'; id: string; text: string } => b.kind === 'text' && !superseded.has(b.id))
     .map(b => b.text.trim())
     .filter(t => t.length > 0)
     .join('\n\n');
@@ -423,7 +549,7 @@ export function pendingApproval(state: TranscriptState): TranscriptStep | null {
 
 /** Form stored with the conversation: no transient reasoning text. */
 export function toPersisted(state: TranscriptState): TranscriptState {
-  return { ...state, thinking: '', interrupting: false };
+  return { ...state, thinking: '', interrupting: false, checking: false };
 }
 
 const STATUSES: readonly TranscriptStatus[] = ['starting', 'running', 'completed', 'aborted', 'error'];
@@ -441,7 +567,9 @@ export function fromPersisted(value: unknown): TranscriptState | null {
     ...initialTranscript(state.runId, state.startedAtMs),
     ...state,
     passages: Array.isArray(state.passages) ? state.passages : [],
-    plan: Array.isArray(state.plan) ? state.plan : null,
+    plan: Array.isArray(state.plan) ? state.plan.map(planItem) : null,
+    groundings: Array.isArray(state.groundings) ? state.groundings : [],
+    checking: false,
     thinking: '',
     interrupting: false,
   };

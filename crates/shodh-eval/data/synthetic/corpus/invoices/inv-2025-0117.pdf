@@ -1,0 +1,70 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (Tax Invoice INV-2025-0117) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 1712 >>
+stream
+BT /F2 12.0 Tf 72.00 730.00 Td (TAX INVOICE) Tj ET
+BT /F1 10.0 Tf 72.00 710.00 Td (Invoice No: INV-2025-0117) Tj ET
+BT /F1 10.0 Tf 72.00 696.00 Td (Invoice Date: 16 May 2025) Tj ET
+BT /F1 10.0 Tf 72.00 682.00 Td (Due Date: 30 June 2025) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (From: Bluepeak Systems LLP, GSTIN 29AAKFB4821M1Z3) Tj ET
+BT /F1 10.0 Tf 72.00 654.00 Td (To: Northwind Analytics Pvt. Ltd.) Tj ET
+BT /F2 9.5 Tf 72.00 630.00 Td (Item) Tj ET
+BT /F2 9.5 Tf 300.00 630.00 Td (Qty) Tj ET
+BT /F2 9.5 Tf 370.00 630.00 Td (Rate \(INR\)) Tj ET
+BT /F2 9.5 Tf 470.00 630.00 Td (Amount \(INR\)) Tj ET
+BT /F1 9.5 Tf 72.00 616.00 Td (Data warehouse design sprint) Tj ET
+BT /F1 9.5 Tf 300.00 616.00 Td (1) Tj ET
+BT /F1 9.5 Tf 370.00 616.00 Td (3,60,000.00) Tj ET
+BT /F1 9.5 Tf 470.00 616.00 Td (3,60,000.00) Tj ET
+BT /F1 9.5 Tf 72.00 602.00 Td (Operations retainer \(May 2025\)) Tj ET
+BT /F1 9.5 Tf 300.00 602.00 Td (1) Tj ET
+BT /F1 9.5 Tf 370.00 602.00 Td (2,75,000.00) Tj ET
+BT /F1 9.5 Tf 470.00 602.00 Td (2,75,000.00) Tj ET
+BT /F1 9.5 Tf 72.00 588.00 Td (Cloud cost optimisation review) Tj ET
+BT /F1 9.5 Tf 300.00 588.00 Td (1) Tj ET
+BT /F1 9.5 Tf 370.00 588.00 Td (40,000.00) Tj ET
+BT /F1 9.5 Tf 470.00 588.00 Td (40,000.00) Tj ET
+BT /F1 9.5 Tf 370.00 574.00 Td (Subtotal) Tj ET
+BT /F1 9.5 Tf 470.00 574.00 Td (6,75,000.00) Tj ET
+BT /F1 9.5 Tf 370.00 560.00 Td (IGST 18%) Tj ET
+BT /F1 9.5 Tf 470.00 560.00 Td (1,21,500.00) Tj ET
+BT /F1 9.5 Tf 370.00 546.00 Td (Total) Tj ET
+BT /F1 9.5 Tf 470.00 546.00 Td (7,96,500.00) Tj ET
+BT /F1 10.0 Tf 72.00 522.00 Td (Total amount due: INR 7,96,500.00) Tj ET
+BT /F1 10.0 Tf 72.00 508.00 Td (Pay by bank transfer to HDFC Bank, account 50200012345678, IFSC HDFC0001234.) Tj ET
+endstream
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000218 00000 n 
+0000000320 00000 n 
+0000000416 00000 n 
+0000000552 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R /Info 5 0 R >>
+startxref
+2315
+%%EOF

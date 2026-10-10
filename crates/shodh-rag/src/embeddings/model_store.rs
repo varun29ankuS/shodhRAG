@@ -102,6 +102,103 @@ pub fn search_model_artifacts() -> Vec<ModelArtifact> {
     ]
 }
 
+/// Directory (under the model root) holding the answer-checking (NLI) model.
+pub const ANSWER_CHECK_DIR: &str = "nli-deberta-v3-xsmall";
+
+/// The pinned answer-checking model (≈96 MB): `cross-encoder/nli-deberta-v3-xsmall`,
+/// its quantised ONNX export, tokenizer and config (the config carries the
+/// label order the loader checks). Optional: without it, answers are checked
+/// with the reranker and number checks only.
+///
+/// The ONNX hash is Hugging Face's LFS object id at this revision; the
+/// tokenizer and config are plain git files, hashed after download from the
+/// same revision URLs.
+pub fn answer_check_artifacts() -> Vec<ModelArtifact> {
+    const REVISION: &str = "https://huggingface.co/cross-encoder/nli-deberta-v3-xsmall/resolve/a150876415327c80daeff35ca6f68f5ed8cf5c24";
+    vec![
+        ModelArtifact::new(
+            "Answer checking model",
+            &format!("{REVISION}/onnx/model_quint8_avx2.onnx"),
+            "21b14751a95520953bfcc607ceeb617de7cbeaeb6d60f4c8966716c743985337",
+            87_377_068,
+            "nli-deberta-v3-xsmall/model_quint8_avx2.onnx",
+        ),
+        ModelArtifact::new(
+            "Answer checking tokenizer",
+            &format!("{REVISION}/tokenizer.json"),
+            "5124ef2ead1a10a717703bc436de7f353da76d6340e4587719b42b1693707964",
+            8_656_624,
+            "nli-deberta-v3-xsmall/tokenizer.json",
+        ),
+        ModelArtifact::new(
+            "Answer checking config",
+            &format!("{REVISION}/config.json"),
+            "8d9f07bf7ba54a6fc3b1962483056f94c39dcf188db4cf61843e1c88f94b2342",
+            1_053,
+            "nli-deberta-v3-xsmall/config.json",
+        ),
+    ]
+}
+
+/// Directory (under the model root) holding the table model.
+pub const TABLE_MODEL_DIR: &str = "docling-tables";
+
+/// The pinned table model (≈212 MB): docling.rs's ONNX exports of the Heron
+/// layout detector (int8; finds table regions on a page) and of TableFormer
+/// (fp16-weight encoder, int8 decoder and the bbox head with its external-data
+/// sidecar; recovers rows, columns, spans and header cells). Optional: without
+/// it tables come from the layout heuristics only.
+///
+/// The files are the assets of docling.rs's `models-v1` GitHub release. A
+/// release tag can be re-pointed, so the SHA-256 (GitHub's published asset
+/// digest) and size are what pin them; a replaced asset fails verification.
+/// Weights: Heron is Apache-2.0 (`docling-project/docling-layout-heron`),
+/// TableFormer is CDLA-Permissive-2.0 / Apache-2.0
+/// (`docling-project/docling-models`); the exports and runtime are MIT.
+/// `bbox.onnx.data` must sit next to `bbox.onnx` under exactly that name:
+/// ONNX Runtime resolves external weights by the name stored in the graph.
+pub fn table_model_artifacts() -> Vec<ModelArtifact> {
+    const RELEASE: &str =
+        "https://github.com/docling-project/docling.rs/releases/download/models-v1";
+    vec![
+        ModelArtifact::new(
+            "Table region detector",
+            &format!("{RELEASE}/layout_heron_int8.onnx"),
+            "d0eb9da0515a2121a20c3262f49ec4761109da45423b37c14b8b98b9759499b5",
+            68_695_321,
+            "docling-tables/layout_heron_int8.onnx",
+        ),
+        ModelArtifact::new(
+            "Table structure encoder",
+            &format!("{RELEASE}/encoder_fp16.onnx"),
+            "d7bc9886f80c40ac5f1286f8de4c03059bd9e8e5d710ac20fefe824c4eeab414",
+            54_040_666,
+            "docling-tables/encoder_fp16.onnx",
+        ),
+        ModelArtifact::new(
+            "Table structure decoder",
+            &format!("{RELEASE}/decoder_int8.onnx"),
+            "e51da7605c47a072e47b385bf3052671c5a66f17a0044723a243fc6ec841087e",
+            49_877_556,
+            "docling-tables/decoder_int8.onnx",
+        ),
+        ModelArtifact::new(
+            "Table cell box head",
+            &format!("{RELEASE}/bbox.onnx"),
+            "40bd7897bef9b1f152ca8132b07691464db6444df7e3c5cb6f5d7451b8356054",
+            52_225,
+            "docling-tables/bbox.onnx",
+        ),
+        ModelArtifact::new(
+            "Table cell box weights",
+            &format!("{RELEASE}/bbox.onnx.data"),
+            "7610e2593bfaecd72a535370f06e8c2468f9bf208bd2abe46cc727dda0a11392",
+            39_649_280,
+            "docling-tables/bbox.onnx.data",
+        ),
+    ]
+}
+
 /// Errors from checking or installing the search models.
 #[derive(Debug, thiserror::Error)]
 pub enum ModelStoreError {
@@ -304,6 +401,16 @@ impl ModelStore {
     /// The pinned search models under `root`.
     pub fn search_models(root: impl Into<PathBuf>) -> Self {
         Self::with_artifacts(root, search_model_artifacts())
+    }
+
+    /// The pinned table model under `root`.
+    pub fn table_model(root: impl Into<PathBuf>) -> Self {
+        Self::with_artifacts(root, table_model_artifacts())
+    }
+
+    /// The pinned answer-checking model under `root`.
+    pub fn answer_check_model(root: impl Into<PathBuf>) -> Self {
+        Self::with_artifacts(root, answer_check_artifacts())
     }
 
     pub fn with_artifacts(root: impl Into<PathBuf>, artifacts: Vec<ModelArtifact>) -> Self {
@@ -797,7 +904,16 @@ mod tests {
     fn pinned_artifacts_are_well_formed() {
         let artifacts = search_model_artifacts();
         assert_eq!(artifacts.len(), 4);
-        for a in &artifacts {
+        let answer_check = answer_check_artifacts();
+        assert_eq!(answer_check.len(), 3);
+        assert!(answer_check
+            .iter()
+            .all(|a| a.relative_path.starts_with(&format!("{ANSWER_CHECK_DIR}/"))));
+        assert_eq!(
+            ModelStore::answer_check_model("x").total_bytes(),
+            96_034_745
+        );
+        for a in artifacts.iter().chain(&answer_check) {
             assert_eq!(a.sha256.len(), 64, "{}", a.name);
             assert!(a
                 .sha256
@@ -818,6 +934,33 @@ mod tests {
         }
         let store = ModelStore::search_models("x");
         assert_eq!(store.total_bytes(), 618_258_790);
+    }
+
+    #[test]
+    fn table_model_artifacts_are_pinned_release_assets() {
+        let artifacts = table_model_artifacts();
+        assert_eq!(artifacts.len(), 5);
+        assert_eq!(ModelStore::table_model("x").total_bytes(), 212_315_048);
+        for a in &artifacts {
+            assert_eq!(a.sha256.len(), 64, "{}", a.name);
+            assert!(a
+                .sha256
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+            assert!(a.url.starts_with(
+                "https://github.com/docling-project/docling.rs/releases/download/models-v1/"
+            ));
+            assert!(a.relative_path.starts_with(&format!("{TABLE_MODEL_DIR}/")));
+            // The published file name is kept: ONNX Runtime finds `bbox.onnx.data`
+            // by the name stored in `bbox.onnx`.
+            assert_eq!(
+                a.url.rsplit('/').next(),
+                a.relative_path.rsplit('/').next(),
+                "{}",
+                a.name
+            );
+            assert!(a.size > 0);
+        }
     }
 
     #[tokio::test]

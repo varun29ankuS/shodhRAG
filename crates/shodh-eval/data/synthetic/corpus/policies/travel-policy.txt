@@ -1,0 +1,8 @@
+Travel and Expense Policy (Northwind Analytics)
+Version 3.2, effective 1 January 2026.
+
+Domestic travel per diem is INR 3,500 per day.
+International travel per diem is USD 75 per day.
+Flights under six hours are booked in economy class.
+All travel must be approved in advance by the department head.
+Expense claims must be filed within 30 days of the trip ending.

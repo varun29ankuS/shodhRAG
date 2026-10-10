@@ -8,12 +8,10 @@ use std::fmt;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
-pub mod external;
 pub mod llamacpp_provider; // llama.cpp provider (CPU, GGUF models)
 pub mod simple_external;
 pub mod streaming;
 
-pub use external::ExternalProvider;
 pub use llamacpp_provider::LlamaCppProvider;
 pub use simple_external::SimpleExternalProvider;
 pub use streaming::{StreamingResponse, TokenStream};
@@ -80,9 +78,65 @@ pub enum ApiProvider {
     Replicate,
     Baseten,
     Ollama,
-    HuggingFace { model_id: String },
-    Custom { endpoint: String },
+    /// LM Studio's OpenAI-compatible server on this computer.
+    LmStudio,
+    /// A subscription the person signed in to through the agent runtime
+    /// (omp). No API key: the runtime holds the account's token, so only the
+    /// agent can answer with it.
+    Subscription(SubscriptionService),
+    HuggingFace {
+        model_id: String,
+    },
+    Custom {
+        endpoint: String,
+    },
 }
+
+/// A subscription that can answer through the agent runtime once the person
+/// signed in to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SubscriptionService {
+    /// Claude Pro or Max.
+    Claude,
+    /// ChatGPT Plus or Pro (Codex).
+    ChatGpt,
+    /// GitHub Copilot.
+    Copilot,
+    /// Google Gemini (the Gemini CLI sign-in, Cloud Code Assist).
+    Gemini,
+}
+
+impl SubscriptionService {
+    pub const ALL: [SubscriptionService; 4] = [
+        SubscriptionService::Claude,
+        SubscriptionService::ChatGpt,
+        SubscriptionService::Copilot,
+        SubscriptionService::Gemini,
+    ];
+
+    /// The runtime's (omp 18.4.10) provider id for this subscription.
+    pub fn omp_provider(self) -> &'static str {
+        match self {
+            SubscriptionService::Claude => "anthropic",
+            SubscriptionService::ChatGpt => "openai-codex",
+            SubscriptionService::Copilot => "github-copilot",
+            SubscriptionService::Gemini => "google-gemini-cli",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SubscriptionService::Claude => "Claude (Pro/Max)",
+            SubscriptionService::ChatGpt => "ChatGPT (Plus/Pro)",
+            SubscriptionService::Copilot => "GitHub Copilot",
+            SubscriptionService::Gemini => "Google Gemini",
+        }
+    }
+}
+
+/// Default address of LM Studio's OpenAI-compatible server.
+pub const LM_STUDIO_DEFAULT_BASE_URL: &str = "http://127.0.0.1:1234/v1";
 
 /// LLM configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,14 +177,6 @@ pub trait LLMProvider: Send + Sync {
     /// Generate with streaming
     async fn generate_stream(&self, prompt: &str, config: &GenerationConfig)
         -> Result<TokenStream>;
-
-    /// Generate with RAG context
-    async fn generate_with_context(
-        &self,
-        query: &str,
-        context: Vec<String>,
-        config: &GenerationConfig,
-    ) -> Result<String>;
 
     /// Chat completion with full message history and optional tool schemas.
     /// Returns ChatResponse::Content or ChatResponse::ToolCalls.
@@ -256,15 +302,6 @@ impl ChatMessage {
             role: ChatRole::Assistant,
             content: Some(content.into()),
             tool_calls: None,
-            tool_call_id: None,
-            name: None,
-        }
-    }
-    pub fn assistant_tool_calls(tool_calls: Vec<ToolCall>) -> Self {
-        Self {
-            role: ChatRole::Assistant,
-            content: None,
-            tool_calls: Some(tool_calls),
             tool_call_id: None,
             name: None,
         }
@@ -454,74 +491,6 @@ impl LLMManager {
         }
     }
 
-    /// Generate with streaming and custom max_tokens
-    pub async fn generate_stream_custom(
-        &self,
-        prompt: &str,
-        max_tokens: usize,
-    ) -> Result<TokenStream> {
-        match &self.provider {
-            Some(provider) => {
-                let mut config = GenerationConfig::from(&self.config);
-                config.max_tokens = max_tokens;
-                provider.generate_stream(prompt, &config).await
-            }
-            None => Err(anyhow!("LLM is disabled or not initialized")),
-        }
-    }
-
-    /// Generate with RAG context
-    pub async fn generate_with_rag(
-        &self,
-        query: &str,
-        search_results: Vec<String>,
-    ) -> Result<String> {
-        match &self.provider {
-            Some(provider) => {
-                let mut config = GenerationConfig::from(&self.config);
-                // RAG responses need more tokens for citations and structured output
-                config.max_tokens = config.max_tokens.max(8192);
-                provider
-                    .generate_with_context(query, search_results, &config)
-                    .await
-            }
-            None => {
-                // Fallback to simple concatenation if LLM is disabled
-                Ok(format!(
-                    "Query: {}\n\nRelevant Information:\n{}",
-                    query,
-                    search_results.join("\n\n")
-                ))
-            }
-        }
-    }
-
-    /// Generate with RAG context and custom max_tokens
-    pub async fn generate_with_rag_custom(
-        &self,
-        query: &str,
-        search_results: Vec<String>,
-        max_tokens: usize,
-    ) -> Result<String> {
-        match &self.provider {
-            Some(provider) => {
-                let mut config = GenerationConfig::from(&self.config);
-                config.max_tokens = max_tokens; // Override with custom token limit
-                provider
-                    .generate_with_context(query, search_results, &config)
-                    .await
-            }
-            None => {
-                // Fallback to simple concatenation if LLM is disabled
-                Ok(format!(
-                    "Query: {}\n\nRelevant Information:\n{}",
-                    query,
-                    search_results.join("\n\n")
-                ))
-            }
-        }
-    }
-
     /// Chat completion with message history and optional tool calling.
     pub async fn chat(
         &self,
@@ -554,14 +523,6 @@ impl LLMManager {
         }
     }
 
-    /// Check if the current provider supports function/tool calling.
-    pub fn supports_tools(&self) -> bool {
-        self.provider
-            .as_ref()
-            .map(|p| p.info().supports_functions)
-            .unwrap_or(false)
-    }
-
     /// Get current provider info
     pub fn info(&self) -> Option<ProviderInfo> {
         self.provider.as_ref().map(|p| p.info())
@@ -579,106 +540,6 @@ impl LLMManager {
             None => true, // Disabled mode is always "ready"
         }
     }
-}
-
-/// Format prompt for RAG
-pub fn format_rag_prompt(query: &str, context: &[String], system_prompt: Option<&str>) -> String {
-    let system = system_prompt.unwrap_or(
-        "You are an intelligent AI assistant with access to a comprehensive knowledge base. \
-         \n\n🚨 CRITICAL: When presenting data/numbers/comparisons/statistics, you MUST use ```table or ```chart code blocks. DO NOT just describe data - SHOW it in structured format using code blocks!\
-         \n\nCRITICAL INSTRUCTIONS:\
-         \n\n**1. Smart Entity Matching**\
-         \n   - Match partial names to full names in context\
-         \n   - Find name variations, aliases, and abbreviations\
-         \n   - Look for related mentions across all documents\
-         \n   - Scan ENTIRE context for ANY occurrence of the entity\
-         \n\n**2. Universal Relationship Detection** (EXTREMELY IMPORTANT)\
-         \n   When asked about ANY entity (person, company, code module, etc.), ALWAYS extract ALL relationships:\
-         \n   \
-         \n   - **Family**: Spouse, Partner, Husband, Wife, Father, Mother, Son, Daughter, Brother, Sister, Child, Parent, Relative\
-         \n   - **Professional**: Employer, Employee, Manager, Supervisor, Client, Customer, Vendor, Supplier, Colleague, Coworker, Boss, Assistant\
-         \n   - **Legal**: Lawyer, Attorney, Judge, Plaintiff, Defendant, Witness, Guardian, Trustee, Beneficiary, Executor\
-         \n   - **Educational**: Teacher, Student, Professor, Instructor, Mentor, Tutor, Advisor, Dean, Principal, Classmate\
-         \n   - **Medical**: Doctor, Patient, Nurse, Therapist, Physician, Surgeon, Caregiver\
-         \n   - **Business**: Partner, Shareholder, Director, Investor, Founder, CEO, Board Member, Contractor, Consultant\
-         \n   - **Code/Technical**: Imports, Depends on, Calls, Inherits from, Implements, Uses, References, Extends\
-         \n   - **Generic patterns**: \"X is Y's ...\", \"X of Y\", \"X for Y\", \"X works with Y\", \"X reports to Y\", \"X managed by Y\"\
-         \n   \
-         \n   **Detection Strategy**:\
-         \n   - Look for structured fields: \"Relationship: VALUE\", \"Role: VALUE\", \"Position: VALUE\"\
-         \n   - Look for possessive constructions: \"John's lawyer\", \"Mary's client\", \"ABC Corp's vendor\"\
-         \n   - Look for relational verbs: \"works for\", \"employed by\", \"managed by\", \"teaches\", \"represents\"\
-         \n   - Look for co-occurrence patterns: if document mentions both entities, extract their relationship\
-         \n   - Check metadata: job titles, roles, organizational charts\
-         \n   \
-         \n   **When asked about X**: If ANY document mentions X in relation to Y, report it. \
-         \n   Example: \"Tell me about Person A\" → Find \"Spouse: Person A\" → Report \"Person A is the spouse of Person B\"\
-         \n\n**3. Code Understanding** (when context contains code):\
-         \n   - Identify functions, classes, modules, and their relationships\
-         \n   - Understand import/dependency chains\
-         \n   - Explain code architecture and data flow\
-         \n   - Reference specific file paths and line numbers when known\
-         \n   - Distinguish between documentation and implementation\
-         \n\n**4. Exhaustive Context Search**\
-         \nBefore saying 'no information found', scan EVERY document for:\
-         \n   - Direct mentions (full or partial names)\
-         \n   - Metadata (file paths, headers, tags, categories, titles)\
-         \n   - Indirect mentions (as someone's relative, colleague, client, etc.)\
-         \n   - Relationship fields (ANY field indicating connection between entities)\
-         \n   - Structured data (tables, forms, key-value pairs)\
-         \n   - Unstructured text (narrative descriptions of relationships)\
-         \n   - Code references (imports, function calls, class inheritance)\
-         \n   - Documentation references (comments, docstrings, markdown)\
-         \n\n**5. Always Cite Sources**\
-         \n   - Reference specific document numbers: [Document 1], [Document 2], etc.\
-         \n   - Include file paths when available\
-         \n   - Quote EXACT text when citing relationships: \"According to [Document 1]: 'Spouse: [Name]'\"\
-         \n   - Be precise about WHERE the information was found\
-         \n\n**6. High Accuracy Standard**\
-         \n   - Only state 'no information found' after thoroughly checking ALL context\
-         \n   - Be specific about what information IS available\
-         \n   - Suggest related information if exact match not found\
-         \n   - If asked about X and you find X mentioned as Y's [relationship], ALWAYS include: \"X is Y's [relationship]\"\
-         \n   - Provide comprehensive answers that synthesize information from multiple documents\
-         \n\n**7. Response Quality**\
-         \n   - Start with direct answer to the question\
-         \n   - Include ALL relevant relationships found\
-         \n   - Cite sources for every claim\
-         \n   - If multiple documents mention the entity, synthesize information from all of them\
-         \n   - Use clear, professional language\
-         \n\n**8. STRUCTURED OUTPUT GENERATION (CRITICAL)**\
-         \n\n   When user asks for data/comparisons/statistics/metrics:\
-         \n   ✅ DO: Output actual ```table or ```chart code blocks with data\
-         \n   ❌ DON'T: Say \"Here's a table\" without the code block\
-         \n   ❌ DON'T: Say \"I'll create a chart\" without the code block\
-         \n\n   Examples:\
-         \n   User: \"Show Q4 sales\" → Output ```table block with actual sales data\
-         \n   User: \"Compare regions\" → Output ```chart block with actual JSON\
-         \n   User: \"List top 10\" → Output ```table block with actual list\
-         \n\n   Table format: Use markdown tables in ```table blocks\
-         \n   Chart format: Use JSON in ```chart blocks with fields: type, title, data{labels, datasets}\
-         \n   Supported chart types: bar, line, pie, scatter, area\
-         \n\nBe comprehensive, intelligent, and precise in every response. ALWAYS extract and report ALL relationship information found in the context."
-    );
-
-    // Format context with clear document boundaries
-    let formatted_context = if context.is_empty() {
-        "No specific context documents available.".to_string()
-    } else {
-        context
-            .iter()
-            .enumerate()
-            .map(|(i, doc)| format!("[Document {}]\n{}", i + 1, doc))
-            .collect::<Vec<_>>()
-            .join("\n\n")
-    };
-
-    format!(
-        "{}\n\n=== CONTEXT DOCUMENTS ===\n{}\n=== END CONTEXT ===\n\nUser Question: {}\n\nAssistant Response:",
-        system,
-        formatted_context,
-        query
-    )
 }
 
 #[cfg(test)]

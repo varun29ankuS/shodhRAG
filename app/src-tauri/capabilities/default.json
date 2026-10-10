@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the app windows. Filesystem access from the webview is limited to: reading files (scope **) because document previews (DocumentPreviewPanel, PDFArtifact) open user-indexed documents that can live anywhere on disk; and writing files without a static scope, so writes only succeed for paths the user picked in a save dialog (the dialog plugin adds the chosen path to the runtime fs scope). Webview data folders stay denied via fs:deny-default.",
+  "description": "Capability for the app windows. Filesystem access from the webview is limited to: reading files (scope **) because document previews (DocumentPreviewPanel, PDFArtifact) open user-indexed documents that can live anywhere on disk; and writing files without a static scope, so writes only succeed for paths the user picked in a save dialog (the dialog plugin adds the chosen path to the runtime fs scope). Webview data folders stay denied via fs:deny-default. Notifications (notification:default) let the webview check permission and show the same native notifications the reminder scheduler shows from Rust. Writing images to the clipboard (clipboard-manager:allow-write-image) backs Copy image of a snippet when the web clipboard is unavailable.",
   "windows": ["main", "daily-brief", "map-view"],
   "permissions": [
     "core:default",
@@ -32,6 +32,8 @@
     "fs:allow-write-file",
     "fs:allow-write-text-file",
     "fs:deny-default",
-    "clipboard-manager:default"
+    "clipboard-manager:default",
+    "clipboard-manager:allow-write-image",
+    "notification:default"
   ]
 }

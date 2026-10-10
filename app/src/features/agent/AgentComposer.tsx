@@ -3,6 +3,11 @@ import { ArrowUp, CornerDownRight, Folder, ImagePlus, Mic, MicOff, Square } from
 import { cn } from '../../lib/utils';
 import { useVoiceInput } from '../ask/useVoiceInput';
 
+/** The engine grows the field with its content (no per-keystroke measuring). */
+const NATIVE_FIELD_SIZING = typeof CSS !== 'undefined' && CSS.supports('field-sizing', 'content');
+const MIN_COMPACT_HEIGHT = 32;
+const MIN_TEXTAREA_HEIGHT = 66;
+
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
 
@@ -38,16 +43,19 @@ interface AgentComposerProps {
   /** Sending is blocked (e.g. an answer is running in another conversation). */
   blockedReason: string | null;
   placeholder: string;
-  modelLabel?: string;
-  modelConnected?: boolean;
-  onOpenModelSettings?: () => void;
+  /** The model chip (Ask only): shows and changes the model the next answer uses. */
+  modelChip?: React.ReactNode;
   scopeLabel?: string;
   scopeTitle?: string;
   onOpenLibrary?: () => void;
+  /** A control next to the scope chip (e.g. "Search all my library" in a workspace). */
+  scopeAction?: React.ReactNode;
   onPickImage?: () => void;
   autoFocus?: boolean;
   /** Dense variant for the conversation dock: no chips, smaller type. */
   compact?: boolean;
+  /** Placeholder while an answer runs and cannot be steered from here. */
+  runningPlaceholder?: string;
 }
 
 /**
@@ -69,15 +77,15 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     approvalPending = false,
     blockedReason,
     placeholder,
-    modelLabel,
-    modelConnected = false,
-    onOpenModelSettings,
+    modelChip,
     scopeLabel,
     scopeTitle,
     onOpenLibrary,
+    scopeAction,
     onPickImage,
     autoFocus = false,
     compact = false,
+    runningPlaceholder,
   },
   ref,
 ) {
@@ -93,8 +101,12 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
   const getText = useCallback(() => valueRef.current, []);
   const voice = useVoiceInput(getText, onChange);
 
-  // Grow with content up to a cap, then scroll.
+  // Grow with content up to a cap, then scroll. Where the engine sizes the
+  // field itself (CSS field-sizing) nothing is measured per keystroke;
+  // measuring (height auto, then scrollHeight) forces a layout of the whole
+  // page, which made typing lag in long conversations.
   useLayoutEffect(() => {
+    if (NATIVE_FIELD_SIZING) return;
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
@@ -121,7 +133,9 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
       ? onApprove
         ? 'Enter to approve · Esc to deny · or type to steer…'
         : 'Approve or deny above · Esc to deny…'
-      : 'Steer the agent…'
+      : !canSteer && runningPlaceholder
+        ? runningPlaceholder
+        : 'Steer the agent…'
     : placeholder;
 
   const iconButton = cn(
@@ -159,12 +173,12 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
         autoFocus={autoFocus}
         aria-describedby={blockedReason ? blockedId : undefined}
         className={cn(
-          'block w-full resize-none border-0 bg-transparent text-shodh-text placeholder:text-shodh-text-faint outline-none focus:outline-none scrollbar-thin',
+          'block w-full resize-none [field-sizing:content] border-0 bg-transparent text-shodh-text placeholder:text-shodh-text-faint outline-none focus:outline-none scrollbar-thin',
           compact ? 'px-3 pt-2.5 pb-0.5 text-[13.5px] leading-[1.45]' : 'px-[18px] pt-4 pb-1 text-[15px] leading-[1.5]',
         )}
-        style={{ maxHeight }}
+        style={NATIVE_FIELD_SIZING ? { maxHeight, minHeight: compact ? MIN_COMPACT_HEIGHT : MIN_TEXTAREA_HEIGHT } : { maxHeight }}
       />
-      <div className={cn('flex items-center gap-1.5 min-w-0', compact ? 'px-2 pt-1 pb-2' : 'px-2.5 pt-1.5 pb-2.5')}>
+      <div className={cn('flex flex-wrap items-center gap-x-1.5 gap-y-2 min-w-0', compact ? 'px-2 pt-1 pb-2' : 'px-2.5 pt-1.5 pb-2.5')}>
         {!compact && onPickImage && (
           <button
             type="button"
@@ -188,21 +202,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
             {voice.listening ? <MicOff className="w-[17px] h-[17px]" aria-hidden="true" /> : <Mic className="w-[17px] h-[17px]" aria-hidden="true" />}
           </button>
         )}
-        {!compact && modelLabel && onOpenModelSettings && (
-          <button
-            type="button"
-            onClick={onOpenModelSettings}
-            className={chip}
-            title="Model settings"
-            aria-label={`Model: ${modelLabel}. Open model settings`}
-          >
-            <span
-              className={cn('w-[7px] h-[7px] rounded-full shrink-0', modelConnected ? 'bg-shodh-info' : 'bg-shodh-warning')}
-              aria-hidden="true"
-            />
-            <span className="truncate max-w-[200px]">{modelLabel}</span>
-          </button>
-        )}
+        {!compact && modelChip}
         {!compact && scopeLabel && onOpenLibrary && (
           <button
             type="button"
@@ -215,6 +215,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
             <span className="truncate max-w-[200px]">{scopeLabel}</span>
           </button>
         )}
+        {!compact && scopeAction}
         <div className="ml-auto flex items-center gap-1.5">
           {running && hasText && (
             <button

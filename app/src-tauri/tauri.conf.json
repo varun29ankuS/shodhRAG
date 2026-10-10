@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.shodh.rag-app",
   "build": {
-    "beforeDevCommand": "node start-dev.cjs",
+    "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
@@ -12,6 +12,8 @@
   "app": {
     "windows": [
       {
+        "label": "main",
+        "create": false,
         "title": "Shodh-RAG",
         "width": 1400,
         "height": 900,

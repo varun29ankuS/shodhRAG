@@ -1,4 +1,6 @@
 import type { PageSpan, RawSearchResult, SearchHit } from './types';
+import { parseRegions } from './viewer/regionGeometry.ts';
+import { citedNumbersIn } from '../agent/grounding.ts';
 
 const SPAN_PATTERN = /^\s*(\d+)(?:\s*(?:[-–—]|to)\s*(\d+))?\s*$/i;
 
@@ -63,6 +65,28 @@ export function isWebUrl(path: string): boolean {
   return /^https?:\/\//i.test(path);
 }
 
+/**
+ * A viewer target for a document the agent asked to show: the file at
+ * `page`, with `passage` highlighted when given. Not a citation, so it has
+ * no number.
+ */
+export function documentHit(path: string, page: number | null, passage: string | null): SearchHit {
+  const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  const text = passage ?? '';
+  return {
+    number: 0,
+    sourceFile: path,
+    fileName: name,
+    title: name,
+    text,
+    snippet: text.slice(0, 200),
+    score: 0,
+    page: page !== null && Number.isInteger(page) && page > 0 ? { start: page, end: page } : null,
+    lineRange: null,
+    url: isWebUrl(path) ? path : null,
+  };
+}
+
 export type AppRecordKind = 'task' | 'event' | 'calendar' | 'note';
 
 /** In-app records are indexed under pseudo-sources (`calendar://task/<id>`, `note://<id>`), not files. */
@@ -83,7 +107,18 @@ export function recordLabel(kind: AppRecordKind, title: string | null | undefine
 }
 
 /** Compact chip label: the file name without extension, or the record label. */
+/** "arxiv.org" for a web address (no "www."), or the input when it is not a URL. */
+export function webHost(url: string): string {
+  try {
+    return new URL(url).host.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
+}
+
 export function sourceLabel(hit: Pick<SearchHit, 'sourceFile' | 'fileName'>): string {
+  // Web sources: the page title the search returned, else the site.
+  if (isWebUrl(hit.sourceFile)) return hit.fileName?.trim() || webHost(hit.sourceFile);
   const record = appRecordKind(hit.sourceFile);
   if (!record) return fileStemOf(hit.sourceFile);
   // Answers saved before records carried titles hold the bare id as the name.
@@ -116,9 +151,12 @@ export function toSearchHits(raw: readonly unknown[] | undefined): SearchHit[] {
       text,
       snippet: typeof r.snippet === 'string' ? r.snippet : text.slice(0, 200),
       score: typeof r.score === 'number' ? r.score : 0,
-      page: parsePageSpan(r.pageNumber ?? citation?.pageNumbers ?? null),
+      // The citation's label carries ranges ("4-5"); `pageNumber` only the first page.
+      page: parsePageSpan(citation?.pageNumbers ?? null) ?? parsePageSpan(r.pageNumber ?? null),
       lineRange: parseLineRange(r.lineRange ?? null),
       url: citation && typeof citation.url === 'string' && citation.url ? citation.url : null,
+      section: typeof r.metadata?.section_path === 'string' && r.metadata.section_path.trim() ? r.metadata.section_path.trim() : null,
+      regions: parseRegions(r.metadata?.bboxes ?? null),
     });
   });
   return hits;
@@ -137,22 +175,12 @@ export function formatLocation(hit: Pick<SearchHit, 'page' | 'lineRange'>): stri
 }
 
 /**
- * Citation numbers referenced in an answer: `[3]`, `[1, 4]`, `[Document 2]`
- * and `【5†…】`. Content inside fenced code blocks is ignored.
+ * Citation numbers referenced in an answer, in the grammar the transcript
+ * and the grounding check share (`[3]`, `[1, 4]`, `[2-4]`, `[Document 2]`,
+ * `【5†…】`); code is ignored.
  */
 export function citedNumbers(content: string): Set<number> {
-  const withoutCode = content.replace(/```[\s\S]*?```/g, '');
-  const found = new Set<number>();
-  for (const m of withoutCode.matchAll(/\[(?:Document\s+)?(\d+(?:\s*,\s*(?:Document\s+)?\d+)*)\]/gi)) {
-    for (const part of m[1].split(',')) {
-      const n = Number(part.replace(/Document\s+/i, '').trim());
-      if (Number.isInteger(n) && n > 0) found.add(n);
-    }
-  }
-  for (const m of withoutCode.matchAll(/【(\d+)†[^】]*】/g)) {
-    found.add(Number(m[1]));
-  }
-  return found;
+  return citedNumbersIn(content);
 }
 
 export interface SourceGroup {

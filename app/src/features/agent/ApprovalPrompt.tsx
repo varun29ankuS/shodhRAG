@@ -2,6 +2,8 @@ import React, { useEffect, useRef } from 'react';
 import { ShieldAlert } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { StepApproval } from './reducer';
+import { DiffView } from '../workspaces/DiffView';
+import { parseDiff } from '../workspaces/model';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -19,6 +21,14 @@ function displayValue(value: unknown): string {
   if (value === null || value === undefined || value === '') return '—';
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) {
+    if (value.length === 0) return 'none';
+    return value
+      .map(item => (isRecord(item) && typeof item.title === 'string'
+        ? `${item.title}${item.completed === true ? ' (done)' : ''}`
+        : displayValue(item)))
+      .join(', ');
+  }
   try {
     return JSON.stringify(value);
   } catch {
@@ -26,11 +36,32 @@ function displayValue(value: unknown): string {
   }
 }
 
-/** The preview as label/value rows; non-object previews become one row. */
+export interface FieldChange {
+  field: string;
+  before: string;
+  after: string;
+}
+
+/** `changes: [{field, before, after}]` from an update's preview. */
+export function previewChanges(preview: unknown): FieldChange[] {
+  if (!isRecord(preview) || !Array.isArray(preview.changes)) return [];
+  return preview.changes
+    .filter(isRecord)
+    .filter(c => typeof c.field === 'string')
+    .map(c => ({
+      field: humanKey(c.field as string),
+      before: displayValue(c.before),
+      after: displayValue(c.after),
+    }));
+}
+
+/** The preview as label/value rows (without `changes`); non-object previews become one row. */
 function previewRows(preview: unknown): Array<[string, string]> {
   if (isRecord(preview)) {
     return Object.entries(preview)
-      .filter(([, v]) => v !== null && v !== undefined && v !== '')
+      // Shown as their own blocks: field changes and an instruction diff.
+      .filter(([k]) => k !== 'changes' && k !== 'instructionsDiff' && k !== 'diff')
+      .filter(([, v]) => v !== null && v !== undefined && v !== '' && v !== false)
       .map(([k, v]) => [humanKey(k), displayValue(v)]);
   }
   if (preview === null || preview === undefined) return [];
@@ -61,6 +92,8 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
   const pending = approval.decision === 'pending';
   const destructive = approval.tier === 'destructive';
   const rows = previewRows(approval.preview);
+  const changes = previewChanges(approval.preview);
+  const diff = isRecord(approval.preview) ? parseDiff(approval.preview.instructionsDiff) : null;
 
   useEffect(() => {
     if (!pending) return;
@@ -103,11 +136,32 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
           {rows.map(([key, value]) => (
             <React.Fragment key={key}>
               <dt className="text-shodh-text-muted whitespace-nowrap">{key}</dt>
-              <dd className="text-shodh-text break-words min-w-0">{value}</dd>
+              <dd className="text-shodh-text break-words whitespace-pre-wrap min-w-0">{value}</dd>
             </React.Fragment>
           ))}
         </dl>
       )}
+      {changes.length > 0 && (
+        <dl
+          aria-label="Changes"
+          className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-lg bg-shodh-raised px-3 py-2 text-[12.5px]"
+        >
+          {changes.map(change => (
+            <React.Fragment key={change.field}>
+              <dt className="text-shodh-text-muted whitespace-nowrap">{change.field}</dt>
+              <dd className="min-w-0 break-words">
+                <span className="sr-only">{`changes from ${change.before} to ${change.after}`}</span>
+                <span aria-hidden="true">
+                  <span className="text-shodh-text-muted line-through decoration-shodh-text-faint">{change.before}</span>
+                  <span className="text-shodh-text-faint">{' → '}</span>
+                  <span className="text-shodh-text font-medium">{change.after}</span>
+                </span>
+              </dd>
+            </React.Fragment>
+          ))}
+        </dl>
+      )}
+      {diff && <DiffView lines={diff} label="Proposed change to the instructions" />}
       <div className="flex items-center gap-2">
         <button
           ref={approveRef}

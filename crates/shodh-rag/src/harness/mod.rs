@@ -8,22 +8,37 @@
 // Gated on `clippy` so a new compiler lint never breaks a normal build.
 #![cfg_attr(clippy, deny(warnings))]
 
+pub mod catalog_cache;
+pub mod catalog_fetch;
+pub mod code_mode;
 pub mod error;
 pub mod events;
+pub mod grounding;
+pub mod mcp;
 pub mod model;
+pub mod model_catalog;
+pub mod model_choice;
+pub mod model_picks;
 pub mod omp;
+pub mod omp_auth;
+#[cfg(test)]
+mod omp_live_tests;
 pub mod profile;
 pub mod protocol;
+pub mod provider_error;
 pub mod session;
 pub mod sidecar;
+pub mod skills;
 pub mod tools;
+pub mod web;
 
 pub use error::HarnessError;
 pub use events::{AgentEvent, PlanItem, PlanStatus, RiskTier, RunStatus};
-pub use model::{select_model, OmpModel};
+pub use model::{select_model, select_model_with, stealth_allowed_by_env, OmpModel};
 pub use omp::{normalise, NormaliserState, StepMeta, StepOutcome};
 pub use profile::AgentProfile;
-pub use session::{OmpSession, SessionConfig};
+pub use provider_error::{ProviderError, ProviderErrorKind};
+pub use session::{CodeSession, OmpSession, SessionConfig};
 pub use sidecar::{
     fetch_omp, resolve_binary_path, FetchProgress, InstalledRuntime, LaunchSpec, OmpLayout,
     OMP_VERSION,
@@ -46,7 +61,19 @@ pub trait AgentHarness: Send + Sync {
     /// Start a run for a new user message. Fails with
     /// [`HarnessError::RunInProgress`] while a run is active. Returns the run id
     /// (`run_id` when given).
-    async fn prompt(&self, text: &str, run_id: Option<String>) -> Result<String, HarnessError>;
+    async fn prompt(&self, text: &str, run_id: Option<String>) -> Result<String, HarnessError> {
+        self.prompt_scoped(text, run_id, tools::RunScope::default())
+            .await
+    }
+
+    /// [`AgentHarness::prompt`] with the run limited to `scope` (document
+    /// search only looks there unless the model names sources itself).
+    async fn prompt_scoped(
+        &self,
+        text: &str,
+        run_id: Option<String>,
+        scope: tools::RunScope,
+    ) -> Result<String, HarnessError>;
 
     /// Redirect the active run; starts a new run when idle. Returns the run id.
     async fn steer(&self, text: &str) -> Result<String, HarnessError>;

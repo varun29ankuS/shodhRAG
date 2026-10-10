@@ -8,6 +8,7 @@
 //! - `SHODH_LLM_MODEL`: provider model id (optional; a sensible default is used)
 //! - API key: the provider's conventional variable, e.g. `OPENROUTER_API_KEY`
 
+use shodh_rag::harness::model_catalog::ModelRef;
 use shodh_rag::llm::{ApiProvider, LLMManager, LLMMode};
 
 use crate::llm_commands::LLMState;
@@ -108,9 +109,19 @@ fn resolve(get: impl Fn(&str) -> Option<String>) -> Result<Option<EnvSelection>,
     }))
 }
 
-/// Activate the provider named in the environment. Returns a short description
-/// (provider · model) when a provider was configured, `None` when opted out.
-pub async fn configure_from_environment(state: &LLMState) -> Result<Option<String>, String> {
+/// What the environment configured.
+#[derive(Debug, Clone)]
+pub struct EnvironmentModel {
+    /// "provider · model", for the log.
+    pub description: String,
+    /// The model as the picker names it (`None` for an id the picker cannot hold).
+    pub model: Option<ModelRef>,
+}
+
+/// Activate the provider named in the environment. `None` when opted out.
+pub async fn configure_from_environment(
+    state: &LLMState,
+) -> Result<Option<EnvironmentModel>, String> {
     let Some(selection) = resolve(|var| std::env::var(var).ok())? else {
         return Ok(None);
     };
@@ -147,10 +158,13 @@ pub async fn configure_from_environment(state: &LLMState) -> Result<Option<Strin
     })?;
     *state.manager.write().await = Some(manager);
 
-    Ok(Some(format!(
-        "{} · {}",
-        selection.spec.label, selection.model
-    )))
+    Ok(Some(EnvironmentModel {
+        description: format!("{} · {}", selection.spec.label, selection.model),
+        model: crate::model_picker_commands::model_ref_for(
+            &selection.spec.provider,
+            &selection.model,
+        ),
+    }))
 }
 
 #[cfg(test)]

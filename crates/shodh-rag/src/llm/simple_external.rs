@@ -10,9 +10,17 @@ use tokio::sync::mpsc;
 
 use super::{
     streaming::StreamingResponse, ApiProvider, ChatMessage, ChatResponse, ChatRole,
-    ChatStreamEvent, GenerationConfig, LLMProvider, MemoryUsage, ProviderInfo, TokenStream,
-    ToolCall, ToolSchema,
+    ChatStreamEvent, GenerationConfig, LLMProvider, MemoryUsage, ProviderInfo, SubscriptionService,
+    TokenStream, ToolCall, ToolSchema, LM_STUDIO_DEFAULT_BASE_URL,
 };
+
+/// Why a subscription model cannot answer outside the agent.
+fn subscription_only(service: SubscriptionService) -> anyhow::Error {
+    anyhow!(
+        "{} answers through the assistant in Ask only. Choose a model with an API key or a local model for this feature.",
+        service.label()
+    )
+}
 
 /// External API provider (simplified for reliability)
 pub struct SimpleExternalProvider {
@@ -94,6 +102,9 @@ impl SimpleExternalProvider {
             ApiProvider::Replicate => "https://api.replicate.com/v1/predictions".to_string(),
             ApiProvider::Baseten => "https://inference.baseten.co/v1/chat/completions".to_string(),
             ApiProvider::Ollama => "http://localhost:11434/v1/chat/completions".to_string(),
+            ApiProvider::LmStudio => format!("{LM_STUDIO_DEFAULT_BASE_URL}/chat/completions"),
+            // Never called: `generate` refuses subscriptions before any request.
+            ApiProvider::Subscription(_) => String::new(),
             ApiProvider::HuggingFace { model_id } => {
                 format!("https://api-inference.huggingface.co/models/{}", model_id)
             }
@@ -112,7 +123,9 @@ impl LLMProvider for SimpleExternalProvider {
             | ApiProvider::Grok
             | ApiProvider::Perplexity
             | ApiProvider::Baseten
-            | ApiProvider::Ollama => self.openai_compatible_generate(prompt, config).await,
+            | ApiProvider::Ollama
+            | ApiProvider::LmStudio => self.openai_compatible_generate(prompt, config).await,
+            ApiProvider::Subscription(service) => Err(subscription_only(*service)),
             ApiProvider::Anthropic => self.anthropic_generate(prompt, config).await,
             ApiProvider::Google => self.google_generate(prompt, config).await,
             ApiProvider::HuggingFace { model_id } => {
@@ -138,7 +151,9 @@ impl LLMProvider for SimpleExternalProvider {
             | ApiProvider::Perplexity
             | ApiProvider::Baseten
             | ApiProvider::Ollama
+            | ApiProvider::LmStudio
             | ApiProvider::Custom { .. } => self.openai_stream(prompt, config).await,
+            ApiProvider::Subscription(service) => Err(subscription_only(*service)),
             _ => {
                 // Providers without SSE: fall back to chunked non-streaming.
                 // Send word-by-word to simulate streaming (safe for any UTF-8).
@@ -146,15 +161,16 @@ impl LLMProvider for SimpleExternalProvider {
                 let (sender, receiver) = tokio::sync::mpsc::channel(256);
                 tokio::spawn(async move {
                     // Split on whitespace boundaries to avoid breaking UTF-8 chars
-                    let mut chars = response.chars().peekable();
+                    let chars = response.chars();
                     let mut chunk = String::with_capacity(40);
-                    while let Some(c) = chars.next() {
+                    for c in chars {
                         chunk.push(c);
                         // Flush at word boundaries (~30 chars per chunk)
-                        if chunk.len() >= 30 && (c == ' ' || c == '\n') {
-                            if sender.send(std::mem::take(&mut chunk)).await.is_err() {
-                                break;
-                            }
+                        if chunk.len() >= 30
+                            && (c == ' ' || c == '\n')
+                            && sender.send(std::mem::take(&mut chunk)).await.is_err()
+                        {
+                            break;
                         }
                     }
                     // Flush remainder
@@ -165,16 +181,6 @@ impl LLMProvider for SimpleExternalProvider {
                 Ok(TokenStream::new(receiver))
             }
         }
-    }
-
-    async fn generate_with_context(
-        &self,
-        query: &str,
-        context: Vec<String>,
-        config: &GenerationConfig,
-    ) -> Result<String> {
-        let prompt = super::format_rag_prompt(query, &context, None);
-        self.generate(&prompt, config).await
     }
 
     fn info(&self) -> ProviderInfo {
@@ -189,6 +195,8 @@ impl LLMProvider for SimpleExternalProvider {
             ApiProvider::Replicate => "Replicate",
             ApiProvider::Baseten => "Baseten",
             ApiProvider::Ollama => "Ollama",
+            ApiProvider::LmStudio => "LM Studio",
+            ApiProvider::Subscription(service) => service.label(),
             ApiProvider::HuggingFace { .. } => "HuggingFace",
             ApiProvider::Custom { .. } => "Custom",
         };
@@ -206,7 +214,8 @@ impl LLMProvider for SimpleExternalProvider {
                 ApiProvider::Google => 1000000, // Gemini 2.5 Pro supports 1M context
                 ApiProvider::Replicate => 4096,
                 ApiProvider::Baseten => 128000,
-                ApiProvider::Ollama => 32768,
+                ApiProvider::Ollama | ApiProvider::LmStudio => 32768,
+                ApiProvider::Subscription(_) => 200000,
                 ApiProvider::HuggingFace { .. } => 4096,
                 ApiProvider::Custom { .. } => 4096,
             },
@@ -221,9 +230,10 @@ impl LLMProvider for SimpleExternalProvider {
                     | ApiProvider::Google
                     | ApiProvider::Perplexity
                     | ApiProvider::Ollama
+                    | ApiProvider::LmStudio
                     | ApiProvider::Custom { .. }
             ),
-            is_local: matches!(self.provider, ApiProvider::Ollama),
+            is_local: matches!(self.provider, ApiProvider::Ollama | ApiProvider::LmStudio),
         }
     }
 
@@ -352,10 +362,10 @@ impl SimpleExternalProvider {
 
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
                         if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
-                            if !content.is_empty() {
-                                if sender.send(content.to_string()).await.is_err() {
-                                    return;
-                                }
+                            if !content.is_empty()
+                                && sender.send(content.to_string()).await.is_err()
+                            {
+                                return;
                             }
                         }
                     }
@@ -802,14 +812,13 @@ impl SimpleExternalProvider {
 
                         // Content delta
                         if let Some(content) = delta["content"].as_str() {
-                            if !content.is_empty() {
-                                if tx
+                            if !content.is_empty()
+                                && tx
                                     .send(ChatStreamEvent::ContentDelta(content.to_string()))
                                     .await
                                     .is_err()
-                                {
-                                    return;
-                                }
+                            {
+                                return;
                             }
                         }
 
@@ -1126,16 +1135,15 @@ impl SimpleExternalProvider {
                                 match delta["type"].as_str() {
                                     Some("text_delta") => {
                                         if let Some(text) = delta["text"].as_str() {
-                                            if !text.is_empty() {
-                                                if tx
+                                            if !text.is_empty()
+                                                && tx
                                                     .send(ChatStreamEvent::ContentDelta(
                                                         text.to_string(),
                                                     ))
                                                     .await
                                                     .is_err()
-                                                {
-                                                    return;
-                                                }
+                                            {
+                                                return;
                                             }
                                         }
                                     }

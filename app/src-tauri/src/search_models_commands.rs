@@ -152,18 +152,26 @@ pub async fn install_search_models(
 
     if !rag_state.rag.read().await.has_search_models() {
         let config = rag_state.rag.read().await.config().clone();
-        // Loading reads ~600 MB and builds ONNX sessions: keep it off the
-        // async workers and outside the engine lock.
-        let models = tokio::task::spawn_blocking(move || SearchModels::load(&config))
+        let models = SearchModels::load(&config)
+            .map_err(|e| format!("Locating the search models failed: {e:#}"))?;
+        let embedder = {
+            let mut engine = rag_state.rag.write().await;
+            engine
+                .attach_search_models(models)
+                .map_err(|e| format!("Attaching the search models failed: {e:#}"))?;
+            engine.embedder_handle()
+        };
+        // Check the new model loads (reads ~600 MB and builds an ONNX session:
+        // off the async workers and outside the engine lock). It stays loaded
+        // for the first searches and is dropped when idle.
+        let loaded = tokio::task::spawn_blocking(move || embedder.get().is_some())
             .await
-            .map_err(|e| format!("Loading the search models failed: {e}"))?
-            .map_err(|e| format!("Loading the search models failed: {e:#}"))?;
-        rag_state
-            .rag
-            .write()
-            .await
-            .attach_search_models(models)
-            .map_err(|e| format!("Attaching the search models failed: {e:#}"))?;
+            .map_err(|e| format!("Loading the search models failed: {e}"))?;
+        if !loaded {
+            return Err(
+                "The search model was downloaded but could not be loaded; see the log".into(),
+            );
+        }
     }
 
     if let Err(e) = app.emit(SEARCH_MODELS_READY_EVENT, ()) {

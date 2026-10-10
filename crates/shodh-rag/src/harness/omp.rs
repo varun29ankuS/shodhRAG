@@ -10,6 +10,11 @@
 //!   arrives before `host_tool_call`, whose arguments have the intent stripped.
 //! - `host_tool_call` arrives before `tool_execution_start` for the same call.
 //! - `tool_execution_end` arrives only after the host wrote `host_tool_result`.
+//!
+//! With [`NormaliserState::set_hold_completion`] a run that completes is not
+//! finished at once: it is *held* so the session can check the answer
+//! ([`super::grounding`]) and then either finish it or send one more prompt
+//! within the same run (same citation numbers, same tool budget).
 
 use std::collections::{HashMap, HashSet};
 
@@ -20,6 +25,7 @@ use super::protocol::{
     AssistantMessageEvent, InboundFrame, MessageEndFrame, PromptResultFrame, PromptStatus,
     ResponseFrame, ToolResultPayload,
 };
+use super::provider_error::classify;
 use super::truncate_chars;
 
 /// Display metadata for a registered host tool.
@@ -40,6 +46,8 @@ pub struct StepOutcome {
 }
 
 const MAX_PROGRESS_CHARS: usize = 400;
+/// Answer text kept per run for the grounding check.
+const MAX_ANSWER_CHARS: usize = 400_000;
 const MAX_SUMMARY_CHARS: usize = 160;
 const MAX_INTENTS_REMEMBERED: usize = 256;
 
@@ -66,6 +74,30 @@ struct ActiveRun {
     usage: UsageTotals,
     worst_status: RunStatus,
     error: Option<String>,
+    /// The runtime's hint that the failure is transient.
+    retryable: Option<bool>,
+    /// Provider error of the latest assistant turn (`stopReason: "error"`); a
+    /// later successful turn clears it.
+    turn_error: Option<String>,
+    /// Answer text by assistant message, in order.
+    messages: Vec<(String, String)>,
+    answer_chars: usize,
+    /// Completed and waiting for the session to finish or continue it.
+    held: bool,
+    /// A hold the session has not yet picked up.
+    settle_pending: bool,
+    /// Changes whenever a hold starts or ends, so a check that finishes
+    /// after the run moved on is discarded.
+    generation: u64,
+}
+
+/// A held run, as handed to the session's check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldRun {
+    pub run_id: String,
+    pub generation: u64,
+    /// Answer text by assistant message, in order.
+    pub messages: Vec<(String, String)>,
 }
 
 /// State carried across frames of one omp session.
@@ -81,6 +113,8 @@ pub struct NormaliserState {
     host_calls: HashMap<String, String>,
     /// Attached to every `RunStarted`.
     model_warning: Option<String>,
+    /// Hold completed runs for the session's answer check.
+    hold_completion: bool,
 }
 
 impl NormaliserState {
@@ -94,6 +128,74 @@ impl NormaliserState {
     /// Set the warning carried by every `RunStarted` (see `OmpModel::warning`).
     pub fn set_model_warning(&mut self, warning: Option<String>) {
         self.model_warning = warning;
+    }
+
+    /// Hold completed runs instead of finishing them (see the module docs).
+    pub fn set_hold_completion(&mut self, hold: bool) {
+        self.hold_completion = hold;
+    }
+
+    /// Whether the active run is held.
+    pub fn is_held(&self) -> bool {
+        self.run.as_ref().is_some_and(|r| r.held)
+    }
+
+    /// The held run, once: the session's check picks it up here.
+    pub fn take_settled(&mut self) -> Option<HeldRun> {
+        let run = self.run.as_mut()?;
+        if !(run.held && run.settle_pending) {
+            return None;
+        }
+        run.settle_pending = false;
+        Some(HeldRun {
+            run_id: run.run_id.clone(),
+            generation: run.generation,
+            messages: run.messages.clone(),
+        })
+    }
+
+    fn held_matches(&self, run_id: &str, generation: u64) -> bool {
+        self.run
+            .as_ref()
+            .is_some_and(|r| r.held && r.run_id == run_id && r.generation == generation)
+    }
+
+    /// Whether `generation` of `run_id` is still held (the check may act).
+    pub fn still_held(&self, run_id: &str, generation: u64) -> bool {
+        self.held_matches(run_id, generation)
+    }
+
+    /// Finish a held run (the check is done). Empty when the run moved on.
+    pub fn finish_held(&mut self, run_id: &str, generation: u64, now_ms: u64) -> Vec<AgentEvent> {
+        if !self.held_matches(run_id, generation) {
+            return Vec::new();
+        }
+        self.finish_run(now_ms)
+    }
+
+    /// Continue a held run with one more prompt. False when the run moved on.
+    pub fn resume_held(&mut self, run_id: &str, generation: u64, prompt_id: &str) -> bool {
+        if !self.held_matches(run_id, generation) {
+            return false;
+        }
+        if let Some(run) = self.run.as_mut() {
+            run.held = false;
+            run.settle_pending = false;
+            run.generation += 1;
+            run.pending_prompts.insert(prompt_id.to_string());
+        }
+        true
+    }
+
+    /// End a held run as interrupted (the user stopped it during the check).
+    pub fn abort_held(&mut self, now_ms: u64) -> Vec<AgentEvent> {
+        match self.run.as_mut() {
+            Some(run) if run.held => {
+                run.worst_status = RunStatus::Aborted;
+                self.finish_run(now_ms)
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// Start a run for a freshly sent prompt and return its `RunStarted`.
@@ -114,6 +216,13 @@ impl NormaliserState {
             usage: UsageTotals::default(),
             worst_status: RunStatus::Completed,
             error: None,
+            retryable: None,
+            turn_error: None,
+            messages: Vec::new(),
+            answer_chars: 0,
+            held: false,
+            settle_pending: false,
+            generation: 0,
         });
         self.steps.clear();
         self.host_calls.clear();
@@ -127,10 +236,16 @@ impl NormaliserState {
     }
 
     /// Attach a steering prompt to the active run. Its own `prompt_result`
-    /// is then absorbed instead of producing a separate run.
+    /// is then absorbed instead of producing a separate run. A held run
+    /// continues (its pending check is discarded).
     pub fn attach_prompt(&mut self, prompt_id: &str) -> bool {
         match self.run.as_mut() {
             Some(run) => {
+                if run.held {
+                    run.held = false;
+                    run.settle_pending = false;
+                    run.generation += 1;
+                }
                 run.pending_prompts.insert(prompt_id.to_string());
                 true
             }
@@ -159,6 +274,23 @@ impl NormaliserState {
         self.host_calls.get(host_call_id).map(String::as_str)
     }
 
+    /// Open the step of a tool call before omp reports it (a Code session's
+    /// guard asks for approval before `tool_execution_start`). `None` when no
+    /// run is active or the step is already open.
+    pub fn open_step(
+        &mut self,
+        tool_call_id: &str,
+        tool: &str,
+        args: &Value,
+        now_ms: u64,
+    ) -> Option<AgentEvent> {
+        let run_id = self.active_run_id()?.to_string();
+        if self.steps.contains_key(tool_call_id) {
+            return None;
+        }
+        Some(self.start_step(run_id, tool_call_id, tool, args, None, now_ms))
+    }
+
     /// End the active run with an error (e.g. the sidecar exited).
     pub fn fail_run(&mut self, error: &str, now_ms: u64) -> Vec<AgentEvent> {
         match self.run.as_mut() {
@@ -175,7 +307,17 @@ impl NormaliserState {
         let Some(run) = self.run.take() else {
             return Vec::new();
         };
-        let interrupted_summary = match run.worst_status {
+        // A run whose last model turn failed did not produce an answer, even
+        // when the runtime reports the prompt itself as completed.
+        let (status, error) = match (run.worst_status, run.error, run.turn_error) {
+            (RunStatus::Completed, None, Some(turn_error)) => (RunStatus::Error, Some(turn_error)),
+            (status, error, _) => (status, error),
+        };
+        let provider_error = match (status, error.as_deref()) {
+            (RunStatus::Error, Some(message)) => Some(classify(message, run.retryable, now_ms)),
+            _ => None,
+        };
+        let interrupted_summary = match status {
             RunStatus::Aborted => "Interrupted",
             RunStatus::Error | RunStatus::Completed => "Did not complete",
         };
@@ -201,9 +343,10 @@ impl NormaliserState {
         self.host_calls.clear();
         events.push(AgentEvent::RunFinished {
             run_id: run.run_id,
-            status: run.worst_status,
+            status,
             duration_ms: now_ms.saturating_sub(run.started_at_ms),
-            error: run.error,
+            error,
+            provider_error,
         });
         events
     }
@@ -286,10 +429,34 @@ impl NormaliserState {
         if error.is_some() {
             run.error = error;
         }
-        if run.pending_prompts.is_empty() {
-            self.finish_run(now_ms)
-        } else {
-            Vec::new()
+        if !run.pending_prompts.is_empty() {
+            return Vec::new();
+        }
+        if self.hold_completion && run.worst_status == RunStatus::Completed {
+            run.held = true;
+            run.settle_pending = true;
+            run.generation += 1;
+            return Vec::new();
+        }
+        self.finish_run(now_ms)
+    }
+
+    fn record_text(&mut self, message_id: &str, delta: &str) {
+        let Some(run) = self.run.as_mut() else {
+            return;
+        };
+        if run.answer_chars + delta.len() > MAX_ANSWER_CHARS {
+            return;
+        }
+        run.answer_chars += delta.len();
+        match run.messages.last_mut() {
+            Some((id, text)) if id == message_id => text.push_str(delta),
+            _ => match run.messages.iter_mut().find(|(id, _)| id == message_id) {
+                Some((_, text)) => text.push_str(delta),
+                None => run
+                    .messages
+                    .push((message_id.to_string(), delta.to_string())),
+            },
         }
     }
 
@@ -335,6 +502,11 @@ impl NormaliserState {
                 ),
             ),
         };
+        if let (Some(run), Some(e)) = (self.run.as_mut(), result.error.as_ref()) {
+            if e.retryable.is_some() {
+                run.retryable = e.retryable;
+            }
+        }
         self.on_prompt_completion(result.id.as_deref(), status, error, now_ms)
     }
 
@@ -346,6 +518,16 @@ impl NormaliserState {
             if let Some(intent) = call.intent() {
                 self.remember_intent(&call.id, intent);
             }
+        }
+        if let Some(run) = self.run.as_mut() {
+            run.turn_error = (frame.message.stop_reason.as_deref() == Some("error")).then(|| {
+                frame
+                    .message
+                    .error_message
+                    .clone()
+                    .filter(|m| !m.trim().is_empty())
+                    .unwrap_or_else(|| "The model provider returned an error".to_string())
+            });
         }
         let Some(usage) = frame.message.usage.as_ref() else {
             return Vec::new();
@@ -399,25 +581,66 @@ fn strip_intent(args: &Value) -> Value {
 }
 
 /// Fill `{name}` placeholders from string or number arguments. Placeholders
-/// without a value are dropped.
+/// without a value are dropped. A `[...]` group is kept only when every
+/// placeholder inside it has a value, so optional phrases disappear whole:
+/// `"Listing tasks[ due by {due_to}]"`. Values are quoted unless the
+/// placeholder is written `{name!}`.
 pub fn render_label(template: &str, args: &Value) -> String {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
+    while let Some(open) = rest.find('[') {
+        out.push_str(&fill_placeholders(&rest[..open], args).0);
+        let after = &rest[open + 1..];
+        match after.find(']') {
+            Some(close) => {
+                let (group, complete) = fill_placeholders(&after[..close], args);
+                if complete {
+                    out.push_str(&group);
+                }
+                rest = &after[close + 1..];
+            }
+            None => {
+                out.push_str(&fill_placeholders(&rest[open..], args).0);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(&fill_placeholders(rest, args).0);
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Fill the placeholders of `segment`; the flag is false when any was empty.
+fn fill_placeholders(segment: &str, args: &Value) -> (String, bool) {
+    let mut out = String::with_capacity(segment.len());
+    let mut complete = true;
+    let mut rest = segment;
     while let Some(open) = rest.find('{') {
         out.push_str(&rest[..open]);
         let after = &rest[open + 1..];
         match after.find('}') {
             Some(close) => {
-                let key = &after[..close];
+                let raw_key = &after[..close];
+                let (key, quoted) = match raw_key.strip_suffix('!') {
+                    Some(k) => (k, false),
+                    None => (raw_key, true),
+                };
                 let value = match args.get(key) {
-                    Some(Value::String(s)) => Some(s.clone()),
+                    Some(Value::String(s)) if !s.trim().is_empty() => Some(s.clone()),
                     Some(Value::Number(n)) => Some(n.to_string()),
                     _ => None,
                 };
-                if let Some(value) = value {
-                    out.push('“');
-                    out.push_str(&truncate_chars(value.trim(), 60));
-                    out.push('”');
+                match value {
+                    Some(value) => {
+                        let value = truncate_chars(value.trim(), 60);
+                        if quoted {
+                            out.push('“');
+                            out.push_str(&value);
+                            out.push('”');
+                        } else {
+                            out.push_str(&value);
+                        }
+                    }
+                    None => complete = false,
                 }
                 rest = &after[close + 1..];
             }
@@ -428,7 +651,7 @@ pub fn render_label(template: &str, args: &Value) -> String {
         }
     }
     out.push_str(rest);
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    (out, complete)
 }
 
 fn first_line_summary(payload: Option<&ToolResultPayload>, ok: bool) -> String {
@@ -459,14 +682,19 @@ pub fn normalise(
                 }
                 Vec::new()
             }
-            AssistantMessageEvent::TextDelta { delta } => match state.active_run_id() {
-                Some(run_id) if !delta.is_empty() => vec![AgentEvent::TextDelta {
-                    run_id: run_id.to_string(),
-                    message_id: update.message_id.clone(),
-                    delta: delta.clone(),
-                }],
-                _ => Vec::new(),
-            },
+            AssistantMessageEvent::TextDelta { delta } => {
+                match state.active_run_id().map(str::to_string) {
+                    Some(run_id) if !delta.is_empty() => {
+                        state.record_text(&update.message_id, delta);
+                        vec![AgentEvent::TextDelta {
+                            run_id,
+                            message_id: update.message_id.clone(),
+                            delta: delta.clone(),
+                        }]
+                    }
+                    _ => Vec::new(),
+                }
+            }
             AssistantMessageEvent::ThinkingDelta { delta } => match state.active_run_id() {
                 Some(run_id) if !delta.is_empty() => vec![AgentEvent::Thinking {
                     run_id: run_id.to_string(),
@@ -568,6 +796,8 @@ pub fn normalise(
         | InboundFrame::TurnEnd
         | InboundFrame::SessionSettled
         | InboundFrame::HostToolCancel(_)
+        | InboundFrame::ExtensionUiRequest(_)
+        | InboundFrame::AvailableCommands(_)
         | InboundFrame::Other { .. }
         | InboundFrame::Malformed { .. } => Vec::new(),
     }
@@ -897,6 +1127,170 @@ mod tests {
     }
 
     #[test]
+    fn provider_errors_are_classified_on_the_finished_run() {
+        use crate::harness::provider_error::ProviderErrorKind;
+        // A prompt that fails outright, with the runtime's retry hint.
+        let mut state = NormaliserState::new(catalog());
+        state.begin_run("r", "s", "m", "p1", 0);
+        let failed = parse_frame(
+            r#"{"type":"prompt_result","id":"p1","agentInvoked":true,"status":"error","error":{"message":"429 {\"error\":{\"message\":\"Rate limit exceeded: free-models-per-min.\",\"code\":429}}","retryable":true}}"#,
+        )
+        .unwrap();
+        match normalise(&failed, &mut state, 5).last() {
+            Some(AgentEvent::RunFinished {
+                status: RunStatus::Error,
+                provider_error: Some(e),
+                ..
+            }) => assert_eq!(e.kind, ProviderErrorKind::RateLimited),
+            other => panic!("unexpected {other:?}"),
+        }
+
+        // The model turn fails (stopReason "error") but the prompt reports completed.
+        state.begin_run("r2", "s", "m", "p2", 10);
+        let turn = parse_frame(
+            r#"{"type":"message_end","messageId":"m1","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"401 {\"error\":{\"message\":\"No auth credentials found\",\"code\":401}}"}}"#,
+        )
+        .unwrap();
+        assert!(normalise(&turn, &mut state, 11).is_empty());
+        match normalise(&completed("p2"), &mut state, 12).last() {
+            Some(AgentEvent::RunFinished {
+                status: RunStatus::Error,
+                error: Some(message),
+                provider_error: Some(e),
+                ..
+            }) => {
+                assert!(message.contains("No auth credentials"));
+                assert_eq!(e.kind, ProviderErrorKind::Auth);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        // A failed turn followed by a successful one (the runtime retried) completes.
+        state.begin_run("r3", "s", "m", "p3", 20);
+        normalise(&turn, &mut state, 21);
+        let ok_turn = parse_frame(
+            r#"{"type":"message_end","messageId":"m2","message":{"role":"assistant","content":[],"stopReason":"stop"}}"#,
+        )
+        .unwrap();
+        normalise(&ok_turn, &mut state, 22);
+        assert!(matches!(
+            normalise(&completed("p3"), &mut state, 23).last(),
+            Some(AgentEvent::RunFinished {
+                status: RunStatus::Completed,
+                provider_error: None,
+                ..
+            })
+        ));
+    }
+
+    fn completed(prompt: &str) -> InboundFrame {
+        parse_frame(&format!(
+            r#"{{"type":"prompt_result","id":"{prompt}","agentInvoked":true,"status":"completed","sessionSettled":true}}"#
+        ))
+        .unwrap()
+    }
+
+    fn text(message: &str, delta: &str) -> InboundFrame {
+        parse_frame(&format!(
+            r#"{{"type":"message_update","messageId":"{message}","assistantMessageEvent":{{"type":"text_delta","delta":"{delta}"}}}}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn held_runs_wait_for_the_check_and_then_finish() {
+        let mut state = NormaliserState::new(catalog());
+        state.set_hold_completion(true);
+        state.begin_run("r", "s", "m", "p1", 0);
+        normalise(&text("m1", "Sixty days [1]."), &mut state, 1);
+        assert!(
+            normalise(&completed("p1"), &mut state, 5).is_empty(),
+            "held, not finished"
+        );
+        assert!(state.is_held());
+        let held = state.take_settled().unwrap();
+        assert_eq!(
+            held.messages,
+            vec![("m1".to_string(), "Sixty days [1].".to_string())]
+        );
+        assert!(state.take_settled().is_none(), "picked up once");
+        assert!(
+            state.finish_held("r", held.generation + 1, 9).is_empty(),
+            "stale check"
+        );
+        let events = state.finish_held("r", held.generation, 9);
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::RunFinished {
+                status: RunStatus::Completed,
+                duration_ms: 9,
+                ..
+            })
+        ));
+        assert!(state.active_run_id().is_none());
+    }
+
+    #[test]
+    fn a_held_run_can_continue_with_one_more_prompt() {
+        let mut state = NormaliserState::new(catalog());
+        state.set_hold_completion(true);
+        state.begin_run("r", "s", "m", "p1", 0);
+        normalise(&completed("p1"), &mut state, 1);
+        let held = state.take_settled().unwrap();
+        assert!(state.resume_held("r", held.generation, "p2"));
+        assert!(!state.is_held());
+        assert!(
+            !state.resume_held("r", held.generation, "p3"),
+            "already resumed"
+        );
+        normalise(&text("m2", "Revised."), &mut state, 2);
+        assert!(normalise(&completed("p2"), &mut state, 3).is_empty());
+        let again = state.take_settled().unwrap();
+        assert_eq!(again.messages.len(), 1);
+        assert_ne!(again.generation, held.generation);
+    }
+
+    #[test]
+    fn steering_or_stopping_a_held_run_discards_its_check() {
+        let mut state = NormaliserState::new(catalog());
+        state.set_hold_completion(true);
+        state.begin_run("r", "s", "m", "p1", 0);
+        normalise(&completed("p1"), &mut state, 1);
+        let held = state.take_settled().unwrap();
+        assert!(state.attach_prompt("p2"));
+        assert!(!state.still_held("r", held.generation));
+        assert!(state.finish_held("r", held.generation, 4).is_empty());
+        normalise(&completed("p2"), &mut state, 5);
+        state.take_settled().unwrap();
+        let events = state.abort_held(6);
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::RunFinished {
+                status: RunStatus::Aborted,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn failed_runs_are_never_held() {
+        let mut state = NormaliserState::new(catalog());
+        state.set_hold_completion(true);
+        state.begin_run("r", "s", "m", "p1", 0);
+        let failed = parse_frame(
+            r#"{"type":"prompt_result","id":"p1","agentInvoked":true,"status":"aborted"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            normalise(&failed, &mut state, 2).last(),
+            Some(AgentEvent::RunFinished {
+                status: RunStatus::Aborted,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn labels_render_placeholders() {
         assert_eq!(
             render_label("Searching {query}", &json!({"query": "  invoices "})),
@@ -911,5 +1305,26 @@ mod tests {
             "Page “3” of “a.pdf”"
         );
         assert_eq!(render_label("Broken {brace", &json!({})), "Broken {brace");
+    }
+
+    #[test]
+    fn optional_label_groups_drop_whole() {
+        let template = "Listing tasks[ due {due_from!} to {due_to!}][ matching {text}]";
+        assert_eq!(render_label(template, &json!({})), "Listing tasks");
+        assert_eq!(
+            render_label(
+                template,
+                &json!({"due_from": "2026-10-05", "due_to": "2026-10-11"})
+            ),
+            "Listing tasks due 2026-10-05 to 2026-10-11"
+        );
+        assert_eq!(
+            render_label(template, &json!({"due_from": "2026-10-05", "text": "gst"})),
+            "Listing tasks matching “gst”"
+        );
+        assert_eq!(
+            render_label("Unclosed [group {x}", &json!({"x": "y"})),
+            "Unclosed [group “y”"
+        );
     }
 }

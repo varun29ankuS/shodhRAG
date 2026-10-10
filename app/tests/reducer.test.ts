@@ -9,7 +9,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentEvent } from '../src/features/agent/events.ts';
+import type { AgentEvent, GroundingReport } from '../src/features/agent/events.ts';
 import {
   answerText,
   currentStep,
@@ -19,6 +19,7 @@ import {
   planProgress,
   reduceAll,
   reduceTranscript,
+  supersededBlocks,
   toPersisted,
 } from '../src/features/agent/reducer.ts';
 
@@ -166,4 +167,65 @@ test('a transcript persisted mid-run is restored as interrupted', () => {
   assert.equal(fromPersisted({ nope: true }), null);
   const done = reduceAll(initialTranscript(RUN, 1000), spikeRun());
   assert.deepEqual(fromPersisted(JSON.parse(JSON.stringify(toPersisted(done)))), done);
+});
+
+function groundingReport(partial: Partial<GroundingReport>): GroundingReport {
+  return {
+    round: 0,
+    isFinal: false,
+    method: 'entailment',
+    summary: { checked: 1, supported: 0, weak: 0, unsupported: 1, uncited: 0, invalid: 0, unchecked: 0, score: 0 },
+    claims: [],
+    needs: [],
+    messageIds: ['m1'],
+    supersededMessageIds: [],
+    ...partial,
+  };
+}
+
+test('a revised answer replaces its draft in the answer text and keeps both in the transcript', () => {
+  const events: AgentEvent[] = [
+    ...spikeRun().slice(0, 3),
+    { type: 'text_delta', runId: RUN, messageId: 'm1', delta: 'The notice period is 90 days [1].' },
+    { type: 'grounding', runId: RUN, report: groundingReport({}) },
+    { type: 'revision_started', runId: RUN, round: 1, reason: 'repair', flagged: 1, missingNeeds: [] },
+    { type: 'text_delta', runId: RUN, messageId: 'm2', delta: 'The notice period is 60 days [1].' },
+    {
+      type: 'grounding',
+      runId: RUN,
+      report: groundingReport({ round: 1, isFinal: true, messageIds: ['m2'], supersededMessageIds: ['m1'] }),
+    },
+    { type: 'run_finished', runId: RUN, status: 'completed', durationMs: 5000, error: null },
+  ];
+  const state = reduceAll(initialTranscript(RUN, 1000), events);
+  assert.equal(state.status, 'completed');
+  assert.equal(answerText(state), 'The notice period is 60 days [1].');
+  assert.deepEqual(state.blocks.map(b => b.kind), ['step', 'text', 'revision', 'text']);
+  assert.equal(state.groundings.length, 2);
+  assert.deepEqual([...supersededBlocks(state)], ['m1']);
+  const restored = fromPersisted(JSON.parse(JSON.stringify(toPersisted(state))));
+  assert.ok(restored);
+  assert.equal(restored.groundings.length, 2, 'both checks are persisted');
+  assert.equal(answerText(restored), 'The notice period is 60 days [1].');
+});
+
+test('transcripts stored before grounding restore with no checks', () => {
+  const old = { ...toPersisted(reduceAll(initialTranscript(RUN, 1000), spikeRun())) } as Record<string, unknown>;
+  delete old.groundings;
+  const restored = fromPersisted(old);
+  assert.ok(restored);
+  assert.deepEqual(restored.groundings, []);
+});
+
+test('plan items from older builds get need defaults and coverage is kept', () => {
+  const legacy = { type: 'plan_updated', runId: RUN, items: [{ id: '1', text: 'Search', status: 'done' }] } as unknown as AgentEvent;
+  let state = reduceAll(initialTranscript(RUN, 0), [spikeRun()[0], legacy]);
+  assert.deepEqual(state.plan, [{ id: '1', text: 'Search', status: 'done', need: false, coverage: null, evidence: [] }]);
+  state = reduceTranscript(state, {
+    type: 'plan_updated',
+    runId: RUN,
+    items: [{ id: '1', text: 'Notice period', status: 'done', need: true, coverage: 'covered', evidence: [3] }],
+  });
+  assert.equal(state.plan?.[0].coverage, 'covered');
+  assert.deepEqual(state.plan?.[0].evidence, [3]);
 });

@@ -38,3 +38,11 @@ test('search results label calendar hits by their citation title', () => {
   assert.equal(hit.fileName, 'Task: File GST return');
   assert.equal(sourceLabel(hit), 'Task: File GST return');
 });
+
+test('web sources are labelled by title, falling back to the site', async () => {
+  const { sourceLabel, webHost } = await import('../src/features/ask/searchResults.ts');
+  assert.equal(webHost('https://www.arxiv.org/abs/2404.19756'), 'arxiv.org');
+  assert.equal(webHost('not a url'), 'not a url');
+  assert.equal(sourceLabel({ sourceFile: 'https://doi.org/10.1/x', fileName: 'Diffusing Blame' }), 'Diffusing Blame');
+  assert.equal(sourceLabel({ sourceFile: 'https://www.example.com/a?b=1', fileName: '' }), 'example.com');
+});

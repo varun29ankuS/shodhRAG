@@ -81,9 +81,15 @@ impl TextSearch {
             }
         };
 
+        // Manual: every write path here (`commit`, deletions, `clear`) reloads the reader
+        // itself, and this is the index's only writer (Tantivy locks it). The other
+        // policy, OnCommitWithDelay, starts a thread that opens `meta.json` every 500 ms
+        // to see whether it changed; on Windows a commit replacing `meta.json` while that
+        // handle is open fails with "Access is denied", so a file failed to index now
+        // and then for no reason of its own.
         let reader = index
             .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .reload_policy(ReloadPolicy::Manual)
             .try_into()
             .context("Failed to create Tantivy reader")?;
 
@@ -297,5 +303,47 @@ impl TextSearch {
     /// The caller should rebuild it from LanceDB if there are documents in the vector store.
     pub fn is_empty(&self) -> bool {
         self.count().unwrap_or(0) == 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The reader reloads only when told (no polling thread): every write path
+    /// must show its change to the next search at once.
+    #[test]
+    fn writes_are_visible_to_the_next_search_without_polling() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = TextSearch::new(dir.path().to_str().unwrap()).unwrap();
+        index
+            .index_chunk("c1", "the lease notice period", "lease", "a/lease.txt")
+            .unwrap();
+        index
+            .index_chunks_batch(&[(
+                "c2".into(),
+                "visitors park on the street".into(),
+                "parking".into(),
+                "a/parking.txt".into(),
+            )])
+            .unwrap();
+        index.commit().unwrap();
+        assert_eq!(index.count().unwrap(), 2);
+        assert_eq!(index.search("lease", 5).unwrap()[0].0, "c1");
+
+        index.delete_by_source("a/lease.txt").unwrap();
+        assert!(index.search("lease", 5).unwrap().is_empty());
+        assert_eq!(index.count().unwrap(), 1);
+
+        index.delete_by_id("c2").unwrap();
+        index.commit().unwrap();
+        assert_eq!(index.count().unwrap(), 0);
+
+        index
+            .index_chunk("c3", "quiet hours", "rules", "a/rules.txt")
+            .unwrap();
+        index.commit().unwrap();
+        index.clear().unwrap();
+        assert!(index.is_empty());
     }
 }

@@ -59,6 +59,9 @@ pub struct CalendarEvent {
     pub all_day: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Where the event takes place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
     #[serde(default = "default_source")]
     pub source: String,
     #[serde(skip_serializing_if = "Option::is_none")]

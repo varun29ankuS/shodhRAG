@@ -9,6 +9,8 @@
  */
 
 import type { TranscriptState } from '../agent/reducer';
+import type { FocusThread } from '../focus/focusTypes';
+import type { SideSummaryRef } from '../focus/summary';
 
 export type ChatRole = 'user' | 'assistant' | 'system';
 
@@ -54,6 +56,15 @@ export interface PageSpan {
   end: number;
 }
 
+/** A layout box of an indexed passage: PDF points, bottom-left origin. */
+export interface PdfRegion {
+  page: number;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
 /** A search result normalised at the frontend boundary. */
 export interface SearchHit {
   /** 1-based position; matches the `[N]` markers the model writes. */
@@ -67,6 +78,12 @@ export interface SearchHit {
   page: PageSpan | null;
   lineRange: [number, number] | null;
   url: string | null;
+  /** Heading chain of the passage, when the document was parsed structurally. */
+  section?: string | null;
+  /** Where the passage sits on its pages; preferred over text search to highlight it. */
+  regions?: PdfRegion[] | null;
+  /** A snippet's rectangles (top-left origin of the page view box), outlined when there are no regions. */
+  rects?: { page: number; rect: { x: number; y: number; width: number; height: number } }[] | null;
 }
 
 export type RunStatus = 'running' | 'done' | 'failed' | 'cancelled';
@@ -114,10 +131,28 @@ export interface ChatMessage {
   transcript?: TranscriptState;
   /** Base64 image attached to OCR notices. Not persisted. */
   image?: string;
+  /**
+   * Side threads ("Ask about this") anchored to this message. Persisted in
+   * the message's opaque `metadata` under `focusThreads`.
+   */
+  threads?: FocusThread[];
+  /**
+   * A user message posted from a side discussion ("Add to main
+   * conversation"): rendered as a card that reopens the discussion.
+   * Persisted in `metadata` under `focusSummary`.
+   */
+  sideSummary?: SideSummaryRef;
 }
 
 /** Options that scope a request; supplied by the caller at send time. */
 export interface SendOptions {
+  /** Legacy fields of callers that predate workspaces; not sent to the backend. */
   spaceId: string | null;
   spaceName: string | null;
+  /** "Search all my library" for this question in a workspace chat. */
+  searchAll?: boolean;
+  /** Sources the answer may search; empty or absent means every source. */
+  sourceIds?: string[];
+  /** Files the answer is about ("Ask about this file"); limits search to them. */
+  sourceFiles?: string[];
 }

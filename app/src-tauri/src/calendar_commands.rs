@@ -1,141 +1,35 @@
-use chrono::Utc;
-use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::PathBuf;
-use tauri::{AppHandle, Emitter, Manager};
-use uuid::Uuid;
+//! Calendar commands for the UI. Storage and the data rules live in
+//! [`crate::calendar_store`], shared with the agent's calendar tools; every
+//! change is reported through [`HostEffects::calendar_changed`], which
+//! re-indexes the record and emits [`CALENDAR_CHANGED_EVENT`].
 
+use tauri::{AppHandle, Manager};
+
+use crate::agent_tools::{CalendarChange, HostEffects, TauriEffects};
+use crate::calendar_store::{CalendarStore, EventPatch, TaskPatch};
 use crate::rag_commands::RagState;
 
-// ── Data Structures ──────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SubTask {
-    pub id: String,
-    pub title: String,
-    #[serde(default)]
-    pub completed: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TodoItem {
-    pub id: String,
-    pub title: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub due_date: Option<String>,
-    #[serde(default = "default_priority")]
-    pub priority: String,
-    #[serde(default = "default_status")]
-    pub status: String,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    pub subtasks: Vec<SubTask>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project: Option<String>,
-    #[serde(default = "default_source")]
-    pub source: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_ref: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub completed_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reminder: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CalendarEvent {
-    pub id: String,
-    pub title: String,
-    #[serde(default)]
-    pub description: String,
-    pub start_time: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub end_time: Option<String>,
-    #[serde(default)]
-    pub all_day: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub color: Option<String>,
-    #[serde(default = "default_source")]
-    pub source: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_ref: Option<String>,
-    pub created_at: String,
-}
-
-fn default_priority() -> String {
-    "medium".to_string()
-}
-fn default_status() -> String {
-    "pending".to_string()
-}
-fn default_source() -> String {
-    "user".to_string()
-}
-
-// ── Storage ──────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CalendarDataFile {
-    #[serde(default)]
-    tasks: Vec<TodoItem>,
-    #[serde(default)]
-    events: Vec<CalendarEvent>,
-}
-
-fn calendar_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let app_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data directory: {}", e))?;
-    fs::create_dir_all(&app_dir).map_err(|e| format!("Failed to create app dir: {}", e))?;
-    Ok(app_dir.join("calendar_data.json"))
-}
-
-fn read_calendar(app: &AppHandle) -> Result<CalendarDataFile, String> {
-    let path = calendar_path(app)?;
-    if !path.exists() {
-        return Ok(CalendarDataFile {
-            tasks: Vec::new(),
-            events: Vec::new(),
-        });
-    }
-    let data =
-        fs::read_to_string(&path).map_err(|e| format!("Failed to read calendar data: {}", e))?;
-    serde_json::from_str(&data).map_err(|e| format!("Failed to parse calendar data: {}", e))
-}
-
-fn write_calendar(app: &AppHandle, data: &CalendarDataFile) -> Result<(), String> {
-    let path = calendar_path(app)?;
-    let tmp_path = path.with_extension("json.tmp");
-    let json = serde_json::to_string_pretty(data)
-        .map_err(|e| format!("Failed to serialize calendar data: {}", e))?;
-    fs::write(&tmp_path, &json).map_err(|e| format!("Failed to write temp file: {}", e))?;
-    fs::rename(&tmp_path, &path).map_err(|e| format!("Failed to rename temp file: {}", e))?;
-    // Every task/event change (UI, agent tools, subtasks) goes through here, so open
-    // views refresh from one signal instead of each caller remembering to notify.
-    if let Err(e) = app.emit(CALENDAR_CHANGED_EVENT, ()) {
-        tracing::warn!("Failed to emit {}: {}", CALENDAR_CHANGED_EVENT, e);
-    }
-    Ok(())
-}
+pub use crate::calendar_store::{CalendarEvent, NewEvent, NewTask, TodoItem};
 
 /// Emitted after calendar data is written; listeners re-read tasks and events.
 pub const CALENDAR_CHANGED_EVENT: &str = "calendar-changed";
+
+fn store(app: &AppHandle) -> Result<CalendarStore, String> {
+    let dir = crate::profile::app_data_dir(app)
+        .map_err(|e| format!("Failed to get app data directory: {e}"))?;
+    Ok(CalendarStore::in_dir(&dir))
+}
+
+fn report(app: &AppHandle, change: CalendarChange) {
+    TauriEffects::new(app.clone()).calendar_changed(change);
+}
 
 // ── RAG Indexing Helpers ─────────────────────────────────────────
 //
 // Convert local structs to shodh_rag equivalents and call the indexer.
 // Best-effort: if RAG engine isn't ready, log and continue.
 
-fn to_rag_subtask(s: &SubTask) -> shodh_rag::agent::calendar::SubTask {
+fn to_rag_subtask(s: &crate::calendar_store::SubTask) -> shodh_rag::agent::calendar::SubTask {
     shodh_rag::agent::calendar::SubTask {
         id: s.id.clone(),
         title: s.title.clone(),
@@ -172,124 +66,81 @@ fn to_rag_event(event: &CalendarEvent) -> shodh_rag::agent::calendar::CalendarEv
         end_time: event.end_time.clone(),
         all_day: event.all_day,
         color: event.color.clone(),
+        location: event.location.clone(),
         source: event.source.clone(),
         source_ref: event.source_ref.clone(),
         created_at: event.created_at.clone(),
     }
 }
 
-/// Index a task in the RAG engine (best-effort, fire-and-forget).
-fn spawn_index_task(app: &AppHandle, task: &TodoItem) {
-    let rag_state: tauri::State<'_, RagState> = app.state();
-    let rag = rag_state.rag.clone();
-    let rag_task = to_rag_task(task);
-    tokio::spawn(async move {
-        let mut engine = rag.write().await;
-        if let Err(e) =
-            shodh_rag::agent::calendar_indexer::index_task(&mut engine, &rag_task, "calendar").await
-        {
-            tracing::warn!(task_id = %rag_task.id, error = %e, "Failed to index task in RAG");
-        }
-    });
-}
-
-/// Remove a task from the RAG index (best-effort, fire-and-forget).
-fn spawn_deindex_task(app: &AppHandle, task_id: &str) {
-    let rag_state: tauri::State<'_, RagState> = app.state();
-    let rag = rag_state.rag.clone();
-    let id = task_id.to_string();
-    tokio::spawn(async move {
-        let mut engine = rag.write().await;
-        if let Err(e) = shodh_rag::agent::calendar_indexer::deindex_task(&mut engine, &id).await {
-            tracing::warn!(task_id = %id, error = %e, "Failed to deindex task from RAG");
-        }
-    });
-}
-
-/// Index an event in the RAG engine (best-effort, fire-and-forget).
-fn spawn_index_event(app: &AppHandle, event: &CalendarEvent) {
-    let rag_state: tauri::State<'_, RagState> = app.state();
-    let rag = rag_state.rag.clone();
-    let rag_event = to_rag_event(event);
-    tokio::spawn(async move {
-        let mut engine = rag.write().await;
-        if let Err(e) =
-            shodh_rag::agent::calendar_indexer::index_event(&mut engine, &rag_event, "calendar")
+/// Re-index (or de-index) the changed record in the background.
+pub(crate) fn spawn_reindex(app: &AppHandle, change: &CalendarChange) {
+    let rag = app.state::<RagState>().rag.clone();
+    match change {
+        CalendarChange::TaskSaved(task) => {
+            let rag_task = to_rag_task(task);
+            tokio::spawn(async move {
+                let mut engine = rag.write().await;
+                if let Err(e) = shodh_rag::agent::calendar_indexer::index_task(
+                    &mut engine,
+                    &rag_task,
+                    "calendar",
+                )
                 .await
-        {
-            tracing::warn!(event_id = %rag_event.id, error = %e, "Failed to index event in RAG");
+                {
+                    tracing::warn!(task_id = %rag_task.id, error = %e, "Failed to index task in RAG");
+                }
+            });
         }
-    });
-}
-
-/// Remove an event from the RAG index (best-effort, fire-and-forget).
-fn spawn_deindex_event(app: &AppHandle, event_id: &str) {
-    let rag_state: tauri::State<'_, RagState> = app.state();
-    let rag = rag_state.rag.clone();
-    let id = event_id.to_string();
-    tokio::spawn(async move {
-        let mut engine = rag.write().await;
-        if let Err(e) = shodh_rag::agent::calendar_indexer::deindex_event(&mut engine, &id).await {
-            tracing::warn!(event_id = %id, error = %e, "Failed to deindex event from RAG");
+        CalendarChange::TaskRemoved(id) => {
+            let id = id.clone();
+            tokio::spawn(async move {
+                let mut engine = rag.write().await;
+                if let Err(e) =
+                    shodh_rag::agent::calendar_indexer::deindex_task(&mut engine, &id).await
+                {
+                    tracing::warn!(task_id = %id, error = %e, "Failed to deindex task from RAG");
+                }
+            });
         }
-    });
+        CalendarChange::EventSaved(event) => {
+            let rag_event = to_rag_event(event);
+            tokio::spawn(async move {
+                let mut engine = rag.write().await;
+                if let Err(e) = shodh_rag::agent::calendar_indexer::index_event(
+                    &mut engine,
+                    &rag_event,
+                    "calendar",
+                )
+                .await
+                {
+                    tracing::warn!(event_id = %rag_event.id, error = %e, "Failed to index event in RAG");
+                }
+            });
+        }
+        CalendarChange::EventRemoved(id) => {
+            let id = id.clone();
+            tokio::spawn(async move {
+                let mut engine = rag.write().await;
+                if let Err(e) =
+                    shodh_rag::agent::calendar_indexer::deindex_event(&mut engine, &id).await
+                {
+                    tracing::warn!(event_id = %id, error = %e, "Failed to deindex event from RAG");
+                }
+            });
+        }
+    }
 }
 
 // ── Task Commands ────────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn load_tasks(app: AppHandle) -> Result<Vec<TodoItem>, String> {
-    let data = read_calendar(&app)?;
-    Ok(data.tasks)
-}
-
-/// Fields for a new task. Shared by the `create_task` command and the
-/// agent's `create_task` tool.
-#[derive(Debug, Clone, Default)]
-pub struct NewTask {
-    pub title: String,
-    pub description: Option<String>,
-    pub due_date: Option<String>,
-    pub priority: Option<String>,
-    pub tags: Option<Vec<String>>,
-    pub project: Option<String>,
-    pub source: Option<String>,
-    pub source_ref: Option<String>,
-    pub reminder: Option<String>,
-}
-
-/// Persist a new task and index it for search.
-pub fn insert_task(app: &AppHandle, new: NewTask) -> Result<TodoItem, String> {
-    let now = Utc::now().to_rfc3339();
-    let task = TodoItem {
-        id: Uuid::new_v4().to_string(),
-        title: new.title,
-        description: new.description.unwrap_or_default(),
-        due_date: new.due_date,
-        priority: new.priority.unwrap_or_else(|| "medium".to_string()),
-        status: "pending".to_string(),
-        tags: new.tags.unwrap_or_default(),
-        subtasks: Vec::new(),
-        project: new.project,
-        source: new.source.unwrap_or_else(|| "user".to_string()),
-        source_ref: new.source_ref,
-        created_at: now.clone(),
-        updated_at: now,
-        completed_at: None,
-        reminder: new.reminder,
-    };
-
-    let mut data = read_calendar(app)?;
-    data.tasks.push(task.clone());
-    write_calendar(app, &data)?;
-
-    spawn_index_task(app, &task);
-
-    tracing::info!(task_id = %task.id, title = %task.title, "Created task");
-    Ok(task)
+    Ok(store(&app)?.load().map_err(|e| e.to_string())?.tasks)
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri passes each field as its own argument.
 pub async fn create_task(
     app: AppHandle,
     title: String,
@@ -302,23 +153,31 @@ pub async fn create_task(
     source_ref: Option<String>,
     reminder: Option<String>,
 ) -> Result<TodoItem, String> {
-    insert_task(
-        &app,
-        NewTask {
-            title,
-            description,
-            due_date,
-            priority,
-            tags,
-            project,
-            source,
-            source_ref,
-            reminder,
-        },
-    )
+    let task = store(&app)?
+        .update(|d| {
+            d.insert_task(NewTask {
+                title,
+                description,
+                due_date,
+                priority,
+                tags,
+                project,
+                source,
+                source_ref,
+                reminder,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    report(&app, CalendarChange::TaskSaved(task.clone()));
+    tracing::info!(task_id = %task.id, title = %task.title, "Created task");
+    Ok(task)
 }
 
+/// Change a task. A field left out keeps its value; `clear` names the
+/// optional fields to empty (`due_date`, `project`, `description`,
+/// `reminder`), since an absent value can never mean "remove".
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri passes each field as its own argument.
 pub async fn update_task(
     app: AppHandle,
     id: String,
@@ -330,66 +189,35 @@ pub async fn update_task(
     tags: Option<Vec<String>>,
     project: Option<String>,
     reminder: Option<String>,
+    clear: Option<Vec<String>>,
 ) -> Result<TodoItem, String> {
-    let mut data = read_calendar(&app)?;
-    let task = data
-        .tasks
-        .iter_mut()
-        .find(|t| t.id == id)
-        .ok_or_else(|| format!("Task not found: {}", id))?;
-
-    if let Some(v) = title {
-        task.title = v;
+    let patch = TaskPatch {
+        title,
+        description,
+        due_date: due_date.map(Some),
+        priority,
+        status,
+        tags,
+        project: project.map(Some),
+        reminder: reminder.map(Some),
+        subtasks: None,
     }
-    if let Some(v) = description {
-        task.description = v;
-    }
-    if let Some(v) = due_date {
-        task.due_date = Some(v);
-    }
-    if let Some(v) = priority {
-        task.priority = v;
-    }
-    if let Some(v) = status {
-        if v == "completed" && task.status != "completed" {
-            task.completed_at = Some(Utc::now().to_rfc3339());
-        } else if v != "completed" {
-            task.completed_at = None;
-        }
-        task.status = v;
-    }
-    if let Some(v) = tags {
-        task.tags = v;
-    }
-    if let Some(v) = project {
-        task.project = Some(v);
-    }
-    if let Some(v) = reminder {
-        task.reminder = Some(v);
-    }
-    task.updated_at = Utc::now().to_rfc3339();
-
-    let updated = task.clone();
-    write_calendar(&app, &data)?;
-
-    spawn_index_task(&app, &updated);
-
+    .clearing(&clear.unwrap_or_default())
+    .map_err(|e| e.to_string())?;
+    let (_, updated, _) = store(&app)?
+        .update(|d| d.patch_task(&id, &patch))
+        .map_err(|e| e.to_string())?;
+    report(&app, CalendarChange::TaskSaved(updated.clone()));
     tracing::info!(task_id = %updated.id, "Updated task");
     Ok(updated)
 }
 
 #[tauri::command]
 pub async fn delete_task(app: AppHandle, id: String) -> Result<bool, String> {
-    let mut data = read_calendar(&app)?;
-    let len_before = data.tasks.len();
-    data.tasks.retain(|t| t.id != id);
-    if data.tasks.len() == len_before {
-        return Err(format!("Task not found: {}", id));
-    }
-    write_calendar(&app, &data)?;
-
-    spawn_deindex_task(&app, &id);
-
+    store(&app)?
+        .update(|d| d.delete_task(&id))
+        .map_err(|e| e.to_string())?;
+    report(&app, CalendarChange::TaskRemoved(id.clone()));
     tracing::info!(task_id = %id, "Deleted task");
     Ok(true)
 }
@@ -402,26 +230,10 @@ pub async fn add_subtask(
     task_id: String,
     title: String,
 ) -> Result<TodoItem, String> {
-    let mut data = read_calendar(&app)?;
-    let task = data
-        .tasks
-        .iter_mut()
-        .find(|t| t.id == task_id)
-        .ok_or_else(|| format!("Task not found: {}", task_id))?;
-
-    task.subtasks.push(SubTask {
-        id: Uuid::new_v4().to_string(),
-        title,
-        completed: false,
-    });
-    task.updated_at = Utc::now().to_rfc3339();
-
-    let updated = task.clone();
-    write_calendar(&app, &data)?;
-
-    // Re-index parent task with updated subtasks
-    spawn_index_task(&app, &updated);
-
+    let updated = store(&app)?
+        .update(|d| d.add_subtask(&task_id, &title))
+        .map_err(|e| e.to_string())?;
+    report(&app, CalendarChange::TaskSaved(updated.clone()));
     Ok(updated)
 }
 
@@ -431,27 +243,24 @@ pub async fn toggle_subtask(
     task_id: String,
     subtask_id: String,
 ) -> Result<TodoItem, String> {
-    let mut data = read_calendar(&app)?;
-    let task = data
-        .tasks
-        .iter_mut()
-        .find(|t| t.id == task_id)
-        .ok_or_else(|| format!("Task not found: {}", task_id))?;
+    let updated = store(&app)?
+        .update(|d| d.toggle_subtask(&task_id, &subtask_id))
+        .map_err(|e| e.to_string())?;
+    report(&app, CalendarChange::TaskSaved(updated.clone()));
+    Ok(updated)
+}
 
-    let subtask = task
-        .subtasks
-        .iter_mut()
-        .find(|s| s.id == subtask_id)
-        .ok_or_else(|| format!("Subtask not found: {}", subtask_id))?;
-
-    subtask.completed = !subtask.completed;
-    task.updated_at = Utc::now().to_rfc3339();
-
-    let updated = task.clone();
-    write_calendar(&app, &data)?;
-
-    spawn_index_task(&app, &updated);
-
+#[tauri::command]
+pub async fn rename_subtask(
+    app: AppHandle,
+    task_id: String,
+    subtask_id: String,
+    title: String,
+) -> Result<TodoItem, String> {
+    let updated = store(&app)?
+        .update(|d| d.rename_subtask(&task_id, &subtask_id, &title))
+        .map_err(|e| e.to_string())?;
+    report(&app, CalendarChange::TaskSaved(updated.clone()));
     Ok(updated)
 }
 
@@ -461,21 +270,10 @@ pub async fn delete_subtask(
     task_id: String,
     subtask_id: String,
 ) -> Result<TodoItem, String> {
-    let mut data = read_calendar(&app)?;
-    let task = data
-        .tasks
-        .iter_mut()
-        .find(|t| t.id == task_id)
-        .ok_or_else(|| format!("Task not found: {}", task_id))?;
-
-    task.subtasks.retain(|s| s.id != subtask_id);
-    task.updated_at = Utc::now().to_rfc3339();
-
-    let updated = task.clone();
-    write_calendar(&app, &data)?;
-
-    spawn_index_task(&app, &updated);
-
+    let updated = store(&app)?
+        .update(|d| d.delete_subtask(&task_id, &subtask_id))
+        .map_err(|e| e.to_string())?;
+    report(&app, CalendarChange::TaskSaved(updated.clone()));
     Ok(updated)
 }
 
@@ -483,50 +281,11 @@ pub async fn delete_subtask(
 
 #[tauri::command]
 pub async fn load_events(app: AppHandle) -> Result<Vec<CalendarEvent>, String> {
-    let data = read_calendar(&app)?;
-    Ok(data.events)
-}
-
-/// Fields for a new calendar event. Shared by the `create_event` command
-/// and the agent's `create_event` tool.
-#[derive(Debug, Clone, Default)]
-pub struct NewEvent {
-    pub title: String,
-    pub start_time: String,
-    pub end_time: Option<String>,
-    pub all_day: Option<bool>,
-    pub description: Option<String>,
-    pub color: Option<String>,
-    pub source: Option<String>,
-    pub source_ref: Option<String>,
-}
-
-/// Persist a new event and index it for search.
-pub fn insert_event(app: &AppHandle, new: NewEvent) -> Result<CalendarEvent, String> {
-    let event = CalendarEvent {
-        id: Uuid::new_v4().to_string(),
-        title: new.title,
-        description: new.description.unwrap_or_default(),
-        start_time: new.start_time,
-        end_time: new.end_time,
-        all_day: new.all_day.unwrap_or(false),
-        color: new.color,
-        source: new.source.unwrap_or_else(|| "user".to_string()),
-        source_ref: new.source_ref,
-        created_at: Utc::now().to_rfc3339(),
-    };
-
-    let mut data = read_calendar(app)?;
-    data.events.push(event.clone());
-    write_calendar(app, &data)?;
-
-    spawn_index_event(app, &event);
-
-    tracing::info!(event_id = %event.id, title = %event.title, "Created event");
-    Ok(event)
+    Ok(store(&app)?.load().map_err(|e| e.to_string())?.events)
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri passes each field as its own argument.
 pub async fn create_event(
     app: AppHandle,
     title: String,
@@ -537,23 +296,32 @@ pub async fn create_event(
     color: Option<String>,
     source: Option<String>,
     source_ref: Option<String>,
+    location: Option<String>,
 ) -> Result<CalendarEvent, String> {
-    insert_event(
-        &app,
-        NewEvent {
-            title,
-            start_time,
-            end_time,
-            all_day,
-            description,
-            color,
-            source,
-            source_ref,
-        },
-    )
+    let event = store(&app)?
+        .update(|d| {
+            d.insert_event(NewEvent {
+                title,
+                start_time,
+                end_time,
+                all_day,
+                description,
+                color,
+                location,
+                source,
+                source_ref,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    report(&app, CalendarChange::EventSaved(event.clone()));
+    tracing::info!(event_id = %event.id, title = %event.title, "Created event");
+    Ok(event)
 }
 
+/// Change an event. A field left out keeps its value; `clear` names the
+/// optional fields to empty (`description`, `end_time`, `location`).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri passes each field as its own argument.
 pub async fn update_event(
     app: AppHandle,
     id: String,
@@ -563,64 +331,45 @@ pub async fn update_event(
     end_time: Option<String>,
     all_day: Option<bool>,
     color: Option<String>,
+    location: Option<String>,
+    clear: Option<Vec<String>>,
 ) -> Result<CalendarEvent, String> {
-    let mut data = read_calendar(&app)?;
-    let event = data
-        .events
-        .iter_mut()
-        .find(|e| e.id == id)
-        .ok_or_else(|| format!("Event not found: {}", id))?;
-
-    if let Some(v) = title {
-        event.title = v;
+    let patch = EventPatch {
+        title,
+        description,
+        start_time,
+        end_time: end_time.map(Some),
+        all_day,
+        color,
+        location: location.map(Some),
     }
-    if let Some(v) = description {
-        event.description = v;
-    }
-    if let Some(v) = start_time {
-        event.start_time = v;
-    }
-    if let Some(v) = end_time {
-        event.end_time = Some(v);
-    }
-    if let Some(v) = all_day {
-        event.all_day = v;
-    }
-    if let Some(v) = color {
-        event.color = Some(v);
-    }
-
-    let updated = event.clone();
-    write_calendar(&app, &data)?;
-
-    spawn_index_event(&app, &updated);
-
+    .clearing(&clear.unwrap_or_default())
+    .map_err(|e| e.to_string())?;
+    let (_, updated, _) = store(&app)?
+        .update(|d| d.patch_event(&id, &patch))
+        .map_err(|e| e.to_string())?;
+    report(&app, CalendarChange::EventSaved(updated.clone()));
     tracing::info!(event_id = %updated.id, "Updated event");
     Ok(updated)
 }
 
 #[tauri::command]
 pub async fn delete_event(app: AppHandle, id: String) -> Result<bool, String> {
-    let mut data = read_calendar(&app)?;
-    let len_before = data.events.len();
-    data.events.retain(|e| e.id != id);
-    if data.events.len() == len_before {
-        return Err(format!("Event not found: {}", id));
-    }
-    write_calendar(&app, &data)?;
-
-    spawn_deindex_event(&app, &id);
-
+    store(&app)?
+        .update(|d| d.delete_event(&id))
+        .map_err(|e| e.to_string())?;
+    report(&app, CalendarChange::EventRemoved(id.clone()));
     tracing::info!(event_id = %id, "Deleted event");
     Ok(true)
 }
 
 // ── Bulk Reindex ─────────────────────────────────────────────────
 
-/// Re-index all existing calendar data into the RAG engine.
-/// Called on startup to ensure the search index is populated.
+/// Index calendar items that are missing from the search index (startup, and
+/// after the search models are installed). Items already indexed are not
+/// re-embedded; edits are indexed as they are made.
 pub async fn reindex_all_calendar_data(app: &AppHandle) {
-    let data = match read_calendar(app) {
+    let data = match store(app).and_then(|s| s.load().map_err(|e| e.to_string())) {
         Ok(d) => d,
         Err(e) => {
             tracing::warn!(error = %e, "Could not read calendar data for reindexing");
@@ -632,15 +381,13 @@ pub async fn reindex_all_calendar_data(app: &AppHandle) {
         return;
     }
 
-    let rag_state: tauri::State<'_, RagState> = app.state();
-    let rag = rag_state.rag.clone();
-
+    let rag = app.state::<RagState>().rag.clone();
     let rag_tasks: Vec<_> = data.tasks.iter().map(to_rag_task).collect();
     let rag_events: Vec<_> = data.events.iter().map(to_rag_event).collect();
 
     tokio::spawn(async move {
         let mut engine = rag.write().await;
-        match shodh_rag::agent::calendar_indexer::reindex_all(
+        match shodh_rag::agent::calendar_indexer::index_missing(
             &mut engine,
             &rag_tasks,
             &rag_events,
@@ -651,9 +398,9 @@ pub async fn reindex_all_calendar_data(app: &AppHandle) {
             Ok((t, e)) => tracing::info!(
                 tasks = t,
                 events = e,
-                "Calendar data reindexed into RAG on startup"
+                "Calendar items missing from the index were indexed"
             ),
-            Err(e) => tracing::warn!(error = %e, "Failed to reindex calendar data into RAG"),
+            Err(e) => tracing::warn!(error = %e, "Failed to index calendar data into RAG"),
         }
     });
 }

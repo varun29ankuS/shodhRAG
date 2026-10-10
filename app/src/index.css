@@ -11,8 +11,8 @@
  *     properties via color-mix(), so opacity modifiers (bg-primary/90) work.
  *   - ThemeContext reads them back with getComputedStyle to build the legacy
  *     `colors` object used by inline-styled panels.
- *   - Legacy stylesheets (ErrorBoundary.css, LoadingStates.css, DailyBrief.css,
- *     MapView.css) consume the aliases declared in the `:root` block below.
+ *   - Legacy stylesheets (ErrorBoundary.css) consume the aliases declared in
+ *     the `:root` block below.
  *
  * Values must stay 6-digit hex: legacy code appends 2-digit alpha suffixes
  * (e.g. `${colors.primary}14`).
@@ -94,9 +94,9 @@
     --c-accent-soft: #fbeee8;
     --c-on-accent: #ffffff;
 
-    --c-success: #15803d;
+    --c-success: #147a3a;
     --c-success-soft: #e8f5ec;
-    --c-warning: #a35f06;
+    --c-warning: #9c5b06;
     --c-warning-soft: #fbf1e1;
     --c-info: #1d4ed8;
     --c-violet: #6d28d9;
@@ -127,11 +127,24 @@
 
     --radius: 0.75rem;
 
-    /* Motion */
+    /*
+     * Motion. One system for the whole app:
+     *   micro  — hover, press, colour changes
+     *   panel  — popovers, menus, list items, view content entering
+     *   screen — docks, side panels, full-surface changes
+     * Exits run faster than entrances so dismissed UI never lingers.
+     * Easings: `standard` for movement between two resting states,
+     * `enter` (decelerate) for things appearing, `exit` (accelerate) for
+     * things leaving. framer-motion code reads the same values from
+     * src/lib/motion.ts.
+     */
     --dur-micro: 120ms;
     --dur-panel: 200ms;
     --dur-screen: 280ms;
+    --dur-exit: 140ms;
     --ease-standard: cubic-bezier(.2, .7, .2, 1);
+    --ease-enter: cubic-bezier(0, 0, .2, 1);
+    --ease-exit: cubic-bezier(.4, 0, 1, 1);
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -139,6 +152,7 @@
       --dur-micro: 0ms;
       --dur-panel: 0ms;
       --dur-screen: 0ms;
+      --dur-exit: 0ms;
     }
   }
 }
@@ -297,7 +311,41 @@
   to { opacity: 1; transform: none; }
 }
 
+/*
+ * Shell motion: view content entering, popovers, and loading skeletons.
+ * Opacity plus a small rise only, so switching views never shifts layout.
+ */
+@layer utilities {
+  .shell-view-enter {
+    animation: ask-rise var(--dur-panel) var(--ease-enter) both;
+  }
+
+  .shell-pop {
+    transform-origin: top right;
+    animation: shell-pop var(--dur-panel) var(--ease-enter) both;
+  }
+
+  .shell-skeleton {
+    display: block;
+    background-color: var(--c-raised-2);
+    animation: shell-skeleton 1.4s ease-in-out infinite;
+  }
+}
+
+@keyframes shell-pop {
+  from { opacity: 0; transform: scale(0.96) translateY(-2px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes shell-skeleton {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .shell-view-enter,
+  .shell-pop,
+  .shell-skeleton,
   .ask-rise,
   .ask-slide-in,
   .ask-fade-in,
@@ -345,6 +393,21 @@
   inset: 0;
   width: 100%;
   height: 100%;
+}
+
+/* Text-line placeholders on a page whose document is still loading. */
+.pdf-page .pdf-skeleton-line {
+  display: block;
+  flex-shrink: 0;
+  border-radius: 2px;
+  background-color: #e6e6e9;
+  animation: shell-skeleton 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pdf-page .pdf-skeleton-line {
+    animation: none;
+  }
 }
 
 /* Minimal port of pdf.js's .textLayer rules (web/pdf_viewer.css). */
@@ -433,4 +496,9 @@
   outline-offset: 1px;
   border-radius: 2px;
   scroll-margin: 96px;
+}
+
+/* Notices stay clickable (e.g. Undo) while a modal dialog has made the rest of the page inert to the pointer. */
+[data-sonner-toast][data-visible='true'] {
+  pointer-events: auto;
 }

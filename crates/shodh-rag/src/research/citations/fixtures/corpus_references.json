@@ -1,0 +1,4966 @@
+{
+"2102.11174 - Linear Transformers Are Secretly Fast Weight Programmers.pdf": {
+"title": [
+"Linear Transformers Are Secretly"
+],
+"firstPage": [
+"Linear Transformers Are Secretly",
+"Imanol Schlag∗ 1 Kazuki",
+"Abstract",
+"We show the formal equivalence of linearised selfattention mechanisms and fast weight controllers from the early ’90s, where a “slow” neural net learns by gradient descent to program the “fast weights” of another net through sequences of elementary programming instructions which are additive outer products of self-invented activation patterns (today called keys and values). Such Fast Weight Programmers (FWPs) learn to manipulate the contents of a finite memory and dynamically interact with it. We infer a memory capacity limitation of recent linearised softmax attention variants, and replace the purely additive outer products by a delta rule-like programming instruction, such that the FWP can more easily learn to correct the current mapping from keys to values. The FWP also learns to compute dynamically changing learning rates. We also propose a new kernel function to linearise attention which balances simplicity and effectiveness. We conduct experiments on synthetic retrieval problems as well as standard machine translation and language modelling tasks which demonstrate the benefits of our methods.",
+"1. Introduction",
+"Transformers (Vaswani et al., 2017) have achieved impressive results in a myriad of sequence processing tasks, including machine translation, language modelling (Al-Rfou et al., 2019; Dai et al., 2019; Baevski & Auli, 2019; Radford et al., 2019), and question answering (Devlin et al., 2019), domains previously dominated by recurrent neural networks (Graves, 2013; Bahdanau et al., 2015).",
+"The core component of a Transformer is the self-attention mechanism (Cheng et al., 2016; Parikh et al., 2016; Lin et al., 2017) which was recently connected to the modern Hop-"
+],
+"references": [
+{
+"page": 9,
+"text": "Al-Rfou, R., Choe, D., Constant, N., Guo, M., and Jones, L. Character-level language modeling with deeper selfattention. In Proc. Conference on Artificial Intelligence (AAAI), pp. 3159–3166, Honolulu, HI, USA, January 2019.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Ba, J., Hinton, G. E., Mnih, V., Leibo, J. Z., and Ionescu, C. Using fast weights to attend to the recent past. In Proc. Advances in Neural Information Processing Systems (NIPS), pp. 4331–4339, Barcelona, Spain, December 2016.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Baevski, A. and Auli, M. Adaptive input representations for neural language modeling. In Int. Conf. on Learning Representations (ICLR), New Orleans, LA, USA, May 2019.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Bahdanau, D., Cho, K., and Bengio, Y. Neural machine translation by jointly learning to align and translate. In Int. Conf. on Learning Representations (ICLR), San Diego, CA, USA, May 2015.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Bello, I. Lambdanetworks: Modeling long-range interactions without attention. In Int. Conf. on Learning Representations (ICLR), Virtual only, May 2021.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Cheng, J., Dong, L., and Lapata, M. Long short-term memory-networks for machine reading. In Proc. Conf. on Empirical Methods in Natural Language Processing (EMNLP), pp. 551–561, Austin, TX, USA, November 2016.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Choromanski, K., Likhosherstov, V., Dohan, D., Song, X., Gane, A., Sarlos, T., Hawkins, P., Davis, J., Mohiuddin, A., Kaiser, L., et al. Rethinking attention with performers. In Int. Conf. on Learning Representations (ICLR), Virtual only, 2021.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Clevert, D.-A., Unterthiner, T., and Hochreiter, S. Fast and accurate deep network learning by exponential linear units (ELUs). In Int. Conf. on Learning Representations (ICLR), San Juan, Puerto Rico, May 2016.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Dai, Z., Yang, Z., Yang, Y., Cohen, W. W., Carbonell, J., Le, Q. V., and Salakhutdinov, R. Transformer-XL: Attentive language models beyond a fixed-length context. In Proc. Association for Computational Linguistics (ACL), pp. 2978–2988, Florence, Italy, July 2019.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Demircigil, M., Heusel, J., Lowe, M., Upgang, S., and ¨ Vermet, F. On a model of associative memory with huge storage capacity. Journal of Statistical Physics, 168(2): 288–299, 2017.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Devlin, J., Chang, M., Lee, K., and Toutanova, K. BERT: pre-training of deep bidirectional transformers for language understanding. In Proc. North American Chapter of the Association for Computational Linguistics on Human Language Technologies (NAACL-HLT), pp. 4171– 4186, Minneapolis, MN, USA, June 2019.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Feldman, J. A. Dynamic connections in neural networks. Biological cybernetics, 46(1):27–39, 1982.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Galanti, T. and Wolf, L. On the modularity of hypernetworks. In Proc. Advances in Neural Information Processing Systems (NeurIPS), Virtual only, 2020.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Graves, A. Generating sequences with recurrent neural networks. Preprint arXiv:1308.0850, 2013.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Greff, K., van Steenkiste, S., and Schmidhuber, J. On the binding problem in artificial neural networks. Preprint",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Ha, D., Dai, A., and Le, Q. V. Hypernetworks. In Int. Conf. on Learning Representations (ICLR), Toulon, France, April 2017.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Hanson, S. J. A stochastic version of the delta rule. Physica D: Nonlinear Phenomena, 42(1-3):265–272, 1990.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Hebb, D. O. The organization of behavior: a neuropsycholocigal theory. A Wiley Book in Clinical Psychology, 62:78, 1949.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Hinton, G. E. and Plaut, D. C. Using fast weights to deblur old memories. In Proc. Conf. of Cognitive Science Society, pp. 177–186, Seatle, WA, USA, July 1987.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Hochreiter, S. and Schmidhuber, J. Long short-term memory. Neural computation, 9(8):1735–1780, 1997.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Hopfield, J. J. Neural networks and physical systems with emergent collective computational abilities. Proc. of the national academy of sciences, 79(8):2554–2558, 1982.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Irie, K., Zeyer, A., Schluter, ¨ R., and Ney, H. Language modeling with deep Transformers. In Proc. Interspeech, pp. 3905–3909, Graz, Austria, September 2019a.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Irie, K., Zeyer, A., Schluter, ¨ R., and Ney, H. Training language models for long-span cross-sentence evaluation. In Proc. IEEE Automatic Speech Recog. and Understanding Workshop (ASRU), pp. 419–426, Sentosa, Singapore, December 2019b.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Irie, K., Gerstenberger, A., Schluter, ¨ R., and Ney, H. How much self-attention do we need? Trading attention for feed-forward layers. In Proc. IEEE Int. Conf. on Acoustics, Speech and Signal Processing (ICASSP), pp. 6154– 6158, Virtual only, May 2020.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Jia, X., De Brabandere, B., Tuytelaars, T., and Gool, L. V. Dynamic filter networks. In Proc. Advances in Neural Information Processing Systems (NIPS), pp. 667–675, Barcelona, Spain, 2016.",
+"section": [
+"References"
+]
+},
+{
+"page": 10,
+"text": "Katharopoulos, A., Vyas, A., Pappas, N., and Fleuret, F. Transformers are rnns: Fast autoregressive transformers with linear attention. In Proc. Int. Conf. on Machine Learning (ICML), Virtual only, July 2020.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Kingma, D. P. and Ba, J. Adam: A method for stochastic optimization. Preprint arXiv:1412.6980, 2014.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Kirsch, L. and Schmidhuber, J. Meta learning backpropagation and improving it. NeurIPS Workshop on Meta- Learning, 2020.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Klein, B., Wolf, L., and Afek, Y. A dynamic convolutional layer for short rangeweather prediction. In Proc. IEEE Conf. on Computer Vision and Pattern Recognition (CVPR), pp. 4840–4848, Boston, MA, USA, June 2015.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Kohonen, T. Correlation matrix memories. IEEE Transactions on Computers, 21(4):353–359, 1972.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Kosko, B. Bidirectional associative memories. IEEE Transactions on Systems, Man, and Cybernetics, 18(1):49–60, 1988.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Krotov, D. and Hopfield, J. J. Dense associative memory for pattern recognition. In Proc. Advances in Neural Information Processing Systems (NIPS), pp. 1172–1180, Barcelona, Spain, December 2016.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Lin, Z., Feng, M., Santos, C. N. d., Yu, M., Xiang, B., Zhou, B., and Bengio, Y. A structured self-attentive sentence embedding. In Int. Conf. on Learning Representations (ICLR), Toulon, France, April 2017.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Little, W. A. The existence of persistent states in the brain. Mathematical biosciences, 19(1-2):101–120, 1974.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Merity, S., Xiong, C., Bradbury, J., and Socher, R. Pointer sentinel mixture models. In Int. Conf. on Learning Representations (ICLR), Toulon, France, April 2017.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Miconi, T., Stanley, K., and Clune, J. Differentiable plasticity: training plastic neural networks with backpropagation. In Proc. Int. Conf. on Machine Learning (ICML), pp. 3559–3568, Stockholm, Sweden, July 2018.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Miconi, T., Rawal, A., Clune, J., and Stanley, K. O. Backpropamine: training self-modifying neural networks with differentiable neuromodulated plasticity. In Int. Conf. on Learning Representations (ICLR), New Orleans, LA, USA, May 2019.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Munkhdalai, T. and Trischler, A. Metalearning with hebbian fast weights. Preprint arXiv:1807.05076, 2018.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Munkhdalai, T. and Yu, H. Meta networks. In Proc. Int. Conf. on Machine Learning (ICML), pp. 2554–2563, Sydney, Australia, August 2017.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Munkhdalai, T., Sordoni, A., Wang, T., and Trischler, A. Metalearned neural memory. In Proc. Advances in Neural Information Processing Systems (NeurIPS), pp. 13310– 13321, Vancouver, Canada, December 2019.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Noh, H., Seo, P. H., and Han, B. Image question answering using convolutional neural network with dynamic parameter prediction. In Proc. IEEE Conf. on Computer Vision and Pattern Recognition (CVPR), pp. 30–38, Las Vegas, NV, USA, 2016.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Ott, M., Edunov, S., Grangier, D., and Auli, M. Scaling neural machine translation. In Proc. Conf. on Machine Translation: Research Papers, pp. 1–9, Brussels, Belgium, October 2018.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Ott, M., Edunov, S., Baevski, A., Fan, A., Gross, S., Ng, N., Grangier, D., and Auli, M. fairseq: A fast, extensible toolkit for sequence modeling. In Proc. North American Chapter of the Association for Computational Linguistics on Human Language Technologies (NAACL-HLT), Demonstrations, pp. 48–53, Minneapolis, MN, USA, June 2019.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Palm, G. On associative memory. Biological cybernetics, 36(1):19–31, 1980.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Papineni, K., Roukos, S., Ward, T., and Zhu, W.-J. Bleu: a method for automatic evaluation of machine translation. In Proc. Association for Computational Linguistics (ACL), pp. 311–318, Philadelphia, PA, USA, July 2002.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Parikh, A. P., Tackstr ¨ om, ¨ O., Das, D., and Uszkoreit, J. A decomposable attention model for natural language inference. In Proc. Conf. on Empirical Methods in Natural Language Processing (EMNLP), pp. 2249–2255, Austin, TX, USA, November 2016.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Paszke, A. et al. Pytorch: An imperative style, highperformance deep learning library. In Proc. Advances in Neural Information Processing Systems (NeurIPS), pp. 8026–8037, Vancouver, Canada, December 2019.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Peng, H., Pappas, N., Yogatama, D., Schwartz, R., Smith, N. A., and Kong, L. Random feature attention. In Int. Conf. on Learning Representations (ICLR), Virtual only, 2021.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Perez, E., Strub, F., De Vries, H., Dumoulin, V., and Courville, A. FiLM: Visual reasoning with a general conditioning layer. In Proc. AAAI Conf. on Artificial Intelligence, pp. 3942–3951, New Orleans, LA, USA, February 2018.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Post, M. A call for clarity in reporting BLEU scores. In Proc. Conf. on Machine Translation, pp. 186–191, Brussels, Belgium, October 2018.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "Radford, A., Wu, J., Child, R., Luan, D., Amodei, D., and Sutskever, I. Language models are unsupervised multitask learners. [Online]. : https://blog.openai.com/betterlanguage-models/, 2019.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "Rae, J. W., Potapenko, A., Jayakumar, S. M., Hillier, C., and Lillicrap, T. P. Compressive transformers for longrange sequence modelling. In Int. Conf. on Learning Representations (ICLR), Virtual only, April 2020.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "Ramsauer, H., Schafl, ¨ B., Lehner, J., Seidl, P., Widrich, M., Gruber, L., Holzleitner, M., Adler, T., Kreil, D., Kopp, M. K., Klambauer, G., Brandstetter, J., and Hochreiter, S. Hopfield networks is all you need. In Int. Conf. on Learning Representations (ICLR), Virtual only, May 2021.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "Schlag, I. and Schmidhuber, J. Gated fast weights for onthe-fly neural program generation. In NIPS Metalearning Workshop, Long Beach, CA, USA, December 2017.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "Schlag, I. and Schmidhuber, J. Learning to reason with third order tensor products. In Proc. Advances in Neural Information Processing Systems (NIPS), pp. 9981–9993, Montreal, ´ Canada, December 2018.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "Schlag, I., Munkhdalai, T., and Schmidhuber, J. Learning associative inference using fast weight memory. In Int. Conf. on Learning Representations (ICLR), Virtual only, May 2021.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "Schmidhuber, J. Learning to control fast-weight memories: An alternative to recurrent nets. Technical Report FKI- 147-91, Institut fur ¨ Informatik, Technische Universitat ¨",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "Munchen, ¨ March 1991. Schmidhuber, J. Learning to control fast-weight memories: An alternative to dynamic recurrent networks. Neural Computation, 4(1):131–139, 1992.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "Schmidhuber, J. Reducing the ratio between learning complexity and number of time varying variables in fully recurrent nets. In International Conference on Artificial Neural Networks (ICANN), pp. 460–463, Amsterdam, Netherlands, September 1993.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "Schmidhuber, J. 26 March 1991: Neural nets learn to program neural nets with fast weights—like today’s Transformer variants. 2021: New stuff!, AI Blog, 2021. URL https://people.idsia.ch/˜juergen/ fast-weight-programmer-1991-transformer. html.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "Sennrich, R., Haddow, B., and Birch, A. Neural machine translation of rare words with subword units. In Proc. Association for Computational Linguistics (ACL), pp. 1715– 1725, Berlin, Germany, August 2016.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "Shen, Z., Zhang, M., Zhao, H., Yi, S., and Li, H. Efficient attention: Attention with linear complexities. Preprint",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "Smolensky, P. Tensor product variable binding and the representation of symbolic structures in connectionist systems. Artificial intelligence, 46(1-2):159–216, 1990.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "Srivastava, N., Hinton, G., Krizhevsky, A., Sutskever, I., and Salakhutdinov, R. Dropout: a simple way to prevent neural networks from overfitting. The Journal of Machine Learning Research, 15(1):1929–1958, 2014.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "Steinbuch, K. Die lernmatrix. Kybernetik, 1(1):36–45, 1961.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "Steinbuch, K. and Piske, U. A. W. Learning matrices and their applications. IEEE Transactions on Electronic Computers, 12(6):846–862, 1963.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "Tay, Y., Dehghani, M., Abnar, S., Shen, Y., Bahri, D., Pham, P., Rao, J., Yang, L., Ruder, S., and Metzler, D. Long range arena: A benchmark for efficient transformers. In Int. Conf. on Learning Representations (ICLR), Virtual only, May 2021.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "Tsai, Y.-H. H., Bai, S., Yamada, M., Morency, L.-P., and Salakhutdinov, R. Transformer dissection: An unified understanding for transformer’s attention via the lens of kernel. In Proc. Conf. on Empirical Methods in Natural Language Processing (EMNLP), pp. 4344–4353, Hong Kong, China, November 2019.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, Ł., and Polosukhin, I. Attention is all you need. In Proc. Advances in Neural Information Processing Systems (NIPS), pp. 5998–6008, Long Beach, CA, USA, December 2017.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "von der Malsburg, C. The correlation theory of brain function. Internal Report 81-2, Gottingen: ¨ Department of Neurobiology, Max Planck Intitute for Biophysical Chemistry, 1981.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "Widrow, B. and Hoff, M. E. Adaptive switching circuits. In Proc. IRE WESCON Convention Record, pp. 96–104, Los Angeles, CA, USA, August 1960.",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "Linear Transformers Are Secretly Fast Weight Programmers",
+"section": [
+"References"
+]
+}
+]
+},
+"2406.06484 - Parallelizing Linear Transformers with the Delta Rule.pdf": {
+"title": [
+"Parallelizing Linear Transformers with the Delta Rule over Sequence Length"
+],
+"firstPage": [
+"Parallelizing Linear Transformers with the Delta Rule over Sequence Length",
+"Abstract",
+"Transformers with linear attention (i.e., linear transformers) and state-space models have recently been suggested as a viable linear-time alternative to transformers with softmax attention. However, these models still underperform transformers especially on tasks that require in-context retrieval. While more expressive variants of linear transformers which replace the additive update in linear transformers with the delta rule [DeltaNet; 101] have been found to be more effective at associative recall, existing algorithms for training such models do not parallelize over sequence length and are thus inefficient to train on modern hardware. This work describes a hardware-efficient algorithm for training linear transformers with the delta rule, which exploits a memory-efficient representation for computing products of Householder matrices [11]. This algorithm allows us to scale up DeltaNet to standard language modeling settings. We train a 1.3B model for 100B tokens and find that it outperforms recent linear-time baselines such as Mamba [31] and GLA [124] in terms of perplexity and zero-shot performance on downstream tasks. We also experiment with two hybrid models which combine DeltaNet layers with (1) sliding-window attention layers every other layer or (2) two global attention layers, and find that these hybrids outperform strong transformer baselines.",
+"1 Introduction",
+"The attention mechanism [8, 116] has been shown to be an important primitive for accurate sequence modeling. Attention is moreover efficient during training as it is rich in matrix multiplications and can thus take advantage of highly parallel processing capabilities and specialized accelerators on modern GPUs. However, the complexity of attention is quadratic in length, and hence it is",
+"sequence",
+"a fundamentally expensive primitive. And while recent techniques have made it possible to scale attention to longer sequences through hardware-aware restructuring of the intermediate computations [20, 18, 59, 14], these methods still require storing the key/value vectors of previous elements, and this “KV cache” (whose size grows linearly) can be unwieldy to manage for long sequences. Linear attention transformers [48] replace the exponential kernel in softmax attention with a dotproduct over (possibly transformed) key and query vectors. This makes it possible to formulate linear attention as a linear RNN with matrix-valued hidden states, thus obviating the need for a KV cache and enabling constant-memory inference. While initial variants of linear attention generally underperformed softmax attention on language modeling, gated variants of linear attention which incorporate a data-dependent gating factor have recently been shown to be competitive against strong transformer baselines [124, 92, 9, 79]. These gated linear transformers, along with time-varying state space models such as Mamba [31, 19] (which can be reparameterized as a gated linear transformer [124]), have been suggested as a potential alternative to ordinary transformers. However, despite"
+],
+"references": [
+{
+"page": 11,
+"text": "[1] Y. Aksenov, N. Balagansky, S. M. L. C. Vaina, B. Shaposhnikov, A. Gorbatovski, and D. Gavrilov. Linear Transformers with Learnable Kernel Functions are Better In-Context Models, 2024. URL https://arxiv.org/abs/2402.10644.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "[2] E. Akyürek, B. Wang, Y. Kim, and J. Andreas. In-context language learning: Arhitectures and algorithms. ArXiv preprint, abs/2401.12973, 2024. URL https://arxiv.org/abs/ 2401.12973.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "[3] A. Ali, I. Zimerman, and L. Wolf. The hidden attention of mamba models, 2024.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "[4] S. Arora, S. Eyuboglu, A. Timalsina, I. Johnson, M. Poli, J. Zou, A. Rudra, and C. Ré. Zoology: Measuring and improving recall in efficient language models. ArXiv preprint, abs/2312.04927, 2023. URL https://arxiv.org/abs/2312.04927.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "[5] S. Arora, B. Yang, S. Eyuboglu, A. Narayan, A. Hojel, I. Trummer, and C. Ré. Language Models Enable Simple Systems for Generating Structured Views of Heterogeneous Data Lakes, 2023. URL https://arxiv.org/abs/2304.09433.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "[6] S. Arora, S. Eyuboglu, M. Zhang, A. Timalsina, S. Alberti, D. Zinsley, J. Zou, A. Rudra, and C. Ré. Simple linear attention language models balance the recall-throughput tradeoff. ArXiv preprint, abs/2402.18668, 2024. URL https://arxiv.org/abs/2402.18668.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "[7] S. Arora, A. Timalsina, A. Singhal, B. Spector, S. Eyuboglu, X. Zhao, A. Rao, A. Rudra, and C. Ré. Just read twice: closing the recall gap for recurrent language models, 2024. URL https://arxiv.org/abs/2407.05483.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "[8] D. Bahdanau, K. Cho, and Y. Bengio. Neural machine translation by jointly learning to align and translate. In Y. Bengio and Y. LeCun, editors, 3rd International Conference on Learning Representations, ICLR 2015, San Diego, CA, USA, May 7-9, 2015, Conference Track Proceedings, 2015. URL http://arxiv.org/abs/1409.0473.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "[9] M. Beck, K. Pöppel, M. Spanring, A. Auer, O. Prudnikova, M. Kopp, G. Klambauer, J. Brandstetter, and S. Hochreiter. xlstm: Extended long short-term memory. ArXiv preprint, abs/2405.04517, 2024. URL https://arxiv.org/abs/2405.04517.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "[10] A. Behrouz, P. Zhong, and V. Mirrokni. Titans: Learning to memorize at test time, 2024. URL https://arxiv.org/abs/2501.00663.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "[11] C. H. Bischof and C. V. Loan. The WY representation for products of householder matrices. In SIAM Conference on Parallel Processing for Scientific Computing, 1985. URL https:// api.semanticscholar.org/CorpusID:36094006.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "[12] Y. Bisk, R. Zellers, R. LeBras, J. Gao, and Y. Choi. PIQA: reasoning about physical commonsense in natural language. In The Thirty-Fourth AAAI Conference on Artificial Intelligence, AAAI 2020, The Thirty-Second Innovative Applications of Artificial Intelligence Conference, IAAI 2020, The Tenth AAAI Symposium on Educational Advances in Artificial Intelligence, EAAI 2020, New York, NY, USA, February 7-12, 2020, pages 7432–7439. AAAI Press, 2020. URL https://aaai.org/ojs/index.php/AAAI/article/view/6239.",
+"section": [
+"References"
+]
+},
+{
+"page": 11,
+"text": "[13] G. E. Blelloch. Prefix sums and their applications. 1990.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "[14] W. Brandon, A. Nrusimha, K. Qian, Z. Ankner, T. Jin, Z. Song, and J. Ragan-Kelley. Striped Attention: Faster Ring Attention for Causal Transformers. ArXiv preprint, abs/2311.09431, 2023. URL https://arxiv.org/abs/2311.09431.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "[15] Y. Chou, M. Yao, K. Wang, Y. Pan, R.-J. Zhu, J. Wu, Y. Zhong, Y. Qiao, B. XU, and G. Li. MetaLA: Unified optimal linear approximation to softmax attention map. In The Thirtyeighth Annual Conference on Neural Information Processing Systems, 2024. URL https:// openreview.net/forum?id=Y8YVCOMEpz.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "[16] P. Clark, I. Cowhey, O. Etzioni, T. Khot, A. Sabharwal, C. Schoenick, and O. Tafjord. Think you have solved question answering? try arc, the ai2 reasoning challenge. ArXiv preprint, abs/1803.05457, 2018. URL https://arxiv.org/abs/1803.05457.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "[17] D. Clevert, T. Unterthiner, and S. Hochreiter. Fast and accurate deep network learning by exponential linear units (elus). In Y. Bengio and Y. LeCun, editors, 4th International Conference on Learning Representations, ICLR 2016, San Juan, Puerto Rico, May 2-4, 2016, Conference Track Proceedings, 2016. URL http://arxiv.org/abs/1511.07289.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "[18] T. Dao. FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning. ArXiv preprint, abs/2307.08691, 2023. URL https://arxiv.org/abs/2307.08691.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "[19] T. Dao and A. Gu. Transformers are ssms: Generalized models and efficient algorithms through structured state space duality. arXiv preprint arXiv: 2405.21060, 2024.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "[20] T. Dao, D. Y. Fu, S. Ermon, A. Rudra, and C. Ré. Flashattention: Fast and memory-efficient exact attention with io-awareness. In S. Koyejo, S. Mohamed, A. Agarwal, D. Belgrave, K. Cho, and A. Oh, editors, Advances in Neural Information Processing Systems 35: Annual Conference on Neural Information Processing Systems 2022, NeurIPS 2022, New Orleans, LA, USA, November 28 - December 9, 2022, 2022. URL http://papers.nips.cc/paper_files/paper/2022/hash/ 67d57c32e20fd0a7a302cb81d36e40d5-Abstract-Conference.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "[21] S. De, S. L. Smith, A. Fernando, A. Botev, G. Cristian-Muraru, A. Gu, R. Haroun, L. Berrada, Y. Chen, S. Srinivasan, G. Desjardins, A. Doucet, D. Budden, Y. W. Teh, R. Pascanu, N. De Freitas, and C. Gulcehre. Griffin: Mixing Gated Linear Recurrences with Local Attention for Efficient Language Models, 2024. URL https://arxiv.org/abs/2402.19427.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "[22] M. Demircigil, J. Heusel, M. Löwe, S. Upgang, and F. Vermet. On a model of associative",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "https://",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "memory with huge storage capacity. ArXiv preprint, abs/1702.01929, 2017. URL arxiv.org/abs/1702.01929.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "[23] A. E. T. Dominguez and E. S. Q. Orti. Fast blocking of householder reflectors on graphics processors. 2018 26th Euromicro International Conference on Parallel, Distributed and Networkbased Processing (PDP), pages 385–393, 2018. URL https://api.semanticscholar. org/CorpusID:46960439.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "[24] S. Elfwing, E. Uchibe, and K. Doya. Sigmoid-Weighted Linear Units for Neural Network Function Approximation in Reinforcement Learning, 2017. URL https://arxiv.org/ abs/1702.03118.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "[25] M. Fathi, J. Pilault, P.-L. Bacon, C. Pal, O. Firat, and R. Goroshin. Block-state transformer. ArXiv preprint, abs/2306.09539, 2023. URL https://arxiv.org/abs/2306.09539.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "[26] D. Y. Fu, T. Dao, K. K. Saab, A. W. Thomas, A. Rudra, and C. Ré. Hungry hungry hippos: Towards language modeling with state space models. In The Eleventh International Conference on Learning Representations, ICLR 2023, Kigali, Rwanda, May 1-5, 2023. OpenReview.net, 2023. URL https://openreview.net/pdf?id=COZDy0WYGg.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "[27] L. Gao, J. Tow, S. Biderman, S. Black, A. DiPofi, C. Foster, L. Golding, J. Hsu, K. McDonell, N. Muennighoff, J. Phang, L. Reynolds, E. Tang, A. Thite, B. Wang, K. Wang, and A. Zou. A framework for few-shot language model evaluation, 2021.",
+"section": [
+"References"
+]
+},
+{
+"page": 12,
+"text": "[28] E. Gardner. The space of interactions in neural network models. Journal of Physics A, 21: 257–270, 1988.",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "[29] A. Graves, G. Wayne, and I. Danihelka. Neural Turing Machines, 2014. URL http:// arxiv.org/abs/1410.5401. arXiv:1410.5401 [cs].",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "[30] R. Griffin and G. Teams. Recurrentgemma: Moving past transformers for efficient open language models. ArXiv preprint, abs/2404.07839, 2024. URL https://arxiv.org/abs/ 2404.07839.",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "[31] A. Gu and T. Dao. Mamba: Linear-Time Sequence Modeling with Selective State Spaces. In Proceedings of COLM, 2023.",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "[32] A. Gu, K. Goel, and C. Ré. Efficiently modeling long sequences with structured state spaces. In The Tenth International Conference on Learning Representations, ICLR 2022, Virtual Event, April 25-29, 2022. OpenReview.net, 2022. URL https://openreview.net/forum? id=uYLFoz1vlAC.",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "[33] K. Helfrich, D. Willmott, and Q. Ye. Orthogonal recurrent neural networks with scaled cayley transform. In J. G. Dy and A. Krause, editors, Proceedings of the 35th International Conference on Machine Learning, ICML 2018, Stockholmsmässan, Stockholm, Sweden, July 10-15, 2018, volume 80 of Proceedings of Machine Learning Research, pages 1974–1983. PMLR, 2018. URL http://proceedings.mlr.press/v80/helfrich18a.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "[34] W. Hua, Z. Dai, H. Liu, and Q. V. Le. Transformer quality in linear time. In K. Chaudhuri, S. Jegelka, L. Song, C. Szepesvári, G. Niu, and S. Sabato, editors, International Conference on Machine Learning, ICML 2022, 17-23 July 2022, Baltimore, Maryland, USA, volume 162 of Proceedings of Machine Learning Research, pages 9099–9117. PMLR, 2022. URL https://proceedings.mlr.press/v162/hua22a.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "[35] F. Huang, K. Lu, Y. Cai, Z. Qin, Y. Fang, G. Tian, and G. Li. Encoding recurrence into transformers. In The Eleventh International Conference on Learning Representations, ICLR 2023, Kigali, Rwanda, May 1-5, 2023. OpenReview.net, 2023. URL https://openreview. net/pdf?id=7YfHla7IxBJ.",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "[36] K. Irie and J. Schmidhuber. Images as weight matrices: Sequential image generation through synaptic learning rules. In The Eleventh International Conference on Learning Representa-",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "https://",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "tions, ICLR 2023, Kigali, Rwanda, May 1-5, 2023. OpenReview.net, 2023. URL openreview.net/pdf?id=ddad0PNUvV.",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "[37] K. Irie, I. Schlag, R. Csordás, and J. Schmidhuber. Going beyond linear transformers with recurrent fast weight programmers. In M. Ranzato, A. Beygelzimer, Y. N. Dauphin, P. Liang, and J. W. Vaughan, editors, Advances in Neural Information Processing Systems 34: Annual Conference on Neural Information Processing Systems 2021, NeurIPS 2021, December 6-14, 2021, virtual, pages 7703–7717, 2021. URL https://proceedings.neurips.cc/paper/ 2021/hash/3f9e3767ef3b10a0de4c256d7ef9805d-Abstract.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "[38] K. Irie, I. Schlag, R. Csordás, and J. Schmidhuber. Going beyond linear transformers with recurrent fast weight programmers. In M. Ranzato, A. Beygelzimer, Y. N. Dauphin, P. Liang, and J. W. Vaughan, editors, Advances in Neural Information Processing Systems 34: Annual Conference on Neural Information Processing Systems 2021, NeurIPS 2021, December 6-14, 2021, virtual, pages 7703–7717, 2021. URL https://proceedings.neurips.cc/paper/ 2021/hash/3f9e3767ef3b10a0de4c256d7ef9805d-Abstract.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "[39] K. Irie, R. Csordás, and J. Schmidhuber. The dual form of neural networks revisited: Connecting test time predictions to training patterns via spotlights of attention. In K. Chaudhuri, S. Jegelka, L. Song, C. Szepesvári, G. Niu, and S. Sabato, editors, International Conference on Machine Learning, ICML 2022, 17-23 July 2022, Baltimore, Maryland, USA, volume 162 of Proceedings of Machine Learning Research, pages 9639–9659. PMLR, 2022. URL https://proceedings.mlr.press/v162/irie22a.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "[40] K. Irie, F. Faccio, and J. Schmidhuber. Neural differential equations for learning to program neural nets through continuous learning rules. In S. Koyejo, S. Mohamed, A. Agarwal, D. Belgrave, K. Cho, and A. Oh, editors, Advances in Neural Information Processing Systems 35: Annual Conference on Neural Information Process-",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "ing Systems 2022, NeurIPS 2022, New Orleans, LA, USA, November 28 - December 9, 2022, 2022. URL http://papers.nips.cc/paper_files/paper/2022/hash/ fc09b26b85ab3abb2832bd555a2e4215-Abstract-Conference.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "[41] K. Irie, I. Schlag, R. Csordás, and J. Schmidhuber. A modern self-referential weight matrix that learns to modify itself. In K. Chaudhuri, S. Jegelka, L. Song, C. Szepesvári, G. Niu, and S. Sabato, editors, International Conference on Machine Learning, ICML 2022, 17-23 July 2022, Baltimore, Maryland, USA, volume 162 of Proceedings of Machine Learning Research, pages 9660–9677. PMLR, 2022. URL https://proceedings.mlr.press/v162/ irie22b.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "[42] K. Irie, R. Csordás, and J. Schmidhuber. Practical computational power of linear transformers and their recurrent and self-referential extensions. In H. Bouamor, J. Pino, and K. Bali, editors, Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pages 9455–9465, Singapore, 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.emnlp-main.588. URL https://aclanthology.org/2023. emnlp-main.588.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "[43] L. Jing, C. Gulcehre, J. Peurifoy, Y. Shen, M. Tegmark, M. Soljacic, and Y. Bengio. Gated Orthogonal Recurrent Units: On Learning to Forget. Neural Computation, 31(4):765–783, 2019. ISSN 0899-7667, 1530-888X. doi: 10.1162/neco_a_01174. URL https://direct. mit.edu/neco/article/31/4/765-783/8458.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "[44] T. Joffrain, T. M. Low, E. S. Quintana-Ortí, R. A. van de Geijn, and F. G. V. Zee. Accumulating householder transformations, revisited. ACM Trans. Math. Softw., 32:169–179, 2006. URL https://api.semanticscholar.org/CorpusID:15723171.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "[45] P. Kacham, V. Mirrokni, and P. Zhong. Polysketchformer: Fast transformers via sketches for polynomial kernels. ArXiv preprint, abs/2310.01655, 2023. URL https://arxiv.org/ abs/2310.01655.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "[46] Y. Kang, G. Tran, and H. De Sterck. Fast multipole attention: A divide-and-conquer attention",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "https://",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "mechanism for long sequences. ArXiv preprint, abs/2310.11960, 2023. URL arxiv.org/abs/2310.11960.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "[47] J. Kasai, H. Peng, Y. Zhang, D. Yogatama, G. Ilharco, N. Pappas, Y. Mao, W. Chen, and N. A. Smith. Finetuning pretrained transformers into RNNs. In M.-F. Moens, X. Huang, L. Specia, and S. W.-t. Yih, editors, Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing, pages 10630–10643, Online and Punta Cana, Dominican Republic, 2021. Association for Computational Linguistics. doi: 10.18653/v1/2021.emnlp-main.830. URL https://aclanthology.org/2021.emnlp-main.830.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "[48] A. Katharopoulos, A. Vyas, N. Pappas, and F. Fleuret. Transformers are rnns: Fast autoregressive transformers with linear attention. In Proceedings of the 37th International Conference on Machine Learning, ICML 2020, 13-18 July 2020, Virtual Event, volume 119 of Proceedings of Machine Learning Research, pages 5156–5165. PMLR, 2020. URL http:// proceedings.mlr.press/v119/katharopoulos20a.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "[49] N. Kitaev, L. Kaiser, and A. Levskaya. Reformer: The efficient transformer. In 8th International Conference on Learning Representations, ICLR 2020, Addis Ababa, Ethiopia, April 26-30, 2020. OpenReview.net, 2020. URL https://openreview.net/forum? id=rkgNKkHtvB.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "[50] D. Krotov and J. J. Hopfield. Large associative memory problem in neurobiology and machine learning. In 9th International Conference on Learning Representations, ICLR 2021, Virtual Event, Austria, May 3-7, 2021. OpenReview.net, 2021. URL https://openreview.net/ forum?id=X4y_10OX-hX.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "[51] T. Lei. When attention meets fast recurrence: Training language models with reduced compute. In M.-F. Moens, X. Huang, L. Specia, and S. W.-t. Yih, editors, Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing, pages 7633–7648, Online and Punta Cana, Dominican Republic, 2021. Association for Computational Linguistics. doi: 10.18653/v1/2021.emnlp-main.602. URL https://aclanthology.org/2021. emnlp-main.602.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "[52] T. Lei, R. Tian, J. Bastings, and A. P. Parikh. Simple recurrence improves masked language models. ArXiv preprint, abs/2205.11588, 2022. URL https://arxiv.org/abs/ 2205.11588.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "[53] P. S. H. Lewis, E. Perez, A. Piktus, F. Petroni, V. Karpukhin, N. Goyal, H. Küttler, M. Lewis, W. Yih, T. Rocktäschel, S. Riedel, and D. Kiela. Retrieval-augmented generation for knowledge-intensive NLP tasks. In H. Larochelle, M. Ranzato, R. Hadsell, M. Balcan, and H. Lin, editors, Advances in Neural Information Processing Systems 33: Annual Conference on Neural Information Processing Systems 2020, NeurIPS 2020, December 6- 12, 2020, virtual, 2020. URL https://proceedings.neurips.cc/paper/2020/hash/ 6b493230205f780e1bc26945df7481e5-Abstract.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "[54] B. Liao, X. Wang, L. Zhu, Q. Zhang, and C. Huang. Vig: Linear-complexity visual sequence learning with gated linear attention. ArXiv, abs/2405.18425, 2024. URL https://api. semanticscholar.org/CorpusID:270068351.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "[55] O. Lieber, B. Lenz, H. Bata, G. Cohen, J. Osin, I. Dalmedigos, E. Safahi, S. Meirom, Y. Belinkov, S. Shalev-Shwartz, et al. Jamba: A hybrid transformer-mamba language model. ArXiv preprint, abs/2403.19887, 2024. URL https://arxiv.org/abs/2403.19887.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "[56] K. C. Lingashetty. Delta learning rule for the active sites model. arXiv preprint",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "[57] L. D. Lingle. Transformer-vq: Linear-time transformers via vector quantization. ArXiv preprint, abs/2309.16354, 2023. URL https://arxiv.org/abs/2309.16354.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "[58] B. Liu, R. Wang, L. Wu, Y. Feng, P. Stone, and Q. Liu. Longhorn: State space models are amortized online learners. ArXiv preprint, abs/2407.14207, 2024. URL https://arxiv. org/abs/2407.14207.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "[59] H. Liu, M. Zaharia, and P. Abbeel. Ring Attention with Blockwise Transformers for Near- Infinite Context. ArXiv preprint, abs/2310.01889, 2023. URL https://arxiv.org/abs/ 2310.01889.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "[60] C. Lockard, P. Shiralkar, and X. L. Dong. OpenCeres: When open information extraction meets the semi-structured web. In J. Burstein, C. Doran, and T. Solorio, editors, Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers), pages 3047– 3056, Minneapolis, Minnesota, 2019. Association for Computational Linguistics. doi: 10. 18653/v1/N19-1309. URL https://aclanthology.org/N19-1309.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "[61] X. Ma, C. Zhou, X. Kong, J. He, L. Gui, G. Neubig, J. May, and L. Zettlemoyer. Mega: Moving average equipped gated attention. In The Eleventh International Conference on Learning Representations, ICLR 2023, Kigali, Rwanda, May 1-5, 2023. OpenReview.net, 2023. URL https://openreview.net/pdf?id=qNLe3iq2El.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "[62] X. Ma, X. Yang, W. Xiong, B. Chen, L. Yu, H. Zhang, J. May, L. Zettlemoyer, O. Levy, and C. Zhou. Megalodon: Efficient llm pretraining and inference with unlimited context length. ArXiv preprint, abs/2404.08801, 2024. URL https://arxiv.org/abs/2404.08801.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "[63] H. H. Mao. Fine-tuning pre-trained transformers into decaying fast weights. In Y. Goldberg, Z. Kozareva, and Y. Zhang, editors, Proceedings of the 2022 Conference on Empirical Methods in Natural Language Processing, pages 10236–10242, Abu Dhabi, United Arab Emirates, 2022. Association for Computational Linguistics. doi: 10.18653/v1/2022.emnlp-main.697. URL https://aclanthology.org/2022.emnlp-main.697.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "[64] E. Martin and C. Cundy. Parallelizing linear recurrent neural nets over sequence length. In 6th International Conference on Learning Representations, ICLR 2018, Vancouver, BC, Canada, April 30 - May 3, 2018, Conference Track Proceedings. OpenReview.net, 2018. URL https://openreview.net/forum?id=HyUNwulC-.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "[65] E. Martin and C. Cundy. Parallelizing linear recurrent neural nets over sequence length. In 6th International Conference on Learning Representations, ICLR 2018, Vancouver, BC, Canada, April 30 - May 3, 2018, Conference Track Proceedings. OpenReview.net, 2018. URL https://openreview.net/forum?id=HyUNwulC-.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "[66] A. Mathiasen, F. Hvilshoj, J. R. Jørgensen, A. Nasery, and D. Mottin. What if neural networks had svds? ArXiv, abs/2009.13977, 2020. URL https://api.semanticscholar.org/ CorpusID:221995651.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "[67] A. Mathiasen, F. Hvilshøj, J. R. Jørgensen, A. Nasery, and D. Mottin. Faster orthogonal parameterization with householder matrices. In ICML, Workshop Proceedings, 2020.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "[68] R. J. McEliece, E. C. Posner, E. R. Rodemich, and S. S. Venkatesh. The capacity of the hopfield associative memory. IEEE Trans. Inf. Theory, 33:461–482, 1987.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "[69] J. Mercat, I. Vasiljevic, S. Keh, K. Arora, A. Dave, A. Gaidon, and T. Kollar. Linearizing large language models. ArXiv preprint, abs/2405.06640, 2024. URL https://arxiv.org/ abs/2405.06640.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "[70] W. Merrill, J. Petty, and A. Sabharwal. The Illusion of State in State-Space Models, 2024. URL https://arxiv.org/abs/2404.08819.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "[71] Z. Mhammedi, A. D. Hellicar, A. Rahman, and J. Bailey. Efficient orthogonal parametrisation of recurrent neural networks using householder reflections. In D. Precup and Y. W. Teh, editors, Proceedings of the 34th International Conference on Machine Learning, ICML 2017, Sydney, NSW, Australia, 6-11 August 2017, volume 70 of Proceedings of Machine Learning Research, pages 2401–2409. PMLR, 2017. URL http://proceedings.mlr.press/v70/ mhammedi17a.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "[72] B. Millidge. Linear Attention as Iterated Hopfield Networks. URL http://www.beren.io/ 2024-03-03-Linear-Attention-as-Iterated-Hopfield-Networks/.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "[73] T. Munkhdalai, A. Sordoni, T. Wang, and A. Trischler. Metalearned neural memory. In H. M. Wallach, H. Larochelle, A. Beygelzimer, F. d’Alché-Buc, E. B. Fox, and R. Garnett, editors, Advances in Neural Information Processing Systems 32: Annual Conference on Neural Information Processing Systems 2019, NeurIPS 2019, December 8-14, 2019, Vancouver, BC, Canada, pages 13310–13321, 2019. URL https://proceedings.neurips.cc/paper/ 2019/hash/182bd81ea25270b7d1c2fe8353d17fe6-Abstract.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "[74] T. Munkhdalai, M. Faruqui, and S. Gopal. Leave no context behind: Efficient infinite context transformers with infini-attention. ArXiv preprint, abs/2404.07143, 2024. URL https:// arxiv.org/abs/2404.07143.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "[75] Y. Nahshan, J. Kampeas, and E. Haleva. Linear Log-Normal Attention with Unbiased Concentration, 2023. URL https://arxiv.org/abs/2311.13541.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "[76] T. M. Nguyen, V. Suliafu, S. J. Osher, L. Chen, and B. Wang. Fmmformer: Efficient and flexible transformer via decomposed near-field and far-field attention. In M. Ranzato, A. Beygelzimer, Y. N. Dauphin, P. Liang, and J. W. Vaughan, editors, Advances in Neural Information Processing Systems 34: Annual Conference on Neural Information Processing Systems 2021, NeurIPS 2021, December 6-14, 2021, virtual, pages 29449–29463, 2021. URL https://proceedings.neurips.cc/paper/2021/hash/ f621585df244e9596dc70a39b579efb1-Abstract.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "[77] D. Paperno, G. Kruszewski, A. Lazaridou, N. Q. Pham, R. Bernardi, S. Pezzelle, M. Baroni, G. Boleda, and R. Fernández. The LAMBADA dataset: Word prediction requiring a broad discourse context. In K. Erk and N. A. Smith, editors, Proceedings of the 54th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 1525–1534, Berlin, Germany, 2016. Association for Computational Linguistics. doi: 10.18653/v1/P16-1144. URL https://aclanthology.org/P16-1144.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "[78] J. Park, J. Park, Z. Xiong, N. Lee, J. Cho, S. Oymak, K. Lee, and D. Papailiopoulos. Can mamba learn how to learn? a comparative study on in-context learning tasks. ArXiv preprint, abs/2402.04248, 2024. URL https://arxiv.org/abs/2402.04248.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "[79] B. Peng, D. Goldstein, Q. Anthony, A. Albalak, E. Alcaide, S. Biderman, E. Cheah, X. Du, T. Ferdinan, H. Hou, P. Kazienko, K. K. GV, J. Kocon,",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "´ B. Koptyra, S. Krishna, R. McClel-",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "land Jr., N. Muennighoff, F. Obeid, A. Saito, G. Song, H. Tu, S. Wo´zniak, R. Zhang, B. Zhao, Q. Zhao, P. Zhou, J. Zhu, and R.-J. Zhu. Eagle and Finch: RWKV with Matrix-Valued States and Dynamic Recurrence, 2024. URL https://arxiv.org/abs/2404.05892.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "[80] H. Peng, R. Schwartz, S. Thomson, and N. A. Smith. Rational recurrences. In E. Riloff, D. Chiang, J. Hockenmaier, and J. Tsujii, editors, Proceedings of the 2018 Conference on Empirical Methods in Natural Language Processing, pages 1203–1214, Brussels, Belgium, 2018. Association for Computational Linguistics. doi: 10.18653/v1/D18-1152. URL https:// aclanthology.org/D18-1152.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "[81] H. Peng, N. Pappas, D. Yogatama, R. Schwartz, N. A. Smith, and L. Kong. Random feature attention. In 9th International Conference on Learning Representations, ICLR 2021, Virtual Event, Austria, May 3-7, 2021. OpenReview.net, 2021. URL https://openreview.net/ forum?id=QtTKTdVrFBB.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "[82] H. Peng, J. Kasai, N. Pappas, D. Yogatama, Z. Wu, L. Kong, R. Schwartz, and N. A. Smith. ABC: Attention with bounded-memory control. In S. Muresan, P. Nakov, and A. Villavicencio, editors, Proceedings of the 60th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 7469–7483, Dublin, Ireland, 2022. Association for Computational Linguistics. doi: 10.18653/v1/2022.acl-long.515. URL https:// aclanthology.org/2022.acl-long.515.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "[83] M. Poli, S. Massaroli, E. Nguyen, D. Y. Fu, T. Dao, S. Baccus, Y. Bengio, S. Ermon, and C. Ré. Hyena hierarchy: Towards larger convolutional language models. In A. Krause, E. Brunskill, K. Cho, B. Engelhardt, S. Sabato, and J. Scarlett, editors, International Conference on Machine Learning, ICML 2023, 23-29 July 2023, Honolulu, Hawaii, USA, volume 202 of Proceedings of Machine Learning Research, pages 28043–28078. PMLR, 2023. URL https://proceedings.mlr.press/v202/poli23a.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "[84] M. Poli, A. W. Thomas, E. Nguyen, P. Ponnusamy, B. Deiseroth, K. Kersting, T. Suzuki, B. Hie, S. Ermon, C. Ré, C. Zhang, and S. Massaroli. Mechanistic Design and Scaling of Hybrid Architectures, 2024. URL https://arxiv.org/abs/2403.17844.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "[85] D. Prados and S. Kak. Neural network capacity using delta rule. Electronics Letters, 3(25): 197–199, 1989.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "[86] Z. Qin, X. Han, W. Sun, D. Li, L. Kong, N. Barnes, and Y. Zhong. The devil in linear transformer. In Y. Goldberg, Z. Kozareva, and Y. Zhang, editors, Proceedings of the 2022 Conference on Empirical Methods in Natural Language Processing, pages 7025–7041, Abu Dhabi, United Arab Emirates, 2022. Association for Computational Linguistics. doi: 10. 18653/v1/2022.emnlp-main.473. URL https://aclanthology.org/2022.emnlp-main. 473.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "[87] Z. Qin, X. Han, W. Sun, B. He, D. Li, D. Li, Y. Dai, L. Kong, and Y. Zhong. Toeplitz neural network for sequence modeling. In The Eleventh International Conference on Learning Representations, ICLR 2023, Kigali, Rwanda, May 1-5, 2023. OpenReview.net, 2023. URL https://openreview.net/pdf?id=IxmWsm4xrua.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "[88] Z. Qin, D. Li, W. Sun, W. Sun, X. Shen, X. Han, Y. Wei, B. Lv, F. Yuan, X. Luo, et al. Scaling transnormer to 175 billion parameters. ArXiv preprint, abs/2307.14995, 2023. URL https://arxiv.org/abs/2307.14995.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "[89] Z. Qin, W. Sun, K. Lu, H. Deng, D. Li, X. Han, Y. Dai, L. Kong, and Y. Zhong. Linearized Relative Positional Encoding, 2023. URL https://arxiv.org/abs/2307.09270.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "[90] Z. Qin, S. Yang, and Y. Zhong. Hierarchically gated recurrent neural network for sequence modeling. In A. Oh, T. Naumann, A. Globerson, K. Saenko, M. Hardt, and S. Levine, editors, Advances in Neural Information Processing Systems 36: Annual Conference on Neural Information Processing Systems 2023, NeurIPS 2023, New Orleans, LA, USA, December 10 - 16, 2023, 2023. URL http://papers.nips.cc/paper_files/paper/2023/hash/ 694be3548697e9cc8999d45e8d16fe1e-Abstract-Conference.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "[91] Z. Qin, W. Sun, D. Li, X. Shen, W. Sun, and Y. Zhong. Lightning attention-2: A free lunch for handling unlimited sequence lengths in large language models. 2024.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "[92] Z. Qin, S. Yang, W. Sun, X. Shen, D. Li, W. Sun, and Y. Zhong. HGRN2: Gated Linear RNNs with State Expansion. 2024. URL https://api.semanticscholar.org/ CorpusID:269043328.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "[93] P. Rajpurkar, R. Jia, and P. Liang. Know what you don’t know: Unanswerable questions for SQuAD. In I. Gurevych and Y. Miyao, editors, Proceedings of the 56th Annual Meeting of the Association for Computational Linguistics (Volume 2: Short Papers), pages 784–789, Melbourne, Australia, 2018. Association for Computational Linguistics. doi: 10.18653/v1/ P18-2124. URL https://aclanthology.org/P18-2124.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "[94] H. Ramsauer, B. Schäfl, J. Lehner, P. Seidl, M. Widrich, L. Gruber, M. Holzleitner, T. Adler, D. P. Kreil, M. K. Kopp, G. Klambauer, J. Brandstetter, and S. Hochreiter. Hopfield networks is all you need. In 9th International Conference on Learning Representations, ICLR 2021, Virtual Event, Austria, May 3-7, 2021. OpenReview.net, 2021. URL https://openreview. net/forum?id=tL89RnzIiCd.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "[95] L. Ren, Y. Liu, Y. Lu, Y. Shen, C. Liang, and W. Chen. Samba: Simple hybrid state space models for efficient unlimited context language modeling. ArXiv preprint, abs/2406.07522, 2024. URL https://arxiv.org/abs/2406.07522.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "[96] I. Rodkin, Y. Kuratov, A. Bulatov, and M. Burtsev. Associative recurrent memory transformer. ArXiv preprint, abs/2407.04841, 2024. URL https://arxiv.org/abs/2407.04841.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "[97] S. Rogers. Adaptive filter theory. Control Engineering Practice, 4:1629–1630, 1996. URL https://api.semanticscholar.org/CorpusID:109523942.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "[98] A. Roy, M. Saffar, A. Vaswani, and D. Grangier. Efficient content-based sparse attention with routing transformers. Transactions of the Association for Computational Linguistics, 9:53– 68, 2021. doi: 10.1162/tacl_a_00353. URL https://aclanthology.org/2021.tacl-1. 4.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "[99] K. Sakaguchi, R. L. Bras, C. Bhagavatula, and Y. Choi. Winogrande: An adversarial winograd schema challenge at scale. In The Thirty-Fourth AAAI Conference on Artificial Intelligence, AAAI 2020, The Thirty-Second Innovative Applications of Artificial Intelligence Conference, IAAI 2020, The Tenth AAAI Symposium on Educational Advances in Artificial Intelligence, EAAI 2020, New York, NY, USA, February 7-12, 2020, pages 8732–8740. AAAI Press, 2020. URL https://aaai.org/ojs/index.php/AAAI/article/view/6399.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "[100] Y. Schiff, C.-H. Kao, A. Gokaslan, T. Dao, A. Gu, and V. Kuleshov. Caduceus: Bidirectional equivariant long-range dna sequence modeling. ArXiv, abs/2403.03234, 2024. URL https://api.semanticscholar.org/CorpusID:268253280.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "[101] I. Schlag, K. Irie, and J. Schmidhuber. Linear transformers are secretly fast weight programmers. In M. Meila and T. Zhang, editors, Proceedings of the 38th International Conference on Machine Learning, ICML 2021, 18-24 July 2021, Virtual Event, volume 139 of Proceedings of Machine Learning Research, pages 9355–9366. PMLR, 2021. URL http://proceedings. mlr.press/v139/schlag21a.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "[102] J. Schmidhuber. Learning to control fast-weight memories: An alternative to dynamic recurrent networks. Neural Computation, 4(1):131–139, 1992.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "[103] N. Shazeer. Glu variants improve transformer. ArXiv preprint, abs/2002.05202, 2020. URL https://arxiv.org/abs/2002.05202.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "[104] Y. Shen, M. Stallone, M. Mishra, G. Zhang, S. Tan, A. Prasad, A. M. Soria, D. D. Cox, and R. Panda. Power scheduler: A batch size and token number agnostic learning rate scheduler. ArXiv preprint, abs/2408.13359, 2024. URL https://arxiv.org/abs/2408.13359.",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[105] J. T. H. Smith, A. Warrington, and S. W. Linderman. Simplified state space layers for sequence modeling. In The Eleventh International Conference on Learning Representations, ICLR 2023, Kigali, Rwanda, May 1-5, 2023. OpenReview.net, 2023. URL https:// openreview.net/pdf?id=Ai8Hw3AXqks.",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[106] J. T. H. Smith, A. Warrington, and S. W. Linderman. Simplified state space layers for sequence modeling. In The Eleventh International Conference on Learning Representations, ICLR 2023, Kigali, Rwanda, May 1-5, 2023. OpenReview.net, 2023. URL https:// openreview.net/pdf?id=Ai8Hw3AXqks.",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[107] W. Sun, Z. Qin, D. Li, X. Shen, Y. Qiao, and Y. Zhong. Linear attention sequence parallelism. ArXiv preprint, abs/2404.02882, 2024. URL https://arxiv.org/abs/2404.02882.",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[108] Y. Sun, L. Dong, S. Huang, S. Ma, Y. Xia, J. Xue, J. Wang, and F. Wei. Retentive network: A successor to transformer for large language models. ArXiv preprint, abs/2307.08621, 2023. URL https://arxiv.org/abs/2307.08621.",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[109] Y. Sun, L. Dong, Y. Zhu, S. Huang, W. Wang, S. Ma, Q. Zhang, J. Wang, and F. Wei. You only cache once: Decoder-decoder architectures for language models. ArXiv preprint, abs/2405.05254, 2024. URL https://arxiv.org/abs/2405.05254.",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[110] Y. Sun, X. Li, K. Dalal, J. Xu, A. Vikram, G. Zhang, Y. Dubois, X. Chen, X. Wang, O. Koyejo, T. Hashimoto, and C. Guestrin. Learning to (learn at test time): Rnns with expressive hidden states. ArXiv preprint, abs/2407.04620, 2024. URL https://arxiv.org/abs/2407. 04620.",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[111] L. Team. The llama 3 herd of models. ArXiv preprint, abs/2407.21783, 2024. URL https:// arxiv.org/abs/2407.21783.",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[112] P. Tillet, H. Kung, and D. D. Cox. Triton: an intermediate language and compiler for tiled neural network computations. In Proceedings of the 3rd ACM SIGPLAN International Workshop on Machine Learning and Programming Languages, MAPL@PLDI 2019, pages 10–19. ACM, 2019. doi: 10.1145/3315508.3329973.",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[113] J. M. Tomczak and M. Welling. Improving Variational Auto-Encoders using Householder Flow, 2016. URL https://arxiv.org/abs/1611.09630.",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[114] H. Touvron, T. Lavril, G. Izacard, X. Martinet, M.-A. Lachaux, T. Lacroix, B. Rozière, N. Goyal, E. Hambro, F. Azhar, et al. Llama: Open and efficient foundation language models. ArXiv preprint, abs/2302.13971, 2023. URL https://arxiv.org/abs/2302.13971.",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[115] R. van den Berg, L. Hasenclever, J. M. Tomczak, and M. Welling. Sylvester normalizing flows for variational inference. In A. Globerson and R. Silva, editors, Proceedings of the Thirty-Fourth Conference on Uncertainty in Artificial Intelligence, UAI 2018, Monterey, California, USA, August 6-10, 2018, pages 393–402. AUAI Press, 2018. URL http://auai. org/uai2018/proceedings/papers/156.pdf.",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[116] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, L. Kaiser, and I. Polosukhin. Attention is all you need. In I. Guyon, U. von Luxburg, S. Bengio, H. M. Wallach, R. Fergus, S. V. N. Vishwanathan, and R. Garnett, editors, Advances in Neural Information Processing Systems 30: Annual Conference on Neural Information Processing Systems 2017, December 4-9, 2017, Long Beach, CA, USA, pages 5998–6008, 2017. URL https://proceedings.neurips.cc/paper/2017/hash/ 3f5ee243547dee91fbd053c1c4a845aa-Abstract.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[117] J. von Oswald, E. Niklasson, M. Schlegel, S. Kobayashi, N. Zucchet, N. Scherrer, N. Miller, M. Sandler, B. A. y Arcas, M. Vladymyrov, R. Pascanu, and J. Sacramento. Uncovering mesaoptimization algorithms in transformers. CoRR, abs/2309.05858, 2023. URL https://doi. org/10.48550/arXiv.2309.05858.",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[118] E. Vorontsov, C. Trabelsi, S. Kadoury, and C. Pal. On orthogonality and learning recurrent networks with long term dependencies. In D. Precup and Y. W. Teh, editors, Proceedings of the 34th International Conference on Machine Learning, ICML 2017, Sydney, NSW, Australia,",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "6-11 August 2017, volume 70 of Proceedings of Machine Learning Research, pages 3570– 3578. PMLR, 2017. URL http://proceedings.mlr.press/v70/vorontsov17a.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[119] C. X. Wang, O. Tsepa, J. Ma, and B. Wang. Graph-mamba: Towards long-range graph sequence modeling with selective state spaces. ArXiv, abs/2402.00789, 2024. URL https:// api.semanticscholar.org/CorpusID:267364853.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[120] J. Wang, J. N. Yan, A. Gu, and A. Rush. Pretraining without attention. In H. Bouamor, J. Pino, and K. Bali, editors, Findings of the Association for Computational Linguistics: EMNLP 2023, pages 58–69, Singapore, 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.findings-emnlp.5. URL https://aclanthology.org/2023. findings-emnlp.5.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[121] B. Widrow, M. E. Hoff, et al. Adaptive switching circuits. In IRE WESCON convention record, volume 4, pages 96–104. New York, 1960.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[122] J. N. Yan, J. Gu, and A. M. Rush. Diffusion models without attention. 2023.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[123] S. Yang and Y. Zhang. FLA: A Triton-Based Library for Hardware-Efficient Implementations of Linear Attention Mechanism, 2024. URL https://github.com/sustcsonglin/ flash-linear-attention. original-date: 2023-12-20T06:50:18Z.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[124] S. Yang, B. Wang, Y. Shen, R. Panda, and Y. Kim. Gated linear attention transformers with hardware-efficient training. ArXiv preprint, abs/2312.06635, 2023. URL https://arxiv. org/abs/2312.06635.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[125] S. Yang, J. Kautz, and A. Hatamizadeh. Gated delta networks: Improving mamba2 with delta rule, 2024. URL https://arxiv.org/abs/2412.06464.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[126] M. Zaheer, G. Guruganesh, K. A. Dubey, J. Ainslie, C. Alberti, S. Ontañón, P. Pham, A. Ravula, Q. Wang, L. Yang, and A. Ahmed. Big bird: Transformers for longer sequences. In H. Larochelle, M. Ranzato, R. Hadsell, M. Balcan, and H. Lin, editors, Advances in Neural Information Processing Systems 33: Annual Conference on Neural Information Processing Systems 2020, NeurIPS 2020, December 6-12, 2020, virtual, 2020. URL https://proceedings.neurips.cc/paper/2020/hash/ c8512d142a2d849725f31a9a7a361ab9-Abstract.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[127] R. Zellers, A. Holtzman, Y. Bisk, A. Farhadi, and Y. Choi. HellaSwag: Can a machine really finish your sentence? In A. Korhonen, D. Traum, and L. Màrquez, editors, Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics, pages 4791– 4800, Florence, Italy, 2019. Association for Computational Linguistics. doi: 10.18653/v1/ P19-1472. URL https://aclanthology.org/P19-1472.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[128] J. Zhang, Q. Lei, and I. S. Dhillon. Stabilizing gradients for deep neural networks via efficient SVD parameterization. In J. G. Dy and A. Krause, editors, Proceedings of the 35th International Conference on Machine Learning, ICML 2018, Stockholmsmässan, Stockholm, Sweden, July 10-15, 2018, volume 80 of Proceedings of Machine Learning Research, pages 5801– 5809. PMLR, 2018. URL http://proceedings.mlr.press/v80/zhang18g.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[129] J. Zhang, S. Jiang, J. Feng, L. Zheng, and L. Kong. Linear Attention via Orthogonal Memory, 2023. URL https://arxiv.org/abs/2312.11135.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[130] Q. Zhang, D. Ram, C. Hawkins, S. Zha, and T. Zhao. Efficient long-range transformers: You need to attend more, but not necessarily at every layer. In H. Bouamor, J. Pino, and K. Bali, editors, Findings of the Association for Computational Linguistics: EMNLP 2023, pages 2775– 2786, Singapore, 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023. findings-emnlp.183. URL https://aclanthology.org/2023.findings-emnlp.183.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[131] Y. Zhang, S. Yang, R. Zhu, Y. Zhang, L. Cui, Y. Wang, B. Wang, F. Shi, B. Wang, W. Bi, P. Zhou, and G. Fu. Gated slot attention for efficient linear-time sequence modeling. In The Thirty-eighth Annual Conference on Neural Information Processing Systems, 2024.",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[132] L. Zhu, Z. Huang, B. Liao, J. H. Liew, H. Yan, J. Feng, and X. Wang. Dig: Scalable and efficient diffusion models with gated linear attention. ArXiv, abs/2405.18428, 2024. URL https://api.semanticscholar.org/CorpusID:270068366.",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[133] L. Zhu, B. Liao, Q. Zhang, X. Wang, W. Liu, and X. Wang. Vision mamba: Efficient visual representation learning with bidirectional state space model. ArXiv, abs/2401.09417, 2024. URL https://api.semanticscholar.org/CorpusID:267028142.",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[134] I. Zimerman, A. Ali, and L. Wolf. A unified implicit attention formulation for gated-linear recurrent sequence models. ArXiv preprint, abs/2405.16504, 2024. URL https://arxiv. org/abs/2405.16504.",
+"section": [
+"References"
+]
+}
+]
+},
+"2411.12537 - Unlocking State-Tracking in Linear RNNs Through Negative Eigenvalues.pdf": {
+"title": [
+"UNLOCKING STATE-TRACKING IN LINEAR RNNS THROUGH NEGATIVE EIGENVALUES"
+],
+"firstPage": [
+"UNLOCKING STATE-TRACKING IN LINEAR RNNS THROUGH NEGATIVE EIGENVALUES",
+"Riccardo Grazzi∗♡, Julien Siems∗♢, Arber Zela♢, Jorg ¨ K.H. Franke♢, Frank Hutter♢♣, Massimiliano Pontil♡♠ Equal contribution∗, CSML, Istituto Italiano di Tecnologia♡, University of Freiburg♢, ELLIS Institute Tubingen ¨ ♣, AI Centre, University College London♠",
+"ABSTRACT",
+"Linear Recurrent Neural Networks (LRNNs) such as Mamba, RWKV, GLA, mL- STM, and DeltaNet have emerged as efficient alternatives to Transformers for long sequences. However, both Transformers and LRNNs struggle to perform state-tracking, which may impair performance in tasks such as code evaluation. In one forward pass, current architectures are unable to solve even parity, the simplest state-tracking task, which non-linear RNNs can handle effectively. Recently, Sarrof et al. (2024) demonstrated that the failure of LRNNs like Mamba to solve parity stems from restricting the value range of their diagonal state-transition matrices to [0, 1] and that incorporating negative values can resolve this issue. We extend this result to non-diagonal LRNNs such as DeltaNet. We prove that finite precision LRNNs with state-transition matrices having only positive eigenvalues cannot solve parity, while non-triangular matrices are needed to count modulo Notably, we also prove that LRNNs can learn any regular language when their state-transition matrices are products of identity minus vector outer product matrices, each with eigenvalues in the range [−1, 1]. Our experiments confirm that extending the eigenvalue range of Mamba and DeltaNet to include negative values not only enables them to solve parity but consistently improves their performance on state-tracking tasks. We also show that state-tracking enabled LRNNs can be pretrained stably and efficiently at scale (1.3B parameters), achieving competitive performance on language modeling and showing promise on code and math tasks.",
+"1 INTRODUCTION",
+"Transformer architectures (Vaswani et al., 2017) have revolutionized NLP but scale quadratically in sequence length, posing computational challenges for long sequences. To address this, Linear Recurrent Neural Networks (LRNNs) have emerged as promising alternatives that offer linear scaling while maintaining competitive performance (Gu & Dao, 2024; Dao & Gu, 2024; Yang et al., 2024a; Peng et al., 2023; Deletang et al., 2023; Sun et al., 2024; Beck et al., 2024). LRNNs update their state via matrix-vector products with structured and often input-dependent state-transition matrices. The structure of the state-transition matrices largely determines the expressivity of LRNNs. While successful models like Mamba (Gu & Dao, 2024) and GLA (Yang et al., 2024a) use diagonal matrices (diagonal LRNN) which only mix tokens along the sequence dimension, recent work explores more complex forms. Notably, non-diagonal matrices using generalized Householder (GH) transformations, defined as I − uu⊤ where u is a learnable vector and I DeltaNet (Schlag et al., 2021; Yang et al., 2024b) and TTT-Linear (Sun et al., 2024) to achieve richer expressiveness through simultaneous token-channel mixing while maintaining efficiency.",
+"3."
+],
+"references": [
+{
+"page": 11,
+"text": "Simran Arora, Brandon Yang, Sabri Eyuboglu, Avanika Narayan, Andrew Hojel, Immanuel Trummer, and Christopher Re. ´ Language Models Enable Simple Systems for Generating Structured Views of Heterogeneous Data Lakes. Proceedings of the VLDB Endowment, 17(2):92–105, 2023.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 11,
+"text": "Maximilian Beck, Korbinian Poppel, Markus Spanring, Andreas Auer, Oleksandra Prudnikova, ¨ Michael Kopp, Gunter ¨ Klambauer, Johannes Brandstetter, and Sepp Hochreiter. xLSTM: Extended Long Short-Term Memory. In Advances in Neural Information Processing Systems. Curran Associates, Inc., 2024.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 11,
+"text": "Satwik Bhattamishra, Kabir Ahuja, and Navin Goyal. On the ability and limitations of transformers to recognize formal languages. In Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP), pp. 7096–7116, 2020.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 11,
+"text": "Satwik Bhattamishra, Michael Hahn, Phil Blunsom, and Varun Kanade. Separations in the representational capabilities of transformers and recurrent architectures. Advances in Neural Information Processing Systems, 36, 2024.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 11,
+"text": "Yonatan Bisk, Rowan Zellers, Ronan Le bras, Jianfeng Gao, and Yejin Choi. PIQA: Reasoning about physical commonsense in natural language. Proceedings of the AAAI Conference on Artificial Intelligence, 34(05):7432–7439, Apr. 2020.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 11,
+"text": "Nicola Muca Cirone, Antonio Orvieto, Benjamin Walker, Cristopher Salvi, and Terry Lyons. Theoretical foundations of deep selective state-space models. Advances in Neural Information Processing Systems, 37:127226–127272, 2025.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 11,
+"text": "Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. Think you have solved question answering? Try arc, the ai2 reasoning challenge. arXiv preprint arXiv:1803.05457, 2018.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 12,
+"text": "Tri Dao and Albert Gu. Transformers are SSMs: Generalized models and efficient algorithms through structured state space duality. In International Conference on Machine Learning. PMLR, 2024.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 12,
+"text": "Gregoire Deletang, Anian Ruoss, Jordi Grau-Moya, Tim Genewein, Li Kevin Wenliang, Elliot Catt, Chris Cundy, Marcus Hutter, Shane Legg, Joel Veness, et al. Neural Networks and the Chomsky Hierarchy. In The Eleventh International Conference on Learning Representations, 2023.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 12,
+"text": "Ting-Han Fan, Ta-Chung Chi, and Alexander Rudnicky. Advancing Regular Language Reasoning in Linear Recurrent Neural Networks. In Proceedings of the 2024 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 2: Short Papers), pp. 45–53, 2024.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 12,
+"text": "Daniel Y Fu, Tri Dao, Khaled Kamal Saab, Armin W Thomas, Atri Rudra, and Christopher Re. Hungry Hungry Hippos: Towards Language Modeling with State Space Models. In The Eleventh International Conference on Learning Representations, 2021.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 12,
+"text": "Jean Gallier and Jean Gallier. The Cartan–Dieudonne´ Theorem. Geometric Methods and Applications: For Computer Science and Engineering, pp. 231–280, 2011.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 12,
+"text": "Leo Gao, Jonathan Tow, Baber Abbasi, Stella Biderman, Sid Black, Anthony DiPofi, Charles Foster, Laurence Golding, Jeffrey Hsu, Alain Le Noac’h, Haonan Li, Kyle McDonell, Niklas Muennighoff, Chris Ociepa, Jason Phang, Laria Reynolds, Hailey Schoelkopf, Aviya Skowron, Lintang Sutawika, Eric Tang, Anish Thite, Ben Wang, Kevin Wang, and Andy Zou. A framework for few-shot language model evaluation, 07 2024.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 12,
+"text": "Angeliki Giannou, Shashank Rajput, Jy-yong Sohn, Kangwook Lee, Jason D Lee, and Dimitris Papailiopoulos. Looped transformers as programmable computers. In International Conference on Machine Learning, pp. 11398–11442. PMLR, 2023.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 12,
+"text": "Xavier Gonzalez, Andrew Warrington, Jimmy T.H. Smith, and Scott Linderman. Towards Scalable and Stable Parallelization of Nonlinear RNNs. In The Thirty-eighth Annual Conference on Neural Information Processing Systems, 2024.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 12,
+"text": "Albert Gu and Tri Dao. Mamba: Linear-Time Sequence Modeling with Selective State Spaces. In First Conference on Language Modeling, 2024.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 12,
+"text": "Albert Gu, Isys Johnson, Karan Goel, Khaled Saab, Tri Dao, Atri Rudra, and Christopher Re.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 12,
+"text": "´ Com-",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 12,
+"text": "bining recurrent, convolutional, and continuous-time models with linear state space layers. Advances in neural information processing systems, 34:572–585, 2021.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 12,
+"text": "Albert Gu, Karan Goel, and Christopher Re. Efficiently Modeling Long Sequences with Structured State Spaces. In International Conference on Learning Representations, 2022.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 12,
+"text": "Sylvain Gugger, Lysandre Debut, Thomas Wolf, Philipp Schmid, Zachary Mueller, Sourab Mangrulkar, Marc Sun, and Benjamin Bossan. Accelerate: Training and inference at scale made simple, efficient and adaptable. https://github.com/huggingface/accelerate, 2022.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 12,
+"text": "Michael Hahn. Theoretical limitations of self-attention in neural sequence models. Transactions of the Association for Computational Linguistics, 8:156–171, 2020.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 12,
+"text": "Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring mathematical problem solving with the math dataset. In Thirty-fifth Conference on Neural Information Processing Systems Datasets and Benchmarks Track (Round 2), 2021.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 12,
+"text": "Sepp Hochreiter and Jurgen ¨ Schmidhuber. Long Short-Term Memory. Neural Computation, 9(8): 1735–1780, 1997.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 12,
+"text": "John Hopcroft and Jeffrey Ullman. Introduction to Automata Theory, Languages, and Computation. Addison-Wesley, 2001.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 12,
+"text": "Roger A Horn and Charles R Johnson. Matrix Analysis. Cambridge University Press, 2012.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "Kazuki Irie, Imanol Schlag, Robert ´ Csordas, ´ and Jurgen ¨ Schmidhuber. Going beyond linear trans-",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "formers with recurrent fast weight programmers. Advances in neural information processing systems, 34:7703–7717, 2021.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "Kazuki Irie, Robert ´ Csordas, ´ and Jurgen ¨ Schmidhuber. Practical computational power of linear transformers and their recurrent and self-referential extensions. arXiv preprint arXiv:2310.16076, 2023.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "Mandar Joshi, Eunsol Choi, Daniel S Weld, and Luke Zettlemoyer. Triviaqa: A large scale distantly supervised challenge dataset for reading comprehension. In Proceedings of the 55th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pp. 1601–1611, 2017.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "Angelos Katharopoulos, Apoorv Vyas, Nikolaos Pappas, and Franc¸ois Fleuret. Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention. In International Conference on Machine Learning, pp. 5156–5165. PMLR, 2020.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "Kenneth Krohn and John Rhodes. Algebraic theory of machines. i. prime decomposition theorem for finite semigroups and machines. Transactions of the American Mathematical Society, 116: 450–464, 1965.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "Yi Heng Lim, Qi Zhu, Joshua Selfridge, and Muhammad Firmansyah Kasim. Parallelizing nonlinear sequential models over the sequence length. In The Twelfth International Conference on Learning Representations, 2024.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "Bingbin Liu, Jordan T Ash, Surbhi Goel, Akshay Krishnamurthy, and Cyril Zhang. Transformers Learn Shortcuts to Automata. In The Eleventh International Conference on Learning Representations, 2023.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "Colin Lockard, Prashant Shiralkar, and Xin Luna Dong. When open information extraction meets the semi-structured web. NAACL-HLT. Association for Computational Linguistics, 2019.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "Ilya Loshchilov and Frank Hutter. SGDR: Stochastic Gradient Descent with Warm Restarts. In International Conference on Learning Representations, 2017.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "Ilya Loshchilov and Frank Hutter. Decoupled Weight Decay Regularization. In International Conference on Learning Representations, 2019.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "Oded Maler and Amir Pnueli. On the cascaded decomposition of automata, its complexity and its application to logic. ACTS Mobile Communication, 48, 1994.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "William Merrill and Ashish Sabharwal. The parallelism tradeoff: Limitations of log-precision transformers. Transactions of the Association for Computational Linguistics, 11:531–545, 2023.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "William Merrill, Gail Weiss, Yoav Goldberg, Roy Schwartz, Noah A Smith, and Eran Yahav. A Formal Hierarchy of RNN Architectures. In Proceedings of the 58th Annual Meeting of the Association for Computational Linguistics, pp. 443–459, 2020.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "William Merrill, Jackson Petty, and Ashish Sabharwal. The Illusion of State in State-Space Models. In Forty-first International Conference on Machine Learning, 2024.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "Antonio Orvieto, Soham De, Caglar Gulcehre, Razvan Pascanu, and Samuel L Smith. Universality of Linear Recurrences Followed by Non-linear Projections: Finite-Width Guarantees and Benefits of Complex Eigenvalues. In Forty-first International Conference on Machine Learning, 2024.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "Denis Paperno, German ´ Kruszewski, Angeliki Lazaridou, Ngoc-Quan Pham, Raffaella Bernardi, Sandro Pezzelle, Marco Baroni, Gemma Boleda, and Raquel Fernandez.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "´ The LAMBADA dataset:",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "Word prediction requiring a broad discourse context. In Proceedings of the 54th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pp. 1525–1534, 2016.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 13,
+"text": "Guilherme Penedo, Hynek Kydl´ıcek, ˇ Loubna Ben allal, Anton Lozhkov, Margaret Mitchell, Colin Raffel, Leandro Von Werra, and Thomas Wolf. The FineWeb Datasets: Decanting the Web for the Finest Text Data at Scale, 2024.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 14,
+"text": "Bo Peng, Eric Alcaide, Quentin Gregory Anthony, Alon Albalak, Samuel Arcadinho, Stella Biderman, Huanqi Cao, Xin Cheng, Michael Nguyen Chung, Leon Derczynski, et al. RWKV: Reinventing RNNs for the Transformer Era. In The 2023 Conference on Empirical Methods in Natural Language Processing, 2023.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 14,
+"text": "Jorge Perez, ´ Pablo Barcelo, ´ and Javier Marinkovic. Attention is turing-complete. Journal of Machine Learning Research, 22(75):1–35, 2021.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 14,
+"text": "Samyam Rajbhandari, Jeff Rasley, Olatunji Ruwase, and Yuxiong He. Zero: Memory optimizations toward training trillion parameter models. In SC20: International Conference for High Performance Computing, Networking, Storage and Analysis, pp. 1–16. IEEE, 2020.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 14,
+"text": "Pranav Rajpurkar, Robin Jia, and Percy Liang. Know what you don’t know: Unanswerable questions for squad. In Proceedings of the 56th Annual Meeting of the Association for Computational Linguistics (Volume 2: Short Papers), pp. 784–789, 2018.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 14,
+"text": "Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi. Winogrande: An adversarial winograd schema challenge at scale. Communications of the ACM, 64(9):99–106, 2021.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 14,
+"text": "Yash Sarrof, Yana Veitsman, and Michael Hahn. The Expressive Capacity of State Space Models: A Formal Language Perspective. Advances in Neural Information Processing Systems, 2024.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 14,
+"text": "Imanol Schlag, Kazuki Irie, and Jurgen ¨ Schmidhuber. Linear transformers are secretly fast weight programmers. In International Conference on Machine Learning, pp. 9355–9366. PMLR, 2021.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 14,
+"text": "Jurgen ¨ Schmidhuber. Learning to control fast-weight memories: An alternative to dynamic recurrent networks. Neural Computation, 4(1):131–139, 1992.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 14,
+"text": "Daria Soboleva, Faisal Al-Khateeb, Robert Myers, Jacob R Steeves, Joel Hestness, and Nolan Dey. SlimPajama: A 627B token cleaned and deduplicated version of RedPajama, June 2023.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 14,
+"text": "Lena Strobl, William Merrill, Gail Weiss, David Chiang, and Dana Angluin. What Formal Languages can Transformers express? A Survey. Transactions of the Association for Computational Linguistics, 12:543–561, 2024.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 14,
+"text": "Yu Sun, Xinhao Li, Karan Dalal, Jiarui Xu, Arjun Vikram, Genghan Zhang, Yann Dubois, Xinlei Chen, Xiaolong Wang, Sanmi Koyejo, et al. Learning to (learn at test time): RNNs with expressive hidden states. arXiv preprint arXiv:2407.04620, 2024.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 14,
+"text": "Matteo Tiezzi, Michele Casoni, Alessandro Betti, Marco Gori, and Stefano Melacci. State-Space Modeling in Long Sequence Processing: A Survey on Recurrence in the Transformer Era, 2024.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 14,
+"text": "Alexandre Torres. mamba.py: A simple, hackable and efficient Mamba implementation in pure PyTorch and MLX., 2024. URL https://github.com/alxndrTL/mamba.py.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 14,
+"text": "Lewis Tunstall, Leandro Von Werra, and Thomas Wolf. Natural Language Processing with Transformers. O’Reilly Media, Inc., 2022.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 14,
+"text": "Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Ł ukasz Kaiser, and Illia Polosukhin. Attention is All you Need. In Advances in Neural Information Processing Systems, volume 30. Curran Associates, Inc., 2017.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 14,
+"text": "Songlin Yang and Yu Zhang. FLA: A Triton-Based Library for Hardware-Efficient Implementations of Linear Attention Mechanism, January 2024. URL https://github.com/ sustcsonglin/flash-linear-attention.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 14,
+"text": "Songlin Yang, Bailin Wang, Yikang Shen, Rameswar Panda, and Yoon Kim. Gated Linear Attention Transformers with Hardware-Efficient Training. In Forty-first International Conference on Machine Learning, 2024a.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 14,
+"text": "Songlin Yang, Bailin Wang, Yu Zhang, Yikang Shen, and Yoon Kim. Parallelizing Linear Transformers with the Delta Rule over Sequence Length. Advances in Neural Information Processing Systems, 36, 2024b.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 15,
+"text": "Songlin Yang, Jan Kautz, and Ali Hatamizadeh. Gated Delta Networks: Improving Mamba2 with Delta Rule. In The Thirteenth International Conference on Learning Representations, 2025.",
+"section": [
+"REFERENCES"
+]
+},
+{
+"page": 15,
+"text": "Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. HellaSwag: Can a Machine Really Finish Your Sentence? In Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics, pp. 4791–4800, 2019.",
+"section": [
+"REFERENCES"
+]
+}
+]
+},
+"2505.01730 - PASCAL - ANN-SNN Conversion.pdf": {
+"title": [
+"PASCAL: Precise and Efficient ANN-SNN Conversion using Spike Accumulation and Adaptive Layerwise Activation"
+],
+"firstPage": [
+"PASCAL: Precise and Efficient ANN-SNN Conversion using Spike Accumulation and Adaptive Layerwise Activation",
+"Department of Computer Science and Engineering Indian Institute of Technology Madras",
+"Reviewed on OpenReview: https: // openreview. net/ forum? id= kIdB7Xp1Iv",
+"Abstract",
+"Spiking Neural Networks (SNNs) have been put forward as an energy-efficient alternative to Artificial Neural Networks (ANNs) since they perform sparse Accumulate operations instead of the power-hungry Multiply-and-Accumulate operations. ANN-SNN conversion is a widely used method to realize deep SNNs with accuracy comparable to that of ANNs. Bu et al. recently proposed the Quantization-Clip-Floor-Shift (QCFS) activation as an alternative to ReLU to minimize the accuracy loss during ANN-SNN conversion. Nevertheless, SNN inferencing requires a large number of timesteps to match the accuracy of the source ANN for real-world datasets. In this work, we propose PASCAL, which performs ANN-SNN conversion in such a way that the resulting SNN is mathematically equivalent to an ANN with QCFSactivation, thereby yielding similar accuracy as the source ANN with minimal inference timesteps. In addition, we propose a systematic method to configure the quantization step of QCFS activation in a layerwise manner, which effectively determines the optimal number of timesteps per layer for the converted SNN. Our results show that the ResNet-34 SNN obtained using PASCAL achieves an accuracy of ≈74% on ImageNet with a 56× reduction in the number of inference timesteps compared to existing approaches. The code is available at https://github.com/BrainSeek-Lab/PASCAL.",
+"1 Introduction"
+],
+"references": [
+{
+"page": 13,
+"text": "Léon Bottou. Stochastic gradient descent tricks. In Neural networks: Tricks of the trade, pp. 421–436. Springer, 2012.",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "Tong Bu, Wei Fang, Jianhao Ding, PengLin Dai, Zhaofei Yu, and Tiejun Huang. Optimal ann-snn conversion for high-accuracy and ultra-low-latency spiking neural networks, 2023. URL https://arxiv.org/abs/ 2303.04347.",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "Yongqiang Cao, Yang Chen, and Deepak Khosla. Spiking deep convolutional neural networks for energyefficient object recognition. International Journal of Computer Vision, 113(1):54−−66, 2015.",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "Mike Davies, Andreas Wild, Garrick Orchard, Yulia Sandamirskaya, Gabriel A Fonseca Guerra, Prasad Joshi, Philipp Plank, and Sumedh R Risbud. Advancing neuromorphic computing with loihi: A survey of results and outlook. Proceedings of the IEEE, 109(5):911–934, 2021.",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "Shikuang Deng and Shi Gu. Optimal conversion of conventional artificial neural networks to spiking neural networks. arXiv preprint arXiv:2103.00476, 2021.",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "Shikuang Deng, Yuhang Li, Shanghang Zhang, and Shi Gu. Temporal efficient training of spiking neural network via gradient re-weighting. In International Conference on Learning Representations, 2022. URL https://openreview.net/forum?id=_XNtisL32jv.",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "Peter U. Diehl, Daniel Neil, Jonathan Binas, Matthew Cook, and Shih Chii Liu. Fast-classifying, highaccuracy spiking deep networks through weight and threshold balancing. In Neural Networks (IJCNN), 2015 International Joint Conference on, 2015.",
+"section": [
+"References"
+]
+},
+{
+"page": 13,
+"text": "Peter U Diehl, Guido Zarrella, Andrew Cassidy, Bruno U Pedroni, and Emre Neftci. Conversion of artificial recurrent neural networks to spiking neural networks for low-power neuromorphic hardware. In 2016 IEEE International Conference on Rebooting Computing (ICRC), pp. 1–8. IEEE, 2016.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Cees Van Der Eijk. Measuring Agreement in Ordered Rating Scales. Quality & Quantity: International Journal of Methodology, 35(3):325–341, August 2001. doi: 10.1023/A:1010374114305. URL https: //ideas.repec.org/a/spr/qualqt/v35y2001i3p325-341.html.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Jonathan Frankle and Michael Carbin. The lottery ticket hypothesis: Finding sparse, trainable neural networks, 2019. URL https://arxiv.org/abs/1803.03635.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Allan Grønlund, Kasper Green Larsen, Alexander Mathiasen, Jesper Sindahl Nielsen, Stefan Schneider, and Mingzhou Song. Fast exact k-means, k-medians and bregman divergence clustering in 1d, 2018. URL https://arxiv.org/abs/1701.07204.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Yufei Guo, Xuhui Huang, and Zhe Ma. Direct learning-based deep spiking neural networks: a review. Frontiers in Neuroscience, 17:1209795, 2023.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Bing Han and Kaushik Roy. Deep spiking neural network: Energy efficiency through time based coding. In European Conference on Computer Vision, 2020.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Bing Han, Gopalakrishnan Srinivasan, and Kaushik Roy. Rmp-snn: Residual membrane potential neuron for enabling deeper high-accuracy and low-latency spiking neural network. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pp. 13558–13567, 2020.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Zecheng Hao, Jianhao Ding, Tong Bu, Tiejun Huang, and Zhaofei Yu. Bridging the gap between anns and snns by calibrating offset spikes, 2023. URL https://arxiv.org/abs/2302.10685.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Mark Horowitz. 1.1 computing’s energy problem (and what we can do about it). In 2014 IEEE International Solid-State Circuits Conference Digest of Technical Papers (ISSCC), pp. 10–14, 2014. doi: 10.1109/ISSCC. 2014.6757323.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Gao Huang, Danlu Chen, Tianhong Li, Felix Wu, Laurens van der Maaten, and Kilian Weinberger. Multiscale dense networks for resource efficient image classification. In International Conference on Learning Representations, 2018. URL https://openreview.net/forum?id=Hk2aImxAb.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "D. N. Joanes and C. A. Gill. Comparing measures of sample skewness and kurtosis. Journal of the Royal Statistical Society. Series D (The Statistician), 47(1):183–189, 1998. ISSN 00390526, 14679884. URL http://www.jstor.org/stable/2988433.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Alex Krizhevsky, Geoffrey Hinton, et al. Learning multiple layers of features from tiny images. Technical report, Citeseer, 2009.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Yann LeCun, Yoshua Bengio, and Geoffrey Hinton. Deep learning. nature, 521(7553):436–444, 2015. Chankyu Lee, Syed Shakib Sarwar, Priyadarshini Panda, Gopalakrishnan Srinivasan, and Kaushik Roy. Enabling spike-based backpropagation for training deep neural network architectures. Frontiers in Neuroscience, 14, 2020.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Jun Haeng Lee, Tobi Delbruck, and Michael Pfeiffer. Training deep spiking neural networks using backpropagation. Frontiers in neuroscience, 10:508, 2016.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Chen Li, Edward Jones, and Steve Furber. Unleashing the potential of spiking neural networks by dynamic confidence, 2023a. URL https://arxiv.org/abs/2303.10276.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Yuhang Li, Tamar Geller, Youngeun Kim, and Priyadarshini Panda. SEENN: Towards temporal spiking early exit neural networks. In Thirty-seventh Conference on Neural Information Processing Systems, 2023b. URL https://openreview.net/forum?id=mbaN0Y0QTw.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Ilya Loshchilov and Frank Hutter. Sgdr: Stochastic gradient descent with warm restarts. arXiv preprint",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Emre O Neftci, Hesham Mostafa, and Friedemann Zenke. Surrogate gradient learning in spiking neural networks: Bringing the power of gradient-based optimization to spiking neural networks. IEEE Signal Processing Magazine, 36(6):51–63, 2019.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Priyadarshini Panda, Abhronil Sengupta, and Kaushik Roy. Conditional deep learning for energy-efficient and enhanced pattern recognition. In 2016 Design, Automation & Test in Europe Conference & Exhibition (DATE), pp. 475–480. IEEE, 2016.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "José Antonio Pérez-Carrasco, Bo Zhao, Carmen Serrano, Begona Acha, Teresa Serrano-Gotarredona, Shouchun Chen, and Bernabé Linares-Barranco. Mapping from frame-driven to frame-free event-driven vision systems by low-rate rate coding and coincidence processing–application to feedforward convnets. IEEE transactions on pattern analysis and machine intelligence, 35(11):2706–2719, 2013.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Nitin Rathi and Kaushik Roy. Diet-snn: A low-latency spiking neural network with direct input encoding and leakage and threshold optimization. IEEE Transactions on Neural Networks and Learning Systems, 2021.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Nitin Rathi, Gopalakrishnan Srinivasan, Priyadarshini Panda, and Kaushik Roy. Enabling deep spiking neural networks with hybrid conversion and spike timing dependent backpropagation. In International Conference on Learning Representations, 2020. URL https://openreview.net/forum?id=B1xSperKvH.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Kaushik Roy, Akhilesh Jaiswal, and Priyadarshini Panda. Towards spike-based machine intelligence with neuromorphic computing. Nature, 575(7784):607–617, 2019.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Bodo Rueckauer, Iulia-Alexandra Lungu, Yuhuang Hu, and Michael Pfeiffer. Theory and tools for the conversion of analog to spiking convolutional neural networks. arXiv: Statistics/Machine Learning, (1612.04052):0–0, 2016.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Bodo Rueckauer, Iulia-Alexandra Lungu, Yuhuang Hu, Michael Pfeiffer, and Shih-Chii Liu. Conversion of continuous-valued deep networks to efficient event-driven networks for image classification. Frontiers in neuroscience, 11:682, 2017.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Olga Russakovsky, Jia Deng, Hao Su, Jonathan Krause, Sanjeev Satheesh, Sean Ma, Zhiheng Huang, Andrej Karpathy, Aditya Khosla, Michael Bernstein, Alexander C. Berg, and Li Fei-Fei. Imagenet large scale visual recognition challenge, 2015. URL https://arxiv.org/abs/1409.0575.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Abhronil Sengupta, Yuting Ye, Robert Wang, Chiao Liu, and Kaushik Roy. Going deeper in spiking neural networks: Vgg and residual architectures. Frontiers in Neuroence, 13, 2018.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Abhronil Sengupta, Yuting Ye, Robert Wang, Chiao Liu, and Kaushik Roy. Going deeper in spiking neural networks: Vgg and residual architectures. Frontiers in neuroscience, 13:95, 2019.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Sumit Bam Shrestha and Garrick Orchard. Slayer: Spike layer error reassignment in time. In Advances in Neural Information Processing Systems, pp. 1412–1421, 2018.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Gopalakrishnan Srinivasan and Kaushik Roy. Bloctrain: Block-wise conditional training and inference for efficient spike-based deep learning. Frontiers in Neuroscience, 15:603433, 2021.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Nicolae Tarbă, Mihai-Lucian Voncilă, and Costin-Anton Boiangiu. On generalizing sarle’s bimodality coefficient as a path towards a newly composite bimodality coefficient. Mathematics, 10(7), 2022. ISSN 2227-7390. doi: 10.3390/math10071042. URL https://www.mdpi.com/2227-7390/10/7/1042.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Amirhossein Tavanaei, Masoud Ghodrati, Saeed Reza Kheradpisheh, Timothee Masquelier, and Anthony Maida. Deep learning in spiking neural networks. Neural Networks, 111:47–63, 2019.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Xiaofeng Wu, Velibor Bojkovic, Bin Gu, Kun Suo, and Kai Zou. Ftbc: Forward temporal bias correction for optimizing ann-snn conversion, 2024. URL https://arxiv.org/abs/2403.18388.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Yujie Wu, Lei Deng, Guoqi Li, Jun Zhu, and Luping Shi. Spatio-temporal backpropagation for training high-performance spiking neural networks. Frontiers in neuroscience, 12:331, 2018.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Ruokai Yin, Youngeun Kim, Di Wu, and Priyadarshini Panda. Loas: Fully temporal-parallel dataflow for dual-sparse spiking neural networks, 2024. URL https://arxiv.org/abs/2407.14073.",
+"section": [
+"References"
+]
+}
+]
+},
+"2407.04620 - Learning to (Learn at Test Time) - RNNs with Expressive Hidden States.pdf": {
+"title": [
+"Learning to (Learn at Test Time): RNNs with Expressive Hidden States"
+],
+"firstPage": [
+"Learning to (Learn at Test Time): RNNs with Expressive Hidden States",
+"Yu Sun∗1, Xinhao Li∗2, Karan Dalal∗3, Jiarui Xu2, Arjun Vikram1, Genghan Zhang1, Yann Dubois1, Xinlei Chen†4, Xiaolong Wang†2, Sanmi Koyejo†1, Tatsunori Hashimoto†1, Carlos Guestrin†1 1 Stanford University 2 UC San Diego 3 UC Berkeley 4 Meta AI",
+"Abstract Self-attention performs well in long context but has quadratic complexity. Existing RNN layers have linear complexity, but their performance in long context is limited by the expressive power of their hidden states. We present a practical framework for instantiating sequence modeling layers with linear complexity and expressive hidden states. The key idea is to make the hidden state a machine learning model itself, and the update rule a step of self-supervised learning. Since the hidden state is updated by training even on test sequences, our layers are called Test-Time Training (TTT) layers. We consider two instantiations: TTT-Linear and TTT-MLP, whose hidden state is a linear model and a two-layer MLP respectively. We evaluate our instantiations at the scale of 125M to 1.3B parameters, comparing with a strong Transformer and Mamba, a modern RNN. Similar to Transformer, TTT-Linear and TTT-MLP can keep reducing perplexity by conditioning on more tokens, while Mamba cannot after 16k context. TTT-MLP still faces challenges in memory I/O, but shows larger potential in long context, pointing to a promising direction for future research.",
+"Output tokens Output rule",
+"Hidden state ...",
+"Update rule",
+"Input tokens",
+"Figure 1. All sequence modeling layers can be expressed as a hidden state that transitions according to an update rule. Our key idea is to make the hidden state itself a model f with weights W , and the update rule a gradient step on the self-supervised loss ℓ. Therefore, updating the hidden state on a test sequence is equivalent to training the model f at test time. This process, known as Test-Time Training (TTT), is programmed into our TTT layers."
+],
+"references": [
+{
+"page": 20,
+"text": "[1] Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, et al. Gpt-4 technical report. arXiv preprint arXiv:2303.08774, 2023.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[2] Marcin Andrychowicz, Misha Denil, Sergio Gomez, Matthew W Hoffman, David Pfau, Tom",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "Schaul, Brendan Shillingford, and Nando De Freitas. Learning to learn by gradient descent by gradient descent. Advances in neural information processing systems, 29, 2016.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[3] Authors Guild. You just found out your book was used to train ai. now what?, 2023. Accessed:",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "2024-06-24. [4] Maximilian Beck, Korbinian Pöppel, Markus Spanring, Andreas Auer, Oleksandra Prudnikova,",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "Michael Kopp, Günter Klambauer, Johannes Brandstetter, and Sepp Hochreiter. xlstm: Extended long short-term memory. arXiv preprint arXiv:2405.04517, 2024.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[5] Yoshua Bengio, Samy Bengio, and Jocelyn Cloutier. Learning a synaptic learning rule. Citeseer,",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "1990. [6] Hermanus Josephus Bierens. The nadaraya-watson kernel regression function estimator. (Serie",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "Research Memoranda; No. 1988-58). Faculty of Economics and Business Administration, Vrije Universiteit Amsterdam., 1988.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[7] Christopher M Bishop and Nasser M Nasrabadi. Pattern recognition and machine learning,",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "volume 4. Springer, 2006. [8] Sid Black, Stella Biderman, Eric Hallahan, Quentin Anthony, Leo Gao, Laurence Golding,",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "Horace He, Connor Leahy, Kyle McDonell, Jason Phang, et al. Gpt-neox-20b: An open-source autoregressive language model. arXiv preprint arXiv:2204.06745, 2022.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[9] Léon Bottou and Vladimir Vapnik. Local learning algorithms. Neural computation, 4(6):888–900,",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "1992. [10] Leo Breiman, William Meisel, and Edward Purcell. Variable kernel estimates of multivariate",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "densities. Technometrics, 19(2):135–144, 1977. [11] Zongwu Cai. Weighted nadaraya–watson regression estimation. Statistics & probability letters,",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "51(3):307–318, 2001. [12] Tianqi Chen, Bing Xu, Chiyuan Zhang, and Carlos Guestrin. Training deep nets with sublinear",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "memory cost, 2016. [13] Xinlei Chen, Haoqi Fan, Ross Girshick, and Kaiming He. Improved baselines with momentum",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "contrastive learning. arXiv preprint arXiv:2003.04297, 2020. [14] Yen-Chi Chen. A tutorial on kernel density estimation and recent advances. Biostatistics &",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "Epidemiology, 1(1):161–187, 2017. [15] Kevin Clark, Kelvin Guu, Ming-Wei Chang, Panupong Pasupat, Geoffrey Hinton, and Moham-",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "mad Norouzi. Meta-learning fast weight language models. arXiv preprint arXiv:2212.02475, 2022.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[16] Ronan Collobert, Fabian Sinz, Jason Weston, Léon Bottou, and Thorsten Joachims. Large scale",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "transductive svms. Journal of Machine Learning Research, 7(8), 2006. [17] Tri Dao and Albert Gu. Transformers are ssms: Generalized models and efficient algorithms",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "through structured state space duality. arXiv preprint arXiv:2405.21060, 2024.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "20",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[18] Soham De, Samuel L Smith, Anushan Fernando, Aleksandar Botev, George Cristian-Muraru,",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "Albert Gu, Ruba Haroun, Leonard Berrada, Yutian Chen, Srivatsan Srinivasan, et al. Griffin: Mixing gated linear recurrences with local attention for efficient language models. arXiv preprint arXiv:2402.19427, 2024.",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[19] Harm de Vries. In the long (context) run, 2023. Accessed: 2024-06-24. [20] Jerome A Feldman. Dynamic connections in neural networks. Biological cybernetics, 46(1):27–39,",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "1982. [21] Chelsea Finn, Pieter Abbeel, and Sergey Levine. Model-agnostic meta-learning for fast adapta-",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "tion of deep networks. In International conference on machine learning, pages 1126–1135. PMLR, 2017.",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[22] A. Gammerman, V. Vovk, and V. Vapnik. Learning by transduction. In In Uncertainty in",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "Artificial Intelligence, pages 148–155. Morgan Kaufmann, 1998. [23] Yossi Gandelsman, Yu Sun, Xinlei Chen, and Alexei A. Efros. Test-time training with masked",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "autoencoders. Advances in Neural Information Processing Systems, 2022. [24] Leo Gao, Stella Biderman, Sid Black, Laurence Golding, Travis Hoppe, Charles Foster, Jason",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "Phang, Horace He, Anish Thite, Noa Nabeshima, Shawn Presser, and Connor Leahy. The pile: An 800gb dataset of diverse text for language modeling, 2020.",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[25] Xinyang Geng. EasyLM: A Simple And Scalable Training Framework for Large Language",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "Models. https://github.com/young-geng/EasyLM, mar 2023. https://github.com/",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[26] Riccardo Grazzi, Julien Siems, Arber Zela, Jörg KH Franke, Frank Hutter, and Massimiliano",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "Pontil. Unlocking state-tracking in linear rnns through negative eigenvalues. International Conference on Learning Representations (ICLR), 2024.",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[27] Albert Gu and Tri Dao. Mamba: Linear-time sequence modeling with selective state spaces.",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "arXiv preprint arXiv:2312.00752, 2023. [28] Nicklas Hansen, Rishabh Jangir, Yu Sun, Guillem Alenyà, Pieter Abbeel, Alexei A Efros, Lerrel",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "Pinto, and Xiaolong Wang. Self-supervised policy adaptation during deployment. arXiv preprint arXiv:2007.04309, 2020.",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[29] Moritz Hardt and Yu Sun. Test-time training on nearest neighbors for large language models.",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "arXiv preprint arXiv:2305.18466, 2023. [30] Horace He. Strangely, matrix multiplications on gpus run faster when given \"predictable\" data!",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[short], 2024. Accessed: 2024-06-30. [31] Dan Hendrycks and Kevin Gimpel. Gaussian error linear units (gelus). arXiv preprint",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[32] Geoffrey E Hinton and David C Plaut. Using fast weights to deblur old memories. In Proceedings",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "of the ninth annual conference of the Cognitive Science Society, pages 177–186, 1987. [33] Sepp Hochreiter and Jürgen Schmidhuber. Long short-term memory. Neural computation,",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "9(8):1735–1780, 1997. [34] Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch, Elena Buchatskaya, Trevor Cai, Eliza",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "Rutherford, Diego de Las Casas, Lisa Anne Hendricks, Johannes Welbl, Aidan Clark, Tom Hennigan, Eric Noland, Katie Millican, George van den Driessche, Bogdan Damoc, Aurelia Guy, Simon Osindero, Karen Simonyan, Erich Elsen, Jack W. Rae, Oriol Vinyals, and Laurent Sifre. Training compute-optimal large language models, 2022.",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "21",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[35] Kazuki Irie, Róbert Csordás, and Jürgen Schmidhuber. The dual form of neural networks",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "revisited: Connecting test time predictions to training patterns via spotlights of attention. In International Conference on Machine Learning, pages 9639–9659. PMLR, 2022.",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[36] Kazuki Irie, Róbert Csordás, and Jürgen Schmidhuber. Practical computational power of",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "linear transformers and their recurrent and self-referential extensions. Conference on Empirical Methods in Natural Language Processing (EMNLP), 2023.",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[37] Kazuki Irie, Francesco Faccio, and Jürgen Schmidhuber. Neural differential equations for",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "learning to program neural nets through continuous learning rules. Advances in Neural Information Processing Systems, 35:38614–38628, 2022.",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[38] Kazuki Irie, Imanol Schlag, Róbert Csordás, and Jürgen Schmidhuber. Going beyond linear",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "transformers with recurrent fast weight programmers. Advances in Neural Information Processing Systems, 34:7703–7717, 2021.",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[39] Kazuki Irie, Imanol Schlag, Róbert Csordás, and Jürgen Schmidhuber. A modern self-referential",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "weight matrix that learns to modify itself. In International Conference on Machine Learning, pages 9660–9677. PMLR, 2022.",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[40] Kazuki Irie and Jürgen Schmidhuber. Images as weight matrices: Sequential image generation",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "through synaptic learning rules. International Conference on Learning Representations (ICLR), 2022.",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[41] Vidit Jain and Erik Learned-Miller. Online domain adaptation of a pre-trained cascade of",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "classifiers. In CVPR 2011, pages 577–584. IEEE, 2011. [42] Thorsten Joachims. Learning to classify text using support vector machines, volume 668. Springer",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "Science & Business Media, 2002. [43] Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B Brown, Benjamin Chess, Rewon Child,",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "Scott Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. Scaling laws for neural language models. arXiv preprint arXiv:2001.08361, 2020.",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[44] Angelos Katharopoulos, Apoorv Vyas, Nikolaos Pappas, and François Fleuret. Transformers",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "are rnns: Fast autoregressive transformers with linear attention. In International conference on machine learning, pages 5156–5165. PMLR, 2020.",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[45] Diederik P Kingma and Jimmy Ba. Adam: A method for stochastic optimization. arXiv preprint",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[46] Louis Kirsch and Jürgen Schmidhuber. Meta learning backpropagation and improving it.",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "Advances in Neural Information Processing Systems, 34:14122–14134, 2021. [47] Ben Krause, Emmanuel Kahembwe, Iain Murray, and Steve Renals. Dynamic evaluation of",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "neural sequence models. In International Conference on Machine Learning, pages 2766–2775. PMLR, 2018.",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[48] Ben Krause, Emmanuel Kahembwe, Iain Murray, and Steve Renals. Dynamic evaluation of",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "transformer language models. arXiv preprint arXiv:1904.08378, 2019. [49] Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "Gonzalez, Hao Zhang, and Ion Stoica. Efficient memory management for large language model serving with pagedattention. In Proceedings of the 29th Symposium on Operating Systems Principles, pages 611–626, 2023.",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[50] Brenden M Lake, Tomer D Ullman, Joshua B Tenenbaum, and Samuel J Gershman. Building",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "machines that learn and think like people. Behavioral and brain sciences, 40:e253, 2017.",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "22",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "[51] Quoc V Le. Building high-level features using large scale unsupervised learning. In 2013 IEEE",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "international conference on acoustics, speech and signal processing, pages 8595–8598. IEEE, 2013. [52] Hao Liu, Wilson Yan, Matei Zaharia, and Pieter Abbeel. World model on million-length video",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "and language with blockwise ringattention. arXiv preprint arXiv:2402.08268, 2024. [53] Xuan Luo, Jia-Bin Huang, Richard Szeliski, Kevin Matzen, and Johannes Kopf. Consistent",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "video depth estimation. ACM Transactions on Graphics (ToG), 39(4):71–1, 2020. [54] Dougal Maclaurin, David Duvenaud, and Ryan Adams. Gradient-based hyperparameter",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "optimization through reversible learning. In International conference on machine learning, pages 2113–2122. PMLR, 2015.",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "[55] Luke Metz, Niru Maheswaranathan, Brian Cheung, and Jascha Sohl-Dickstein. Meta-learning",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "update rules for unsupervised representation learning. arXiv preprint arXiv:1804.00222, 2018. [56] Ravi Teja Mullapudi, Steven Chen, Keyi Zhang, Deva Ramanan, and Kayvon Fatahalian. Online",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "model distillation for efficient video inference. arXiv preprint arXiv:1812.02699, 2018. [57] F. Pedregosa, G. Varoquaux, A. Gramfort, V. Michel, B. Thirion, O. Grisel, M. Blondel, P. Pret-",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "tenhofer, R. Weiss, V. Dubourg, J. Vanderplas, A. Passos, D. Cournapeau, M. Brucher, M. Perrot, and E. Duchesnay. Scikit-learn: Machine learning in Python. Journal of Machine Learning Research, 12:2825–2830, 2011.",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "[58] Bo Peng, Eric Alcaide, Quentin Anthony, Alon Albalak, Samuel Arcadinho, Stella Biderman,",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "Huanqi Cao, Xin Cheng, Michael Chung, Matteo Grella, et al. Rwkv: Reinventing rnns for the transformer era. arXiv preprint arXiv:2305.13048, 2023.",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "[59] Bo Peng, Daniel Goldstein, Quentin Anthony, Alon Albalak, Eric Alcaide, Stella Biderman,",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "Eugene Cheah, Teddy Ferdinan, Haowen Hou, Przemysław Kazienko, et al. Eagle and finch: Rwkv with matrix-valued states and dynamic recurrence. arXiv preprint arXiv:2404.05892, 2024.",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "[60] Zhen Qin, Xiaodong Han, Weixuan Sun, Dongxu Li, Lingpeng Kong, Nick Barnes, and Yiran",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "Zhong. The devil in linear transformer. arXiv preprint arXiv:2210.10340, 2022. [61] Frank Rosenblatt. The perceptron: a probabilistic model for information storage and organiza-",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "tion in the brain. Psychological review, 65(6):386, 1958. [62] Imanol Schlag, Kazuki Irie, and Jürgen Schmidhuber. Linear transformers are secretly fast",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "weight programmers. In International Conference on Machine Learning, pages 9355–9366. PMLR, 2021.",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "[63] Imanol Schlag, Tsendsuren Munkhdalai, and Jürgen Schmidhuber. Learning associative",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "inference using fast weight memory. arXiv preprint arXiv:2011.07831, 2020. [64] Jürgen Schmidhuber. Evolutionary principles in self-referential learning, or on learning how to",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "learn: the meta-meta-... hook. PhD thesis, Technische Universität München, 1987. [65] Jürgen Schmidhuber. Learning to control fast-weight memories: An alternative to dynamic",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "recurrent networks. Neural Computation, 4(1):131–139, 1992. [66] Noam Shazeer. Glu variants improve transformer, 2020. [67] Sam Shleifer, Jason Weston, and Myle Ott. Normformer: Improved transformer pretraining",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "with extra normalization. arXiv preprint arXiv:2110.09456, 2021.",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "23",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "[68] Assaf Shocher, Nadav Cohen, and Michal Irani. “zero-shot” super-resolution using deep inter-",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "nal learning. In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, pages 3118–3126, 2018.",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "[69] Jianlin Su, Yu Lu, Shengfeng Pan, Ahmed Murtadha, Bo Wen, and Yunfeng Liu. Roformer:",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "Enhanced transformer with rotary position embedding, 2023. [70] Yu Sun, Xinhao Li, Karan Dalal, Chloe Hsu, Sanmi Koyejo, Carlos Guestrin, Xiaolong Wang,",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "Tatsunori Hashimoto, and Xinlei Chen. Learning to (learn at test time). arXiv preprint",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "[71] Yu Sun, Wyatt L Ubellacker, Wen-Loong Ma, Xiang Zhang, Changhao Wang, Noel V Csomay-",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "Shanklin, Masayoshi Tomizuka, Koushil Sreenath, and Aaron D Ames. Online learning of unknown dynamics for model-based controllers in legged locomotion. IEEE Robotics and Automation Letters, 6(4):8442–8449, 2021.",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "[72] Yu Sun, Xiaolong Wang, Zhuang Liu, John Miller, Alexei Efros, and Moritz Hardt. Test-time",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "training with self-supervision for generalization under distribution shifts. In International Conference on Machine Learning, pages 9229–9248. PMLR, 2020.",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "[73] Sebastian Thrun and Lorien Pratt. Learning to learn: Introduction and overview. In Learning",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "to learn, pages 3–17. Springer, 1998. [74] Tijmen Tieleman and Geoffrey Hinton. Using fast weights to improve persistent contrastive",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "divergence. In Proceedings of the 26th annual international conference on machine learning, pages 1033–1040, 2009.",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "[75] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei,",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, Dan Bikel, Lukas Blecher, Cristian Canton Ferrer, Moya Chen, Guillem Cucurull, David Esiobu, Jude Fernandes, Jeremy Fu, Wenyin Fu, Brian Fuller, Cynthia Gao, Vedanuj Goswami, Naman Goyal, Anthony Hartshorn, Saghar Hosseini, Rui Hou, Hakan Inan, Marcin Kardas, Viktor Kerkez, Madian Khabsa, Isabel Kloumann, Artem Korenev, Punit Singh Koura, Marie-Anne Lachaux, Thibaut Lavril, Jenya Lee, Diana Liskovich, Yinghai Lu, Yuning Mao, Xavier Martinet, Todor Mihaylov, Pushkar Mishra, Igor Molybog, Yixin Nie, Andrew Poulton, Jeremy Reizenstein, Rashi Rungta, Kalyan Saladi, Alan Schelten, Ruan Silva, Eric Michael Smith, Ranjan Subramanian, Xiaoqing Ellen Tan, Binh Tang, Ross Taylor, Adina Williams, Jian Xiang Kuan, Puxin Xu, Zheng Yan, Iliyan Zarov, Yuchen Zhang, Angela Fan, Melanie Kambadur, Sharan Narang, Aurelien Rodriguez, Robert Stojnic, Sergey Edunov, and Thomas Scialom. Llama 2: Open foundation and fine-tuned chat models, 2023.",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "[76] Vladimir Vapnik. The nature of statistical learning theory. Springer science & business media,",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "2013. [77] Pascal Vincent, Hugo Larochelle, Yoshua Bengio, and Pierre-Antoine Manzagol. Extracting and",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "composing robust features with denoising autoencoders. In ICML, page 1096–1103, 2008. [78] Christoph Von Der Malsburg. The correlation theory of brain function. In Models of neural",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "networks: Temporal aspects of coding and information processing in biological systems, pages 95–119. Springer, 1994.",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "[79] Renhao Wang, Yu Sun, Yossi Gandelsman, Xinlei Chen, Alexei A Efros, and Xiaolong Wang.",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "Test-time training on video streams. arXiv preprint arXiv:2307.05014, 2023. [80] Thomas Wolf, Lysandre Debut, Victor Sanh, Julien Chaumond, Clement Delangue, Anthony",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "Moi, Pierric Cistac, Tim Rault, Rémi Louf, Morgan Funtowicz, et al. Huggingface’s transformers: State-of-the-art natural language processing. arXiv preprint arXiv:1910.03771, 2019.",
+"section": [
+"References"
+]
+},
+{
+"page": 24,
+"text": "24",
+"section": [
+"References"
+]
+},
+{
+"page": 25,
+"text": "[81] Wenhan Xiong, Jingyu Liu, Igor Molybog, Hejia Zhang, Prajjwal Bhargava, Rui Hou, Louis",
+"section": [
+"References"
+]
+},
+{
+"page": 25,
+"text": "Martin, Rashi Rungta, Karthik Abinav Sankararaman, Barlas Oguz, Madian Khabsa, Han Fang, Yashar Mehdad, Sharan Narang, Kshitiz Malik, Angela Fan, Shruti Bhosale, Sergey Edunov, Mike Lewis, Sinong Wang, and Hao Ma. Effective long-context scaling of foundation models, 2023.",
+"section": [
+"References"
+]
+},
+{
+"page": 25,
+"text": "[82] Songlin Yang, Bailin Wang, Yikang Shen, Rameswar Panda, and Yoon Kim. Gated linear",
+"section": [
+"References"
+]
+},
+{
+"page": 25,
+"text": "attention transformers with hardware-efficient training. arXiv preprint arXiv:2312.06635, 2023. [83] Songlin Yang, Bailin Wang, Yu Zhang, Yikang Shen, and Yoon Kim. Parallelizing linear",
+"section": [
+"References"
+]
+},
+{
+"page": 25,
+"text": "transformers with the delta rule over sequence length. arXiv preprint arXiv:2406.06484, 2024. [84] Biao Zhang and Rico Sennrich. Root mean square layer normalization, 2019.",
+"section": [
+"References"
+]
+},
+{
+"page": 25,
+"text": "[85] Hao Zhang, Alexander C Berg, Michael Maire, and Jitendra Malik. Svm-knn: Discriminative",
+"section": [
+"References"
+]
+},
+{
+"page": 25,
+"text": "nearest neighbor classification for visual category recognition. In 2006 IEEE Computer Society Conference on Computer Vision and Pattern Recognition (CVPR’06), volume 2, pages 2126–2136. IEEE, 2006.",
+"section": [
+"References"
+]
+},
+{
+"page": 25,
+"text": "25",
+"section": [
+"References"
+]
+}
+]
+},
+"2504.13173 - It's All Connected - Test-Time Memorization and Online Optimization.pdf": {
+"title": [
+"1 Introduction"
+],
+"firstPage": [
+"It’s All Connected: A Journey Through Test-Time Memorization,",
+"Attentional Bias, Retention, and Online Optimization",
+"† † † †",
+"Ali Behrouz , Meisam Razaviyayn , Peilin Zhong , and Vahab Mirrokni",
+"† Google Research",
+"Abstract",
+"Designing efficient and effective architectural backbones has been in the core of research efforts to enhance the capability of foundation models. Inspired by the human cognitive phenomenon of attentional bias—the natural tendency to prioritize certain events or stimuli—we reconceptualize neural architectures, including Transformers, Titans, and modern linear recurrent neural networks as associative memory modules that learn a mapping of keys and values using an internal objective, referred to as attentional bias. Surprisingly, we observed that most existing sequence models leverage either (1) dot-product similarity, or (2) ℓ2 regression objectives as their attentional bias. Going beyond these objectives, we present a set of alternative attentional bias configurations along with their effective approximations to stabilize their training procedure. We then reinterpret forgetting mechanisms in modern deep learning architectures as a form of retention regularization, providing a novel set of forget gates for sequence models. Building upon these insights, we present Miras, a general framework to design deep learning architectures based on four choices of: (i) associative memory architecture, (ii) attentional bias objective, (iii) retention gate, and (iv) memory learning algorithm. We present three novel sequence models—Moneta, Yaad, and Memora—that go beyond the power of existing linear RNNs while maintaining a fast parallelizable training process. Our experiments show different design choices in Miras yield models with varying strengths. For example, certain instances of Miras achieve exceptional performance in special tasks such as language modeling, commonsense reasoning, and recall intensive tasks, even outperforming Transformers and other modern linear recurrent models."
+],
+"references": [
+{
+"page": 19,
+"text": "[1] Ali Behrouz, Parsa Delavari, and Farnoosh Hashemi. “Unsupervised Representation Learning of Brain Activity via",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "Bridging Voxel Activity and Functional Connectivity”. In: Forty-first International Conference on Machine Learning. 2024. url: https://openreview.net/forum?id=nOjZfpLyh1.",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[2] Ali Behrouz, Michele Santacatterina, and Ramin Zabih. “Mambamixer: Efficient selective state space models with",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "dual token and channel selection”. In: arXiv preprint arXiv:2403.19888 (2024). [3] Ali Behrouz, Peilin Zhong, and Vahab Mirrokni. “Titans: Learning to memorize at test time”. In: arXiv preprint",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[4] Alberto Bietti, Vivien Cabannes, Diane Bouchacourt, Herve Jegou, and Leon Bottou. “Birth of a transformer: A",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "memory viewpoint”. In: Advances in Neural Information Processing Systems 36 (2023), pp. 1560–1588. [5] Yonatan Bisk, Rowan Zellers, Jianfeng Gao, Yejin Choi, et al. “Piqa: Reasoning about physical commonsense in",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "natural language”. In: Proceedings of the AAAI conference on artificial intelligence. Vol. 34. 2020, pp. 7432–7439. [6] Leon Bottou and Vladimir Vapnik. “Local learning algorithms”. In: Neural computation 4.6 (1992), pp. 888–900. [7] Christopher Clark, Kenton Lee, Ming-Wei Chang, Tom Kwiatkowski, Michael Collins, and Kristina Toutanova.",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "“BoolQ: Exploring the Surprising Difficulty of Natural Yes/No Questions”. In: Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers). Ed. by Jill Burstein, Christy Doran, and Thamar Solorio. Minneapolis, Minnesota: Association for Computational Linguistics, June 2019, pp. 2924–2936. doi: 10.18653/v1/N19-1300. url: https:",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[8] Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord.",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "“Think you have solved question answering? try arc, the ai2 reasoning challenge”. In: arXiv preprint arXiv:1803.05457 (2018).",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[9] Imre Csiszar. “On information-type measure of difference of probability distributions and indirect observations”. In:",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "Studia Sci. Math. Hungar. 2 (1967), pp. 299–318. [10] Róbert Csordás, Christopher Potts, Christopher D Manning, and Atticus Geiger. “Recurrent Neural Networks Learn to",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "Store and Generate Sequences using Non-Linear Representations”. In: Proceedings of the 7th BlackboxNLP Workshop: Analyzing and Interpreting Neural Networks for NLP. 2024, pp. 248–262.",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[11] Karan Dalal, Daniel Koceja, Gashon Hussein, Jiarui Xu, Yue Zhao, Youjin Song, Shihao Han, Ka Chun Cheung,",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "Jan Kautz, Carlos Guestrin, et al. “One-Minute Video Generation with Test-Time Training”. In: arXiv preprint",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[12] Tri Dao and Albert Gu. “Transformers are SSMs: Generalized models and efficient algorithms through structured",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "state space duality”. In: arXiv preprint arXiv:2405.21060 (2024). [13] Soham De, Samuel L Smith, Anushan Fernando, Aleksandar Botev, George Cristian-Muraru, Albert Gu, Ruba Haroun,",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "Leonard Berrada, Yutian Chen, Srivatsan Srinivasan, et al. “Griffin: Mixing gated linear recurrences with local attention for efficient language models”. In: arXiv preprint arXiv:2402.19427 (2024).",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[14] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, Xiaohua Zhai, Thomas Unterthiner,",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "Mostafa Dehghani, Matthias Minderer, Georg Heigold, Sylvain Gelly, et al. “An image is worth 16x16 words: Transformers for image recognition at scale”. In: arXiv preprint arXiv:2010.11929 (2020).",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "[15] Yossi Gandelsman, Yu Sun, Xinlei Chen, and Alexei Efros. “Test-time training with masked autoencoders”. In:",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "Advances in Neural Information Processing Systems 35 (2022), pp. 29374–29385. [16] Xavier Gonzalez, Andrew Warrington, Jimmy Smith, and Scott Linderman. “Towards scalable and stable paralleliza-",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "tion of nonlinear rnns”. In: Advances in Neural Information Processing Systems 37 (2024), pp. 5817–5849. [17] Riccardo Grazzi, Julien Siems, Jörg KH Franke, Arber Zela, Frank Hutter, and Massimiliano Pontil. “Unlocking",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "state-tracking in linear rnns through negative eigenvalues”. In: arXiv preprint arXiv:2411.12537 (2024). [18] Klaus Greff, Rupesh K Srivastava, Jan Koutnk, Bas R Steunebrink, and Jürgen Schmidhuber. “LSTM: A search space",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "odyssey”. In: IEEE transactions on neural networks and learning systems 28.10 (2016), pp. 2222–2232. [19] Albert Gu and Tri Dao. “Mamba: Linear-Time Sequence Modeling with Selective State Spaces”. In: First Conference",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "on Language Modeling. 2024. url: https://openreview.net/forum?id=tEYskw1VY2. [20] Albert Gu, Karan Goel, and Christopher Re. “Efficiently Modeling Long Sequences with Structured State Spaces”.",
+"section": [
+"References"
+]
+},
+{
+"page": 19,
+"text": "In: International Conference on Learning Representations. 2022. url: https : / / openreview . net / forum ? id =",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[21] Ramin Hasani, Mathias Lechner, Tsun-Hsuan Wang, Makram Chahine, Alexander Amini, and Daniela Rus. “Liquid",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "Structural State-Space Models”. In: The Eleventh International Conference on Learning Representations. 2023. url: https://openreview.net/forum?id=g4OTKRKfS7R.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[22] Trevor Hastie, Robert Tibshirani, Jerome Friedman, et al. The elements of statistical learning. 2009. [23] Elad Hazan et al. “Introduction to online convex optimization”. In: Foundations and Trends® in Optimization 2.3-4",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "(2016), pp. 157–325. [24] Donald Olding Hebb. The organization of behavior: A neuropsychological theory. Psychology press, 2005. [25] Dan Hendrycks and Kevin Gimpel. “Gaussian error linear units (gelus)”. In: arXiv preprint arXiv:1606.08415 (2016). [26] Donald E Hilt and Donald W Seegrist. Ridge, a computer program for calculating ridge regression estimates. Vol. 236.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "Department of Agriculture, Forest Service, Northeastern Forest Experiment . . ., 1977. [27] Arthur E Hoerl and Robert W Kennard. “Ridge regression: applications to nonorthogonal problems”. In: Technometrics",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "12.1 (1970), pp. 69–82. [28] John J Hopfield. “Neural networks and physical systems with emergent collective computational abilities.” In:",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "Proceedings of the national academy of sciences 79.8 (1982), pp. 2554–2558. [29] Cheng-Ping Hsieh, Simeng Sun, Samuel Kriman, Shantanu Acharya, Dima Rekesh, Fei Jia, and Boris Ginsburg.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "“RULER: What’s the Real Context Size of Your Long-Context Language Models?” In: First Conference on Language Modeling. 2024. url: https://openreview.net/forum?id=kIoBbc76Sy.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[30] Jerry Yao-Chieh Hu, Dennis Wu, and Han Liu. “Provably optimal memory capacity for modern hopfield models:",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "Transformer-compatible dense associative memories as spherical codes”. In: arXiv preprint arXiv:2410.23126 (2024). [31] Peter J Huber. “Robust estimation of a location parameter”. In: Breakthroughs in statistics: Methodology and distribution.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "Springer, 1992, pp. 492–518. [32] Kazuki Irie, Robert Csordas, and Jürgen Schmidhuber. “Practical computational power of linear transformers and",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "their recurrent and self-referential extensions”. In: arXiv preprint arXiv:2310.16076 (2023). [33] Kazuki Irie, Imanol Schlag, Robert Csordas, and Jurgen Schmidhuber. “Going beyond linear transformers with",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "recurrent fast weight programmers”. In: Advances in neural information processing systems 34 (2021), pp. 7703–7717. [34] Vidit Jain and Erik Learned-Miller. “Online domain adaptation of a pre-trained cascade of classifiers”. In: CVPR 2011.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "IEEE. 2011, pp. 577–584. [35] Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B Brown, Benjamin Chess, Rewon Child, Scott Gray, Alec",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "Radford, Jeffrey Wu, and Dario Amodei. “Scaling laws for neural language models”. In: arXiv preprint arXiv:2001.08361 (2020).",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[36] M. Karami and V. Mirrokni. Lattice: Learning to Efficiently Compress the Memory. 2025. [37] Angelos Katharopoulos, Apoorv Vyas, Nikolaos Pappas, and François Fleuret. “Transformers are rnns: Fast au-",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "toregressive transformers with linear attention”. In: International conference on machine learning. PMLR. 2020, pp. 5156–5165.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[38] Dmitry Krotov. “Hierarchical associative memory”. In: arXiv preprint arXiv:2107.06446 (2021). [39] Dmitry Krotov and John J Hopfield. “Dense associative memory for pattern recognition”. In: Advances in neural",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "information processing systems 29 (2016). [40] Aonian Li, Bangwei Gong, Bo Yang, Boji Shan, Chang Liu, Cheng Zhu, Chunhao Zhang, Congchao Guo, Da Chen,",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "Dong Li, et al. “Minimax-01: Scaling foundation models with lightning attention”. In: arXiv preprint arXiv:2501.08313 (2025).",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[41] Chengxuan Li, Di Huang, Zeyu Lu, Yang Xiao, Qingqi Pei, and Lei Bai. “A survey on long video generation: Challenges,",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "methods, and prospects”. In: arXiv preprint arXiv:2403.16407 (2024). [42] Xiaoyu Li, Yuanpeng Li, Yingyu Liang, Zhenmei Shi, and Zhao Song. “On the expressive power of modern hopfield",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "networks”. In: arXiv preprint arXiv:2412.05562 (2024). [43] Yi Heng Lim, Qi Zhu, Joshua Selfridge, and Muhammad Firmansyah Kasim. “Parallelizing non-linear sequential",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "models over the sequence length”. In: The Twelfth International Conference on Learning Representations. 2024. url: https://openreview.net/forum?id=E34AlVLN0v.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[44] Bo Liu, Rui Wang, Lemeng Wu, Yihao Feng, Peter Stone, and Qiang Liu. “Longhorn: State space models are amortized",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "online learners”. In: arXiv preprint arXiv:2407.14207 (2024). [45] Nelson F Liu, Kevin Lin, John Hewitt, Ashwin Paranjape, Michele Bevilacqua, Fabio Petroni, and Percy Liang. “Lost in",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "the middle: How language models use long contexts”. In: Transactions of the Association for Computational Linguistics 12 (2024), pp. 157–173.",
+"section": [
+"References"
+]
+},
+{
+"page": 20,
+"text": "[46] Elizabeth F Loftus. “The reality of repressed memories.” In: American psychologist 48.5 (1993), p. 518.",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[47] Carlo Lucibello and Marc Mézard. “Exponential capacity of dense associative memories”. In: Physical Review Letters",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "132.7 (2024), p. 077301. [48] Julien Mairal. “Incremental majorization-minimization optimization with application to large-scale machine learning”.",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "In: SIAM Journal on Optimization 25.2 (2015), pp. 829–855. [49] Harsh Mehta, Ankit Gupta, Ashok Cutkosky, and Behnam Neyshabur. “Long Range Language Modeling via Gated",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "State Spaces”. In: The Eleventh International Conference on Learning Representations. 2023. url: https://openreview.",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[50] Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher. “Pointer Sentinel Mixture Models”. In:",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "International Conference on Learning Representations. 2017. url: https://openreview.net/forum?id=Byj72udxe. [51] William Merrill, Jackson Petty, and Ashish Sabharwal. “The Illusion of State in State-Space Models”. In: Forty-first",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "International Conference on Machine Learning. 2024. url: https://openreview.net/forum?id=QZgo9JZpLq. [52] Ravi Teja Mullapudi, Steven Chen, Keyi Zhang, Deva Ramanan, and Kayvon Fatahalian. “Online model distillation",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "for efficient video inference”. In: Proceedings of the IEEE/CVF International conference on computer vision. 2019, pp. 3573–3582.",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[53] Tsendsuren Munkhdalai, Alessandro Sordoni, Tong Wang, and Adam Trischler. “Metalearned neural memory”. In:",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "Advances in Neural Information Processing Systems 32 (2019). [54] Tsendsuren Munkhdalai and Hong Yu. “Neural semantic encoders”. In: Proceedings of the conference. Association for",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "Computational Linguistics. Meeting. Vol. 1. NIH Public Access. 2017, p. 397. [55] Daniel Neil, Jun Haeng Lee, Tobi Delbruck, and Shih-Chii Liu. “Delta networks for optimized recurrent network",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "computation”. In: International conference on machine learning. PMLR. 2017, pp. 2584–2593. [56] Hideyuki Okano, Tomoo Hirano, and Evan Balaban. “Learning and memory”. In: Proceedings of the National Academy",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "of Sciences 97.23 (2000), pp. 12403–12404. [57] Antonio Orvieto, Samuel L Smith, Albert Gu, Anushan Fernando, Caglar Gulcehre, Razvan Pascanu, and Soham De.",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "“Resurrecting recurrent neural networks for long sequences”. In: International Conference on Machine Learning. PMLR. 2023, pp. 26670–26698.",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[58] Denis Paperno, German Kruszewski, Angeliki Lazaridou, Ngoc Quan Pham, Raffaella Bernardi, Sandro Pezzelle,",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "Marco Baroni, Gemma Boleda, and Raquel Fernandez. “The LAMBADA dataset: Word prediction requiring a broad discourse context”. In: Proceedings of the 54th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers). Ed. by Katrin Erk and Noah A. Smith. Berlin, Germany: Association for Computational Linguistics, Aug. 2016, pp. 1525–1534. doi: 10.18653/v1/P16-1144. url: https://aclanthology.org/P16-1144/.",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[59] Guilherme Penedo, Hynek Kydlcek, Loubna Ben allal, Anton Lozhkov, Margaret Mitchell, Colin Raffel, Leandro",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "Von Werra, and Thomas Wolf. “The FineWeb Datasets: Decanting the Web for the Finest Text Data at Scale”. In: The Thirty-eight Conference on Neural Information Processing Systems Datasets and Benchmarks Track. 2024. url: https://openreview.net/forum?id=n6SCkn2QaG.",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[60] Bo Peng, Eric Alcaide, Quentin Gregory Anthony, Alon Albalak, Samuel Arcadinho, Stella Biderman, Huanqi Cao,",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "Xin Cheng, Michael Nguyen Chung, Leon Derczynski, Xingjian Du, Matteo Grella, Kranthi Kiran GV, Xuzheng He, Haowen Hou, Przemyslaw Kazienko, Jan Kocon, Jiaming Kong, Bartłomiej Koptyra, Hayden Lau, Jiaju Lin, Krishna Sri Ipsit Mantri, Ferdinand Mom, Atsushi Saito, Guangyu Song, Xiangru Tang, Johan S. Wind, Stanisław Wozniak, Zhenyuan Zhang, Qinghua Zhou, Jian Zhu, and Rui-Jie Zhu. “RWKV: Reinventing RNNs for the Transformer Era”. In: The 2023 Conference on Empirical Methods in Natural Language Processing. 2023. url: https://openreview.net/",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[61] Bo Peng, Daniel Goldstein, Quentin Anthony, Alon Albalak, Eric Alcaide, Stella Biderman, Eugene Cheah, Xingjian",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "Du, Teddy Ferdinan, Haowen Hou, et al. “Eagle and finch: Rwkv with matrix-valued states and dynamic recurrence”. In: arXiv preprint arXiv:2404.05892 (2024).",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[62] Bo Peng, Ruichong Zhang, Daniel Goldstein, Eric Alcaide, Haowen Hou, Janna Lu, William Merrill, Guangyu Song,",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "Kaifeng Tan, Saiteja Utpala, et al. “RWKV-7\" Goose\" with Expressive Dynamic State Evolution”. In: arXiv preprint",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[63] Bo Peng, Ruichong Zhang, Daniel Goldstein, Eric Alcaide, Haowen Hou, Janna Lu, William Merrill, Guangyu Song,",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "Kaifeng Tan, Saiteja Utpala, et al. “Rwkv-7\" goose\" with expressive dynamic state evolution”. In: arXiv preprint",
+"section": [
+"References"
+]
+},
+{
+"page": 21,
+"text": "[64] Yury Polyanskiy and Yihong Wu. Information theory: From coding to learning. Cambridge university press, 2025. [65] DL Prados and SC Kak. “Neural network capacity using delta rule”. In: Electronics Letters 25.3 (1989), pp. 197–199.",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[66] Zhen Qin, Songlin Yang, Weixuan Sun, Xuyang Shen, Dong Li, Weigao Sun, and Yiran Zhong. “HGRN2: Gated Linear",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "RNNs with State Expansion”. In: First Conference on Language Modeling. 2024. url: https://openreview.net/",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[67] Colin Raffel, Noam Shazeer, Adam Roberts, Katherine Lee, Sharan Narang, Michael Matena, Yanqi Zhou, Wei Li, and",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "Peter J Liu. “Exploring the limits of transfer learning with a unified text-to-text transformer”. In: Journal of machine learning research 21.140 (2020), pp. 1–67.",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[68] Hubert Ramsauer, Bernhard Schäfl, Johannes Lehner, Philipp Seidl, Michael Widrich, Lukas Gruber, Markus Holzleit-",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "ner, Thomas Adler, David Kreil, Michael K Kopp, Günter Klambauer, Johannes Brandstetter, and Sepp Hochreiter. “Hopfield Networks is All You Need”. In: International Conference on Learning Representations. 2021. url: https:",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[69] Meisam Razaviyayn, Mingyi Hong, and Zhi-Quan Luo. “A unified convergence analysis of block successive mini-",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "mization methods for nonsmooth optimization”. In: SIAM Journal on Optimization 23.2 (2013), pp. 1126–1153. [70] Liliang Ren, Yang Liu, Yadong Lu, Yelong Shen, Chen Liang, and Weizhu Chen. “Samba: Simple Hybrid State Space",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "Models for Efficient Unlimited Context Language Modeling”. In: arXiv preprint arXiv:2406.07522 (2024). [71] Lee T Robertson. “Memory and the brain”. In: Journal of dental education 66.1 (2002), pp. 30–42. [72] Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi. “Winogrande: An adversarial winograd",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "schema challenge at scale”. In: Communications of the ACM 64.9 (2021), pp. 99–106. [73] Imanol Schlag, Kazuki Irie, and Jürgen Schmidhuber. “Linear transformers are secretly fast weight programmers”. In:",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "International Conference on Machine Learning. PMLR. 2021, pp. 9355–9366. [74] JH Schmidhuber. “Learning to control fast-weight memories: An alternative to recurrent nets. Accepted for publication",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "in”. In: Neural Computation (1992). [75] Jürgen Schmidhuber. “Reducing the ratio between learning complexity and number of time varying variables in fully",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "recurrent nets”. In: ICANN’93: Proceedings of the International Conference on Artificial Neural Networks Amsterdam, The Netherlands 13–16 September 1993 3. Springer. 1993, pp. 460–463.",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[76] Jürgen Schmidhuber and Sepp Hochreiter. “Long Short-term Memory”. In: Neural Computation MIT-Press (1997). [77] Mark Schöne, Babak Rahmani, Heiner Kremer, Fabian Falck, Hitesh Ballani, and Jannes Gladrow. “Implicit Language",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "Models are RNNs: Balancing Parallelization and Expressivity”. In: arXiv preprint arXiv:2502.07827 (2025). [78] Shai Shalev-Shwartz et al. “Online learning and online convex optimization”. In: Foundations and Trends® in Machine",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "Learning 4.2 (2012), pp. 107–194. [79] Julien Siems, Timur Carstensen, Arber Zela, Frank Hutter, Massimiliano Pontil, and Riccardo Grazzi. “DeltaProduct:",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "Increasing the Expressivity of DeltaNet Through Products of Householders”. In: arXiv preprint arXiv:2502.10297 (2025).",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[80] Jimmy T.H. Smith, Andrew Warrington, and Scott Linderman. “Simplified State Space Layers for Sequence Modeling”.",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "In: The Eleventh International Conference on Learning Representations. 2022. url: https://openreview.net/forum?",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[81] Jimmy T.H. Smith, Andrew Warrington, and Scott Linderman. “Simplified State Space Layers for Sequence Modeling”.",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "In: The Eleventh International Conference on Learning Representations. 2023. url: https://openreview.net/forum?",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[82] Jianlin Su, Murtadha Ahmed, Yu Lu, Shengfeng Pan, Wen Bo, and Yunfeng Liu. “Roformer: Enhanced transformer",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "with rotary position embedding”. In: Neurocomputing 568 (2024), p. 127063. [83] Yu Sun, Xinhao Li, Karan Dalal, Jiarui Xu, Arjun Vikram, Genghan Zhang, Yann Dubois, Xinlei Chen, Xiaolong",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "Wang, Sanmi Koyejo, et al. “Learning to (learn at test time): Rnns with expressive hidden states”. In: arXiv preprint",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[84] Yutao Sun, Li Dong, Shaohan Huang, Shuming Ma, Yuqing Xia, Jilong Xue, Jianyong Wang, and Furu Wei. “Retentive",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "network: A successor to transformer for large language models”. In: arXiv preprint arXiv:2307.08621 (2023). [85] W Scott Terry. Learning and memory: Basic principles, processes, and procedures. Routledge, 2017.",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[86] Robert Tibshirani. “Regression shrinkage and selection via the lasso”. In: Journal of the Royal Statistical Society Series",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "B: Statistical Methodology 58.1 (1996), pp. 267–288. [87] Matteo Tiezzi, Michele Casoni, Alessandro Betti, Tommaso Guidi, Marco Gori, and Stefano Melacci. “On the",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "resurgence of recurrent models for long sequences: Survey and research opportunities in the transformer era”. In: arXiv preprint arXiv:2402.08132 (2024).",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "[88] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne Lachaux, Timothee Lacroix, Baptiste",
+"section": [
+"References"
+]
+},
+{
+"page": 22,
+"text": "Rozière, Naman Goyal, Eric Hambro, Faisal Azhar, et al. “Llama: Open and efficient foundation language models”. In: arXiv preprint arXiv:2302.13971 (2023).",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "[89] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "Illia Polosukhin. “Attention is All you Need”. In: Advances in Neural Information Processing Systems. Vol. 30. Curran Associates, Inc., 2017. url: https://proceedings.neurips.cc/paper_files/paper/2017/file/",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "[90] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "Polosukhin. “Attention is All you Need”. In: Advances in Neural Information Processing Systems. Ed. by I. Guyon, U. Von Luxburg, S. Bengio, H. Wallach, R. Fergus, S. Vishwanathan, and R. Garnett. Vol. 30. Curran Associates, Inc., 2017. url: https://proceedings.neurips.cc/paper_files/paper/2017/file/3f5ee243547dee91fbd053c1c4a845aa-",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "[91] Johannes Von Oswald, Maximilian Schlegel, Alexander Meulemans, Seijin Kobayashi, Eyvind Niklasson, Nicolas",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "Zucchet, Nino Scherrer, Nolan Miller, Mark Sandler, Max Vladymyrov, et al. “Uncovering mesa-optimization algorithms in transformers”. In: arXiv preprint arXiv:2309.05858 (2023).",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "[92] Ke Alexander Wang, Jiaxin Shi, and Emily B Fox. “Test-time regression: a unifying framework for designing sequence",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "models with associative memory”. In: arXiv preprint arXiv:2501.12352 (2025). [93] Yingheng Wang, Zichen Wang, Gil Sadeh, Luca Zancato, Alessandro Achille, George Karypis, and Huzefa Rangwala.",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "“Long-context Protein Language Model”. In: bioRxiv (2024), pp. 2024–10. [94] Songlin Yang, Jan Kautz, and Ali Hatamizadeh. “Gated Delta Networks: Improving Mamba2 with Delta Rule”. In:",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "arXiv preprint arXiv:2412.06464 (2024). [95] Songlin Yang, Bailin Wang, Yikang Shen, Rameswar Panda, and Yoon Kim. “Gated Linear Attention Transformers",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "with Hardware-Efficient Training”. In: Forty-first International Conference on Machine Learning. 2024. url: https:",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "[96] Songlin Yang, Bailin Wang, Yu Zhang, Yikang Shen, and Yoon Kim. “Parallelizing linear transformers with the delta",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "rule over sequence length”. In: Advances in Neural Information Processing Systems 37 (2024), pp. 115491–115522. [97] Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. “HellaSwag: Can a Machine Really Finish",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "Your Sentence?” In: Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics. Ed. by Anna Korhonen, David Traum, and Lluis Marquez. Florence, Italy: Association for Computational Linguistics, July 2019, pp. 4791–4800. doi: 10.18653/v1/P19-1472. url: https://aclanthology.org/P19-1472/.",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "[98] Biao Zhang and Rico Sennrich. “Root mean square layer normalization”. In: Advances in Neural Information Processing",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "Systems 32 (2019). [99] Hao Zhang, Alexander C Berg, Michael Maire, and Jitendra Malik. “SVM-KNN: Discriminative nearest neighbor",
+"section": [
+"References"
+]
+},
+{
+"page": 23,
+"text": "classification for visual category recognition”. In: 2006 IEEE Computer Society Conference on Computer Vision and Pattern Recognition (CVPR’06). Vol. 2. IEEE. 2006, pp. 2126–2136.",
+"section": [
+"References"
+]
+}
+]
+},
+"2605.04308 - Memory as a Markov Matrix.pdf": {
+"title": [
+"Memory as a Markov Matrix: Sample Efficient Knowledge Expansion via Token-to-Dictionary Mapping"
+],
+"firstPage": [
+"Memory as a Markov Matrix: Sample Efficient Knowledge Expansion via Token-to-Dictionary Mapping",
+"Kaustubh Pethkar1 Ziyang Xiong2 Zuofeng Shang1 Yingcong Li1",
+"1New Jersey Institute of Technology 2University of California, Berkeley",
+"Abstract",
+"Continual incorporation of new knowledge is essential for the long-term evolution of large language models (LLMs). Existing approaches typically rely on parameter-update algorithms to mitigate catastrophic forgetting, yet they suffer from fundamental limitations: 1) forgetting is unavoidable as the amount of newly injected knowledge grows; and 2) model updates are often irreversible. As modern LLMs become increasingly expressive, it is natural to question whether large-scale weight updates are necessary for acquiring a small amount of new knowledge. In this work, we propose a principled framework that models autoregressive language generation as a Markov process over tokens, where model memory is represented by a Markov transition matrix. Under this formulation, incorporating new knowledge/tokens corresponds to extending the state space, and preserving existing transitions guarantees retention of previously learned knowledge. We then prove a sample complexity bound for incorporating new tokens via a token-to-dictionary mapping strategy. In particular, for learning the transition behavior of each new token, the required number of samples scales linearly with the number of existing tokens it is mapped to. To realize this mapping, we propose an embedding-tuning algorithm that requires minimal parameter updates and induces zero forgetting. Experimental results further demonstrate the effectiveness of our method and validate our theoretical findings.",
+"1 Introduction",
+"Large language models (LLMs) acquire extensive linguistic and factual knowledge during pretraining, yet adapting them to new vocabulary, entities, or domains remains challenging (Lewis et al., 2020; Muennighoff et al., 2023; Shi et al., 2025). Naïve fine-tuning methods often cause catastrophic forgetting, where previously learned behaviors degrade in continual learning without access to original data (Kirkpatrick et al., 2017; Lopez-Paz & Ranzato, 2017; Luo et al., 2025). Recent empirical studies confirm that this phenomenon persists even in state-of-the-art models like Llama-3 and Qwen-2.5, often worsening as model scale increases (Jiang et al., 2024; Haque, 2025). Existing solutions, including regularization, replay-based, and retrieval-augmented methods, introduce computational overhead, require external memory, or are difficult to analyze theoretically (De Lange et al., 2021; Huang et al., 2024). Even small-scale updates can overwrite existing capabilities, raising concerns about stability and scalability (Meng et al., 2022; Zhai et al., 2023).",
+"As modern LLMs become increasingly expressive, it is natural to question whether large-scale weight updates are necessary for acquiring a small amount of new knowledge. Therefore, in this work, we ask:"
+],
+"references": [
+{
+"page": 14,
+"text": "Achiam, J., Adler, S., Agarwal, S., Ahmad, L., Akkaya, I., Aleman, F. L., Almeida, D., Altenschmidt,",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "J., Altman, S., Anadkat, S., et al. Gpt-4 technical report. arXiv preprint arXiv:2303.08774, 2023.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Artetxe, M., Ruder, S., and Yogatama, D. On the cross-lingual transferability of monolingual represen-",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "tations. In Proceedings of the 58th annual meeting of the association for computational linguistics, pp. 4623–4637, 2020.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Bafghi, R. A., Harilal, N., Monteleoni, C., and Raissi, M. Parameter efficient fine-tuning of self-",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "supervised vits without catastrophic forgetting. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pp. 3679–3684, 2024.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Ben-David, S., Blitzer, J., Crammer, K., Kulesza, A., Pereira, F., and Vaughan, J. W. A theory of",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "learning from different domains. Machine learning, 79(1):151–175, 2010.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Ben Zaken, E., Goldberg, Y., and Ravfogel, S. BitFit: Simple parameter-efficient fine-tuning for",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "transformer-based masked language-models. In Muresan, S., Nakov, P., and Villavicencio, A. (eds.), Proceedings of the 60th Annual Meeting of the Association for Computational Linguistics (Volume 2: Short Papers), pp. 1–9, Dublin, Ireland, May 2022. Association for Computational Linguistics. doi: 10.18653/v1/2022.acl-short.1. URL https://aclanthology.org/2022.acl-short.1/.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Chaudhry, A., Ranzato, M., Rohrbach, M., and Elhoseiny, M. Efficient lifelong learning with a-gem,",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "2019. URL https://arxiv.org/abs/1812.00420.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Chen, Y., Marchisio, K., Raileanu, R., Adelani, D., Saito Stenetorp, P. L. E., Riedel, S., and Artetxe, M.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Improving language plasticity via pretraining with active forgetting. Advances in Neural Information Processing Systems, 36:31543–31557, 2023.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Chen, Y., Wang, S., Zhang, Y., Lin, Z., Zhang, H., Sun, W., Ding, T., and Sun, R. Mofo: Momentum-",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "filtered optimizer for mitigating forgetting in llm fine-tuning. arXiv preprint arXiv:2407.20999, 2024.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Chen, Y., Wang, S., Zhang, Y., Lin, Z., Zhang, H., Sun, W., Ding, T., and Sun, R. Mofo: Momentum-",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "filtered optimizer for mitigating forgetting in llm fine-tuning, 2025. URL https://arxiv.org/ abs/2407.20999.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "De Lange, M., Aljundi, R., Masana, M., Parisot, S., Jia, X., Leonardis, A., Slabaugh, G., and Tuytelaars,",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "T. A continual learning survey: Defying forgetting in classification tasks. IEEE transactions on pattern analysis and machine intelligence, 44(7):3366–3385, 2021.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Elad, M. Sparse and Redundant Representations, From Theory to Applications in Signal and Image",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Processing. 2010. doi: 10.1007/978-1-4419-7011-4. URL https://app.dimensions.ai/ details/publication/pub.1026876023.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Gage, P. A new algorithm for data compression. The C Users Journal, 12(2):23–38, 1994.",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "Gupta, A., Rao, A., and Anumanchipalli, G. Model editing at scale leads to gradual and catas-",
+"section": [
+"References"
+]
+},
+{
+"page": 14,
+"text": "trophic forgetting. In Ku, L.-W., Martins, A., and Srikumar, V. (eds.), Findings of the Association for Computational Linguistics: ACL 2024, pp. 15202–15232, Bangkok, Thailand, August 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.findings-acl.902. URL https://aclanthology.org/2024.findings-acl.902/.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Gururangan, S., Marasovic, ´ A., Swayamdipta, S., Lo, K., Beltagy, I., Downey, D., and Smith, N. A. Don’t stop pretraining: Adapt language models to domains and tasks. arXiv preprint",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Haider, E., Perez-Becker, D., Portet, T., Madan, P., Garg, A., Ashfaq, A., Majercak, D., Wen, W.,",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Kim, D., Yang, Z., Zhang, J., Sharma, H., Bullwinkel, B., Pouliot, M., Minnich, A., Chawla, S., Herrera, S., Warreth, S., Engler, M., Lopez, G., Chikanov, N., Dheekonda, R. S. R., Jagdagdorj, B.-E., Lutz, R., Lundeen, R., Westerhoff, T., Bryan, P., Seifert, C., Kumar, R. S. S., Berkley, A., and Kessler, A. Phi-3 safety post-training: Aligning language models with a \"break-fix\" cycle, 2024. URL https://arxiv.org/abs/2407.13833.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Haque, N. Catastrophic forgetting in llms: A comparative analysis across language tasks. arXiv",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "preprint arXiv:2504.01241, 2025.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "He, P., Liu, X., Gao, J., and Chen, W. Deberta: Decoding-enhanced bert with disentangled attention.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "arXiv preprint arXiv:2006.03654, 2020.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Hoffman, M. D., Phan, D., david dohan, Douglas, S., Le, T. A., Parisi, A. T., Sountsov, P., Sutton, C.,",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Vikram, S., and Saurous, R. A. Training chain-of-thought via latent-variable inference. In Thirtyseventh Conference on Neural Information Processing Systems, 2023. URL https://openreview. net/forum?id=a147pIS2Co.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Hu, E. J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., and Chen, W. Lora: Low-rank",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "adaptation of large language models, 2021. URL https://arxiv.org/abs/2106.09685.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Huang, J., Cui, L., Wang, A., Yang, C., Liao, X., Song, L., Yao, J., and Su, J. Mitigating catastrophic for-",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "getting in large language models with self-synthesized rehearsal. arXiv preprint arXiv:2403.01244, 2024.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Huang, Y., Zhang, R., Wang, Q., Lu, C., Gao, Y., Wu, Y., Hu, Y., Zhi, X., Liu, G., Li, X., et al. Selfaug:",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Mitigating catastrophic forgetting in retrieval-augmented generation via distribution self-alignment. arXiv preprint arXiv:2509.03934, 2025.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Ildiz, M. E., Huang, Y., Li, Y., Rawat, A. S., and Oymak, S. From self-attention to markov models:",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Unveiling the dynamics of generative transformers. arXiv preprint arXiv:2402.13512, 2024.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Jiang, G., Jiang, C., Li, Z., Xue, S., Zhou, J., Song, L., Lian, D., and Wei, Y. Interpretable catastrophic",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "forgetting of large language model fine-tuning via instruction vector. CoRR, abs/2406.12227, 2024. URL https://doi.org/10.48550/arXiv.2406.12227.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Kim, J., Wu, D., Lee, J., and Suzuki, T. Metastable dynamics of chain-of-thought reasoning: Provable",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "benefits of search, rl and distillation. arXiv preprint arXiv:2502.01694, 2025.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Kirkpatrick, J., Pascanu, R., Rabinowitz, N., Veness, J., Desjardins, G., Rusu, A. A., Milan, K., Quan,",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "J., Ramalho, T., Grabska-Barwinska, A., Hassabis, D., Clopath, C., Kumaran, D., and Hadsell, R. Overcoming catastrophic forgetting in neural networks. Proceedings of the National Academy of Sciences, 114(13):3521–3526, March 2017. ISSN 1091-6490. doi: 10.1073/pnas.1611835114. URL http://dx.doi.org/10.1073/pnas.1611835114.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "Lester, B., Al-Rfou, R., and Constant, N. The power of scale for parameter-efficient prompt tuning.",
+"section": [
+"References"
+]
+},
+{
+"page": 15,
+"text": "arXiv preprint arXiv:2104.08691, 2021.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "Lewis, M., Liu, Y., Goyal, N., Ghazvininejad, M., Mohamed, A., Levy, O., Stoyanov, V., and",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "Zettlemoyer, L. Bart: Denoising sequence-to-sequence pre-training for natural language generation, translation, and comprehension. In Proceedings of the 58th annual meeting of the association for computational linguistics, pp. 7871–7880, 2020.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "Li, X. L. and Liang, P. Prefix-tuning: Optimizing continuous prompts for generation. In",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "Zong, C., Xia, F., Li, W., and Navigli, R. (eds.), Proceedings of the 59th Annual Meeting of the Association for Computational Linguistics and the 11th International Joint Conference on Natural Language Processing (Volume 1: Long Papers), pp. 4582–4597, Online, August 2021. Association for Computational Linguistics. doi: 10.18653/v1/2021.acl-long.353. URL https://aclanthology.org/2021.acl-long.353/.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "Liu, C., Wang, S., Qing, L., Kuang, K., Kang, Y., Sun, C., and Wu, F. Gold panning in vocabu-",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "lary: An adaptive method for vocabulary expansion of domain-specific LLMs. In Al-Onaizan, Y., Bansal, M., and Chen, Y.-N. (eds.), Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing, pp. 7442–7459, Miami, Florida, USA, November 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.emnlp-main.424. URL https://aclanthology.org/2024.emnlp-main.424/.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "Liu, X., Ji, K., Fu, Y., Tam, W., Du, Z., Yang, Z., and Tang, J. P-tuning: Prompt tuning can be compa-",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "rable to fine-tuning across scales and tasks. In Muresan, S., Nakov, P., and Villavicencio, A. (eds.), Proceedings of the 60th Annual Meeting of the Association for Computational Linguistics (Volume 2: Short Papers), pp. 61–68, Dublin, Ireland, May 2022. Association for Computational Linguistics. doi: 10.18653/v1/2022.acl-short.8. URL https://aclanthology.org/2022.acl-short.8/. Liu, Z., Zhao, C., Fedorov, I., Soran, B., Choudhary, D., Krishnamoorthi, R., Chandra, V., Tian,",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "Y., and Blankevoort, T. Spinquant: Llm quantization with learned rotations, 2025. URL https: //arxiv.org/abs/2405.16406.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "Lopez-Paz, D. and Ranzato, M. A. Gradient episodic memory for continual learning. In",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "Guyon, I., Luxburg, U. V., Bengio, S., Wallach, H., Fergus, R., Vishwanathan, S., and Garnett, R. (eds.), Advances in Neural Information Processing Systems, volume 30. Curran Associates, Inc., 2017. URL https://proceedings.neurips.cc/paper_files/paper/2017/ file/f87522788a2be2d171666752f97ddebb-Paper.pdf.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "Luo, Y., Yang, Z., Meng, F., Li, Y., Zhou, J., and Zhang, Y. An empirical study of catastrophic",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "forgetting in large language models during continual fine-tuning. IEEE Transactions on Audio, Speech and Language Processing, 2025.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "Marchisio, K., Lewis, P., Chen, Y., and Artetxe, M. Mini-model adaptation: Efficiently extending",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "pretrained models to new languages via aligned shallow training. In Findings of the Association for Computational Linguistics: ACL 2023, pp. 5474–5490, 2023.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "Meng, K., Bau, D., Andonian, A., and Belinkov, Y. Locating and editing factual associations",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "in gpt. In Koyejo, S., Mohamed, S., Agarwal, A., Belgrave, D., Cho, K., and Oh, A. (eds.), Advances in Neural Information Processing Systems, volume 35, pp. 17359–17372. Curran Associates, Inc., 2022. URL https://proceedings.neurips.cc/paper_files/paper/2022/ file/6f1d43d5a82a37e89b0665b33bf3a182-Paper-Conference.pdf.",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "Muennighoff, N., Rush, A., Barak, B., Le Scao, T., Tazi, N., Piktus, A., Pyysalo, S.,",
+"section": [
+"References"
+]
+},
+{
+"page": 16,
+"text": "Wolf, T., and Raffel, C. A. Scaling data-constrained language models. In Oh, A., Naumann, T., Globerson, A., Saenko, K., Hardt, M., and Levine, S. (eds.), Advances in",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "Neural Information Processing Systems, volume 36, pp. 50358–50376. Curran Associates, Inc., 2023. URL https://proceedings.neurips.cc/paper_files/paper/2023/file/ 9d89448b63ce1e2e8dc7af72c984c196-Paper-Conference.pdf.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "Olshausen, B. A. and Field, D. J. Sparse coding with an overcomplete basis set: A strategy employed",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "by v1? Vision research, 37(23):3311–3325, 1997.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "Patterson, D., Gonzalez, J., Hölzle, U., Le, Q., Liang, C., Munguia, L.-M., Rothchild, D., So, D.,",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "Texier, M., and Dean, J. The carbon footprint of machine learning training will plateau, then shrink, 2022. URL https://arxiv.org/abs/2204.05149.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "Pfeiffer, J., Vulic, ´ I., Gurevych, I., and Ruder, S. Mad-x: An adapter-based framework for multi-task cross-lingual transfer. In Proceedings of the 2020 conference on empirical methods in natural language processing (EMNLP), pp. 7654–7673, 2020.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "Pfeiffer, J., Kamath, A., Rücklé, A., Cho, K., and Gurevych, I. AdapterFusion: Non-destructive task",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "composition for transfer learning. In Merlo, P., Tiedemann, J., and Tsarfaty, R. (eds.), Proceedings of the 16th Conference of the European Chapter of the Association for Computational Linguistics: Main Volume, pp. 487–503, Online, April 2021. Association for Computational Linguistics. doi: 10.18653/v1/2021.eacl-main.39. URL https://aclanthology.org/2021.eacl-main.39/.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "Pfeiffer, J., Goyal, N., Lin, X., Li, X., Cross, J., Riedel, S., and Artetxe, M. Lifting the curse of",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "multilinguality by pre-training modular transformers. In Proceedings of the 2022 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, pp. 3479–3495, 2022.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "Rajaraman, N., Bondaschi, M., Ramchandran, K., Gastpar, M., and Makkuva, A. V. Transform-",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "ers on markov data: Constant depth suffices. In Globerson, A., Mackey, L., Belgrave, D., Fan, A., Paquet, U., Tomczak, J., and Zhang, C. (eds.), Advances in Neural Information Processing Systems, volume 37, pp. 137521–137556. Curran Associates, Inc., 2024. doi: 10.52202/ 079017-4369. URL https://proceedings.neurips.cc/paper_files/paper/2024/file/ f8a2070082ad05b4deeff4ffb4312a6f-Paper-Conference.pdf.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "Ribeiro, M. T., Wu, T., Guestrin, C., and Singh, S. Beyond accuracy: Behavioral testing of NLP",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "models with CheckList. In Jurafsky, D., Chai, J., Schluter, N., and Tetreault, J. (eds.), Proceedings of the 58th Annual Meeting of the Association for Computational Linguistics, pp. 4902–4912, Online, July 2020. Association for Computational Linguistics. doi: 10.18653/v1/2020.acl-main.442. URL https://aclanthology.org/2020.acl-main.442/.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "Shi, H., Xu, Z., Wang, H., Qin, W., Wang, W., Wang, Y., Wang, Z., Ebrahimi, S., and Wang, H.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "Continual learning of large language models: A comprehensive survey. ACM Computing Surveys, 58(5):1–42, 2025.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "Tsun, A. Probability & Statistics with Applications to Computing. Self-published, 2020. https:",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "//www.alextsun.com/files/Prob_Stat_for_CS_Book.pdf.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "Vershynin, R. High-dimensional probability: An introduction with applications in data science,",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "volume 47. Cambridge University Press, 2018.",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "Wei, H., Kong, L., Chen, J., Zhao, L., Ge, Z., Yang, J., Sun, J., Han, C., and Zhang, X. Vary: Scaling",
+"section": [
+"References"
+]
+},
+{
+"page": 17,
+"text": "up the vision vocabulary for large vision-language model. In European Conference on Computer Vision, pp. 408–424. Springer, 2024.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "Wu, T., Luo, L., Li, Y.-F., Pan, S., Vu, T.-T., and Haffari, G. Continual learning for large language",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "models: A survey, 2024. URL https://arxiv.org/abs/2402.01364.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "Xiong, Y. and Xie, X. Oplora: Orthogonal projection lora prevents catastrophic forgetting during",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "parameter-efficient fine-tuning. arXiv preprint arXiv:2510.13003, 2025.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "Yamaguchi, A., Morishita, T., Villavicencio, A., and Aletras, N. Mitigating catastrophic forgetting",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "in target language adaptation of llms via source-shielded updates, 2025a. URL https://arxiv. org/abs/2512.04844.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "Yamaguchi, A., Villavicencio, A., and Aletras, N. How can we effectively expand the vocabulary of",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "llms with 0.01 gb of target language text? Computational Linguistics, pp. 1–40, 2025b.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "Yüksel, O. K. and Flammarion, N. On the sample complexity of next-token prediction. In The",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "28th International Conference on Artificial Intelligence and Statistics, 2025. URL https:// openreview.net/forum?id=eJkNMwzZzy.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "Zekri, O., Odonnat, A., Benechehab, A., Bleistein, L., Boullé, N., and Redko, I. Large language",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "models as markov chains. arXiv preprint arXiv:2410.02724, 2024.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "Zekri, O., Odonnat, A., Benechehab, A., Bleistein, L., Boullé, N., and Redko, I. Large language",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "models as markov chains, 2025. URL https://arxiv.org/abs/2410.02724.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "Zhai, Y., Tong, S., Li, X., Cai, M., Qu, Q., Lee, Y. J., and Ma, Y. Investigating the catastrophic",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "forgetting in multimodal large language models. arXiv preprint arXiv:2309.10313, 2023.",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "Zhang, X., Huang, Z., Li, Y., Ni, C., Chen, J., and Oymak, S. Bread: Branched rollouts from expert",
+"section": [
+"References"
+]
+},
+{
+"page": 18,
+"text": "anchors bridge sft & rl for reasoning. arXiv preprint arXiv:2506.17211, 2025.",
+"section": [
+"References"
+]
+}
+]
+}
+}

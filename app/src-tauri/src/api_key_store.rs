@@ -6,10 +6,6 @@
 
 use keyring::Entry;
 
-/// Credential-store service name. Matches the Tauri bundle identifier so the
-/// entries are easy to identify (and remove) in the OS credential manager.
-pub const KEYRING_SERVICE: &str = "com.shodh.rag-app";
-
 /// Provider ids that can hold a stored API key. These are the ids the
 /// frontend and `switch_llm_mode` use.
 pub const KEY_PROVIDERS: &[&str] = &[
@@ -29,7 +25,7 @@ pub fn is_known_provider(provider: &str) -> bool {
 }
 
 fn entry(provider: &str) -> Result<Entry, String> {
-    Entry::new(KEYRING_SERVICE, provider)
+    Entry::new(&crate::profile::active().keyring_service(), provider)
         .map_err(|e| format!("Cannot open OS credential store entry for {provider}: {e}"))
 }
 
@@ -105,9 +101,190 @@ pub fn load_all() -> Vec<(&'static str, String)> {
         .collect()
 }
 
+/// Where provider keys are kept. [`OsVault`] is the OS credential store;
+/// tests use an in-memory vault (never the real one).
+pub trait KeyVault {
+    fn load(&self, provider: &str) -> Result<Option<String>, String>;
+    fn store(&self, provider: &str, key: &str) -> Result<(), String>;
+}
+
+/// The OS credential store (Windows Credential Manager, macOS Keychain,
+/// Secret Service), under this profile's service
+/// ([`crate::profile::Profile::keyring_service`]).
+pub struct OsVault;
+
+impl KeyVault for OsVault {
+    fn load(&self, provider: &str) -> Result<Option<String>, String> {
+        load(provider)
+    }
+    fn store(&self, provider: &str, key: &str) -> Result<(), String> {
+        store(provider, key)
+    }
+}
+
+/// Provider key environment variables, by the key store's provider id.
+pub const ENV_KEY_VARS: &[(&str, &[&str])] = &[
+    ("openrouter", &["OPENROUTER_API_KEY"]),
+    ("anthropic", &["ANTHROPIC_API_KEY"]),
+    ("openai", &["OPENAI_API_KEY"]),
+    ("google", &["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
+    ("grok", &["XAI_API_KEY"]),
+];
+
+/// The first non-empty environment key of `provider`.
+pub fn env_key(provider: &str, env: &impl Fn(&str) -> Option<String>) -> Option<String> {
+    ENV_KEY_VARS
+        .iter()
+        .find(|(id, _)| *id == provider)
+        .and_then(|(_, vars)| {
+            vars.iter().find_map(|var| {
+                env(var)
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+            })
+        })
+}
+
+/// One-time copy of provider keys found in the environment
+/// (`OPENROUTER_API_KEY`, …) into the vault, so the app keeps them after
+/// the variables are gone. A key already in the vault is never replaced.
+/// Returns the providers whose key was copied. The environment still wins
+/// at run time (an override for power users); the caller records that the
+/// migration ran so a key the person removes is not copied back.
+pub fn migrate_env_keys(
+    vault: &impl KeyVault,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<Vec<&'static str>, String> {
+    let mut copied = Vec::new();
+    let mut failures = Vec::new();
+    for (provider, _) in ENV_KEY_VARS {
+        let Some(key) = env_key(provider, &env) else {
+            continue;
+        };
+        match vault.load(provider) {
+            Ok(Some(_)) => continue,
+            Ok(None) => match vault.store(provider, &key) {
+                Ok(()) => copied.push(*provider),
+                Err(e) => failures.push(e),
+            },
+            Err(e) => failures.push(e),
+        }
+    }
+    if failures.is_empty() {
+        Ok(copied)
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_vault {
+    use super::KeyVault;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// An in-memory vault for tests.
+    #[derive(Default)]
+    pub struct MemoryVault {
+        pub keys: Mutex<HashMap<String, String>>,
+        pub fail_store: bool,
+    }
+
+    impl KeyVault for MemoryVault {
+        fn load(&self, provider: &str) -> Result<Option<String>, String> {
+            Ok(self
+                .keys
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(provider)
+                .cloned())
+        }
+        fn store(&self, provider: &str, key: &str) -> Result<(), String> {
+            if self.fail_store {
+                return Err(format!("store refused for {provider}"));
+            }
+            self.keys
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(provider.to_string(), key.to_string());
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_vault::MemoryVault;
     use super::*;
+
+    fn env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
+    #[test]
+    fn environment_keys_are_copied_once_and_never_replace_a_stored_key() {
+        let vault = MemoryVault::default();
+        vault.store("openai", "sk-proj-stored").unwrap();
+        let copied = migrate_env_keys(
+            &vault,
+            env(&[
+                ("OPENROUTER_API_KEY", " sk-or-env "),
+                ("OPENAI_API_KEY", "sk-proj-env"),
+                ("GOOGLE_API_KEY", "AIza-env"),
+                ("XAI_API_KEY", "  "),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(copied, vec!["openrouter", "google"]);
+        assert_eq!(
+            vault.load("openrouter").unwrap().as_deref(),
+            Some("sk-or-env")
+        );
+        assert_eq!(
+            vault.load("openai").unwrap().as_deref(),
+            Some("sk-proj-stored"),
+            "a stored key is kept"
+        );
+        assert_eq!(vault.load("google").unwrap().as_deref(), Some("AIza-env"));
+        assert_eq!(
+            vault.load("grok").unwrap(),
+            None,
+            "blank values are ignored"
+        );
+        // A second run copies nothing new.
+        assert!(
+            migrate_env_keys(&vault, env(&[("OPENROUTER_API_KEY", "sk-or-env")]))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_vault_failure_is_reported() {
+        let vault = MemoryVault {
+            fail_store: true,
+            ..MemoryVault::default()
+        };
+        let err =
+            migrate_env_keys(&vault, env(&[("OPENROUTER_API_KEY", "sk-or-secret")])).unwrap_err();
+        assert!(err.contains("openrouter"));
+        assert!(!err.contains("sk-or-secret"), "never the key");
+    }
+
+    #[test]
+    fn environment_keys_are_read_in_order() {
+        let e = env(&[("GEMINI_API_KEY", "g1"), ("GOOGLE_API_KEY", "g2")]);
+        assert_eq!(env_key("google", &e).as_deref(), Some("g1"));
+        assert_eq!(env_key("openai", &e), None);
+        for (provider, _) in ENV_KEY_VARS {
+            assert!(is_known_provider(provider));
+        }
+    }
 
     #[test]
     fn provider_ids_are_unique_and_known() {

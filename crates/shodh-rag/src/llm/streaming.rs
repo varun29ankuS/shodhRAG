@@ -45,6 +45,12 @@ pub struct StreamingResponse {
     pub total_tokens: usize,
 }
 
+impl Default for StreamingResponse {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StreamingResponse {
     pub fn new() -> Self {
         Self {

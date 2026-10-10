@@ -53,6 +53,11 @@ import type { ConversationMode } from '../../hooks/useConversations';
 // The artifact side panel (editors, previews) loads when an artifact is first opened.
 const EnhancedArtifactPanel = lazy(() => import('../../components/EnhancedArtifactPanel').then(m => ({ default: m.EnhancedArtifactPanel })));
 
+/** Room kept below the conversation before the composer is measured. */
+const COMPOSER_SPACE_FALLBACK = 190;
+/** Space between the last answer's actions and the composer's fade. */
+const COMPOSER_GAP = 16;
+
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
 
@@ -577,6 +582,20 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
   const previewTriggerRef = useRef<HTMLElement | null>(null);
   const composerRef = useRef<AgentComposerHandle>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
+  // The composer floats over the end of the conversation; the conversation
+  // keeps that much room below its last answer (the composer grows with a
+  // wrapped toolbar, notices and long drafts), so nothing hides behind it.
+  const composerAreaRef = useRef<HTMLDivElement>(null);
+  const [composerSpace, setComposerSpace] = useState(COMPOSER_SPACE_FALLBACK);
+  useLayoutEffect(() => {
+    const el = composerAreaRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const measure = () => setComposerSpace(Math.ceil(el.getBoundingClientRect().height) + COMPOSER_GAP);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
   const lastCountRef = useRef(0);
 
   // Start the agent runtime while the question is being typed (it is not
@@ -991,7 +1010,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
   return (
     <section aria-label="Ask" className="relative h-full flex flex-col bg-shodh-ground" {...dropHandlers}>
       {dropOverlay}
-      <div ref={scrollerRef} className="flex-1 overflow-y-auto scrollbar-thin pt-[18px] pb-[190px]">
+      <div ref={scrollerRef} className="flex-1 overflow-y-auto scrollbar-thin pt-[18px]" style={{ paddingBottom: composerSpace }}>
         <div
           className="max-w-[700px] mx-auto px-7 flex flex-col gap-[26px]"
           role="log"
@@ -1050,7 +1069,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
         </div>
       </div>
 
-      <div className="absolute left-0 right-0 bottom-0 px-7 pt-10 pb-[22px] bg-gradient-to-b from-transparent via-shodh-ground via-[38%] to-shodh-ground pointer-events-none">
+      <div ref={composerAreaRef} className="absolute left-0 right-0 bottom-0 px-7 pt-10 pb-[22px] bg-gradient-to-b from-transparent via-shodh-ground via-[38%] to-shodh-ground pointer-events-none">
         <div className="max-w-[700px] mx-auto pointer-events-auto flex flex-col gap-2">
           <SearchSetupCard compact />
           {runtimeCard}

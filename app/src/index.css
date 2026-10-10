@@ -11,8 +11,8 @@
  *     properties via color-mix(), so opacity modifiers (bg-primary/90) work.
  *   - ThemeContext reads them back with getComputedStyle to build the legacy
  *     `colors` object used by inline-styled panels.
- *   - Legacy stylesheets (ErrorBoundary.css, LoadingStates.css, DailyBrief.css,
- *     MapView.css) consume the aliases declared in the `:root` block below.
+ *   - Legacy stylesheets (ErrorBoundary.css) consume the aliases declared in
+ *     the `:root` block below.
  *
  * Values must stay 6-digit hex: legacy code appends 2-digit alpha suffixes
  * (e.g. `${colors.primary}14`).

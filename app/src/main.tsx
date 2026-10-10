@@ -5,8 +5,6 @@ import "./index.css";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App-SplitView";
-import DailyBriefWindow from "./DailyBrief";
-import MapViewWindow from "./MapView";
 import PrintView from "./features/print/PrintView";
 import { ThemeProvider, useTheme } from "./contexts/ThemeContext";
 import { SidebarProvider } from "./contexts/SidebarContext";
@@ -22,13 +20,6 @@ markStartup("modules-evaluated");
 initErrorReporting();
 
 const path = window.location.pathname;
-let Component = App;
-
-if (path === '/daily-brief') {
-  Component = DailyBriefWindow;
-} else if (path === '/map-view') {
-  Component = MapViewWindow;
-}
 
 function ThemedToaster() {
   const { theme, colors } = useTheme();
@@ -82,13 +73,9 @@ if (path === '/print-view') {
         <ErrorBoundary>
           <ThemeProvider>
             <SidebarProvider>
-              {Component === App ? (
-                <SearchModelsProvider>
-                  <App />
-                </SearchModelsProvider>
-              ) : (
-                <Component />
-              )}
+              <SearchModelsProvider>
+                <App />
+              </SearchModelsProvider>
               <ThemedToaster />
             </SidebarProvider>
           </ThemeProvider>

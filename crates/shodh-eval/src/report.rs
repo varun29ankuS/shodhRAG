@@ -15,7 +15,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::metrics::{lower_is_better, AnswerScore, CaseRanks};
+use crate::metrics::{lower_is_better, AnswerScore, CaseRanks, RetrievedChunk};
 
 pub const NOISE_SIGMA: f64 = 3.0;
 /// Smallest change treated as real (float noise in means of 0/1 scores).
@@ -132,12 +132,47 @@ pub struct CaseRecord {
     pub retrieved: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latency_ms: Option<f64>,
+    /// Answers: from sending the question to the first streamed text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_token_ms: Option<f64>,
+    /// Answers: times the question was asked again after a rate limit.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub retries: usize,
+    /// Retrieval: the first result (document, pages, start of its text).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top: Option<TopResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub score: Option<AnswerScore>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// The first search result of a case, to see what outranked the evidence.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TopResult {
+    pub key: Option<String>,
+    pub pages: Option<(u32, u32)>,
+    /// The first [`TOP_TEXT_CHARS`] characters of the chunk.
+    pub text: String,
+}
+
+/// Characters of the first result's text kept in a report.
+pub const TOP_TEXT_CHARS: usize = 160;
+
+impl TopResult {
+    pub fn of(chunk: &RetrievedChunk) -> Self {
+        Self {
+            key: chunk.key.clone(),
+            pages: chunk.pages,
+            text: chunk.text.chars().take(TOP_TEXT_CHARS).collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -152,6 +187,16 @@ pub struct RunReport {
     pub metrics: BTreeMap<String, MetricStats>,
     /// Per search (retrieval) or per answer (answers), across all runs.
     pub latency: LatencySummary,
+    /// Answers: from sending the question to the first streamed text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_token: Option<LatencySummary>,
+    /// Answers: provider failures by kind (`rate_limited`, …), every attempt
+    /// counted, retried ones too.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub provider_errors: BTreeMap<String, usize>,
+    /// Why the run ended before its last question, if it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<String>,
     /// One entry per run.
     pub ingest: Vec<IngestSummary>,
     /// Cases of the last run.
@@ -219,6 +264,29 @@ impl RunReport {
             "\nLatency per {what} (not gated): p50 {:.1} ms, p95 {:.1} ms, max {:.1} ms over {}.",
             l.p50_ms, l.p95_ms, l.max_ms, l.count
         );
+        if let Some(f) = &self.first_token {
+            let _ = writeln!(
+                md,
+                "Time to first token (question sent to first streamed text): p50 {:.1} ms, \
+                 p95 {:.1} ms, max {:.1} ms over {}.",
+                f.p50_ms, f.p95_ms, f.max_ms, f.count
+            );
+        }
+        if !self.provider_errors.is_empty() {
+            let errors: Vec<String> = self
+                .provider_errors
+                .iter()
+                .map(|(kind, n)| format!("{kind} {n}"))
+                .collect();
+            let _ = writeln!(
+                md,
+                "Provider errors (every attempt): {}.",
+                errors.join(", ")
+            );
+        }
+        if let Some(reason) = &self.stopped {
+            let _ = writeln!(md, "Stopped early: {reason}.");
+        }
         for (i, ingest) in self.ingest.iter().enumerate() {
             let _ = writeln!(
                 md,
@@ -428,6 +496,9 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), MetricStats::from_values(v).unwrap()))
                 .collect(),
             latency: LatencySummary::default(),
+            first_token: None,
+            provider_errors: BTreeMap::new(),
+            stopped: None,
             ingest: vec![],
             cases: vec![],
         }
@@ -515,5 +586,16 @@ mod tests {
         let md = r.markdown();
         assert!(md.contains("| hit@5 | 1.0000 |"));
         assert!(md.contains("`c1` q? (document rank none)"));
+        assert!(!md.contains("Time to first token"));
+        r.first_token = Some(summarize_latencies(&[300.0, 900.0]));
+        r.provider_errors.insert("rate_limited".into(), 2);
+        r.stopped = Some("quota used up".into());
+        let md = r.markdown();
+        assert!(md.contains(
+            "Time to first token (question sent to first streamed text): p50 300.0 ms, \
+             p95 900.0 ms, max 900.0 ms over 2."
+        ));
+        assert!(md.contains("Provider errors (every attempt): rate_limited 2."));
+        assert!(md.contains("Stopped early: quota used up."));
     }
 }

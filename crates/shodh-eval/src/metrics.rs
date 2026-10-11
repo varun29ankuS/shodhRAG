@@ -12,6 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use shodh_rag::harness::ProviderError;
+
 use crate::dataset::EvalCase;
 use crate::text::{contains_span, is_refusal};
 
@@ -154,11 +156,20 @@ pub struct GroundingCounts {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AnswerTranscript {
     pub answer: String,
+    /// Every numbered passage the answer could cite: search results and
+    /// document reads (numbers are shared across one answer).
     pub passages: BTreeMap<u32, SeenPassage>,
+    /// The passage numbers of each `search_documents` call, in rank order.
+    pub searches: Vec<Vec<u32>>,
     pub cited: BTreeSet<u32>,
     pub grounding: Option<GroundingCounts>,
+    /// Milliseconds from sending the question to the first text the
+    /// model streamed (any message, as the user sees it).
+    pub first_token_ms: Option<f64>,
     /// The run ended without an answer (provider error, timeout, abort).
     pub error: Option<String>,
+    /// The provider failure that ended the run, classified.
+    pub provider_error: Option<ProviderError>,
 }
 
 /// Per-case answer scores; `None` where a score does not apply.
@@ -180,11 +191,19 @@ pub struct AnswerScore {
     pub refusal_correct: Option<bool>,
     /// Answerable: the answer declined although the corpus answers it.
     pub false_refusal: Option<bool>,
+    /// Answerable with an expected passage: a passage the answer could cite
+    /// (searched or read) from an expected document contains it.
+    pub evidence_seen: Option<bool>,
+    /// 1-based rank of that passage in the first search that returned it;
+    /// `None` when no search returned it (it may still have been read).
+    pub evidence_rank: Option<usize>,
 }
 
+/// `expected` maps each expected document key to its pages and passage, as
+/// [`rank_case`] takes it.
 pub fn score_answer(
     case: &EvalCase,
-    expected_keys: &BTreeSet<String>,
+    expected: &BTreeMap<String, (Vec<u32>, Option<String>)>,
     t: &AnswerTranscript,
 ) -> AnswerScore {
     if t.error.is_some() {
@@ -227,8 +246,23 @@ pub fn score_answer(
     let cited_expected_source = Some(
         cited
             .iter()
-            .any(|p| p.key.as_ref().is_some_and(|k| expected_keys.contains(k))),
+            .any(|p| p.key.as_ref().is_some_and(|k| expected.contains_key(k))),
     );
+    let is_evidence = |p: &SeenPassage| {
+        p.key
+            .as_ref()
+            .and_then(|k| expected.get(k))
+            .and_then(|(_, passage)| passage.as_deref())
+            .is_some_and(|passage| contains_span(&p.text, passage))
+    };
+    let has_passage = expected.values().any(|(_, p)| p.is_some());
+    let evidence_seen = has_passage.then(|| t.passages.values().any(is_evidence));
+    let evidence_rank = t.searches.iter().find_map(|search| {
+        search
+            .iter()
+            .position(|n| t.passages.get(n).is_some_and(is_evidence))
+            .map(|i| i + 1)
+    });
     AnswerScore {
         fact_recall,
         citation_correct,
@@ -237,6 +271,8 @@ pub fn score_answer(
         flagged,
         refusal_correct: None,
         false_refusal: Some(refused),
+        evidence_seen,
+        evidence_rank,
     }
 }
 
@@ -265,6 +301,10 @@ pub fn answer_metrics(scores: &[AnswerScore], errors: usize) -> BTreeMap<String,
                 .iter()
                 .filter_map(|s| s.cited_expected_source.map(flag)),
         ),
+    );
+    put(
+        "evidence_seen",
+        mean(scores.iter().filter_map(|s| s.evidence_seen.map(flag))),
     );
     put(
         "claims_supported",
@@ -409,7 +449,7 @@ mod tests {
 
     #[test]
     fn citation_correctness_needs_the_fact_in_a_cited_passage() {
-        let keys: BTreeSet<String> = ["inv.pdf".to_string()].into();
+        let keys = expect(&[("inv.pdf", &[], None)]);
         let t = AnswerTranscript {
             answer: "The total is INR 7,96,500 [1], due 30 June 2025 [2].".into(),
             passages: [
@@ -425,7 +465,7 @@ mod tests {
                 unsupported: 1,
                 ..Default::default()
             }),
-            error: None,
+            ..Default::default()
         };
         let s = score_answer(
             &case(true, &["7,96,500", "30 June 2025", "GSTIN"]),
@@ -443,13 +483,11 @@ mod tests {
 
     #[test]
     fn uncited_passages_do_not_back_facts() {
-        let keys: BTreeSet<String> = ["inv.pdf".to_string()].into();
+        let keys = expect(&[("inv.pdf", &[], None)]);
         let t = AnswerTranscript {
             answer: "It is INR 7,96,500.".into(),
             passages: [(1, passage("inv.pdf", "INR 7,96,500.00"))].into(),
-            cited: BTreeSet::new(),
-            grounding: None,
-            error: None,
+            ..Default::default()
         };
         let s = score_answer(&case(true, &["7,96,500"]), &keys, &t);
         assert_eq!(s.citation_correct, Some(0.0));
@@ -458,8 +496,62 @@ mod tests {
     }
 
     #[test]
+    fn evidence_is_the_expected_passage_in_what_the_answer_saw() {
+        let expected = expect(&[("inv.pdf", &[2], Some("Total amount due"))]);
+        let t = AnswerTranscript {
+            answer: "INR 7,96,500 [3].".into(),
+            passages: [
+                (1, passage("inv.pdf", "Invoice INV-2025-0117, Bluepeak")),
+                (2, passage("msa.pdf", "Total amount due under the MSA")),
+                (3, passage("inv.pdf", "Total amount due: INR 7,96,500.00")),
+                (
+                    4,
+                    passage("inv.pdf", "Total amount due: INR 7,96,500.00 (read)"),
+                ),
+            ]
+            .into(),
+            searches: vec![vec![2, 1], vec![1, 2, 3]],
+            cited: [3].into(),
+            ..Default::default()
+        };
+        let s = score_answer(&case(true, &["7,96,500"]), &expected, &t);
+        assert_eq!(s.evidence_seen, Some(true));
+        assert_eq!(
+            s.evidence_rank,
+            Some(3),
+            "the same words in another document are not the evidence"
+        );
+        // Read with `open_document` only: seen, but no search ranked it.
+        let read_only = AnswerTranscript {
+            searches: vec![vec![1, 2]],
+            ..t.clone()
+        };
+        let s = score_answer(&case(true, &["7,96,500"]), &expected, &read_only);
+        assert_eq!((s.evidence_seen, s.evidence_rank), (Some(true), None));
+        let missed = AnswerTranscript {
+            passages: [(1, passage("inv.pdf", "Invoice INV-2025-0117"))].into(),
+            searches: vec![vec![1]],
+            ..t.clone()
+        };
+        let s = score_answer(&case(true, &["7,96,500"]), &expected, &missed);
+        assert_eq!((s.evidence_seen, s.evidence_rank), (Some(false), None));
+        // No passage given: evidence is not scored.
+        let s = score_answer(
+            &case(true, &["7,96,500"]),
+            &expect(&[("inv.pdf", &[], None)]),
+            &t,
+        );
+        assert_eq!(s.evidence_seen, None);
+        let m = answer_metrics(
+            &[score_answer(&case(true, &["7,96,500"]), &expected, &missed)],
+            0,
+        );
+        assert_eq!(m["evidence_seen"], 0.0);
+    }
+
+    #[test]
     fn unanswerable_cases_score_the_refusal() {
-        let keys = BTreeSet::new();
+        let keys = expect(&[]);
         let declined = AnswerTranscript {
             answer: "Your documents don't mention a CEO.".into(),
             ..Default::default()

@@ -134,8 +134,16 @@ p50/p95 is reported, never gated.
 (stated facts found in a passage the answer cites), `cited_expected_source`,
 `claims_supported` and `flagged_per_answer` (the grounding verifier's
 verdicts), `refusal_correct` on unanswerable cases, `false_refusal`,
-`answered`. Refusals are detected by phrase; the report says which answers
-were scored how.
+`answered`, and `evidence_seen` (a passage the answer could cite, searched or
+read with `open_document`, holds the expected passage; each case also records
+the passage's rank in the first search that returned it). Refusals are
+detected by phrase; the report says which answers were scored how. Latency is
+per answer from starting the agent session; time to first token is from
+sending the question to the first streamed text. A rate-limited question is
+asked again after 20, 40, 80 and 160 s (or the provider's own hint), and the
+run stops when the provider's quota is used up: the remaining questions are
+not asked and that question is left out of the metrics. Provider errors are
+counted by kind in the report.
 
 ## Language model (answers, generate)
 

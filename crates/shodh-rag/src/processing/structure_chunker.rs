@@ -1201,7 +1201,7 @@ mod tests {
         assert!(chunks.len() >= 2);
         for c in &chunks {
             assert!(c.context.starts_with(
-                "Document: \"msa\". Opening: MASTER SERVICES AGREEMENT This Agreement is made between Northwind Analytics and Bluepeak Systems."
+                "Document: \"msa\". Opening: MASTER SERVICES AGREEMENT This Agreement Northwind Analytics Bluepeak Systems."
             ));
             assert!(words(&c.contextualized_text()) <= EMBEDDER_TOKEN_LIMIT);
         }

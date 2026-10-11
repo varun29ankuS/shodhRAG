@@ -157,6 +157,7 @@ impl FilePreparer {
             .to_lowercase();
         let tabular = crate::processing::tabular::is_spreadsheet_extension(&extension)
             || crate::processing::tabular::is_delimited_extension(&extension);
+        let label = source_label(&source);
         let chunk_all = |context: &DocumentContext| {
             let mut chunks = Vec::new();
             if let Some(doc) = structured {
@@ -166,13 +167,13 @@ impl FilePreparer {
                 chunks.extend(self.chunker.chunk_structured(
                     &parsed.structured_sections,
                     context,
-                    &source,
+                    label,
                 ));
             }
             if chunks.is_empty() && parsed.document.is_none() {
                 chunks = self
                     .chunker
-                    .chunk_with_context(&parsed.content, context, &source);
+                    .chunk_with_context(&parsed.content, context, label);
             }
             chunks
         };
@@ -206,13 +207,12 @@ impl FilePreparer {
 
 /// The chunks of one document, each with its context ([`DocumentContext`]).
 /// `chunk` chunks the document under a given context. The document's
-/// opening is the first words of its first chunk, as chunked under the title
-/// alone; the document is then chunked again under title and opening (the
-/// context shrinks what fits of the text), and the opening is dropped from
-/// chunks whose own text begins with it. A document of one chunk keeps the
-/// title alone: its text holds its opening. `with_opening` is false for
-/// spreadsheets and delimited files, whose first words are a header row
-/// that each of their chunks repeats already.
+/// opening is taken from the start of its first chunk, as chunked under the
+/// title alone; the document is then chunked again under title and opening
+/// (the context shrinks what fits of the text). A document of one chunk keeps
+/// the title alone: its text holds its opening. `with_opening` is false for
+/// spreadsheets and delimited files, whose first words are a header row that
+/// each of their chunks repeats already.
 fn chunk_in_context(
     title: &str,
     with_opening: bool,
@@ -231,9 +231,7 @@ fn chunk_in_context(
     if context.opening.is_none() {
         return chunks;
     }
-    let mut chunks = chunk(&context);
-    context.drop_opening_where_present(&mut chunks);
-    chunks
+    chunk(&context)
 }
 
 /// Version of what is indexed for a chunk: its text, the context embedded
@@ -244,7 +242,9 @@ fn chunk_in_context(
 ///
 /// 2: chunks carry the document's opening in their context, and the context
 /// is stored (`context`) for the reranker and for rebuilding the keyword index.
-pub const INDEX_FORMAT: u32 = 2;
+/// 3: contexts name a file by its name, never its folders ([`source_label`]),
+/// and carry only the names in the document's opening, on every chunk.
+pub const INDEX_FORMAT: u32 = 3;
 
 /// Chunk metadata key: the [`INDEX_FORMAT`] a chunk was indexed with.
 pub const INDEX_FORMAT_KEY: &str = "index_format";
@@ -273,6 +273,17 @@ fn rerank_context(result: &ComprehensiveResult) -> String {
         context.push_str(". ");
     }
     context
+}
+
+/// How a chunk's context names the file `source`: its file name. The folders
+/// a file sits in are the user's, not the document's: in what is embedded,
+/// keyword-indexed and reranked they would be words of every chunk of every
+/// file there. A `scheme://` source (a calendar item) is kept as it is.
+fn source_label(source: &str) -> &str {
+    if source.contains("://") {
+        return source;
+    }
+    source.rsplit(['/', '\\']).next().unwrap_or(source)
 }
 
 /// A LanceDB filter for the chunks of `source`.
@@ -1101,7 +1112,8 @@ impl RAGEngine {
                 .unwrap_or_else(|| crate::embeddings::estimate_tokens(text))
         };
         let chunks = chunk_in_context(&title, true, &count, &|context| {
-            self.chunker.chunk_with_context(content, context, &source)
+            self.chunker
+                .chunk_with_context(content, context, source_label(&source))
         });
         let prepared = prepare_chunks(embedder, chunks, title, source, &metadata, &citation)?;
         self.store_prepared(prepared).await
@@ -2014,9 +2026,9 @@ impl RAGEngine {
         for document in hits.chunk_by(|a, b| a.doc_id == b.doc_id) {
             let titled = DocumentContext::titled(document[0].title.as_str());
             let context = if document.len() > 1 {
-                titled.clone().with_opening(&document[0].text, &count)
+                titled.with_opening(&document[0].text, &count)
             } else {
-                titled.clone()
+                titled
             };
             for hit in document {
                 let meta: HashMap<String, String> = serde_json::from_str(&hit.metadata_json)
@@ -2025,13 +2037,12 @@ impl RAGEngine {
                     .get("section_path")
                     .map(|path| path.split(" > ").map(str::to_string).collect())
                     .unwrap_or_default();
-                let own = if context.begins_with_opening(&hit.text) {
-                    &titled
-                } else {
-                    &context
-                };
                 let Some(chunk_context) = meta.get("unit_kind").and_then(|unit| {
-                    crate::processing::structure_chunker::unit_context(own, &section_path, unit)
+                    crate::processing::structure_chunker::unit_context(
+                        &context,
+                        &section_path,
+                        unit,
+                    )
                 }) else {
                     return Ok(false);
                 };
@@ -2801,13 +2812,10 @@ Language models trained on long documents reach lower perplexity.
                  Lessee: Tidewater Logistics Pvt. Ltd. Section: Rent. "
             )
         );
-        // The first chunk says its opening itself.
+        // The first chunk carries the names too.
         let first = chunks.iter().find(|c| c.text.contains("Saffron")).unwrap();
         let metadata: HashMap<String, String> = serde_json::from_str(&first.metadata_json).unwrap();
-        assert_eq!(
-            metadata.get(CHUNK_CONTEXT_KEY).map(String::as_str),
-            Some("Document: \"lease\". ")
-        );
+        assert!(metadata[CHUNK_CONTEXT_KEY].starts_with("Document: \"lease\". Opening: Lessor:"));
         assert!(engine.stale_sources().await.unwrap().is_empty());
     }
 
@@ -2899,6 +2907,52 @@ Language models trained on long documents reach lower perplexity.
         assert_eq!(old_ids, new_ids);
         assert!(engine.stale_sources().await.unwrap().is_empty());
         assert!(!engine.upgrade_in_place("no such source").await.unwrap());
+    }
+
+    /// No context names a file's folders: not for plain text (window chunks),
+    /// not for structure chunks.
+    #[tokio::test]
+    async fn contexts_name_the_file_never_its_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let folder = dir.path().join("Private Client Files");
+        std::fs::create_dir_all(&folder).unwrap();
+        let notes = folder.join("notes.txt");
+        std::fs::write(
+            &notes,
+            "Quiet hours begin at ten in the evening. ".repeat(80),
+        )
+        .unwrap();
+        let lease = folder.join("lease.md");
+        std::fs::write(&lease, LEASE).unwrap();
+        for file in [&notes, &lease] {
+            engine
+                .add_document_from_file(file, HashMap::new())
+                .await
+                .unwrap();
+        }
+        let chunks = engine.store.list_chunks(None, 100).await.unwrap();
+        assert!(chunks.iter().any(|c| c.source.ends_with("notes.txt")));
+        for chunk in &chunks {
+            let metadata: HashMap<String, String> =
+                serde_json::from_str(&chunk.metadata_json).unwrap();
+            let context = metadata.get(CHUNK_CONTEXT_KEY).unwrap();
+            assert!(!context.contains("Private Client Files"), "{context}");
+            assert!(
+                !context.contains(&*dir.path().to_string_lossy()),
+                "{context}"
+            );
+        }
+        let window = chunks
+            .iter()
+            .find(|c| c.source.ends_with("notes.txt"))
+            .unwrap();
+        let metadata: HashMap<String, String> =
+            serde_json::from_str(&window.metadata_json).unwrap();
+        assert!(metadata[CHUNK_CONTEXT_KEY].contains("Source: notes.txt."));
+        assert_eq!(source_label("calendar://task/7"), "calendar://task/7");
+        assert_eq!(source_label("C:\\Users\\a\\b.txt"), "b.txt");
+        assert_eq!(source_label("/home/a/b.txt"), "b.txt");
     }
 
     /// The cross-encoder reads a passage with the context it was embedded

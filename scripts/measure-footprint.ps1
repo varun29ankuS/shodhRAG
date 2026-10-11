@@ -431,9 +431,17 @@ function Write-StartupDiagnostics($App, $Cdp) {
             Write-Host "Page did not answer: $($_.Exception.Message)"
         }
     }
+    $runtimeKeys = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+        'HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+        'HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+    $runtime = @($runtimeKeys | ForEach-Object { (Get-ItemProperty -LiteralPath $_ -ErrorAction SilentlyContinue).pv } | Where-Object { $_ })
+    Write-Host ("WebView2 runtime: {0}" -f $(if ($runtime.Count) { $runtime -join ', ' } else { 'not registered' }))
+    $tree = @(Get-ProcessTree $App.Process.Id $App.Start)
+    Write-Host ("App processes: {0}" -f (($tree | ForEach-Object { $_.Name }) -join ', '))
+    # Lance logs every table open at info level; everything else is worth seeing.
     foreach ($file in @(Get-ChildItem -LiteralPath $App.LogDir -Filter ("app-{0}*" -f $App.LaunchMs) -ErrorAction SilentlyContinue)) {
-        Write-Host "--- $($file.Name) (last 60 lines) ---"
-        Get-Content -LiteralPath $file.FullName -Tail 60 | ForEach-Object { Write-Host $_ }
+        Write-Host "--- $($file.Name) (last 60 lines other than table loads) ---"
+        Get-Content -LiteralPath $file.FullName | Where-Object { $_ -notmatch 'event="loading"' } | Select-Object -Last 60 | ForEach-Object { Write-Host $_ }
     }
     Write-Host '--- End of startup diagnostics ---'
 }

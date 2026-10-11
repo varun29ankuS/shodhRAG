@@ -4,6 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::document_model::{Block, BlockKind, StructuredDocument};
+use super::ocr::cache::{CachedScan, FileStamp, OcrCache};
 use super::ocr::worker::{FileKind, OcrWorker, WorkerEngine};
 use super::ocr::{ScanReaderMissing, SharedOcrModel};
 use super::pdf_layout::{TableMode, TableReport};
@@ -156,6 +157,8 @@ pub struct DocumentParser {
     /// When set, OCR runs in the child process instead of this one (the
     /// in-process model is then not used).
     ocr_worker: Option<Arc<OcrWorker>>,
+    /// What OCR read from scans, reused while a file is unchanged.
+    ocr_cache: Option<Arc<OcrCache>>,
     ocr: OcrConfig,
 }
 
@@ -186,6 +189,21 @@ impl DocumentParser {
     pub fn with_ocr_worker(mut self, worker: Arc<OcrWorker>) -> Self {
         self.ocr_worker = Some(worker);
         self
+    }
+
+    /// This parser keeping what OCR reads in `cache` and reading scans from
+    /// it while they are unchanged (see [`super::ocr::cache`]).
+    pub fn with_ocr_cache(mut self, cache: Arc<OcrCache>) -> Self {
+        self.ocr_cache = Some(cache);
+        self
+    }
+
+    /// Whether the scan reader (the PP-OCRv6 model) is installed.
+    fn reader_installed(&self) -> bool {
+        match &self.ocr_worker {
+            Some(worker) => worker.model_dir().is_some(),
+            None => self.ocr_model.as_ref().is_some_and(|m| m.available()),
+        }
     }
 
     /// The engine for a scan ([`decide_ocr`]) and whether the scan reader is
@@ -328,11 +346,43 @@ impl DocumentParser {
     }
 
     /// [`Self::parse_file`], reporting OCR's progress through a scanned PDF.
+    /// With a cache ([`Self::with_ocr_cache`]), a scan read before and
+    /// unchanged since is taken from it without OCR, and a scan read now is
+    /// put in it.
     pub fn parse_file_with_progress(
         &self,
         path: &Path,
         progress: OcrProgress<'_>,
     ) -> Result<ParsedDocument> {
+        let cached = self
+            .ocr_cache
+            .as_ref()
+            .filter(|_| is_ocr_candidate(path))
+            .and_then(|cache| {
+                let stamp = FileStamp::of(path).ok()?;
+                Some((cache, crate::rag_engine::normalize_source_path(path), stamp))
+            });
+        if let Some((cache, source, stamp)) = &cached {
+            if let Some(entry) = cache.get(source) {
+                let system_only = self.ocr.engine == OcrEngineChoice::System;
+                if entry.is_current_for(*stamp, system_only, self.reader_installed()) {
+                    tracing::debug!("Scan read from the OCR cache: {}", path.display());
+                    return Ok(entry.into_parsed());
+                }
+            }
+        }
+        let parsed = self.parse_uncached(path, progress)?;
+        if let Some((cache, source, stamp)) = cached {
+            if let Some(entry) = CachedScan::of(&source, stamp, &parsed) {
+                if let Err(e) = cache.put(&entry) {
+                    tracing::warn!(error = %format!("{e:#}"), "OCR result not cached: {}", path.display());
+                }
+            }
+        }
+        Ok(parsed)
+    }
+
+    fn parse_uncached(&self, path: &Path, progress: OcrProgress<'_>) -> Result<ParsedDocument> {
         let extension = path
             .extension()
             .and_then(|e| e.to_str())
@@ -786,6 +836,15 @@ impl DocumentParser {
     }
 }
 
+/// Whether `path` is a file OCR may read (a PDF or an image).
+fn is_ocr_candidate(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        ["pdf", "png", "jpg", "jpeg", "bmp", "tiff", "tif"]
+            .iter()
+            .any(|x| e.eq_ignore_ascii_case(x))
+    })
+}
+
 /// Whether a PDF's text layer is too thin to be its real content: under 200
 /// characters in total and under 8 per page. Pages that are figures only are
 /// normal in papers, so this looks at the whole document, not single pages.
@@ -1211,7 +1270,7 @@ fn extract_docx_text(xml: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::processing::pdf_fixtures::{build_pdf, column};
 
@@ -1457,6 +1516,75 @@ mod tests {
             "{}",
             parsed.content
         );
+    }
+
+    /// A scan as the indexer read it, cached for `path`.
+    pub(crate) fn cached_scan(path: &Path, text: &str) -> CachedScan {
+        let mut doc = StructuredDocument {
+            pages: Vec::new(),
+            blocks: vec![Block::new(BlockKind::Paragraph, text).on_page(1, None)],
+        };
+        doc.finalize();
+        let parsed = ParsedDocument {
+            content: text.to_string(),
+            title: "scan".to_string(),
+            metadata: HashMap::from([(OCR_ENGINE_KEY.to_string(), OCR_ENGINE_PPOCR.to_string())]),
+            format: DocumentFormat::PDF,
+            structured_sections: Vec::new(),
+            document: Some(doc),
+        };
+        CachedScan::of(
+            &crate::rag_engine::normalize_source_path(path),
+            FileStamp::of(path).unwrap(),
+            &parsed,
+        )
+        .expect("an OCR parse is cacheable")
+    }
+
+    /// A cached scan is read without starting OCR; once the file changes,
+    /// the cache is missed and OCR is asked for.
+    #[test]
+    fn a_cached_scan_is_read_without_ocr_until_the_file_changes() {
+        use super::super::ocr::worker::WorkerCommand;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lease-scan.pdf");
+        std::fs::copy(scanned("contracts/lease-saffron-tidewater-scan.pdf"), &path).unwrap();
+        let cache = Arc::new(OcrCache::new(dir.path().join("ocr_cache")));
+        cache
+            .put(&cached_scan(&path, "Notice period: ninety (90) days"))
+            .unwrap();
+        // A worker that cannot start: any OCR would fail.
+        let worker = Arc::new(OcrWorker::new(WorkerCommand {
+            program: dir.path().join("no-ocr-worker.exe"),
+            args: Vec::new(),
+            env: Vec::new(),
+        }));
+        worker.set_model_dir(Some(dir.path().join("pp-ocrv6")));
+        let parser = DocumentParser::new()
+            .with_ocr_worker(worker.clone())
+            .with_ocr_cache(cache.clone());
+
+        let parsed = parser.parse_file(&path).expect("read from the cache");
+        assert_eq!(parsed.content, "Notice period: ninety (90) days");
+        assert_eq!(
+            parsed.metadata.get(OCR_ENGINE_KEY).map(String::as_str),
+            Some(OCR_ENGINE_PPOCR)
+        );
+        assert!(parsed.document.is_some_and(|d| d.blocks[0].page == Some(1)));
+        assert!(!worker.is_running(), "a hit starts no OCR");
+
+        // A stale modification time misses: OCR is asked for (and fails here).
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(86_400),
+        )
+        .unwrap();
+        drop(file);
+        assert!(
+            parser.parse_file(&path).is_err(),
+            "a changed file is read again"
+        );
+        assert!(!worker.is_running());
     }
 
     /// Without the model, choosing PP-OCRv6 only reads nothing rather than

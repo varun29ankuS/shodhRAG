@@ -47,6 +47,9 @@ pub struct FilePreparer {
     embeddings: Arc<dyn EmbeddingModel>,
 }
 
+/// Directory (under the data directory) of the OCR cache.
+pub const OCR_CACHE_DIR: &str = "ocr_cache";
+
 /// A scanned file the indexer read without the scan reader (the PP-OCRv6
 /// model, not installed): the system OCR read it, or nothing could. Sent to
 /// the queue set with [`RAGEngine::set_scan_reader_queue`] so the file can be
@@ -735,6 +738,9 @@ pub struct RAGEngine {
     /// The OCR child process, when scans are read out of process
     /// ([`Self::use_ocr_worker`]); it reads with the model in `ocr`'s place.
     ocr_worker: Option<Arc<crate::processing::ocr::worker::OcrWorker>>,
+    /// What OCR read from indexed scans (see [`crate::processing::ocr::cache`]),
+    /// emptied of files as they leave the index.
+    ocr_cache: Arc<crate::processing::ocr::cache::OcrCache>,
     /// PDFs indexed by the fast parser that have table-candidate pages are sent
     /// here, for the table model to refine in the background (see
     /// [`crate::table_refinement`]).
@@ -798,7 +804,12 @@ impl RAGEngine {
 
         let structure_chunker = StructureChunker::new(config.chunking.max_tokens);
         let ocr = crate::processing::ocr::shared_ocr_model();
-        let parser = DocumentParser::new().with_ocr(ocr.clone(), config.ocr.clone());
+        let ocr_cache = Arc::new(crate::processing::ocr::cache::OcrCache::new(
+            config.data_dir.join(OCR_CACHE_DIR),
+        ));
+        let parser = DocumentParser::new()
+            .with_ocr(ocr.clone(), config.ocr.clone())
+            .with_ocr_cache(ocr_cache.clone());
         let mut engine = Self {
             store,
             text_search,
@@ -812,6 +823,7 @@ impl RAGEngine {
             reranker: Arc::new(LazyModel::new("reranker")),
             ocr,
             ocr_worker: None,
+            ocr_cache,
             refinement_queue: None,
             scan_reader_queue: None,
             source_ranker: None,
@@ -1665,6 +1677,7 @@ impl RAGEngine {
     /// Delete all chunks belonging to a specific document (by doc_id).
     /// Removes from both LanceDB and Tantivy.
     pub async fn delete_by_doc_id(&mut self, doc_id: &str) -> Result<usize> {
+        self.forget_cached_scans(|row| row.doc_id == doc_id).await;
         // Get all chunk IDs for this doc so we can remove from Tantivy
         let predicate = format!("doc_id = '{}'", doc_id.replace('\'', "''"));
         let chunks = self.store.list_chunks(Some(&predicate), 100_000).await?;
@@ -1689,7 +1702,24 @@ impl RAGEngine {
         let deleted = self.store.delete_by_source(&normalized).await?;
         self.text_search.delete_by_source(&normalized)?;
         self.text_search.commit()?;
+        self.ocr_cache.remove(&normalized);
         Ok(deleted)
+    }
+
+    /// Removes the OCR cache entries of the indexed files `leaving` selects
+    /// (called before they are deleted from the index).
+    async fn forget_cached_scans(
+        &self,
+        leaving: impl Fn(&crate::storage::DocumentSourceRow) -> bool,
+    ) {
+        match self.store.document_sources().await {
+            Ok(rows) => {
+                for row in rows.iter().filter(|row| leaving(row)) {
+                    self.ocr_cache.remove(&row.source);
+                }
+            }
+            Err(e) => tracing::warn!(error = %format!("{e:#}"), "OCR cache not cleaned"),
+        }
     }
 
     /// Delete all documents whose source starts with the given folder path.
@@ -1697,6 +1727,8 @@ impl RAGEngine {
     /// path matches all files indexed under it.
     pub async fn delete_by_source_prefix(&mut self, folder: &str) -> Result<usize> {
         let normalized = normalize_source_path(Path::new(folder));
+        self.forget_cached_scans(|row| row.source.starts_with(&normalized))
+            .await;
         let deleted = self.store.delete_by_source_prefix(&normalized).await?;
         self.text_search.delete_by_source_prefix(&normalized)?;
         self.text_search.commit()?;
@@ -1706,6 +1738,8 @@ impl RAGEngine {
     /// Delete all chunks belonging to a specific space.
     /// Removes from both the vector store (LanceDB) and the text search index (Tantivy).
     pub async fn delete_by_space_id(&mut self, space_id: &str) -> Result<usize> {
+        self.forget_cached_scans(|row| row.space_id == space_id)
+            .await;
         // First, get all chunk IDs for this space so we can remove them from Tantivy
         let predicate = format!("space_id = '{}'", space_id.replace('\'', "''"));
         let chunks = self.store.list_chunks(Some(&predicate), 1_000_000).await?;
@@ -1731,6 +1765,7 @@ impl RAGEngine {
     pub async fn clear_all_data(&mut self) -> Result<()> {
         self.store.clear().await?;
         self.text_search.clear()?;
+        self.ocr_cache.clear();
         Ok(())
     }
 
@@ -2298,6 +2333,76 @@ mod page_metadata_tests {
         ] {
             assert!(!seeks_references(query), "{query}");
         }
+    }
+
+    /// A scan indexed from the OCR cache loses its entry when it leaves the
+    /// index, by file or by its source's space.
+    #[tokio::test]
+    async fn ocr_cache_entries_leave_the_cache_with_their_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.path().join("data");
+        config.embedding.model_dir = dir.path().join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        // PP-OCRv6 only, and it is not installed: the scans index only from the cache.
+        config.ocr.engine = crate::config::OcrEngineChoice::PpOcr;
+        let mut engine = RAGEngine::new(config).await.unwrap();
+        engine
+            .attach_search_models(SearchModels::from_embedder(Arc::new(
+                crate::statements::testing::WordEmbedder::default(),
+            )))
+            .unwrap();
+        let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../shodh-eval/data/scanned/corpus/contracts/lease-saffron-tidewater-scan.pdf");
+        let index = |name: &str| {
+            let path = dir.path().join(name);
+            std::fs::copy(&corpus, &path).unwrap();
+            path
+        };
+        let cache = engine.ocr_cache.clone();
+
+        let by_file = index("a-scan.pdf");
+        let source = normalize_source_path(&by_file);
+        cache
+            .put(&crate::processing::parser::tests::cached_scan(
+                &by_file,
+                "Rent is due monthly",
+            ))
+            .unwrap();
+        engine
+            .add_document_from_file(
+                &by_file,
+                HashMap::from([("space_id".to_string(), "s1".to_string())]),
+            )
+            .await
+            .expect("indexed from the OCR cache");
+        assert!(cache.get(&source).is_some());
+        engine
+            .delete_by_source(&by_file.to_string_lossy())
+            .await
+            .unwrap();
+        assert!(cache.get(&source).is_none(), "removed with its file");
+
+        let by_space = index("b-scan.pdf");
+        let source = normalize_source_path(&by_space);
+        cache
+            .put(&crate::processing::parser::tests::cached_scan(
+                &by_space,
+                "Rent is due monthly",
+            ))
+            .unwrap();
+        engine
+            .add_document_from_file(
+                &by_space,
+                HashMap::from([("space_id".to_string(), "s2".to_string())]),
+            )
+            .await
+            .unwrap();
+        engine.delete_by_space_id("s1").await.unwrap();
+        assert!(cache.get(&source).is_some(), "another space's file stays");
+        engine.delete_by_space_id("s2").await.unwrap();
+        assert!(cache.get(&source).is_none(), "removed with its space");
     }
 
     async fn engine_with_paper(dir: &Path) -> RAGEngine {

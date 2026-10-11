@@ -16,6 +16,7 @@
 //! OCR runs behind the user's work: half the logical cores, at below-normal
 //! priority ([`priority`]). The app runs it in a child process ([`worker`]).
 
+pub mod cache;
 pub mod det;
 pub mod geometry;
 pub mod order;

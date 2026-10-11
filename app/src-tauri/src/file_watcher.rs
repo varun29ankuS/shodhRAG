@@ -71,6 +71,9 @@ pub struct FolderSyncState {
     /// The documents no Library source owns were checked for an older index
     /// format in this run.
     unowned_checked: std::sync::atomic::AtomicBool,
+    /// Scans read without the scan reader were looked for in this run, once
+    /// the Library's folders are watched (see [crate::scan_reader::reread_on_start]).
+    scans_checked: std::sync::atomic::AtomicBool,
 }
 
 impl FolderSyncState {
@@ -80,6 +83,7 @@ impl FolderSyncState {
             watched: Mutex::new(HashMap::new()),
             running: tokio::sync::Mutex::new(()),
             unowned_checked: std::sync::atomic::AtomicBool::new(false),
+            scans_checked: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -341,6 +345,15 @@ pub async fn sync_folder_sources(
                 }
             }
         }
+    }
+    drop(watched);
+    // Once the folders are watched, so scans in them can go to their syncs.
+    if !state
+        .scans_checked
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        let rag = app.state::<RagState>().rag.clone();
+        tauri::async_runtime::spawn(crate::scan_reader::reread_on_start(app.clone(), rag));
     }
     Ok(())
 }

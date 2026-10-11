@@ -291,6 +291,15 @@ fn source_predicate(source: &str) -> String {
     format!("source = '{}'", source.replace('\'', "''"))
 }
 
+/// A LanceDB filter for the chunks that name no OCR engine. serde_json writes
+/// keys without spaces and escapes a quote inside a value, so only the key
+/// itself matches.
+fn no_ocr_engine_recorded() -> String {
+    format!(
+        "metadata_json NOT LIKE '%\"{}\":\"%'",
+        crate::processing::parser::OCR_ENGINE_KEY
+    )
+}
 /// A LanceDB filter for the chunks not indexed with [`INDEX_FORMAT`]. The
 /// metadata is serialized by serde_json (no spaces), so the current format
 /// appears verbatim as `"index_format":"<n>"`; inside a metadata value its
@@ -1979,6 +1988,16 @@ impl RAGEngine {
         Ok(stale)
     }
 
+    /// The indexed documents with chunks that name no OCR engine
+    /// ([`crate::processing::parser::OCR_ENGINE_KEY`]): every document that
+    /// was not read by OCR, and scans indexed before the engine was recorded.
+    pub async fn documents_without_ocr_engine(
+        &self,
+    ) -> Result<Vec<crate::storage::DocumentSourceRow>> {
+        self.store
+            .document_sources_where(Some(&no_ocr_engine_recorded()))
+            .await
+    }
     /// The metadata stored with the first chunk of `source` (empty when it
     /// has none).
     pub async fn document_metadata(&self, source: &str) -> Result<HashMap<String, String>> {

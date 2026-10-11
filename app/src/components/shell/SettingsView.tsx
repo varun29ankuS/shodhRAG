@@ -8,6 +8,7 @@ import BackgroundSettings from '../BackgroundSettings';
 import MemorySettings from '../MemorySettings';
 import AnswerCheckSettings from '../AnswerCheckSettings';
 import TableModelSettings from '../TableModelSettings';
+import ScanReaderSettings from '../ScanReaderSettings';
 import ToolsSettings from '../ToolsSettings';
 import { cn } from '../../lib/utils';
 import { useWorkspaces } from '../../features/workspaces/WorkspaceContext';
@@ -23,7 +24,7 @@ const SECTIONS: { id: SettingsSection; label: string; description: string }[] = 
   {
     id: 'search',
     label: 'Search',
-    description: 'Choose how many passages each document search retrieves.',
+    description: 'Choose how many passages each document search retrieves, and the local models that read scans and tables.',
   },
   {
     id: 'tools',
@@ -157,6 +158,7 @@ export default function SettingsView({
                     onReset={onResetSearchConfig}
                   />
                   <AnswerCheckSettings />
+                  <ScanReaderSettings />
                   <TableModelSettings />
                 </>
               ) : section === 'tools' ? (

@@ -134,3 +134,46 @@ export function errorMessage(error: unknown): string {
   }
   return raw;
 }
+
+/** Folder of the scan reader's files (the PP-OCRv6 model) under the model folder. */
+export const SCAN_READER_DIR = 'pp-ocrv6/';
+
+/** The scan reader as the search model status reports it. */
+export interface ScanReaderSummary {
+  /** Every file of the scan reader is on disk. */
+  installed: boolean;
+  /** A download of it was interrupted and resumes. */
+  resumable: boolean;
+  totalBytes: number;
+  /** Bytes still to download. */
+  remainingBytes: number;
+}
+
+/**
+ * Whether the scan reader is installed, from the status's model files. Null when
+ * the status lists none of its files (a build that did not install it).
+ */
+export function scanReaderSummary(status: SearchModelsStatus): ScanReaderSummary | null {
+  const files = status.artifacts.filter(a => a.relativePath.replace(/\\/g, '/').startsWith(SCAN_READER_DIR));
+  if (files.length === 0) return null;
+  let remaining = 0;
+  let resumable = false;
+  let total = 0;
+  for (const file of files) {
+    total += file.size;
+    // Present but not hashed yet (status checks skip hashing once search is ready).
+    if (file.state === 'verified' || file.state === 'unverified') continue;
+    if (file.state === 'partial') {
+      resumable = true;
+      remaining += Math.max(0, file.size - file.presentBytes);
+    } else {
+      remaining += file.size;
+    }
+  }
+  return {
+    installed: files.every(f => f.state === 'verified' || f.state === 'unverified'),
+    resumable,
+    totalBytes: total,
+    remainingBytes: remaining,
+  };
+}

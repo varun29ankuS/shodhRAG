@@ -231,15 +231,27 @@ fn try_conjunction_split(query: &str) -> Option<DecomposedQuery> {
         return None;
     }
 
-    let parts: Vec<&str> = CONJUNCTION_SPLIT_RE.split(query).collect();
-    if parts.len() < 2 {
+    // A conjunction separates two questions only when what follows it asks
+    // something on its own ("... and what is Y"). Otherwise it joins words
+    // within one question ("the Northwind and Bluepeak agreement", "rent and
+    // deposit"), and the text stays with the part before it.
+    let mut parts: Vec<String> = Vec::new();
+    let mut start = 0;
+    for conjunction in CONJUNCTION_SPLIT_RE.find_iter(query) {
+        let next = &query[conjunction.end()..];
+        if starts_a_question(next) {
+            parts.push(query[start..conjunction.start()].trim().to_string());
+            start = conjunction.end();
+        }
+    }
+    if parts.is_empty() {
         return None;
     }
+    parts.push(query[start..].trim().to_string());
 
     // Each part must have enough substance to be a standalone query
     let valid_parts: Vec<String> = parts
         .into_iter()
-        .map(|p| p.trim().to_string())
         .filter(|p| p.split_whitespace().count() >= 3)
         .collect();
 
@@ -252,6 +264,56 @@ fn try_conjunction_split(query: &str) -> Option<DecomposedQuery> {
     } else {
         None
     }
+}
+
+/// Words that open a question or a request of its own: interrogatives,
+/// auxiliaries that start a yes/no question, and verbs of a request.
+const QUESTION_STARTS: [&str; 34] = [
+    "what",
+    "which",
+    "who",
+    "whom",
+    "whose",
+    "when",
+    "where",
+    "why",
+    "how",
+    "is",
+    "are",
+    "was",
+    "were",
+    "do",
+    "does",
+    "did",
+    "can",
+    "could",
+    "should",
+    "would",
+    "will",
+    "has",
+    "have",
+    "had",
+    "list",
+    "show",
+    "give",
+    "tell",
+    "find",
+    "explain",
+    "describe",
+    "summarize",
+    "summarise",
+    "compare",
+];
+
+/// Whether `text` begins with a word that opens a question or request of
+/// its own ([`QUESTION_STARTS`]).
+fn starts_a_question(text: &str) -> bool {
+    text.split_whitespace().next().is_some_and(|word| {
+        let word = word
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_lowercase();
+        QUESTION_STARTS.contains(&word.as_str())
+    })
 }
 
 /// Merge and deduplicate results from multiple sub-query searches.
@@ -348,6 +410,51 @@ mod tests {
         let result = decompose_query("what is the PAN number and what is the monthly salary");
         assert_eq!(result.strategy, DecompositionStrategy::Conjunction);
         assert_eq!(result.sub_queries.len(), 2);
+    }
+
+    #[test]
+    fn a_conjunction_inside_one_name_does_not_split_the_question() {
+        for query in [
+            "How much notice does the Northwind and Bluepeak agreement require to terminate for convenience?",
+            "What does the Saffron Estates and Tidewater Logistics lease say about rent and deposit?",
+            "Which courts hear disputes between Orchid Biolabs and Kestrel Robotics?",
+            "How many hours of dashboard migration and incident response were billed?",
+        ] {
+            let result = decompose_query(query);
+            assert_eq!(result.strategy, DecompositionStrategy::Single, "{query}");
+            assert_eq!(result.sub_queries, vec![query.to_string()]);
+        }
+    }
+
+    #[test]
+    fn questions_joined_by_a_conjunction_still_split() {
+        let result = decompose_query(
+            "What is the monthly rent of the Harbor Street unit and who signed the Bluepeak agreement",
+        );
+        assert_eq!(result.strategy, DecompositionStrategy::Conjunction);
+        assert_eq!(
+            result.sub_queries,
+            vec![
+                "What is the monthly rent of the Harbor Street unit",
+                "who signed the Bluepeak agreement",
+            ]
+        );
+        // A name with a conjunction inside one of the questions stays whole.
+        let result = decompose_query(
+            "What does the Northwind and Bluepeak agreement say about liability and how long is the Tidewater lease",
+        );
+        assert_eq!(
+            result.sub_queries,
+            vec![
+                "What does the Northwind and Bluepeak agreement say about liability",
+                "how long is the Tidewater lease",
+            ]
+        );
+        let result = decompose_query("Summarize the travel policy and list the hybrid work rules");
+        assert_eq!(
+            result.sub_queries,
+            vec!["Summarize the travel policy", "list the hybrid work rules"]
+        );
     }
 
     #[test]

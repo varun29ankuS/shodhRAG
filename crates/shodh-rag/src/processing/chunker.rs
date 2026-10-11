@@ -155,16 +155,16 @@ pub const OPENING_MAX_TOKENS: usize = 48;
 const OPENING_MAX_CHARS: usize = 320;
 
 /// What every chunk of a document carries ahead of its own text where it is
-/// embedded, keyword-indexed and reranked: the document's title and its
-/// opening words. The opening is where a contract names its parties, a lease
-/// its premises, an invoice its seller and buyer, a paper its title and
-/// authors. Without it, a question that names a document by its parties
+/// embedded, keyword-indexed and reranked: the document's title and the
+/// names in its opening. The opening is where a contract names its parties,
+/// a lease its premises, an invoice its seller and buyer, a paper its title
+/// and authors. Without them, a question that names a document by its parties
 /// ("the rent under the Saffron Estates lease") matches the first page, which
 /// is dense with those names, better than the clause that answers it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DocumentContext {
     pub title: String,
-    /// The document's first words ([`document_opening`]).
+    /// The names in the document's first words ([`opening_names`]).
     pub opening: Option<String>,
 }
 
@@ -177,9 +177,11 @@ impl DocumentContext {
         }
     }
 
-    /// The context with the opening of `text` ([`document_opening`]).
+    /// The context with the names in the opening of `text`
+    /// ([`document_opening`], [`opening_names`]).
     pub fn with_opening(mut self, text: &str, count_tokens: &dyn Fn(&str) -> usize) -> Self {
-        self.opening = document_opening(text, OPENING_MAX_TOKENS, count_tokens);
+        self.opening = document_opening(text, OPENING_MAX_TOKENS, count_tokens)
+            .and_then(|opening| opening_names(&opening));
         self
     }
 
@@ -202,31 +204,26 @@ impl DocumentContext {
             clause
         })
     }
+}
 
-    /// Whether `text` begins with the opening (word for word, whatever the
-    /// spacing): the document's first chunk does.
-    pub fn begins_with_opening(&self, text: &str) -> bool {
-        let Some(opening) = &self.opening else {
-            return false;
-        };
-        let mut words = text.split_whitespace();
-        opening
-            .split_whitespace()
-            .all(|word| words.next() == Some(word))
-    }
-
-    /// Removes the opening from the context of each chunk whose own text
-    /// begins with it (the document's first chunk): it would say it twice.
-    pub fn drop_opening_where_present(&self, chunks: &mut [ContextualChunkResult]) {
-        let Some(clause) = self.opening_clause() else {
-            return;
-        };
-        for chunk in chunks {
-            if self.begins_with_opening(&chunk.text) {
-                chunk.context = chunk.context.replacen(&clause, "", 1);
-            }
-        }
-    }
+/// The names among the words of `opening`: those that begin with a capital
+/// letter or a digit (parties, places, products, numbers, the title), in
+/// order. Only names are carried: the opening's other words say what the
+/// first chunk says (its purpose, its date, "made between"), and carried on
+/// every chunk they made each one say all of the first chunk plus its own
+/// words, so any chunk adding one word of a question the first chunk answers
+/// ("party" for "who are the parties") outranked it. `None` when there are no
+/// names (text in a script without capitals carries none).
+pub fn opening_names(opening: &str) -> Option<String> {
+    let names: Vec<&str> = opening
+        .split_whitespace()
+        .filter(|word| {
+            word.chars()
+                .next()
+                .is_some_and(|c| c.is_uppercase() || c.is_ascii_digit())
+        })
+        .collect();
+    (!names.is_empty()).then(|| names.join(" "))
 }
 
 /// The first words of `text`, whitespace collapsed to single spaces, cut at a
@@ -881,6 +878,20 @@ mod tests {
         assert!(opening.chars().count() <= OPENING_MAX_CHARS);
         assert!(opening.ends_with("word"));
         assert_eq!(document_opening(" \n\t ", 48, &words), None);
+    }
+
+    #[test]
+    fn the_opening_carries_its_names_only() {
+        assert_eq!(
+            opening_names("This Agreement is made between Orchid Biolabs Ltd. and Kestrel Robotics GmbH. It takes effect on 12 January 2026.").as_deref(),
+            Some("This Agreement Orchid Biolabs Ltd. Kestrel Robotics GmbH. It 12 January 2026.")
+        );
+        assert_eq!(opening_names("über die mietsache und die kaution"), None);
+        let context = DocumentContext::titled("nda").with_opening(
+            "Purpose: the parties are evaluating a joint lab automation project.",
+            &words,
+        );
+        assert_eq!(context.opening.as_deref(), Some("Purpose:"));
     }
 
     #[test]

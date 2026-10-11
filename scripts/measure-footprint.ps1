@@ -441,6 +441,19 @@ function Write-StartupDiagnostics($App, $Cdp) {
     Write-Host ("WebView2 runtime: {0}" -f $(if ($runtime.Count) { $runtime -join ', ' } else { 'not registered' }))
     $tree = @(Get-ProcessTree $App.Process.Id $App.Start)
     Write-Host ("App processes: {0}" -f (($tree | ForEach-Object { $_.Name }) -join ', '))
+    # Whether the debugging switch reached the browser process, and what it listens on.
+    foreach ($p in @($tree | Where-Object { $_.Name -eq 'msedgewebview2.exe' })) {
+        $cim = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $([int]$p.ProcessId)" -ErrorAction SilentlyContinue
+        if ($null -eq $cim -or $cim.CommandLine -match '--type=') { continue }
+        Write-Host "Browser process $($p.ProcessId): $($cim.CommandLine)"
+        $listening = @(Get-NetTCPConnection -State Listen -OwningProcess ([int]$p.ProcessId) -ErrorAction SilentlyContinue | ForEach-Object { "$($_.LocalAddress):$($_.LocalPort)" })
+        Write-Host ("Listening: {0}" -f $(if ($listening.Count) { $listening -join ', ' } else { 'nothing' }))
+        $dataDir = [regex]::Match($cim.CommandLine, '--user-data-dir="?([^"]+?)"?(\s--|$)').Groups[1].Value
+        if ($dataDir) {
+            $portFile = Join-Path $dataDir 'DevToolsActivePort'
+            Write-Host ("DevToolsActivePort: {0}" -f $(if (Test-Path -LiteralPath $portFile) { (Get-Content -LiteralPath $portFile) -join ' ' } else { 'missing' }))
+        }
+    }
     # Lance logs every table open at info level; everything else is worth seeing.
     foreach ($file in @(Get-ChildItem -LiteralPath $App.LogDir -Filter ("app-{0}*" -f $App.LaunchMs) -ErrorAction SilentlyContinue)) {
         Write-Host "--- $($file.Name) (last 60 lines other than table loads) ---"

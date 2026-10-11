@@ -141,3 +141,26 @@ pub fn column(x: f32, top: f32, tag: &str, n: usize) -> Vec<Text> {
         })
         .collect()
 }
+
+/// `pdf` locked with a user password (RC4, revision 2): its `/U` entry does
+/// not match the empty password, so it needs a password to open. Its content
+/// is left as it was; only a reader that checks the password refuses it.
+pub fn lock_with_password(pdf: &[u8]) -> Vec<u8> {
+    use lopdf::StringFormat;
+    let mut doc = Document::load_mem(pdf).expect("fixture pdf");
+    let encrypt_id = doc.add_object(dictionary! {
+        "Filter" => "Standard",
+        "V" => 1,
+        "R" => 2,
+        "Length" => 40,
+        "P" => -4,
+        "O" => Object::String(vec![0x4f; 32], StringFormat::Hexadecimal),
+        "U" => Object::String(vec![0x55; 32], StringFormat::Hexadecimal),
+    });
+    doc.trailer.set("Encrypt", encrypt_id);
+    let id = Object::String(vec![0x1d; 16], StringFormat::Hexadecimal);
+    doc.trailer.set("ID", vec![id.clone(), id]);
+    let mut out = Vec::new();
+    doc.save_to(&mut out).expect("serialize pdf");
+    out
+}

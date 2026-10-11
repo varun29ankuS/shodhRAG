@@ -46,6 +46,19 @@ pub const OCR_ENGINE_SYSTEM: &str = "windows-ocr";
 /// the reader is installed.
 pub const OCR_READER_MISSING_KEY: &str = "ocr_reader_missing";
 
+/// A PDF that needs a password to open: its text cannot be read, by OCR
+/// either, so it is not treated as a scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("this PDF is protected with a password, so its text cannot be read")]
+pub struct PdfEncrypted;
+
+/// A PDF that no reader here could open and OCR could not read: damaged,
+/// incomplete (a partial download) or not a PDF at all. Carries what the
+/// PDF reader said.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("this PDF is damaged or incomplete ({0})")]
+pub struct PdfDamaged(pub String);
+
 /// Called with (page being read, pages) while OCR reads a scanned PDF, before
 /// each page (1-based).
 pub type OcrProgress<'a> = &'a dyn Fn(usize, usize);
@@ -523,11 +536,13 @@ impl DocumentParser {
 
         // Form fields and comments live outside the text layer; they are placed into
         // the structured document as blocks with their pages and boxes.
-        let forms = match pdf_forms::extract_forms(&bytes) {
-            Ok(forms) => forms,
+        // The form reader also says whether the PDF opens at all and whether
+        // it needs a password, which decides the error when nothing reads it.
+        let (forms, form_error) = match pdf_forms::extract_forms(&bytes) {
+            Ok(forms) => (forms, None),
             Err(e) => {
                 tracing::debug!(error = %e, "PDF form fields not read: {}", path.display());
-                pdf_forms::FormExtraction::default()
+                (pdf_forms::FormExtraction::default(), Some(e))
             }
         };
         if !forms.fields.is_empty() {
@@ -543,6 +558,8 @@ impl DocumentParser {
             None => TableMode::Candidates,
         };
         let mut layout_failed = false;
+        // Pages the layout parser found (none when it could not read the file).
+        let mut layout_pages = 0;
         match pdf_layout::parse_pdf_layout_with(&bytes, mode) {
             Ok(parsed) => {
                 let mut doc = parsed.document;
@@ -550,6 +567,7 @@ impl DocumentParser {
                     tracing::warn!(error = %error, "table model page skipped: {}", path.display());
                 }
                 let chars = doc.text_chars();
+                layout_pages = doc.pages.len();
                 if !is_effectively_scanned(chars, doc.pages.len()) {
                     insert_form_fields(&mut doc, &forms.fields);
                     return Ok(PdfParse {
@@ -582,6 +600,18 @@ impl DocumentParser {
                 });
             }
         }
+        // No text was read. A PDF locked with a password is not a scan: OCR
+        // would render blank pages, and the scan reader would not help.
+        if matches!(form_error, Some(pdf_forms::FormError::Encrypted)) {
+            return Err(anyhow::Error::new(PdfEncrypted).context(path.display().to_string()));
+        }
+        // Neither PDF reader could open it: OCR is still tried (its renderer
+        // may manage), and if it reads nothing the file is reported damaged
+        // rather than as a scan.
+        let damaged = match &form_error {
+            Some(pdf_forms::FormError::Open(reason)) if layout_pages == 0 => Some(reason.clone()),
+            _ => None,
+        };
 
         let (read, reader_missing) = self.ocr_pdf(path, &bytes, progress);
         match read {
@@ -604,6 +634,9 @@ impl DocumentParser {
                 tracing::warn!("No OCR engine is available for {}", path.display());
             }
             Err(e) => tracing::warn!("OCR failed for {}: {:#}", path.display(), e),
+        }
+        if let Some(reason) = damaged {
+            return Err(anyhow::Error::new(PdfDamaged(reason)).context(path.display().to_string()));
         }
         // The scan reader may read what nothing here could.
         if reader_missing {
@@ -843,6 +876,31 @@ fn is_ocr_candidate(path: &Path) -> bool {
             .iter()
             .any(|x| e.eq_ignore_ascii_case(x))
     })
+}
+
+/// Whether the file at `path` is one the parser reads with OCR: an image,
+/// or a PDF without a text layer (the decision [`DocumentParser::parse_file`]
+/// makes before it reads a PDF with OCR). False when the file cannot be read.
+pub fn needs_ocr(path: &Path) -> bool {
+    if !is_ocr_candidate(path) {
+        return false;
+    }
+    let is_pdf = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
+    if !is_pdf {
+        return true;
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    match pdf_layout::parse_pdf_layout_with(&bytes, TableMode::Candidates) {
+        Ok(parsed) => {
+            is_effectively_scanned(parsed.document.text_chars(), parsed.document.pages.len())
+        }
+        Err(_) => pdf_extract_text(&bytes).is_none(),
+    }
 }
 
 /// Whether a PDF's text layer is too thin to be its real content: under 200
@@ -1611,6 +1669,115 @@ pub(crate) mod tests {
                 "{err:#}"
             );
         }
+    }
+
+    /// A PDF that needs a password, and one no reader can open, say so and
+    /// are not taken for scans (the scan reader would not help). The Library
+    /// turns these reasons into plain words by the phrases asserted here
+    /// (`app/src/features/library/indexingAdvice.ts`).
+    #[test]
+    fn locked_and_damaged_pdfs_are_not_reported_as_scans() {
+        use crate::processing::pdf_fixtures::{build_pdf, lock_with_password};
+        let parser = DocumentParser::new().with_ocr(
+            super::super::ocr::shared_ocr_model(),
+            OcrConfig {
+                engine: OcrEngineChoice::PpOcr,
+                ..OcrConfig::default()
+            },
+        );
+        let dir = tempfile::tempdir().unwrap();
+
+        let locked = dir.path().join("statement.pdf");
+        std::fs::write(&locked, lock_with_password(&build_pdf(&[vec![]], None))).unwrap();
+        let err = parser.parse_file(&locked).expect_err("a locked PDF");
+        assert!(err.is::<PdfEncrypted>(), "{err:#}");
+        assert!(!err.is::<ScanReaderMissing>(), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("protected with a password"),
+            "{err:#}"
+        );
+
+        for (name, bytes) in [
+            (
+                "partial-download.pdf",
+                &b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog"[..],
+            ),
+            ("not-a-pdf.pdf", &b"PK\x03\x04 this is a zip, not a PDF"[..]),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            let err = parser.parse_file(&path).expect_err("a damaged PDF");
+            assert!(err.is::<PdfDamaged>(), "{name}: {err:#}");
+            assert!(
+                format!("{err:#}").contains("damaged or incomplete"),
+                "{name}: {err:#}"
+            );
+        }
+
+        // A PDF whose empty password opens it is read as usual.
+        let open = dir.path().join("open.pdf");
+        std::fs::write(
+            &open,
+            build_pdf(
+                &[vec![crate::processing::pdf_fixtures::text(
+                    72.0,
+                    700.0,
+                    11.0,
+                    "The deposit is returned within thirty days of the end of the lease.",
+                )]],
+                None,
+            ),
+        )
+        .unwrap();
+        assert!(parser.parse_file(&open).is_ok());
+    }
+
+    /// Scans are told apart from text PDFs without OCR, as `parse_file` tells
+    /// them apart.
+    #[test]
+    fn needs_ocr_finds_scans_and_images_only() {
+        assert!(needs_ocr(&scanned("invoices/inv-2025-0117-scan.pdf")));
+        assert!(needs_ocr(&scanned(
+            "contracts/nda-orchid-kestrel-p2-scan.png"
+        )));
+        let dir = tempfile::tempdir().unwrap();
+        let text_pdf = dir.path().join("lease.pdf");
+        let lines: Vec<_> = (0..30)
+            .map(|i| {
+                crate::processing::pdf_fixtures::text(
+                    72.0,
+                    740.0 - 20.0 * i as f32,
+                    11.0,
+                    "The tenant pays the rent on the first working day of each month.",
+                )
+            })
+            .collect();
+        std::fs::write(
+            &text_pdf,
+            crate::processing::pdf_fixtures::build_pdf(&[lines], None),
+        )
+        .unwrap();
+        assert!(!needs_ocr(&text_pdf));
+        let notes = dir.path().join("notes.txt");
+        std::fs::write(&notes, "plain text").unwrap();
+        assert!(!needs_ocr(&notes));
+        assert!(!needs_ocr(&dir.path().join("gone.pdf")), "unreadable");
+    }
+
+    /// The other reasons the Library reads: a damaged Office file and an
+    /// unreadable spreadsheet.
+    #[test]
+    fn damaged_office_files_say_what_failed() {
+        let parser = DocumentParser::new();
+        let dir = tempfile::tempdir().unwrap();
+        let docx = dir.path().join("report.docx");
+        std::fs::write(&docx, b"not a zip archive").unwrap();
+        let err = format!("{:#}", parser.parse_file(&docx).expect_err("damaged docx"));
+        assert!(err.contains("as ZIP"), "{err}");
+        let xlsx = dir.path().join("budget.xlsx");
+        std::fs::write(&xlsx, b"not a zip archive").unwrap();
+        let err = format!("{:#}", parser.parse_file(&xlsx).expect_err("damaged xlsx"));
+        assert!(err.contains("failed to open spreadsheet"), "{err}");
     }
 
     /// The system OCR is choosable, but `Auto` uses it only where the scan

@@ -43,8 +43,13 @@ const FF_MULTISELECT: i64 = 1 << 21;
 pub enum FormError {
     #[error("cannot open PDF: {0}")]
     Open(String),
+    /// The PDF needs a password to open (its user password is not empty).
     #[error("PDF is encrypted with a password")]
     Encrypted,
+    /// The PDF is encrypted in a way this reader cannot decrypt (it may
+    /// still open elsewhere: an empty user password with AES encryption).
+    #[error("PDF encryption not readable here: {0}")]
+    Undecryptable(String),
 }
 
 /// What kind of field a value came from.
@@ -150,7 +155,12 @@ pub fn extract_forms(bytes: &[u8]) -> Result<FormExtraction, FormError> {
     let mut doc = Document::load_mem(bytes).map_err(|e| FormError::Open(e.to_string()))?;
     if doc.is_encrypted() {
         // Most "encrypted" PDFs only restrict editing: the user password is empty.
-        doc.decrypt("").map_err(|_| FormError::Encrypted)?;
+        doc.decrypt("").map_err(|e| match e {
+            lopdf::Error::Decryption(lopdf::encryption::DecryptionError::IncorrectPassword) => {
+                FormError::Encrypted
+            }
+            other => FormError::Undecryptable(other.to_string()),
+        })?;
     }
     Ok(Extractor::new(&doc).run())
 }
@@ -917,6 +927,11 @@ pub(crate) mod tests {
         assert!(matches!(
             extract_forms(b"not a pdf"),
             Err(FormError::Open(_))
+        ));
+        // Only a password that is actually needed reads as one.
+        assert!(matches!(
+            extract_forms(&crate::processing::pdf_fixtures::lock_with_password(&plain)),
+            Err(FormError::Encrypted)
         ));
     }
 

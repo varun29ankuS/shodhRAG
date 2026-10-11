@@ -322,6 +322,10 @@ Pause and resume work per source.
 - *Ontology design cost.* Mitigated by a small core, standard-aligned domain packs, and agent-proposed, user-approved extensions instead of hand-authoring OWL.
 - *Over-constraining real documents.* Mitigated by counting dropped violations per class; a high drop rate is a signal to revise the ontology, surfaced on the Ontology page.
 
+**Status (2026-10-11).**
+- Built: the `shodh-ontology` crate with the TOML core (`ontology/core.toml`), the research pack (`ontology/packs/research.toml`), validation, versioned statements with provenance, supersession, ontology diffs, per-chunk slices and Turtle export. Long-term memory and research Result statements are stored as ontology statements.
+- Not built yet: the agent query tools (`describe_ontology`, `find_entities`, `get_entity`, `query_records`), agent-proposed extensions, OWL import and the Ontology settings page. Structured extraction across many files (the LlamaExtract-style gap) is the next project on top of records and these tools.
+
 ## 7. Answering
 
 ### Flow

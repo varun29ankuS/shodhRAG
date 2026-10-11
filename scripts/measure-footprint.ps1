@@ -114,10 +114,11 @@ function Test-Models {
     [bool]((Test-Path -LiteralPath (Join-Path $e5 'tokenizer.json')) -and (Get-ChildItem -LiteralPath $e5 -Filter '*.onnx' -ErrorAction SilentlyContinue))
 }
 
-# WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS opens the DevTools port. The app's own
-# flags (WEBVIEW_BROWSER_ARGS in profile.rs, read from this checkout) are
-# repeated in it, so the measured WebView runs with them whether a WebView2
-# version merges the variable with the app's flags or lets it replace them.
+# WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS opens the DevTools port. The app adds
+# the variable to its own flags (webview_browser_args in profile.rs), because
+# WebView2 153 drops the variable when an app passes flags. The app's flags
+# (read from this checkout) are repeated in it too, so a runtime that lets the
+# variable replace the app's flags still runs the measured WebView with them.
 $ProfileSource = Join-Path $PSScriptRoot '../app/src-tauri/src/profile.rs'
 $AppWebViewArgs = [regex]::Match((Get-Content -Raw -LiteralPath $ProfileSource), 'WEBVIEW_BROWSER_ARGS: &str =\s*"([^"]+)"')
 if (-not $AppWebViewArgs.Success) { throw "WEBVIEW_BROWSER_ARGS not found in $ProfileSource" }
@@ -431,9 +432,33 @@ function Write-StartupDiagnostics($App, $Cdp) {
             Write-Host "Page did not answer: $($_.Exception.Message)"
         }
     }
+    $runtimeKeys = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+        'HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+        'HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+    $runtime = @(foreach ($key in $runtimeKeys) {
+            $item = Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue
+            if ($null -ne $item -and $item.PSObject.Properties['pv'] -and $item.pv) { "$($item.pv) ($key)" }
+        })
+    Write-Host ("WebView2 runtime: {0}" -f $(if ($runtime.Count) { $runtime -join ', ' } else { 'not registered' }))
+    $tree = @(Get-ProcessTree $App.Process.Id $App.Start)
+    Write-Host ("App processes: {0}" -f (($tree | ForEach-Object { $_.Name }) -join ', '))
+    # Whether the debugging switch reached the browser process, and what it listens on.
+    foreach ($p in @($tree | Where-Object { $_.Name -eq 'msedgewebview2.exe' })) {
+        $cim = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $([int]$p.ProcessId)" -ErrorAction SilentlyContinue
+        if ($null -eq $cim -or $cim.CommandLine -match '--type=') { continue }
+        Write-Host "Browser process $($p.ProcessId): $($cim.CommandLine)"
+        $listening = @(Get-NetTCPConnection -State Listen -OwningProcess ([int]$p.ProcessId) -ErrorAction SilentlyContinue | ForEach-Object { "$($_.LocalAddress):$($_.LocalPort)" })
+        Write-Host ("Listening: {0}" -f $(if ($listening.Count) { $listening -join ', ' } else { 'nothing' }))
+        $dataDir = [regex]::Match($cim.CommandLine, '--user-data-dir="?([^"]+?)"?(\s--|$)').Groups[1].Value
+        if ($dataDir) {
+            $portFile = Join-Path $dataDir 'DevToolsActivePort'
+            Write-Host ("DevToolsActivePort: {0}" -f $(if (Test-Path -LiteralPath $portFile) { (Get-Content -LiteralPath $portFile) -join ' ' } else { 'missing' }))
+        }
+    }
+    # Lance logs every table open at info level; everything else is worth seeing.
     foreach ($file in @(Get-ChildItem -LiteralPath $App.LogDir -Filter ("app-{0}*" -f $App.LaunchMs) -ErrorAction SilentlyContinue)) {
-        Write-Host "--- $($file.Name) (last 60 lines) ---"
-        Get-Content -LiteralPath $file.FullName -Tail 60 | ForEach-Object { Write-Host $_ }
+        Write-Host "--- $($file.Name) (last 60 lines other than table loads) ---"
+        Get-Content -LiteralPath $file.FullName | Where-Object { $_ -notmatch 'event="loading"' } | Select-Object -Last 60 | ForEach-Object { Write-Host $_ }
     }
     Write-Host '--- End of startup diagnostics ---'
 }

@@ -1,4 +1,4 @@
-name: CI
+﻿name: CI
 
 on:
   pull_request:
@@ -156,9 +156,11 @@ jobs:
   # Memory and startup budget of the release build: idle on a fresh profile
   # with the search models installed (they load only when used). Five runs,
   # the median is gated; scripts/measure-footprint.ps1 documents what is
-  # measured. Budgets are the measured release build plus at most 10%
-  # (148.6 MB idle, 0.65 s to a usable window, median of 3 runs on a
-  # developer machine) and never above the targets (350 MB, 1.5 s). The idle
+  # measured. Budgets are the measured release build plus at most 10%, and
+  # never above the targets (350 MB, 1.5 s). Idle: 148.6 MB (median of 3 runs
+  # on a developer machine; 145.7 MB on this runner). Time to a usable window
+  # depends on the CPU, so it is measured here: 0.857 s, median of 5 runs on
+  # windows-latest (0.85-0.97 s), against 0.65 s on the developer machine. The idle
   # figure assumes WebView2 runs with --disable-gpu (profile.rs); with GPU
   # compositing it would be about 115 MB more.
   footprint:
@@ -209,7 +211,7 @@ jobs:
           -Exe target/release/shodh-rag-app.exe
           -ModelPath "${{ runner.temp }}/shodh-models" -InstallModels
           -Scenario idle -Runs 5 -IdleSeconds 60
-          -BudgetIdleMB 163 -BudgetWindowSeconds 0.72
+          -BudgetIdleMB 163 -BudgetWindowSeconds 0.94
           -Output footprint.json
 
       - name: Upload footprint report

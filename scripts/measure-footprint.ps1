@@ -434,7 +434,10 @@ function Write-StartupDiagnostics($App, $Cdp) {
     $runtimeKeys = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
         'HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
         'HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
-    $runtime = @($runtimeKeys | ForEach-Object { (Get-ItemProperty -LiteralPath $_ -ErrorAction SilentlyContinue).pv } | Where-Object { $_ })
+    $runtime = @(foreach ($key in $runtimeKeys) {
+            $item = Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue
+            if ($null -ne $item -and $item.PSObject.Properties['pv'] -and $item.pv) { "$($item.pv) ($key)" }
+        })
     Write-Host ("WebView2 runtime: {0}" -f $(if ($runtime.Count) { $runtime -join ', ' } else { 'not registered' }))
     $tree = @(Get-ProcessTree $App.Process.Id $App.Start)
     Write-Host ("App processes: {0}" -f (($tree | ForEach-Object { $_.Name }) -join ', '))

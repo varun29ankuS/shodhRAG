@@ -197,6 +197,13 @@ Security rules for all three phases:
 - **Enterprise admins:** aggregated usage from the audit log.
 - **Privacy policy:** a plain-language policy meeting DPDP Act 2023 and GDPR.
 
+**Status (2026-10-11): what changed since this update.**
+- **v0.0.1 is free.** The first public release ships unsigned Windows and macOS builds from GitHub Releases. Device-bound licensing, the license server and payment vendors above are deferred until there is a paid product; no store listing for now.
+- **Telemetry replaces opt-in analytics for the free build.** Usage telemetry is on by default with one-click off, and opt-in for users in the EU. It never carries content (queries, file names, document text). Crash and problem reports are sent only when the user sends them. The privacy policy states this before the release.
+- **Shipped:** the research pack (paper parsing with tables and equations, the citation graph via OpenAlex, Result statements, visual answers), the approved navigation plus an Inbox behind the header bell, workspaces, web search and fetch, and full task and event editing.
+- **Memory changed shape.** It shipped as long-term memory over the statement store, learned from chats and written only with the user's approval, instead of Markdown memory files.
+- **Team collaboration is unchanged and not started;** it still needs server mode.
+
 ## 4. Architecture
 
 ```

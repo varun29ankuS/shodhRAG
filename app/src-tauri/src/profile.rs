@@ -133,13 +133,32 @@ pub fn app_data_dir<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<PathBuf
 pub const WEBVIEW_BROWSER_ARGS: &str =
     "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu";
 
-/// Settings every window's WebView gets: [`WEBVIEW_BROWSER_ARGS`], and for a
+/// WebView2's own variable for extra browser flags (for example a DevTools
+/// port when measuring the app).
+pub const WEBVIEW_ARGS_ENV: &str = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
+
+/// The flags passed to WebView2: [`WEBVIEW_BROWSER_ARGS`] followed by the
+/// value of [`WEBVIEW_ARGS_ENV`], if any. Which of the app's flags and the
+/// variable WebView2 keeps differs between runtime versions (154 keeps the
+/// variable, 153 the app's flags), so the app passes both and every runtime
+/// starts the same browser.
+pub fn webview_browser_args(env_value: Option<&OsStr>) -> String {
+    match env_value.map(|v| v.to_string_lossy()) {
+        Some(extra) if !extra.trim().is_empty() => {
+            format!("{WEBVIEW_BROWSER_ARGS} {}", extra.trim())
+        }
+        _ => WEBVIEW_BROWSER_ARGS.to_string(),
+    }
+}
+
+/// Settings every window's WebView gets: [`webview_browser_args`], and for a
 /// separate profile, storage inside its folder (Windows, Linux) or its own
 /// data store (macOS 14+).
 pub fn webview_defaults<'a, R: Runtime, M: Manager<R>>(
     builder: WebviewWindowBuilder<'a, R, M>,
 ) -> WebviewWindowBuilder<'a, R, M> {
-    let builder = builder.additional_browser_args(WEBVIEW_BROWSER_ARGS);
+    let args = webview_browser_args(std::env::var_os(WEBVIEW_ARGS_ENV).as_deref());
+    let builder = builder.additional_browser_args(&args);
     let profile = active();
     match profile.webview_data_dir() {
         Some(dir) => builder
@@ -208,6 +227,20 @@ mod tests {
         assert_ne!(service_a, b.keyring_service());
         // Stable across runs: the same folder always finds its keys again.
         assert_eq!(service_a, a.clone().keyring_service());
+    }
+
+    #[test]
+    fn browser_flags_keep_the_apps_and_add_the_variables() {
+        assert_eq!(webview_browser_args(None), WEBVIEW_BROWSER_ARGS);
+        assert_eq!(
+            webview_browser_args(Some(OsStr::new("  "))),
+            WEBVIEW_BROWSER_ARGS
+        );
+        let args = webview_browser_args(Some(OsStr::new(" --remote-debugging-port=9339 ")));
+        assert_eq!(
+            args,
+            format!("{WEBVIEW_BROWSER_ARGS} --remote-debugging-port=9339")
+        );
     }
 
     #[test]

@@ -114,10 +114,11 @@ function Test-Models {
     [bool]((Test-Path -LiteralPath (Join-Path $e5 'tokenizer.json')) -and (Get-ChildItem -LiteralPath $e5 -Filter '*.onnx' -ErrorAction SilentlyContinue))
 }
 
-# WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS opens the DevTools port. The app's own
-# flags (WEBVIEW_BROWSER_ARGS in profile.rs, read from this checkout) are
-# repeated in it, so the measured WebView runs with them whether a WebView2
-# version merges the variable with the app's flags or lets it replace them.
+# WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS opens the DevTools port. The app adds
+# the variable to its own flags (webview_browser_args in profile.rs), because
+# WebView2 153 drops the variable when an app passes flags. The app's flags
+# (read from this checkout) are repeated in it too, so a runtime that lets the
+# variable replace the app's flags still runs the measured WebView with them.
 $ProfileSource = Join-Path $PSScriptRoot '../app/src-tauri/src/profile.rs'
 $AppWebViewArgs = [regex]::Match((Get-Content -Raw -LiteralPath $ProfileSource), 'WEBVIEW_BROWSER_ARGS: &str =\s*"([^"]+)"')
 if (-not $AppWebViewArgs.Success) { throw "WEBVIEW_BROWSER_ARGS not found in $ProfileSource" }

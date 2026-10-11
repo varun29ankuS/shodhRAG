@@ -1980,29 +1980,13 @@ impl RAGEngine {
             .unwrap_or_default())
     }
 
-    /// Whether indexing the file at `path`, indexed as `source`, again would
-    /// run OCR: it was read by OCR, and the OCR cache holds no current entry
-    /// for it (it was indexed before scans were cached).
-    pub async fn reindexing_runs_ocr(&self, path: &Path, source: &str) -> Result<bool> {
-        let first = self
-            .store
-            .list_chunks(Some(&source_predicate(source)), 1)
-            .await?;
-        let read_by_ocr = first.first().is_some_and(|hit| {
-            serde_json::from_str::<HashMap<String, String>>(&hit.metadata_json).is_ok_and(
-                |metadata| metadata.contains_key(crate::processing::parser::OCR_ENGINE_KEY),
-            )
-        });
-        Ok(read_by_ocr && !self.parser.has_cached_scan(path))
-    }
-
     /// Brings the stored chunks of `source` to the current [`INDEX_FORMAT`]
     /// without reading its file: each chunk's context is made again from
     /// what was stored with it (title, section, unit kind; the opening from
     /// the document's first chunk), and the chunks are embedded and
-    /// keyword-indexed again with it. Text, ids, pages and citations stay as
-    /// they are. For scans indexed before their OCR was cached, which could
-    /// otherwise be indexed again only by running OCR. Possible for structure
+    /// keyword-indexed again with it. Text, ids, pages, citations and refined
+    /// tables stay as they are, and nothing is parsed: scans indexed before
+    /// their OCR was cached are not read by OCR again. Possible for structure
     /// chunks only, whose context depends on nothing else; returns false,
     /// changing nothing, when a chunk is of another kind or there are none.
     pub async fn upgrade_in_place(&mut self, source: &str) -> Result<bool> {

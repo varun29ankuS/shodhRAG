@@ -15,9 +15,11 @@
 //! ([`crate::rag_engine::INDEX_FORMAT`]) are indexed again even when they did
 //! not change, so a library indexed by an earlier version is brought to the
 //! current format on its first sync instead of ranking old chunks against new
-//! ones. A scan read again this way comes from the OCR cache, not from OCR;
-//! a scan indexed before OCR was cached is brought up to date in place from
-//! its stored chunks ([`RAGEngine::upgrade_in_place`]) rather than read again.
+//! ones. Where their chunks allow it, unchanged files are brought up to date
+//! in place from their stored chunks ([`RAGEngine::upgrade_in_place`]): no
+//! parsing, no OCR (scans indexed before OCR was cached included), refined
+//! tables kept, embedding only. Other files are read again; a scan read
+//! again comes from the OCR cache.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -260,24 +262,10 @@ async fn stale_files(rag: &RwLock<RAGEngine>, source_id: &str) -> Result<BTreeSe
         .collect())
 }
 
-/// Brings the unchanged file `path` (index identity `key`) of an older index
-/// format up to date without reading it again when reading it would run OCR
-/// ([`RAGEngine::reindexing_runs_ocr`]). Returns whether it did; otherwise
-/// the file is to be indexed again from disk.
-async fn upgrade_scan_in_place(
-    rag: &RwLock<RAGEngine>,
-    path: &Path,
-    key: &str,
-) -> Result<bool, String> {
-    let runs_ocr = rag
-        .read()
-        .await
-        .reindexing_runs_ocr(path, key)
-        .await
-        .map_err(|e| format!("{e:#}"))?;
-    if !runs_ocr {
-        return Ok(false);
-    }
+/// Brings the unchanged file of index identity `key`, of an older index
+/// format, up to date from its stored chunks ([`RAGEngine::upgrade_in_place`]).
+/// Returns whether it did; otherwise the file is to be indexed again from disk.
+async fn upgrade_unchanged_in_place(rag: &RwLock<RAGEngine>, key: &str) -> Result<bool, String> {
     rag.write()
         .await
         .upgrade_in_place(key)
@@ -305,7 +293,7 @@ pub async fn upgrade_file_source(
     if !stale_files(rag, source_id).await?.contains(&key) {
         return Ok(false);
     }
-    if !upgrade_scan_in_place(rag, &file, &key).await? {
+    if !upgrade_unchanged_in_place(rag, &key).await? {
         crate::indexing::index_single_file(path, source_id, rag, None).await?;
     }
     tracing::info!(
@@ -490,7 +478,7 @@ pub async fn sync_folder(
                 .is_some_and(|(_, on_disk)| on_disk == stamp)
         });
         let indexed = if unchanged && stale.contains(&key) {
-            match upgrade_scan_in_place(rag, path, &key).await {
+            match upgrade_unchanged_in_place(rag, &key).await {
                 Ok(true) => Ok(0),
                 Ok(false) => {
                     crate::indexing::process_file_with_options(path, source_id, rag, None).await

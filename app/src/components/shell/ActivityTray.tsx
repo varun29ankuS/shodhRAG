@@ -19,6 +19,8 @@ export interface IndexingJob {
   progress?: number;
   fileCount?: number;
   processedCount?: number;
+  /** What the indexer does inside the current file (a scan's pages). */
+  currentStep?: string;
 }
 
 function runActivity(transcript: TranscriptState): string {
@@ -210,6 +212,9 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
                     {paused ? 'Paused · ' : ''}
                     {total > 0 ? `${processed.toLocaleString()} of ${total.toLocaleString()} files · ${percent}%` : 'Preparing files'}
                   </span>
+                  {job.currentStep && (
+                    <span className="text-[11px] text-shodh-text-faint tabular-nums">{job.currentStep}</span>
+                  )}
                 </div>
                 <button
                   type="button"

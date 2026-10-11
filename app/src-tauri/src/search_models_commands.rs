@@ -1,4 +1,5 @@
-//! First-run setup of the search models (E5 embeddings + reranker).
+//! First-run setup of the search models (E5 embeddings + reranker) and the OCR
+//! model (PP-OCRv6), which is installed with them.
 //!
 //! The app starts without them: the RAG engine runs in a "needs setup" state
 //! in which search and indexing return `search_models_missing`. The frontend
@@ -46,7 +47,7 @@ impl SearchModelsState {
     }
 
     fn store(&self) -> ModelStore {
-        ModelStore::search_models(self.model_dir.clone())
+        ModelStore::search_and_ocr_models(self.model_dir.clone())
     }
 }
 
@@ -150,6 +151,11 @@ pub async fn install_search_models(
         }),
     ));
 
+    // The OCR model is optional for search, so an install that adds it to a
+    // ready engine still points the engine at it.
+    let ocr = rag_state.rag.read().await.attach_ocr_model();
+    tracing::info!(ocr, "OCR model checked after install");
+
     if !rag_state.rag.read().await.has_search_models() {
         let config = rag_state.rag.read().await.config().clone();
         let models = SearchModels::load(&config)
@@ -182,6 +188,13 @@ pub async fn install_search_models(
     tauri::async_runtime::spawn(async move {
         crate::calendar_commands::reindex_all_calendar_data(&reindex_handle).await;
     });
+    // Scans read before the scan reader was installed are read again with it.
+    if ocr {
+        tauri::async_runtime::spawn(crate::scan_reader::reread_after_install(
+            app.clone(),
+            rag_state.rag.clone(),
+        ));
+    }
 
     drop(guard);
     read_status(&state, &rag_state, false).await

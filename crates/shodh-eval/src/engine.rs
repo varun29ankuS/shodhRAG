@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
-use shodh_rag::config::RAGConfig;
+use shodh_rag::config::{OcrConfig, OcrEngineChoice, RAGConfig};
 use shodh_rag::indexing::{index_folder, IndexingOptions, IndexingState};
 use shodh_rag::types::ComprehensiveResult;
 use shodh_rag::RAGEngine;
@@ -103,8 +103,28 @@ pub fn settings() -> BTreeMap<String, String> {
 }
 
 /// Index `corpus` (an absolute folder) with the models in `models` into a
-/// new temporary index.
+/// new temporary index, reading scans with the app's default OCR choice.
 pub async fn index_corpus(corpus: &Path, models: &Path) -> Result<IndexedCorpus> {
+    index_corpus_with(corpus, models, &OcrConfig::default()).await
+}
+
+/// [`index_corpus`] with the OCR engine and render resolutions of `ocr`.
+/// Choosing PP-OCRv6 fails when its model is not in `models`, rather than
+/// quietly measuring another engine.
+pub async fn index_corpus_with(
+    corpus: &Path,
+    models: &Path,
+    ocr: &OcrConfig,
+) -> Result<IndexedCorpus> {
+    if ocr.engine == OcrEngineChoice::PpOcr
+        && !shodh_rag::processing::ocr::is_installed(&shodh_rag::processing::ocr::model_dir(models))
+    {
+        bail!(
+            "the OCR model is not in {} (install it with `shodh-eval models --models {}`)",
+            models.display(),
+            models.display()
+        );
+    }
     let data_dir = tempfile::Builder::new()
         .prefix("shodh-eval-index-")
         .tempdir()
@@ -116,6 +136,7 @@ pub async fn index_corpus(corpus: &Path, models: &Path) -> Result<IndexedCorpus>
     config.embedding.model_dir = models.to_path_buf();
     config.embedding.use_e5 = true;
     config.embedding.dimension = 768;
+    config.ocr = ocr.clone();
     let engine = RAGEngine::new(config).await.context("opening the engine")?;
     if !engine.has_search_models() {
         bail!(

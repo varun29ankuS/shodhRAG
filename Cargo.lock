@@ -9161,15 +9161,19 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "flate2",
  "hex",
+ "image",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "shodh-rag",
  "tempfile",
+ "tiny-skia",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "ttf-parser",
  "walkdir",
 ]
 

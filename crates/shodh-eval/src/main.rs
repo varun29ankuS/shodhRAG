@@ -10,16 +10,22 @@ use anyhow::{anyhow, bail, Context, Result};
 use shodh_eval::corpus::{absolute_dir, default_output_dir, prepare_output_dir, LOCAL_DIR};
 use shodh_eval::dataset::Dataset;
 use shodh_eval::report::{compare, Baseline, RunReport};
-use shodh_eval::{answers, generate, models, retrieval, synth};
+use shodh_eval::{answers, generate, models, ocr, retrieval, scan, synth};
+use shodh_rag::config::{OcrConfig, OcrEngineChoice};
 
 const USAGE: &str = "\
 shodh-eval: retrieval and answer quality of shodh
 
 USAGE:
   shodh-eval synth     --out <dir>
+  shodh-eval synth-scanned --out <dir>
   shodh-eval models    --models <dir> [--answer-check]
   shodh-eval retrieval --corpus <dir> --models <dir> [--dataset <file>] [--runs <n>] [--k <n>]
                        [--out <dir>] [--write-baseline <file>]
+                       [--ocr auto|system|ppocr] [--ocr-dpi <n>] [--system-ocr-dpi <n>]
+  shodh-eval ocr       --corpus <dir> --truth <ground-truth.json> --engine ppocr|system
+                       [--models <dir> | --ocr-model <dir>] [--det-band-pixels <n>] [--threads <n>]
+                       [--dpi <n>] [--worker] [--out <file>]
   shodh-eval answers   --corpus <dir> --models <dir> [--dataset <file>] [--limit <n>]
                        [--timeout-secs <n>] [--runtime <dir>] [--out <dir>]
   shodh-eval generate  --corpus <dir> --models <dir> [--n <n>] [--seed <n>] [--out <dir>] [--force]
@@ -137,6 +143,86 @@ async fn run(command: &str, rest: &[String]) -> Result<ExitCode> {
                 out.display()
             );
         }
+        "synth-scanned" => {
+            let args = Args::parse(rest, &["out"], &[])?;
+            let out = args.required_path("out")?;
+            let corpus = scan::build()?;
+            corpus.check()?;
+            scan::write(&corpus, &out)?;
+            eprintln!(
+                "Wrote {} files and {} cases to {}",
+                corpus.files.len(),
+                corpus.dataset.cases.len(),
+                out.display()
+            );
+        }
+        "ocr" => {
+            let args = Args::parse(
+                rest,
+                &[
+                    "corpus",
+                    "truth",
+                    "engine",
+                    "models",
+                    "ocr-model",
+                    "det-band-pixels",
+                    "threads",
+                    "dpi",
+                    "out",
+                ],
+                &["worker"],
+            )?;
+            let corpus = absolute_dir(&args.required_path("corpus")?)?;
+            let truth = scan::read_ground_truth(&args.required_path("truth")?)?;
+            let engine = match args.values.get("engine").map(String::as_str) {
+                Some("ppocr") => {
+                    let dir = match (args.path("ocr-model"), args.path("models")) {
+                        (Some(dir), _) => dir,
+                        (None, Some(models)) => shodh_rag::processing::ocr::model_dir(&models),
+                        (None, None) => bail!("--models or --ocr-model is required for ppocr"),
+                    };
+                    let defaults = shodh_rag::processing::ocr::OcrSettings::default();
+                    ocr::Engine::PpOcr {
+                        dir,
+                        settings: shodh_rag::processing::ocr::OcrSettings {
+                            det_band_pixels: args
+                                .number("det-band-pixels", defaults.det_band_pixels)?,
+                            threads: args.number("threads", defaults.threads)?,
+                        },
+                        worker: args.flag("worker"),
+                    }
+                }
+                Some("system") => ocr::Engine::System,
+                _ => bail!("--engine must be ppocr or system"),
+            };
+            let dpi = match args.values.get("dpi") {
+                Some(_) => Some(args.number("dpi", 0u32)?),
+                None => None,
+            };
+            let report = ocr::run(&ocr::OcrOptions {
+                corpus,
+                truth,
+                engine,
+                dpi,
+            })?;
+            println!(
+                "{} at {} dpi: line recall {:.3}, word recall {:.3}, CER {:.4}, {:.0} ms/page, \
+                 load {:?} ms, memory {:?}",
+                report.engine,
+                report.dpi,
+                report.mean_line_recall,
+                report.mean_word_recall,
+                report.mean_cer,
+                report.mean_ms_per_page,
+                report.load_ms.map(f64::round),
+                report.memory_mb
+            );
+            if let Some(path) = args.path("out") {
+                let json = serde_json::to_string_pretty(&report)? + "\n";
+                std::fs::write(&path, json)
+                    .with_context(|| format!("writing {}", path.display()))?;
+            }
+        }
         "models" => {
             let args = Args::parse(rest, &["models"], &["answer-check"])?;
             models::install(&args.required_path("models")?, args.flag("answer-check")).await?;
@@ -152,17 +238,34 @@ async fn run(command: &str, rest: &[String]) -> Result<ExitCode> {
                     "k",
                     "out",
                     "write-baseline",
+                    "ocr",
+                    "ocr-dpi",
+                    "system-ocr-dpi",
                 ],
                 &[],
             )?;
             let (corpus, out, dataset) = corpus_inputs(&args, true)?;
             let dataset = dataset.ok_or_else(|| anyhow!("no dataset"))?;
+            let mut ocr = OcrConfig {
+                engine: match args.values.get("ocr").map(String::as_str) {
+                    None | Some("auto") => OcrEngineChoice::Auto,
+                    Some("system") => OcrEngineChoice::System,
+                    Some("ppocr") => OcrEngineChoice::PpOcr,
+                    Some(other) => bail!("--ocr must be auto, system or ppocr, got '{other}'"),
+                },
+                ..OcrConfig::default()
+            };
+            ocr.render_dpi = args.number("ocr-dpi", ocr.render_dpi)?;
+            if args.values.contains_key("system-ocr-dpi") {
+                ocr.system_render_dpi = Some(args.number("system-ocr-dpi", 0u32)?);
+            }
             let report = retrieval::run(&retrieval::RetrievalOptions {
                 corpus,
                 dataset,
                 models: args.required_path("models")?,
                 runs: args.number("runs", 1usize)?,
                 k: args.number("k", retrieval::DEFAULT_K)?,
+                ocr,
             })
             .await?;
             write_outputs(&out, &report)?;
@@ -261,15 +364,23 @@ async fn main() -> ExitCode {
         .with_writer(std::io::stderr)
         .init();
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    // `ocr --worker` starts this executable as the OCR child.
+    if argv.first().map(String::as_str) == Some(shodh_rag::processing::ocr::worker::WORKER_ARG) {
+        shodh_rag::processing::ocr::worker::serve_stdio();
+    }
     let Some((command, rest)) = argv.split_first() else {
         println!("{USAGE}");
         return ExitCode::FAILURE;
     };
-    match run(command, rest).await {
-        Ok(code) => code,
+    let code = match run(command, rest).await {
+        Ok(code) if code == ExitCode::SUCCESS => 0,
+        Ok(_) => 1,
         Err(e) => {
             eprintln!("error: {e:#}");
-            ExitCode::FAILURE
+            1
         }
-    }
+    };
+    // A run that read scans with Windows OCR after loading ONNX Runtime would
+    // otherwise not finish exiting (see `end_process`).
+    shodh_rag::processing::ocr::worker::end_process(code)
 }

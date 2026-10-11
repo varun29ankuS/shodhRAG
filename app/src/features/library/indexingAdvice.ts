@@ -10,7 +10,7 @@ export type IndexingAction =
   | 'reindex'
   /** Open the folder in the file manager (moved, missing or unreadable files). */
   | 'show_in_folder'
-  /** Install the search models (nothing can be indexed without them). */
+  /** Install the search models (nothing can be indexed without them), or the scan reader installed with them. */
   | 'install_search_models'
   /** Nothing in the app helps (the file itself must change). */
   | 'none';
@@ -29,6 +29,11 @@ interface Rule {
 }
 
 const RULES: readonly Rule[] = [
+  {
+    // Before the search-model rule: the reason also says the reader is not installed.
+    test: /scan reader/i,
+    advice: { hint: 'This file is a scan. Install the scan reader (31 MB); scans are then read automatically.', action: 'install_search_models', actionLabel: 'Install the scan reader' },
+  },
   {
     test: /search models?|embedding model|needs? (first-run )?setup|model (is )?not installed/i,
     advice: { hint: 'Search is not set up yet: install the search models, then index again.', action: 'install_search_models', actionLabel: 'Set up search' },

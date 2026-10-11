@@ -60,7 +60,9 @@ office_oxide = { version = "=0.1.10", default-features = false }
 # downloaded on demand (embeddings::model_store::table_model_artifacts).
 docling-pdf = { version = "=1.91.0", default-features = false, features = ["ml"] }
 docling-core = "=1.91.0"
-image = { version = "0.25", default-features = false, features = ["png"] }
+# Page images: PNG for rendered pages; JPEG, TIFF and BMP for image files read
+# by OCR (docling-pdf already builds `image` with its default formats).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp"] }
 pdf-extract = "0.7"
 lopdf = "0.32"
 zip = "2"

@@ -33,11 +33,87 @@ shodh-eval synth --out crates/shodh-eval/data/synthetic
 
 No third-party texts are included.
 
+## Scanned corpus
+
+`data/scanned/` measures OCR through the same indexing path. Ten pages of the
+synthetic contracts and invoices are drawn as images, as a scanner delivers
+them (image-only PDFs, no text layer), plus one page as a PNG: 150, 200 and
+300 dpi, grey and black-and-white, skewed by up to 2 degrees, some speckled,
+three of them invoice tables. Five text files of the synthetic corpus are
+copied in as distractors. The 27 answerable cases are the synthetic cases
+whose pages were scanned, each with a one-line passage (a table cell's row
+for the four table questions), so `passage_hit` measures whether OCR read
+the evidence; the 5 unanswerable cases are kept. `ground-truth.json` holds
+each scanned file's text by page.
+
+Pages are drawn with Liberation Sans (`data/fonts`, SIL Open Font License
+1.1, see `LICENSE-LiberationSans.txt`), not the machine's fonts, and noise
+comes from a seeded generator, so the files are reproducible; a unit test
+fails if the committed files differ from the generator. Regenerate after
+changing it:
+
+```
+shodh-eval synth-scanned --out crates/shodh-eval/data/scanned
+```
+
+`shodh-eval ocr` reads the scanned files with one engine and scores the text
+against the ground truth per page (`line_recall`: lines found whole;
+`word_recall`; `cer`: character error rate), with time per page and the
+process's memory (Windows). It compares engines, model tiers
+(`--ocr-model <dir>` with `det.onnx`, `det.yml`, `rec.onnx`, `rec.yml`),
+render resolutions (`--dpi`), detector band sizes (`--det-band-pixels`) and
+ONNX Runtime threads (`--threads`, default half the logical cores); `--worker`
+reads in the OCR child process as the app does (the child loads the model
+with the default settings, so `--threads` does not apply, and the memory
+reported is the parent's):
+
+```
+shodh-eval ocr --corpus crates/shodh-eval/data/scanned/corpus \
+  --truth crates/shodh-eval/data/scanned/ground-truth.json --engine ppocr --models <dir>
+shodh-eval ocr ... --engine system [--dpi 300]
+```
+
+Measured on this corpus (Windows, 12 threads; PP-OCRv6 small at 300 dpi;
+times from an optimised build):
+
+| | Windows OCR (96 dpi) | Windows OCR (300 dpi) | PP-OCRv6 small |
+|---|---|---|---|
+| passage_hit@1 / @10 | 0.593 / 0.667 | 0.630 / 0.704 | 0.889 / 1.000 |
+| page_hit@1 | 0.920 | 0.920 | 0.880 |
+| hit@1 / mrr | 0.926 / 0.963 | 0.926 / 0.963 | 0.963 / 0.981 |
+| line recall / CER (`ocr`) | 0.744 / 0.111 | 0.773 / 0.106 | 0.955 / 0.0007 |
+| time per page | 0.13 s | 0.35 s | 6.2 s |
+| peak memory | 160 MB | 357 MB | 349 MB |
+
+PP-OCRv6 reads tables row by row and survives speckle; Windows OCR's misses
+are mostly table rows read out of order. PP-OCRv6 is the default on Windows
+and macOS (`OcrEngineChoice::Auto`) by decision, knowing that page_hit@1 is
+one question lower and a page takes seconds.
+
+So that OCR does not make the machine feel heavy, it runs on half the
+logical cores, below normal priority, without spinning between operators,
+and in the app in a child process. The same 11 pages (release build, 12
+logical cores; time per page, CPU time of the whole run, peak working set):
+
+| | s/page | CPU s (11 pages) | peak memory |
+|---|---|---|---|
+| before: 12 threads, normal priority, spinning | 4.5-4.7 | 227 | 344-361 MB |
+| 12 threads, below normal, no spinning | 4.7 | 232 | 344 MB |
+| default now: 6 threads, below normal, no spinning | 5.5-5.6 | 197-202 | 340-358 MB |
+| 2 threads (a 4-core CI runner) | 9.5 | 178 | 342 MB |
+| default, in the OCR child (`--worker`) | 5.5 | 200 (child) | 342 MB child, 12 MB parent |
+
+Per-page line recall, word recall and CER are identical at 2, 6 and 12
+threads, and the scanned baseline holds unchanged.
+
 ## Commands
 
 ```
-shodh-eval models    --models <dir>                       # pinned E5 + reranker (+ --answer-check: NLI model)
+shodh-eval models    --models <dir>                       # pinned E5 + reranker + OCR (+ --answer-check: NLI model)
 shodh-eval retrieval --corpus <dir> --models <dir> --dataset <file> [--runs 3] [--k 10]
+                     [--ocr auto|system|ppocr] [--ocr-dpi <n>] [--system-ocr-dpi <n>]
+shodh-eval ocr       --corpus <dir> --truth <file> --engine ppocr|system [--models <dir>]
+                     [--threads <n>] [--worker]
 shodh-eval compare   --baseline <file> --report <dir>/retrieval-report.json
 shodh-eval generate  --corpus <your folder> --models <dir> --n 50
 shodh-eval answers   --corpus <dir> --models <dir> --dataset <file> [--limit 10]
@@ -94,3 +170,17 @@ metric is below `mean - max(3 * stddev, 1e-9)`. Retrieval is deterministic
 (stddev 0), so any drop fails. A change that improves retrieval, or changes
 the corpus or dataset, records a new baseline in the same PR. The `Retrieval
 eval` CI job runs this on every PR.
+
+`data/scanned/baseline.json` is the scanned corpus's baseline, read with
+PP-OCRv6 (`--ocr ppocr` fails when the OCR model is not installed, so the
+gate never measures another engine):
+
+```
+shodh-eval retrieval --corpus crates/shodh-eval/data/scanned/corpus \
+  --dataset crates/shodh-eval/data/scanned/dataset.json --models <dir> --ocr ppocr \
+  --runs 3 --write-baseline crates/shodh-eval/data/scanned/baseline.json
+```
+
+The same job gates it after the synthetic corpus. `--ocr system` measures
+Windows OCR on the same files (`--system-ocr-dpi` renders its pages at a
+chosen resolution instead of 96 dpi).

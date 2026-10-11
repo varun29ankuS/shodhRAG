@@ -25,6 +25,8 @@ export interface LibrarySource {
   progress?: number;
   currentFile?: string;
   processedCount?: number;
+  /** What the indexer does inside the current file, when it takes long (scans). */
+  currentStep?: string;
   /** Files the last indexing run could not index, with reasons. */
   failures?: FileFailure[];
   /** Why the last indexing run failed as a whole. */
@@ -90,8 +92,25 @@ export function parseStoredSources(raw: string | null): LibrarySource[] {
 /** The persisted form: live progress and sync fields are not stored. */
 export function serializeSources(sources: readonly LibrarySource[]): string {
   return JSON.stringify(
-    sources.map(({ progress: _p, currentFile: _c, processedCount: _n, syncError: _s, ...rest }) => rest),
+    sources.map(({ progress: _p, currentFile: _c, processedCount: _n, currentStep: _t, syncError: _s, ...rest }) => rest),
   );
+}
+
+/** The `indexing-progress` event's scanned-page fields (set while OCR reads a scan). */
+export interface ScannedPagesProgress {
+  scanned_page?: unknown;
+  scanned_pages?: unknown;
+}
+
+/**
+ * "Reading scanned pages: 12 of 240" while OCR reads page 12 of a 240-page
+ * scan; undefined for any other progress event.
+ */
+export function scannedPagesStep(payload: ScannedPagesProgress): string | undefined {
+  const { scanned_page: page, scanned_pages: pages } = payload;
+  if (typeof page !== 'number' || typeof pages !== 'number') return undefined;
+  if (!Number.isInteger(page) || !Number.isInteger(pages) || pages < 1 || page < 1 || page > pages) return undefined;
+  return `Reading scanned pages: ${page.toLocaleString('en-US')} of ${pages.toLocaleString('en-US')}`;
 }
 
 /** A folder the backend keeps in sync (`sync_folder_sources`). */

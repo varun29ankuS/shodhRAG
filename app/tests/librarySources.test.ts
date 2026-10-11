@@ -10,6 +10,7 @@ import {
   parseStoredSources,
   progressPercent,
   readIndexingResult,
+  scannedPagesStep,
   serializeSources,
   syncedFolders,
 } from '../src/features/library/sources.ts';
@@ -57,10 +58,28 @@ test('unknown statuses become ready; failures survive a round trip', () => {
 });
 
 test('serialisation leaves out live progress', () => {
-  const json = serializeSources([{ ...parseStoredSources(JSON.stringify([stored()]))[0], progress: 10, currentFile: 'a', processedCount: 1 }]);
+  const json = serializeSources([{
+    ...parseStoredSources(JSON.stringify([stored()]))[0],
+    progress: 10,
+    currentFile: 'a',
+    processedCount: 1,
+    currentStep: 'Reading scanned pages: 3 of 9',
+  }]);
   assert.ok(!json.includes('progress'));
   assert.ok(!json.includes('currentFile'));
   assert.ok(!json.includes('processedCount'));
+  assert.ok(!json.includes('currentStep'));
+  assert.ok(!json.includes('scanned'));
+});
+
+test('a scan being read says which page; other progress events say nothing', () => {
+  assert.equal(scannedPagesStep({ scanned_page: 12, scanned_pages: 240 }), 'Reading scanned pages: 12 of 240');
+  assert.equal(scannedPagesStep({ scanned_page: 1, scanned_pages: 1200 }), 'Reading scanned pages: 1 of 1,200');
+  assert.equal(scannedPagesStep({}), undefined);
+  assert.equal(scannedPagesStep({ scanned_page: null, scanned_pages: 4 }), undefined);
+  assert.equal(scannedPagesStep({ scanned_page: 5, scanned_pages: 4 }), undefined);
+  assert.equal(scannedPagesStep({ scanned_page: 0, scanned_pages: 4 }), undefined);
+  assert.equal(scannedPagesStep({ scanned_page: 1.5, scanned_pages: 4 }), undefined);
 });
 
 test('reads snake_case indexing results with failures', () => {

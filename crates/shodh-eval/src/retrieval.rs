@@ -11,7 +11,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::corpus::{corpus_hash, expected_key};
 use crate::dataset::{Dataset, EvalCase};
-use crate::engine::{index_corpus, settings, IndexedCorpus};
+use crate::engine::{index_corpus_with, settings, IndexedCorpus};
 use crate::metrics::{rank_case, retrieval_metrics, RetrievedChunk};
 use crate::report::{combine_runs, summarize_latencies, CaseRecord, RunKind, RunReport};
 
@@ -26,6 +26,8 @@ pub struct RetrievalOptions {
     /// Repetitions, each on a freshly built index.
     pub runs: usize,
     pub k: usize,
+    /// OCR engine and render resolutions for scanned files.
+    pub ocr: shodh_rag::config::OcrConfig,
 }
 
 /// Expected document key -> (pages, passage) for one case.
@@ -98,6 +100,36 @@ async fn search_all(
     Ok(records)
 }
 
+/// The OCR choice as report settings.
+pub fn ocr_settings(ocr: &shodh_rag::config::OcrConfig) -> BTreeMap<String, String> {
+    use shodh_rag::config::OcrEngineChoice;
+    let engine = match ocr.engine {
+        OcrEngineChoice::Auto => "auto",
+        OcrEngineChoice::System => "system",
+        OcrEngineChoice::PpOcr => "ppocr",
+    };
+    let mut settings: BTreeMap<String, String> = [
+        ("ocr".to_string(), engine.to_string()),
+        (
+            "system_ocr_render_dpi".to_string(),
+            ocr.system_render_dpi
+                .map_or_else(|| "96 (page size)".to_string(), |d| d.to_string()),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    // The PP-OCRv6 settings only where it can read (`auto` uses it where the
+    // system OCR is missing).
+    if ocr.engine != OcrEngineChoice::System {
+        settings.insert(
+            "ocr_model".to_string(),
+            shodh_rag::processing::ocr::OCR_MODEL_ID.to_string(),
+        );
+        settings.insert("ocr_render_dpi".to_string(), ocr.render_dpi.to_string());
+    }
+    settings
+}
+
 pub async fn run(opts: &RetrievalOptions) -> Result<RunReport> {
     if opts.runs == 0 || opts.k == 0 {
         bail!("runs and k must be at least 1");
@@ -121,7 +153,7 @@ pub async fn run(opts: &RetrievalOptions) -> Result<RunReport> {
             opts.runs,
             opts.corpus.display()
         );
-        let index = index_corpus(&opts.corpus, &opts.models).await?;
+        let index = index_corpus_with(&opts.corpus, &opts.models, &opts.ocr).await?;
         eprintln!(
             "run {run}/{}: {}/{} files, {} chunks in {:.1} s; searching {} questions",
             opts.runs,
@@ -145,6 +177,7 @@ pub async fn run(opts: &RetrievalOptions) -> Result<RunReport> {
     let mut settings = settings();
     settings.insert("k".to_string(), opts.k.to_string());
     settings.insert("runs".to_string(), opts.runs.to_string());
+    settings.extend(ocr_settings(&opts.ocr));
     Ok(RunReport {
         kind: RunKind::Retrieval,
         dataset_id: opts.dataset.id.clone(),

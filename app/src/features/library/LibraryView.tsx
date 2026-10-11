@@ -359,6 +359,9 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
             {baseName(source.currentFile)}
           </p>
         )}
+        {source.currentStep && (
+          <p className="m-0 text-[11.5px] text-shodh-text-secondary tabular-nums">{source.currentStep}</p>
+        )}
       </div>
     );
   } else if (source.status === 'error') {

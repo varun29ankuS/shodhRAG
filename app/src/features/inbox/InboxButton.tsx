@@ -21,12 +21,14 @@ import {
   parseItems,
   waitingCount,
 } from './model';
-import type { InboxItem } from './model';
+import type { InboxItem, PrimaryAction } from './model';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
 const ACTION =
   'h-7 px-2 inline-flex items-center gap-1 rounded-md text-[12px] font-medium transition-colors duration-micro disabled:opacity-50';
+
+const PRIMARY_LABEL: Record<PrimaryAction, string> = { approve: 'Approve', accept: 'Accept', install: 'Install' };
 
 /** Opened from the command palette ("Inbox"). */
 export const OPEN_INBOX_EVENT = 'shodh:open-inbox';
@@ -159,6 +161,9 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
     } else if (action === 'accept') {
       const id = str(item.data.suggestionId);
       if (id) void run(item, () => acceptSuggestion(id), 'The suggestion was not accepted');
+    } else if (action === 'install') {
+      // The scan reader is installed with the search models: only its files are missing.
+      void run(item, () => invoke('install_search_models'), 'The scan reader was not installed');
     }
   };
 
@@ -302,7 +307,7 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
                             className={cn(ACTION, 'bg-shodh-accent text-shodh-on-accent hover:bg-shodh-accent-hover', FOCUS_RING)}
                           >
                             <Check className="w-3.5 h-3.5" aria-hidden="true" />
-                            {actions.primary === 'approve' ? 'Approve' : 'Accept'}
+                            {PRIMARY_LABEL[actions.primary]}
                           </button>
                         )}
                         {actions.secondary && (

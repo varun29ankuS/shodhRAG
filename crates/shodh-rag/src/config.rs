@@ -8,6 +8,57 @@ pub struct RAGConfig {
     pub chunking: ChunkingConfig,
     pub search: SearchConfig,
     pub features: FeatureFlags,
+    /// OCR of scanned PDFs and images.
+    #[serde(default)]
+    pub ocr: OcrConfig,
+}
+
+/// Which OCR engine reads scanned PDFs and images.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OcrEngineChoice {
+    /// PP-OCRv6 (the scan reader) when its model is installed, on every
+    /// platform; without it the system OCR on Windows, and no OCR elsewhere.
+    /// Scans with JBIG2 or JPEG 2000 images go to the system OCR on Windows.
+    /// On the scanned evaluation set PP-OCRv6 found far more passages
+    /// (passage_hit@10 1.0 against 0.67) but ranked the right page first
+    /// slightly less often (page_hit@1 0.88 against 0.92) and is slower per
+    /// page; it is the default by decision (see `crates/shodh-eval/README.md`).
+    #[default]
+    Auto,
+    /// The system OCR only (Windows.Media.Ocr; none on other platforms).
+    System,
+    /// PP-OCRv6 only: scanned pages stay unread while its model is missing
+    /// (JBIG2 and JPEG 2000 scans still go to the system OCR on Windows).
+    PpOcr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OcrConfig {
+    #[serde(default)]
+    pub engine: OcrEngineChoice,
+    /// Resolution PDF pages are rendered at for OCR. The system OCR keeps its
+    /// historical rendering (the page size in device-independent pixels, 96 dpi)
+    /// unless `system_render_dpi` is set.
+    #[serde(default = "default_render_dpi")]
+    pub render_dpi: u32,
+    /// Resolution PDF pages are rendered at for the system OCR; `None`: 96 dpi.
+    #[serde(default)]
+    pub system_render_dpi: Option<u32>,
+}
+
+fn default_render_dpi() -> u32 {
+    crate::processing::ocr::raster::RENDER_DPI
+}
+
+impl Default for OcrConfig {
+    fn default() -> Self {
+        Self {
+            engine: OcrEngineChoice::default(),
+            render_dpi: default_render_dpi(),
+            system_render_dpi: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +122,10 @@ impl RAGConfig {
         if !(0.0..=1.0).contains(&self.search.min_score_threshold) {
             return Err("search.min_score_threshold must be in [0.0, 1.0]".into());
         }
+        let dpi_ok = |dpi: u32| (72..=600).contains(&dpi);
+        if !dpi_ok(self.ocr.render_dpi) || self.ocr.system_render_dpi.is_some_and(|d| !dpi_ok(d)) {
+            return Err("ocr render resolutions must be between 72 and 600 dpi".into());
+        }
         Ok(())
     }
 
@@ -128,6 +183,7 @@ impl Default for RAGConfig {
                 enable_reranking: true,
                 enable_cross_encoder: true,
             },
+            ocr: OcrConfig::default(),
         }
     }
 }

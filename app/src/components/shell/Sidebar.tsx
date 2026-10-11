@@ -31,6 +31,8 @@ export interface SidebarSource {
   fileCount?: number;
   processedCount?: number;
   progress?: number;
+  /** What the indexer does inside the current file (a scan's pages). */
+  currentStep?: string;
 }
 
 export interface SidebarLLMStatus {

@@ -61,7 +61,11 @@ against the ground truth per page (`line_recall`: lines found whole;
 `word_recall`; `cer`: character error rate), with time per page and the
 process's memory (Windows). It compares engines, model tiers
 (`--ocr-model <dir>` with `det.onnx`, `det.yml`, `rec.onnx`, `rec.yml`),
-render resolutions (`--dpi`) and detector band sizes (`--det-band-pixels`):
+render resolutions (`--dpi`), detector band sizes (`--det-band-pixels`) and
+ONNX Runtime threads (`--threads`, default half the logical cores); `--worker`
+reads in the OCR child process as the app does (the child loads the model
+with the default settings, so `--threads` does not apply, and the memory
+reported is the parent's):
 
 ```
 shodh-eval ocr --corpus crates/shodh-eval/data/scanned/corpus \
@@ -82,9 +86,25 @@ times from an optimised build):
 | peak memory | 160 MB | 357 MB | 349 MB |
 
 PP-OCRv6 reads tables row by row and survives speckle; Windows OCR's misses
-are mostly table rows read out of order. Because page_hit@1 and time per
-page are worse, Windows keeps its system OCR by default
-(`OcrEngineChoice::Auto`); macOS uses PP-OCRv6.
+are mostly table rows read out of order. PP-OCRv6 is the default on Windows
+and macOS (`OcrEngineChoice::Auto`) by decision, knowing that page_hit@1 is
+one question lower and a page takes seconds.
+
+So that OCR does not make the machine feel heavy, it runs on half the
+logical cores, below normal priority, without spinning between operators,
+and in the app in a child process. The same 11 pages (release build, 12
+logical cores; time per page, CPU time of the whole run, peak working set):
+
+| | s/page | CPU s (11 pages) | peak memory |
+|---|---|---|---|
+| before: 12 threads, normal priority, spinning | 4.5-4.7 | 227 | 344-361 MB |
+| 12 threads, below normal, no spinning | 4.7 | 232 | 344 MB |
+| default now: 6 threads, below normal, no spinning | 5.5-5.6 | 197-202 | 340-358 MB |
+| 2 threads (a 4-core CI runner) | 9.5 | 178 | 342 MB |
+| default, in the OCR child (`--worker`) | 5.5 | 200 (child) | 342 MB child, 12 MB parent |
+
+Per-page line recall, word recall and CER are identical at 2, 6 and 12
+threads, and the scanned baseline holds unchanged.
 
 ## Commands
 
@@ -93,6 +113,7 @@ shodh-eval models    --models <dir>                       # pinned E5 + reranker
 shodh-eval retrieval --corpus <dir> --models <dir> --dataset <file> [--runs 3] [--k 10]
                      [--ocr auto|system|ppocr] [--ocr-dpi <n>] [--system-ocr-dpi <n>]
 shodh-eval ocr       --corpus <dir> --truth <file> --engine ppocr|system [--models <dir>]
+                     [--threads <n>] [--worker]
 shodh-eval compare   --baseline <file> --report <dir>/retrieval-report.json
 shodh-eval generate  --corpus <your folder> --models <dir> --n 50
 shodh-eval answers   --corpus <dir> --models <dir> --dataset <file> [--limit 10]

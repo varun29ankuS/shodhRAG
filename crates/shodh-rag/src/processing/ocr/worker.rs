@@ -157,12 +157,13 @@ pub fn serve_stdio() -> ! {
 /// Ends this process with `code` without running the libraries' unload
 /// code (Windows: `TerminateProcess` on itself rather than `ExitProcess`).
 ///
-/// A process that rendered with Windows.Data.Pdf (Direct2D on the GPU's
-/// Direct3D 11 driver) and loaded ONNX Runtime (which loads Direct3D 12 and
-/// DirectML) did not finish exiting: during `ExitProcess`, one thread spun
-/// forever inside the GPU driver's user-mode DLL (`igd10um64xe.dll`, Intel)
-/// while its unload code ran, and the exiting process could no longer be
-/// killed. Ending the process without unload notifications skips that code.
+/// A process that ran ONNX Runtime and then rendered with Windows.Data.Pdf
+/// did not finish exiting (measured on an Intel GPU): after `main` returned,
+/// one thread spun forever inside the GPU driver's user-mode Direct3D 11 DLL
+/// (`igd10um64xe.dll`), and the exiting process could no longer be killed.
+/// The process had also loaded Direct3D 12 and DirectML; the reverse order
+/// (Windows.Data.Pdf first) exited. Ending the process without unload
+/// notifications skips the code that spun.
 /// Output is flushed first; nothing else of the process needs its unload code.
 pub fn end_process(code: i32) -> ! {
     use std::io::Write as _;

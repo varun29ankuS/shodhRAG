@@ -895,12 +895,33 @@ pub fn needs_ocr(path: &Path) -> bool {
     let Ok(bytes) = std::fs::read(path) else {
         return false;
     };
+    // A look at the first pages first: one that already holds the text no
+    // scan has is not a scan, so the full layout parse below runs only for
+    // PDFs that open with almost no text.
+    if opening_has_text(&bytes) {
+        return false;
+    }
     match pdf_layout::parse_pdf_layout_with(&bytes, TableMode::Candidates) {
         Ok(parsed) => {
             is_effectively_scanned(parsed.document.text_chars(), parsed.document.pages.len())
         }
         Err(_) => pdf_extract_text(&bytes).is_none(),
     }
+}
+
+/// Whether the first two pages of a PDF hold 200 characters of text or more,
+/// which no scan has in all its pages ([`is_effectively_scanned`]). False
+/// when that cannot be told (the reader fails, or the PDF is encrypted).
+fn opening_has_text(bytes: &[u8]) -> bool {
+    let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let doc = lopdf::Document::load_mem(pdf_forms::strip_leading_junk(bytes)).ok()?;
+        if doc.is_encrypted() {
+            return None;
+        }
+        let pages: Vec<u32> = doc.get_pages().keys().copied().take(2).collect();
+        doc.extract_text(&pages).ok()
+    }));
+    matches!(read, Ok(Some(text)) if text.chars().filter(|c| !c.is_whitespace()).count() >= 200)
 }
 
 /// Whether a PDF's text layer is too thin to be its real content: under 200
@@ -1758,6 +1779,11 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(!needs_ocr(&text_pdf));
+        // Told from its first page, without the layout parse.
+        assert!(opening_has_text(&std::fs::read(&text_pdf).unwrap()));
+        assert!(!opening_has_text(
+            &std::fs::read(scanned("invoices/inv-2025-0117-scan.pdf")).unwrap()
+        ));
         let notes = dir.path().join("notes.txt");
         std::fs::write(&notes, "plain text").unwrap();
         assert!(!needs_ocr(&notes));

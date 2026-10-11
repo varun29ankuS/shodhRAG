@@ -257,6 +257,20 @@ async fn upgrade_unowned_once(app: &AppHandle, owned: std::collections::BTreeSet
     }
 }
 
+/// Scans indexed before the OCR engine was recorded with their chunks
+/// ([`shodh_rag::folder_sync::legacy_ocr_scans`]), looked for in turn with the
+/// syncs and while background work is not paused: the look opens the PDFs
+/// that may be scans. The turn is released before the scans are read again.
+pub async fn legacy_ocr_scans_in_turn(
+    app: &AppHandle,
+) -> Result<Vec<shodh_rag::folder_sync::LegacyScan>, String> {
+    app.state::<BackgroundState>().wait_until_resumed().await;
+    let state = app.state::<FolderSyncState>();
+    let _turn = state.running.lock().await;
+    let rag = app.state::<RagState>().rag.clone();
+    shodh_rag::folder_sync::legacy_ocr_scans(&rag).await
+}
+
 /// Syncs the folder source `source_id` now, if it is watched (for files whose
 /// manifest entries were dropped with [`FolderSyncState::forget_file`]).
 pub async fn sync_source_now(app: &AppHandle, source_id: &str) {

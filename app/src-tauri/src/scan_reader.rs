@@ -129,13 +129,13 @@ impl ScanReaderState {
         self.load().legacy_checked
     }
 
-    /// Records that they were (they are read again with the reported files).
-    async fn mark_legacy_checked(&self) {
+    /// Puts the scans found indexed before the OCR engine was recorded on the
+    /// list of files to read again and records that they were looked for, in
+    /// one save: an app closed before they are read reads them next time.
+    async fn add_legacy(&self, scans: Vec<shodh_rag::folder_sync::LegacyScan>) {
         let _guard = self.lock.lock().await;
         let mut pending = self.load();
-        if pending.legacy_checked {
-            return;
-        }
+        merge_legacy(&mut pending.files, scans);
         pending.legacy_checked = true;
         if let Err(e) = self.save(&pending) {
             tracing::warn!(error = %e, "scan reader list not saved");
@@ -279,40 +279,33 @@ async fn reader_reads(rag: &AsyncRwLock<ComprehensiveRAG>) -> bool {
         && engine.config().ocr.engine != shodh_rag::config::OcrEngineChoice::System
 }
 
-/// The scans indexed before the OCR engine was recorded, found once with the
-/// reader installed (`None` when already done or when they cannot be read
-/// with it now; a failure is tried again next time).
-async fn legacy_scans(
-    app: &AppHandle,
-    rag: &AsyncRwLock<ComprehensiveRAG>,
-) -> Option<Vec<shodh_rag::folder_sync::LegacyScan>> {
+/// Finds, once with the reader installed, the scans indexed before the OCR
+/// engine was recorded and puts them on the list of files to read again. A
+/// failure is tried again next time.
+async fn queue_legacy_scans(app: &AppHandle, rag: &AsyncRwLock<ComprehensiveRAG>) {
     let state = app.state::<ScanReaderState>();
     if state.legacy_checked().await || !reader_reads(rag).await {
-        return None;
+        return;
     }
-    match shodh_rag::folder_sync::legacy_ocr_scans(rag).await {
+    match crate::file_watcher::legacy_ocr_scans_in_turn(app).await {
         Ok(scans) => {
-            state.mark_legacy_checked().await;
             if !scans.is_empty() {
                 tracing::info!(
                     scans = scans.len(),
                     "scans read with Windows OCR before the engine was recorded"
                 );
             }
-            Some(scans)
+            state.add_legacy(scans).await;
         }
         Err(e) => {
             tracing::warn!(error = %e, "scans indexed before the OCR engine was recorded not looked for");
-            None
         }
     }
 }
 
 async fn reread(app: AppHandle, rag: Arc<AsyncRwLock<ComprehensiveRAG>>, announce: bool) {
-    let mut files = app.state::<ScanReaderState>().take_files().await;
-    if let Some(legacy) = legacy_scans(&app, &rag).await {
-        merge_legacy(&mut files, legacy);
-    }
+    queue_legacy_scans(&app, &rag).await;
+    let files = app.state::<ScanReaderState>().take_files().await;
     let offered = app.state::<ScanReaderState>().load().offered;
     if files.is_empty() {
         if offered && announce {
@@ -406,12 +399,23 @@ mod tests {
         let state = ScanReaderState::new(dir.path());
         assert!(!state.legacy_checked().await);
         assert!(!state.has_files().await);
-        state.mark_legacy_checked().await;
+        state
+            .add_legacy(vec![shodh_rag::folder_sync::LegacyScan {
+                source: "c:/docs/old-scan.pdf".into(),
+                space_id: "s1".into(),
+                metadata: HashMap::new(),
+            }])
+            .await;
+        // A new run (the app closed before they were read) still has them.
         let again = ScanReaderState::new(dir.path());
         assert!(again.legacy_checked().await);
+        assert!(again.has_files().await);
         assert!(again.load().offered, "the offer stays made");
         assert!(!again.record(request("C:/docs/a-scan.pdf", "s1")).await);
-        assert!(again.has_files().await);
+        let files = again.take_files().await;
+        assert_eq!(files.len(), 2);
+        assert_eq!(files["c:/docs/old-scan.pdf"]["space_id"], "s1");
+        assert!(!again.has_files().await);
         assert!(again.legacy_checked().await, "recording keeps the check");
     }
 

@@ -143,7 +143,10 @@ fn sentences(text: &str, partial: bool) -> Vec<(usize, usize)> {
     spans
 }
 
-const OPENERS: &[&str] = &[
+/// Apologies are preface only when they are about the earlier output or are
+/// nothing but an apology: "I apologize, but the documents do not cover the
+/// fee" is how a model says a part is missing, which is the answer.
+const APOLOGIES: &[&str] = &[
     "i apologize",
     "i apologise",
     "apologies",
@@ -151,6 +154,27 @@ const OPENERS: &[&str] = &[
     "sorry",
     "i'm sorry",
     "i am sorry",
+];
+/// What an apology for the earlier output is for.
+const APOLOGY_FOR: &[&str] = &[
+    "error",
+    "errors",
+    "mistake",
+    "mistakes",
+    "confusion",
+    "oversight",
+    "omission",
+    "inaccuracy",
+    "inaccuracies",
+    "misunderstanding",
+    "incorrect",
+    "previous",
+    "earlier",
+    "prior",
+    "above",
+];
+/// Acknowledgements of the check.
+const ACKNOWLEDGEMENTS: &[&str] = &[
     "thank you for",
     "thanks for",
     "you're right",
@@ -158,8 +182,17 @@ const OPENERS: &[&str] = &[
     "you're correct",
     "you are correct",
     "good catch",
-    "i understand",
-    "understood",
+];
+/// Acknowledgements that are preface only as a sentence of their own.
+const SHORT_ACKNOWLEDGEMENTS: &[&str] = &["understood", "i understand", "certainly", "of course"];
+/// Where an apology turns to what follows it.
+const CONTRASTS: &[&str] = &[
+    ", but ",
+    " but ",
+    "; however",
+    ", however",
+    " however,",
+    "; ",
 ];
 
 const EARLIER: &[&str] = &[
@@ -222,7 +255,22 @@ pub fn is_preface(sentence: &str) -> bool {
         .filter(|w| !w.is_empty())
         .collect();
     let has = |set: &[&str]| words.iter().any(|w| set.contains(w));
-    if OPENERS.iter().any(|o| starts_with_words(text, o)) {
+    if APOLOGIES.iter().any(|a| starts_with_words(text, a)) {
+        // "I apologize for the error, but here is the corrected answer" is
+        // preface; "I apologize, but the documents do not cover it" is not.
+        return match CONTRASTS.iter().find_map(|c| text.split_once(c)) {
+            Some((_, rest)) => is_preface(rest),
+            None => words.len() <= 3 || has(APOLOGY_FOR),
+        };
+    }
+    if ACKNOWLEDGEMENTS.iter().any(|a| starts_with_words(text, a)) {
+        return true;
+    }
+    if words.len() <= 3
+        && SHORT_ACKNOWLEDGEMENTS
+            .iter()
+            .any(|a| starts_with_words(text, a))
+    {
         return true;
     }
     if words
@@ -327,6 +375,19 @@ mod tests {
         assert!(is_preface(
             "Based on the grounding check, I have revised the claims."
         ));
+        // An apology that says what the documents lack is the answer.
+        assert!(!is_preface(
+            "I apologize, but the documents do not cover the termination fee."
+        ));
+        assert!(!is_preface(
+            "I'm sorry, the agreement says nothing about renewal."
+        ));
+        assert!(!is_preface("I understand the lease ends in March."));
+        assert!(is_preface(
+            "I apologize for the error in my previous response, but here is the corrected answer:"
+        ));
+        assert!(is_preface("My apologies."));
+        assert!(is_preface("Understood."));
     }
 
     #[test]
@@ -342,6 +403,18 @@ mod tests {
         assert_eq!(first, body);
         assert_eq!(gate.push(" More."), " More.");
         assert_eq!(gate.finish(), "");
+    }
+
+    #[test]
+    fn a_missing_part_said_with_an_apology_is_shown() {
+        let missing = "I apologize, but the documents do not cover the termination fee.";
+        assert_eq!(stream(missing, 4), missing);
+        let after_error = "I apologize for the error. The documents do not cover the termination \
+                           fee.\n\nThe notice period is sixty days [1].";
+        assert_eq!(
+            stream(after_error, 4),
+            "The documents do not cover the termination fee.\n\nThe notice period is sixty days [1]."
+        );
     }
 
     #[test]

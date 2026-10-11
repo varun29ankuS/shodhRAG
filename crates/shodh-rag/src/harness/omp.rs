@@ -15,12 +15,23 @@
 //! finished at once: it is *held* so the session can check the answer
 //! ([`super::grounding`]) and then either finish it or send one more prompt
 //! within the same run (same citation numbers, same tool budget).
+//!
+//! The answer of a round is its final turn, not every text the model wrote:
+//! the text of a message that calls tools ("I'll search for the retainer")
+//! is a working note, marked with `TextInterim` at its first tool call and
+//! left out of the checked answer. The text was already shown by then, so it
+//! stays where it is as a note; nothing streamed is taken back. In a
+//! follow-up turn the model replies to the app's check, so each message's
+//! opening is held until its preface ("I apologize for the error in my
+//! previous response") can be dropped before it is shown
+//! ([`super::grounding::preface`]).
 
 use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
 use super::events::{AgentEvent, RiskTier, RunStatus};
+use super::grounding::preface::OpeningGate;
 use super::protocol::{
     AssistantMessageEvent, InboundFrame, MessageEndFrame, PromptResultFrame, PromptStatus,
     ResponseFrame, ToolResultPayload,
@@ -79,9 +90,20 @@ struct ActiveRun {
     /// Provider error of the latest assistant turn (`stopReason: "error"`); a
     /// later successful turn clears it.
     turn_error: Option<String>,
-    /// Answer text by assistant message, in order.
+    /// Text by assistant message, in order, as it was shown.
     messages: Vec<(String, String)>,
     answer_chars: usize,
+    /// Messages that call tools: their text is the model's working note
+    /// ("I'll search the contracts"), not the answer (see `TextInterim`).
+    interim: HashSet<String>,
+    /// Index into `messages` where the current round of answering starts
+    /// (the first answer, or a follow-up turn of the answer check).
+    round_start: usize,
+    /// The current round is a follow-up turn of the answer check: the
+    /// opening of each of its messages is held until its preface to the app
+    /// is dropped ([`OpeningGate`]).
+    follow_up: bool,
+    gates: HashMap<String, OpeningGate>,
     /// Completed and waiting for the session to finish or continue it.
     held: bool,
     /// A hold the session has not yet picked up.
@@ -96,7 +118,8 @@ struct ActiveRun {
 pub struct HeldRun {
     pub run_id: String,
     pub generation: u64,
-    /// Answer text by assistant message, in order.
+    /// Answer text by assistant message, in order: every message of the run
+    /// but the working notes before tool calls.
     pub messages: Vec<(String, String)>,
 }
 
@@ -150,7 +173,12 @@ impl NormaliserState {
         Some(HeldRun {
             run_id: run.run_id.clone(),
             generation: run.generation,
-            messages: run.messages.clone(),
+            messages: run
+                .messages
+                .iter()
+                .filter(|(id, _)| !run.interim.contains(id))
+                .cloned()
+                .collect(),
         })
     }
 
@@ -183,6 +211,9 @@ impl NormaliserState {
             run.settle_pending = false;
             run.generation += 1;
             run.pending_prompts.insert(prompt_id.to_string());
+            run.round_start = run.messages.len();
+            run.follow_up = true;
+            run.gates.clear();
         }
         true
     }
@@ -220,6 +251,10 @@ impl NormaliserState {
             turn_error: None,
             messages: Vec::new(),
             answer_chars: 0,
+            interim: HashSet::new(),
+            round_start: 0,
+            follow_up: false,
+            gates: HashMap::new(),
             held: false,
             settle_pending: false,
             generation: 0,
@@ -297,7 +332,9 @@ impl NormaliserState {
             Some(run) => {
                 run.worst_status = RunStatus::Error;
                 run.error = Some(error.to_string());
-                self.finish_run(now_ms)
+                let mut events = self.end_round();
+                events.extend(self.finish_run(now_ms));
+                events
             }
             None => Vec::new(),
         }
@@ -432,13 +469,119 @@ impl NormaliserState {
         if !run.pending_prompts.is_empty() {
             return Vec::new();
         }
+        let mut events = self.end_round();
+        let Some(run) = self.run.as_mut() else {
+            return events;
+        };
         if self.hold_completion && run.worst_status == RunStatus::Completed {
             run.held = true;
             run.settle_pending = true;
             run.generation += 1;
+            return events;
+        }
+        events.extend(self.finish_run(now_ms));
+        events
+    }
+
+    /// The round of answering ended: held openings are shown, and when every
+    /// text of the round is a working note, the last one is the answer after
+    /// all (a model that wrote its answer and then updated its task list).
+    fn end_round(&mut self) -> Vec<AgentEvent> {
+        let mut events = self.flush_gates();
+        let Some(run) = self.run.as_mut() else {
+            return events;
+        };
+        let round = run.messages.get(run.round_start..).unwrap_or(&[]);
+        let answered = round
+            .iter()
+            .any(|(id, text)| !run.interim.contains(id) && !text.trim().is_empty());
+        if answered {
+            return events;
+        }
+        let last_note = round
+            .iter()
+            .rev()
+            .find(|(_, text)| !text.trim().is_empty())
+            .map(|(id, _)| id.clone());
+        if let Some(id) = last_note {
+            run.interim.remove(&id);
+            events.push(AgentEvent::TextInterim {
+                run_id: run.run_id.clone(),
+                message_id: id,
+                interim: false,
+            });
+        }
+        events
+    }
+
+    /// Streamed text of `message_id`; in a follow-up turn it passes the
+    /// message's opening gate first.
+    fn on_text(&mut self, run_id: String, message_id: &str, delta: &str) -> Vec<AgentEvent> {
+        let shown = match self.run.as_mut() {
+            Some(run) if run.follow_up => run
+                .gates
+                .entry(message_id.to_string())
+                .or_default()
+                .push(delta),
+            Some(_) => delta.to_string(),
+            None => return Vec::new(),
+        };
+        self.show_text(run_id, message_id, shown)
+    }
+
+    /// Records and emits text exactly as the transcript shows it.
+    fn show_text(&mut self, run_id: String, message_id: &str, text: String) -> Vec<AgentEvent> {
+        if text.is_empty() {
             return Vec::new();
         }
-        self.finish_run(now_ms)
+        self.record_text(message_id, &text);
+        vec![AgentEvent::TextDelta {
+            run_id,
+            message_id: message_id.to_string(),
+            delta: text,
+        }]
+    }
+
+    /// The text of `message_id` ended: what its opening gate holds is shown.
+    fn flush_gate(&mut self, message_id: &str) -> Vec<AgentEvent> {
+        let Some(run) = self.run.as_mut() else {
+            return Vec::new();
+        };
+        let Some(gate) = run.gates.get_mut(message_id) else {
+            return Vec::new();
+        };
+        let text = gate.finish();
+        let run_id = run.run_id.clone();
+        self.show_text(run_id, message_id, text)
+    }
+
+    fn flush_gates(&mut self) -> Vec<AgentEvent> {
+        let mut ids: Vec<String> = self
+            .run
+            .as_ref()
+            .map(|run| run.gates.keys().cloned().collect())
+            .unwrap_or_default();
+        ids.sort();
+        let mut events = Vec::new();
+        for id in ids {
+            events.extend(self.flush_gate(&id));
+        }
+        events
+    }
+
+    /// `message_id` calls tools: its text is a working note, not answer.
+    fn mark_interim(&mut self, message_id: &str) -> Vec<AgentEvent> {
+        let Some(run) = self.run.as_mut() else {
+            return Vec::new();
+        };
+        if !run.interim.insert(message_id.to_string()) {
+            return Vec::new();
+        }
+        vec![AgentEvent::TextInterim {
+            run_id: run.run_id.clone(),
+            message_id: message_id.to_string(),
+            interim: true,
+        }]
     }
 
     fn record_text(&mut self, message_id: &str, delta: &str) {
@@ -514,7 +657,20 @@ impl NormaliserState {
         if frame.message.role != "assistant" {
             return Vec::new();
         }
-        for call in frame.message.tool_calls() {
+        // The message's text ended; a message that calls tools is a working
+        // note (normally marked at its first `toolcall_end` already).
+        let calls = frame.message.tool_calls();
+        let mut events = match &frame.message_id {
+            Some(id) => {
+                let mut events = self.flush_gate(id);
+                if !calls.is_empty() {
+                    events.extend(self.mark_interim(id));
+                }
+                events
+            }
+            None => self.flush_gates(),
+        };
+        for call in calls {
             if let Some(intent) = call.intent() {
                 self.remember_intent(&call.id, intent);
             }
@@ -530,26 +686,27 @@ impl NormaliserState {
             });
         }
         let Some(usage) = frame.message.usage.as_ref() else {
-            return Vec::new();
+            return events;
         };
         let cost = usage.cost.as_ref().map(|c| c.total).unwrap_or(0.0);
         if usage.input == 0 && usage.output == 0 && usage.cache_read == 0 && cost == 0.0 {
-            return Vec::new();
+            return events;
         }
         let Some(run) = self.run.as_mut() else {
-            return Vec::new();
+            return events;
         };
         run.usage.input += usage.input;
         run.usage.output += usage.output;
         run.usage.cache_read += usage.cache_read;
         run.usage.cost += cost;
-        vec![AgentEvent::Usage {
+        events.push(AgentEvent::Usage {
             run_id,
             input_tokens: run.usage.input,
             output_tokens: run.usage.output,
             cache_read_tokens: run.usage.cache_read,
             cost_usd: run.usage.cost,
-        }]
+        });
+        events
     }
 }
 
@@ -680,17 +837,15 @@ pub fn normalise(
                 if let Some(intent) = tool_call.intent() {
                     state.remember_intent(&tool_call.id, intent);
                 }
-                Vec::new()
+                // The text before the call led into it: a working note.
+                let mut events = state.flush_gate(&update.message_id);
+                events.extend(state.mark_interim(&update.message_id));
+                events
             }
             AssistantMessageEvent::TextDelta { delta } => {
                 match state.active_run_id().map(str::to_string) {
                     Some(run_id) if !delta.is_empty() => {
-                        state.record_text(&update.message_id, delta);
-                        vec![AgentEvent::TextDelta {
-                            run_id,
-                            message_id: update.message_id.clone(),
-                            delta: delta.clone(),
-                        }]
+                        state.on_text(run_id, &update.message_id, delta)
                     }
                     _ => Vec::new(),
                 }
@@ -1248,6 +1403,166 @@ mod tests {
         let again = state.take_settled().unwrap();
         assert_eq!(again.messages.len(), 1);
         assert_ne!(again.generation, held.generation);
+    }
+
+    /// A text delta frame for any text (escaped as JSON).
+    fn text_frame(message: &str, delta: &str) -> InboundFrame {
+        let frame = json!({
+            "type": "message_update",
+            "messageId": message,
+            "assistantMessageEvent": {"type": "text_delta", "delta": delta},
+        });
+        parse_frame(&frame.to_string()).unwrap()
+    }
+
+    fn tool_call(message: &str, call: &str) -> InboundFrame {
+        parse_frame(&format!(
+            r#"{{"type":"message_update","messageId":"{message}","assistantMessageEvent":{{"type":"toolcall_end","toolCall":{{"type":"toolCall","id":"{call}","name":"search_documents","arguments":{{"query":"retainer"}}}}}}}}"#
+        ))
+        .unwrap()
+    }
+
+    fn shown_text(events: &[AgentEvent]) -> String {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::TextDelta { delta, .. } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_fixture_preamble_before_its_searches_is_a_working_note() {
+        let events = replay();
+        let run = run_events(&events, "run-p5");
+        let interim: Vec<(&str, bool)> = run
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::TextInterim {
+                    message_id,
+                    interim,
+                    ..
+                } => Some((message_id.as_str(), *interim)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(interim, vec![("msg-2", true)], "msg-5 is the answer");
+        let marked = run
+            .iter()
+            .position(|e| matches!(e, AgentEvent::TextInterim { .. }))
+            .unwrap();
+        let first_step = run
+            .iter()
+            .position(|e| matches!(e, AgentEvent::StepStarted { .. }))
+            .unwrap();
+        assert!(marked < first_step, "marked before its steps show");
+    }
+
+    #[test]
+    fn the_answer_checked_is_the_final_turn_not_the_preamble() {
+        let mut state = NormaliserState::new(catalog());
+        state.set_hold_completion(true);
+        state.begin_run("r", "s", "m", "p1", 0);
+        let mut events = Vec::new();
+        events.extend(normalise(
+            &text("m1", "I'll search for the monthly retainer."),
+            &mut state,
+            1,
+        ));
+        events.extend(normalise(&tool_call("m1", "t1"), &mut state, 2));
+        events.extend(normalise(
+            &text("m2", "The retainer is INR 2,75,000 [11]."),
+            &mut state,
+            3,
+        ));
+        events.extend(normalise(&completed("p1"), &mut state, 4));
+        assert_eq!(
+            shown_text(&events),
+            "I'll search for the monthly retainer.The retainer is INR 2,75,000 [11].",
+            "nothing streamed is taken back"
+        );
+        let held = state.take_settled().unwrap();
+        assert_eq!(
+            held.messages,
+            vec![(
+                "m2".to_string(),
+                "The retainer is INR 2,75,000 [11].".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_round_with_only_a_note_keeps_it_as_the_answer() {
+        let mut state = NormaliserState::new(catalog());
+        state.set_hold_completion(true);
+        state.begin_run("r", "s", "m", "p1", 0);
+        normalise(&text("m1", "Sixty days [1]."), &mut state, 1);
+        normalise(&tool_call("m1", "t1"), &mut state, 2);
+        let events = normalise(&completed("p1"), &mut state, 3);
+        assert_eq!(
+            events,
+            vec![AgentEvent::TextInterim {
+                run_id: "r".into(),
+                message_id: "m1".into(),
+                interim: false,
+            }]
+        );
+        let held = state.take_settled().unwrap();
+        assert_eq!(held.messages.len(), 1);
+    }
+
+    #[test]
+    fn a_follow_up_turn_shows_its_answer_without_the_apology() {
+        let mut state = NormaliserState::new(catalog());
+        state.set_hold_completion(true);
+        state.begin_run("r", "s", "m", "p1", 0);
+        normalise(&text("m1", "Interest is 2% per month [1]."), &mut state, 1);
+        normalise(&completed("p1"), &mut state, 2);
+        let held = state.take_settled().unwrap();
+        assert!(state.resume_held("r", held.generation, "p2"));
+
+        let answer = "Late payments accrue 1.5% per month [2].";
+        let turn = format!(
+            "I apologize for the error in my previous response. Let me provide a corrected \
+             answer with proper citations.\n\n{answer}"
+        );
+        let mut events = Vec::new();
+        // Streamed in small pieces, as providers do.
+        let chars: Vec<char> = turn.chars().collect();
+        for piece in chars.chunks(5) {
+            let piece: String = piece.iter().collect();
+            events.extend(normalise(&text_frame("m2", &piece), &mut state, 3));
+        }
+        events.extend(normalise(&completed("p2"), &mut state, 4));
+        assert_eq!(shown_text(&events), answer);
+        let again = state.take_settled().unwrap();
+        assert_eq!(
+            again.messages,
+            vec![
+                (
+                    "m1".to_string(),
+                    "Interest is 2% per month [1].".to_string()
+                ),
+                ("m2".to_string(), answer.to_string()),
+            ],
+            "the stored text is the shown text"
+        );
+    }
+
+    #[test]
+    fn first_answers_are_streamed_as_written() {
+        let mut state = NormaliserState::new(catalog());
+        state.begin_run("r", "s", "m", "p1", 0);
+        let events = normalise(
+            &text("m1", "I apologize, the documents say nothing."),
+            &mut state,
+            1,
+        );
+        assert_eq!(
+            shown_text(&events),
+            "I apologize, the documents say nothing."
+        );
     }
 
     #[test]

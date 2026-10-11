@@ -164,7 +164,8 @@ pub fn decide(
     }
     prompt.push_str(
         "\n\nThen write your complete revised answer from the beginning, with citations. It \
-         replaces the previous one, so do not refer to it or to this check.",
+         replaces the previous one, so do not refer to it or to this check. Start with the \
+         answer's first sentence: no apology, no acknowledgement, no preface.",
     );
     Next::FollowUp {
         reason,
@@ -280,6 +281,7 @@ mod tests {
                 assert!(prompt.contains("cites [9]"));
                 assert!(prompt.contains("Passage [4] comes closest"));
                 assert!(prompt.contains("complete revised answer"));
+                assert!(prompt.contains("no apology"));
             }
             Next::Finish => panic!("expected a repair turn"),
         }

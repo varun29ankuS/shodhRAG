@@ -118,6 +118,18 @@ export interface TextDeltaEvent {
   delta: string;
 }
 
+/**
+ * Whether the text of messageId is the model's working note ("I'll search the
+ * contracts") rather than the answer: true when the message calls tools, false when
+ * a round ended with no other text so the note is the answer after all.
+ */
+export interface TextInterimEvent {
+  type: "text_interim";
+  runId: string;
+  messageId: string;
+  interim: boolean;
+}
+
 export interface ThinkingEvent {
   type: "thinking";
   runId: string;
@@ -289,6 +301,7 @@ export interface RunFinishedEvent {
 export type AgentEvent =
   | RunStartedEvent
   | TextDeltaEvent
+  | TextInterimEvent
   | ThinkingEvent
   | StepStartedEvent
   | StepProgressEvent

@@ -10,7 +10,9 @@
 //!   number and word checks, never an LLM judge, and checks the question's
 //!   information needs against every passage;
 //! * [`followup`] decides whether to ask the model once to re-ground flagged
-//!   claims and/or (at most twice) to search for uncovered needs.
+//!   claims and/or (at most twice) to search for uncovered needs;
+//! * [`preface`] keeps a follow-up turn's opening words to the app (an
+//!   apology, "here is the corrected answer") out of the answer.
 //!
 //! Every check is emitted as an `AgentEvent::Grounding` and audited with the
 //! answer.
@@ -19,6 +21,7 @@ pub mod citations;
 pub mod claims;
 pub mod followup;
 pub mod numbers;
+pub mod preface;
 pub mod verify;
 
 #[cfg(test)]

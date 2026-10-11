@@ -67,3 +67,19 @@ test('a draft replaced by a revised answer folds with the working', () => {
   const onlyDraft = [{ ...groundings[0], supersededMessageIds: ['draft'] }];
   assert.equal(workFold(transcript({ status: 'completed', blocks: replacedLast, groundings: onlyDraft })), null);
 });
+
+test('a working note after the last answer text never becomes the answer', () => {
+  const fold = workFold(transcript({
+    status: 'completed',
+    durationMs: 3_000,
+    blocks: [
+      { kind: 'text', id: 't0', text: "I'll search the contracts." },
+      { kind: 'step', stepId: 's1' },
+      { kind: 'text', id: 't1', text: 'The notice period is 60 days [1].' },
+      { kind: 'text', id: 't2', text: 'Let me also check the renewal clause.' },
+      { kind: 'step', stepId: 's2' },
+    ],
+    interimIds: ['t0', 't2'],
+  }));
+  assert.equal(fold?.answerIndex, 2);
+});

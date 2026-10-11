@@ -5,7 +5,7 @@ import { MessageContentRenderer } from '../ask/MessageContentRenderer';
 import type { SearchHit } from '../ask/types';
 import { RuntimeCard } from './RuntimeCard';
 import { Spinner, StepLine } from './StepLine';
-import { currentStep, isLive, supersededBlocks } from './reducer';
+import { currentStep, interimBlocks, isLive, notAnswerBlocks, supersededBlocks } from './reducer';
 import type { TranscriptBlock, TranscriptState } from './reducer';
 import { workFold } from './workSummary';
 import type { GroundingReport, RevisionReason } from './events';
@@ -104,9 +104,12 @@ export function Transcript({
   const step = currentStep(transcript);
   const lastBlock = transcript.blocks[transcript.blocks.length - 1];
   const superseded = useMemo(() => supersededBlocks(transcript), [transcript]);
+  // Working notes before tool calls stay where they streamed, styled as notes, never as answer.
+  const notes = useMemo(() => interimBlocks(transcript), [transcript]);
+  const excluded = useMemo(() => notAnswerBlocks(transcript), [transcript]);
   const textBlocks = useMemo(
-    () => transcript.blocks.filter(b => b.kind === 'text' && !superseded.has(b.id)).length,
-    [transcript.blocks, superseded],
+    () => transcript.blocks.filter(b => b.kind === 'text' && !excluded.has(b.id)).length,
+    [transcript.blocks, excluded],
   );
   const answer = useMemo(() => answerReport(transcript.groundings), [transcript.groundings]);
   // A replaced block after the answer is a follow-up reply that did not
@@ -114,10 +117,10 @@ export function Transcript({
   const answerBlockIndex = useMemo(() => {
     for (let i = transcript.blocks.length - 1; i >= 0; i--) {
       const b = transcript.blocks[i];
-      if (b.kind === 'text' && !superseded.has(b.id)) return i;
+      if (b.kind === 'text' && !excluded.has(b.id)) return i;
     }
     return -1;
-  }, [transcript.blocks, superseded]);
+  }, [transcript.blocks, excluded]);
   let textSeen = 0;
   // A finished answer folds its working into one line so the answer starts at the top.
   const fold = useMemo(() => workFold(transcript), [transcript]);
@@ -169,6 +172,7 @@ export function Transcript({
                   id={block.id}
                   text={block.text}
                   superseded={superseded.has(block.id)}
+                  note={notes.has(block.id)}
                   afterAnswer={answerBlockIndex >= 0 && transcript.blocks.indexOf(block) > answerBlockIndex}
                   groundings={transcript.groundings}
                   answer={answer}
@@ -184,7 +188,7 @@ export function Transcript({
       )}
       {transcript.blocks.map((block, index) => {
         if (fold && index < fold.answerIndex) {
-          if (block.kind === 'text' && !superseded.has(block.id)) textSeen += 1;
+          if (block.kind === 'text' && !excluded.has(block.id)) textSeen += 1;
           return null;
         }
         if (block.kind === 'step') {
@@ -205,14 +209,15 @@ export function Transcript({
           );
         }
         if (block.kind === 'revision') return <RevisionRow key={block.id} block={block} compact={compact} />;
-        if (!superseded.has(block.id)) textSeen += 1;
-        const isFinal = !superseded.has(block.id) && textSeen === textBlocks;
+        if (!excluded.has(block.id)) textSeen += 1;
+        const isFinal = !excluded.has(block.id) && textSeen === textBlocks;
         return (
           <TextBlock
             key={block.id}
             id={block.id}
             text={block.text}
             superseded={superseded.has(block.id)}
+            note={notes.has(block.id)}
             afterAnswer={answerBlockIndex >= 0 && index > answerBlockIndex}
             groundings={transcript.groundings}
             answer={answer}
@@ -294,6 +299,8 @@ interface TextBlockProps {
   text: string;
   /** Replaced by a revised answer: shown collapsed as an earlier draft. */
   superseded: boolean;
+  /** A working note that led into tool calls ("I'll search the contracts"): shown as a note. */
+  note: boolean;
   /** A replaced block after the answer: a follow-up reply that kept the answer. */
   afterAnswer: boolean;
   groundings: readonly GroundingReport[];
@@ -312,6 +319,7 @@ function TextBlock({
   id,
   text,
   superseded,
+  note,
   afterAnswer,
   groundings,
   answer,
@@ -326,7 +334,7 @@ function TextBlock({
   const claims = useMemo(() => checksForMessage(report, id), [report, id]);
   const body = (
     <MessageContentRenderer
-      compact={compact || superseded}
+      compact={compact || superseded || note}
       content={text}
       hits={hits}
       artifacts={artifacts}
@@ -337,6 +345,7 @@ function TextBlock({
       flagUnknownCitations
     />
   );
+  if (!superseded && note) return <div className="text-shodh-text-secondary" data-note="working">{body}</div>;
   if (!superseded) return <div>{body}</div>;
   return (
     <details className="group/draft">

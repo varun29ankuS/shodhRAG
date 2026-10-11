@@ -2,7 +2,8 @@
 //! status, duration, model, token usage and cost, which numbered passages
 //! the answer cites (`[n]` → file and page), and its grounding (counts and
 //! score of the final check; never claim text). Text blocks a revised answer
-//! replaced do not count as the answer.
+//! replaced, and the model's working notes that led into its tool calls
+//! (`TextInterim`), do not count as the answer.
 //!
 //! Usage totals are cumulative and are only emitted while the run is active,
 //! so they are final when `RunFinished` arrives.
@@ -29,6 +30,8 @@ struct RunState {
     model: String,
     /// Answer text by text block, in order.
     messages: Vec<(String, String)>,
+    /// Text blocks that are working notes, not answer.
+    interim: BTreeSet<String>,
     text_chars: usize,
     /// The final grounding check, or the latest one.
     grounding: Option<GroundingReport>,
@@ -92,6 +95,20 @@ impl RunAuditTap {
                 }
                 None
             }
+            AgentEvent::TextInterim {
+                run_id,
+                message_id,
+                interim,
+            } => {
+                if let Some(run) = self.runs.get_mut(run_id) {
+                    if *interim {
+                        run.interim.insert(message_id.clone());
+                    } else {
+                        run.interim.remove(message_id);
+                    }
+                }
+                None
+            }
             AgentEvent::Grounding { run_id, report } => {
                 if let Some(run) = self.runs.get_mut(run_id) {
                     run.messages
@@ -150,6 +167,7 @@ impl RunAuditTap {
                 let text: String = run
                     .messages
                     .iter()
+                    .filter(|(id, _)| !run.interim.contains(id))
                     .map(|(_, t)| t.as_str())
                     .collect::<Vec<_>>()
                     .join("\n\n");
@@ -415,6 +433,64 @@ mod tests {
             !p.to_string().contains("sixty"),
             "answer text is not stored"
         );
+    }
+
+    #[test]
+    fn working_notes_before_tool_calls_are_not_the_answer() {
+        let mut tap = RunAuditTap::new();
+        tap.observe(&started("r1"));
+        let text = |message: &str, delta: &str| AgentEvent::TextDelta {
+            run_id: "r1".into(),
+            message_id: message.into(),
+            delta: delta.into(),
+        };
+        let interim = |message: &str, interim: bool| AgentEvent::TextInterim {
+            run_id: "r1".into(),
+            message_id: message.into(),
+            interim,
+        };
+        tap.observe(&text("m1", "I'll search the invoices [3] first."));
+        tap.observe(&interim("m1", true));
+        tap.observe(&text("m2", "Total due is 900 EUR [1]."));
+        let answer = tap
+            .observe(&AgentEvent::RunFinished {
+                run_id: "r1".into(),
+                status: RunStatus::Completed,
+                duration_ms: 1,
+                error: None,
+                provider_error: None,
+            })
+            .unwrap();
+        let p = &answer.payload;
+        assert_eq!(p["answer_chars"], "Total due is 900 EUR [1].".len());
+        assert_eq!(p["citations"].as_array().unwrap().len(), 1);
+        assert_eq!(p["citations"][0]["n"], 1);
+
+        // A note taken back as the answer (the round had no other text) counts.
+        tap.observe(&started("r2"));
+        let text2 = |delta: &str| AgentEvent::TextDelta {
+            run_id: "r2".into(),
+            message_id: "m1".into(),
+            delta: delta.into(),
+        };
+        tap.observe(&text2("Total due is 900 EUR [1]."));
+        for flag in [true, false] {
+            tap.observe(&AgentEvent::TextInterim {
+                run_id: "r2".into(),
+                message_id: "m1".into(),
+                interim: flag,
+            });
+        }
+        let answer = tap
+            .observe(&AgentEvent::RunFinished {
+                run_id: "r2".into(),
+                status: RunStatus::Completed,
+                duration_ms: 1,
+                error: None,
+                provider_error: None,
+            })
+            .unwrap();
+        assert_eq!(answer.payload["citations"][0]["n"], 1);
     }
 
     #[test]

@@ -94,6 +94,8 @@ pub struct Collector {
     first_token_ms: Option<f64>,
     report: Option<GroundingReport>,
     superseded: BTreeSet<String>,
+    /// Text blocks that are working notes before tool calls, not answer.
+    interim: BTreeSet<String>,
     status: Option<(RunStatus, Option<String>)>,
     provider_error: Option<ProviderError>,
 }
@@ -139,6 +141,17 @@ impl Collector {
                 match self.messages.iter_mut().find(|(id, _)| id == message_id) {
                     Some((_, text)) => text.push_str(delta),
                     None => self.messages.push((message_id.clone(), delta.clone())),
+                }
+            }
+            AgentEvent::TextInterim {
+                message_id,
+                interim,
+                ..
+            } => {
+                if *interim {
+                    self.interim.insert(message_id.clone());
+                } else {
+                    self.interim.remove(message_id);
                 }
             }
             AgentEvent::Grounding { report, .. } => {
@@ -193,7 +206,8 @@ impl Collector {
 
     pub fn transcript(&self) -> AnswerTranscript {
         // The answer is the text blocks the final check covered; without a
-        // check, every block that no revision replaced.
+        // check, every block that no revision replaced and that is not a
+        // working note before tool calls.
         let answer_ids: Vec<&str> = match &self.report {
             Some(r) if !r.message_ids.is_empty() => {
                 r.message_ids.iter().map(String::as_str).collect()
@@ -202,7 +216,7 @@ impl Collector {
                 .messages
                 .iter()
                 .map(|(id, _)| id.as_str())
-                .filter(|id| !self.superseded.contains(*id))
+                .filter(|id| !self.superseded.contains(*id) && !self.interim.contains(*id))
                 .collect(),
         };
         let answer = self
@@ -630,6 +644,24 @@ mod tests {
         assert_eq!(t.passages[&2].key, None);
         assert_eq!(t.grounding.unwrap().unsupported, 1);
         assert!(t.error.is_none());
+    }
+
+    #[test]
+    fn notes_before_tool_calls_are_not_the_answer_without_a_check() {
+        let mut c = Collector::new("c:/corpus");
+        for e in [
+            delta("m1", "I'll search for the monthly retainer."),
+            AgentEvent::TextInterim {
+                run_id: "r".into(),
+                message_id: "m1".into(),
+                interim: true,
+            },
+            delta("m2", "The retainer is INR 2,75,000 [11]."),
+        ] {
+            c.observe(&e, ms(1));
+        }
+        c.observe(&finished(RunStatus::Completed), ms(2));
+        assert_eq!(c.transcript().answer, "The retainer is INR 2,75,000 [11].");
     }
 
     #[test]

@@ -199,6 +199,56 @@ pub fn table_model_artifacts() -> Vec<ModelArtifact> {
     ]
 }
 
+/// Directory (under the model root) holding the OCR model.
+pub const OCR_MODEL_DIR: &str = "pp-ocrv6";
+
+/// The pinned OCR model (about 31 MB): PaddleOCR's PP-OCRv6 small text
+/// detector and small text recogniser (Apache-2.0), the official ONNX exports
+/// from Hugging Face, each with its `inference.yml` (the detector's
+/// post-processing thresholds; the recogniser's 18,708-character dictionary).
+/// Installed with the search models; without it, scans go to the system OCR
+/// on Windows and are not read elsewhere.
+///
+/// The ONNX hashes are Hugging Face's LFS object ids at these revisions; the
+/// `inference.yml` files are plain git files, hashed after download from the
+/// same revision URLs.
+pub fn ocr_model_artifacts() -> Vec<ModelArtifact> {
+    const DET: &str =
+        "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/28fe5895c24fd108c19eb3e8479f4ab385fbfc62";
+    const REC: &str =
+        "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/b8f84f0b80c529de40b4fbb3544b84fa7233a513";
+    vec![
+        ModelArtifact::new(
+            "OCR text detector",
+            &format!("{DET}/inference.onnx"),
+            "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e",
+            9_880_512,
+            "pp-ocrv6/det.onnx",
+        ),
+        ModelArtifact::new(
+            "OCR text detector config",
+            &format!("{DET}/inference.yml"),
+            "193f435274bf9f0b5f71a929bbfbcf148282df7e633b34e7c373e8f44741b516",
+            885,
+            "pp-ocrv6/det.yml",
+        ),
+        ModelArtifact::new(
+            "OCR text recogniser",
+            &format!("{REC}/inference.onnx"),
+            "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634",
+            21_159_378,
+            "pp-ocrv6/rec.onnx",
+        ),
+        ModelArtifact::new(
+            "OCR text recogniser dictionary",
+            &format!("{REC}/inference.yml"),
+            "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1",
+            150_579,
+            "pp-ocrv6/rec.yml",
+        ),
+    ]
+}
+
 /// Errors from checking or installing the search models.
 #[derive(Debug, thiserror::Error)]
 pub enum ModelStoreError {
@@ -401,6 +451,19 @@ impl ModelStore {
     /// The pinned search models under `root`.
     pub fn search_models(root: impl Into<PathBuf>) -> Self {
         Self::with_artifacts(root, search_model_artifacts())
+    }
+
+    /// The pinned OCR model under `root`.
+    pub fn ocr_model(root: impl Into<PathBuf>) -> Self {
+        Self::with_artifacts(root, ocr_model_artifacts())
+    }
+
+    /// The search models and the OCR model under `root`: what the app's
+    /// search setup installs.
+    pub fn search_and_ocr_models(root: impl Into<PathBuf>) -> Self {
+        let mut artifacts = search_model_artifacts();
+        artifacts.extend(ocr_model_artifacts());
+        Self::with_artifacts(root, artifacts)
     }
 
     /// The pinned table model under `root`.
@@ -913,7 +976,29 @@ mod tests {
             ModelStore::answer_check_model("x").total_bytes(),
             96_034_745
         );
-        for a in artifacts.iter().chain(&answer_check) {
+        let ocr = ocr_model_artifacts();
+        let ocr_files: Vec<String> = [
+            crate::processing::ocr::DET_MODEL_FILE,
+            crate::processing::ocr::DET_CONFIG_FILE,
+            crate::processing::ocr::REC_MODEL_FILE,
+            crate::processing::ocr::REC_CONFIG_FILE,
+        ]
+        .iter()
+        .map(|f| format!("{OCR_MODEL_DIR}/{f}"))
+        .collect();
+        assert_eq!(
+            ocr.iter()
+                .map(|a| a.relative_path.clone())
+                .collect::<Vec<_>>(),
+            ocr_files,
+            "the OCR loader reads exactly the installed files"
+        );
+        assert_eq!(ModelStore::ocr_model("x").total_bytes(), 31_191_354);
+        assert_eq!(
+            ModelStore::search_and_ocr_models("x").total_bytes(),
+            618_258_790 + 31_191_354
+        );
+        for a in artifacts.iter().chain(&answer_check).chain(&ocr) {
             assert_eq!(a.sha256.len(), 64, "{}", a.name);
             assert!(a
                 .sha256

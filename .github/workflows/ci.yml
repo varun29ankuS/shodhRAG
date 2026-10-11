@@ -78,6 +78,9 @@ jobs:
   # Retrieval quality on the committed synthetic corpus (no LLM): a fresh
   # index, every question searched, gated against the committed baseline.
   # Retrieval is deterministic, so any drop fails; latency is reported only.
+  # The scanned corpus (image-only pages) is gated the same way, read with the
+  # PP-OCRv6 model installed with the search models; it fails when the OCR
+  # model is missing rather than measuring another engine.
   eval-retrieval:
     name: Retrieval eval
     runs-on: windows-latest
@@ -94,15 +97,15 @@ jobs:
       - name: Install Protobuf compiler
         run: choco install protoc -y
 
-      # Same cache as the footprint job: the pinned search models, keyed by
-      # the file that pins them.
+      # Same cache as the footprint job: the pinned search and OCR models,
+      # keyed by the file that pins them.
       - name: Cache search models
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/shodh-models
           key: search-models-${{ hashFiles('crates/shodh-rag/src/embeddings/model_store.rs') }}
 
-      - name: Install search models
+      - name: Install search and OCR models
         run: cargo run --package shodh-eval -- models --models "${{ runner.temp }}/shodh-models"
 
       - name: Retrieval eval
@@ -119,6 +122,21 @@ jobs:
           --baseline crates/shodh-eval/data/synthetic/baseline.json
           --report eval-out/retrieval-report.json
 
+      - name: Scanned retrieval eval (PP-OCRv6)
+        run: >
+          cargo run --package shodh-eval -- retrieval
+          --corpus crates/shodh-eval/data/scanned/corpus
+          --dataset crates/shodh-eval/data/scanned/dataset.json
+          --models "${{ runner.temp }}/shodh-models"
+          --ocr ppocr
+          --out eval-out-scanned
+
+      - name: Compare scanned with baseline
+        run: >
+          cargo run --package shodh-eval -- compare
+          --baseline crates/shodh-eval/data/scanned/baseline.json
+          --report eval-out-scanned/retrieval-report.json
+
       - name: Upload eval report
         if: always()
         uses: actions/upload-artifact@v4
@@ -127,6 +145,8 @@ jobs:
           path: |
             eval-out/retrieval-report.json
             eval-out/retrieval-summary.md
+            eval-out-scanned/retrieval-report.json
+            eval-out-scanned/retrieval-summary.md
           if-no-files-found: ignore
 
   frontend:
@@ -194,8 +214,8 @@ jobs:
       - name: Build release app
         run: cargo build --release -p shodh-rag-app --features tauri/custom-protocol
 
-      # The pinned search models (installed by the app itself, SHA-256 checked),
-      # cached by the file that pins them.
+      # The pinned search and OCR models (installed by the app itself, SHA-256
+      # checked), cached by the file that pins them.
       - name: Cache search models
         uses: actions/cache@v4
         with:

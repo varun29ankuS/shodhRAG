@@ -27,6 +27,9 @@ pub struct SynthFile {
     pub path: String,
     pub bytes: Vec<u8>,
     pub pages: Vec<String>,
+    /// The laid-out pages of a PDF (empty for other formats); the scanned
+    /// corpus draws them as images (`crate::scan`).
+    pub pdf_pages: Vec<PdfPage>,
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +114,7 @@ fn pdf_file(path: &str, title: &str, pages: Vec<Vec<Block>>) -> SynthFile {
         path: path.to_string(),
         bytes: write_pdf(title, &pdf_pages),
         pages: rendered.into_iter().map(|(_, text)| text).collect(),
+        pdf_pages,
     }
 }
 
@@ -119,12 +123,13 @@ fn text_file(path: &str, body: &str) -> SynthFile {
         path: path.to_string(),
         bytes: body.as_bytes().to_vec(),
         pages: vec![body.to_string()],
+        pdf_pages: Vec::new(),
     }
 }
 
 const INVOICE_HEADER: [&str; 4] = ["Item", "Qty", "Rate (INR)", "Amount (INR)"];
 
-fn documents() -> Vec<SynthFile> {
+pub(crate) fn documents() -> Vec<SynthFile> {
     vec![
         pdf_file(
             "contracts/msa-northwind-bluepeak.pdf",
@@ -438,7 +443,7 @@ fn unanswerable(id: &str, question: &str) -> EvalCase {
     }
 }
 
-fn cases() -> Vec<EvalCase> {
+pub(crate) fn cases() -> Vec<EvalCase> {
     let s = source;
     vec![
         ask("msa-payment", "Within how many days must Northwind Analytics pay Bluepeak's invoices?",

@@ -1,6 +1,7 @@
-//! Installing the pinned search models (E5 embedder and reranker) into a
-//! folder with the app's own verified downloader; already verified files are
-//! kept. The answer-checking model is optional and installed only on request.
+//! Installing the pinned search models (E5 embedder and reranker) and the OCR
+//! model (PP-OCRv6, installed with them as the app does) into a folder with
+//! the app's own verified downloader; already verified files are kept. The
+//! answer-checking model is optional and installed only on request.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -44,11 +45,11 @@ async fn install_store(store: ModelStore) -> Result<()> {
     Ok(())
 }
 
-/// Install the search models into `dir`; with `answer_check`, also the
-/// answer-checking (NLI) model used by the grounding verifier.
+/// Install the search and OCR models into `dir`; with `answer_check`, also
+/// the answer-checking (NLI) model used by the grounding verifier.
 pub async fn install(dir: &Path, answer_check: bool) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    install_store(ModelStore::search_models(dir)).await?;
+    install_store(ModelStore::search_and_ocr_models(dir)).await?;
     if answer_check {
         install_store(ModelStore::answer_check_model(dir)).await?;
     }

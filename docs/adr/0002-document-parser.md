@@ -89,7 +89,9 @@ Its layout model is clearly better on hard pages, for tables and figure regions.
 
 1. The layout parser runs first. Any panic inside it is caught, and reading order is retried per page.
 2. If the layout parser cannot open the file, `pdf_extract` provides unpaged text. A panic there is caught too.
-3. A PDF counts as scanned only when its whole text layer is essentially empty: under 200 characters in total and under 8 per page. It is then OCR'd page by page with Windows OCR, which keeps page numbers. One extractor failing never makes a PDF "scanned". The RoboTTT regression test builds a PDF with the panicking CMap.
+3. A PDF counts as scanned only when its whole text layer is essentially empty: under 200 characters in total and under 8 per page. It is then OCR'd page by page, which keeps page numbers. One extractor failing never makes a PDF "scanned". The RoboTTT regression test builds a PDF with the panicking CMap.
+
+OCR (`processing::ocr`) runs PaddleOCR's PP-OCRv6 small detector and recogniser with ONNX Runtime on Windows and macOS. Pages are rendered at 300 dpi by docling.rs's pure-Rust renderer, which the table model already builds, and detected in overlapping full-width bands of at most 2 megapixels, so memory stays bounded at full resolution. Lines are read in an XY-cut order: table rows read across, and text columns split only when both sides read as prose. The model (31 MB) is installed with the search models, loaded on the first scanned page and dropped when idle. Windows OCR (`windows_ocr`) is the fallback while the model is missing. It also reads scans whose images are JBIG2 or JPEG 2000, which the pure-Rust renderer cannot decode. On the scanned evaluation set (`crates/shodh-eval/data/scanned`), PP-OCRv6 found the expected passage in the top 10 for every question, against two thirds with Windows OCR.
 
 ## Index compatibility
 

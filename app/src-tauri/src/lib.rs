@@ -346,12 +346,13 @@ pub fn run() {
             )));
             // PDFs indexed with table-candidate pages are refined in the background.
             let refinement = table_model_commands::spawn_refinement(app.handle(), &mut default_rag);
-            // The embedding, reranker, answer checking and table models load on
+            // The embedding, reranker, OCR, answer checking and table models load on
             // first use; unload them when idle.
             if let Some(idle) = shodh_rag::lazy_model::idle_period() {
                 let models: Vec<Arc<dyn shodh_rag::lazy_model::IdleUnload>> = vec![
                     default_rag.embedder_handle(),
                     default_rag.reranker_handle(),
+                    default_rag.ocr_handle(),
                     app.state::<answer_check_commands::AnswerCheckState>()
                         .model
                         .clone(),

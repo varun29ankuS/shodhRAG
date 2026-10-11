@@ -11,6 +11,7 @@ use crate::embeddings::{EmbeddingModel, SearchModelsMissing};
 use crate::harness::web::relevance::sigmoid;
 use crate::lazy_model::LazyModel;
 use crate::processing::chunker::{ContextualChunkResult, TextChunker};
+use crate::processing::ocr::SharedOcrModel;
 use crate::processing::parser::{
     DocumentParser, ParsedDocument, TABLE_CANDIDATES_KEY, TABLE_MODEL_KEY,
 };
@@ -544,6 +545,8 @@ fn extract_structured_fields(text: &str) -> HashMap<String, String> {
 pub struct SearchModels {
     embeddings: EmbedderSource,
     reranker_dir: Option<std::path::PathBuf>,
+    /// The PP-OCRv6 model directory, when the model is installed.
+    ocr_dir: Option<std::path::PathBuf>,
 }
 
 enum EmbedderSource {
@@ -560,6 +563,7 @@ impl SearchModels {
         Self {
             embeddings: EmbedderSource::Loaded(embeddings),
             reranker_dir: None,
+            ocr_dir: None,
         }
     }
 
@@ -591,7 +595,15 @@ impl SearchModels {
         Ok(Self {
             embeddings: EmbedderSource::E5(e5_config),
             reranker_dir,
+            ocr_dir: Self::locate_ocr(config),
         })
+    }
+
+    /// The installed OCR model's directory under `config.embedding.model_dir`
+    /// (optional: without it scans go to the system OCR).
+    fn locate_ocr(config: &RAGConfig) -> Option<std::path::PathBuf> {
+        let dir = crate::processing::ocr::model_dir(&config.embedding.model_dir);
+        crate::processing::ocr::is_installed(&dir).then_some(dir)
     }
 
     pub fn dimension(&self) -> usize {
@@ -682,6 +694,9 @@ pub struct RAGEngine {
     /// The cross-encoder, shared with other rankers (web and paper results)
     /// through [`Self::reranker_handle`]; filled when models are attached.
     reranker: SharedReranker,
+    /// The PP-OCRv6 model the parser reads scans with; filled when the models
+    /// are attached and it is installed. Loaded on the first scanned page.
+    ocr: SharedOcrModel,
     /// PDFs indexed by the fast parser that have table-candidate pages are sent
     /// here, for the table model to refine in the background (see
     /// [`crate::table_refinement`]).
@@ -741,6 +756,8 @@ impl RAGEngine {
         );
 
         let structure_chunker = StructureChunker::new(config.chunking.max_tokens);
+        let ocr = crate::processing::ocr::shared_ocr_model();
+        let parser = DocumentParser::new().with_ocr(ocr.clone(), config.ocr.clone());
         let mut engine = Self {
             store,
             text_search,
@@ -749,9 +766,10 @@ impl RAGEngine {
             embedder_e5: false,
             chunker,
             structure_chunker,
-            parser: DocumentParser::new(),
+            parser,
             config,
             reranker: Arc::new(LazyModel::new("reranker")),
+            ocr,
             refinement_queue: None,
             source_ranker: None,
         };
@@ -784,6 +802,29 @@ impl RAGEngine {
     /// models attached later fill the same slot.
     pub fn reranker_handle(&self) -> SharedReranker {
         self.reranker.clone()
+    }
+
+    /// The slot holding the OCR model once it is loaded (for idle unloading).
+    /// Valid for the engine's life; models attached later fill the same slot.
+    pub fn ocr_handle(&self) -> SharedOcrModel {
+        self.ocr.clone()
+    }
+
+    /// Points the OCR slot at the installed model under the model directory,
+    /// or empties it when the model is not installed. Returns whether it is
+    /// installed. Called on attach and after an install.
+    pub fn attach_ocr_model(&self) -> bool {
+        match SearchModels::locate_ocr(&self.config) {
+            Some(dir) => {
+                self.ocr
+                    .set_loader(move || crate::processing::ocr::PpOcr::load(&dir));
+                true
+            }
+            None => {
+                self.ocr.uninstall();
+                false
+            }
+        }
     }
 
     /// The slot holding the E5 model once it is loaded (for idle unloading and
@@ -832,9 +873,16 @@ impl RAGEngine {
                 .set_loader(move || CrossEncoderReranker::new(&dir)),
             None => self.reranker.uninstall(),
         }
+        match models.ocr_dir {
+            Some(dir) => self
+                .ocr
+                .set_loader(move || crate::processing::ocr::PpOcr::load(&dir)),
+            None => self.ocr.uninstall(),
+        }
         tracing::info!(
             dimension,
             reranker = self.reranker.available(),
+            ocr = self.ocr.available(),
             "Search models attached"
         );
         Ok(())

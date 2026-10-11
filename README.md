@@ -42,7 +42,8 @@
 - Conversations are saved locally, including their citations and run details.
 
 **Documents**
-- **Text documents:** PDF (text layer; scanned pages via Windows OCR), Word (`.docx`), PowerPoint (`.pptx`), Markdown, HTML, plain text and source code.
+- **Text documents:** PDF (text layer; scanned pages via PP-OCRv6 OCR on Windows and macOS, installed with the search models, with Windows OCR as the fallback on Windows), Word (`.docx`), PowerPoint (`.pptx`), Markdown, HTML, plain text and source code.
+- **Images:** PNG, JPEG, BMP and TIFF scans are read with the same OCR.
 - **Spreadsheets:** `.xlsx`, `.xls`, `.xlsm`, `.xlsb`, `.ods`, plus CSV and TSV.
   - Sheets are indexed row by row, and every chunk repeats the header row. That way any single row can be retrieved on its own.
   - CSV encodings (UTF-8, UTF-16, Windows-1252) are detected automatically.

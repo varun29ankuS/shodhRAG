@@ -13,7 +13,7 @@ use crate::corpus::{corpus_hash, expected_key};
 use crate::dataset::{Dataset, EvalCase};
 use crate::engine::{index_corpus_with, settings, IndexedCorpus};
 use crate::metrics::{rank_case, retrieval_metrics, RetrievedChunk};
-use crate::report::{combine_runs, summarize_latencies, CaseRecord, RunKind, RunReport};
+use crate::report::{combine_runs, summarize_latencies, CaseRecord, RunKind, RunReport, TopResult};
 
 /// Results fetched per question (the top of the agent tool's range).
 pub const DEFAULT_K: usize = 10;
@@ -93,6 +93,7 @@ async fn search_all(
             question: case.question.clone(),
             ranks: Some(ranks),
             retrieved: distinct_keys(&chunks),
+            top: chunks.first().map(TopResult::of),
             latency_ms: Some(ms),
             ..CaseRecord::default()
         });
@@ -187,6 +188,9 @@ pub async fn run(opts: &RetrievalOptions) -> Result<RunReport> {
         settings,
         metrics: combine_runs(&per_run),
         latency: summarize_latencies(&latencies),
+        first_token: None,
+        provider_errors: BTreeMap::new(),
+        stopped: None,
         ingest: ingests,
         cases: last,
     })

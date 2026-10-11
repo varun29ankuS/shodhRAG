@@ -20,7 +20,7 @@ use shodh_rag::harness::events::{GroundingReport, RunStatus};
 use shodh_rag::harness::grounding::citations::cited_numbers;
 use shodh_rag::harness::grounding::{GroundingConfig, ScorerSet, SharedEntailment};
 use shodh_rag::harness::profile::AgentProfile;
-use shodh_rag::harness::tools::documents::OpenDocumentTool;
+use shodh_rag::harness::tools::documents::{OpenDocumentTool, OPEN_DOCUMENT};
 use shodh_rag::harness::tools::plan::UpdatePlanTool;
 use shodh_rag::harness::tools::search::{SearchDocumentsTool, SEARCH_DOCUMENTS};
 use shodh_rag::harness::tools::sources::ListSourcesTool;
@@ -28,7 +28,7 @@ use shodh_rag::harness::tools::ToolRegistry;
 use shodh_rag::harness::web::relevance::SharedScorer;
 use shodh_rag::harness::{
     fetch_omp, resolve_binary_path, select_model, AgentEvent, AgentHarness, LaunchSpec, OmpLayout,
-    OmpModel, OmpSession, SessionConfig,
+    OmpModel, OmpSession, ProviderError, ProviderErrorKind, SessionConfig,
 };
 use shodh_rag::reranking::NliModel;
 
@@ -45,10 +45,30 @@ use crate::retrieval::expected_map;
 /// Longest one answer may take (searches, answer, check and follow-ups).
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Waits before asking again after a rate limit, when the provider gives no
+/// time; one entry per retry, so a question is tried at most five times.
+const RATE_LIMIT_BACKOFF_SECS: [u64; 4] = [20, 40, 80, 160];
+
+/// Longest wait honoured from a provider's own retry hint.
+const MAX_RETRY_AFTER_SECS: u64 = 300;
+
+/// How long to wait before retrying a question whose run ended in `error`,
+/// `retries` retries in: only rate limits are retried (a used-up daily quota,
+/// a bad key or an unknown model do not recover by waiting); `None` when
+/// the question is not to be retried.
+fn rate_limit_wait(error: Option<&ProviderError>, retries: usize) -> Option<Duration> {
+    let error = error.filter(|e| e.kind == ProviderErrorKind::RateLimited)?;
+    let backoff = *RATE_LIMIT_BACKOFF_SECS.get(retries)?;
+    let secs = error
+        .retry_after_secs
+        .map_or(backoff, |s| u64::from(s).clamp(1, MAX_RETRY_AFTER_SECS));
+    Some(Duration::from_secs(secs))
+}
+
 /// The document tools an answer may use (what the app registers for them).
 const TOOLS: [&str; 4] = [
     SEARCH_DOCUMENTS,
-    "open_document",
+    OPEN_DOCUMENT,
     "list_sources",
     "update_plan",
 ];
@@ -70,9 +90,12 @@ pub struct Collector {
     tools: HashMap<String, String>,
     messages: Vec<(String, String)>,
     passages: BTreeMap<u32, SeenPassage>,
+    searches: Vec<Vec<u32>>,
+    first_token_ms: Option<f64>,
     report: Option<GroundingReport>,
     superseded: BTreeSet<String>,
     status: Option<(RunStatus, Option<String>)>,
+    provider_error: Option<ProviderError>,
 }
 
 impl Collector {
@@ -83,8 +106,9 @@ impl Collector {
         }
     }
 
-    /// Take one event; true when the run has finished.
-    pub fn observe(&mut self, event: &AgentEvent) -> bool {
+    /// Take one event, `elapsed` after the question was sent; true when
+    /// the run has finished.
+    pub fn observe(&mut self, event: &AgentEvent, elapsed: Duration) -> bool {
         match event {
             AgentEvent::StepStarted { step_id, tool, .. } => {
                 self.tools.insert(step_id.clone(), tool.clone());
@@ -94,15 +118,29 @@ impl Collector {
                 ok: true,
                 detail: Some(detail),
                 ..
-            } if self.tools.get(step_id).map(String::as_str) == Some(SEARCH_DOCUMENTS) => {
-                self.add_passages(detail);
-            }
+            } => match self.tools.get(step_id).map(String::as_str) {
+                // Both number passages from one sequence; an answer may cite
+                // what it read as well as what it searched.
+                Some(SEARCH_DOCUMENTS) => {
+                    let numbers = self.add_passages(detail);
+                    self.searches.push(numbers);
+                }
+                Some(OPEN_DOCUMENT) => {
+                    self.add_passages(detail);
+                }
+                _ => {}
+            },
             AgentEvent::TextDelta {
                 message_id, delta, ..
-            } => match self.messages.iter_mut().find(|(id, _)| id == message_id) {
-                Some((_, text)) => text.push_str(delta),
-                None => self.messages.push((message_id.clone(), delta.clone())),
-            },
+            } => {
+                if self.first_token_ms.is_none() && !delta.trim().is_empty() {
+                    self.first_token_ms = Some(elapsed.as_secs_f64() * 1000.0);
+                }
+                match self.messages.iter_mut().find(|(id, _)| id == message_id) {
+                    Some((_, text)) => text.push_str(delta),
+                    None => self.messages.push((message_id.clone(), delta.clone())),
+                }
+            }
             AgentEvent::Grounding { report, .. } => {
                 self.superseded
                     .extend(report.superseded_message_ids.iter().cloned());
@@ -110,8 +148,14 @@ impl Collector {
                     self.report = Some(report.clone());
                 }
             }
-            AgentEvent::RunFinished { status, error, .. } => {
+            AgentEvent::RunFinished {
+                status,
+                error,
+                provider_error,
+                ..
+            } => {
                 self.status = Some((*status, error.clone()));
+                self.provider_error = provider_error.clone();
                 return true;
             }
             _ => {}
@@ -119,10 +163,12 @@ impl Collector {
         false
     }
 
-    fn add_passages(&mut self, detail: &Value) {
+    /// Record a step's numbered passages; their numbers in the step's order.
+    fn add_passages(&mut self, detail: &Value) -> Vec<u32> {
         let Some(list) = detail.get("passages").and_then(Value::as_array) else {
-            return;
+            return Vec::new();
         };
+        let mut numbers = Vec::with_capacity(list.len());
         for p in list {
             let Some(n) = p
                 .get("n")
@@ -140,7 +186,9 @@ impl Collector {
                     text: text("text").unwrap_or_default(),
                 },
             );
+            numbers.push(n);
         }
+        numbers
     }
 
     pub fn transcript(&self) -> AnswerTranscript {
@@ -188,9 +236,12 @@ impl Collector {
         AnswerTranscript {
             answer,
             passages: self.passages.clone(),
+            searches: self.searches.clone(),
             cited,
             grounding,
+            first_token_ms: self.first_token_ms,
             error,
+            provider_error: self.provider_error.clone(),
         }
     }
 }
@@ -269,6 +320,7 @@ impl Answerer {
         .await
         .context("starting the agent session")?;
         let mut collector = Collector::new(root_key);
+        let sent = Instant::now();
         let outcome = async {
             session.prompt(&case.question, None).await?;
             let deadline = tokio::time::Instant::now() + self.timeout;
@@ -279,7 +331,7 @@ impl Answerer {
                         if let AgentEvent::ApprovalRequested { step_id, .. } = &event {
                             let _ = session.approve(step_id, false);
                         }
-                        if collector.observe(&event) {
+                        if collector.observe(&event, sent.elapsed()) {
                             return Ok(());
                         }
                     }
@@ -362,35 +414,78 @@ pub async fn run(opts: &AnswerOptions) -> Result<RunReport> {
     let mut scores: Vec<AnswerScore> = Vec::new();
     let mut errors = 0usize;
     let mut latencies = Vec::new();
+    let mut first_tokens = Vec::new();
+    let mut provider_errors: BTreeMap<String, usize> = BTreeMap::new();
+    let mut stopped = None;
     let mut records = Vec::with_capacity(cases.len());
     for (i, case) in cases.iter().enumerate() {
         eprintln!("[{}/{}] {}", i + 1, cases.len(), case.id);
-        let started = Instant::now();
-        let transcript = answerer
-            .answer(case, &index.root_key)
-            .await
-            .unwrap_or_else(|e| AnswerTranscript {
-                error: Some(format!("{e:#}")),
-                ..AnswerTranscript::default()
-            });
-        let ms = started.elapsed().as_secs_f64() * 1000.0;
-        let expected: BTreeSet<String> = expected_map(&index.root, case).into_keys().collect();
+        let mut retries = 0usize;
+        // Time of the last attempt only: waits for a rate limit are not
+        // the answer's latency.
+        let (transcript, ms) = loop {
+            let started = Instant::now();
+            let transcript = answerer
+                .answer(case, &index.root_key)
+                .await
+                .unwrap_or_else(|e| AnswerTranscript {
+                    error: Some(format!("{e:#}")),
+                    ..AnswerTranscript::default()
+                });
+            let ms = started.elapsed().as_secs_f64() * 1000.0;
+            if let Some(e) = &transcript.provider_error {
+                *provider_errors.entry(kind_name(e.kind)).or_default() += 1;
+            }
+            match rate_limit_wait(transcript.provider_error.as_ref(), retries) {
+                Some(wait) => {
+                    retries += 1;
+                    eprintln!(
+                        "  rate limited; asking again in {} s (retry {retries})",
+                        wait.as_secs()
+                    );
+                    tokio::time::sleep(wait).await;
+                }
+                None => break (transcript, ms),
+            }
+        };
+        let expected = expected_map(&index.root, case);
         let score = score_answer(case, &expected, &transcript);
+        let quota_used_up = transcript
+            .provider_error
+            .as_ref()
+            .is_some_and(|e| e.kind == ProviderErrorKind::QuotaExhausted);
+        // A used-up quota is not an answer the model failed: the question is
+        // left out of the metrics.
         if transcript.error.is_some() {
-            errors += 1;
+            errors += usize::from(!quota_used_up);
         } else {
             latencies.push(ms);
+            first_tokens.extend(transcript.first_token_ms);
             scores.push(score.clone());
         }
         records.push(CaseRecord {
             id: case.id.clone(),
             question: case.question.clone(),
             latency_ms: Some(ms),
+            first_token_ms: transcript.first_token_ms,
+            retries,
             answer: Some(transcript.answer.clone()),
             score: Some(score),
             error: transcript.error.clone(),
             ..CaseRecord::default()
         });
+        if quota_used_up {
+            // Every later question would fail the same way and count as
+            // unanswered; stop and say so instead.
+            let reason = format!(
+                "the provider's quota is used up: stopped after {} of {} questions",
+                i + 1,
+                cases.len()
+            );
+            eprintln!("{reason}");
+            stopped = Some(reason);
+            break;
+        }
     }
 
     let mut settings = settings();
@@ -406,9 +501,20 @@ pub async fn run(opts: &AnswerOptions) -> Result<RunReport> {
         settings,
         metrics: combine_runs(&[answer_metrics(&scores, errors)]),
         latency: summarize_latencies(&latencies),
+        first_token: Some(summarize_latencies(&first_tokens)),
+        provider_errors,
+        stopped,
         ingest: vec![index.ingest.clone()],
         cases: records,
     })
+}
+
+/// A provider error kind as reports name it (`rate_limited`, …).
+fn kind_name(kind: ProviderErrorKind) -> String {
+    serde_json::to_value(kind)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| format!("{kind:?}"))
 }
 
 #[cfg(test)]
@@ -418,6 +524,10 @@ mod tests {
     use shodh_rag::harness::events::{
         ClaimCheck, ClaimKind, ClaimOutcome, GroundingSummary, ScoringMethod,
     };
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
 
     fn finished(status: RunStatus) -> AgentEvent {
         AgentEvent::RunFinished {
@@ -502,12 +612,18 @@ mod tests {
                 report: report(&["m2"], &["m1"], &[2]),
             },
         ];
-        for e in &events {
-            assert!(!c.observe(e));
+        for (i, e) in events.iter().enumerate() {
+            assert!(!c.observe(e, ms(10 * i as u64)));
         }
-        assert!(c.observe(&finished(RunStatus::Completed)));
+        assert!(c.observe(&finished(RunStatus::Completed), ms(100)));
         let t = c.transcript();
         assert_eq!(t.answer, "The total is INR 7,96,500 [1].");
+        assert_eq!(t.searches, vec![vec![1, 2]]);
+        assert_eq!(
+            t.first_token_ms,
+            Some(20.0),
+            "the first text, a draft included"
+        );
         assert_eq!(t.cited, [1, 2].into());
         assert_eq!(t.passages[&1].key.as_deref(), Some("invoices/a.pdf"));
         assert_eq!(t.passages[&1].page.as_deref(), Some("2"));
@@ -519,12 +635,136 @@ mod tests {
     #[test]
     fn unfinished_or_failed_runs_are_errors() {
         let mut c = Collector::new("c:/corpus");
-        c.observe(&delta("m1", "partial"));
+        c.observe(&delta("m1", "partial"), ms(5));
         assert!(c.transcript().error.is_some());
-        assert!(c.observe(&finished(RunStatus::Error)));
+        assert!(c.observe(&finished(RunStatus::Error), ms(6)));
         let t = c.transcript();
         assert!(t.error.unwrap().contains("Error"));
         assert_eq!(t.answer, "partial");
+        assert_eq!(t.provider_error, None);
+    }
+
+    fn step(id: &str, tool: &str, passages: Value) -> [AgentEvent; 2] {
+        [
+            AgentEvent::StepStarted {
+                run_id: "r".into(),
+                step_id: id.into(),
+                parent_step_id: None,
+                tool: tool.into(),
+                label: tool.into(),
+                args: json!({}),
+                tier: shodh_rag::harness::RiskTier::Read,
+                at_ms: 0,
+            },
+            AgentEvent::StepFinished {
+                run_id: "r".into(),
+                step_id: id.into(),
+                ok: true,
+                summary: String::new(),
+                detail: Some(json!({ "passages": passages })),
+                duration_ms: 1,
+            },
+        ]
+    }
+
+    #[test]
+    fn passages_read_with_open_document_can_be_cited() {
+        let mut c = Collector::new("c:/corpus");
+        let events = [
+            step(
+                "s1",
+                SEARCH_DOCUMENTS,
+                json!([{"n": 1, "path": "c:/corpus/msa.pdf", "page": "1", "text": "Master Services Agreement between Northwind and Bluepeak"}]),
+            ),
+            step(
+                "s2",
+                OPEN_DOCUMENT,
+                json!([{"n": 2, "path": "c:/corpus/msa.pdf", "page": "3", "text": "within forty-five (45) days of receipt"}]),
+            ),
+            step(
+                "s3",
+                "list_sources",
+                json!([{"n": 3, "path": "c:/corpus/other.pdf", "text": "not a passage"}]),
+            ),
+        ];
+        for e in events.iter().flatten() {
+            c.observe(e, ms(1));
+        }
+        c.observe(&delta("m1", "Payment is due within 45 days [2]."), ms(2));
+        c.observe(&finished(RunStatus::Completed), ms(3));
+        let t = c.transcript();
+        assert_eq!(t.cited, [2].into());
+        assert_eq!(t.passages[&2].key.as_deref(), Some("msa.pdf"));
+        assert_eq!(t.passages[&2].page.as_deref(), Some("3"));
+        assert!(
+            !t.passages.contains_key(&3),
+            "only document tools number passages"
+        );
+        assert_eq!(t.searches, vec![vec![1]], "reads are not searches");
+    }
+
+    #[test]
+    fn provider_failures_are_kept_with_the_transcript() {
+        let mut c = Collector::new("c:/corpus");
+        let limit = ProviderError {
+            kind: ProviderErrorKind::RateLimited,
+            status: Some(429),
+            retry_after_secs: Some(12),
+        };
+        c.observe(
+            &AgentEvent::RunFinished {
+                run_id: "r".into(),
+                status: RunStatus::Error,
+                duration_ms: 1,
+                error: Some("429 rate limit".into()),
+                provider_error: Some(limit.clone()),
+            },
+            ms(1),
+        );
+        let t = c.transcript();
+        assert_eq!(t.provider_error, Some(limit));
+        assert!(t.error.is_some());
+        assert_eq!(t.first_token_ms, None);
+    }
+
+    fn provider(kind: ProviderErrorKind, retry_after_secs: Option<u32>) -> ProviderError {
+        ProviderError {
+            kind,
+            status: None,
+            retry_after_secs,
+        }
+    }
+
+    #[test]
+    fn only_rate_limits_are_retried_with_backoff() {
+        let limited = provider(ProviderErrorKind::RateLimited, None);
+        let waits: Vec<Option<u64>> = (0..5)
+            .map(|r| rate_limit_wait(Some(&limited), r).map(|d| d.as_secs()))
+            .collect();
+        assert_eq!(waits, [Some(20), Some(40), Some(80), Some(160), None]);
+        let hinted = provider(ProviderErrorKind::RateLimited, Some(12));
+        assert_eq!(
+            rate_limit_wait(Some(&hinted), 0),
+            Some(Duration::from_secs(12))
+        );
+        let huge = provider(ProviderErrorKind::RateLimited, Some(86_400));
+        assert_eq!(
+            rate_limit_wait(Some(&huge), 0),
+            Some(Duration::from_secs(MAX_RETRY_AFTER_SECS))
+        );
+        for kind in [
+            ProviderErrorKind::QuotaExhausted,
+            ProviderErrorKind::Auth,
+            ProviderErrorKind::ModelUnavailable,
+            ProviderErrorKind::Other,
+        ] {
+            assert_eq!(rate_limit_wait(Some(&provider(kind, Some(5))), 0), None);
+        }
+        assert_eq!(rate_limit_wait(None, 0), None);
+        assert_eq!(
+            kind_name(ProviderErrorKind::QuotaExhausted),
+            "quota_exhausted"
+        );
     }
 
     #[test]

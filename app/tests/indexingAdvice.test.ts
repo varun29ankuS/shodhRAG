@@ -18,6 +18,18 @@ test('reasons map to the action that helps', () => {
   assert.equal(indexingAdvice('There is not enough space on the disk').action, 'reindex');
 });
 
+test('a scan waiting for the scan reader offers to install it, not search setup or conversion', () => {
+  // The reason the indexer gives (shodh_rag::processing::ocr::ScanReaderMissing).
+  const reason = 'Failed to process file: /docs/lease-scan.pdf: this file is a scan, and the scan reader (31 MB) that reads scans is not installed';
+  const advice = indexingAdvice(reason);
+  assert.equal(advice.action, 'install_search_models');
+  assert.equal(advice.actionLabel, 'Install the scan reader');
+  assert.match(advice.hint, /scan reader/);
+  assert.equal(adviceForFailures([reason, reason, 'Access is denied.'])?.actionLabel, 'Install the scan reader');
+  // A scan with no text at all is still a file Shodh cannot read.
+  assert.equal(indexingAdvice('PDF contains no extractable text (scanned/image-based and OCR found no text)').action, 'none');
+});
+
 test('unknown and empty reasons suggest indexing again', () => {
   for (const reason of ['', '   ', null, undefined, 'something odd happened']) {
     const advice = indexingAdvice(reason);

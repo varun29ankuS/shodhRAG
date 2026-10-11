@@ -111,8 +111,13 @@ fn engine() -> Result<OcrEngine> {
 /// OCR a scanned PDF by rendering each page and running Windows OCR: at
 /// `dpi` when given (lowered where the page would exceed the engine's largest
 /// image size), else at the page size in DIPs (96 dpi). Returns one string per
-/// page, in page order (empty for blank pages).
-pub fn ocr_pdf_pages(path: &Path, dpi: Option<u32>) -> Result<Vec<String>> {
+/// page, in page order (empty for blank pages). `on_page(page, pages)` is
+/// called before each page is read (1-based).
+pub fn ocr_pdf_pages(
+    path: &Path,
+    dpi: Option<u32>,
+    on_page: &dyn Fn(usize, usize),
+) -> Result<Vec<String>> {
     let pdf = WindowsPdf::open(path)?;
     let engine = engine()?;
     let max_side = OcrEngine::MaxImageDimension().context("Failed to get the OCR image limit")?;
@@ -120,6 +125,7 @@ pub fn ocr_pdf_pages(path: &Path, dpi: Option<u32>) -> Result<Vec<String>> {
     let mut pages = Vec::with_capacity(page_count);
 
     for i in 0..page_count {
+        on_page(i + 1, page_count);
         let dpi = match dpi {
             Some(dpi) => {
                 let cap = (max_side as f64 / pdf.longer_side_inches(i)?).floor() as u32;

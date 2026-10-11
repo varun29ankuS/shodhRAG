@@ -22,7 +22,7 @@ use super::{
     req_str, CitedPassage, HostTool, ToolContext, ToolError, ToolOutput, UNTRUSTED_NOTICE,
 };
 use crate::harness::events::RiskTier;
-use crate::processing::parser::{DocumentParser, ParsedDocument};
+use crate::processing::parser::ParsedDocument;
 use crate::types::{DocumentFormat, DocumentSection};
 use crate::RAGEngine;
 
@@ -682,9 +682,11 @@ impl HostTool for OpenDocumentTool {
 
         let path = source.clone();
         let wants_page = selection.wants_page();
+        // The indexer's parser: a scan is read with the OCR it was indexed with.
+        let parser = self.rag.read().await.parser();
         let (parsed, pages) = tokio::task::spawn_blocking(move || {
             let file = Path::new(&path);
-            let parsed = DocumentParser::new().parse_file(file)?;
+            let parsed = parser.parse_file(file)?;
             let mut pages = parsed_pages(&parsed);
             if wants_page && pages.is_empty() && parsed.format == DocumentFormat::PDF {
                 pages = pdf_pages_from_file(file).unwrap_or_default();

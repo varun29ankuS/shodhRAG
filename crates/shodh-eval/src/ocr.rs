@@ -21,9 +21,16 @@ use crate::text::{contains_span, normalize_text};
 /// Which engine reads the pages.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Engine {
-    /// PP-OCRv6 from a model directory, detecting in bands of at most
-    /// `det_band_pixels` pixels.
-    PpOcr { dir: PathBuf, det_band_pixels: u32 },
+    /// PP-OCRv6 from a model directory, run with `settings` (detector band
+    /// size, threads).
+    PpOcr {
+        dir: PathBuf,
+        settings: shodh_rag::processing::ocr::OcrSettings,
+        /// Read in the OCR child process, as the app does (this executable
+        /// started as the child; it loads the model with the default
+        /// settings, and memory is the child's, sampled by the caller).
+        worker: bool,
+    },
     /// Windows.Media.Ocr; pages rendered at `dpi` (`None`: 96 dpi page size).
     System,
 }
@@ -191,6 +198,25 @@ fn read_file(engine: &EngineHandle, path: &Path, dpi: Option<u32>) -> Result<Vec
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
     match engine {
+        EngineHandle::Worker(worker) => {
+            use shodh_rag::processing::ocr::worker::{FileKind, WorkerEngine};
+            let kind = if is_pdf {
+                FileKind::Pdf
+            } else {
+                FileKind::Image
+            };
+            let started = Instant::now();
+            let texts = worker.read(
+                kind,
+                path,
+                WorkerEngine::PpOcr,
+                dpi.unwrap_or(shodh_rag::processing::ocr::raster::RENDER_DPI),
+                None,
+                &|_, _| {},
+            )?;
+            let ms = started.elapsed().as_secs_f64() * 1000.0 / texts.len().max(1) as f64;
+            Ok(texts.into_iter().map(|t| (t, ms)).collect())
+        }
         EngineHandle::PpOcr(model) => {
             use shodh_rag::processing::ocr::raster;
             if !is_pdf {
@@ -217,7 +243,7 @@ fn read_file(engine: &EngineHandle, path: &Path, dpi: Option<u32>) -> Result<Vec
             use shodh_rag::processing::windows_ocr;
             let started = Instant::now();
             let texts = if is_pdf {
-                windows_ocr::ocr_pdf_pages(path, dpi)?
+                windows_ocr::ocr_pdf_pages(path, dpi, &|_, _| {})?
             } else {
                 vec![windows_ocr::ocr_image(path)?]
             };
@@ -229,6 +255,7 @@ fn read_file(engine: &EngineHandle, path: &Path, dpi: Option<u32>) -> Result<Vec
 
 enum EngineHandle {
     PpOcr(Box<shodh_rag::processing::ocr::PpOcr>),
+    Worker(Box<shodh_rag::processing::ocr::worker::OcrWorker>),
     #[cfg(windows)]
     System,
 }
@@ -238,15 +265,26 @@ pub fn run(opts: &OcrOptions) -> Result<OcrReport> {
     let started = Instant::now();
     let (engine, name, load_ms) = match &opts.engine {
         Engine::PpOcr {
-            dir,
-            det_band_pixels,
+            dir, worker: true, ..
         } => {
-            let model = shodh_rag::processing::ocr::PpOcr::load_with(dir, *det_band_pixels)?;
+            use shodh_rag::processing::ocr::worker::{OcrWorker, WorkerCommand};
+            let worker = OcrWorker::new(WorkerCommand::current_exe()?);
+            worker.set_model_dir(Some(dir.clone()));
+            (
+                EngineHandle::Worker(Box::new(worker)),
+                format!("ppocr in the OCR child process ({})", dir.display()),
+                None,
+            )
+        }
+        Engine::PpOcr { dir, settings, .. } => {
+            let model = shodh_rag::processing::ocr::PpOcr::load_with(dir, *settings)?;
             (
                 EngineHandle::PpOcr(Box::new(model)),
                 format!(
-                    "ppocr ({}, detector bands <= {det_band_pixels} px)",
-                    dir.display()
+                    "ppocr ({}, detector bands <= {} px, {} threads, below-normal priority)",
+                    dir.display(),
+                    settings.det_band_pixels,
+                    settings.threads
                 ),
                 Some(started.elapsed().as_secs_f64() * 1000.0),
             )
@@ -257,6 +295,8 @@ pub fn run(opts: &OcrOptions) -> Result<OcrReport> {
         Engine::System => bail!("the system OCR exists only on Windows"),
     };
     let loaded = process_memory_mb();
+    // Read as the app reads scans: this thread below normal priority.
+    let _below_normal = shodh_rag::processing::ocr::priority::BelowNormal::new();
     let mut pages = Vec::new();
     for (file, truth_pages) in &opts.truth {
         let path = file.split('/').fold(opts.corpus.clone(), |p, s| p.join(s));

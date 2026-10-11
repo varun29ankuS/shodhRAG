@@ -15,6 +15,7 @@ import {
   moveSelection,
   parseItems,
   waitingCount,
+  INSTALL_SCAN_READER,
 } from '../src/features/inbox/model.ts';
 import type { InboxItem } from '../src/features/inbox/model.ts';
 
@@ -56,6 +57,15 @@ test('each kind offers its actions; running work offers none', () => {
   assert.deepEqual(actionsFor(item('e', 'export', 'done')), { primary: null, secondary: 'dismiss' });
   assert.equal(isUndoable('dismiss'), true);
   assert.equal(isUndoable('deny'), false, 'the assistant moves on after a denial');
+});
+
+test('the scan reader offer installs while it waits; other installs and finished offers only dismiss', () => {
+  const offer = { ...item('install:scan-reader', 'install', 'needs_you'), data: { action: INSTALL_SCAN_READER } };
+  assert.deepEqual(actionsFor(offer), { primary: 'install', secondary: 'dismiss' });
+  assert.deepEqual(actionsFor({ ...offer, status: 'working' }), { primary: null, secondary: null });
+  assert.deepEqual(actionsFor({ ...offer, status: 'done' }), { primary: null, secondary: 'dismiss' });
+  assert.deepEqual(actionsFor(item('install:mcp', 'install', 'needs_you')), { primary: null, secondary: 'dismiss' });
+  assert.equal(waitingCount([offer]), 1);
 });
 
 test('status colours use the tokens: blue working, amber needs you, green done, red failed only', () => {

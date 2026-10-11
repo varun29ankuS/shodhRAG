@@ -8,10 +8,10 @@
 //! CCITT fax page images; JBIG2 and JPEG 2000 images, which some scanners
 //! write, render as blank grey. [`uses_unrendered_codecs`] finds such files so
 //! the parser can hand them to the system OCR on Windows (Windows.Data.Pdf
-//! decodes both). Windows.Data.Pdf is not used to feed PP-OCRv6: a process
-//! that rendered with it and ran the ONNX models under the async runtime did
-//! not terminate on exit (a thread kept spinning in the exiting process),
-//! measured with `shodh-eval ocr`.
+//! decodes both). Windows.Data.Pdf is not used to feed PP-OCRv6, and the app
+//! runs both in its OCR child process ([`super::worker`]): a process that
+//! loaded ONNX Runtime and then rendered with Windows.Data.Pdf did not finish
+//! exiting (see [`super::worker::end_process`]).
 
 use anyhow::{bail, Context, Result};
 use image::RgbImage;

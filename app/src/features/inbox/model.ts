@@ -59,20 +59,26 @@ export function parseItems(value: unknown): InboxItem[] {
   return Array.isArray(value) ? value.map(parseItem).filter((i): i is InboxItem => i !== null) : [];
 }
 
-export type PrimaryAction = 'approve' | 'accept';
+export type PrimaryAction = 'approve' | 'accept' | 'install';
+
+/** `data.action` of the Install item that offers the scan reader (OCR model). */
+export const INSTALL_SCAN_READER = 'install_scan_reader';
 export type SecondaryAction = 'deny' | 'dismiss';
 
 export interface ItemActions {
-  /** A: Approve (an approval) or Accept (a memory suggestion). */
+  /** A: Approve (an approval), Accept (a memory suggestion) or Install (an offered download). */
   primary: PrimaryAction | null;
   /** D: Deny (an approval) or Dismiss (anything else that is not running). */
   secondary: SecondaryAction | null;
 }
 
 /** What an item offers. Work still running has nothing to decide or dismiss. */
-export function actionsFor(item: Pick<InboxItem, 'kind' | 'status'>): ItemActions {
+export function actionsFor(item: Pick<InboxItem, 'kind' | 'status'> & { data?: Record<string, unknown> }): ItemActions {
   if (item.kind === 'approval') return { primary: 'approve', secondary: 'deny' };
   if (item.kind === 'memory') return { primary: 'accept', secondary: 'dismiss' };
+  if (item.kind === 'install' && item.status === 'needs_you' && item.data?.action === INSTALL_SCAN_READER) {
+    return { primary: 'install', secondary: 'dismiss' };
+  }
   if (item.status === 'working') return { primary: null, secondary: null };
   return { primary: null, secondary: 'dismiss' };
 }

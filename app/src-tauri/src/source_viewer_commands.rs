@@ -13,7 +13,6 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::rag_commands::{is_code_file, RagState};
-use shodh_rag::processing::parser::DocumentParser;
 use shodh_rag::processing::pdf_info::{pdf_info, PdfInfo};
 use shodh_rag::processing::tabular;
 
@@ -432,8 +431,10 @@ pub async fn read_source_text(
     ensure_size(&file)?;
 
     let path = file.path;
+    // The indexer's parser: a scan is read with the same OCR it was indexed with.
+    let parser = state.rag.read().await.parser();
     let content = tokio::task::spawn_blocking(move || {
-        DocumentParser::new()
+        parser
             .parse_file(&path)
             .map(|parsed| parsed.content)
             .map_err(|e| SourceAccessError::ReadFailed {

@@ -10,13 +10,19 @@
 //! The models are pinned in [`crate::embeddings::model_store::ocr_model_artifacts`],
 //! installed with the search models, loaded on the first scanned page and
 //! dropped when idle ([`SharedOcrModel`]). Without them, Windows falls back to
-//! the system OCR ([`super::windows_ocr`]) and other platforms have no OCR.
+//! the system OCR ([`super::windows_ocr`]) and other platforms have no OCR
+//! ([`ScanReaderMissing`]).
+//!
+//! OCR runs behind the user's work: half the logical cores, at below-normal
+//! priority ([`priority`]). The app runs it in a child process ([`worker`]).
 
 pub mod det;
 pub mod geometry;
 pub mod order;
+pub mod priority;
 pub mod raster;
 pub mod rec;
+pub mod worker;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -56,6 +62,13 @@ const REC_BATCH: usize = 6;
 /// `batch x width/8 x classes` floats, about 30 MB at this budget with the
 /// 18,710-class dictionary.
 const REC_WIDTH_BUDGET: u32 = 3200;
+
+/// A scan was not read because the scan reader (this OCR model) is not
+/// installed and no other engine could read it. The indexer reports such
+/// files so they are read once it is installed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("this file is a scan, and the scan reader (31 MB) that reads scans is not installed")]
+pub struct ScanReaderMissing;
 
 /// The installed OCR model, shared by the parsers. Loaded on first use and
 /// dropped when idle.
@@ -153,6 +166,28 @@ fn det_params(yml: &str, band_pixels: u32) -> Result<DetParams> {
     })
 }
 
+/// How the model set runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OcrSettings {
+    /// Most pixels the detector reads at once (see [`DET_BAND_PIXELS`]).
+    pub det_band_pixels: u32,
+    /// Intra-op threads of each session, the calling thread included.
+    pub threads: usize,
+}
+
+impl Default for OcrSettings {
+    fn default() -> Self {
+        Self {
+            det_band_pixels: DET_BAND_PIXELS,
+            threads: priority::ocr_threads(),
+        }
+    }
+}
+
+/// An ONNX session on `threads` intra-op threads. The threads ONNX Runtime
+/// starts run below normal priority ([`priority::BackgroundThreads`]) and
+/// sleep between operators instead of spinning, so a page being read does
+/// not keep idle cores busy.
 fn session(bytes: &[u8], threads: usize) -> Result<Session> {
     Session::builder()
         .map_err(|e| anyhow!("ONNX session builder: {e:?}"))?
@@ -162,6 +197,10 @@ fn session(bytes: &[u8], threads: usize) -> Result<Session> {
         .map_err(|e| anyhow!("ONNX intra threads: {e:?}"))?
         .with_inter_threads(1)
         .map_err(|e| anyhow!("ONNX inter threads: {e:?}"))?
+        .with_intra_op_spinning(false)
+        .map_err(|e| anyhow!("ONNX intra-op spinning: {e:?}"))?
+        .with_thread_manager(priority::BackgroundThreads)
+        .map_err(|e| anyhow!("ONNX thread manager: {e:?}"))?
         // No arena and no memory pattern (as for the embedder): activations
         // are freed after each page instead of staying resident at the size
         // of the largest page seen.
@@ -194,14 +233,13 @@ impl std::fmt::Debug for PpOcr {
 
 impl PpOcr {
     /// Loads the model set from `dir` (the `pp-ocrv6` directory of the model
-    /// root) with the default detector band size.
+    /// root) with the default settings.
     pub fn load(dir: &Path) -> Result<Self> {
-        Self::load_with(dir, DET_BAND_PIXELS)
+        Self::load_with(dir, OcrSettings::default())
     }
 
-    /// Loads the model set from `dir`, detecting in bands of at most
-    /// `det_band_pixels` pixels.
-    pub fn load_with(dir: &Path, det_band_pixels: u32) -> Result<Self> {
+    /// Loads the model set from `dir` with `settings`.
+    pub fn load_with(dir: &Path, settings: OcrSettings) -> Result<Self> {
         if !is_installed(dir) {
             bail!("the OCR model is not installed in {}", dir.display());
         }
@@ -212,11 +250,9 @@ impl PpOcr {
         let text = |file: &str| -> Result<String> {
             String::from_utf8(read(file)?).with_context(|| format!("{file} is not UTF-8"))
         };
-        let params = det_params(&text(DET_CONFIG_FILE)?, det_band_pixels)?;
+        let params = det_params(&text(DET_CONFIG_FILE)?, settings.det_band_pixels)?;
         let charset = Charset::from_inference_yml(&text(REC_CONFIG_FILE)?)?;
-        let threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
+        let threads = settings.threads.max(1);
         let det = session(&read(DET_MODEL_FILE)?, threads).context("loading the OCR detector")?;
         let rec = session(&read(REC_MODEL_FILE)?, threads).context("loading the OCR recogniser")?;
         Ok(Self {
@@ -357,6 +393,45 @@ impl PpOcr {
             lines,
         })
     }
+}
+
+/// Each page of the PDF in `bytes` rendered at `dpi` and read by `model`,
+/// in order. `on_page(page, pages)` is called before each page (1-based). A
+/// page that cannot be rendered or read is logged and reads as empty.
+pub fn read_pdf(
+    model: &PpOcr,
+    bytes: &[u8],
+    dpi: u32,
+    path: &Path,
+    on_page: &dyn Fn(usize, usize),
+) -> Result<Vec<String>> {
+    let pages = raster::PdfPages::open(bytes)?;
+    let mut texts = Vec::with_capacity(pages.count());
+    for index in 0..pages.count() {
+        on_page(index + 1, pages.count());
+        match pages
+            .render(index, dpi)
+            .and_then(|img| model.read_page(&img))
+        {
+            Ok(page) => texts.push(page.text()),
+            Err(e) => {
+                tracing::warn!(
+                    page = index + 1,
+                    error = %format!("{e:#}"),
+                    "OCR skipped a page: {}",
+                    path.display()
+                );
+                texts.push(String::new());
+            }
+        }
+    }
+    Ok(texts)
+}
+
+/// The image file at `path` read by `model`.
+pub fn read_image(model: &PpOcr, path: &Path) -> Result<String> {
+    let img = raster::load_image(path)?;
+    Ok(model.read_page(&img)?.text())
 }
 
 #[cfg(test)]

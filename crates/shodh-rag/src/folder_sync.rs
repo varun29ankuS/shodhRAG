@@ -172,6 +172,30 @@ impl ManifestStore {
         std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
     }
 
+    /// Drops what the manifest of `source_id` records about the file `key`
+    /// (its stamp and any failure), so the next sync reads it as a new file.
+    /// Returns whether it was recorded. The caller keeps syncs of the source
+    /// from running meanwhile.
+    pub fn forget_file(&self, source_id: &str, key: &str) -> Result<bool, String> {
+        let Some(mut manifest) = self.load(source_id) else {
+            return Ok(false);
+        };
+        let had_stamp = manifest.files.remove(key).is_some();
+        let had_failure = manifest.failures.remove(key).is_some();
+        if !(had_stamp || had_failure) {
+            return Ok(false);
+        }
+        self.save(
+            source_id,
+            &ManifestRef {
+                folder: &manifest.folder,
+                files: &manifest.files,
+                failures: &manifest.failures,
+            },
+        )?;
+        Ok(true)
+    }
+
     /// Forget a source (it was removed from the Library).
     pub fn forget(&self, source_id: &str) {
         // Missing is fine: the source never finished a sync.
@@ -283,7 +307,7 @@ pub async fn sync_folder(
             break;
         }
         let key = normalize_source_path(path);
-        match crate::indexing::process_file_with_options(path, source_id, rag).await {
+        match crate::indexing::process_file_with_options(path, source_id, rag, None).await {
             Ok(_) => {
                 report.indexed += 1;
                 failures.remove(&key);
@@ -534,6 +558,26 @@ mod tests {
         assert_eq!(again.failures, broken.failures);
         assert_eq!((again.indexed, again.removed), (0, 0));
 
+        // A file whose record is dropped is read again on the next sync (as
+        // after the scan reader was installed).
+        let broken_key = normalize_source_path(&folder.join("broken.pdf"));
+        assert_eq!(store.forget_file("s1", &broken_key), Ok(true));
+        assert_eq!(store.forget_file("s1", &broken_key), Ok(false));
+        assert_eq!(store.forget_file("unknown", &broken_key), Ok(false));
+        let retried = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!(
+            retried.failures, broken.failures,
+            "tried again: {retried:?}"
+        );
+        let lease_key = normalize_source_path(&folder.join("lease.txt"));
+        assert_eq!(store.forget_file("s1", &lease_key), Ok(true));
+        let reread = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!((reread.indexed, reread.removed), (1, 0), "{reread:?}");
+
         // Deleted.
         std::fs::remove_file(folder.join("rules.txt")).expect("delete");
         std::fs::remove_file(folder.join("broken.pdf")).expect("delete");
@@ -589,6 +633,7 @@ mod tests {
             &folder.join(".claude").join("notes.md"),
             "s1",
             &rag,
+            None,
         )
         .await
         .expect("indexed");

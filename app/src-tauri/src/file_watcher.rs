@@ -71,6 +71,33 @@ impl FolderSyncState {
         }
     }
 
+    /// Drops what the manifest of `source_id` records about the file `key` (an
+    /// index identity), so the source's next sync reads it as new. Waits for a
+    /// running sync, which would otherwise write its own copy back. Returns
+    /// whether the file was recorded.
+    pub async fn forget_file(&self, source_id: &str, key: &str) -> bool {
+        let _turn = self.running.lock().await;
+        match self.store.forget_file(source_id, key) {
+            Ok(found) => found,
+            Err(e) => {
+                tracing::warn!(source_id, error = %e, "folder manifest not updated");
+                false
+            }
+        }
+    }
+
+    /// The watched folder of `source_id`.
+    fn watched_source(&self, source_id: &str) -> Option<FolderSourceRef> {
+        self.watched
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(source_id)
+            .map(|w| FolderSourceRef {
+                id: source_id.to_string(),
+                path: w.path.clone(),
+            })
+    }
+
     fn is_watched(&self, source: &FolderSourceRef) -> bool {
         self.watched
             .lock()
@@ -187,6 +214,15 @@ async fn sync_once(app: &AppHandle, source: &FolderSourceRef) {
     };
     if let Err(e) = app.emit(FOLDER_SYNC_EVENT, &outcome) {
         tracing::warn!("Failed to emit {FOLDER_SYNC_EVENT}: {e}");
+    }
+}
+
+/// Syncs the folder source `source_id` now, if it is watched (for files whose
+/// manifest entries were dropped with [`FolderSyncState::forget_file`]).
+pub async fn sync_source_now(app: &AppHandle, source_id: &str) {
+    let source = app.state::<FolderSyncState>().watched_source(source_id);
+    if let Some(source) = source {
+        sync_once(app, &source).await;
     }
 }
 

@@ -188,6 +188,13 @@ pub async fn install_search_models(
     tauri::async_runtime::spawn(async move {
         crate::calendar_commands::reindex_all_calendar_data(&reindex_handle).await;
     });
+    // Scans read before the scan reader was installed are read again with it.
+    if ocr {
+        tauri::async_runtime::spawn(crate::scan_reader::reread_after_install(
+            app.clone(),
+            rag_state.rag.clone(),
+        ));
+    }
 
     drop(guard);
     read_status(&state, &rag_state, false).await

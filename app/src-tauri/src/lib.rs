@@ -23,6 +23,7 @@ mod profile;
 mod rag_commands;
 mod reminders;
 mod research_commands;
+mod scan_reader;
 mod search_models_commands;
 mod source_viewer_commands;
 mod space_manager;
@@ -346,6 +347,27 @@ pub fn run() {
             )));
             // PDFs indexed with table-candidate pages are refined in the background.
             let refinement = table_model_commands::spawn_refinement(app.handle(), &mut default_rag);
+            // Scans read without the scan reader (installed before it shipped)
+            // are offered the install once and read again after it.
+            app.manage(scan_reader::ScanReaderState::new(&app_data_dir));
+            let scan_reader_reports = scan_reader::connect(&mut default_rag);
+            scan_reader::start_worker(app.handle().clone(), scan_reader_reports);
+            // Scans are read in a child process (this executable, started for
+            // OCR only), stopped after a minute without work: OCR's memory and
+            // threads never stay in the app, and a stuck reader can be killed.
+            match shodh_rag::processing::ocr::worker::WorkerCommand::current_exe() {
+                Ok(command) => {
+                    let worker = default_rag.use_ocr_worker(command);
+                    tauri::async_runtime::spawn(shodh_rag::lazy_model::unload_idle_models(
+                        vec![worker as Arc<dyn shodh_rag::lazy_model::IdleUnload>],
+                        shodh_rag::processing::ocr::worker::IDLE,
+                    ));
+                }
+                Err(e) => tracing::warn!(
+                    error = %format!("{e:#}"),
+                    "OCR runs in the app process: its executable was not found"
+                ),
+            }
             // The embedding, reranker, OCR, answer checking and table models load on
             // first use; unload them when idle.
             if let Some(idle) = shodh_rag::lazy_model::idle_period() {

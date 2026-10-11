@@ -17,17 +17,19 @@ pub struct RAGConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OcrEngineChoice {
-    /// The system OCR on Windows while it is available, else PP-OCRv6 when
-    /// its model is installed (macOS always). On the scanned evaluation set
-    /// PP-OCRv6 found far more passages (passage_hit@10 1.0 against 0.67) but
-    /// ranked the right page first slightly less often (page_hit@1 0.88
-    /// against 0.92) and took about 6 s a page against 0.1-0.4 s, so it is
-    /// not the Windows default (see `crates/shodh-eval/README.md`).
+    /// PP-OCRv6 (the scan reader) when its model is installed, on every
+    /// platform; without it the system OCR on Windows, and no OCR elsewhere.
+    /// Scans with JBIG2 or JPEG 2000 images go to the system OCR on Windows.
+    /// On the scanned evaluation set PP-OCRv6 found far more passages
+    /// (passage_hit@10 1.0 against 0.67) but ranked the right page first
+    /// slightly less often (page_hit@1 0.88 against 0.92) and is slower per
+    /// page; it is the default by decision (see `crates/shodh-eval/README.md`).
     #[default]
     Auto,
     /// The system OCR only (Windows.Media.Ocr; none on other platforms).
     System,
-    /// PP-OCRv6 only: scanned pages stay unread while its model is missing.
+    /// PP-OCRv6 only: scanned pages stay unread while its model is missing
+    /// (JBIG2 and JPEG 2000 scans still go to the system OCR on Windows).
     PpOcr,
 }
 

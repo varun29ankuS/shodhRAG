@@ -75,6 +75,32 @@ jobs:
       - name: Tests (shodh-eval)
         run: cargo test --package shodh-eval
 
+  # macOS reads scans with PP-OCRv6 only (Windows OCR is not built there), so
+  # the parser and the OCR engine have macOS-only paths. This builds shodh-rag
+  # on macOS and runs its OCR unit tests: one crate, debug, cached; the app and
+  # the other crates are built on Windows only.
+  macos:
+    name: macOS build + OCR tests (shodh-rag)
+    runs-on: macos-latest
+    env:
+      # The workflow's -crt-static is for the Windows MSVC builds.
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
+
+      - uses: Swatinem/rust-cache@v2
+
+      # LanceDB's protobuf definitions are compiled at build time.
+      - name: Install Protobuf compiler
+        run: brew install protobuf
+
+      - name: OCR tests (shodh-rag)
+        run: cargo test --package shodh-rag --lib ocr
+
   # Retrieval quality on the committed synthetic corpus (no LLM): a fresh
   # index, every question searched, gated against the committed baseline.
   # Retrieval is deterministic, so any drop fails; latency is reported only.

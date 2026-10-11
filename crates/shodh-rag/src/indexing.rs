@@ -41,6 +41,12 @@ pub struct IndexingProgress {
     pub current_action: String,
     pub eta_seconds: f32,
     pub speed: f32,
+    /// While OCR reads a scanned PDF: the page being read (1-based).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scanned_page: Option<usize>,
+    /// While OCR reads a scanned PDF: its pages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scanned_pages: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,7 +193,19 @@ pub async fn index_single_file(
     metadata.insert("doc_type".to_string(), "document".to_string());
     metadata.insert("indexed_at".to_string(), Utc::now().to_rfc3339());
 
-    let ids = index_file(rag, &path, metadata)
+    // While a scan is read the bar moves from half way to the end.
+    let on_page = |page: usize, pages: usize| {
+        let read = (page - 1) as f32 / pages.max(1) as f32;
+        emit_scanned_page(
+            emitter,
+            space_id,
+            file_path,
+            (0, 1),
+            50.0 + 50.0 * read,
+            (page, pages),
+        );
+    };
+    let ids = index_file_with_progress(rag, &path, metadata, Some(&on_page))
         .await
         .map_err(|e| format!("Failed to index file: {e}"))?;
 
@@ -330,10 +348,32 @@ pub async fn index_folder(
             last_progress_time = Instant::now();
         }
 
+        // While a scan is read, its pages move the bar within the file's share.
+        let current_file = file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        let done = files_processed;
+        let on_page = |page: usize, pages: usize| {
+            let read = (page - 1) as f32 / pages.max(1) as f32;
+            emit_scanned_page(
+                emitter,
+                space_id,
+                current_file,
+                (done, total_files),
+                (done as f32 + read) / total_files as f32 * 100.0,
+                (page, pages),
+            );
+        };
+
         // Process file with panic protection
         let process_result = {
-            let result =
-                std::panic::AssertUnwindSafe(process_file_with_options(file_path, space_id, rag));
+            let result = std::panic::AssertUnwindSafe(process_file_with_options(
+                file_path,
+                space_id,
+                rag,
+                Some(&on_page),
+            ));
             match result.catch_unwind().await {
                 Ok(r) => r,
                 Err(panic_info) => Err(format!("Panic: {}", panic_message(panic_info.as_ref()))),
@@ -414,11 +454,13 @@ fn is_selected_file_type(options: &IndexingOptions, extension: &str) -> bool {
                 .any(|t| t.trim_start_matches('.').eq_ignore_ascii_case(extension)))
 }
 
-/// Index one file of a folder source (the metadata every folder file gets).
+/// Index one file of a folder source (the metadata every folder file gets),
+/// reporting OCR's progress through a scan to `on_page` (page, pages).
 pub(crate) async fn process_file_with_options(
     file_path: &Path,
     space_id: &str,
     rag: &RwLock<RAGEngine>,
+    on_page: Option<&ScannedPageFn<'_>>,
 ) -> Result<usize, String> {
     if !file_path.exists() {
         return Err(format!("File does not exist: {}", file_path.display()));
@@ -453,12 +495,15 @@ pub(crate) async fn process_file_with_options(
         }
     }
 
-    let ids = index_file(rag, file_path, metadata)
+    let ids = index_file_with_progress(rag, file_path, metadata, on_page)
         .await
         .map_err(|e| format!("Failed to process file: {e}"))?;
 
     Ok(ids.len())
 }
+
+/// Called with (page being read, pages) while OCR reads a scanned PDF.
+pub type ScannedPageFn<'a> = dyn Fn(usize, usize) + Sync + 'a;
 
 /// Indexes one file into the shared engine. The file is parsed, chunked and embedded on
 /// a blocking thread without the engine lock; only storing it takes the write lock, so
@@ -468,19 +513,61 @@ pub async fn index_file(
     path: &Path,
     metadata: HashMap<String, String>,
 ) -> Result<Vec<uuid::Uuid>, String> {
+    index_file_with_progress(rag, path, metadata, None).await
+}
+
+/// [`index_file`], reporting OCR's progress through a scanned PDF to
+/// `on_page` (page being read, pages). A scan read without the scan reader is
+/// reported to the engine ([`RAGEngine::report_scan_reader_missing`]).
+pub async fn index_file_with_progress(
+    rag: &RwLock<RAGEngine>,
+    path: &Path,
+    metadata: HashMap<String, String>,
+    on_page: Option<&ScannedPageFn<'_>>,
+) -> Result<Vec<uuid::Uuid>, String> {
     let preparer = rag
         .read()
         .await
         .file_preparer()
         .map_err(|e| format!("{e:#}"))?;
     let owned = path.to_path_buf();
-    let prepared = tokio::task::spawn_blocking(move || preparer.prepare(&owned, metadata))
-        .await
-        .map_err(|e| match e.try_into_panic() {
-            Ok(panic) => format!("Panic: {}", panic_message(panic.as_ref())),
-            Err(e) => format!("Indexing task failed: {e}"),
-        })?
-        .map_err(|e| format!("{e:#}"))?;
+    let reported = metadata.clone();
+    // Pages are reported from the blocking thread through a channel and
+    // passed to `on_page` here, while the file is prepared.
+    let (pages_tx, mut pages_rx) = tokio::sync::mpsc::unbounded_channel::<(usize, usize)>();
+    let task = tokio::task::spawn_blocking(move || {
+        preparer.prepare_with_progress(&owned, metadata, &|page, pages| {
+            // The receiver is gone only when the caller stopped waiting.
+            let _ = pages_tx.send((page, pages));
+        })
+    });
+    tokio::pin!(task);
+    let joined = loop {
+        tokio::select! {
+            joined = &mut task => break joined,
+            Some((page, pages)) = pages_rx.recv() => {
+                if let Some(on_page) = on_page {
+                    on_page(page, pages);
+                }
+            }
+        }
+    };
+    let prepared = joined.map_err(|e| match e.try_into_panic() {
+        Ok(panic) => format!("Panic: {}", panic_message(panic.as_ref())),
+        Err(e) => format!("Indexing task failed: {e}"),
+    })?;
+    let prepared = match prepared {
+        Ok(prepared) => prepared,
+        Err(e) => {
+            if e.is::<crate::processing::ocr::ScanReaderMissing>() {
+                rag.read().await.report_scan_reader_missing(path, reported);
+            }
+            return Err(format!("{e:#}"));
+        }
+    };
+    if prepared.scan_reader_missing() {
+        rag.read().await.report_scan_reader_missing(path, reported);
+    }
     rag.write()
         .await
         .commit_file(prepared)
@@ -517,11 +604,56 @@ fn emit_progress(
             current_action: action.to_string(),
             eta_seconds: 0.0,
             speed: 0.0,
+            scanned_page: None,
+            scanned_pages: None,
         };
         e.emit(
             "indexing-progress",
             serde_json::to_value(&progress).unwrap_or_default(),
         );
+    }
+}
+
+/// Progress while OCR reads page `page` of a scanned PDF (`pages` pages):
+/// "Reading scanned pages: 12 of 240". `files` is (processed, total) of the
+/// run; `percentage` stays below 100 so the run does not read as finished.
+fn emit_scanned_page(
+    emitter: Option<&dyn EventEmitter>,
+    space_id: &str,
+    current_file: &str,
+    files: (usize, usize),
+    percentage: f32,
+    (page, pages): (usize, usize),
+) {
+    if let Some(e) = emitter {
+        let progress =
+            scanned_page_progress(space_id, current_file, files, percentage, page, pages);
+        e.emit(
+            "indexing-progress",
+            serde_json::to_value(&progress).unwrap_or_default(),
+        );
+    }
+}
+
+fn scanned_page_progress(
+    space_id: &str,
+    current_file: &str,
+    (processed, total): (usize, usize),
+    percentage: f32,
+    page: usize,
+    pages: usize,
+) -> IndexingProgress {
+    IndexingProgress {
+        space_id: space_id.to_string(),
+        current_file: current_file.to_string(),
+        processed_files: processed,
+        total_files: total,
+        percentage: percentage.min(99.9),
+        current_action: format!("Reading scanned pages: {page} of {pages}"),
+        eta_seconds: 0.0,
+        speed: 0.0,
+        scanned_page: Some(page),
+        scanned_pages: Some(pages),
     }
 }
 
@@ -560,6 +692,27 @@ mod tests {
         assert!(!is_selected_file_type(&narrowed, "xlsx"));
         // Requesting an unsupported type never makes it indexable.
         assert!(!is_selected_file_type(&narrowed, "exe"));
+    }
+
+    #[test]
+    fn scanned_page_progress_names_the_page_and_never_reads_as_done() {
+        let progress = scanned_page_progress("s1", "lease-scan.pdf", (2, 3), 100.0, 12, 240);
+        assert_eq!(progress.current_action, "Reading scanned pages: 12 of 240");
+        assert!(progress.percentage < 100.0);
+        let json = serde_json::to_value(&progress).unwrap();
+        assert_eq!(json["scanned_page"], 12);
+        assert_eq!(json["scanned_pages"], 240);
+        assert_eq!(json["current_file"], "lease-scan.pdf");
+        assert_eq!(json["processed_files"], 2);
+        // Other progress events carry no page fields.
+        let plain = IndexingProgress {
+            scanned_page: None,
+            scanned_pages: None,
+            ..progress
+        };
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json.get("scanned_page").is_none());
+        assert!(json.get("scanned_pages").is_none());
     }
 
     #[test]

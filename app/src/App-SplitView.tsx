@@ -32,7 +32,7 @@ function safeStorage(): Storage | null {
 }
 
 // Core components
-import { applyFolderSync, parseStoredSources, readIndexingResult, serializeSources, SOURCES_STORAGE_KEY, syncedFolders } from './features/library/sources';
+import { applyFolderSync, parseStoredSources, readIndexingResult, scannedPagesStep, serializeSources, SOURCES_STORAGE_KEY, syncedFolders } from './features/library/sources';
 import type { FolderSyncOutcome, LibrarySource } from './features/library/sources';
 import type { FileNode } from './features/library/fileTree';
 import { errorMessage as searchErrorMessage } from './features/setup/searchModels';
@@ -779,7 +779,8 @@ function AppSplitView() {
       debugLog('=== INDEXING PROGRESS EVENT ===');
       debugLog('Full event:', event);
       debugLog('Payload:', event.payload);
-      const { current_file, processed_files, total_files, percentage, current_action } = event.payload;
+      const { current_file, processed_files, total_files, percentage } = event.payload;
+      const currentStep = scannedPagesStep(event.payload);
 
       // Update the currently indexing source with progress
       setSources(prev => prev.map(source => {
@@ -790,6 +791,7 @@ function AppSplitView() {
             status: percentage >= 100 ? 'ready' : 'indexing',
             progress: Math.round(percentage),
             currentFile: current_file === 'Completed' ? undefined : current_file,
+            currentStep,
             fileCount: total_files || source.fileCount,
             processedCount: processed_files
           };
@@ -936,7 +938,7 @@ function AppSplitView() {
   const indexSource = async (source: Source, kind: 'folder' | 'file' = 'folder') => {
     setCurrentlyIndexing(source.id);
     setSources(prev => prev.map(s => s.id === source.id
-      ? { ...s, status: 'indexing' as const, progress: 0, processedCount: 0, currentFile: undefined, lastError: undefined }
+      ? { ...s, status: 'indexing' as const, progress: 0, processedCount: 0, currentFile: undefined, currentStep: undefined, lastError: undefined }
       : s));
     try {
       const raw = kind === 'file'
@@ -958,6 +960,7 @@ function AppSplitView() {
             failures: outcome.failures.length > 0 ? outcome.failures : undefined,
             progress: undefined,
             currentFile: undefined,
+            currentStep: undefined,
             processedCount: undefined,
           }
         : s));
@@ -970,7 +973,7 @@ function AppSplitView() {
       console.error('Indexing failed:', error);
       const message = searchErrorMessage(error);
       setSources(prev => prev.map(s => s.id === source.id
-        ? { ...s, status: 'error' as const, lastError: message, progress: undefined, currentFile: undefined, processedCount: undefined }
+        ? { ...s, status: 'error' as const, lastError: message, progress: undefined, currentFile: undefined, currentStep: undefined, processedCount: undefined }
         : s));
       notify.error('Indexing failed', { description: message });
     } finally {

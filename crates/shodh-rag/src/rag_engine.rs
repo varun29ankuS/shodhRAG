@@ -13,7 +13,8 @@ use crate::lazy_model::LazyModel;
 use crate::processing::chunker::{ContextualChunkResult, TextChunker};
 use crate::processing::ocr::SharedOcrModel;
 use crate::processing::parser::{
-    DocumentParser, ParsedDocument, TABLE_CANDIDATES_KEY, TABLE_MODEL_KEY,
+    DocumentParser, OcrProgress, ParsedDocument, OCR_READER_MISSING_KEY, TABLE_CANDIDATES_KEY,
+    TABLE_MODEL_KEY,
 };
 use crate::processing::structure_chunker::{StructureChunker, STRUCTURE_CHUNKER_VERSION};
 use crate::reranking::CrossEncoderReranker;
@@ -46,6 +47,17 @@ pub struct FilePreparer {
     embeddings: Arc<dyn EmbeddingModel>,
 }
 
+/// A scanned file the indexer read without the scan reader (the PP-OCRv6
+/// model, not installed): the system OCR read it, or nothing could. Sent to
+/// the queue set with [`RAGEngine::set_scan_reader_queue`] so the file can be
+/// read again, with the metadata it was indexed with, once the reader is
+/// installed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanReaderRequest {
+    pub path: std::path::PathBuf,
+    pub metadata: HashMap<String, String>,
+}
+
 /// A file parsed, chunked and embedded, ready for [`RAGEngine::commit_file`].
 pub struct PreparedFile {
     path: std::path::PathBuf,
@@ -53,16 +65,37 @@ pub struct PreparedFile {
     document: PreparedDocument,
     /// The file has table-candidate pages the table model has not read yet.
     refine: bool,
+    /// The file is a scan the system OCR read because the scan reader is not
+    /// installed.
+    scan_reader_missing: bool,
     parse_ms: u128,
     chunk_ms: u128,
     embed_ms: u128,
 }
 
+impl PreparedFile {
+    /// The file is a scan the system OCR read because the scan reader is not
+    /// installed.
+    pub fn scan_reader_missing(&self) -> bool {
+        self.scan_reader_missing
+    }
+}
+
 impl FilePreparer {
     /// Parses, chunks and embeds the file at `path` (blocking).
     pub fn prepare(&self, path: &Path, metadata: HashMap<String, String>) -> Result<PreparedFile> {
+        self.prepare_with_progress(path, metadata, &|_, _| {})
+    }
+
+    /// [`Self::prepare`], reporting OCR's progress through a scanned PDF.
+    pub fn prepare_with_progress(
+        &self,
+        path: &Path,
+        metadata: HashMap<String, String>,
+        progress: OcrProgress<'_>,
+    ) -> Result<PreparedFile> {
         let parse_started = std::time::Instant::now();
-        let parsed = self.parser.parse_file(path)?;
+        let parsed = self.parser.parse_file_with_progress(path, progress)?;
         let parse_ms = parse_started.elapsed().as_millis();
         self.prepare_parsed(path, parsed, metadata, parse_ms)
     }
@@ -77,6 +110,7 @@ impl FilePreparer {
     ) -> Result<PreparedFile> {
         let refine = parsed.metadata.contains_key(TABLE_CANDIDATES_KEY)
             && !parsed.metadata.contains_key(TABLE_MODEL_KEY);
+        let scan_reader_missing = parsed.metadata.contains_key(OCR_READER_MISSING_KEY);
         let source = normalize_source_path(path);
         let mut merged_metadata = parsed.metadata;
         for (k, v) in metadata {
@@ -145,6 +179,7 @@ impl FilePreparer {
             source,
             document,
             refine,
+            scan_reader_missing,
             parse_ms,
             chunk_ms,
             embed_ms: embed_started.elapsed().as_millis(),
@@ -697,10 +732,16 @@ pub struct RAGEngine {
     /// The PP-OCRv6 model the parser reads scans with; filled when the models
     /// are attached and it is installed. Loaded on the first scanned page.
     ocr: SharedOcrModel,
+    /// The OCR child process, when scans are read out of process
+    /// ([`Self::use_ocr_worker`]); it reads with the model in `ocr`'s place.
+    ocr_worker: Option<Arc<crate::processing::ocr::worker::OcrWorker>>,
     /// PDFs indexed by the fast parser that have table-candidate pages are sent
     /// here, for the table model to refine in the background (see
     /// [`crate::table_refinement`]).
     refinement_queue: Option<tokio::sync::mpsc::UnboundedSender<std::path::PathBuf>>,
+    /// Scans read without the scan reader are reported here (see
+    /// [`ScanReaderRequest`]).
+    scan_reader_queue: Option<tokio::sync::mpsc::UnboundedSender<ScanReaderRequest>>,
     /// Ranks library files by the citation graph for queries about papers, methods or
     /// citations: a third list fused into search (see [`crate::search::graph_fusion`]).
     source_ranker: Option<Arc<dyn crate::search::graph_fusion::SourceRanker>>,
@@ -770,7 +811,9 @@ impl RAGEngine {
             config,
             reranker: Arc::new(LazyModel::new("reranker")),
             ocr,
+            ocr_worker: None,
             refinement_queue: None,
+            scan_reader_queue: None,
             source_ranker: None,
         };
         if let Some(models) = models {
@@ -814,17 +857,40 @@ impl RAGEngine {
     /// or empties it when the model is not installed. Returns whether it is
     /// installed. Called on attach and after an install.
     pub fn attach_ocr_model(&self) -> bool {
-        match SearchModels::locate_ocr(&self.config) {
-            Some(dir) => {
-                self.ocr
-                    .set_loader(move || crate::processing::ocr::PpOcr::load(&dir));
-                true
-            }
-            None => {
-                self.ocr.uninstall();
-                false
-            }
+        let dir = SearchModels::locate_ocr(&self.config);
+        self.set_ocr_dir(dir.clone());
+        dir.is_some()
+    }
+
+    /// Points OCR at the model in `dir` (`None`: not installed): the
+    /// in-process slot and, when there is one, the OCR child.
+    fn set_ocr_dir(&self, dir: Option<std::path::PathBuf>) {
+        if let Some(worker) = &self.ocr_worker {
+            worker.set_model_dir(dir.clone());
         }
+        match dir {
+            Some(dir) => self
+                .ocr
+                .set_loader(move || crate::processing::ocr::PpOcr::load(&dir)),
+            None => self.ocr.uninstall(),
+        }
+    }
+
+    /// Reads scans and images from now on in an OCR child process started
+    /// with `command` ([`crate::processing::ocr::worker`]) instead of in this
+    /// process. Returns the worker, for idle stopping. Call before the engine
+    /// is shared.
+    pub fn use_ocr_worker(
+        &mut self,
+        command: crate::processing::ocr::worker::WorkerCommand,
+    ) -> Arc<crate::processing::ocr::worker::OcrWorker> {
+        let worker = Arc::new(crate::processing::ocr::worker::OcrWorker::new(command));
+        if self.ocr.available() {
+            worker.set_model_dir(SearchModels::locate_ocr(&self.config));
+        }
+        self.parser = std::mem::take(&mut self.parser).with_ocr_worker(worker.clone());
+        self.ocr_worker = Some(worker.clone());
+        worker
     }
 
     /// The slot holding the E5 model once it is loaded (for idle unloading and
@@ -873,12 +939,7 @@ impl RAGEngine {
                 .set_loader(move || CrossEncoderReranker::new(&dir)),
             None => self.reranker.uninstall(),
         }
-        match models.ocr_dir {
-            Some(dir) => self
-                .ocr
-                .set_loader(move || crate::processing::ocr::PpOcr::load(&dir)),
-            None => self.ocr.uninstall(),
-        }
+        self.set_ocr_dir(models.ocr_dir);
         tracing::info!(
             dimension,
             reranker = self.reranker.available(),
@@ -991,6 +1052,33 @@ impl RAGEngine {
             }
         }
         Ok(ids)
+    }
+
+    /// Reports every scan indexed from now on without the scan reader to
+    /// `queue` ([`ScanReaderRequest`]).
+    pub fn set_scan_reader_queue(
+        &mut self,
+        queue: tokio::sync::mpsc::UnboundedSender<ScanReaderRequest>,
+    ) {
+        self.scan_reader_queue = Some(queue);
+    }
+
+    /// Reports a scan read without the scan reader (see
+    /// [`Self::set_scan_reader_queue`]); nothing happens without a queue.
+    pub fn report_scan_reader_missing(&self, path: &Path, metadata: HashMap<String, String>) {
+        if let Some(queue) = &self.scan_reader_queue {
+            // A closed queue only means nobody offers the reader.
+            let _ = queue.send(ScanReaderRequest {
+                path: path.to_path_buf(),
+                metadata,
+            });
+        }
+    }
+
+    /// The parser the indexer reads files with (its OCR included), for
+    /// readers of indexed files that must see what the index saw.
+    pub fn parser(&self) -> DocumentParser {
+        self.parser.clone()
     }
 
     /// Sends every PDF indexed from now on that has table-candidate pages to `queue`.

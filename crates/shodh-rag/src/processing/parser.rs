@@ -4,7 +4,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::document_model::{Block, BlockKind, StructuredDocument};
-use super::ocr::SharedOcrModel;
+use super::ocr::worker::{FileKind, OcrWorker, WorkerEngine};
+use super::ocr::{ScanReaderMissing, SharedOcrModel};
 use super::pdf_layout::{TableMode, TableReport};
 use super::table_model::{TableModel, TABLE_MODEL_ID};
 use super::{pdf_forms, pdf_layout, tabular, text_structure};
@@ -39,21 +40,106 @@ pub const OCR_ENGINE_KEY: &str = "ocr_engine";
 pub const OCR_ENGINE_PPOCR: &str = super::ocr::OCR_MODEL_ID;
 /// [`OCR_ENGINE_KEY`] value: Windows.Media.Ocr.
 pub const OCR_ENGINE_SYSTEM: &str = "windows-ocr";
+/// Metadata key set (`"true"`) on a scan the system OCR read only because the
+/// scan reader (the PP-OCRv6 model) is not installed: it is read again once
+/// the reader is installed.
+pub const OCR_READER_MISSING_KEY: &str = "ocr_reader_missing";
+
+/// Called with (page being read, pages) while OCR reads a scanned PDF, before
+/// each page (1-based).
+pub type OcrProgress<'a> = &'a dyn Fn(usize, usize);
 
 /// A parsed PDF: text, structured blocks when the layout parser or OCR read
-/// it, the table detection, and the OCR engine for a scan.
+/// it, the table detection, and how OCR read a scan.
 struct PdfParse {
     text: String,
     document: Option<StructuredDocument>,
     tables: Option<TableReport>,
-    ocr_engine: Option<&'static str>,
+    ocr: Option<OcrUse>,
+}
+
+/// How a scan was read: the engine, and whether the scan reader was missing
+/// (so the system OCR read it instead).
+#[derive(Debug, Clone, Copy)]
+struct OcrUse {
+    engine: &'static str,
+    reader_missing: bool,
 }
 
 /// The OCR engine a scanned page goes to.
 enum OcrRoute {
+    /// PP-OCRv6 in this process.
     PpOcr(Arc<super::ocr::PpOcr>),
+    /// The system OCR in this process.
+    System,
+    /// An engine in the OCR child process ([`OcrWorker`]).
+    Worker(WorkerEngine),
+    None,
+}
+
+/// The [`OCR_ENGINE_KEY`] value of an engine in the OCR child.
+fn worker_engine_name(engine: WorkerEngine) -> &'static str {
+    match engine {
+        WorkerEngine::PpOcr => OCR_ENGINE_PPOCR,
+        WorkerEngine::System => OCR_ENGINE_SYSTEM,
+    }
+}
+
+/// Which engine reads a scan, decided before any model is loaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OcrEngine {
+    PpOcr,
     System,
     None,
+}
+
+/// The engine for a scan and whether the scan reader is missing for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OcrDecision {
+    engine: OcrEngine,
+    /// The scan reader would read this scan but is not installed.
+    reader_missing: bool,
+}
+
+/// Chooses the engine for a scan (see [`OcrEngineChoice`]). On `Auto` the scan
+/// reader (PP-OCRv6) reads scans when it is installed, on every platform;
+/// without it Windows reads with the system OCR and other platforms cannot
+/// read. Scans whose images are JBIG2 or JPEG 2000 (`unrendered_codecs`),
+/// which the pure-Rust renderer draws blank, go to the system OCR where there
+/// is one, whatever the choice. `system_available` is asked only when the
+/// answer matters.
+fn decide_ocr(
+    choice: OcrEngineChoice,
+    reader_installed: bool,
+    system_available: impl FnOnce() -> bool,
+    unrendered_codecs: bool,
+) -> OcrDecision {
+    let decision = |engine, reader_missing| OcrDecision {
+        engine,
+        reader_missing,
+    };
+    let system = |available: bool| {
+        if available {
+            OcrEngine::System
+        } else {
+            OcrEngine::None
+        }
+    };
+    match choice {
+        OcrEngineChoice::System => decision(system(system_available()), false),
+        OcrEngineChoice::PpOcr | OcrEngineChoice::Auto => {
+            let system_available = std::cell::LazyCell::new(system_available);
+            if unrendered_codecs && *system_available {
+                decision(OcrEngine::System, false)
+            } else if reader_installed {
+                decision(OcrEngine::PpOcr, false)
+            } else if choice == OcrEngineChoice::Auto {
+                decision(system(*system_available), true)
+            } else {
+                decision(OcrEngine::None, true)
+            }
+        }
+    }
 }
 
 /// Parses files into text, sections and structured documents.
@@ -67,6 +153,9 @@ enum OcrRoute {
 pub struct DocumentParser {
     table_model: Option<Arc<TableModel>>,
     ocr_model: Option<SharedOcrModel>,
+    /// When set, OCR runs in the child process instead of this one (the
+    /// in-process model is then not used).
+    ocr_worker: Option<Arc<OcrWorker>>,
     ocr: OcrConfig,
 }
 
@@ -91,97 +180,159 @@ impl DocumentParser {
         self
     }
 
-    /// The engine for scanned pages (see [`OcrEngineChoice`]). On `Auto`,
-    /// Windows uses the system OCR while it is available and other platforms
-    /// use PP-OCRv6. Loads the model on first use (seconds).
-    fn ocr_route(&self) -> OcrRoute {
-        let model = || self.ocr_model.as_ref().and_then(|m| m.get());
-        let system = if system_ocr_available() {
-            OcrRoute::System
-        } else {
-            OcrRoute::None
+    /// This parser reading scans and images in the OCR child process
+    /// `worker` (see [`super::ocr::worker`]); the model it reads with is the
+    /// worker's ([`OcrWorker::model_dir`]).
+    pub fn with_ocr_worker(mut self, worker: Arc<OcrWorker>) -> Self {
+        self.ocr_worker = Some(worker);
+        self
+    }
+
+    /// The engine for a scan ([`decide_ocr`]) and whether the scan reader is
+    /// missing for it. The model is loaded (seconds, on first use) only when
+    /// it reads; one that is installed but fails to load is logged and the
+    /// scan goes where it would go without it.
+    fn ocr_route(&self, unrendered_codecs: bool) -> (OcrRoute, bool) {
+        if let Some(worker) = &self.ocr_worker {
+            // Windows OCR is asked for in the child only (no WinRT in this
+            // process); without an OCR language the child says so.
+            let decision = decide_ocr(
+                self.ocr.engine,
+                worker.model_dir().is_some(),
+                || cfg!(windows),
+                unrendered_codecs,
+            );
+            let route = match decision.engine {
+                OcrEngine::PpOcr => OcrRoute::Worker(WorkerEngine::PpOcr),
+                OcrEngine::System => OcrRoute::Worker(WorkerEngine::System),
+                OcrEngine::None => OcrRoute::None,
+            };
+            return (route, decision.reader_missing);
+        }
+        let installed = self.ocr_model.as_ref().is_some_and(|m| m.available());
+        let decision = decide_ocr(
+            self.ocr.engine,
+            installed,
+            system_ocr_available,
+            unrendered_codecs,
+        );
+        let route = |engine| match engine {
+            OcrEngine::System => OcrRoute::System,
+            _ => OcrRoute::None,
         };
-        match self.ocr.engine {
-            OcrEngineChoice::System => system,
-            OcrEngineChoice::PpOcr => model().map_or(OcrRoute::None, OcrRoute::PpOcr),
-            OcrEngineChoice::Auto => match system {
-                OcrRoute::System => OcrRoute::System,
-                _ => model().map_or(OcrRoute::None, OcrRoute::PpOcr),
+        match decision.engine {
+            OcrEngine::PpOcr => match self.ocr_model.as_ref().and_then(|m| m.get()) {
+                Some(model) => (OcrRoute::PpOcr(model), false),
+                None => {
+                    let fallback = decide_ocr(
+                        self.ocr.engine,
+                        false,
+                        system_ocr_available,
+                        unrendered_codecs,
+                    );
+                    (route(fallback.engine), false)
+                }
             },
+            engine => (route(engine), decision.reader_missing),
         }
     }
 
-    /// A scanned PDF read by OCR page by page, the engine that read it and
-    /// its page count, or `None` when no engine is available.
+    /// A scanned PDF read by OCR page by page (at below-normal priority),
+    /// with the engine that read it and its page count, `None` when no engine
+    /// could read it; and whether the scan reader was missing for it.
+    #[allow(clippy::type_complexity)]
     fn ocr_pdf(
         &self,
         path: &Path,
         bytes: &[u8],
+        progress: OcrProgress<'_>,
+    ) -> (
+        Result<Option<(StructuredDocument, &'static str, usize)>>,
+        bool,
+    ) {
+        let unrendered = super::ocr::raster::uses_unrendered_codecs(bytes);
+        let (route, reader_missing) = self.ocr_route(unrendered);
+        let _below_normal = super::ocr::priority::BelowNormal::new();
+        (
+            self.read_scan(route, path, bytes, unrendered, progress),
+            reader_missing,
+        )
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn read_scan(
+        &self,
+        route: OcrRoute,
+        path: &Path,
+        bytes: &[u8],
+        unrendered: bool,
+        progress: OcrProgress<'_>,
     ) -> Result<Option<(StructuredDocument, &'static str, usize)>> {
-        let route = match self.ocr_route() {
-            // JBIG2 and JPEG 2000 page images render blank with the pure-Rust
-            // renderer; Windows.Data.Pdf decodes them for the system OCR.
-            OcrRoute::PpOcr(_)
-                if cfg!(windows) && super::ocr::raster::uses_unrendered_codecs(bytes) =>
-            {
-                tracing::info!(
-                    "Scan uses JBIG2 or JPEG 2000 images; reading it with the system OCR: {}",
-                    path.display()
-                );
-                OcrRoute::System
-            }
-            route => route,
-        };
-        match route {
+        let read = match route {
             OcrRoute::PpOcr(model) => {
-                if super::ocr::raster::uses_unrendered_codecs(bytes) {
+                if unrendered {
                     tracing::warn!(
                         "Scan uses JBIG2 or JPEG 2000 images, which cannot be rendered here; \
                          those pages read as empty: {}",
                         path.display()
                     );
                 }
-                let pages = super::ocr::raster::PdfPages::open(bytes)?;
-                let mut texts = Vec::with_capacity(pages.count());
-                for index in 0..pages.count() {
-                    let read = pages
-                        .render(index, self.ocr.render_dpi)
-                        .and_then(|img| model.read_page(&img));
-                    match read {
-                        Ok(page) => texts.push(page.text()),
-                        Err(e) => {
-                            tracing::warn!(
-                                page = index + 1,
-                                error = %format!("{e:#}"),
-                                "OCR skipped a page: {}",
-                                path.display()
-                            );
-                            texts.push(String::new());
-                        }
-                    }
-                }
-                Ok(Some((
-                    ocr_pages_to_document(&texts),
-                    OCR_ENGINE_PPOCR,
-                    texts.len(),
-                )))
+                let texts =
+                    super::ocr::read_pdf(&model, bytes, self.ocr.render_dpi, path, progress)?;
+                Some((ocr_pages_to_document(&texts), OCR_ENGINE_PPOCR, texts.len()))
             }
             #[cfg(windows)]
             OcrRoute::System => {
-                let pages = super::windows_ocr::ocr_pdf_pages(path, self.ocr.system_render_dpi)?;
-                Ok(Some((
+                if unrendered {
+                    tracing::info!(
+                        "Scan uses JBIG2 or JPEG 2000 images; reading it with the system OCR: {}",
+                        path.display()
+                    );
+                }
+                let pages =
+                    super::windows_ocr::ocr_pdf_pages(path, self.ocr.system_render_dpi, progress)?;
+                Some((
                     ocr_pages_to_document(&pages),
                     OCR_ENGINE_SYSTEM,
                     pages.len(),
-                )))
+                ))
             }
             #[cfg(not(windows))]
-            OcrRoute::System => Ok(None),
-            OcrRoute::None => Ok(None),
-        }
+            OcrRoute::System => None,
+            OcrRoute::Worker(engine) => {
+                let worker = self
+                    .ocr_worker
+                    .as_ref()
+                    .context("no OCR process is configured")?;
+                let texts = worker.read(
+                    FileKind::Pdf,
+                    path,
+                    engine,
+                    self.ocr.render_dpi,
+                    self.ocr.system_render_dpi,
+                    progress,
+                )?;
+                Some((
+                    ocr_pages_to_document(&texts),
+                    worker_engine_name(engine),
+                    texts.len(),
+                ))
+            }
+            OcrRoute::None => None,
+        };
+        Ok(read)
     }
 
     pub fn parse_file(&self, path: &Path) -> Result<ParsedDocument> {
+        self.parse_file_with_progress(path, &|_, _| {})
+    }
+
+    /// [`Self::parse_file`], reporting OCR's progress through a scanned PDF.
+    pub fn parse_file_with_progress(
+        &self,
+        path: &Path,
+        progress: OcrProgress<'_>,
+    ) -> Result<ParsedDocument> {
         let extension = path
             .extension()
             .and_then(|e| e.to_str())
@@ -219,13 +370,13 @@ impl DocumentParser {
             Some(tables) => tabular::tables_to_text(tables),
             None => match extension.as_str() {
                 "pdf" => {
-                    let parsed = self.parse_pdf(path)?;
+                    let parsed = self.parse_pdf(path, progress)?;
                     document = parsed.document;
                     if let Some(report) = parsed.tables {
                         record_table_report(&report, self.table_model.is_some(), &mut metadata);
                     }
-                    if let Some(engine) = parsed.ocr_engine {
-                        metadata.insert(OCR_ENGINE_KEY.to_string(), engine.to_string());
+                    if let Some(ocr) = parsed.ocr {
+                        record_ocr(ocr, &mut metadata);
                     }
                     parsed.text
                 }
@@ -246,8 +397,8 @@ impl DocumentParser {
                 "pptx" => self.parse_pptx(path)?,
                 "html" | "htm" => self.parse_html(path)?,
                 "png" | "jpg" | "jpeg" | "bmp" | "tiff" | "tif" => {
-                    let (doc, engine) = self.parse_image(path)?;
-                    metadata.insert(OCR_ENGINE_KEY.to_string(), engine.to_string());
+                    let (doc, ocr) = self.parse_image(path)?;
+                    record_ocr(ocr, &mut metadata);
                     let text = doc.plain_text();
                     document = Some(doc);
                     text
@@ -316,7 +467,7 @@ impl DocumentParser {
     /// A PDF is treated as scanned only when its text layer is essentially
     /// empty across all pages ([`is_effectively_scanned`]), never because one
     /// extractor failed.
-    fn parse_pdf(&self, path: &Path) -> Result<PdfParse> {
+    fn parse_pdf(&self, path: &Path, progress: OcrProgress<'_>) -> Result<PdfParse> {
         let bytes = std::fs::read(path)
             .with_context(|| format!("Failed to read PDF: {}", path.display()))?;
 
@@ -355,7 +506,7 @@ impl DocumentParser {
                         text: doc.plain_text(),
                         document: Some(doc),
                         tables: Some(parsed.tables),
-                        ocr_engine: None,
+                        ocr: None,
                     });
                 }
                 tracing::info!(
@@ -377,12 +528,13 @@ impl DocumentParser {
                     text,
                     document: None,
                     tables: None,
-                    ocr_engine: None,
+                    ocr: None,
                 });
             }
         }
 
-        match self.ocr_pdf(path, &bytes) {
+        let (read, reader_missing) = self.ocr_pdf(path, &bytes, progress);
+        match read {
             Ok(Some((mut doc, engine, pages))) => {
                 if doc.text_chars() > 0 || !forms.fields.is_empty() {
                     insert_form_fields(&mut doc, &forms.fields);
@@ -391,7 +543,10 @@ impl DocumentParser {
                         text: doc.plain_text(),
                         document: Some(doc),
                         tables: None,
-                        ocr_engine: Some(engine),
+                        ocr: Some(OcrUse {
+                            engine,
+                            reader_missing,
+                        }),
                     });
                 }
             }
@@ -399,6 +554,10 @@ impl DocumentParser {
                 tracing::warn!("No OCR engine is available for {}", path.display());
             }
             Err(e) => tracing::warn!("OCR failed for {}: {:#}", path.display(), e),
+        }
+        // The scan reader may read what nothing here could.
+        if reader_missing {
+            return Err(anyhow::Error::new(ScanReaderMissing).context(path.display().to_string()));
         }
 
         Err(anyhow::anyhow!(
@@ -492,37 +651,56 @@ impl DocumentParser {
         Ok(text)
     }
 
-    /// An image file read by OCR as page 1, and the engine that read it.
-    fn parse_image(&self, path: &Path) -> Result<(StructuredDocument, &'static str)> {
-        match self.ocr_route() {
-            OcrRoute::PpOcr(model) => {
-                let img = super::ocr::raster::load_image(path)?;
-                let text = model.read_page(&img)?.text();
-                if text.trim().is_empty() {
-                    anyhow::bail!("OCR produced no text for image: {}", path.display());
-                }
-                Ok((
-                    ocr_pages_to_document(std::slice::from_ref(&text)),
-                    OCR_ENGINE_PPOCR,
-                ))
+    /// An image file read by OCR (at below-normal priority) as page 1, and
+    /// how it was read.
+    fn parse_image(&self, path: &Path) -> Result<(StructuredDocument, OcrUse)> {
+        let (route, reader_missing) = self.ocr_route(false);
+        let _below_normal = super::ocr::priority::BelowNormal::new();
+        let missing =
+            || Err(anyhow::Error::new(ScanReaderMissing).context(path.display().to_string()));
+        let read = |engine: &'static str, text: Result<String>| match text {
+            Ok(text) if !text.trim().is_empty() => Ok((
+                ocr_pages_to_document(std::slice::from_ref(&text)),
+                OcrUse {
+                    engine,
+                    reader_missing,
+                },
+            )),
+            // The scan reader may read what the system OCR could not.
+            _ if reader_missing => missing(),
+            Ok(_) => Err(anyhow::anyhow!(
+                "OCR produced no text for image: {}",
+                path.display()
+            )),
+            Err(e) => Err(e),
+        };
+        match route {
+            OcrRoute::PpOcr(model) => read(OCR_ENGINE_PPOCR, super::ocr::read_image(&model, path)),
+            OcrRoute::Worker(engine) => {
+                let text = match &self.ocr_worker {
+                    Some(worker) => worker
+                        .read(
+                            FileKind::Image,
+                            path,
+                            engine,
+                            self.ocr.render_dpi,
+                            self.ocr.system_render_dpi,
+                            &|_, _| {},
+                        )
+                        .map(|pages| pages.concat()),
+                    None => Err(anyhow::anyhow!("no OCR process is configured")),
+                };
+                read(worker_engine_name(engine), text)
             }
             #[cfg(windows)]
-            OcrRoute::System => {
-                let text = super::windows_ocr::ocr_image(path)?;
-                Ok((
-                    ocr_pages_to_document(std::slice::from_ref(&text)),
-                    OCR_ENGINE_SYSTEM,
-                ))
-            }
+            OcrRoute::System => read(OCR_ENGINE_SYSTEM, super::windows_ocr::ocr_image(path)),
             #[cfg(not(windows))]
             OcrRoute::System => anyhow::bail!(
                 "Image OCR not available on this platform: {}",
                 path.display()
             ),
-            OcrRoute::None => anyhow::bail!(
-                "No OCR engine is available for {} (install the OCR model with the search models)",
-                path.display()
-            ),
+            OcrRoute::None if reader_missing => missing(),
+            OcrRoute::None => anyhow::bail!("No OCR engine is available for {}", path.display()),
         }
     }
 
@@ -695,6 +873,15 @@ fn system_ocr_available() -> bool {
     #[cfg(not(windows))]
     {
         false
+    }
+}
+
+/// Records how a scan was read: the engine, and that the scan reader was
+/// missing ([`OCR_READER_MISSING_KEY`]).
+fn record_ocr(ocr: OcrUse, metadata: &mut HashMap<String, String>) {
+    metadata.insert(OCR_ENGINE_KEY.to_string(), ocr.engine.to_string());
+    if ocr.reader_missing {
+        metadata.insert(OCR_READER_MISSING_KEY.to_string(), "true".to_string());
     }
 }
 
@@ -1273,7 +1460,7 @@ mod tests {
     }
 
     /// Without the model, choosing PP-OCRv6 only reads nothing rather than
-    /// falling back silently.
+    /// falling back silently, and says the scan reader is missing.
     #[test]
     fn ppocr_only_without_the_model_reads_no_scan() {
         let parser = DocumentParser::new().with_ocr(
@@ -1283,9 +1470,123 @@ mod tests {
                 ..OcrConfig::default()
             },
         );
-        let err = parser
-            .parse_file(&scanned("contracts/nda-orchid-kestrel-p2-scan.png"))
-            .expect_err("no OCR engine");
-        assert!(format!("{err:#}").contains("No OCR engine"), "{err:#}");
+        for file in [
+            "contracts/nda-orchid-kestrel-p2-scan.png",
+            "invoices/inv-2025-0117-scan.pdf",
+        ] {
+            let err = parser
+                .parse_file(&scanned(file))
+                .expect_err("no OCR engine");
+            assert!(err.is::<ScanReaderMissing>(), "{file}: {err:#}");
+            assert!(
+                format!("{err:#}").contains("the scan reader (31 MB)"),
+                "{err:#}"
+            );
+        }
+    }
+
+    /// The system OCR is choosable, but `Auto` uses it only where the scan
+    /// reader is missing or cannot render the scan.
+    #[test]
+    fn ocr_route_prefers_the_scan_reader_on_auto() {
+        use OcrEngine::{None as NoEngine, PpOcr, System};
+        let d = |engine, reader_missing| OcrDecision {
+            engine,
+            reader_missing,
+        };
+        let auto = OcrEngineChoice::Auto;
+        // (reader installed, system OCR available, JBIG2/JPX) -> decision
+        let cases = [
+            ((true, true, false), d(PpOcr, false)),
+            ((true, false, false), d(PpOcr, false)),
+            ((false, true, false), d(System, true)),
+            ((false, false, false), d(NoEngine, true)),
+            // Blank with the pure-Rust renderer: the system OCR reads it, by design.
+            ((true, true, true), d(System, false)),
+            ((false, true, true), d(System, false)),
+            ((true, false, true), d(PpOcr, false)),
+            ((false, false, true), d(NoEngine, true)),
+        ];
+        for ((installed, system, unrendered), expected) in cases {
+            assert_eq!(
+                decide_ocr(auto, installed, || system, unrendered),
+                expected,
+                "auto: installed {installed}, system {system}, unrendered {unrendered}"
+            );
+        }
+        assert_eq!(
+            decide_ocr(OcrEngineChoice::PpOcr, false, || true, false),
+            d(NoEngine, true)
+        );
+        assert_eq!(
+            decide_ocr(OcrEngineChoice::PpOcr, true, || true, true),
+            d(System, false)
+        );
+        assert_eq!(
+            decide_ocr(OcrEngineChoice::System, true, || true, false),
+            d(System, false)
+        );
+        assert_eq!(
+            decide_ocr(OcrEngineChoice::System, false, || false, false),
+            d(NoEngine, false)
+        );
+    }
+
+    /// The system OCR is not consulted when the scan reader reads.
+    #[test]
+    fn ocr_route_does_not_ask_for_the_system_ocr_when_the_reader_reads() {
+        let decision = decide_ocr(
+            OcrEngineChoice::Auto,
+            true,
+            || panic!("the system OCR was consulted"),
+            false,
+        );
+        assert_eq!(decision.engine, OcrEngine::PpOcr);
+    }
+
+    /// A scan read by the system OCR because the reader is missing is marked
+    /// for reading again; one it reads by design is not.
+    #[test]
+    fn ocr_metadata_marks_scans_read_without_the_reader() {
+        let mut metadata = HashMap::new();
+        record_ocr(
+            OcrUse {
+                engine: OCR_ENGINE_SYSTEM,
+                reader_missing: true,
+            },
+            &mut metadata,
+        );
+        assert_eq!(metadata[OCR_ENGINE_KEY], OCR_ENGINE_SYSTEM);
+        assert_eq!(metadata[OCR_READER_MISSING_KEY], "true");
+        let mut metadata = HashMap::new();
+        record_ocr(
+            OcrUse {
+                engine: OCR_ENGINE_SYSTEM,
+                reader_missing: false,
+            },
+            &mut metadata,
+        );
+        assert!(!metadata.contains_key(OCR_READER_MISSING_KEY));
+    }
+
+    /// OCR reports each page of a scanned PDF before reading it.
+    #[test]
+    #[cfg_attr(
+        not(shodh_test_models),
+        ignore = "requires SHODH_TEST_MODELS containing pp-ocrv6/"
+    )]
+    fn ocr_reports_scanned_pages_as_it_reads() {
+        let seen = std::sync::Mutex::new(Vec::new());
+        let parsed = ppocr_parser()
+            .parse_file_with_progress(
+                &scanned("invoices/inv-2025-0164-scan.pdf"),
+                &|page, pages| seen.lock().unwrap().push((page, pages)),
+            )
+            .expect("parsed scan");
+        assert_eq!(
+            parsed.metadata.get(OCR_ENGINE_KEY).map(String::as_str),
+            Some(OCR_ENGINE_PPOCR)
+        );
+        assert_eq!(seen.into_inner().unwrap(), [(1, 2), (2, 2)]);
     }
 }

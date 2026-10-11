@@ -24,8 +24,8 @@ USAGE:
                        [--out <dir>] [--write-baseline <file>]
                        [--ocr auto|system|ppocr] [--ocr-dpi <n>] [--system-ocr-dpi <n>]
   shodh-eval ocr       --corpus <dir> --truth <ground-truth.json> --engine ppocr|system
-                       [--models <dir> | --ocr-model <dir>] [--det-band-pixels <n>] [--dpi <n>]
-                       [--out <file>]
+                       [--models <dir> | --ocr-model <dir>] [--det-band-pixels <n>] [--threads <n>]
+                       [--dpi <n>] [--worker] [--out <file>]
   shodh-eval answers   --corpus <dir> --models <dir> [--dataset <file>] [--limit <n>]
                        [--timeout-secs <n>] [--runtime <dir>] [--out <dir>]
   shodh-eval generate  --corpus <dir> --models <dir> [--n <n>] [--seed <n>] [--out <dir>] [--force]
@@ -166,10 +166,11 @@ async fn run(command: &str, rest: &[String]) -> Result<ExitCode> {
                     "models",
                     "ocr-model",
                     "det-band-pixels",
+                    "threads",
                     "dpi",
                     "out",
                 ],
-                &[],
+                &["worker"],
             )?;
             let corpus = absolute_dir(&args.required_path("corpus")?)?;
             let truth = scan::read_ground_truth(&args.required_path("truth")?)?;
@@ -180,12 +181,15 @@ async fn run(command: &str, rest: &[String]) -> Result<ExitCode> {
                         (None, Some(models)) => shodh_rag::processing::ocr::model_dir(&models),
                         (None, None) => bail!("--models or --ocr-model is required for ppocr"),
                     };
+                    let defaults = shodh_rag::processing::ocr::OcrSettings::default();
                     ocr::Engine::PpOcr {
                         dir,
-                        det_band_pixels: args.number(
-                            "det-band-pixels",
-                            shodh_rag::processing::ocr::DET_BAND_PIXELS,
-                        )?,
+                        settings: shodh_rag::processing::ocr::OcrSettings {
+                            det_band_pixels: args
+                                .number("det-band-pixels", defaults.det_band_pixels)?,
+                            threads: args.number("threads", defaults.threads)?,
+                        },
+                        worker: args.flag("worker"),
                     }
                 }
                 Some("system") => ocr::Engine::System,
@@ -360,15 +364,23 @@ async fn main() -> ExitCode {
         .with_writer(std::io::stderr)
         .init();
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    // `ocr --worker` starts this executable as the OCR child.
+    if argv.first().map(String::as_str) == Some(shodh_rag::processing::ocr::worker::WORKER_ARG) {
+        shodh_rag::processing::ocr::worker::serve_stdio();
+    }
     let Some((command, rest)) = argv.split_first() else {
         println!("{USAGE}");
         return ExitCode::FAILURE;
     };
-    match run(command, rest).await {
-        Ok(code) => code,
+    let code = match run(command, rest).await {
+        Ok(code) if code == ExitCode::SUCCESS => 0,
+        Ok(_) => 1,
         Err(e) => {
             eprintln!("error: {e:#}");
-            ExitCode::FAILURE
+            1
         }
-    }
+    };
+    // A run that read scans with Windows OCR after loading ONNX Runtime would
+    // otherwise not finish exiting (see `end_process`).
+    shodh_rag::processing::ocr::worker::end_process(code)
 }

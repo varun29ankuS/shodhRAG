@@ -1372,7 +1372,7 @@ pub(crate) mod tests {
         // The chunker packs the fields into form chunks citing each widget's box.
         let chunks = crate::processing::structure_chunker::StructureChunker::new(300).chunk(
             &doc,
-            "Return",
+            &crate::processing::chunker::DocumentContext::titled("Return"),
             &|t: &str| t.split_whitespace().count(),
         );
         let form = chunks

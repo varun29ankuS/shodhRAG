@@ -10,7 +10,7 @@ use crate::embeddings::e5::{E5Config, E5Embeddings};
 use crate::embeddings::{EmbeddingModel, SearchModelsMissing};
 use crate::harness::web::relevance::sigmoid;
 use crate::lazy_model::LazyModel;
-use crate::processing::chunker::{ContextualChunkResult, TextChunker};
+use crate::processing::chunker::{ContextualChunkResult, DocumentContext, TextChunker};
 use crate::processing::ocr::SharedOcrModel;
 use crate::processing::parser::{
     DocumentParser, OcrProgress, ParsedDocument, OCR_READER_MISSING_KEY, TABLE_CANDIDATES_KEY,
@@ -140,29 +140,43 @@ impl FilePreparer {
         // from PDFs, and spreadsheet tables, use the section chunker; other
         // formats fall back to sliding windows.
         let chunk_started = std::time::Instant::now();
-        let mut chunks = Vec::new();
-        if let Some(doc) = parsed.document.as_ref().filter(|d| !d.blocks.is_empty()) {
-            let embedder = self.embeddings.as_ref();
-            let count = |text: &str| {
-                embedder
-                    .count_tokens(text)
-                    .unwrap_or_else(|| crate::embeddings::estimate_tokens(text))
-            };
-            chunks = self.structure_chunker.chunk(doc, &title, &count);
+        let embedder = self.embeddings.as_ref();
+        let count = |text: &str| {
+            embedder
+                .count_tokens(text)
+                .unwrap_or_else(|| crate::embeddings::estimate_tokens(text))
+        };
+        let structured = parsed.document.as_ref().filter(|d| !d.blocks.is_empty());
+        if structured.is_some() {
             merged_metadata.insert("chunker".to_string(), STRUCTURE_CHUNKER_VERSION.to_string());
         }
-        if !parsed.structured_sections.is_empty() {
-            chunks.extend(self.chunker.chunk_structured(
-                &parsed.structured_sections,
-                &title,
-                &source,
-            ));
-        }
-        if chunks.is_empty() && parsed.document.is_none() {
-            chunks = self
-                .chunker
-                .chunk_with_context(&parsed.content, &title, &source);
-        }
+        let extension = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default()
+            .to_lowercase();
+        let tabular = crate::processing::tabular::is_spreadsheet_extension(&extension)
+            || crate::processing::tabular::is_delimited_extension(&extension);
+        let chunk_all = |context: &DocumentContext| {
+            let mut chunks = Vec::new();
+            if let Some(doc) = structured {
+                chunks = self.structure_chunker.chunk(doc, context, &count);
+            }
+            if !parsed.structured_sections.is_empty() {
+                chunks.extend(self.chunker.chunk_structured(
+                    &parsed.structured_sections,
+                    context,
+                    &source,
+                ));
+            }
+            if chunks.is_empty() && parsed.document.is_none() {
+                chunks = self
+                    .chunker
+                    .chunk_with_context(&parsed.content, context, &source);
+            }
+            chunks
+        };
+        let mut chunks = chunk_in_context(&title, !tabular, &count, &chunk_all);
         for (index, chunk) in chunks.iter_mut().enumerate() {
             chunk.index = index;
         }
@@ -190,6 +204,90 @@ impl FilePreparer {
     }
 }
 
+/// The chunks of one document, each with its context ([`DocumentContext`]).
+/// `chunk` chunks the document under a given context. The document's
+/// opening is the first words of its first chunk, as chunked under the title
+/// alone; the document is then chunked again under title and opening (the
+/// context shrinks what fits of the text), and the opening is dropped from
+/// chunks whose own text begins with it. A document of one chunk keeps the
+/// title alone: its text holds its opening. `with_opening` is false for
+/// spreadsheets and delimited files, whose first words are a header row
+/// that each of their chunks repeats already.
+fn chunk_in_context(
+    title: &str,
+    with_opening: bool,
+    count_tokens: &dyn Fn(&str) -> usize,
+    chunk: &dyn Fn(&DocumentContext) -> Vec<ContextualChunkResult>,
+) -> Vec<ContextualChunkResult> {
+    let titled = DocumentContext::titled(title);
+    let chunks = chunk(&titled);
+    if !with_opening {
+        return chunks;
+    }
+    let Some(first) = chunks.first().filter(|_| chunks.len() > 1) else {
+        return chunks;
+    };
+    let context = titled.with_opening(&first.text, count_tokens);
+    if context.opening.is_none() {
+        return chunks;
+    }
+    let mut chunks = chunk(&context);
+    context.drop_opening_where_present(&mut chunks);
+    chunks
+}
+
+/// Version of what is indexed for a chunk: its text, the context embedded
+/// and keyword-indexed with it, and the metadata search reads. Stored with
+/// every chunk (`index_format`); chunks without it are format 1. Raise it
+/// whenever any of these change, so that what was indexed before is found
+/// and indexed again instead of being ranked against chunks made the new way.
+///
+/// 2: chunks carry the document's opening in their context, and the context
+/// is stored (`context`) for the reranker and for rebuilding the keyword index.
+pub const INDEX_FORMAT: u32 = 2;
+
+/// Chunk metadata key: the [`INDEX_FORMAT`] a chunk was indexed with.
+pub const INDEX_FORMAT_KEY: &str = "index_format";
+
+/// Chunk metadata key: the context the chunk was embedded and keyword-indexed
+/// with (see [`ContextualChunkResult::context`]).
+pub const CHUNK_CONTEXT_KEY: &str = "context";
+
+/// The context the cross-encoder reads a result's passage with: the context
+/// the chunk was embedded with. A chunk indexed before the context was
+/// stored ([`INDEX_FORMAT`] 1) is read with its document's title and section,
+/// as it was embedded then, until it is indexed again.
+fn rerank_context(result: &ComprehensiveResult) -> String {
+    if let Some(context) = result.metadata.get(CHUNK_CONTEXT_KEY) {
+        return context.clone();
+    }
+    let mut context = format!("Document: \"{}\". ", result.citation.title.trim());
+    if let Some(heading) = result
+        .metadata
+        .get("heading")
+        .map(|h| h.trim())
+        .filter(|h| !h.is_empty())
+    {
+        context.push_str("Section: ");
+        context.push_str(heading);
+        context.push_str(". ");
+    }
+    context
+}
+
+/// A LanceDB filter for the chunks of `source`.
+fn source_predicate(source: &str) -> String {
+    format!("source = '{}'", source.replace('\'', "''"))
+}
+
+/// A LanceDB filter for the chunks not indexed with [`INDEX_FORMAT`]. The
+/// metadata is serialized by serde_json (no spaces), so the current format
+/// appears verbatim as `"index_format":"<n>"`; inside a metadata value its
+/// quotes would be escaped, so a value can never match.
+fn current_format_excluded() -> String {
+    format!("metadata_json NOT LIKE '%\"{INDEX_FORMAT_KEY}\":\"{INDEX_FORMAT}\"%'")
+}
+
 /// Embed chunks and build the storage records for one document without
 /// touching the stores. Fails (with nothing written) if embedding fails.
 fn prepare_chunks(
@@ -213,10 +311,8 @@ fn prepare_chunks(
 
     // Embed the contextualized text (with document context prefix) for better
     // vector representation
-    let chunk_texts: Vec<&str> = chunks
-        .iter()
-        .map(|c| c.contextualized_text.as_str())
-        .collect();
+    let contextualized: Vec<String> = chunks.iter().map(|c| c.contextualized_text()).collect();
+    let chunk_texts: Vec<&str> = contextualized.iter().map(String::as_str).collect();
     let embeddings = embedder.embed_documents(&chunk_texts)?;
 
     let doc_id = Uuid::new_v4();
@@ -227,11 +323,18 @@ fn prepare_chunks(
     let mut fts_batch = Vec::with_capacity(chunks.len());
     let mut chunk_ids = Vec::with_capacity(chunks.len());
 
-    for (i, (chunk, embedding)) in chunks.iter().zip(embeddings).enumerate() {
+    for (i, ((chunk, embedding), contextualized)) in chunks
+        .iter()
+        .zip(embeddings)
+        .zip(contextualized)
+        .enumerate()
+    {
         let chunk_id = chunk.id;
         chunk_ids.push(chunk_id);
 
         let mut per_chunk_meta = metadata.clone();
+        per_chunk_meta.insert(INDEX_FORMAT_KEY.to_string(), INDEX_FORMAT.to_string());
+        per_chunk_meta.insert(CHUNK_CONTEXT_KEY.to_string(), chunk.context.clone());
         if let Some(heading) = &chunk.heading {
             per_chunk_meta.insert("chunk_type".to_string(), heading.clone());
             per_chunk_meta.insert("heading".to_string(), heading.clone());
@@ -274,7 +377,7 @@ fn prepare_chunks(
         // Index contextualized text in FTS for richer BM25 matching
         fts_batch.push((
             chunk_id.to_string(),
-            chunk.contextualized_text.clone(),
+            contextualized,
             title.clone(),
             source.clone(),
         ));
@@ -751,6 +854,8 @@ pub struct RAGEngine {
     /// Ranks library files by the citation graph for queries about papers, methods or
     /// citations: a third list fused into search (see [`crate::search::graph_fusion`]).
     source_ranker: Option<Arc<dyn crate::search::graph_fusion::SourceRanker>>,
+    /// [`Self::stale_sources`] found every chunk in the current [`INDEX_FORMAT`].
+    no_stale_chunks: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl RAGEngine {
@@ -827,6 +932,7 @@ impl RAGEngine {
             refinement_queue: None,
             scan_reader_queue: None,
             source_ranker: None,
+            no_stale_chunks: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         if let Some(models) = models {
             if let Err(e) = engine.attach_search_models(models) {
@@ -988,15 +1094,16 @@ impl RAGEngine {
 
         // Contextual chunking: prepend document-level context to each chunk
         // before embedding for better retrieval (Anthropic's contextual retrieval approach)
-        let chunks = self.chunker.chunk_with_context(content, &title, &source);
-        let prepared = prepare_chunks(
-            self.require_embeddings()?,
-            chunks,
-            title,
-            source,
-            &metadata,
-            &citation,
-        )?;
+        let embedder = self.require_embeddings()?;
+        let count = |text: &str| {
+            embedder
+                .count_tokens(text)
+                .unwrap_or_else(|| crate::embeddings::estimate_tokens(text))
+        };
+        let chunks = chunk_in_context(&title, true, &count, &|context| {
+            self.chunker.chunk_with_context(content, context, &source)
+        });
+        let prepared = prepare_chunks(embedder, chunks, title, source, &metadata, &citation)?;
         self.store_prepared(prepared).await
     }
 
@@ -1562,12 +1669,14 @@ impl RAGEngine {
         let reranker = self.reranker.get();
         if let Some(reranker) = &reranker {
             if results.len() > 1 {
-                let candidates: Vec<(String, String)> = results
+                // The cross-encoder reads each passage with the context it was
+                // embedded with: which document, its opening, which section.
+                let candidates: Vec<(String, String, String)> = results
                     .iter()
-                    .map(|r| (r.id.to_string(), r.snippet.clone()))
+                    .map(|r| (r.id.to_string(), rerank_context(r), r.snippet.clone()))
                     .collect();
 
-                match reranker.rerank(query, &candidates, candidates.len()) {
+                match reranker.rerank_in_context(query, &candidates, candidates.len()) {
                     Ok(reranked) => {
                         let logits: HashMap<String, f32> = reranked.into_iter().collect();
                         Self::apply_rerank_scores(&mut results, &logits);
@@ -1833,6 +1942,158 @@ impl RAGEngine {
         self.store.get_document_info().await
     }
 
+    /// The indexed documents with chunks of an older [`INDEX_FORMAT`] than
+    /// this build writes: they were embedded and keyword-indexed with another
+    /// context than the chunks indexed now, so they rank on other terms. Each
+    /// is indexed again by whatever indexed it (folder sync, the Library's
+    /// file sources, the calendar), which replaces its chunks.
+    pub async fn stale_sources(&self) -> Result<Vec<crate::storage::DocumentSourceRow>> {
+        // Nothing writes an older format, so once none is left none comes
+        // back: the scan over every chunk's metadata is skipped from then on.
+        if self
+            .no_stale_chunks
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Ok(Vec::new());
+        }
+        let stale = self
+            .store
+            .document_sources_where(Some(&current_format_excluded()))
+            .await?;
+        if stale.is_empty() {
+            self.no_stale_chunks
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(stale)
+    }
+
+    /// The metadata stored with the first chunk of `source` (empty when it
+    /// has none).
+    pub async fn document_metadata(&self, source: &str) -> Result<HashMap<String, String>> {
+        let first = self
+            .store
+            .list_chunks(Some(&source_predicate(source)), 1)
+            .await?;
+        Ok(first
+            .first()
+            .and_then(|hit| serde_json::from_str(&hit.metadata_json).ok())
+            .unwrap_or_default())
+    }
+
+    /// Brings the stored chunks of `source` to the current [`INDEX_FORMAT`]
+    /// without reading its file: each chunk's context is made again from
+    /// what was stored with it (title, section, unit kind; the opening from
+    /// the document's first chunk), and the chunks are embedded and
+    /// keyword-indexed again with it. Text, ids, pages, citations and refined
+    /// tables stay as they are, and nothing is parsed: scans indexed before
+    /// their OCR was cached are not read by OCR again. Possible for structure
+    /// chunks only, whose context depends on nothing else; returns false,
+    /// changing nothing, when a chunk is of another kind or there are none.
+    pub async fn upgrade_in_place(&mut self, source: &str) -> Result<bool> {
+        let embedder = self
+            .embeddings
+            .clone()
+            .ok_or_else(|| anyhow::Error::from(SearchModelsMissing))?;
+        let mut hits = self
+            .store
+            .list_chunks(Some(&source_predicate(source)), 1_000_000)
+            .await?;
+        if hits.is_empty() {
+            return Ok(false);
+        }
+        hits.sort_by(|a, b| {
+            (a.doc_id.as_str(), a.chunk_index).cmp(&(b.doc_id.as_str(), b.chunk_index))
+        });
+        let count = |text: &str| {
+            embedder
+                .count_tokens(text)
+                .unwrap_or_else(|| crate::embeddings::estimate_tokens(text))
+        };
+        let mut contexts = Vec::with_capacity(hits.len());
+        let mut metadata = Vec::with_capacity(hits.len());
+        for document in hits.chunk_by(|a, b| a.doc_id == b.doc_id) {
+            let titled = DocumentContext::titled(document[0].title.as_str());
+            let context = if document.len() > 1 {
+                titled.clone().with_opening(&document[0].text, &count)
+            } else {
+                titled.clone()
+            };
+            for hit in document {
+                let meta: HashMap<String, String> = serde_json::from_str(&hit.metadata_json)
+                    .with_context(|| format!("chunk {} has unreadable metadata", hit.id))?;
+                let section_path: Vec<String> = meta
+                    .get("section_path")
+                    .map(|path| path.split(" > ").map(str::to_string).collect())
+                    .unwrap_or_default();
+                let own = if context.begins_with_opening(&hit.text) {
+                    &titled
+                } else {
+                    &context
+                };
+                let Some(chunk_context) = meta.get("unit_kind").and_then(|unit| {
+                    crate::processing::structure_chunker::unit_context(own, &section_path, unit)
+                }) else {
+                    return Ok(false);
+                };
+                contexts.push(chunk_context);
+                metadata.push(meta);
+            }
+        }
+
+        let contextualized: Vec<String> = hits
+            .iter()
+            .zip(&contexts)
+            .map(|(hit, context)| format!("{context}{}", hit.text))
+            .collect();
+        let texts: Vec<&str> = contextualized.iter().map(String::as_str).collect();
+        let vectors = embedder.embed_documents(&texts)?;
+        let now = chrono::Utc::now().timestamp();
+        let mut records = Vec::with_capacity(hits.len());
+        let mut fts_batch = Vec::with_capacity(hits.len());
+        let mut chunk_ids = Vec::with_capacity(hits.len());
+        for (((hit, context), mut meta), (vector, text)) in hits
+            .into_iter()
+            .zip(contexts)
+            .zip(metadata)
+            .zip(vectors.into_iter().zip(contextualized))
+        {
+            meta.insert(INDEX_FORMAT_KEY.to_string(), INDEX_FORMAT.to_string());
+            meta.insert(CHUNK_CONTEXT_KEY.to_string(), context);
+            chunk_ids.push(Uuid::parse_str(&hit.id).unwrap_or_else(|_| Uuid::new_v4()));
+            fts_batch.push((hit.id.clone(), text, hit.title.clone(), hit.source.clone()));
+            records.push(ChunkRecord {
+                id: hit.id,
+                doc_id: hit.doc_id,
+                chunk_index: hit.chunk_index,
+                text: hit.text,
+                title: hit.title,
+                source: hit.source,
+                heading: hit.heading,
+                vector,
+                space_id: hit.space_id,
+                metadata_json: serde_json::to_string(&meta)?,
+                citation_json: hit.citation_json,
+                created_at: now,
+            });
+        }
+        let title = records[0].title.clone();
+        let space_id = records[0].space_id.clone();
+        self.remove_source_chunks(source).await?;
+        self.store_prepared(PreparedDocument {
+            title,
+            space_id,
+            records,
+            fts_batch,
+            chunk_ids,
+        })
+        .await?;
+        tracing::info!(
+            source,
+            "chunks brought to the current index format in place"
+        );
+        Ok(true)
+    }
+
     /// One row per indexed document with its source path, space and chunk count.
     pub async fn document_sources(&self) -> Result<Vec<crate::storage::DocumentSourceRow>> {
         self.store.document_sources().await
@@ -1963,9 +2224,19 @@ impl RAGEngine {
             return Ok(());
         }
 
+        // Each chunk is keyword-indexed with the context it was indexed with,
+        // as when it was stored.
         let batch: Vec<(String, String, String, String)> = all_chunks
             .into_iter()
-            .map(|hit| (hit.id, hit.text, hit.title, hit.source))
+            .map(|hit| {
+                let metadata: HashMap<String, String> =
+                    serde_json::from_str(&hit.metadata_json).unwrap_or_default();
+                let text = match metadata.get(CHUNK_CONTEXT_KEY) {
+                    Some(context) => format!("{context}{}", hit.text),
+                    None => hit.text,
+                };
+                (hit.id, text, hit.title, hit.source)
+            })
             .collect();
 
         self.text_search.index_chunks_batch(&batch)?;
@@ -2105,6 +2376,35 @@ impl RAGEngine {
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+    }
+}
+
+#[cfg(test)]
+impl RAGEngine {
+    /// Stores `file` as a build of [`INDEX_FORMAT`] 1 did: chunks without a
+    /// format or a stored context, keyword-indexed with their text only.
+    /// For tests of the upgrade from an index made by an earlier version.
+    pub(crate) async fn commit_file_as_format_one(
+        &mut self,
+        mut file: PreparedFile,
+    ) -> Result<Vec<Uuid>> {
+        let mut texts: HashMap<String, String> = HashMap::new();
+        for record in &mut file.document.records {
+            let mut metadata: HashMap<String, String> =
+                serde_json::from_str(&record.metadata_json)?;
+            metadata.remove(INDEX_FORMAT_KEY);
+            metadata.remove(CHUNK_CONTEXT_KEY);
+            record.metadata_json = serde_json::to_string(&metadata)?;
+            texts.insert(record.id.clone(), record.text.clone());
+        }
+        for (id, text, _, _) in &mut file.document.fts_batch {
+            if let Some(plain) = texts.get(id) {
+                text.clone_from(plain);
+            }
+        }
+        self.no_stale_chunks
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.commit_file(file).await
     }
 }
 
@@ -2443,6 +2743,221 @@ Language models trained on long documents reach lower perplexity.
             .await
             .unwrap();
         engine
+    }
+
+    fn test_engine_config(dir: &Path) -> RAGConfig {
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.join("data");
+        config.embedding.model_dir = dir.join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        config.search.min_score_threshold = 0.0;
+        config
+    }
+
+    async fn test_engine(dir: &Path) -> RAGEngine {
+        let mut engine = RAGEngine::new(test_engine_config(dir)).await.unwrap();
+        engine
+            .attach_search_models(SearchModels::from_embedder(Arc::new(
+                crate::statements::testing::WordEmbedder::default(),
+            )))
+            .unwrap();
+        engine
+    }
+
+    const LEASE: &str =
+        "Lessor: Saffron Estates Pvt. Ltd. Lessee: Tidewater Logistics Pvt. Ltd.\n\n\
+                         # Rent\n\n\
+                         Monthly rent is INR 4,85,000, payable by the 5th day of each month.\n";
+
+    /// Every chunk records the format and the context it was indexed with;
+    /// the context holds the document's opening, the stored text does not.
+    #[tokio::test]
+    async fn chunks_record_their_index_format_and_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let lease = dir.path().join("lease.md");
+        std::fs::write(&lease, LEASE).unwrap();
+        engine
+            .add_document_from_file(&lease, HashMap::new())
+            .await
+            .unwrap();
+        let chunks = engine.store.list_chunks(None, 100).await.unwrap();
+        let rent = chunks
+            .iter()
+            .find(|c| c.text.contains("4,85,000"))
+            .expect("the rent chunk");
+        assert!(!rent.text.contains("Saffron"), "stored text is the passage");
+        let metadata: HashMap<String, String> = serde_json::from_str(&rent.metadata_json).unwrap();
+        assert_eq!(
+            metadata.get(INDEX_FORMAT_KEY),
+            Some(&INDEX_FORMAT.to_string())
+        );
+        // The opening is the start of the first chunk (here all of it).
+        assert_eq!(
+            metadata.get(CHUNK_CONTEXT_KEY).map(String::as_str),
+            Some(
+                "Document: \"lease\". Opening: Lessor: Saffron Estates Pvt. Ltd. \
+                 Lessee: Tidewater Logistics Pvt. Ltd. Section: Rent. "
+            )
+        );
+        // The first chunk says its opening itself.
+        let first = chunks.iter().find(|c| c.text.contains("Saffron")).unwrap();
+        let metadata: HashMap<String, String> = serde_json::from_str(&first.metadata_json).unwrap();
+        assert_eq!(
+            metadata.get(CHUNK_CONTEXT_KEY).map(String::as_str),
+            Some("Document: \"lease\". ")
+        );
+        assert!(engine.stale_sources().await.unwrap().is_empty());
+    }
+
+    /// Documents indexed by an earlier version are listed as stale until they
+    /// are indexed again; indexing one again replaces its chunks.
+    #[tokio::test]
+    async fn documents_of_an_older_index_format_are_stale_until_indexed_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let old = dir.path().join("lease.md");
+        let new = dir.path().join("notes.md");
+        std::fs::write(&old, LEASE).unwrap();
+        std::fs::write(&new, "# Notes\n\nThe roof is repaired every spring.\n").unwrap();
+        let space = HashMap::from([("space_id".to_string(), "s1".to_string())]);
+        let prepared = engine
+            .file_preparer()
+            .unwrap()
+            .prepare(&old, space.clone())
+            .unwrap();
+        let old_chunks = engine.commit_file_as_format_one(prepared).await.unwrap();
+        engine
+            .add_document_from_file(&new, space.clone())
+            .await
+            .unwrap();
+
+        let stale = engine.stale_sources().await.unwrap();
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].source, normalize_source_path(&old));
+        assert_eq!(stale[0].space_id, "s1");
+        assert_eq!(stale[0].chunks, old_chunks.len());
+
+        engine.add_document_from_file(&old, space).await.unwrap();
+        assert!(engine.stale_sources().await.unwrap().is_empty());
+        let rows = engine.document_sources().await.unwrap();
+        let lease = rows
+            .iter()
+            .find(|r| r.source == normalize_source_path(&old))
+            .unwrap();
+        assert_eq!(lease.chunks, old_chunks.len(), "replaced, not added");
+    }
+
+    /// Upgraded in place, a document's chunks get the contexts indexing it
+    /// afresh gives them, keeping their ids and text.
+    #[tokio::test]
+    async fn an_upgrade_in_place_gives_the_contexts_of_a_fresh_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let lease = dir.path().join("lease.md");
+        std::fs::write(&lease, LEASE).unwrap();
+        let source = normalize_source_path(&lease);
+        let contexts = |chunks: &[crate::storage::SearchHit]| -> Vec<(String, String)> {
+            let mut out: Vec<(String, String)> = chunks
+                .iter()
+                .map(|c| {
+                    let metadata: HashMap<String, String> =
+                        serde_json::from_str(&c.metadata_json).unwrap();
+                    (
+                        c.text.clone(),
+                        metadata.get(CHUNK_CONTEXT_KEY).cloned().unwrap_or_default(),
+                    )
+                })
+                .collect();
+            out.sort();
+            out
+        };
+        engine
+            .add_document_from_file(&lease, HashMap::new())
+            .await
+            .unwrap();
+        let fresh = contexts(&engine.store.list_chunks(None, 100).await.unwrap());
+
+        let prepared = engine
+            .file_preparer()
+            .unwrap()
+            .prepare(&lease, HashMap::new())
+            .unwrap();
+        engine.commit_file_as_format_one(prepared).await.unwrap();
+        let old = engine.store.list_chunks(None, 100).await.unwrap();
+        assert!(contexts(&old).iter().all(|(_, context)| context.is_empty()));
+        assert_eq!(engine.stale_sources().await.unwrap().len(), 1);
+
+        assert!(engine.upgrade_in_place(&source).await.unwrap());
+        let upgraded = engine.store.list_chunks(None, 100).await.unwrap();
+        assert_eq!(contexts(&upgraded), fresh);
+        let mut old_ids: Vec<_> = old.iter().map(|c| c.id.clone()).collect();
+        let mut new_ids: Vec<_> = upgraded.iter().map(|c| c.id.clone()).collect();
+        old_ids.sort();
+        new_ids.sort();
+        assert_eq!(old_ids, new_ids);
+        assert!(engine.stale_sources().await.unwrap().is_empty());
+        assert!(!engine.upgrade_in_place("no such source").await.unwrap());
+    }
+
+    /// The cross-encoder reads a passage with the context it was embedded
+    /// with; a chunk of format 1 with its document's title and section.
+    #[test]
+    fn the_reranker_reads_each_passage_with_its_context() {
+        let mut current = result(0.5, "text");
+        current.metadata.insert(
+            CHUNK_CONTEXT_KEY.to_string(),
+            "Document: \"lease\". Opening: Lessor: Saffron Estates. ".to_string(),
+        );
+        assert_eq!(
+            rerank_context(&current),
+            "Document: \"lease\". Opening: Lessor: Saffron Estates. "
+        );
+
+        let mut older = result(0.5, "text");
+        older.citation.title = "lease".to_string();
+        older
+            .metadata
+            .insert("heading".to_string(), "1. Rent".to_string());
+        assert_eq!(
+            rerank_context(&older),
+            "Document: \"lease\". Section: 1. Rent. "
+        );
+    }
+
+    /// Rebuilding the keyword index keeps each chunk's context: a party named
+    /// only in the opening still finds the clause.
+    #[tokio::test]
+    async fn the_rebuilt_keyword_index_keeps_the_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let lease = dir.path().join("lease.md");
+        std::fs::write(&lease, LEASE).unwrap();
+        engine
+            .add_document_from_file(&lease, HashMap::new())
+            .await
+            .unwrap();
+        let rent_id = engine
+            .store
+            .list_chunks(None, 100)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|c| c.text.contains("4,85,000"))
+            .unwrap()
+            .id;
+        let finds_rent = |engine: &RAGEngine| {
+            engine
+                .text_search
+                .search("Saffron", 10)
+                .unwrap()
+                .iter()
+                .any(|(id, _)| *id == rent_id)
+        };
+        assert!(finds_rent(&engine));
+        engine.rebuild_text_index().await.unwrap();
+        assert!(finds_rent(&engine));
     }
 
     #[tokio::test]

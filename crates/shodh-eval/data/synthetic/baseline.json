@@ -1,26 +1,30 @@
 {
   "kind": "retrieval",
   "dataset_id": "synthetic-v1",
-  "dataset_hash": "d1e86f279a594d34113282bd82c250fadc15ca1328156617ffd325b17fa2b8ad",
+  "dataset_hash": "26c12c6b06498b390057be75f5cdbafee993cdbcad0776f549dbd0a5a8164936",
   "corpus_hash": "a0dd1b9f61d3abd55c1a96ab9ff130b3d60b5f19d1a7e874e12d7d60ac9d5349",
-  "recorded_at": "2026-10-10T10:31:08.688033400+00:00",
+  "recorded_at": "2026-10-11T19:16:40.860282+00:00",
   "settings": {
     "chunk_max_tokens": "380",
     "citation_graph": "off",
     "embedding": "multilingual-e5-base",
     "k": "10",
+    "ocr": "auto",
+    "ocr_model": "pp-ocrv6-small",
+    "ocr_render_dpi": "300",
     "reranker": "ms-marco-MiniLM-L6-v2",
     "reranking": "true",
     "rrf_k": "60",
     "runs": "3",
+    "system_ocr_render_dpi": "96 (page size)",
     "table_refinement": "off"
   },
   "metrics": {
     "hit@1": {
-      "mean": 0.9285714285714285,
-      "stddev": 1.3597399555105182e-16,
-      "min": 0.9285714285714286,
-      "max": 0.9285714285714286,
+      "mean": 0.9777777777777777,
+      "stddev": 0.0,
+      "min": 0.9777777777777777,
+      "max": 0.9777777777777777,
       "runs": 3
     },
     "hit@10": {
@@ -45,17 +49,17 @@
       "runs": 3
     },
     "mrr": {
-      "mean": 0.9583333333333334,
+      "mean": 0.9888888888888889,
       "stddev": 0.0,
-      "min": 0.9583333333333334,
-      "max": 0.9583333333333334,
+      "min": 0.9888888888888889,
+      "max": 0.9888888888888889,
       "runs": 3
     },
     "page_hit@1": {
-      "mean": 0.6333333333333333,
+      "mean": 0.9393939393939394,
       "stddev": 0.0,
-      "min": 0.6333333333333333,
-      "max": 0.6333333333333333,
+      "min": 0.9393939393939394,
+      "max": 0.9393939393939394,
       "runs": 3
     },
     "page_hit@10": {
@@ -73,10 +77,10 @@
       "runs": 3
     },
     "passage_hit@1": {
-      "mean": 0.6285714285714286,
+      "mean": 0.9473684210526315,
       "stddev": 0.0,
-      "min": 0.6285714285714286,
-      "max": 0.6285714285714286,
+      "min": 0.9473684210526315,
+      "max": 0.9473684210526315,
       "runs": 3
     },
     "passage_hit@10": {

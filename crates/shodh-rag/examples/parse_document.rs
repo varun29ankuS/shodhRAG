@@ -17,6 +17,7 @@ use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use serde_json::json;
+use shodh_rag::processing::chunker::DocumentContext;
 use shodh_rag::processing::document_model::BlockKind;
 use shodh_rag::processing::structure_chunker::StructureChunker;
 use shodh_rag::processing::table_model::{model_dir, TableModel};
@@ -101,7 +102,12 @@ fn main() -> Result<()> {
                 let estimate = |text: &str| (text.split_whitespace().count() * 4).div_ceil(3);
                 let chunks: Vec<_> = match (&doc.document, with_chunks) {
                     (Some(structured), true) => StructureChunker::default()
-                        .chunk(structured, &doc.title, &estimate)
+                        .chunk(
+                            structured,
+                            &DocumentContext::titled(doc.title.as_str())
+                                .with_opening(&structured.plain_text(), &estimate),
+                            &estimate,
+                        )
                         .into_iter()
                         .map(|c| {
                             let layout = c.layout.as_ref();

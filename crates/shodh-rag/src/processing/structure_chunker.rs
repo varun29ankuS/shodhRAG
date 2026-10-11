@@ -25,7 +25,7 @@
 
 use uuid::Uuid;
 
-use super::chunker::ContextualChunkResult;
+use super::chunker::{ContextualChunkResult, DocumentContext};
 use super::document_model::{render_table, BBox, Block, BlockKind, StructuredDocument};
 
 /// Tokens the embedder reads per passage, minus special tokens and the
@@ -82,6 +82,21 @@ enum UnitKind {
 }
 
 impl UnitKind {
+    const ALL: [UnitKind; 8] = [
+        UnitKind::Flow,
+        UnitKind::Statement,
+        UnitKind::Table,
+        UnitKind::Figure,
+        UnitKind::Reference,
+        UnitKind::Code,
+        UnitKind::Form,
+        UnitKind::TableText,
+    ];
+
+    fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.name() == name)
+    }
+
     fn name(self) -> &'static str {
         match self {
             UnitKind::Flow => "text",
@@ -133,7 +148,7 @@ impl StructureChunker {
     pub fn chunk(
         &self,
         doc: &StructuredDocument,
-        doc_title: &str,
+        doc_context: &DocumentContext,
         count_tokens: &dyn Fn(&str) -> usize,
     ) -> Vec<ContextualChunkResult> {
         let units = build_units(&doc.blocks);
@@ -143,7 +158,7 @@ impl StructureChunker {
         let mut i = 0;
         while i < units.len() {
             let unit = &units[i];
-            let prefix = context_prefix(doc_title, &unit.section_path, unit.kind);
+            let prefix = context_prefix(doc_context, &unit.section_path, unit.kind);
             let budget = self
                 .max_tokens
                 .min(EMBEDDER_TOKEN_LIMIT.saturating_sub(count_tokens(&prefix)))
@@ -157,42 +172,42 @@ impl StructureChunker {
                         .is_none_or(|(u, _, _)| u.section_path == unit.section_path);
                     let packed_tokens: usize = pack.iter().map(|(_, _, t)| *t).sum();
                     if !same_section || packed_tokens + tokens > budget {
-                        self.flush_pack(&mut pack, doc, doc_title, count_tokens, &mut out);
+                        self.flush_pack(&mut pack, doc, doc_context, count_tokens, &mut out);
                     }
                     if tokens > budget {
                         for piece in split_text(&text, budget, count_tokens) {
                             let piece_tokens = count_tokens(&piece);
                             pack.push((unit.clone(), piece, piece_tokens));
-                            self.flush_pack(&mut pack, doc, doc_title, count_tokens, &mut out);
+                            self.flush_pack(&mut pack, doc, doc_context, count_tokens, &mut out);
                         }
                     } else {
                         pack.push((unit.clone(), text, tokens));
                     }
                 }
                 UnitKind::Table => {
-                    self.flush_pack(&mut pack, doc, doc_title, count_tokens, &mut out);
+                    self.flush_pack(&mut pack, doc, doc_context, count_tokens, &mut out);
                     for text in table_pieces(unit, &doc.blocks, budget, count_tokens) {
-                        push_chunk(&mut out, doc_title, &[unit], text, &doc.blocks);
+                        push_chunk(&mut out, doc_context, &[unit], text, &doc.blocks);
                     }
                 }
                 UnitKind::Statement => {
-                    self.flush_pack(&mut pack, doc, doc_title, count_tokens, &mut out);
+                    self.flush_pack(&mut pack, doc, doc_context, count_tokens, &mut out);
                     for text in statement_pieces(unit, &doc.blocks, budget, count_tokens) {
-                        push_chunk(&mut out, doc_title, &[unit], text, &doc.blocks);
+                        push_chunk(&mut out, doc_context, &[unit], text, &doc.blocks);
                     }
                 }
                 UnitKind::Form => {
-                    self.flush_pack(&mut pack, doc, doc_title, count_tokens, &mut out);
+                    self.flush_pack(&mut pack, doc, doc_context, count_tokens, &mut out);
                     for (text, blocks) in form_pieces(unit, &doc.blocks, budget, count_tokens) {
                         let piece = Unit {
                             blocks,
                             ..unit.clone()
                         };
-                        push_chunk(&mut out, doc_title, &[&piece], text, &doc.blocks);
+                        push_chunk(&mut out, doc_context, &[&piece], text, &doc.blocks);
                     }
                 }
                 UnitKind::Figure | UnitKind::Reference | UnitKind::Code | UnitKind::TableText => {
-                    self.flush_pack(&mut pack, doc, doc_title, count_tokens, &mut out);
+                    self.flush_pack(&mut pack, doc, doc_context, count_tokens, &mut out);
                     let text = unit_text(unit, &doc.blocks);
                     let pieces = if count_tokens(&text) > budget {
                         if matches!(unit.kind, UnitKind::Code | UnitKind::TableText) {
@@ -204,13 +219,13 @@ impl StructureChunker {
                         vec![text]
                     };
                     for text in pieces {
-                        push_chunk(&mut out, doc_title, &[unit], text, &doc.blocks);
+                        push_chunk(&mut out, doc_context, &[unit], text, &doc.blocks);
                     }
                 }
             }
             i += 1;
         }
-        self.flush_pack(&mut pack, doc, doc_title, count_tokens, &mut out);
+        self.flush_pack(&mut pack, doc, doc_context, count_tokens, &mut out);
 
         for (index, chunk) in out.iter_mut().enumerate() {
             chunk.index = index;
@@ -222,7 +237,7 @@ impl StructureChunker {
         &self,
         pack: &mut Vec<(Unit, String, usize)>,
         doc: &StructuredDocument,
-        doc_title: &str,
+        doc_context: &DocumentContext,
         count_tokens: &dyn Fn(&str) -> usize,
         out: &mut Vec<ContextualChunkResult>,
     ) {
@@ -236,15 +251,15 @@ impl StructureChunker {
             .collect::<Vec<_>>()
             .join("\n\n");
         // Sums of per-unit counts can undercount at joins; verify once.
-        let prefix = context_prefix(doc_title, &units[0].section_path, UnitKind::Flow);
+        let prefix = context_prefix(doc_context, &units[0].section_path, UnitKind::Flow);
         if count_tokens(&format!("{prefix}{text}")) > EMBEDDER_TOKEN_LIMIT && pack.len() > 1 {
             let budget = EMBEDDER_TOKEN_LIMIT.saturating_sub(count_tokens(&prefix));
             let pieces = split_text(&text, budget, count_tokens);
             for piece in pieces {
-                push_chunk(out, doc_title, &units, piece, &doc.blocks);
+                push_chunk(out, doc_context, &units, piece, &doc.blocks);
             }
         } else {
-            push_chunk(out, doc_title, &units, text, &doc.blocks);
+            push_chunk(out, doc_context, &units, text, &doc.blocks);
         }
         pack.clear();
     }
@@ -432,8 +447,16 @@ fn unit_text(unit: &Unit, blocks: &[Block]) -> String {
     parts.join("\n\n")
 }
 
-fn context_prefix(title: &str, section_path: &[String], kind: UnitKind) -> String {
-    let mut prefix = format!("Document: \"{}\".", title.trim());
+/// The context [`StructureChunker::chunk`] gives a chunk of the unit kind
+/// named `unit` (as stored, [`ChunkLayout::unit`]) in the section
+/// `section_path`; `None` for a name it does not use. Lets the context of a
+/// stored chunk be made again without parsing its document.
+pub fn unit_context(doc: &DocumentContext, section_path: &[String], unit: &str) -> Option<String> {
+    UnitKind::from_name(unit).map(|kind| context_prefix(doc, section_path, kind))
+}
+
+fn context_prefix(doc: &DocumentContext, section_path: &[String], kind: UnitKind) -> String {
+    let mut prefix = doc.header();
     if !section_path.is_empty() {
         prefix.push_str(" Section: ");
         prefix.push_str(&section_path.join(" > "));
@@ -716,7 +739,7 @@ fn split_sentences(text: &str) -> Vec<&str> {
 
 fn push_chunk(
     out: &mut Vec<ContextualChunkResult>,
-    doc_title: &str,
+    doc_context: &DocumentContext,
     units: &[&Unit],
     text: String,
     blocks: &[Block],
@@ -736,10 +759,10 @@ fn push_chunk(
     } else {
         UnitKind::Flow
     };
-    let prefix = context_prefix(doc_title, &first.section_path, kind);
+    let prefix = context_prefix(doc_context, &first.section_path, kind);
     out.push(ContextualChunkResult {
         id: Uuid::new_v4(),
-        contextualized_text: format!("{prefix}{text}"),
+        context: prefix,
         index: 0,
         heading: first.section_path.last().cloned(),
         start_offset: 0,
@@ -834,7 +857,7 @@ mod tests {
             block(BlockKind::Heading { level: 1 }, "2 Method", 2),
             block(BlockKind::Paragraph, "Beta paragraph text here.", 2),
         ]);
-        let chunks = StructureChunker::new(300).chunk(&d, "Doc", &words);
+        let chunks = StructureChunker::new(300).chunk(&d, &DocumentContext::titled("Doc"), &words);
         assert_eq!(chunks.len(), 2);
         assert!(chunks[0].text.contains("Alpha") && !chunks[0].text.contains("Beta"));
         assert!(chunks[0].text.starts_with("1 Intro"));
@@ -842,7 +865,9 @@ mod tests {
         let layout = chunks[1].layout.as_ref().unwrap();
         assert_eq!(layout.section_path, vec!["2 Method"]);
         assert_eq!(layout.page_start, Some(2));
-        assert!(chunks[1].contextualized_text.contains("Section: 2 Method."));
+        assert!(chunks[1]
+            .contextualized_text()
+            .contains("Section: 2 Method."));
     }
 
     #[test]
@@ -864,14 +889,14 @@ mod tests {
             ),
         ]);
         let chunker = StructureChunker::new(100);
-        let chunks = chunker.chunk(&d, "Doc", &words);
+        let chunks = chunker.chunk(&d, &DocumentContext::titled("Doc"), &words);
         for c in &chunks {
             assert!(
                 words(&c.text) <= 100,
                 "chunk over budget: {}",
                 words(&c.text)
             );
-            assert!(words(&c.contextualized_text) <= EMBEDDER_TOKEN_LIMIT);
+            assert!(words(&c.contextualized_text()) <= EMBEDDER_TOKEN_LIMIT);
         }
         // a+b packed (2 x 40 + heading), c alone, d/e/f split at sentences.
         assert!(chunks[0].text.contains("a.") && chunks[0].text.contains("b."));
@@ -897,7 +922,7 @@ mod tests {
             "",
             4,
         )]);
-        let chunks = StructureChunker::new(80).chunk(&d, "Doc", &words);
+        let chunks = StructureChunker::new(80).chunk(&d, &DocumentContext::titled("Doc"), &words);
         assert!(chunks.len() > 1);
         let mut seen = 0;
         for c in &chunks {
@@ -930,7 +955,7 @@ mod tests {
                 6,
             ),
         ]);
-        let chunks = StructureChunker::new(200).chunk(&d, "Doc", &words);
+        let chunks = StructureChunker::new(200).chunk(&d, &DocumentContext::titled("Doc"), &words);
         assert_eq!(chunks.len(), 2);
         assert!(chunks[0].text.contains("Theorem 2"));
         assert!(chunks[0].text.contains("f(x) ≤ g(x)"));
@@ -958,7 +983,7 @@ mod tests {
             ),
             block(BlockKind::Paragraph, &proof, 1),
         ]);
-        let chunks = StructureChunker::new(64).chunk(&d, "Doc", &words);
+        let chunks = StructureChunker::new(64).chunk(&d, &DocumentContext::titled("Doc"), &words);
         assert!(chunks[0].text.starts_with("Lemma 3."));
         assert!(chunks[0].text.contains("Proof."));
         assert!(words(&chunks[0].text) <= 64);
@@ -972,7 +997,7 @@ mod tests {
             block(BlockKind::Paragraph, "where k is the key vector.", 2),
             block(BlockKind::Paragraph, "Figure 1: Overview of the model.", 2),
         ]);
-        let chunks = StructureChunker::new(30).chunk(&d, "Doc", &words);
+        let chunks = StructureChunker::new(30).chunk(&d, &DocumentContext::titled("Doc"), &words);
         assert!(
             chunks[0].text.contains("updated as")
                 && chunks[0].text.contains("S_t")
@@ -1000,14 +1025,15 @@ mod tests {
             block(BlockKind::Heading { level: 1 }, "Taxes paid", 2),
             field("TDS", "12,000", 2, 600.0),
         ]);
-        let chunks = StructureChunker::new(300).chunk(&d, "Return", &words);
+        let chunks =
+            StructureChunker::new(300).chunk(&d, &DocumentContext::titled("Return"), &words);
         assert_eq!(chunks.len(), 3, "{chunks:#?}");
         assert_eq!(
             chunks[0].text,
             "Income details\nGross salary: 9,10,000\nStandard deduction: 75,000"
         );
         assert!(chunks[0]
-            .contextualized_text
+            .contextualized_text()
             .starts_with("Document: \"Return\". Section: Income details. Form fields. "));
         let layout = chunks[0].layout.as_ref().unwrap();
         assert_eq!(layout.unit, "form");
@@ -1032,7 +1058,8 @@ mod tests {
                 )
             })
             .collect();
-        let chunks = StructureChunker::new(64).chunk(&doc(many), "Return", &words);
+        let chunks =
+            StructureChunker::new(64).chunk(&doc(many), &DocumentContext::titled("Return"), &words);
         assert!(chunks.len() > 1);
         let mut seen = 0;
         for c in &chunks {
@@ -1068,7 +1095,7 @@ mod tests {
             raw,
             block(BlockKind::Paragraph, "Unrelated closing words here.", 1),
         ]);
-        let chunks = StructureChunker::new(300).chunk(&d, "Bill", &words);
+        let chunks = StructureChunker::new(300).chunk(&d, &DocumentContext::titled("Bill"), &words);
         assert_eq!(chunks.len(), 3);
         assert!(chunks[0].layout.as_ref().unwrap().incomplete);
         let raw = chunks[1].layout.as_ref().unwrap();
@@ -1076,7 +1103,7 @@ mod tests {
         assert_eq!(raw.unit, "table_text");
         assert!(chunks[1].text.contains("Water 250"));
         assert!(chunks[1]
-            .contextualized_text
+            .contextualized_text()
             .contains("Table text as printed."));
         assert!(!chunks[2].layout.as_ref().unwrap().incomplete);
     }
@@ -1088,11 +1115,11 @@ mod tests {
             block(BlockKind::Paragraph, "[1] A. Author. Paper one. 2020.", 9),
             block(BlockKind::Paragraph, "[2] B. Author. Paper two. 2021.", 9),
         ]);
-        let chunks = StructureChunker::new(300).chunk(&d, "Doc", &words);
+        let chunks = StructureChunker::new(300).chunk(&d, &DocumentContext::titled("Doc"), &words);
         assert_eq!(chunks.len(), 2);
         for c in &chunks {
             assert_eq!(c.layout.as_ref().unwrap().unit, "reference_entry");
-            assert!(c.contextualized_text.contains("Bibliography entry."));
+            assert!(c.contextualized_text().contains("Bibliography entry."));
         }
         assert!(chunks[0].text.ends_with("Paper one. 2020."));
     }
@@ -1151,5 +1178,65 @@ mod tests {
                 "Next one."
             ]
         );
+    }
+
+    #[test]
+    fn every_chunk_carries_the_document_opening_within_the_embedder_limit() {
+        let d = doc(vec![
+            block(
+                BlockKind::Heading { level: 1 },
+                "MASTER SERVICES AGREEMENT",
+                1,
+            ),
+            block(
+                BlockKind::Paragraph,
+                "This Agreement is made between Northwind Analytics and Bluepeak Systems.",
+                1,
+            ),
+            block(BlockKind::Heading { level: 2 }, "3. Fees and Payment", 2),
+            block(BlockKind::Paragraph, &sentence(300, "pay"), 2),
+        ]);
+        let context = DocumentContext::titled("msa").with_opening(&d.plain_text(), &words);
+        let chunks = StructureChunker::new(440).chunk(&d, &context, &words);
+        assert!(chunks.len() >= 2);
+        for c in &chunks {
+            assert!(c.context.starts_with(
+                "Document: \"msa\". Opening: MASTER SERVICES AGREEMENT This Agreement is made between Northwind Analytics and Bluepeak Systems."
+            ));
+            assert!(words(&c.contextualized_text()) <= EMBEDDER_TOKEN_LIMIT);
+        }
+        let fees = chunks
+            .iter()
+            .find(|c| {
+                c.context
+                    .contains("Section: MASTER SERVICES AGREEMENT > 3. Fees and Payment.")
+                    || c.context.contains("Section: 3. Fees and Payment.")
+            })
+            .expect("a chunk of the fees section");
+        assert!(
+            !fees.text.contains("Northwind"),
+            "the opening is context, not text"
+        );
+    }
+
+    #[test]
+    fn the_context_of_a_stored_chunk_is_made_again_from_its_kind_and_section() {
+        let d = doc(vec![
+            block(BlockKind::Heading { level: 1 }, "1 Intro", 1),
+            block(BlockKind::Paragraph, &sentence(20, "a"), 1),
+        ]);
+        let context = DocumentContext::titled("Doc");
+        let chunks = StructureChunker::new(300).chunk(&d, &context, &words);
+        for c in &chunks {
+            let layout = c.layout.as_ref().unwrap();
+            assert_eq!(
+                unit_context(&context, &layout.section_path, layout.unit).as_deref(),
+                Some(c.context.as_str())
+            );
+        }
+        for kind in UnitKind::ALL {
+            assert_eq!(UnitKind::from_name(kind.name()), Some(kind));
+        }
+        assert_eq!(unit_context(&context, &[], "window"), None);
     }
 }

@@ -135,6 +135,28 @@ impl CrossEncoderReranker {
         self.rerank_batch(query, candidates, top_k)
     }
 
+    /// [`Self::rerank`] of passages read with their context: `(id, context,
+    /// passage)`, scored as the context followed by the passage. Where the
+    /// pair would exceed what the model reads, the context is cut, never
+    /// the passage ([`fit_context`]).
+    pub fn rerank_in_context(
+        &self,
+        query: &str,
+        candidates: &[(String, String, String)],
+        top_k: usize,
+    ) -> Result<Vec<(String, f32)>> {
+        let texts: Vec<(String, String)> = candidates
+            .iter()
+            .map(|(id, context, passage)| {
+                (
+                    id.clone(),
+                    fit_context(&self.tokenizer, self.max_length, query, context, passage),
+                )
+            })
+            .collect();
+        self.rerank_batch(query, &texts, top_k)
+    }
+
     /// Batch reranking — tokenize all (query, doc) pairs and run ONNX inference
     /// in batches of MAX_BATCH for better throughput.
     pub fn rerank_batch(
@@ -243,9 +265,106 @@ impl CrossEncoderReranker {
     }
 }
 
+/// `context` followed by `passage`, with the context cut at a token
+/// boundary (from its end) so that the pair with `query` fits in `max_length`
+/// tokens: the model reads at most that many, and the passage is what is
+/// judged. When even the passage alone does not fit, the context is left
+/// out and the passage is cut as before.
+pub fn fit_context(
+    tokenizer: &tokenizers::Tokenizer,
+    max_length: usize,
+    query: &str,
+    context: &str,
+    passage: &str,
+) -> String {
+    let joined = format!("{context}{passage}");
+    let tokens = |text: &str| {
+        tokenizer
+            .encode((query, text), true)
+            .map(|e| e.get_ids().len())
+            .ok()
+    };
+    let Some(total) = tokens(&joined) else {
+        return passage.to_string();
+    };
+    if total <= max_length || context.is_empty() {
+        return joined;
+    }
+    let Ok(context_tokens) = tokenizer.encode_char_offsets(context, false) else {
+        return passage.to_string();
+    };
+    let offsets = context_tokens.get_offsets();
+    let mut keep = offsets.len().saturating_sub(total - max_length);
+    // Tokens at the joint can differ from those of the parts: check, and cut
+    // further until the pair fits.
+    while keep > 0 {
+        let end = offsets[keep].0;
+        let cut: String = context.chars().take(end).collect();
+        let candidate = format!("{} {passage}", cut.trim_end());
+        if tokens(&candidate).is_some_and(|n| n <= max_length) {
+            return candidate;
+        }
+        keep -= 1;
+    }
+    passage.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tokenizer of whitespace-separated words, one token each, with
+    /// `[CLS] a [SEP] b [SEP]` around a pair.
+    fn word_tokenizer(words: &[&str]) -> tokenizers::Tokenizer {
+        use tokenizers::models::wordlevel::WordLevel;
+        use tokenizers::pre_tokenizers::whitespace::WhitespaceSplit;
+        use tokenizers::processors::template::TemplateProcessing;
+        let vocab: Vec<(String, u32)> = ["[UNK]", "[CLS]", "[SEP]"]
+            .iter()
+            .chain(words)
+            .enumerate()
+            .map(|(i, w)| (w.to_string(), i as u32))
+            .collect();
+        let model = WordLevel::builder()
+            .vocab(vocab.into_iter().collect())
+            .unk_token("[UNK]".to_string())
+            .build()
+            .expect("model");
+        let mut tokenizer = tokenizers::Tokenizer::new(model);
+        tokenizer.with_pre_tokenizer(Some(WhitespaceSplit));
+        tokenizer.with_post_processor(Some(
+            TemplateProcessing::builder()
+                .try_single("[CLS] $A [SEP]")
+                .expect("single")
+                .try_pair("[CLS] $A [SEP] $B:1 [SEP]:1")
+                .expect("pair")
+                .special_tokens(vec![("[CLS]", 1), ("[SEP]", 2)])
+                .build()
+                .expect("template"),
+        ));
+        tokenizer
+    }
+
+    #[test]
+    fn the_context_is_cut_never_the_passage() {
+        let tokenizer =
+            word_tokenizer(&["q1", "q2", "c1", "c2", "c3", "c4", "c5", "p1", "p2", "p3"]);
+        let query = "q1 q2";
+        let context = "c1 c2 c3 c4 c5 ";
+        let passage = "p1 p2 p3";
+        // [CLS] q1 q2 [SEP] c1..c5 p1..p3 [SEP] = 13 tokens.
+        assert_eq!(
+            fit_context(&tokenizer, 13, query, context, passage),
+            "c1 c2 c3 c4 c5 p1 p2 p3"
+        );
+        assert_eq!(
+            fit_context(&tokenizer, 11, query, context, passage),
+            "c1 c2 c3 p1 p2 p3"
+        );
+        // The passage alone fills the budget: no context.
+        assert_eq!(fit_context(&tokenizer, 8, query, context, passage), passage);
+        assert_eq!(fit_context(&tokenizer, 5, query, context, passage), passage);
+    }
 
     const MODELS_ENV: &str = "SHODH_TEST_MODELS";
 

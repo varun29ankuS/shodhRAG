@@ -131,6 +131,23 @@
       ]
     },
     {
+      "id": "msa-parties",
+      "question": "Who are the parties to the master services agreement?",
+      "sources": [
+        {
+          "file": "contracts/msa-northwind-bluepeak.pdf",
+          "pages": [
+            1
+          ],
+          "passage": "made between Northwind Analytics Pvt. Ltd. (the Client)"
+        }
+      ],
+      "facts": [
+        "Northwind Analytics",
+        "Bluepeak Systems"
+      ]
+    },
+    {
       "id": "nda-duration",
       "question": "For how long must confidential information stay secret under the Orchid and Kestrel NDA?",
       "sources": [
@@ -208,6 +225,39 @@
       ],
       "facts": [
         "12 January 2026"
+      ]
+    },
+    {
+      "id": "nda-parties",
+      "question": "Between which companies is the mutual non-disclosure agreement made?",
+      "sources": [
+        {
+          "file": "contracts/nda-orchid-kestrel.pdf",
+          "pages": [
+            1
+          ],
+          "passage": "made between Orchid Biolabs Ltd. and Kestrel Robotics GmbH."
+        }
+      ],
+      "facts": [
+        "Orchid Biolabs",
+        "Kestrel Robotics"
+      ]
+    },
+    {
+      "id": "lease-parties",
+      "question": "Who leases the Harbor Street warehouse unit to Tidewater Logistics?",
+      "sources": [
+        {
+          "file": "contracts/lease-saffron-tidewater.pdf",
+          "pages": [
+            1
+          ],
+          "passage": "Lessor: Saffron Estates Pvt. Ltd."
+        }
+      ],
+      "facts": [
+        "Saffron Estates"
       ]
     },
     {

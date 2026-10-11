@@ -341,6 +341,21 @@ impl DocumentParser {
         Ok(read)
     }
 
+    /// Whether parsing `path` now would take a scan from the OCR cache
+    /// ([`Self::with_ocr_cache`]): the cache holds a current entry for it.
+    pub fn has_cached_scan(&self, path: &Path) -> bool {
+        let Some(cache) = self.ocr_cache.as_ref().filter(|_| is_ocr_candidate(path)) else {
+            return false;
+        };
+        let Ok(stamp) = FileStamp::of(path) else {
+            return false;
+        };
+        let system_only = self.ocr.engine == OcrEngineChoice::System;
+        cache
+            .get(&crate::rag_engine::normalize_source_path(path))
+            .is_some_and(|entry| entry.is_current_for(stamp, system_only, self.reader_installed()))
+    }
+
     pub fn parse_file(&self, path: &Path) -> Result<ParsedDocument> {
         self.parse_file_with_progress(path, &|_, _| {})
     }
@@ -1372,7 +1387,7 @@ pub(crate) mod tests {
         // The chunker packs the fields into form chunks citing each widget's box.
         let chunks = crate::processing::structure_chunker::StructureChunker::new(300).chunk(
             &doc,
-            "Return",
+            &crate::processing::chunker::DocumentContext::titled("Return"),
             &|t: &str| t.split_whitespace().count(),
         );
         let form = chunks

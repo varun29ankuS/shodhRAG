@@ -224,10 +224,11 @@ pub async fn deindex_event(rag: &mut RAGEngine, event_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Index the tasks and events that have no entry in the index yet. Run at
+/// Index the tasks and events that have no entry in the index yet, or one of
+/// an older index format ([`crate::rag_engine::INDEX_FORMAT`]). Run at
 /// startup and after the search models are installed, so the calendar is
-/// searchable after a fresh index build. Items already indexed are left as
-/// they are: edits are indexed when they are made (see [`index_task`] and
+/// searchable after a fresh index build. Items already indexed in the current
+/// format are left as they are: edits are indexed when they are made (see [`index_task`] and
 /// [`index_event`]), and re-embedding the whole calendar at every start
 /// would load the embedding model even when nothing is searched.
 /// Returns how many tasks and events were indexed.
@@ -237,11 +238,20 @@ pub async fn index_missing(
     events: &[CalendarEvent],
     space_id: &str,
 ) -> Result<(usize, usize)> {
+    // Items indexed in an older index format count as missing: indexing one
+    // again replaces its chunks.
+    let stale: std::collections::HashSet<String> = rag
+        .stale_sources()
+        .await?
+        .into_iter()
+        .map(|row| row.source)
+        .collect();
     let indexed: std::collections::HashSet<String> = rag
         .document_sources()
         .await?
         .into_iter()
         .map(|row| row.source)
+        .filter(|source| !stale.contains(source))
         .collect();
     let mut tasks_indexed = 0usize;
     let mut events_indexed = 0usize;

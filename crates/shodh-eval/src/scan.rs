@@ -480,7 +480,7 @@ mod tests {
             .active_cases()
             .filter(|c| c.answerable)
             .collect();
-        assert_eq!(answerable.len(), 27);
+        assert_eq!(answerable.len(), 29);
         for case in &answerable {
             for source in &case.sources {
                 assert!(source.passage.is_some(), "{} has no passage", case.id);

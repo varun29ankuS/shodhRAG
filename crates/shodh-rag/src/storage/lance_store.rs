@@ -333,12 +333,23 @@ impl LanceStore {
     /// One row per indexed document: its source path, space and chunk count.
     /// Reads only the `doc_id`, `source` and `space_id` columns.
     pub async fn document_sources(&self) -> Result<Vec<DocumentSourceRow>> {
+        self.document_sources_where(None).await
+    }
+
+    /// [`Self::document_sources`] counting only the chunks that match
+    /// `predicate` (a LanceDB filter); documents without such chunks are left out.
+    pub async fn document_sources_where(
+        &self,
+        predicate: Option<&str>,
+    ) -> Result<Vec<DocumentSourceRow>> {
         let table = self.db.open_table(&self.table_name).execute().await?;
-        let results = table
-            .query()
-            .select(lancedb::query::Select::columns(&[
-                "doc_id", "source", "space_id",
-            ]))
+        let mut query = table.query().select(lancedb::query::Select::columns(&[
+            "doc_id", "source", "space_id",
+        ]));
+        if let Some(predicate) = predicate {
+            query = query.only_if(predicate);
+        }
+        let results = query
             .execute()
             .await
             .context("Failed to query document sources")?;

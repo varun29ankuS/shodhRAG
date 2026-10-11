@@ -91,11 +91,9 @@ impl TextChunker {
     }
 
     fn find_break_point(&self, text: &str, start: usize, preferred_end: usize) -> usize {
-        let raw_search_start = if preferred_end > 200 {
-            preferred_end - 200
-        } else {
-            start
-        };
+        // Within this chunk: a chunk shorter than the search window would
+        // otherwise end before it starts.
+        let raw_search_start = preferred_end.saturating_sub(200).max(start);
         let search_start = snap_to_char_boundary(text, raw_search_start);
         let safe_end = snap_to_char_boundary(text, preferred_end);
 
@@ -150,6 +148,113 @@ fn snap_to_char_boundary(text: &str, pos: usize) -> usize {
     p
 }
 
+/// Most tokens of a document's opening carried by each of its chunks.
+pub const OPENING_MAX_TOKENS: usize = 48;
+
+/// Most characters of a document's opening, whatever the token count.
+const OPENING_MAX_CHARS: usize = 320;
+
+/// What every chunk of a document carries ahead of its own text where it is
+/// embedded, keyword-indexed and reranked: the document's title and its
+/// opening words. The opening is where a contract names its parties, a lease
+/// its premises, an invoice its seller and buyer, a paper its title and
+/// authors. Without it, a question that names a document by its parties
+/// ("the rent under the Saffron Estates lease") matches the first page, which
+/// is dense with those names, better than the clause that answers it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DocumentContext {
+    pub title: String,
+    /// The document's first words ([`document_opening`]).
+    pub opening: Option<String>,
+}
+
+impl DocumentContext {
+    /// A context naming only the document.
+    pub fn titled(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            opening: None,
+        }
+    }
+
+    /// The context with the opening of `text` ([`document_opening`]).
+    pub fn with_opening(mut self, text: &str, count_tokens: &dyn Fn(&str) -> usize) -> Self {
+        self.opening = document_opening(text, OPENING_MAX_TOKENS, count_tokens);
+        self
+    }
+
+    /// `Document: "<title>".`, followed by ` Opening: <opening>` when there is one.
+    pub fn header(&self) -> String {
+        format!(
+            "Document: \"{}\".{}",
+            self.title.trim(),
+            self.opening_clause().unwrap_or_default()
+        )
+    }
+
+    /// ` Opening: <opening>`, closed with a full stop unless it ends in punctuation.
+    fn opening_clause(&self) -> Option<String> {
+        self.opening.as_ref().map(|opening| {
+            let mut clause = format!(" Opening: {opening}");
+            if !opening.ends_with(['.', '!', '?', ':', ';']) {
+                clause.push('.');
+            }
+            clause
+        })
+    }
+
+    /// Whether `text` begins with the opening (word for word, whatever the
+    /// spacing): the document's first chunk does.
+    pub fn begins_with_opening(&self, text: &str) -> bool {
+        let Some(opening) = &self.opening else {
+            return false;
+        };
+        let mut words = text.split_whitespace();
+        opening
+            .split_whitespace()
+            .all(|word| words.next() == Some(word))
+    }
+
+    /// Removes the opening from the context of each chunk whose own text
+    /// begins with it (the document's first chunk): it would say it twice.
+    pub fn drop_opening_where_present(&self, chunks: &mut [ContextualChunkResult]) {
+        let Some(clause) = self.opening_clause() else {
+            return;
+        };
+        for chunk in chunks {
+            if self.begins_with_opening(&chunk.text) {
+                chunk.context = chunk.context.replacen(&clause, "", 1);
+            }
+        }
+    }
+}
+
+/// The first words of `text`, whitespace collapsed to single spaces, cut at a
+/// word so that they are at most `max_tokens` tokens (by `count_tokens`) and
+/// [`OPENING_MAX_CHARS`] characters. `None` for text without words.
+pub fn document_opening(
+    text: &str,
+    max_tokens: usize,
+    count_tokens: &dyn Fn(&str) -> usize,
+) -> Option<String> {
+    let mut words: Vec<&str> = Vec::new();
+    let mut chars = 0usize;
+    for word in text.split_whitespace() {
+        let added = word.chars().count() + usize::from(!words.is_empty());
+        if chars + added > OPENING_MAX_CHARS {
+            break;
+        }
+        chars += added;
+        words.push(word);
+    }
+    while !words.is_empty() && count_tokens(&words.join(" ")) > max_tokens {
+        // A tenth at a time (at least one word): a word is one or a few tokens.
+        let keep = words.len() - (words.len() / 10).max(1);
+        words.truncate(keep);
+    }
+    (!words.is_empty()).then(|| words.join(" "))
+}
+
 /// A chunk with document-level context prepended for embedding.
 /// The original text is preserved for display; the contextualized form is used
 /// for embedding and full-text indexing to improve retrieval recall.
@@ -158,8 +263,10 @@ pub struct ContextualChunkResult {
     pub id: Uuid,
     /// Original chunk text (stored in DB and shown to user)
     pub text: String,
-    /// Context-prefixed text (embedded and FTS-indexed for better retrieval)
-    pub contextualized_text: String,
+    /// What precedes the text where it is embedded, keyword-indexed and
+    /// reranked: the document's context (see [`DocumentContext`]) and the
+    /// chunk's place in it (section, table, page). Never shown or cited.
+    pub context: String,
     pub index: usize,
     pub heading: Option<String>,
     pub start_offset: usize,
@@ -170,6 +277,13 @@ pub struct ContextualChunkResult {
     /// Pages, boxes, section path and block kinds for chunks made from a
     /// structured document; `None` for window and section chunks.
     pub layout: Option<super::structure_chunker::ChunkLayout>,
+}
+
+impl ContextualChunkResult {
+    /// The text as embedded, keyword-indexed and reranked: context, then text.
+    pub fn contextualized_text(&self) -> String {
+        format!("{}{}", self.context, self.text)
+    }
 }
 
 /// Map a section's page number to an optional page: 0 means "not paged".
@@ -184,36 +298,23 @@ impl TextChunker {
     pub fn chunk_with_context(
         &self,
         text: &str,
-        doc_title: &str,
+        doc: &DocumentContext,
         doc_source: &str,
     ) -> Vec<ContextualChunkResult> {
         let base_chunks = self.chunk(text);
 
-        // Extract first paragraph as document summary (for chunks without headings)
-        let doc_summary: String = text
-            .split("\n\n")
-            .next()
-            .unwrap_or("")
-            .chars()
-            .take(200)
-            .collect();
-
         base_chunks
             .into_iter()
             .map(|chunk| {
-                let section = chunk
-                    .heading
-                    .as_deref()
-                    .filter(|h| !h.is_empty())
-                    .unwrap_or(&doc_summary);
-
-                let context_prefix = format!(
-                    "Document: \"{}\". Source: {}. Section: {}. ",
-                    doc_title, doc_source, section
-                );
+                let mut context_prefix = format!("{} Source: {}. ", doc.header(), doc_source);
+                if let Some(section) = chunk.heading.as_deref().filter(|h| !h.is_empty()) {
+                    context_prefix.push_str("Section: ");
+                    context_prefix.push_str(section);
+                    context_prefix.push_str(". ");
+                }
 
                 ContextualChunkResult {
-                    contextualized_text: format!("{}{}", context_prefix, chunk.text),
+                    context: context_prefix,
                     id: chunk.id,
                     text: chunk.text,
                     index: chunk.index,
@@ -233,7 +334,7 @@ impl TextChunker {
     pub fn chunk_structured(
         &self,
         sections: &[DocumentSection],
-        doc_title: &str,
+        doc: &DocumentContext,
         doc_source: &str,
     ) -> Vec<ContextualChunkResult> {
         let mut results = Vec::new();
@@ -265,13 +366,15 @@ impl TextChunker {
                     // If form fields fit in one chunk, keep them atomic
                     if body.len() <= self.chunk_size * 2 {
                         let context_prefix = format!(
-                            "Document: \"{}\". Source: {}. Form Data{}. ",
-                            doc_title, doc_source, page_label
+                            "{} Source: {}. Form Data{}. ",
+                            doc.header(),
+                            doc_source,
+                            page_label
                         );
                         results.push(ContextualChunkResult {
                             id: Uuid::new_v4(),
                             text: body.clone(),
-                            contextualized_text: format!("{}{}", context_prefix, body),
+                            context: context_prefix,
                             index: global_index,
                             heading: Some("Form Fields".to_string()),
                             start_offset: 0,
@@ -298,8 +401,8 @@ impl TextChunker {
                             }
                             let chunk_text = lines[chunk_start..chunk_end].join("\n");
                             let context_prefix = format!(
-                                "Document: \"{}\". Source: {}. Form Data{} (part {}). ",
-                                doc_title,
+                                "{} Source: {}. Form Data{} (part {}). ",
+                                doc.header(),
                                 doc_source,
                                 page_label,
                                 results.len() + 1
@@ -307,7 +410,7 @@ impl TextChunker {
                             results.push(ContextualChunkResult {
                                 id: Uuid::new_v4(),
                                 text: chunk_text.clone(),
-                                contextualized_text: format!("{}{}", context_prefix, chunk_text),
+                                context: context_prefix,
                                 index: global_index,
                                 heading: Some("Form Fields".to_string()),
                                 start_offset: 0,
@@ -327,14 +430,9 @@ impl TextChunker {
                     page,
                     caption,
                 } => {
-                    for chunk in self.chunk_table(
-                        headers,
-                        rows,
-                        *page,
-                        caption.as_deref(),
-                        doc_title,
-                        doc_source,
-                    ) {
+                    for chunk in
+                        self.chunk_table(headers, rows, *page, caption.as_deref(), doc, doc_source)
+                    {
                         results.push(ContextualChunkResult {
                             index: global_index,
                             ..chunk
@@ -350,15 +448,16 @@ impl TextChunker {
                     }
 
                     let context_prefix = format!(
-                        "Document: \"{}\". Source: {}. Key Relationships. ",
-                        doc_title, doc_source
+                        "{} Source: {}. Key Relationships. ",
+                        doc.header(),
+                        doc_source
                     );
 
                     if content.len() <= self.chunk_size * 2 {
                         results.push(ContextualChunkResult {
                             id: Uuid::new_v4(),
                             text: content.to_string(),
-                            contextualized_text: format!("{}{}", context_prefix, content),
+                            context: context_prefix.clone(),
                             index: global_index,
                             heading: Some("Relationships".to_string()),
                             start_offset: 0,
@@ -369,7 +468,7 @@ impl TextChunker {
                         global_index += 1;
                     } else {
                         // Large relationship block — use sliding window
-                        let sub_chunks = self.chunk_with_context(content, doc_title, doc_source);
+                        let sub_chunks = self.chunk_with_context(content, doc, doc_source);
                         for mut sc in sub_chunks {
                             sc.index = global_index;
                             sc.heading = Some("Relationships".to_string());
@@ -398,7 +497,7 @@ impl TextChunker {
                         None => doc_source.to_string(),
                     };
 
-                    let sub_chunks = self.chunk_with_context(content, doc_title, &page_source);
+                    let sub_chunks = self.chunk_with_context(content, doc, &page_source);
                     for mut sc in sub_chunks {
                         sc.index = global_index;
                         sc.page = text_page;
@@ -433,7 +532,7 @@ impl TextChunker {
         rows: &[Vec<String>],
         page: usize,
         caption: Option<&str>,
-        doc_title: &str,
+        doc: &DocumentContext,
         doc_source: &str,
     ) -> Vec<ContextualChunkResult> {
         let table_page = page_of(page);
@@ -464,13 +563,10 @@ impl TextChunker {
             return Vec::new();
         }
 
-        let context_prefix = format!(
-            "Document: \"{}\". Source: {}. {}. ",
-            doc_title, doc_source, label
-        );
+        let context_prefix = format!("{} Source: {}. {}. ", doc.header(), doc_source, label);
         let make_chunk = |text: String| ContextualChunkResult {
             id: Uuid::new_v4(),
-            contextualized_text: format!("{}{}", context_prefix, text),
+            context: context_prefix.clone(),
             index: 0,
             heading: Some(label.clone()),
             start_offset: 0,
@@ -615,7 +711,8 @@ mod tests {
             0,
             "Q1 Sheet",
         )];
-        let chunks = chunker.chunk_structured(&sections, "Report", "report.xlsx");
+        let chunks =
+            chunker.chunk_structured(&sections, &DocumentContext::titled("Report"), "report.xlsx");
         assert_eq!(chunks.len(), 1);
         assert_eq!(
             chunks[0].text,
@@ -624,7 +721,7 @@ mod tests {
         assert_eq!(chunks[0].heading.as_deref(), Some("Q1 Sheet"));
         assert_eq!(chunks[0].page, None);
         assert!(chunks[0]
-            .contextualized_text
+            .contextualized_text()
             .starts_with("Document: \"Report\""));
     }
 
@@ -642,7 +739,8 @@ mod tests {
             })
             .collect();
         let sections = vec![table(&["Name", "Größe", "Price"], &rows, 3, "Inventory")];
-        let chunks = chunker.chunk_structured(&sections, "Doc", "doc.pdf");
+        let chunks =
+            chunker.chunk_structured(&sections, &DocumentContext::titled("Doc"), "doc.pdf");
         assert!(chunks.len() > 1, "expected multiple chunks");
 
         let mut seen_rows = Vec::new();
@@ -684,7 +782,8 @@ mod tests {
         let long_value = "é".repeat(100);
         let rows = vec![row(&["a", long_value.as_str()]), row(&["b", "short"])];
         let sections = vec![table(&["K", "V"], &rows, 0, "T")];
-        let chunks = chunker.chunk_structured(&sections, "Doc", "doc.csv");
+        let chunks =
+            chunker.chunk_structured(&sections, &DocumentContext::titled("Doc"), "doc.csv");
         assert_eq!(chunks.len(), 2);
         assert!(chunks[0]
             .text
@@ -730,16 +829,20 @@ mod tests {
                 heading: None,
             },
         ];
-        let chunks = chunker.chunk_structured(&sections, "Contract", "contract.pdf");
+        let chunks = chunker.chunk_structured(
+            &sections,
+            &DocumentContext::titled("Contract"),
+            "contract.pdf",
+        );
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].page, Some(2));
         assert_eq!(chunks[0].heading.as_deref(), Some("Page 2"));
         assert!(chunks[0]
-            .contextualized_text
+            .contextualized_text()
             .contains("contract.pdf (Page 2)"));
         assert_eq!(chunks[1].page, None);
         assert_eq!(chunks[1].heading, None);
-        assert!(!chunks[1].contextualized_text.contains("(Page"));
+        assert!(!chunks[1].contextualized_text().contains("(Page"));
     }
 
     #[test]
@@ -749,9 +852,80 @@ mod tests {
             fields: vec![("Name".to_string(), "Asha".to_string())],
             page: 0,
         }];
-        let chunks = chunker.chunk_structured(&sections, "Form", "form.pdf");
+        let chunks =
+            chunker.chunk_structured(&sections, &DocumentContext::titled("Form"), "form.pdf");
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].page, None);
         assert_eq!(chunks[0].text, "Name: Asha");
+    }
+
+    fn words(text: &str) -> usize {
+        text.split_whitespace().count()
+    }
+
+    #[test]
+    fn the_opening_is_the_first_words_within_the_token_and_character_limits() {
+        let text = "COMMERCIAL LEASE DEED\n\nLessor: Saffron Estates Pvt. Ltd.\n  Lessee: Tidewater Logistics Pvt. Ltd.";
+        assert_eq!(
+            document_opening(text, 48, &words).as_deref(),
+            Some("COMMERCIAL LEASE DEED Lessor: Saffron Estates Pvt. Ltd. Lessee: Tidewater Logistics Pvt. Ltd.")
+        );
+        // Cut at a word, within the token limit.
+        assert_eq!(
+            document_opening(text, 5, &words).as_deref(),
+            Some("COMMERCIAL LEASE DEED Lessor: Saffron")
+        );
+        // At most OPENING_MAX_CHARS characters, whatever the token count.
+        let long = "word ".repeat(400);
+        let opening = document_opening(&long, 10_000, &words).unwrap();
+        assert!(opening.chars().count() <= OPENING_MAX_CHARS);
+        assert!(opening.ends_with("word"));
+        assert_eq!(document_opening(" \n\t ", 48, &words), None);
+    }
+
+    #[test]
+    fn the_header_names_the_document_and_its_opening() {
+        assert_eq!(
+            DocumentContext::titled("lease").header(),
+            "Document: \"lease\"."
+        );
+        let context = DocumentContext::titled("lease")
+            .with_opening("Lessor: Saffron Estates. Lessee: Tidewater", &words);
+        assert_eq!(
+            context.header(),
+            "Document: \"lease\". Opening: Lessor: Saffron Estates. Lessee: Tidewater."
+        );
+    }
+
+    #[test]
+    fn every_window_carries_the_opening_as_context_not_as_text() {
+        let chunker = TextChunker::new(120, 0, 10);
+        let body = "Lessor: Saffron Estates. Lessee: Tidewater Logistics.\n\n\
+                    Monthly rent is INR 4,85,000, payable by the 5th day of each month. \
+                    Rent escalates by 5% every twelve months from the commencement date. \
+                    The Lessee pays a security deposit of six months rent.";
+        let context = DocumentContext::titled("lease").with_opening(body, &words);
+        let chunks = chunker.chunk_with_context(body, &context, "lease.txt");
+        assert!(chunks.len() > 1);
+        for chunk in &chunks {
+            assert!(chunk.context.starts_with(
+                "Document: \"lease\". Opening: Lessor: Saffron Estates. Lessee: Tidewater Logistics."
+            ));
+            assert!(chunk.context.contains("Source: lease.txt."));
+            assert!(
+                body.contains(chunk.text.trim()),
+                "text is the document's own"
+            );
+            assert_eq!(
+                chunk.contextualized_text(),
+                format!("{}{}", chunk.context, chunk.text)
+            );
+        }
+        let rent = chunks
+            .iter()
+            .find(|c| c.text.contains("4,85,000"))
+            .expect("rent chunk");
+        assert!(!rent.text.contains("Saffron"));
+        assert!(rent.contextualized_text().contains("Saffron"));
     }
 }

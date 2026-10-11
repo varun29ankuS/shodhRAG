@@ -7,6 +7,12 @@
 //! [`shodh_rag::folder_sync::sync_folder`]; this module schedules it, one sync
 //! at a time and never while background work is paused, and reports each
 //! outcome to the Library as a [`FOLDER_SYNC_EVENT`].
+//!
+//! Listed sources that are single files are not watched; each is indexed
+//! again once if it was indexed in an older index format
+//! ([`upgrade_file_source`]), as a folder's files are on its sync. Once per
+//! run, documents of an older format that no listed source owns (files added
+//! in a chat) are brought up to date too ([`upgrade_unowned`]).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -15,7 +21,9 @@ use std::time::Duration;
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
-use shodh_rag::folder_sync::{is_temporary_file, sync_folder, ManifestStore, SyncReport};
+use shodh_rag::folder_sync::{
+    is_temporary_file, sync_folder, upgrade_file_source, upgrade_unowned, ManifestStore, SyncReport,
+};
 use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus, NewInboxItem};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
@@ -60,6 +68,9 @@ pub struct FolderSyncState {
     watched: Mutex<HashMap<String, Watched>>,
     /// Held for the duration of a sync: one folder at a time.
     running: tokio::sync::Mutex<()>,
+    /// The documents no Library source owns were checked for an older index
+    /// format in this run.
+    unowned_checked: std::sync::atomic::AtomicBool,
 }
 
 impl FolderSyncState {
@@ -68,6 +79,7 @@ impl FolderSyncState {
             store: ManifestStore::in_dir(manifest_dir),
             watched: Mutex::new(HashMap::new()),
             running: tokio::sync::Mutex::new(()),
+            unowned_checked: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -217,6 +229,30 @@ async fn sync_once(app: &AppHandle, source: &FolderSourceRef) {
     }
 }
 
+/// Indexes the single-file source `source` again if it was indexed in an older
+/// index format. Takes its turn with the folder syncs.
+async fn upgrade_file_once(app: &AppHandle, source: &FolderSourceRef) {
+    app.state::<BackgroundState>().wait_until_resumed().await;
+    let state = app.state::<FolderSyncState>();
+    let _turn = state.running.lock().await;
+    let rag = app.state::<RagState>().rag.clone();
+    if let Err(e) = upgrade_file_source(&source.path, &source.id, &rag).await {
+        tracing::warn!(source_id = %source.id, error = %e, "file source not indexed again");
+    }
+}
+
+/// Brings the documents of an older index format that none of `owned` (the
+/// Library's source ids) owns up to date. Takes its turn with the syncs.
+async fn upgrade_unowned_once(app: &AppHandle, owned: std::collections::BTreeSet<String>) {
+    app.state::<BackgroundState>().wait_until_resumed().await;
+    let state = app.state::<FolderSyncState>();
+    let _turn = state.running.lock().await;
+    let rag = app.state::<RagState>().rag.clone();
+    if let Err(e) = upgrade_unowned(&rag, &owned).await {
+        tracing::warn!(error = %e, "documents outside the Library not brought up to date");
+    }
+}
+
 /// Syncs the folder source `source_id` now, if it is watched (for files whose
 /// manifest entries were dropped with [`FolderSyncState::forget_file`]).
 pub async fn sync_source_now(app: &AppHandle, source_id: &str) {
@@ -252,13 +288,21 @@ fn watch(app: &AppHandle, source: &FolderSourceRef) -> Result<Watched, String> {
 
 /// The Library's folder sources: watch and sync these, stop watching the
 /// rest (a removed source's manifest is deleted). Paths that are single
-/// files are not folders and are skipped.
+/// files are not watched; each is brought to the current index format.
 #[tauri::command]
 pub async fn sync_folder_sources(
     app: AppHandle,
     sources: Vec<FolderSourceRef>,
 ) -> Result<(), String> {
     let state = app.state::<FolderSyncState>();
+    if !state
+        .unowned_checked
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        let owned = sources.iter().map(|s| s.id.clone()).collect();
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move { upgrade_unowned_once(&app, owned).await });
+    }
     let mut watched = state.watched.lock().unwrap_or_else(|e| e.into_inner());
     let stale: Vec<String> = watched
         .iter()
@@ -272,7 +316,12 @@ pub async fn sync_folder_sources(
         }
     }
     for source in sources {
-        if watched.contains_key(&source.id) || Path::new(&source.path).is_file() {
+        if Path::new(&source.path).is_file() {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move { upgrade_file_once(&app, &source).await });
+            continue;
+        }
+        if watched.contains_key(&source.id) {
             continue;
         }
         match watch(&app, &source) {

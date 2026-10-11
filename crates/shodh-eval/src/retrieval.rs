@@ -108,13 +108,8 @@ pub fn ocr_settings(ocr: &shodh_rag::config::OcrConfig) -> BTreeMap<String, Stri
         OcrEngineChoice::System => "system",
         OcrEngineChoice::PpOcr => "ppocr",
     };
-    [
+    let mut settings: BTreeMap<String, String> = [
         ("ocr".to_string(), engine.to_string()),
-        (
-            "ocr_model".to_string(),
-            shodh_rag::processing::ocr::OCR_MODEL_ID.to_string(),
-        ),
-        ("ocr_render_dpi".to_string(), ocr.render_dpi.to_string()),
         (
             "system_ocr_render_dpi".to_string(),
             ocr.system_render_dpi
@@ -122,7 +117,17 @@ pub fn ocr_settings(ocr: &shodh_rag::config::OcrConfig) -> BTreeMap<String, Stri
         ),
     ]
     .into_iter()
-    .collect()
+    .collect();
+    // The PP-OCRv6 settings only where it can read (`auto` uses it where the
+    // system OCR is missing).
+    if ocr.engine != OcrEngineChoice::System {
+        settings.insert(
+            "ocr_model".to_string(),
+            shodh_rag::processing::ocr::OCR_MODEL_ID.to_string(),
+        );
+        settings.insert("ocr_render_dpi".to_string(), ocr.render_dpi.to_string());
+    }
+    settings
 }
 
 pub async fn run(opts: &RetrievalOptions) -> Result<RunReport> {

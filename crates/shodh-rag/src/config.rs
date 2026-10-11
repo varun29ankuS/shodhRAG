@@ -17,7 +17,12 @@ pub struct RAGConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OcrEngineChoice {
-    /// PP-OCRv6 when its model is installed, else the system OCR (Windows).
+    /// The system OCR on Windows while it is available, else PP-OCRv6 when
+    /// its model is installed (macOS always). On the scanned evaluation set
+    /// PP-OCRv6 found far more passages (passage_hit@10 1.0 against 0.67) but
+    /// ranked the right page first slightly less often (page_hit@1 0.88
+    /// against 0.92) and took about 6 s a page against 0.1-0.4 s, so it is
+    /// not the Windows default (see `crates/shodh-eval/README.md`).
     #[default]
     Auto,
     /// The system OCR only (Windows.Media.Ocr; none on other platforms).

@@ -91,12 +91,12 @@ impl DocumentParser {
         self
     }
 
-    /// The engine for scanned pages: PP-OCRv6 when chosen (or on `Auto`) and
-    /// installed, else the system OCR where there is one. Loads the model on
-    /// first use (seconds).
+    /// The engine for scanned pages (see [`OcrEngineChoice`]). On `Auto`,
+    /// Windows uses the system OCR while it is available and other platforms
+    /// use PP-OCRv6. Loads the model on first use (seconds).
     fn ocr_route(&self) -> OcrRoute {
         let model = || self.ocr_model.as_ref().and_then(|m| m.get());
-        let system = if cfg!(windows) {
+        let system = if system_ocr_available() {
             OcrRoute::System
         } else {
             OcrRoute::None
@@ -104,7 +104,10 @@ impl DocumentParser {
         match self.ocr.engine {
             OcrEngineChoice::System => system,
             OcrEngineChoice::PpOcr => model().map_or(OcrRoute::None, OcrRoute::PpOcr),
-            OcrEngineChoice::Auto => model().map_or(system, OcrRoute::PpOcr),
+            OcrEngineChoice::Auto => match system {
+                OcrRoute::System => OcrRoute::System,
+                _ => model().map_or(OcrRoute::None, OcrRoute::PpOcr),
+            },
         }
     }
 
@@ -680,6 +683,18 @@ pub fn insert_form_fields(doc: &mut StructuredDocument, fields: &[pdf_forms::For
     }
     if inserted > 0 {
         doc.finalize();
+    }
+}
+
+/// Whether the system OCR can run here (Windows with an OCR language).
+fn system_ocr_available() -> bool {
+    #[cfg(windows)]
+    {
+        super::windows_ocr::is_ocr_available()
+    }
+    #[cfg(not(windows))]
+    {
+        false
     }
 }
 

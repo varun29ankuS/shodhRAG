@@ -69,6 +69,23 @@ shodh-eval ocr --corpus crates/shodh-eval/data/scanned/corpus \
 shodh-eval ocr ... --engine system [--dpi 300]
 ```
 
+Measured on this corpus (Windows, 12 threads; PP-OCRv6 small at 300 dpi;
+times from an optimised build):
+
+| | Windows OCR (96 dpi) | Windows OCR (300 dpi) | PP-OCRv6 small |
+|---|---|---|---|
+| passage_hit@1 / @10 | 0.593 / 0.667 | 0.630 / 0.704 | 0.889 / 1.000 |
+| page_hit@1 | 0.920 | 0.920 | 0.880 |
+| hit@1 / mrr | 0.926 / 0.963 | 0.926 / 0.963 | 0.963 / 0.981 |
+| line recall / CER (`ocr`) | 0.744 / 0.111 | 0.773 / 0.106 | 0.955 / 0.0007 |
+| time per page | 0.13 s | 0.35 s | 6.2 s |
+| peak memory | 160 MB | 357 MB | 349 MB |
+
+PP-OCRv6 reads tables row by row and survives speckle; Windows OCR's misses
+are mostly table rows read out of order. Because page_hit@1 and time per
+page are worse, Windows keeps its system OCR by default
+(`OcrEngineChoice::Auto`); macOS uses PP-OCRv6.
+
 ## Commands
 
 ```

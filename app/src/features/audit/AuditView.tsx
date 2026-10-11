@@ -6,6 +6,7 @@ import { notify } from '../../lib/notify';
 import { auditStats, errorText, exportAudit, queryAudit, setRetentionDays, verifyAudit } from './api';
 import { AuditTable } from './AuditTable';
 import { dayBoundary, localDate } from './summary';
+import { useNavigationTarget } from '../agent/useNavigationTarget';
 import { UsageCards } from './UsageCards';
 import { EVENT_TYPES, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS } from './types';
 import type { AuditEventType, AuditQuery, AuditRow, AuditStats, VerifyReport } from './types';
@@ -32,10 +33,18 @@ interface Filters {
   fromDate: string;
   toDate: string;
   conversationId: string;
+  tool: string;
   text: string;
 }
 
-const NO_FILTERS: Filters = { types: [], fromDate: '', toDate: '', conversationId: '', text: '' };
+const NO_FILTERS: Filters = { types: [], fromDate: '', toDate: '', conversationId: '', tool: '', text: '' };
+
+/** Local YYYY-MM-DD of an RFC 3339 timestamp, or '' when it is not one. */
+function dateOf(timestamp: string | null): string {
+  if (!timestamp) return '';
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime()) ? '' : localDate(date);
+}
 
 /** The query for `filters`, with `snapshot` capping `to` so paging is stable. */
 function toQuery(filters: Filters, snapshot: string | null): AuditQuery {
@@ -48,6 +57,7 @@ function toQuery(filters: Filters, snapshot: string | null): AuditQuery {
   else if (to) query.to = to;
   else if (snapshot) query.to = snapshot;
   if (filters.conversationId.trim()) query.conversationId = filters.conversationId.trim();
+  if (filters.tool.trim()) query.tool = filters.tool.trim();
   if (filters.text.trim()) query.text = filters.text.trim();
   return query;
 }
@@ -179,6 +189,20 @@ export default function AuditView() {
     }));
   };
 
+  // The agent opened the log with filters (show_audit).
+  useNavigationTarget('audit', target => {
+    const known = new Set<string>(EVENT_TYPES.map(t => t.id));
+    setSearchText(target.text ?? '');
+    setFilters({
+      types: target.types.filter((t): t is AuditEventType => known.has(t)),
+      fromDate: dateOf(target.from),
+      toDate: dateOf(target.to),
+      conversationId: '',
+      tool: target.tool ?? '',
+      text: target.text ?? '',
+    });
+  });
+
   const clearFilters = () => {
     setSearchText('');
     setFilters(NO_FILTERS);
@@ -253,7 +277,7 @@ export default function AuditView() {
   };
 
   const hasFilters =
-    filters.types.length > 0 || filters.fromDate !== '' || filters.toDate !== '' || filters.conversationId !== '' || searchText !== '';
+    filters.types.length > 0 || filters.fromDate !== '' || filters.toDate !== '' || filters.conversationId !== '' || filters.tool !== '' || searchText !== '';
 
   return (
     <div className="flex flex-col gap-6">
@@ -354,6 +378,16 @@ export default function AuditView() {
               placeholder="Conversation id"
               value={filters.conversationId}
               onChange={e => setFilters(f => ({ ...f, conversationId: e.target.value }))}
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-[11.5px] text-shodh-text-muted">
+            Tool
+            <input
+              type="text"
+              className={cn(INPUT, 'w-[150px] font-mono')}
+              placeholder="e.g. web_search"
+              value={filters.tool}
+              onChange={e => setFilters(f => ({ ...f, tool: e.target.value }))}
             />
           </label>
           <label className="flex flex-col gap-1 text-[11.5px] text-shodh-text-muted flex-1 min-w-[180px]">

@@ -1,7 +1,6 @@
 //! Image upload, OCR (Windows OCR API), and form export commands
 
 use serde::{Deserialize, Serialize};
-use shodh_rag::rag::{export_form_as_html, export_form_as_json_schema, FormField};
 use tauri::State;
 use uuid::Uuid;
 
@@ -239,58 +238,6 @@ pub async fn process_image_from_file(
         word_count,
         image_data: format!("data:{};base64,{}", mime, b64),
     })
-}
-
-/// Search indexed images by text query
-#[tauri::command]
-pub async fn search_images(
-    query: String,
-    limit: Option<usize>,
-    state: State<'_, RagState>,
-) -> Result<Vec<serde_json::Value>, String> {
-    let rag = state.rag.read().await;
-
-    let results = rag
-        .search(&query, limit.unwrap_or(10))
-        .await
-        .map_err(|e| format!("Search failed: {}", e))?;
-
-    let image_results: Vec<_> = results
-        .into_iter()
-        .filter(|r| r.metadata.values().any(|v| v.contains("image")))
-        .map(|r| {
-            serde_json::json!({
-                "id": r.doc_id.to_string(),
-                "text": r.text,
-                "score": r.score,
-                "source": r.source,
-            })
-        })
-        .collect();
-
-    Ok(image_results)
-}
-
-/// Export form as HTML file
-#[tauri::command]
-pub async fn export_form_html(
-    title: String,
-    description: Option<String>,
-    fields: Vec<FormField>,
-) -> Result<String, String> {
-    export_form_as_html(&title, description.as_deref(), &fields)
-        .map_err(|e| format!("Failed to export form as HTML: {}", e))
-}
-
-/// Export form as JSON Schema
-#[tauri::command]
-pub async fn export_form_json(
-    title: String,
-    description: Option<String>,
-    fields: Vec<FormField>,
-) -> Result<String, String> {
-    export_form_as_json_schema(&title, description.as_deref(), &fields)
-        .map_err(|e| format!("Failed to export form as JSON: {}", e))
 }
 
 #[cfg(test)]

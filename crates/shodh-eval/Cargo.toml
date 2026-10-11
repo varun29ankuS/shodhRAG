@@ -1,0 +1,24 @@
+[package]
+name = "shodh-eval"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Evaluation harness for shodh: retrieval and grounded-answer quality on a committed synthetic corpus and on local folders"
+
+[[bin]]
+name = "shodh-eval"
+path = "src/main.rs"
+
+[dependencies]
+shodh-rag = { path = "../shodh-rag" }
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+walkdir = "2"

@@ -31,6 +31,10 @@ pub enum InboundFrame {
     ToolExecutionEnd(ToolExecutionEndFrame),
     HostToolCall(HostToolCallFrame),
     HostToolCancel(HostToolCancelFrame),
+    /// A dialog request (Code sessions answer approvals over it).
+    ExtensionUiRequest(ExtensionUiRequestFrame),
+    /// The session's slash commands (Code sessions look for the guard's).
+    AvailableCommands(AvailableCommandsFrame),
     /// A frame type Shodh does not consume (e.g. `turn_start`, `subagent_event`).
     Other {
         frame_type: String,
@@ -60,6 +64,8 @@ impl InboundFrame {
             InboundFrame::ToolExecutionEnd(_) => "tool_execution_end",
             InboundFrame::HostToolCall(_) => "host_tool_call",
             InboundFrame::HostToolCancel(_) => "host_tool_cancel",
+            InboundFrame::ExtensionUiRequest(_) => "extension_ui_request",
+            InboundFrame::AvailableCommands(_) => "available_commands_update",
             InboundFrame::Other { frame_type } | InboundFrame::Malformed { frame_type, .. } => {
                 frame_type
             }
@@ -115,6 +121,8 @@ pub fn parse_frame(line: &str) -> Result<InboundFrame, FrameError> {
         "tool_execution_end" => typed(value, &frame_type, InboundFrame::ToolExecutionEnd),
         "host_tool_call" => typed(value, &frame_type, InboundFrame::HostToolCall),
         "host_tool_cancel" => typed(value, &frame_type, InboundFrame::HostToolCancel),
+        "extension_ui_request" => typed(value, &frame_type, InboundFrame::ExtensionUiRequest),
+        "available_commands_update" => typed(value, &frame_type, InboundFrame::AvailableCommands),
         _ => InboundFrame::Other { frame_type },
     };
     Ok(frame)
@@ -360,6 +368,51 @@ pub struct HostToolCancelFrame {
     pub target_id: String,
 }
 
+/// `extension_ui_request`: a dialog (`select`, `confirm`, `input`, `editor`,
+/// `ask`), its cancellation (`cancel` with `targetId`), or a presentation
+/// update (`notify`, `setStatus`, `setWidget`, …) that needs no answer.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionUiRequestFrame {
+    pub id: String,
+    pub method: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    /// `input` dialogs carry their text here.
+    #[serde(default)]
+    pub placeholder: Option<String>,
+    /// For `cancel`: the dialog being closed.
+    #[serde(default)]
+    pub target_id: Option<String>,
+}
+
+impl ExtensionUiRequestFrame {
+    /// Whether the request waits for an `extension_ui_response`.
+    pub fn is_dialog(&self) -> bool {
+        matches!(
+            self.method.as_str(),
+            "select" | "confirm" | "input" | "editor" | "ask"
+        )
+    }
+}
+
+/// `available_commands_update`: the session's slash commands.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct AvailableCommandsFrame {
+    #[serde(default)]
+    pub commands: Vec<AvailableCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct AvailableCommand {
+    pub name: String,
+    /// `builtin`, `extension`, `file`, …
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
 // ── Shared payloads ────────────────────────────────────────────────────────
 
 /// A text content block.
@@ -480,6 +533,18 @@ pub enum OutboundFrame {
     GetSessionStats {
         id: String,
     },
+    /// The session state, including its tool inventory (`dumpTools`).
+    GetState {
+        id: String,
+    },
+    /// The answer to a dialog: `value` for `input`/`select`, or `cancelled`.
+    ExtensionUiResponse {
+        id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        cancelled: bool,
+    },
     HostToolUpdate {
         id: String,
         partial_result: ToolResultPayload,
@@ -501,8 +566,11 @@ impl OutboundFrame {
             | OutboundFrame::SetHostTools { id, .. }
             | OutboundFrame::SetEventFilter { id, .. }
             | OutboundFrame::SetSubagentSubscription { id, .. }
-            | OutboundFrame::GetSessionStats { id } => Some(id),
-            OutboundFrame::HostToolUpdate { .. } | OutboundFrame::HostToolResult { .. } => None,
+            | OutboundFrame::GetSessionStats { id }
+            | OutboundFrame::GetState { id } => Some(id),
+            OutboundFrame::HostToolUpdate { .. }
+            | OutboundFrame::HostToolResult { .. }
+            | OutboundFrame::ExtensionUiResponse { .. } => None,
         }
     }
 

@@ -14,6 +14,7 @@ use tauri::State;
 
 use crate::rag_commands::{is_code_file, RagState};
 use shodh_rag::processing::parser::DocumentParser;
+use shodh_rag::processing::pdf_info::{pdf_info, PdfInfo};
 use shodh_rag::processing::tabular;
 
 /// Largest file the viewer will read (bytes).
@@ -76,6 +77,10 @@ pub struct SourceFileInfo {
     pub folder: Option<String>,
     pub extension: String,
     pub size_bytes: u64,
+    /// Last modification time (ms since the Unix epoch), when the file
+    /// system reports one. Part of the viewer's cache key, so an edited
+    /// file is not shown from a stale cache.
+    pub modified_ms: Option<u64>,
     pub kind: ViewerKind,
     /// MIME type for byte-served kinds (PDF and images).
     pub mime_type: Option<String>,
@@ -174,6 +179,16 @@ struct AuthorizedFile {
     path: PathBuf,
     extension: String,
     size_bytes: u64,
+    modified_ms: Option<u64>,
+}
+
+fn modified_ms(metadata: &std::fs::Metadata) -> Option<u64> {
+    let since_epoch = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    u64::try_from(since_epoch.as_millis()).ok()
 }
 
 /// Admit `requested` only if it is an existing regular file and the RAG index
@@ -273,6 +288,7 @@ async fn authorize(
         path: canonical,
         extension,
         size_bytes: metadata.len(),
+        modified_ms: modified_ms(&metadata),
     })
 }
 
@@ -325,10 +341,39 @@ pub async fn get_source_file_info(
         folder: file.path.parent().map(|p| p.display().to_string()),
         extension: file.extension,
         size_bytes: file.size_bytes,
+        modified_ms: file.modified_ms,
         kind,
         mime_type,
         path: path_str,
     })
+}
+
+/// Title, page count and first page size of an indexed PDF, for file
+/// lists. Reads the PDF's object tree only (no text extraction), and only
+/// for files the index vouches for, like every other source command.
+#[tauri::command]
+pub async fn get_pdf_info(
+    state: State<'_, RagState>,
+    file_path: String,
+) -> Result<PdfInfo, SourceAccessError> {
+    let file = authorize(&state, &file_path).await?;
+    if file.extension != "pdf" {
+        return Err(SourceAccessError::Unsupported {
+            message: format!(
+                "PDF details are not available for .{} files.",
+                file.extension
+            ),
+        });
+    }
+    ensure_size(&file)?;
+    let path = file.path;
+    tokio::task::spawn_blocking(move || {
+        pdf_info(&path).map_err(|e| SourceAccessError::ReadFailed {
+            message: e.to_string(),
+        })
+    })
+    .await
+    .map_err(join_failed)?
 }
 
 /// Raw bytes of an indexed PDF or image, sent as a binary IPC payload.

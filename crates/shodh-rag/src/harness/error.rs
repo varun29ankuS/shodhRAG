@@ -42,8 +42,11 @@ pub enum HarnessError {
     #[error("The model id {0:?} is not valid.")]
     InvalidModel(String),
 
-    #[error("The model {0} is not allowed: stealth models may log prompts for training. Choose another model, or set SHODH_ALLOW_STEALTH_MODELS=1 to accept that risk.")]
+    #[error("The model {0} is not allowed: stealth models may log prompts for training. Choose another model, or select it again in the model picker and confirm that you accept this risk.")]
     DisallowedModel(String),
+
+    #[error("Local-only mode is on, so the agent cannot use {0}, which sends data off this computer. Choose a local model (Ollama) in Settings → Models, or turn off Local-only mode in Settings → Privacy.")]
+    LocalOnlyCloudModel(String),
 
     #[error("Unknown agent profile {0:?}.")]
     UnknownProfile(String),
@@ -82,6 +85,12 @@ pub enum HarnessError {
 
     #[error("Agent session {0} does not exist.")]
     UnknownSession(String),
+
+    #[error("Code mode cannot use the code folder: {0}")]
+    CodeFolder(String),
+
+    #[error("Code mode's safety checks did not start ({0}), so Code mode was not started. Switch this conversation to Research, or try again.")]
+    CodeGuard(String),
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

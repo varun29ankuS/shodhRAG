@@ -6,7 +6,9 @@ use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Cross-encoder reranker using ms-marco-MiniLM-L6-v2
+/// Cross-encoder reranker using ms-marco-MiniLM-L6-v2. Cloning is cheap and
+/// shares the loaded model (inference is serialised by the session lock).
+#[derive(Clone)]
 pub struct CrossEncoderReranker {
     session: Arc<Mutex<Session>>,
     tokenizer: Arc<tokenizers::Tokenizer>,
@@ -41,6 +43,19 @@ impl CrossEncoderReranker {
             tokenizer: Arc::new(tokenizer),
             max_length: 512,
         })
+    }
+
+    /// Whether the model and tokenizer files exist in `model_dir`, without loading them.
+    pub fn check_files(model_dir: &Path) -> Result<()> {
+        Self::find_model(model_dir)?;
+        let tokenizer_path = model_dir.join("tokenizer.json");
+        if !tokenizer_path.exists() {
+            return Err(anyhow!(
+                "Tokenizer not found at: {}",
+                tokenizer_path.display()
+            ));
+        }
+        Ok(())
     }
 
     fn find_model(model_dir: &Path) -> Result<PathBuf> {

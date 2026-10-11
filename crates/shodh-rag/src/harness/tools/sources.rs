@@ -119,6 +119,31 @@ pub fn summarise_sources(rows: &[DocumentSourceRow]) -> Vec<SourceSummary> {
         .collect()
 }
 
+const DEFAULT_FILES: usize = 50;
+const MAX_FILES: usize = 500;
+
+/// One indexed file of a source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceFile {
+    pub path: String,
+    pub chunks: usize,
+}
+
+/// The indexed files of `source_id`, sorted by path.
+pub fn files_of(rows: &[DocumentSourceRow], source_id: &str) -> Vec<SourceFile> {
+    let mut files: BTreeMap<&str, usize> = BTreeMap::new();
+    for row in rows.iter().filter(|r| r.space_id == source_id) {
+        *files.entry(row.source.as_str()).or_default() += row.chunks;
+    }
+    files
+        .into_iter()
+        .map(|(path, chunks)| SourceFile {
+            path: path.to_string(),
+            chunks,
+        })
+        .collect()
+}
+
 /// Load every source from the index.
 pub async fn load_sources(rag: &RAGEngine) -> Result<Vec<SourceSummary>, ToolError> {
     let rows = rag
@@ -168,12 +193,16 @@ impl HostTool for ListSourcesTool {
     }
     fn description(&self) -> &'static str {
         "List the indexed sources: folders (with their path), the calendar and notes, with file \
-         and chunk counts. Source ids can be passed to search_documents to restrict a search."
+         and chunk counts. Source ids can be passed to search_documents to restrict a search. \
+         With source_id, list the indexed files of that source instead."
     }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
-            "properties": {},
+            "properties": {
+                "source_id": {"type": "string", "minLength": 1, "maxLength": 200},
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_FILES}
+            },
             "additionalProperties": false
         })
     }
@@ -181,7 +210,43 @@ impl HostTool for ListSourcesTool {
         RiskTier::Read
     }
 
-    async fn execute(&self, _args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        if let Some(source_id) = super::opt_str(&args, "source_id") {
+            let limit = args
+                .get("limit")
+                .and_then(Value::as_u64)
+                .and_then(|n| usize::try_from(n).ok())
+                .unwrap_or(DEFAULT_FILES)
+                .clamp(1, MAX_FILES);
+            let rows = {
+                let rag = self.rag.read().await;
+                rag.document_sources()
+                    .await
+                    .map_err(|e| ToolError::Failed(format!("Could not read the index: {e}")))?
+            };
+            let files = files_of(&rows, source_id);
+            if files.is_empty() {
+                return Err(ToolError::NotFound(format!(
+                    "No indexed source has id {source_id}. Call list_sources for valid ids."
+                )));
+            }
+            let total = files.len();
+            let shown: Vec<&SourceFile> = files.iter().take(limit).collect();
+            let body = serde_json::to_string(&shown)
+                .map_err(|e| ToolError::Failed(format!("Could not encode files: {e}")))?;
+            let more = if total > shown.len() {
+                format!(" Showing the first {}.", shown.len())
+            } else {
+                String::new()
+            };
+            return Ok(ToolOutput {
+                text_for_model: format!(
+                    "{total} indexed files in source {source_id}.{more}\n{body}"
+                ),
+                summary_for_ui: format!("{total} files"),
+                detail: Some(json!({ "sourceId": source_id, "total": total, "files": shown })),
+            });
+        }
         let sources = {
             let rag = self.rag.read().await;
             load_sources(&rag).await?
@@ -224,6 +289,31 @@ mod tests {
             space_id: space.into(),
             chunks,
         }
+    }
+
+    #[test]
+    fn files_of_a_source_are_listed_once_with_their_chunks() {
+        let rows = vec![
+            row("d1", "c:/docs/b.pdf", "s1", 3),
+            row("d2", "c:/docs/a.pdf", "s1", 2),
+            row("d3", "c:/docs/a.pdf", "s1", 1),
+            row("d4", "c:/other/x.pdf", "s2", 9),
+        ];
+        let files = files_of(&rows, "s1");
+        assert_eq!(
+            files,
+            vec![
+                SourceFile {
+                    path: "c:/docs/a.pdf".into(),
+                    chunks: 3
+                },
+                SourceFile {
+                    path: "c:/docs/b.pdf".into(),
+                    chunks: 3
+                },
+            ]
+        );
+        assert!(files_of(&rows, "nope").is_empty());
     }
 
     #[test]

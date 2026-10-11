@@ -1,12 +1,14 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Activity, Pause, Play, Square } from 'lucide-react';
+import { Activity, Bot, Pause, Play, Square } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import { formatMs } from '../../features/agent/format';
 import { currentStep, pendingApproval } from '../../features/agent/reducer';
 import type { TranscriptState } from '../../features/agent/reducer';
 import { useChatSession } from '../../features/ask/ChatSessionContext';
+import { useSessionCounts } from '../../features/agent/useAgentSession';
+import { sessionCountsLabel } from '../../features/agent/sessionCounts';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-sidebar';
@@ -46,10 +48,12 @@ interface ActivityTrayProps {
 
 /**
  * Everything running right now: the agent's answer and indexing jobs, from a
- * footer button with a running count.
+ * footer button with a running count, and how many assistant sessions (one
+ * process each) are open.
  */
 export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
   const { liveRun, conversations, cancel } = useChatSession();
+  const sessions = useSessionCounts();
   const [open, setOpen] = useState(false);
   const [paused, setPaused] = useState(false);
   const panelId = useId();
@@ -165,6 +169,18 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
               >
                 <Square className="w-3 h-3" fill="currentColor" aria-hidden="true" />
               </button>
+            </div>
+          )}
+
+          {sessions && (
+            <div className="flex items-start gap-2 px-2 py-1.5" role="status" aria-live="polite">
+              <Bot className="w-3.5 h-3.5 mt-[2px] shrink-0 text-shodh-text-faint" aria-hidden="true" />
+              <div className="min-w-0 flex flex-col">
+                <span className="text-[12px] text-shodh-text-secondary tabular-nums">{sessionCountsLabel(sessions)}</span>
+                {sessions.side > 0 && (
+                  <span className="text-[11px] text-shodh-text-faint">Side discussions close after 5 minutes idle.</span>
+                )}
+              </div>
             </div>
           )}
 

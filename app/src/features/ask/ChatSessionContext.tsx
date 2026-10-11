@@ -2,10 +2,11 @@ import React, { createContext, useCallback, useContext, useEffect, useLayoutEffe
 import { useConversations } from '../../hooks/useConversations';
 import type { ConversationMessage } from '../../hooks/useConversations';
 import { notify } from '../../lib/notify';
-import { extractArtifacts } from '../../utils/artifactExtractor';
 import { normalizeViewTab } from '../../lib/viewTabs';
 import type { ViewTab } from '../../lib/viewTabs';
-import type { AgentEventEnvelope } from '../agent/events';
+import type { AgentEventEnvelope, NavigationTarget } from '../agent/events';
+import { navigationFromEvent, publishTarget } from '../agent/navigation';
+import { recordAnswerVisuals } from '../visuals/recording';
 import {
   answerText,
   fromPersisted,
@@ -16,7 +17,13 @@ import {
 } from '../agent/reducer';
 import type { TranscriptAction, TranscriptState } from '../agent/reducer';
 import { toAgentError, useAgentSession } from '../agent/useAgentSession';
-import type { HistoryTurn } from '../agent/useAgentSession';
+import type { AnswerScope, HistoryTurn } from '../agent/useAgentSession';
+import { answerScope } from '../workspaces/model';
+import type { FocusThread } from '../focus/focusTypes';
+import { metadataWithThreads, metadataWithoutThreads, threadsFromMetadata } from '../focus/threadStore';
+import { metadataWithSummary, readSideSummary, summaryPrompt } from '../focus/summary';
+import type { SideSummaryRef } from '../focus/summary';
+import type { ModelOverride } from '../modelPicker/modelTypes';
 import type {
   ChatMessage,
   RawSearchResult,
@@ -26,6 +33,7 @@ import type {
   RunStep,
   SendOptions,
 } from './types';
+import { onApprovalAnswered } from '../inbox/approvalBus';
 
 /**
  * The answer being produced. Events are queued and folded into the
@@ -52,14 +60,24 @@ interface ViewState {
 /** Earlier turns replayed into a fresh agent session. */
 const HISTORY_LIMIT = 10;
 
-/** Settle time before prewarming a conversation's session, so clicking
- * through conversations does not start a runtime for each one. */
-const PREWARM_DELAY_MS = 400;
-
 /** How long an interrupt may take before the answer is closed locally. */
 const INTERRUPT_TIMEOUT_MS = 5_000;
 
 type ConversationsApi = ReturnType<typeof useConversations>;
+
+/** One answer run with a fallback model: the override sent with `agent_start` and the model it replaces. */
+export interface FallbackRun {
+  override: ModelOverride;
+  /** The failed model as runs name it (`provider/model`). */
+  from: string;
+}
+
+export interface SendExtra {
+  /** A summary brought back from a side discussion. */
+  sideSummary?: SideSummaryRef;
+  /** Run this answer with a fallback model. */
+  fallback?: FallbackRun | null;
+}
 
 /** What the rest of the app needs to know about the running answer. */
 export interface LiveRunInfo {
@@ -72,6 +90,8 @@ export interface LiveRunInfo {
 export interface AgentNavigation {
   view: ViewTab;
   focus: string | null;
+  /** What to show inside the view, if the event said. */
+  target: NavigationTarget | null;
   /** Increases with every navigation, so repeats are distinguishable. */
   seq: number;
 }
@@ -86,6 +106,8 @@ export interface ChatSessionValue {
   deleteConversation: ConversationsApi['deleteConversation'];
   pinConversation: ConversationsApi['pinConversation'];
   updateConversationMeta: ConversationsApi['updateConversationMeta'];
+  /** Move the chats of a deleted workspace to "No workspace" (in memory). */
+  detachWorkspace: ConversationsApi['detachWorkspace'];
 
   /** Messages of the active conversation, including a live answer. */
   messages: ChatMessage[];
@@ -100,10 +122,22 @@ export interface ChatSessionValue {
   /** Whether the agent runtime is installed (null until known). */
   runtimeInstalled: boolean | null;
   setRuntimeInstalled: (installed: boolean) => void;
+  /**
+   * Start the active conversation's agent session ahead of the question
+   * (the user started typing one). Idempotent; never needed for correctness.
+   */
+  prewarm: () => void;
 
-  send: (text: string, options: SendOptions) => Promise<void>;
-  /** Re-run the user prompt that produced `assistantMessageId`. */
-  retry: (assistantMessageId: string, options: SendOptions) => void;
+  /**
+   * Post a message and run the agent on it. `extra.sideSummary` marks it as
+   * a summary brought back from a side discussion.
+   */
+  send: (text: string, options: SendOptions, extra?: SendExtra) => Promise<void>;
+  /**
+   * Re-run the user prompt that produced `assistantMessageId`; with
+   * `fallback`, that one answer runs with the fallback model.
+   */
+  retry: (assistantMessageId: string, options: SendOptions, fallback?: FallbackRun | null) => void;
   /** Redirect the running answer. */
   steer: (text: string) => void;
   /** Interrupt the running answer. */
@@ -113,6 +147,31 @@ export interface ChatSessionValue {
   /** Append a non-chat message (e.g. OCR or upload notices) to the active conversation. */
   appendMessage: (message: ChatMessage) => void;
   updateMessage: (id: string, patch: Partial<ChatMessage>) => void;
+
+  /** A side-thread question being answered; blocks main sends until it ends. */
+  sideRun: SideRunInfo | null;
+  /**
+   * Reserve the single agent run for a side thread. False when an answer
+   * (main or side) is already running.
+   */
+  claimSideRun: (info: SideRunInfo) => boolean;
+  /** Give the run back; only the holder's `threadId` releases it. */
+  releaseSideRun: (threadId: string) => void;
+  /**
+   * Change the side threads stored on a message, in the visible
+   * conversation or in the background one it belongs to.
+   */
+  updateThreads: (conversationId: string, messageId: string, update: (threads: FocusThread[]) => FocusThread[]) => void;
+  /** Change a conversation's side threads that have no parent message (stored on the conversation). */
+  updateFocusThreads: ConversationsApi['updateFocusThreads'];
+}
+
+/** The side-thread answer that holds the run. */
+export interface SideRunInfo {
+  conversationId: string;
+  threadId: string;
+  /** What the question is about, e.g. "Revenue by quarter". */
+  label: string;
 }
 
 const ChatSessionContext = createContext<ChatSessionValue | null>(null);
@@ -153,6 +212,9 @@ function readRun(value: unknown): RunRecord | undefined {
 }
 
 function fromStored(m: ConversationMessage): ChatMessage {
+  const metadata = metadataWithSummary(metadataWithoutThreads(m.metadata), null);
+  const threads = threadsFromMetadata(m.metadata);
+  const sideSummary = m.role === 'user' ? readSideSummary(m.metadata) : null;
   return {
     id: m.id,
     role: m.role,
@@ -160,9 +222,11 @@ function fromStored(m: ConversationMessage): ChatMessage {
     timestamp: m.timestamp,
     artifacts: m.artifacts,
     searchResults: m.searchResults as RawSearchResult[] | undefined,
-    metadata: isRecord(m.metadata) ? (m.metadata as ResponseMetadata) : undefined,
+    metadata: metadata ? (metadata as ResponseMetadata) : undefined,
     run: readRun(m.run),
     transcript: fromPersisted(m.transcript) ?? undefined,
+    threads: threads.length > 0 ? threads : undefined,
+    sideSummary: sideSummary ?? undefined,
   };
 }
 
@@ -175,7 +239,8 @@ function toStored(m: ChatMessage): ConversationMessage {
   };
   if (m.artifacts && m.artifacts.length > 0) stored.artifacts = m.artifacts;
   if (m.searchResults && m.searchResults.length > 0) stored.searchResults = m.searchResults;
-  if (m.metadata) stored.metadata = m.metadata as Record<string, unknown>;
+  const metadata = metadataWithThreads(metadataWithSummary(m.metadata, m.sideSummary ?? null), m.threads ?? []);
+  if (metadata) stored.metadata = metadata;
   if (m.run) {
     const { activity: _activity, ...persistable } = m.run;
     stored.run = persistable as unknown as Record<string, unknown>;
@@ -189,12 +254,24 @@ function isPersistable(m: ChatMessage): boolean {
   return !(m.transcript && isLive(m.transcript));
 }
 
+/**
+ * The answer's search limit from the send options and the conversation's workspace (whose
+ * sources the backend limits search to, unless "search all my library" is on); null when
+ * neither applies.
+ */
+function scopeOf(options: SendOptions | null, workspaceId: string | null): AnswerScope | null {
+  const sourceIds = options?.sourceIds?.filter(id => id.trim().length > 0) ?? [];
+  const sourceFiles = options?.sourceFiles?.filter(f => f.trim().length > 0) ?? [];
+  const limit = sourceIds.length === 0 && sourceFiles.length === 0 ? null : { sourceIds, sourceFiles };
+  return answerScope(limit, workspaceId, options?.searchAll === true);
+}
+
 function historyOf(messages: readonly ChatMessage[]): HistoryTurn[] {
   return messages
     .filter((m): m is ChatMessage & { role: 'user' | 'assistant' } => m.role === 'user' || m.role === 'assistant')
     .filter(m => m.content.trim().length > 0 && isPersistable(m))
     .slice(-HISTORY_LIMIT)
-    .map(m => ({ role: m.role, content: m.content }));
+    .map(m => ({ role: m.role, content: m.sideSummary ? summaryPrompt(m.sideSummary, m.content) : m.content }));
 }
 
 export function ChatSessionProvider({ children }: { children: React.ReactNode }) {
@@ -203,15 +280,17 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     activeConversationId,
     activeConversation,
     updateConversationMessages,
-    updateConversationMeta,
   } = conv;
 
   const [view, setView] = useState<ViewState>({ conversationId: null, messages: [] });
   const [liveRun, setLiveRun] = useState<LiveRunInfo | null>(null);
   const [navigation, setNavigation] = useState<AgentNavigation | null>(null);
   const [runtimeInstalled, setRuntimeInstalled] = useState<boolean | null>(null);
+  const [sideRun, setSideRun] = useState<SideRunInfo | null>(null);
 
   const liveRef = useRef<LiveRun | null>(null);
+  // Read synchronously by send/retry/claim so two runs can never start in one tick.
+  const sideRunRef = useRef<SideRunInfo | null>(null);
   const viewRef = useRef(view);
   viewRef.current = view;
   const activeConversationRef = useRef(activeConversation);
@@ -219,6 +298,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const dirtyRef = useRef(false);
   const loadedConvIdRef = useRef<string | null>(null);
   const navSeqRef = useRef(0);
+  const switchConversationRef = useRef(conv.switchConversation);
+  switchConversationRef.current = conv.switchConversation;
 
   // Load messages when the active conversation changes. A running answer for
   // that conversation is re-attached so it stays visible.
@@ -289,13 +370,9 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       setLiveRun({ conversationId: live.conversationId, messageId: message.id, transcript });
       return;
     }
-    // Charts, tables and other artifacts in the finished answer render
-    // below the text and open in the artifact panel.
-    const artifacts = extractArtifacts(message.content);
-    if (artifacts.length > 0) {
-      message.artifacts = artifacts;
-      live.message = message;
-    }
+    // Diagrams, charts, equations and tables in agent answers render inline
+    // (MessageContentRenderer) and open in the focus pop-out; they are not
+    // extracted into side-panel artifacts.
     live.settled = true;
     if (live.abortTimer !== null) {
       window.clearTimeout(live.abortTimer);
@@ -304,6 +381,10 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     if (liveRef.current === live) liveRef.current = null;
     setLiveRun(null);
     commit(live.conversationId, message);
+    // Its diagrams, charts, sketches, plots, simulations, equations and tables join the gallery.
+    if (transcript.status === 'completed') {
+      recordAnswerVisuals({ conversationId: live.conversationId, messageId: message.id, threadId: null, turnId: null }, message.content);
+    }
   }, [commit, publish]);
 
   const enqueue = useCallback((live: LiveRun, action: TranscriptAction, immediate = false) => {
@@ -326,10 +407,17 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     if (event.runId !== live.runId) return;
     if (live.sessionId !== null && envelope.sessionId !== live.sessionId) return;
     if (event.type === 'navigated') {
-      const tab = normalizeViewTab(event.view);
+      const nav = navigationFromEvent(event);
+      const tab = normalizeViewTab(nav.view);
       if (tab) {
         navSeqRef.current += 1;
-        setNavigation({ view: tab, focus: event.focus, seq: navSeqRef.current });
+        setNavigation({ view: tab, focus: nav.focus, target: nav.target, seq: navSeqRef.current });
+        if (nav.target?.kind === 'conversation') {
+          // The run keeps streaming into its own conversation.
+          switchConversationRef.current(nav.target.conversationId);
+        } else if (nav.target) {
+          publishTarget(nav.target);
+        }
         window.dispatchEvent(new CustomEvent('switchTab', { detail: tab }));
       }
     }
@@ -356,25 +444,40 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     return () => { cancelled = true; };
   }, [api]);
 
-  // Start the active conversation's agent session ahead of the first
-  // question: launching the runtime takes seconds, asking should not.
+  // The agent runtime is not started with the app or when a conversation
+  // opens: it holds hundreds of megabytes. `prewarm` starts the active
+  // conversation's session once the user begins typing a question, so it is
+  // ready (or nearly) when they send; `send` starts it anyway.
   const instructions = activeConversation?.systemPrompt?.trim() || null;
-  useEffect(() => {
-    if (!activeConversationId || runtimeInstalled !== true) return;
-    const timer = window.setTimeout(() => {
-      api.start(activeConversationId, instructions).catch(error => {
-        const failure = toAgentError(error);
-        if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
-        // Other failures (no model configured, …) surface when the user asks.
-      });
-    }, PREWARM_DELAY_MS);
-    return () => window.clearTimeout(timer);
-  }, [api, activeConversationId, instructions, runtimeInstalled]);
+  const activeMode = activeConversation?.mode ?? 'research';
+  const activeWorkspaceId = activeConversation?.workspaceId ?? null;
+  const streaming = liveRun !== null;
+  const prewarm = useCallback(() => {
+    if (!activeConversationId || runtimeInstalled !== true || streaming) return;
+    api.start(activeConversationId, instructions, null, null, { mode: activeMode, workspaceId: activeWorkspaceId }).catch(error => {
+      const failure = toAgentError(error);
+      if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
+      // Other failures (no model configured, no code folder, …) surface when the user asks.
+    });
+  }, [api, activeConversationId, instructions, activeMode, activeWorkspaceId, runtimeInstalled, streaming]);
 
-  const runAgent = useCallback(async (conversationId: string, prompt: string, history: ChatMessage[]) => {
+  // `textOrigin`: `typed` when `prompt` is exactly what the user typed (learning may use it);
+  // `composed` for prompts the app builds (a side-thread summary request).
+  const runAgent = useCallback(async (
+    conversationId: string,
+    prompt: string,
+    history: ChatMessage[],
+    options: SendOptions | null,
+    textOrigin: 'typed' | 'composed',
+    fallback: FallbackRun | null = null,
+  ) => {
     const runId = newId('run');
     const startedAtMs = Date.now();
-    const transcript = initialTranscript(runId, startedAtMs);
+    const transcript = initialTranscript(
+      runId,
+      startedAtMs,
+      fallback ? { from: fallback.from, kind: fallback.override.failure ?? 'other', automatic: fallback.override.automatic } : null,
+    );
     const message: ChatMessage = {
       id: newId('msg'),
       role: 'assistant',
@@ -399,11 +502,13 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     const conversation = activeConversationRef.current?.id === conversationId ? activeConversationRef.current : null;
     const conversationInstructions = conversation?.systemPrompt?.trim() || null;
     try {
-      const sessionId = await api.start(conversationId, conversationInstructions);
+      const mode = { mode: conversation?.mode ?? 'research', workspaceId: conversation?.workspaceId ?? null } as const;
+      const sessionId = await api.start(conversationId, conversationInstructions, null, fallback?.override ?? null, mode);
       if (live.settled) return;
       live.sessionId = sessionId;
       setRuntimeInstalled(true);
-      await api.send(sessionId, prompt, runId, historyOf(history));
+      const workspaceId = conversation?.workspaceId ?? null;
+      await api.send(sessionId, prompt, runId, historyOf(history), scopeOf(options, workspaceId), textOrigin);
     } catch (error) {
       const failure = toAgentError(error);
       if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
@@ -411,31 +516,29 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     }
   }, [api, enqueue, publish]);
 
-  const send = useCallback(async (text: string, options: SendOptions) => {
-    const prompt = text.trim();
+  const send = useCallback(async (text: string, options: SendOptions, extra?: SendExtra) => {
+    const content = text.trim();
     const conversationId = viewRef.current.conversationId;
-    if (!prompt || !conversationId || liveRef.current) return;
+    if (!content || !conversationId || liveRef.current || sideRunRef.current) return;
 
     const history = viewRef.current.messages;
+    const sideSummary = extra?.sideSummary;
     const userMessage: ChatMessage = {
       id: newId('msg'),
       role: 'user',
-      content: prompt,
+      content,
       timestamp: new Date().toISOString(),
+      ...(sideSummary ? { sideSummary } : {}),
     };
+    const prompt = sideSummary ? summaryPrompt(sideSummary, content) : content;
     publish(conversationId, userMessage, true);
 
-    const active = activeConversationRef.current;
-    if (active && active.id === conversationId && !active.spaceId && options.spaceId && options.spaceName) {
-      updateConversationMeta(conversationId, { spaceId: options.spaceId, spaceName: options.spaceName });
-    }
+    await runAgent(conversationId, prompt, history, options, sideSummary ? 'composed' : 'typed', extra?.fallback ?? null);
+  }, [publish, runAgent]);
 
-    await runAgent(conversationId, prompt, history);
-  }, [publish, runAgent, updateConversationMeta]);
-
-  const retry = useCallback((assistantMessageId: string, options: SendOptions) => {
+  const retry = useCallback((assistantMessageId: string, options: SendOptions, fallback: FallbackRun | null = null) => {
     const { conversationId, messages } = viewRef.current;
-    if (!conversationId || liveRef.current) return;
+    if (!conversationId || liveRef.current || sideRunRef.current) return;
     const index = messages.findIndex(m => m.id === assistantMessageId);
     if (index < 0) return;
     let userIndex = -1;
@@ -446,7 +549,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       }
     }
     if (userIndex < 0) return;
-    const prompt = messages[userIndex].content;
+    const asked = messages[userIndex];
+    const prompt = asked.sideSummary ? summaryPrompt(asked.sideSummary, asked.content) : asked.content;
 
     if (index === messages.length - 1) {
       // Latest answer: replace it in place and re-run the same prompt.
@@ -454,9 +558,9 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       setView(v => (v.conversationId === conversationId
         ? { ...v, messages: v.messages.filter(m => m.id !== assistantMessageId) }
         : v));
-      void runAgent(conversationId, prompt, messages.slice(0, userIndex));
+      void runAgent(conversationId, prompt, messages.slice(0, userIndex), options, asked.sideSummary ? 'composed' : 'typed', fallback);
     } else {
-      void send(prompt, options);
+      void send(asked.content, options, { ...(asked.sideSummary ? { sideSummary: asked.sideSummary } : {}), fallback });
     }
   }, [runAgent, send]);
 
@@ -524,6 +628,13 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       .catch(error => notify.error('The decision did not reach the agent', { description: toAgentError(error).message }));
   }, [api, enqueue]);
 
+  // Answered in the Inbox: show the decision here too.
+  useEffect(() => onApprovalAnswered(({ sessionId, stepId, approved }) => {
+    const live = liveRef.current;
+    if (!live || live.settled || live.sessionId !== sessionId) return;
+    enqueue(live, { type: 'local_approval', stepId, approved }, true);
+  }), [enqueue]);
+
   const appendMessage = useCallback((message: ChatMessage) => {
     const conversationId = viewRef.current.conversationId;
     if (!conversationId) return;
@@ -534,6 +645,37 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     dirtyRef.current = true;
     setView(v => ({ ...v, messages: v.messages.map(m => (m.id === id ? { ...m, ...patch } : m)) }));
   }, []);
+
+  const claimSideRun = useCallback((info: SideRunInfo) => {
+    if (liveRef.current || sideRunRef.current) return false;
+    sideRunRef.current = info;
+    setSideRun(info);
+    return true;
+  }, []);
+
+  const releaseSideRun = useCallback((threadId: string) => {
+    if (sideRunRef.current?.threadId !== threadId) return;
+    sideRunRef.current = null;
+    setSideRun(null);
+  }, []);
+
+  const updateThreads = useCallback((conversationId: string, messageId: string, update: (threads: FocusThread[]) => FocusThread[]) => {
+    const apply = (threads: FocusThread[] | undefined) => {
+      const next = update(threads ?? []);
+      return next.length > 0 ? next : undefined;
+    };
+    if (viewRef.current.conversationId === conversationId) {
+      dirtyRef.current = true;
+      setView(v => (v.conversationId !== conversationId
+        ? v
+        : { ...v, messages: v.messages.map(m => (m.id === messageId ? { ...m, threads: apply(m.threads) } : m)) }));
+      return;
+    }
+    // Background conversation: edit the stored message, keeping its other metadata.
+    updateConversationMessages(conversationId, prev => prev.map(m => (m.id !== messageId
+      ? m
+      : { ...m, metadata: metadataWithThreads(m.metadata, apply(threadsFromMetadata(m.metadata)) ?? []) })));
+  }, [updateConversationMessages]);
 
   const streamingConversationId = liveRun?.conversationId ?? null;
 
@@ -547,6 +689,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     deleteConversation: conv.deleteConversation,
     pinConversation: conv.pinConversation,
     updateConversationMeta: conv.updateConversationMeta,
+    detachWorkspace: conv.detachWorkspace,
     messages: view.conversationId === conv.activeConversationId ? view.messages : [],
     isStreaming: streamingConversationId !== null && streamingConversationId === conv.activeConversationId,
     streamingConversationId,
@@ -554,6 +697,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     navigation,
     runtimeInstalled,
     setRuntimeInstalled,
+    prewarm,
     send,
     retry,
     steer,
@@ -561,7 +705,12 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     approve,
     appendMessage,
     updateMessage,
-  }), [conv, view, streamingConversationId, liveRun, navigation, runtimeInstalled, send, retry, steer, cancel, approve, appendMessage, updateMessage]);
+    sideRun,
+    claimSideRun,
+    releaseSideRun,
+    updateThreads,
+    updateFocusThreads: conv.updateFocusThreads,
+  }), [conv, view, streamingConversationId, liveRun, navigation, runtimeInstalled, prewarm, send, retry, steer, cancel, approve, appendMessage, updateMessage, sideRun, claimSideRun, releaseSideRun, updateThreads]);
 
   return <ChatSessionContext.Provider value={value}>{children}</ChatSessionContext.Provider>;
 }

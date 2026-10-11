@@ -1,0 +1,82 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (Tax Invoice INV-2025-0164) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 1299 >>
+stream
+BT /F2 12.0 Tf 72.00 730.00 Td (TAX INVOICE) Tj ET
+BT /F1 10.0 Tf 72.00 710.00 Td (Invoice No: INV-2025-0164) Tj ET
+BT /F1 10.0 Tf 72.00 696.00 Td (Invoice Date: 18 July 2025) Tj ET
+BT /F1 10.0 Tf 72.00 682.00 Td (Due Date: 1 September 2025) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (From: Bluepeak Systems LLP, GSTIN 29AAKFB4821M1Z3) Tj ET
+BT /F1 10.0 Tf 72.00 654.00 Td (To: Northwind Analytics Pvt. Ltd.) Tj ET
+BT /F2 9.5 Tf 72.00 630.00 Td (Item) Tj ET
+BT /F2 9.5 Tf 300.00 630.00 Td (Qty) Tj ET
+BT /F2 9.5 Tf 370.00 630.00 Td (Rate \(INR\)) Tj ET
+BT /F2 9.5 Tf 470.00 630.00 Td (Amount \(INR\)) Tj ET
+BT /F1 9.5 Tf 72.00 616.00 Td (Operations retainer \(July 2025\)) Tj ET
+BT /F1 9.5 Tf 300.00 616.00 Td (1) Tj ET
+BT /F1 9.5 Tf 370.00 616.00 Td (2,75,000.00) Tj ET
+BT /F1 9.5 Tf 470.00 616.00 Td (2,75,000.00) Tj ET
+BT /F1 9.5 Tf 72.00 602.00 Td (Dashboard migration \(hours\)) Tj ET
+BT /F1 9.5 Tf 300.00 602.00 Td (40) Tj ET
+BT /F1 9.5 Tf 370.00 602.00 Td (2,500.00) Tj ET
+BT /F1 9.5 Tf 470.00 602.00 Td (1,00,000.00) Tj ET
+BT /F1 9.5 Tf 72.00 588.00 Td (Incident response, on-call \(hours\)) Tj ET
+BT /F1 9.5 Tf 300.00 588.00 Td (6) Tj ET
+BT /F1 9.5 Tf 370.00 588.00 Td (3,000.00) Tj ET
+BT /F1 9.5 Tf 470.00 588.00 Td (18,000.00) Tj ET
+BT /F1 10.0 Tf 72.00 564.00 Td (Continued on page 2.) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 553 >>
+stream
+BT /F2 12.0 Tf 72.00 730.00 Td (INV-2025-0164 \(page 2\)) Tj ET
+BT /F1 9.5 Tf 370.00 710.00 Td (Subtotal) Tj ET
+BT /F1 9.5 Tf 470.00 710.00 Td (3,93,000.00) Tj ET
+BT /F1 9.5 Tf 370.00 696.00 Td (IGST 18%) Tj ET
+BT /F1 9.5 Tf 470.00 696.00 Td (70,740.00) Tj ET
+BT /F1 9.5 Tf 370.00 682.00 Td (Total) Tj ET
+BT /F1 9.5 Tf 470.00 682.00 Td (4,63,740.00) Tj ET
+BT /F1 10.0 Tf 72.00 658.00 Td (Total amount due: INR 4,63,740.00) Tj ET
+BT /F1 10.0 Tf 72.00 644.00 Td (Late payment interest of 1.5% per month applies under the Master Services Agreement.) Tj ET
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000224 00000 n 
+0000000326 00000 n 
+0000000422 00000 n 
+0000000558 00000 n 
+0000001908 00000 n 
+0000002044 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R /Info 5 0 R >>
+startxref
+2647
+%%EOF

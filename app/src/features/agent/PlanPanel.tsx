@@ -1,5 +1,5 @@
-import React, { useId, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import React, { useEffect, useId, useState } from 'react';
+import { ChevronDown, CircleCheck, SearchX } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { PlanItem, PlanStatus } from './events';
 import { planProgress } from './reducer';
@@ -27,16 +27,40 @@ interface PlanPanelProps {
   variant: 'docked' | 'inline';
 }
 
-/** The agent's task list: ☐ to do, ◐ in progress, ☑ done. */
+/** Coverage of an information need: found in which passages, or not found. */
+function NeedCoverage({ item }: { item: PlanItem }) {
+  if (!item.need || item.coverage === null) return null;
+  if (item.coverage === 'covered') {
+    const sources = item.evidence.map(n => `[${n}]`).join('');
+    return (
+      <span className="inline-flex w-full items-center gap-1 mt-0.5 text-[11.5px] text-shodh-success no-underline">
+        <CircleCheck className="w-3 h-3 shrink-0" aria-hidden="true" />
+        {sources ? `Found in ${sources}` : 'Found in the sources'}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex w-full items-center gap-1 mt-0.5 text-[11.5px] text-shodh-warning no-underline">
+      <SearchX className="w-3 h-3 shrink-0" aria-hidden="true" />
+      Not found in the sources
+    </span>
+  );
+}
+
+/** The agent's plan for an answer: ☐ to do, ◐ in progress, ☑ done; needs show whether a passage covers them.
+ * Open while the answer runs; folds to its header once the answer is finished. */
 export function PlanPanel({ items, live, variant }: PlanPanelProps) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(!live);
   const listId = useId();
+  useEffect(() => {
+    if (!live) setCollapsed(true);
+  }, [live]);
   if (items.length === 0) return null;
   const { done, total } = planProgress(items);
 
   return (
     <section
-      aria-label="Task list"
+      aria-label="Plan for this answer"
       className={cn(
         'ask-fade-in rounded-xl border border-shodh-border bg-shodh-surface text-[12.5px]',
         variant === 'docked' ? 'w-[260px]' : 'w-full',
@@ -49,9 +73,9 @@ export function PlanPanel({ items, live, variant }: PlanPanelProps) {
         aria-controls={listId}
         className={cn('w-full flex items-center gap-2 px-3 h-9 rounded-xl text-left', FOCUS_RING)}
       >
-        <span className="font-semibold text-shodh-text">Tasks</span>
+        <span className="font-semibold text-shodh-text">Plan</span>
         <span className="text-shodh-text-muted tabular-nums" aria-live={live ? 'polite' : 'off'}>
-          {`${done} of ${total} done`}
+          {`${done} of ${total} ${total === 1 ? 'step' : 'steps'} done`}
         </span>
         <ChevronDown
           className={cn('ml-auto w-3.5 h-3.5 text-shodh-text-faint transition-transform duration-micro', collapsed && '-rotate-90')}
@@ -81,6 +105,7 @@ export function PlanPanel({ items, live, variant }: PlanPanelProps) {
               >
                 {item.text}
                 <span className="sr-only">{` (${STATUS_TEXT[item.status]})`}</span>
+                <NeedCoverage item={item} />
               </span>
             </li>
           ))}

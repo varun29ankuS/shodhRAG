@@ -1,0 +1,41 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
+  <id>https://arxiv.org/api/++xllVF7/C45E8hT4LZxYIwxRns</id>
+  <title>arXiv Query: search_query=ti:"diffusing blame task dependent credit assignment in biologically plausible dual stream networks" OR ( (ti:diffusing OR abs:diffusing) AND (ti:dependent OR abs:dependent) AND (ti:credit OR abs:credit) AND (ti:assignment OR abs:assignment) AND (ti:biologically OR abs:biologically) AND (ti:plausible OR abs:plausible) AND (ti:stream OR abs:stream) AND (ti:networks OR abs:networks) )&amp;id_list=&amp;start=0&amp;max_results=12</title>
+  <updated>2026-10-03T17:13:19Z</updated>
+  <link href="https://arxiv.org/api/query?search_query=ti:%22diffusing+blame+task+dependent+credit+assignment+in+biologically+plausible+dual+stream+networks%22+OR+((ti:diffusing+OR+abs:diffusing)+AND+((ti:dependent+OR+abs:dependent)+AND+((ti:credit+OR+abs:credit)+AND+((ti:assignment+OR+abs:assignment)+AND+((ti:biologically+OR+abs:biologically)+AND+((ti:plausible+OR+abs:plausible)+AND+((ti:stream+OR+abs:stream)+AND+(ti:networks+OR+abs:networks))))))))&amp;start=0&amp;max_results=12&amp;id_list=" type="application/atom+xml"/>
+  <opensearch:itemsPerPage>12</opensearch:itemsPerPage>
+  <opensearch:totalResults>1</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <entry>
+    <id>http://arxiv.org/abs/2606.31700v1</id>
+    <title>Diffusing Blame: Task-Dependent Credit Assignment in Biologically Plausible Dual-Stream Networks</title>
+    <updated>2026-06-30T14:09:40Z</updated>
+    <link href="https://arxiv.org/abs/2606.31700v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2606.31700v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Biological neural circuits obey Dale's principle: each neuron's synapses are uniformly excitatory or inhibitory. Artificial networks that respect this constraint must coordinate separate excitatory and inhibitory populations, fundamentally changing how credit is assigned during learning. Several biologically plausible learning rules avoid backpropagation's weight transport requirement, but it has been difficult to achieve strong performance under Dale's principle beyond MNIST. Error Diffusion (ED) was originally proposed in a dual-stream excitatory/inhibitory architecture, where learning is driven by routing global error signals to all layers without transporting transposed forward weights or relying on random feedback matrices. Whether such a rule can scale under Dale's principle across both supervised classification and reinforcement learning remains unknown. Here, we introduce modulo error routing to extend Error Diffusion beyond binary classification, and show that a dual-stream excitatory/inhibitory architecture trained with this method achieves 96.7% on MNIST and establishes a 61.7% baseline on CIFAR-10, demonstrating that representation learning is possible even when strictly enforcing Dale's principle. For the classification setting, we introduce three domain-specific innovations: layer-specific sigmoid widths, batch-centered class error signals, and asymmetric initialization, and ablation analysis reveals that their relative importance reverses between MNIST and CIFAR-10, exposing task-dependent credit-assignment bottlenecks invisible to single-benchmark evaluation. In reinforcement learning, we integrate ED with Proximal Policy Optimization (PPO) and evaluate it on continuous-control tasks in Google Brax and on Craftax, an open-ended exploration task. We show that ED-PPO achieves competitive performance relative to Direct Feedback Alignment, a backpropagation-free baseline.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.NE" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-06-30T14:09:40Z</published>
+    <arxiv:comment>ALIFE2026</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Yutaro Yamada</name>
+    </author>
+    <author>
+      <name>Luca Grillotti</name>
+    </author>
+    <author>
+      <name>Rujikorn Charakorn</name>
+    </author>
+    <author>
+      <name>Sebastian Risi</name>
+    </author>
+    <author>
+      <name>David Ha</name>
+    </author>
+    <author>
+      <name>Robert Tjarko Lange</name>
+    </author>
+  </entry>
+</feed>

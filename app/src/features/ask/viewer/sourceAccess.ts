@@ -11,8 +11,18 @@ export interface SourceFileInfo {
   folder: string | null;
   extension: string;
   sizeBytes: number;
+  /** Last modification (ms since the epoch); null when the file system has none. */
+  modifiedMs: number | null;
   kind: ViewerKind;
   mimeType: string | null;
+}
+
+/** Mirrors `shodh_rag::processing::pdf_info::PdfInfo`. */
+export interface PdfInfo {
+  title: string | null;
+  pageCount: number;
+  firstPageWidth: number | null;
+  firstPageHeight: number | null;
 }
 
 /** Mirrors `SourceText`. */
@@ -84,6 +94,11 @@ async function call<T>(command: string, filePath: string): Promise<T> {
 
 export function getSourceFileInfo(filePath: string): Promise<SourceFileInfo> {
   return call<SourceFileInfo>('get_source_file_info', filePath);
+}
+
+/** Title, page count and first page size of an indexed PDF, without opening it in pdf.js. */
+export function getPdfInfo(filePath: string): Promise<PdfInfo> {
+  return call<PdfInfo>('get_pdf_info', filePath);
 }
 
 /** Raw bytes of an indexed PDF or image (binary IPC payload). */

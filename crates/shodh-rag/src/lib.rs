@@ -6,25 +6,30 @@
 pub mod audit;
 pub mod chat;
 pub mod config;
-pub mod context;
 pub mod embeddings;
+pub mod folder_sync;
 pub mod harness;
+pub mod inbox;
 pub mod indexing;
+pub mod lazy_model;
 pub mod processing;
 pub mod rag_engine;
 pub mod reranking;
+pub mod research;
 pub mod search;
 pub mod space;
+pub mod statements;
 pub mod storage;
-pub mod templates;
+pub mod table_refinement;
 pub mod types;
+pub mod user_memory;
+pub mod visuals;
+pub mod workspaces;
 
 // Ported modules from old shodh-rag
 pub mod agent;
 pub mod llm;
-pub mod memory;
 pub mod rag;
-pub mod system;
 
 // Re-export primary types for convenience
 pub use config::RAGConfig;

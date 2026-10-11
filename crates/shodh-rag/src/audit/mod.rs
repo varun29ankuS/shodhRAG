@@ -30,7 +30,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use canonical::canonical_json;
-pub use store::{AuditLog, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS};
+pub use store::{
+    open_shared_connection, AuditLog, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS,
+    MIN_RETENTION_DAYS,
+};
 pub use tap::RunAuditTap;
 
 /// The principal of every event recorded by the desktop app.
@@ -99,10 +102,21 @@ pub enum AuditEventType {
     SettingsChange,
     RuntimeInstall,
     RetentionCheckpoint,
+    /// A memory statement was stored (added, updated or superseded).
+    MemoryWrite,
+    /// A memory was forgotten (soft-deleted).
+    MemoryForget,
+    /// Memories were recalled and used in an answer.
+    MemoryUse,
+    /// The agent's model changed (user choice, fallback for one answer, environment).
+    ModelChange,
+    /// Code mode changed a code folder's git state (switched to its branch,
+    /// or discarded its changes).
+    CodeChange,
 }
 
 impl AuditEventType {
-    pub const ALL: [AuditEventType; 9] = [
+    pub const ALL: [AuditEventType; 14] = [
         AuditEventType::Question,
         AuditEventType::ToolCall,
         AuditEventType::Approval,
@@ -112,6 +126,11 @@ impl AuditEventType {
         AuditEventType::SettingsChange,
         AuditEventType::RuntimeInstall,
         AuditEventType::RetentionCheckpoint,
+        AuditEventType::MemoryWrite,
+        AuditEventType::MemoryForget,
+        AuditEventType::MemoryUse,
+        AuditEventType::ModelChange,
+        AuditEventType::CodeChange,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -125,6 +144,11 @@ impl AuditEventType {
             AuditEventType::SettingsChange => "settings_change",
             AuditEventType::RuntimeInstall => "runtime_install",
             AuditEventType::RetentionCheckpoint => "retention_checkpoint",
+            AuditEventType::MemoryWrite => "memory_write",
+            AuditEventType::MemoryForget => "memory_forget",
+            AuditEventType::MemoryUse => "memory_use",
+            AuditEventType::ModelChange => "model_change",
+            AuditEventType::CodeChange => "code_change",
         }
     }
 }
@@ -239,6 +263,9 @@ pub struct AuditQuery {
     /// Inclusive upper bound on `ts`.
     pub to: Option<DateTime<Utc>>,
     pub conversation_id: Option<String>,
+    /// Events whose payload names this tool (`tool_call`, `approval`,
+    /// `retrieval`).
+    pub tool: Option<String>,
     /// Case-insensitive substring of the payload, type or principal.
     pub text: Option<String>,
     pub limit: Option<u32>,

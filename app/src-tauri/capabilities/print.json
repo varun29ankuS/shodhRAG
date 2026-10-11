@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "print-view",
+  "description": "Capability for the print windows of PDF export (labels print-*). They render one document with the answer renderer and read nothing but the app's own commands (paper figures come from read_source_bytes and the paper-object commands); no file system, dialog, clipboard or window-management permissions.",
+  "windows": ["print-*"],
+  "permissions": [
+    "core:default"
+  ]
+}

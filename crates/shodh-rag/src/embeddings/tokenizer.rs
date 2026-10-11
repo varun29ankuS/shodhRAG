@@ -93,7 +93,16 @@ impl SentencePieceTokenizer {
     }
 
     pub fn encode(&self, text: &str, add_special_tokens: bool) -> Result<Vec<u32>> {
-        let cache_key = format!("{}:{}", text.len(), &text[..text.len().min(100)]);
+        // Keyed by a hash of the whole text: two passages sharing a long
+        // prefix (the contextual "Document: ... Section: ..." header) and a
+        // length must never share token ids.
+        let cache_key = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            text.hash(&mut hasher);
+            add_special_tokens.hash(&mut hasher);
+            format!("{}:{:016x}", text.len(), hasher.finish())
+        };
         if let Some(cached) = self.cache.write().get(&cache_key) {
             return Ok(cached.clone());
         }
@@ -118,22 +127,9 @@ impl SentencePieceTokenizer {
         Ok(token_ids)
     }
 
-    pub fn prepare_for_model(&self, token_ids: &[u32], max_len: usize) -> (Vec<i64>, Vec<i64>) {
-        let len = token_ids.len().min(max_len);
-        let mut ids = Vec::with_capacity(max_len);
-        let mut mask = Vec::with_capacity(max_len);
-
-        for i in 0..len {
-            ids.push(token_ids[i] as i64);
-            mask.push(1i64);
-        }
-
-        for _ in len..max_len {
-            ids.push(self.pad_id as i64);
-            mask.push(0i64);
-        }
-
-        (ids, mask)
+    /// Token id used for padding (`<pad>`).
+    pub fn pad_id(&self) -> u32 {
+        self.pad_id
     }
 
     /// Viterbi-based Unigram tokenization (SentencePiece algorithm)
@@ -144,8 +140,14 @@ impl SentencePieceTokenizer {
 
         // Replace spaces with SentencePiece word boundary marker
         let processed = format!("▁{}", text.replace(' ', "▁"));
-        let chars: Vec<char> = processed.chars().collect();
-        let n = chars.len();
+        // Byte offset of every char boundary, so candidate pieces are
+        // borrowed slices of `processed` rather than freshly built Strings.
+        let offsets: Vec<usize> = processed
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(processed.len()))
+            .collect();
+        let n = offsets.len() - 1;
 
         // Viterbi forward pass: find best segmentation
         let mut best_score = vec![f32::NEG_INFINITY; n + 1];
@@ -155,8 +157,8 @@ impl SentencePieceTokenizer {
         for end in 1..=n {
             let max_piece_len = 32.min(end);
             for start in (end.saturating_sub(max_piece_len))..end {
-                let piece: String = chars[start..end].iter().collect();
-                if let Some(&id) = self.vocab.get(&piece) {
+                let piece = &processed[offsets[start]..offsets[end]];
+                if let Some(&id) = self.vocab.get(piece) {
                     let score = best_score[start] + self.scores.get(&id).copied().unwrap_or(0.0);
                     if score > best_score[end] {
                         best_score[end] = score;
@@ -177,13 +179,60 @@ impl SentencePieceTokenizer {
         let mut pos = n;
         while pos > 0 {
             let start = best_edge[pos];
-            let piece: String = chars[start..pos].iter().collect();
-            let id = self.vocab.get(&piece).copied().unwrap_or(self.unk_id);
+            let piece = &processed[offsets[start]..offsets[pos]];
+            let id = self.vocab.get(piece).copied().unwrap_or(self.unk_id);
             tokens.push(id);
             pos = start;
         }
 
         tokens.reverse();
         Ok(tokens)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tokenizer() -> (tempfile::TempDir, SentencePieceTokenizer) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let json = r#"{
+            "model": {"type": "Unigram", "unk_id": 3, "vocab": [
+                ["<s>", 0.0], ["<pad>", 0.0], ["</s>", 0.0], ["<unk>", 0.0],
+                ["▁", -2.0], ["a", -3.0], ["b", -3.0], ["▁a", -1.5], ["▁b", -1.5], ["ab", -1.0]
+            ]},
+            "added_tokens": [
+                {"id": 0, "content": "<s>", "special": true},
+                {"id": 1, "content": "<pad>", "special": true},
+                {"id": 2, "content": "</s>", "special": true},
+                {"id": 3, "content": "<unk>", "special": true}
+            ]
+        }"#;
+        std::fs::write(dir.path().join("tokenizer.json"), json).expect("write tokenizer");
+        let tok = SentencePieceTokenizer::from_model_dir(dir.path()).expect("load tokenizer");
+        (dir, tok)
+    }
+
+    #[test]
+    fn texts_sharing_a_long_prefix_and_length_are_tokenized_separately() {
+        let (_dir, tok) = tokenizer();
+        let prefix = "a ".repeat(80);
+        let first = format!("{prefix}ab");
+        let second = format!("{prefix}ba");
+        assert_eq!(first.len(), second.len());
+        let a = tok.encode(&first, true).expect("encode");
+        let b = tok.encode(&second, true).expect("encode");
+        assert_ne!(a, b);
+        // Cached results stay correct.
+        assert_eq!(tok.encode(&first, true).expect("encode"), a);
+    }
+
+    #[test]
+    fn viterbi_prefers_higher_scoring_pieces_and_handles_unknown_chars() {
+        let (_dir, tok) = tokenizer();
+        // "▁ab": "▁" + "ab" scores -3.0, "▁a" + "b" scores -4.5.
+        assert_eq!(tok.encode("ab", false).expect("encode"), vec![4, 9]);
+        let with_unknown = tok.encode("aé", false).expect("encode");
+        assert_eq!(with_unknown, vec![7, 3]);
     }
 }

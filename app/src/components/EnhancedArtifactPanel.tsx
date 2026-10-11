@@ -8,7 +8,7 @@
  * - Accepts selectedArtifactId to auto-select on open
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { Suspense, lazy, useState, useEffect } from 'react';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -19,13 +19,16 @@ import {
 } from 'lucide-react';
 import { CodeArtifact } from './CodeArtifact';
 import { MarkdownArtifact } from './MarkdownArtifact';
-import { MermaidArtifact } from './MermaidArtifact';
 import { PDFArtifact } from './PDFArtifact';
 import { TableArtifact } from './TableArtifact';
 import { ChartArtifact } from './ChartArtifact';
 import { useTheme } from '../contexts/ThemeContext';
 import { getArtifactKind, getArtifactCodeLanguage } from '../utils/artifactKind';
 import type { ArtifactKind, ArtifactTypeValue } from '../utils/artifactKind';
+
+// mermaid (and its diagram dependencies) is several megabytes; load it only
+// when a diagram is opened instead of with the app shell.
+const MermaidArtifact = lazy(() => import('./MermaidArtifact').then(m => ({ default: m.MermaidArtifact })));
 
 export interface Artifact {
   id: string;
@@ -461,7 +464,11 @@ export function EnhancedArtifactPanel({
                     <>
                       {selectedKind === 'code' && <CodeArtifact artifact={selectedArtifact} theme={theme} />}
                       {selectedKind === 'markdown' && <MarkdownArtifact artifact={selectedArtifact} />}
-                      {selectedKind === 'mermaid' && <MermaidArtifact artifact={selectedArtifact} />}
+                      {selectedKind === 'mermaid' && (
+                        <Suspense fallback={<p role="status" className="p-4 text-[12.5px] text-shodh-text-muted">Loading diagram…</p>}>
+                          <MermaidArtifact artifact={selectedArtifact} />
+                        </Suspense>
+                      )}
                       {selectedKind === 'pdf' && <PDFArtifact artifact={selectedArtifact} />}
                       {selectedKind === 'table' && <TableArtifact artifact={selectedArtifact} theme={theme} />}
                       {selectedKind === 'chart' && <ChartArtifact artifact={selectedArtifact} theme={theme} />}

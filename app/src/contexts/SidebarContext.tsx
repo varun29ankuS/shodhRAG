@@ -13,12 +13,21 @@ const SidebarContext = createContext<SidebarContextType>({
 });
 
 export function SidebarProvider({ children }: { children: React.ReactNode }) {
+  // Remembered per viewer; storage may be unavailable (private mode).
   const [collapsed, setCollapsed] = useState(() => {
-    return localStorage.getItem('sidebar_collapsed') === 'true';
+    try {
+      return localStorage.getItem('sidebar_collapsed') === 'true';
+    } catch {
+      return false;
+    }
   });
 
   useEffect(() => {
-    localStorage.setItem('sidebar_collapsed', String(collapsed));
+    try {
+      localStorage.setItem('sidebar_collapsed', String(collapsed));
+    } catch {
+      // The choice lasts for this session only.
+    }
   }, [collapsed]);
 
   const toggleSidebar = useCallback(() => {
@@ -32,7 +41,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   // Ctrl+B / Cmd+B to toggle sidebar
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'b') {
         e.preventDefault();
         toggleSidebar();
       }

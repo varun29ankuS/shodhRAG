@@ -33,8 +33,14 @@ impl HostTool for UpdatePlanTool {
         "Updating the task list"
     }
     fn description(&self) -> &'static str {
-        "Replace the task list shown to the user for this answer. Send the full list each time, \
-         with each item's status (pending, in_progress, done). Use it for work with three or more steps."
+        "Replace the plan shown to the user for this answer. Send the full list each time, \
+         with each item's status (pending, in_progress, done). Use it for work with three or more \
+         steps. Write each item as a short step the user understands, starting with a verb and at \
+         most eight words, e.g. \"Find the training objective\" or \"Compare results with \
+         Mamba\"; never tool names, search queries, ids or file paths. For a question with several parts, list each part the answer must find in the \
+         sources as an item with need: true (a short phrase naming the information, e.g. \"notice \
+         period of the Acme contract\"); the app checks each need against the passages you \
+         retrieve and shows whether it was covered."
     }
     fn schema(&self) -> Value {
         json!({
@@ -48,7 +54,8 @@ impl HostTool for UpdatePlanTool {
                         "properties": {
                             "id": {"type": "string", "minLength": 1, "maxLength": 40},
                             "text": {"type": "string", "minLength": 1, "maxLength": 200},
-                            "status": {"type": "string", "enum": ["pending", "in_progress", "done"]}
+                            "status": {"type": "string", "enum": ["pending", "in_progress", "done"]},
+                            "need": {"type": "boolean"}
                         },
                         "required": ["text", "status"],
                         "additionalProperties": false
@@ -90,10 +97,10 @@ impl HostTool for UpdatePlanTool {
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .unwrap_or_else(|| (index + 1).to_string());
+            let need = item.get("need").and_then(Value::as_bool).unwrap_or(false);
             items.push(PlanItem {
-                id,
-                text: text.to_string(),
-                status,
+                need,
+                ..PlanItem::task(id, text, status)
             });
         }
         let done = items
@@ -101,6 +108,8 @@ impl HostTool for UpdatePlanTool {
             .filter(|i| i.status == PlanStatus::Done)
             .count();
         let total = items.len();
+        // Stored for the harness's need check; coverage found earlier stays.
+        let items = ctx.record_plan(items);
         ctx.emit(AgentEvent::PlanUpdated {
             run_id: ctx.run_id.clone(),
             items,

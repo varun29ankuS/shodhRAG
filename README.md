@@ -133,6 +133,10 @@ Local models:
 - **Ollama:** run `ollama pull <model>`, then set `SHODH_LLM_PROVIDER=ollama`.
 - **GGUF:** select the file in **Settings → Models → Local**.
 
+### Separate profile (demo or testing)
+
+Set `SHODH_DATA_DIR` to an absolute folder to run a separate profile: its library, settings, chats and WebView storage live in that folder, its saved API keys use a credential-store service of their own, and it runs beside your normal instance instead of switching to it. It cannot change the start-with-Windows entry. Search models are downloaded into that folder; to reuse an existing download, also set `MODEL_PATH` (installs then write there). Run one instance per folder. WebView storage is separated on Windows, Linux and macOS 14+.
+
 ## Data and privacy
 
 | Data | Where it goes |

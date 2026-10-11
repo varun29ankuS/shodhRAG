@@ -75,7 +75,7 @@ export default defineConfig(async () => ({
   // import fails ("Failed to fetch dynamically imported module", a 504 for
   // the stale bundle). Pre-bundle them at startup instead.
   optimizeDeps: {
-    include: ["pdfjs-dist", "@tauri-apps/api/webview"],
+    include: ["pdfjs-dist", "@tauri-apps/api/webview", "mermaid"],
   },
 
   // Explicitly set root directory

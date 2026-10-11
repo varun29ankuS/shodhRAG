@@ -1,11 +1,18 @@
-import React, { useState } from 'react';
-import LLMSettings from '../../LLMSettings';
+import React, { useEffect, useState } from 'react';
+import { OPEN_SETTINGS_SECTION, takeRequestedSection } from '../../features/memory/navigation';
+import { ModelSettingsSection } from '../../features/modelPicker/ModelSettingsSection';
 import SearchSettings from '../SearchSettings';
 import DataManagement from '../DataManagement';
-import AuditView from '../../features/audit/AuditView';
+import PrivacySettings from '../PrivacySettings';
+import BackgroundSettings from '../BackgroundSettings';
+import MemorySettings from '../MemorySettings';
+import AnswerCheckSettings from '../AnswerCheckSettings';
+import TableModelSettings from '../TableModelSettings';
+import ToolsSettings from '../ToolsSettings';
 import { cn } from '../../lib/utils';
+import { useWorkspaces } from '../../features/workspaces/WorkspaceContext';
 
-export type SettingsSection = 'models' | 'search' | 'data' | 'audit';
+export type SettingsSection = 'models' | 'search' | 'tools' | 'general' | 'privacy' | 'memory' | 'data';
 
 const SECTIONS: { id: SettingsSection; label: string; description: string }[] = [
   {
@@ -16,17 +23,32 @@ const SECTIONS: { id: SettingsSection; label: string; description: string }[] = 
   {
     id: 'search',
     label: 'Search',
-    description: 'Choose the retrieval mode, how many passages are retrieved, and the minimum relevance a passage needs to be used.',
+    description: 'Choose how many passages each document search retrieves.',
+  },
+  {
+    id: 'tools',
+    label: 'Tools & connections',
+    description: 'What the assistant can use: its built-in tools, MCP servers you connect (with which tools ask first), and skills.',
+  },
+  {
+    id: 'general',
+    label: 'General',
+    description: 'How Shodh runs when its window is closed, so task reminders keep ringing.',
+  },
+  {
+    id: 'privacy',
+    label: 'Privacy',
+    description: 'Decide whether anything may leave this computer, and whether the assistant may use the web.',
+  },
+  {
+    id: 'memory',
+    label: 'Memory',
+    description: 'What Shodh remembers about you: how strong each memory is, where it came from and how it changed. Edit, pin, forget or export them.',
   },
   {
     id: 'data',
     label: 'Data',
     description: 'Inspect the local index, remove sources, or reset stored data on this computer.',
-  },
-  {
-    id: 'audit',
-    label: 'Usage & Audit',
-    description: 'What was asked, which tools ran, what was retrieved and what changed, in a tamper-evident log on this computer.',
   },
 ];
 
@@ -34,32 +56,42 @@ type SearchSettingsProps = React.ComponentProps<typeof SearchSettings>;
 type DataManagementProps = React.ComponentProps<typeof DataManagement>;
 
 interface SettingsViewProps {
-  /** Re-check the active LLM after its configuration changes. */
-  onModelStatusChange: () => void;
-  /** Called when the model configuration panel is dismissed. */
-  onCloseModelSettings: () => void;
   searchConfig: SearchSettingsProps['config'];
   onUpdateSearchConfig: SearchSettingsProps['onUpdate'];
   onResetSearchConfig: SearchSettingsProps['onReset'];
   sources: DataManagementProps['sources'];
   onRemoveSource: DataManagementProps['onRemoveSource'];
   onSourcesCleared: DataManagementProps['onSourcesCleared'];
+  /** Saved conversations (titles for memory sources). */
+  conversations: readonly { id: string; title: string }[];
+  /** Open a conversation in Ask. */
+  onOpenConversation: (id: string) => void;
 }
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background';
 
 export default function SettingsView({
-  onModelStatusChange,
-  onCloseModelSettings,
   searchConfig,
   onUpdateSearchConfig,
   onResetSearchConfig,
   sources,
   onRemoveSource,
   onSourcesCleared,
+  conversations,
+  onOpenConversation,
 }: SettingsViewProps) {
-  const [section, setSection] = useState<SettingsSection>('models');
+  const { byId: workspaceById } = useWorkspaces();
+  const [section, setSection] = useState<SettingsSection>(() => takeRequestedSection() ?? 'models');
+  // Another view (the suggested-memories badge) asks for a section.
+  useEffect(() => {
+    const open = () => {
+      const requested = takeRequestedSection();
+      if (requested) setSection(requested);
+    };
+    window.addEventListener(OPEN_SETTINGS_SECTION, open);
+    return () => window.removeEventListener(OPEN_SETTINGS_SECTION, open);
+  }, []);
   const active = SECTIONS.find(s => s.id === section) ?? SECTIONS[0];
 
   return (
@@ -95,7 +127,7 @@ export default function SettingsView({
       </nav>
 
       {section === 'models' ? (
-        <main aria-labelledby="settings-section-heading" className="flex-1 min-w-0 overflow-y-auto">
+        <section aria-labelledby="settings-section-heading" className="flex-1 min-w-0 overflow-y-auto">
           <div className="max-w-[820px] px-10 py-8 flex flex-col gap-7">
             <header className="flex flex-col gap-1.5">
               <h2 id="settings-section-heading" className="m-0 text-2xl font-bold">
@@ -103,23 +135,11 @@ export default function SettingsView({
               </h2>
               <p className="text-sm text-shodh-text-muted">{active.description}</p>
             </header>
-            <LLMSettings embedded onClose={onCloseModelSettings} onStatusChange={onModelStatusChange} />
+            <ModelSettingsSection />
           </div>
-        </main>
-      ) : section === 'audit' ? (
-        <main aria-labelledby="settings-section-heading" className="flex-1 min-w-0 overflow-y-auto">
-          <div className="max-w-[1080px] px-10 py-8 flex flex-col gap-7">
-            <header className="flex flex-col gap-1.5">
-              <h2 id="settings-section-heading" className="m-0 text-2xl font-bold">
-                {active.label}
-              </h2>
-              <p className="text-sm text-shodh-text-muted">{active.description}</p>
-            </header>
-            <AuditView />
-          </div>
-        </main>
+        </section>
       ) : (
-        <main aria-labelledby="settings-section-heading" className="flex-1 min-w-0 overflow-y-auto">
+        <section aria-labelledby="settings-section-heading" className="flex-1 min-w-0 overflow-y-auto">
           <div className="max-w-[820px] px-10 py-8 flex flex-col gap-7">
             <header className="flex flex-col gap-1.5">
               <h2 id="settings-section-heading" className="m-0 text-2xl font-bold">
@@ -130,10 +150,26 @@ export default function SettingsView({
 
             <section className="p-5 rounded-[14px] bg-shodh-surface border border-shodh-border">
               {section === 'search' ? (
-                <SearchSettings
-                  config={searchConfig}
-                  onUpdate={onUpdateSearchConfig}
-                  onReset={onResetSearchConfig}
+                <>
+                  <SearchSettings
+                    config={searchConfig}
+                    onUpdate={onUpdateSearchConfig}
+                    onReset={onResetSearchConfig}
+                  />
+                  <AnswerCheckSettings />
+                  <TableModelSettings />
+                </>
+              ) : section === 'tools' ? (
+                <ToolsSettings />
+              ) : section === 'general' ? (
+                <BackgroundSettings />
+              ) : section === 'privacy' ? (
+                <PrivacySettings />
+              ) : section === 'memory' ? (
+                <MemorySettings
+                  conversationTitle={id => conversations.find(c => c.id === id)?.title}
+                  onOpenConversation={onOpenConversation}
+                  workspaceName={id => workspaceById(id)?.name}
                 />
               ) : (
                 <DataManagement
@@ -144,7 +180,7 @@ export default function SettingsView({
               )}
             </section>
           </div>
-        </main>
+        </section>
       )}
     </div>
   );

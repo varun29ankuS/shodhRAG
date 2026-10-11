@@ -1,0 +1,97 @@
+{
+  "kind": "retrieval",
+  "dataset_id": "synthetic-v1",
+  "dataset_hash": "d1e86f279a594d34113282bd82c250fadc15ca1328156617ffd325b17fa2b8ad",
+  "corpus_hash": "a0dd1b9f61d3abd55c1a96ab9ff130b3d60b5f19d1a7e874e12d7d60ac9d5349",
+  "recorded_at": "2026-10-10T10:31:08.688033400+00:00",
+  "settings": {
+    "chunk_max_tokens": "380",
+    "citation_graph": "off",
+    "embedding": "multilingual-e5-base",
+    "k": "10",
+    "reranker": "ms-marco-MiniLM-L6-v2",
+    "reranking": "true",
+    "rrf_k": "60",
+    "runs": "3",
+    "table_refinement": "off"
+  },
+  "metrics": {
+    "hit@1": {
+      "mean": 0.9285714285714285,
+      "stddev": 1.3597399555105182e-16,
+      "min": 0.9285714285714286,
+      "max": 0.9285714285714286,
+      "runs": 3
+    },
+    "hit@10": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 3
+    },
+    "hit@5": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 3
+    },
+    "ingest_ok": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 3
+    },
+    "mrr": {
+      "mean": 0.9583333333333334,
+      "stddev": 0.0,
+      "min": 0.9583333333333334,
+      "max": 0.9583333333333334,
+      "runs": 3
+    },
+    "page_hit@1": {
+      "mean": 0.6333333333333333,
+      "stddev": 0.0,
+      "min": 0.6333333333333333,
+      "max": 0.6333333333333333,
+      "runs": 3
+    },
+    "page_hit@10": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 3
+    },
+    "page_hit@5": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 3
+    },
+    "passage_hit@1": {
+      "mean": 0.6285714285714286,
+      "stddev": 0.0,
+      "min": 0.6285714285714286,
+      "max": 0.6285714285714286,
+      "runs": 3
+    },
+    "passage_hit@10": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 3
+    },
+    "passage_hit@5": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 3
+    }
+  }
+}

@@ -30,6 +30,19 @@ pub trait EmbeddingModel: Send + Sync {
 
     /// Embedding vector dimension
     fn dimension(&self) -> usize;
+
+    /// Tokens the model reads for `text` embedded as a document, including
+    /// special tokens and any instruction prefix. `None` when the model has
+    /// no tokenizer to ask; callers then estimate.
+    fn count_tokens(&self, _text: &str) -> Option<usize> {
+        None
+    }
+}
+
+/// Conservative token estimate for text without a tokenizer: three
+/// characters per token (scientific text with symbols tokenizes densely).
+pub fn estimate_tokens(text: &str) -> usize {
+    text.chars().count().div_ceil(3) + 2
 }
 
 #[cfg(test)]

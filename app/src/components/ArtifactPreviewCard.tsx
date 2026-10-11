@@ -10,7 +10,6 @@
 import { motion } from 'framer-motion';
 import { Code, FileText, Image as ImageIcon, ExternalLink, Eye } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import mermaid from 'mermaid';
 import type { Artifact } from './EnhancedArtifactPanel';
 import { useTheme } from '../contexts/ThemeContext';
 import { getArtifactKind, getArtifactCodeLanguage } from '../utils/artifactKind';
@@ -25,14 +24,6 @@ export function ArtifactPreviewCard({ artifact, onClick }: ArtifactPreviewCardPr
   const mermaidRef = useRef<HTMLDivElement>(null);
   const [mermaidError, setMermaidError] = useState<string | null>(null);
 
-  useEffect(() => {
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: theme === 'dark' ? 'dark' : 'default',
-      securityLevel: 'loose',
-    });
-  }, [theme]);
-
   const kind = getArtifactKind(artifact.artifact_type);
   const isMermaid = kind === 'mermaid';
 
@@ -40,7 +31,7 @@ export function ArtifactPreviewCard({ artifact, onClick }: ArtifactPreviewCardPr
     if (isMermaid && mermaidRef.current) {
       renderMermaid();
     }
-  }, [artifact.content, isMermaid]);
+  }, [artifact.content, isMermaid, theme]);
 
   const renderMermaid = async () => {
     if (!mermaidRef.current) return;
@@ -56,6 +47,13 @@ export function ArtifactPreviewCard({ artifact, onClick }: ArtifactPreviewCardPr
         diagramContent = `flowchart TD\n${diagramContent}`;
       }
 
+      // Loaded on first use: mermaid is several megabytes and most answers have no diagram.
+      const { default: mermaid } = await import('mermaid');
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: theme === 'dark' ? 'dark' : 'default',
+        securityLevel: 'loose',
+      });
       const { svg } = await mermaid.render(
         `mermaid-preview-${artifact.id}-${Date.now()}`,
         diagramContent

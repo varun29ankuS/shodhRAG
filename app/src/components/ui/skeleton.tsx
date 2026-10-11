@@ -1,12 +1,14 @@
 import { cn } from "@/lib/utils"
 
+/** Loading placeholder. Pulses gently; static under prefers-reduced-motion. */
 function Skeleton({
   className,
   ...props
 }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn("animate-pulse rounded-md bg-muted", className)}
+      aria-hidden="true"
+      className={cn("shell-skeleton rounded-md", className)}
       {...props}
     />
   )

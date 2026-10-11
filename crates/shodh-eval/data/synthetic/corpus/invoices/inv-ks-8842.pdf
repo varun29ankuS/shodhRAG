@@ -1,0 +1,66 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (Invoice KS-8842) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 1497 >>
+stream
+BT /F2 12.0 Tf 72.00 730.00 Td (INVOICE) Tj ET
+BT /F1 10.0 Tf 72.00 710.00 Td (Invoice number: KS-8842) Tj ET
+BT /F1 10.0 Tf 72.00 696.00 Td (Date: 3 March 2026) Tj ET
+BT /F1 10.0 Tf 72.00 682.00 Td (Seller: Kestrel Robotics GmbH, VAT ID DE298765431) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (Buyer: Orchid Biolabs Ltd.) Tj ET
+BT /F2 9.5 Tf 72.00 644.00 Td (Item) Tj ET
+BT /F2 9.5 Tf 300.00 644.00 Td (Qty) Tj ET
+BT /F2 9.5 Tf 370.00 644.00 Td (Unit price \(EUR\)) Tj ET
+BT /F2 9.5 Tf 470.00 644.00 Td (Amount \(EUR\)) Tj ET
+BT /F1 9.5 Tf 72.00 630.00 Td (Pipetting robot arm PR-200) Tj ET
+BT /F1 9.5 Tf 300.00 630.00 Td (2) Tj ET
+BT /F1 9.5 Tf 370.00 630.00 Td (7,200.00) Tj ET
+BT /F1 9.5 Tf 470.00 630.00 Td (14,400.00) Tj ET
+BT /F1 9.5 Tf 72.00 616.00 Td (Calibration and installation) Tj ET
+BT /F1 9.5 Tf 300.00 616.00 Td (1) Tj ET
+BT /F1 9.5 Tf 370.00 616.00 Td (1,850.00) Tj ET
+BT /F1 9.5 Tf 470.00 616.00 Td (1,850.00) Tj ET
+BT /F1 9.5 Tf 72.00 602.00 Td (Operator training \(2 days\)) Tj ET
+BT /F1 9.5 Tf 300.00 602.00 Td (1) Tj ET
+BT /F1 9.5 Tf 370.00 602.00 Td (2,200.00) Tj ET
+BT /F1 9.5 Tf 470.00 602.00 Td (2,200.00) Tj ET
+BT /F1 9.5 Tf 370.00 588.00 Td (Total) Tj ET
+BT /F1 9.5 Tf 470.00 588.00 Td (18,450.00) Tj ET
+BT /F1 10.0 Tf 72.00 564.00 Td (VAT: reverse charge, the buyer accounts for VAT.) Tj ET
+BT /F1 10.0 Tf 72.00 550.00 Td (Total amount due: EUR 18,450.00) Tj ET
+BT /F1 10.0 Tf 72.00 536.00 Td (Pay within 30 days by SEPA transfer to IBAN DE44 5001 0517 5407 3249 31.) Tj ET
+endstream
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000218 00000 n 
+0000000320 00000 n 
+0000000406 00000 n 
+0000000542 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R /Info 5 0 R >>
+startxref
+2090
+%%EOF

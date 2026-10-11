@@ -1,0 +1,169 @@
+{
+ "work_by_arxiv_doi": {
+  "id": "https://openalex.org/W4399554431",
+  "doi": "https://doi.org/10.48550/arxiv.2406.06484",
+  "display_name": "Parallelizing Linear Transformers with the Delta Rule over Sequence Length",
+  "publication_year": 2024,
+  "type": "preprint",
+  "cited_by_count": 3,
+  "ids": {
+   "openalex": "https://openalex.org/W4399554431",
+   "doi": "https://doi.org/10.48550/arxiv.2406.06484"
+  },
+  "primary_location": {
+   "landing_page_url": "http://arxiv.org/abs/2406.06484",
+   "source": {
+    "id": "https://openalex.org/S4306400194",
+    "display_name": "arXiv (Cornell University)",
+    "type": "repository"
+   }
+  },
+  "authorships": [
+   {
+    "author_position": "first",
+    "raw_author_name": "Yang, Songlin",
+    "author": {
+     "id": "https://openalex.org/A5100548266",
+     "display_name": "Songlin Yang",
+     "orcid": null
+    }
+   },
+   {
+    "author_position": "middle",
+    "raw_author_name": "Wang, Bailin",
+    "author": {
+     "id": "https://openalex.org/A5042749062",
+     "display_name": "Bailin Wang",
+     "orcid": "https://orcid.org/0000-0002-3579-298X"
+    }
+   },
+   {
+    "author_position": "middle",
+    "raw_author_name": "Zhang, Yu",
+    "author": {
+     "id": "https://openalex.org/A5100433372",
+     "display_name": "Yu Zhang",
+     "orcid": "https://orcid.org/0000-0001-5728-7645"
+    }
+   },
+   {
+    "author_position": "middle",
+    "raw_author_name": "Shen, Yikang",
+    "author": {
+     "id": "https://openalex.org/A5073742611",
+     "display_name": "Yikang Shen",
+     "orcid": "https://orcid.org/0000-0001-6836-0510"
+    }
+   },
+   {
+    "author_position": "last",
+    "raw_author_name": "Kim, Yoon",
+    "author": {
+     "id": "https://openalex.org/A5100693798",
+     "display_name": "Yoon Kim",
+     "orcid": "https://orcid.org/0000-0002-4837-8411"
+    }
+   }
+  ]
+ },
+ "work_by_doi": {
+  "id": "https://openalex.org/W2064675550",
+  "doi": "https://doi.org/10.1162/neco.1997.9.8.1735",
+  "display_name": "Long Short-Term Memory",
+  "publication_year": 1997,
+  "type": "article",
+  "cited_by_count": 102840,
+  "ids": {
+   "openalex": "https://openalex.org/W2064675550",
+   "doi": "https://doi.org/10.1162/neco.1997.9.8.1735",
+   "mag": "2064675550",
+   "pmid": "https://pubmed.ncbi.nlm.nih.gov/9377276"
+  },
+  "primary_location": {
+   "landing_page_url": "https://doi.org/10.1162/neco.1997.9.8.1735",
+   "source": {
+    "id": "https://openalex.org/S207023548",
+    "display_name": "Neural Computation",
+    "type": "journal"
+   }
+  },
+  "authorships": [
+   {
+    "author_position": "first",
+    "raw_author_name": "Sepp Hochreiter",
+    "author": {
+     "id": "https://openalex.org/A5053148274",
+     "display_name": "Sepp Hochreiter",
+     "orcid": "https://orcid.org/0000-0001-7449-2528"
+    }
+   },
+   {
+    "author_position": "last",
+    "raw_author_name": "Jürgen Schmidhuber",
+    "author": {
+     "id": "https://openalex.org/A5071172037",
+     "display_name": "Jürgen Schmidhuber",
+     "orcid": "https://orcid.org/0000-0002-1468-6758"
+    }
+   }
+  ]
+ },
+ "title_search": {
+  "meta": {
+   "count": 1,
+   "per_page": 5
+  },
+  "results": [
+   {
+    "id": "https://openalex.org/W3166702123",
+    "doi": "https://doi.org/10.48550/arxiv.2102.11174",
+    "display_name": "Linear Transformers Are Secretly Fast Weight Programmers",
+    "publication_year": 2021,
+    "type": "preprint",
+    "cited_by_count": 23,
+    "ids": {
+     "openalex": "https://openalex.org/W3166702123",
+     "doi": "https://doi.org/10.48550/arxiv.2102.11174",
+     "mag": "3166702123"
+    },
+    "primary_location": {
+     "landing_page_url": "http://arxiv.org/abs/2102.11174",
+     "source": {
+      "id": "https://openalex.org/S4306400194",
+      "display_name": "arXiv (Cornell University)",
+      "type": "repository"
+     }
+    },
+    "authorships": [
+     {
+      "author_position": "first",
+      "raw_author_name": "Schlag, Imanol",
+      "author": {
+       "id": "https://openalex.org/A5019167028",
+       "display_name": "Imanol Schlag",
+       "orcid": null
+      }
+     },
+     {
+      "author_position": "middle",
+      "raw_author_name": "Irie, Kazuki",
+      "author": {
+       "id": "https://openalex.org/A5002810304",
+       "display_name": "Kazuki Irie",
+       "orcid": null
+      }
+     },
+     {
+      "author_position": "last",
+      "raw_author_name": "Schmidhuber, Jürgen",
+      "author": {
+       "id": "https://openalex.org/A5071172037",
+       "display_name": "Jürgen Schmidhuber",
+       "orcid": "https://orcid.org/0000-0002-1468-6758"
+      }
+     }
+    ]
+   }
+  ]
+ }
+}

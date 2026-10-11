@@ -2,12 +2,54 @@
 resolver = "2"
 members = [
     "crates/shodh-rag",
+    "crates/shodh-ontology",
+    "crates/shodh-eval",
     "app/src-tauri",
 ]
 
 # The agent runtime binary is hashed before every launch (ADR 0001). An
 # unoptimized sha2 makes that take seconds in dev builds.
 [profile.dev.package.sha2]
+opt-level = 3
+
+# PDF layout parsing runs during indexing; unoptimized it is ~20x slower,
+# which made indexing a paper library in dev builds take minutes.
+[profile.dev.package.pdf_oxide]
+opt-level = 3
+
+# The table model (docling-pdf) renders candidate pages and resamples them in
+# pure Rust before inference; unoptimized that alone takes seconds per page.
+[profile.dev.package.docling-pdf]
+opt-level = 3
+
+[profile.dev.package.docling-core]
+opt-level = 3
+
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.fast_image_resize]
+opt-level = 3
+
+[profile.dev.package.tiny-skia]
+opt-level = 3
+
+[profile.dev.package.tiny-skia-path]
+opt-level = 3
+
+[profile.dev.package.lopdf]
+opt-level = 3
+
+[profile.dev.package.flate2]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
+[profile.dev.package.weezl]
+opt-level = 3
+
+[profile.dev.package.zune-jpeg]
 opt-level = 3
 
 # llama-cpp-sys-2's build script links `msvcrtd` (the debug CRT) whenever the build
@@ -17,3 +59,11 @@ opt-level = 3
 # this package keeps the whole link on the release dynamic CRT.
 [profile.dev.package.llama-cpp-sys-2]
 debug-assertions = false
+
+# Release builds are what users run: smaller and faster code, no symbols.
+# panic stays "unwind": PDF parsing and the table model catch parser panics
+# (catch_unwind) so one malformed file never takes the app down.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

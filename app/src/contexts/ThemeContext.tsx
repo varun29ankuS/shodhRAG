@@ -1,4 +1,5 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { clampSearchResults, getAppSettings, onAppSettingsChanged, updatePreferences } from '../lib/appSettings';
 
 type Theme = 'light' | 'dark';
 
@@ -129,25 +130,73 @@ function readStoredTheme(): Theme {
   }
 }
 
+/** Passages per search the user chose before settings moved to the backend. */
+function readStoredSearchResults(): number {
+  try {
+    const saved = JSON.parse(localStorage.getItem('shodh_search_config') ?? 'null') as unknown;
+    if (typeof saved === 'object' && saved !== null && typeof (saved as { maxResults?: unknown }).maxResults === 'number') {
+      return (saved as { maxResults: number }).maxResults;
+    }
+  } catch {
+    // Unreadable storage: fall through to the default.
+  }
+  return 8;
+}
+
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
-export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [theme, setTheme] = useState<Theme>(readStoredTheme);
+/**
+ * `forced` pins the theme for this window without reading or writing the
+ * user's choice (the print view always prints light).
+ */
+export const ThemeProvider: React.FC<{ children: React.ReactNode; forced?: Theme }> = ({ children, forced }) => {
+  const [theme, setTheme] = useState<Theme>(() => forced ?? readStoredTheme());
 
   // Applying the attribute and reading the palette happen together so the
   // colours handed to children always match the active stylesheet.
   const colors = useMemo(() => applyThemeAndReadColors(theme), [theme]);
 
   useEffect(() => {
+    if (forced) return;
     try {
       localStorage.setItem('theme', theme);
     } catch {
       // Storage unavailable (private mode / quota); theme still applies for this session.
     }
-  }, [theme]);
+  }, [theme, forced]);
 
+  // The backend settings store is the source of truth for the theme (the
+  // agent can change it too); local storage only avoids a flash at startup.
+  // On first run the store is seeded from what this browser storage held.
+  useEffect(() => {
+    if (forced) return;
+    let cancelled = false;
+    getAppSettings()
+      .then(async settings => {
+        if (cancelled || !settings) return;
+        if (settings.seeded) {
+          setTheme(settings.preferences.theme);
+          return;
+        }
+        await updatePreferences(
+          { theme: readStoredTheme(), searchMaxResults: clampSearchResults(readStoredSearchResults()) },
+          true,
+        );
+      })
+      .catch(err => console.error('Loading app settings failed:', err));
+    const unsubscribe = onAppSettingsChanged(settings => setTheme(settings.preferences.theme));
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [forced]);
+
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
   const toggleTheme = useCallback(() => {
-    setTheme(prev => (prev === 'light' ? 'dark' : 'light'));
+    const next: Theme = themeRef.current === 'light' ? 'dark' : 'light';
+    setTheme(next);
+    updatePreferences({ theme: next }).catch(err => console.error('Saving the theme failed:', err));
   }, []);
 
   const value = useMemo(() => ({ theme, toggleTheme, colors }), [theme, toggleTheme, colors]);

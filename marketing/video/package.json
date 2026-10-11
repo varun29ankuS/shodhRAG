@@ -1,0 +1,27 @@
+{
+  "name": "shodh-launch-video",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Shodh launch video (Remotion). Captions only; music generated in code.",
+  "type": "module",
+  "scripts": {
+    "music": "node scripts/make-music.mjs",
+    "studio": "npm run music && remotion studio src/index.ts",
+    "render": "npm run music && remotion render src/index.ts ShodhLaunch out/shodh-launch.mp4 --codec=h264 --crf=18",
+    "render:vertical": "npm run music && remotion render src/index.ts ShodhLaunchVertical out/shodh-launch-vertical.mp4 --codec=h264 --crf=18",
+    "render:gif": "remotion render src/index.ts ShodhLoop out/shodh-loop.gif --codec=gif --every-nth-frame=2 --scale=0.5 --number-of-gif-loops=0",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist": "5.3.0",
+    "@fontsource/noto-sans-devanagari": "5.3.0",
+    "@remotion/cli": "4.0.534",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "remotion": "4.0.534"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "typescript": "5.9.3"
+  }
+}

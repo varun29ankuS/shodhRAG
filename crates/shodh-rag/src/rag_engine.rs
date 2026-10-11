@@ -2,14 +2,19 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use uuid::Uuid;
 
 use crate::config::RAGConfig;
 use crate::embeddings::e5::{E5Config, E5Embeddings};
 use crate::embeddings::{EmbeddingModel, SearchModelsMissing};
+use crate::harness::web::relevance::sigmoid;
+use crate::lazy_model::LazyModel;
 use crate::processing::chunker::{ContextualChunkResult, TextChunker};
-use crate::processing::parser::DocumentParser;
+use crate::processing::parser::{
+    DocumentParser, ParsedDocument, TABLE_CANDIDATES_KEY, TABLE_MODEL_KEY,
+};
+use crate::processing::structure_chunker::{StructureChunker, STRUCTURE_CHUNKER_VERSION};
 use crate::reranking::CrossEncoderReranker;
 use crate::search::hybrid::{score_aware_rrf, HybridSource};
 use crate::search::TextSearch;
@@ -28,12 +33,277 @@ struct PreparedDocument {
     chunk_ids: Vec<Uuid>,
 }
 
-/// Normalize a file path for consistent storage and lookup across Windows/Unix.
-/// Converts backslashes to forward slashes and lowercases on Windows so that
-/// `delete_by_source` predicates always match regardless of how the path was
-/// originally formatted.
+/// Parses, chunks and embeds files apart from the engine: copies of its parser,
+/// chunkers and embedder (all cheap to clone). Indexing prepares files with it outside
+/// the engine lock and takes the lock only to store them ([`RAGEngine::commit_file`]),
+/// so searches are not blocked while files are parsed and embedded.
+#[derive(Clone)]
+pub struct FilePreparer {
+    parser: DocumentParser,
+    chunker: TextChunker,
+    structure_chunker: StructureChunker,
+    embeddings: Arc<dyn EmbeddingModel>,
+}
+
+/// A file parsed, chunked and embedded, ready for [`RAGEngine::commit_file`].
+pub struct PreparedFile {
+    path: std::path::PathBuf,
+    source: String,
+    document: PreparedDocument,
+    /// The file has table-candidate pages the table model has not read yet.
+    refine: bool,
+    parse_ms: u128,
+    chunk_ms: u128,
+    embed_ms: u128,
+}
+
+impl FilePreparer {
+    /// Parses, chunks and embeds the file at `path` (blocking).
+    pub fn prepare(&self, path: &Path, metadata: HashMap<String, String>) -> Result<PreparedFile> {
+        let parse_started = std::time::Instant::now();
+        let parsed = self.parser.parse_file(path)?;
+        let parse_ms = parse_started.elapsed().as_millis();
+        self.prepare_parsed(path, parsed, metadata, parse_ms)
+    }
+
+    /// Chunks and embeds a parsed file (blocking).
+    pub fn prepare_parsed(
+        &self,
+        path: &Path,
+        parsed: ParsedDocument,
+        metadata: HashMap<String, String>,
+        parse_ms: u128,
+    ) -> Result<PreparedFile> {
+        let refine = parsed.metadata.contains_key(TABLE_CANDIDATES_KEY)
+            && !parsed.metadata.contains_key(TABLE_MODEL_KEY);
+        let source = normalize_source_path(path);
+        let mut merged_metadata = parsed.metadata;
+        for (k, v) in metadata {
+            merged_metadata.insert(k, v);
+        }
+        // Ensure file_path in metadata matches the canonical source used for
+        // deletion when the file is stored. This prevents mismatches if the
+        // caller passes a differently-formatted path string.
+        merged_metadata.insert("file_path".to_string(), source.clone());
+
+        let citation = Citation {
+            title: parsed.title.clone(),
+            source: source.clone(),
+            ..Citation::default()
+        };
+        let title = merged_metadata
+            .get("title")
+            .cloned()
+            .unwrap_or_else(|| parsed.title.clone());
+
+        // Documents parsed into semantic blocks (PDF, LaTeX, Markdown) are
+        // chunked by unit: sections, tables with headers, theorems with their
+        // proofs, single references. Form fields and relationships extracted
+        // from PDFs, and spreadsheet tables, use the section chunker; other
+        // formats fall back to sliding windows.
+        let chunk_started = std::time::Instant::now();
+        let mut chunks = Vec::new();
+        if let Some(doc) = parsed.document.as_ref().filter(|d| !d.blocks.is_empty()) {
+            let embedder = self.embeddings.as_ref();
+            let count = |text: &str| {
+                embedder
+                    .count_tokens(text)
+                    .unwrap_or_else(|| crate::embeddings::estimate_tokens(text))
+            };
+            chunks = self.structure_chunker.chunk(doc, &title, &count);
+            merged_metadata.insert("chunker".to_string(), STRUCTURE_CHUNKER_VERSION.to_string());
+        }
+        if !parsed.structured_sections.is_empty() {
+            chunks.extend(self.chunker.chunk_structured(
+                &parsed.structured_sections,
+                &title,
+                &source,
+            ));
+        }
+        if chunks.is_empty() && parsed.document.is_none() {
+            chunks = self
+                .chunker
+                .chunk_with_context(&parsed.content, &title, &source);
+        }
+        for (index, chunk) in chunks.iter_mut().enumerate() {
+            chunk.index = index;
+        }
+        let chunk_ms = chunk_started.elapsed().as_millis();
+
+        let embed_started = std::time::Instant::now();
+        let document = prepare_chunks(
+            self.embeddings.as_ref(),
+            chunks,
+            title,
+            source.clone(),
+            &merged_metadata,
+            &citation,
+        )?;
+        Ok(PreparedFile {
+            path: path.to_path_buf(),
+            source,
+            document,
+            refine,
+            parse_ms,
+            chunk_ms,
+            embed_ms: embed_started.elapsed().as_millis(),
+        })
+    }
+}
+
+/// Embed chunks and build the storage records for one document without
+/// touching the stores. Fails (with nothing written) if embedding fails.
+fn prepare_chunks(
+    embedder: &dyn EmbeddingModel,
+    chunks: Vec<ContextualChunkResult>,
+    title: String,
+    source: String,
+    metadata: &HashMap<String, String>,
+    citation: &Citation,
+) -> Result<PreparedDocument> {
+    let space_id = metadata.get("space_id").cloned().unwrap_or_default();
+    if chunks.is_empty() {
+        return Ok(PreparedDocument {
+            title,
+            space_id,
+            records: Vec::new(),
+            fts_batch: Vec::new(),
+            chunk_ids: Vec::new(),
+        });
+    }
+
+    // Embed the contextualized text (with document context prefix) for better
+    // vector representation
+    let chunk_texts: Vec<&str> = chunks
+        .iter()
+        .map(|c| c.contextualized_text.as_str())
+        .collect();
+    let embeddings = embedder.embed_documents(&chunk_texts)?;
+
+    let doc_id = Uuid::new_v4();
+    let metadata_json = serde_json::to_string(metadata).unwrap_or_else(|_| "{}".to_string());
+    let now = chrono::Utc::now().timestamp();
+
+    let mut records = Vec::with_capacity(chunks.len());
+    let mut fts_batch = Vec::with_capacity(chunks.len());
+    let mut chunk_ids = Vec::with_capacity(chunks.len());
+
+    for (i, (chunk, embedding)) in chunks.iter().zip(embeddings).enumerate() {
+        let chunk_id = chunk.id;
+        chunk_ids.push(chunk_id);
+
+        let mut per_chunk_meta = metadata.clone();
+        if let Some(heading) = &chunk.heading {
+            per_chunk_meta.insert("chunk_type".to_string(), heading.clone());
+            per_chunk_meta.insert("heading".to_string(), heading.clone());
+        }
+        match &chunk.layout {
+            Some(layout) => insert_layout_metadata(&mut per_chunk_meta, layout),
+            None => insert_page_metadata(&mut per_chunk_meta, chunk.page),
+        }
+        // Extract structured fields (emails, phones, etc.) at ingest time
+        for (k, v) in extract_structured_fields(&chunk.text) {
+            per_chunk_meta.insert(k, v);
+        }
+        let per_chunk_meta_json =
+            serde_json::to_string(&per_chunk_meta).unwrap_or_else(|_| metadata_json.clone());
+
+        // Citation is stored per chunk so its page survives into search results.
+        let chunk_citation = Citation {
+            page_numbers: page_numbers_from_metadata(&per_chunk_meta),
+            ..citation.clone()
+        };
+        let citation_json =
+            serde_json::to_string(&chunk_citation).unwrap_or_else(|_| "{}".to_string());
+
+        // Store the original text (without context prefix) for display
+        records.push(ChunkRecord {
+            id: chunk_id.to_string(),
+            doc_id: doc_id.to_string(),
+            chunk_index: i as u32,
+            text: chunk.text.clone(),
+            title: title.clone(),
+            source: source.clone(),
+            heading: chunk.heading.clone().unwrap_or_default(),
+            vector: embedding,
+            space_id: space_id.clone(),
+            metadata_json: per_chunk_meta_json,
+            citation_json,
+            created_at: now,
+        });
+
+        // Index contextualized text in FTS for richer BM25 matching
+        fts_batch.push((
+            chunk_id.to_string(),
+            chunk.contextualized_text.clone(),
+            title.clone(),
+            source.clone(),
+        ));
+    }
+
+    Ok(PreparedDocument {
+        title,
+        space_id,
+        records,
+        fts_batch,
+        chunk_ids,
+    })
+}
+
+/// One native spelling of a path, applied where paths enter the indexer
+/// (folder walks, single files, uploads): the platform separator throughout
+/// (a folder typed as `C:/Papers` and walked to `C:/Papers\a.pdf` becomes
+/// `C:\Papers\a.pdf`), no verbatim `\\?\` prefix, no `.` components,
+/// `..` resolved lexically, no trailing separator. Case is preserved; the
+/// file system is not consulted.
+pub fn canonical_path(path: &Path) -> std::path::PathBuf {
+    let raw = path.to_string_lossy();
+    let mut text = raw.to_string();
+    for (verbatim, replacement) in [
+        ("\\\\?\\UNC\\", "\\\\"),
+        ("//?/UNC/", "//"),
+        ("\\\\?\\", ""),
+        ("//?/", ""),
+    ] {
+        if let Some(rest) = text.strip_prefix(verbatim) {
+            text = format!("{replacement}{rest}");
+            break;
+        }
+    }
+    if cfg!(windows) {
+        text = text.replace('/', "\\");
+    }
+    let mut out = std::path::PathBuf::new();
+    for component in Path::new(&text).components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                let ends_in_name = matches!(
+                    out.components().next_back(),
+                    Some(std::path::Component::Normal(_))
+                );
+                if ends_in_name {
+                    out.pop();
+                } else {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// The identity of an indexed file: its [`canonical_path`] with forward
+/// slashes, lowercased on Windows (whose file systems are case-insensitive).
+/// Stored as each chunk's `source`, so `delete_by_source` and re-indexing
+/// match however the path was spelled. Rows written by older versions under
+/// another spelling are removed on re-index (see `legacy_source_spellings`).
 pub fn normalize_source_path(path: &Path) -> String {
-    let s = path.display().to_string().replace('\\', "/");
+    let s = canonical_path(path)
+        .display()
+        .to_string()
+        .replace('\\', "/");
     if cfg!(windows) {
         s.to_lowercase()
     } else {
@@ -74,6 +344,111 @@ fn insert_page_metadata(meta: &mut HashMap<String, String>, page: Option<usize>)
         meta.insert("page_start".to_string(), page.clone());
         meta.insert("page_end".to_string(), page);
     }
+}
+
+/// Record a structured chunk's provenance: page range, bounding boxes (JSON
+/// `[{"page":3,"x0":..,"y0":..,"x1":..,"y1":..}]`, PDF points, bottom-left
+/// origin), section path (`" > "`-joined), block kinds and unit kind.
+fn insert_layout_metadata(
+    meta: &mut HashMap<String, String>,
+    layout: &crate::processing::structure_chunker::ChunkLayout,
+) {
+    if let Some(start) = layout.page_start {
+        let end = layout.page_end.unwrap_or(start);
+        meta.insert("page".to_string(), start.to_string());
+        meta.insert("page_start".to_string(), start.to_string());
+        meta.insert("page_end".to_string(), end.to_string());
+    }
+    if !layout.regions.is_empty() {
+        let regions: Vec<_> = layout
+            .regions
+            .iter()
+            .map(|r| crate::processing::structure_chunker::ChunkRegion {
+                page: r.page,
+                bbox: r.bbox.rounded(),
+            })
+            .collect();
+        if let Ok(json) = serde_json::to_string(&regions) {
+            meta.insert("bboxes".to_string(), json);
+        }
+    }
+    if !layout.section_path.is_empty() {
+        meta.insert("section_path".to_string(), layout.section_path.join(" > "));
+    }
+    meta.insert("block_kinds".to_string(), layout.block_kinds.join(","));
+    meta.insert("unit_kind".to_string(), layout.unit.to_string());
+    if layout.incomplete {
+        meta.insert(TABLE_INCOMPLETE_KEY.to_string(), "true".to_string());
+    }
+}
+
+/// Chunk metadata flag: the chunk holds a table whose cells missed part of its
+/// region's text, or that region's raw text.
+pub const TABLE_INCOMPLETE_KEY: &str = "table_incomplete";
+
+/// Whether a search result should be widened with its neighbouring chunks.
+/// Window chunks cut text mid-thought, so their neighbours restore context.
+/// Structure chunks (`unit_kind` set) are complete units — a section's
+/// paragraphs, a table, a theorem, one bibliography entry — and their page
+/// and section labels describe exactly their own text; widening them would
+/// cross headings and pages and merge adjacent references.
+fn wants_neighbor_expansion(meta: &HashMap<String, String>) -> bool {
+    !meta.contains_key("unit_kind")
+}
+
+/// Whether a chunk is one bibliography entry.
+fn is_reference_entry(meta: &HashMap<String, String>) -> bool {
+    meta.get("unit_kind").map(String::as_str) == Some("reference_entry")
+}
+
+/// Whether `query` asks about citations or the works behind an idea ("which paper
+/// proposed ...", "what does X cite"). Only such queries are answered from
+/// bibliography entries; any other query gets content chunks only.
+pub fn seeks_references(query: &str) -> bool {
+    let lower = query.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let citation_word = words.iter().any(|w| {
+        w.starts_with("cite")
+            || w.starts_with("citing")
+            || w.starts_with("citation")
+            || w.starts_with("referenc")
+            || w.starts_with("bibliograph")
+    });
+    let asks_for_origin = words.windows(2).any(|pair| {
+        matches!(
+            (pair[0], pair[1]),
+            (
+                "who",
+                "proposed" | "introduced" | "invented" | "first" | "wrote" | "authored"
+            ) | (
+                "which" | "what",
+                "paper" | "papers" | "work" | "works" | "article" | "articles"
+            ) | ("original", "paper" | "work")
+        )
+    });
+    citation_word || asks_for_origin
+}
+
+/// Other spellings under which older versions of the indexer may have stored
+/// `path`: the verbatim string, its forward-slash form, and the previous
+/// normalization (forward slashes, lowercased on Windows, `\\?\` prefixes and
+/// `.` components left in place). Excludes `canonical` itself.
+fn legacy_source_spellings(path: &Path, canonical: &str) -> Vec<String> {
+    let verbatim = path.display().to_string();
+    let slashed = verbatim.replace('\\', "/");
+    let previous = if cfg!(windows) {
+        slashed.to_lowercase()
+    } else {
+        slashed.clone()
+    };
+    let mut out = vec![verbatim, slashed, previous];
+    out.retain(|s| s != canonical);
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Human-readable page label (`"3"` or `"3-5"`) from chunk metadata written by
@@ -162,43 +537,51 @@ fn extract_structured_fields(text: &str) -> HashMap<String, String> {
 }
 
 /// The ONNX models the engine searches with: the E5 embedder (required) and
-/// the cross-encoder reranker (optional). Loading takes seconds and reads
-/// ~600 MB, so it is separate from [`RAGEngine::new`] and can run on a
-/// blocking thread before [`RAGEngine::attach_search_models`].
+/// the cross-encoder reranker (optional). Both are only located here (cheap);
+/// they load on first use and are dropped again when idle (see
+/// [`SharedEmbedder`], [`SharedReranker`]). The E5 model reads ~600 MB, so an
+/// app that is only opened, or only browses its library, never holds it.
 pub struct SearchModels {
-    embeddings: Box<dyn EmbeddingModel>,
-    reranker: Option<CrossEncoderReranker>,
+    embeddings: EmbedderSource,
+    reranker_dir: Option<std::path::PathBuf>,
+}
+
+enum EmbedderSource {
+    /// The installed E5 model, loaded on first use.
+    E5(E5Config),
+    /// A model that is already loaded (tests).
+    Loaded(Arc<dyn EmbeddingModel>),
 }
 
 impl SearchModels {
+    /// Models over a test embedder, without a reranker.
+    #[cfg(test)]
+    pub(crate) fn from_embedder(embeddings: Arc<dyn EmbeddingModel>) -> Self {
+        Self {
+            embeddings: EmbedderSource::Loaded(embeddings),
+            reranker_dir: None,
+        }
+    }
+
     /// Whether the E5 model files exist under `config.embedding.model_dir`.
     pub fn available(config: &RAGConfig) -> bool {
         E5Config::auto_detect(&config.embedding.model_dir).is_some()
     }
 
-    /// Load the models from `config.embedding.model_dir` (blocking).
-    /// Fails with [`SearchModelsMissing`] when the E5 files are absent.
+    /// Locate the models under `config.embedding.model_dir` (nothing is
+    /// loaded). Fails with [`SearchModelsMissing`] when the E5 files are absent.
     pub fn load(config: &RAGConfig) -> Result<Self> {
         let e5_config =
             E5Config::auto_detect(&config.embedding.model_dir).ok_or(SearchModelsMissing)?;
-        let embeddings: Box<dyn EmbeddingModel> =
-            Box::new(E5Embeddings::new(e5_config).context("Failed to load E5 embeddings")?);
 
-        let reranker = if config.features.enable_reranking || config.features.enable_cross_encoder {
-            let reranker_dir = config.embedding.model_dir.join("ms-marco-MiniLM-L6-v2");
-            match CrossEncoderReranker::new(&reranker_dir) {
-                Ok(r) => {
-                    tracing::info!(
-                        "Cross-encoder reranker loaded from {}",
-                        reranker_dir.display()
-                    );
-                    Some(r)
-                }
+        let reranker_dir = if config.features.enable_reranking
+            || config.features.enable_cross_encoder
+        {
+            let dir = config.embedding.model_dir.join("ms-marco-MiniLM-L6-v2");
+            match CrossEncoderReranker::check_files(&dir) {
+                Ok(()) => Some(dir),
                 Err(e) => {
-                    tracing::warn!(
-                        "Reranker not available ({}), continuing without reranking",
-                        e
-                    );
+                    tracing::warn!("Reranker not available ({e}), continuing without reranking");
                     None
                 }
             }
@@ -206,39 +589,117 @@ impl SearchModels {
             None
         };
         Ok(Self {
-            embeddings,
-            reranker,
+            embeddings: EmbedderSource::E5(e5_config),
+            reranker_dir,
         })
     }
 
     pub fn dimension(&self) -> usize {
-        self.embeddings.dimension()
+        match &self.embeddings {
+            EmbedderSource::E5(config) => config.dimension,
+            EmbedderSource::Loaded(model) => model.dimension(),
+        }
     }
 
     pub fn has_reranker(&self) -> bool {
-        self.reranker.is_some()
+        self.reranker_dir.is_some()
     }
 }
+
+/// The engine's E5 embedder, loaded on first use and dropped when idle;
+/// shared so the idle unloader and the install check reach it without the
+/// engine lock.
+pub type SharedEmbedder = Arc<LazyModel<E5Embeddings>>;
+
+/// [`EmbeddingModel`] over the lazily loaded E5 model: the first call loads
+/// it (seconds, on the calling thread), later calls reuse it until it has
+/// been idle long enough to be dropped.
+struct LazyEmbeddings {
+    model: SharedEmbedder,
+    dimension: usize,
+}
+
+impl LazyEmbeddings {
+    fn loaded(&self) -> Result<Arc<E5Embeddings>> {
+        self.model.get().ok_or_else(|| {
+            anyhow::anyhow!(
+                "The search model could not be loaded (see the log); reinstall it in Settings → Search"
+            )
+        })
+    }
+}
+
+impl EmbeddingModel for LazyEmbeddings {
+    fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+        self.loaded()?.embed_query(text)
+    }
+
+    fn embed_document(&self, text: &str) -> Result<Vec<f32>> {
+        self.loaded()?.embed_document(text)
+    }
+
+    fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        // Text too short to chunk (a one-line calendar item) reaches here
+        // with no passages: never load the model for nothing.
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.loaded()?.embed_documents(texts)
+    }
+
+    fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    fn count_tokens(&self, text: &str) -> Option<usize> {
+        self.model.get()?.count_tokens(text)
+    }
+}
+
+/// The engine's cross-encoder, shared so other rankers use the model without
+/// taking the engine lock. Loaded on first use and dropped when idle; not
+/// available until the search models are attached, or when reranking is off.
+pub type SharedReranker = Arc<LazyModel<CrossEncoderReranker>>;
 
 pub struct RAGEngine {
     store: LanceStore,
     text_search: TextSearch,
     /// `None` until the search models are installed and attached; search and
-    /// indexing then fail with [`SearchModelsMissing`].
-    embeddings: Option<Box<dyn EmbeddingModel>>,
+    /// indexing then fail with [`SearchModelsMissing`]. The installed E5 model
+    /// sits behind [`Self::embedder`] and loads on first use.
+    /// Shared (`Arc`) so other stores, such as the statement store, embed with the same
+    /// model without holding the engine lock during inference.
+    embeddings: Option<Arc<dyn EmbeddingModel>>,
+    /// The E5 model behind `embeddings` (empty for a test embedder); its slot
+    /// lives as long as the engine, so the idle unloader keeps one handle.
+    embedder: SharedEmbedder,
+    /// `embeddings` is the E5 model in [`Self::embedder`] (not a test embedder).
+    embedder_e5: bool,
     chunker: TextChunker,
+    structure_chunker: StructureChunker,
     parser: DocumentParser,
     config: RAGConfig,
-    reranker: Option<CrossEncoderReranker>,
+    /// The cross-encoder, shared with other rankers (web and paper results)
+    /// through [`Self::reranker_handle`]; filled when models are attached.
+    reranker: SharedReranker,
+    /// PDFs indexed by the fast parser that have table-candidate pages are sent
+    /// here, for the table model to refine in the background (see
+    /// [`crate::table_refinement`]).
+    refinement_queue: Option<tokio::sync::mpsc::UnboundedSender<std::path::PathBuf>>,
+    /// Ranks library files by the citation graph for queries about papers, methods or
+    /// citations: a third list fused into search (see [`crate::search::graph_fusion`]).
+    source_ranker: Option<Arc<dyn crate::search::graph_fusion::SourceRanker>>,
 }
 
 impl RAGEngine {
-    /// Open the stores and, when the model files are present, load the
-    /// search models. Without them (first run) the engine starts in a
-    /// degraded state: stores, listing and deletion work; search and indexing
-    /// return [`SearchModelsMissing`] until [`Self::attach_search_models`].
-    /// A model that is present but fails to load is logged and treated the
-    /// same way, so a damaged model never prevents the app from starting.
+    /// Open the stores and, when the model files are present, attach the
+    /// search models (located, not loaded: they load on first search or
+    /// indexing). Without them (first run) the engine starts in a degraded
+    /// state: stores, listing and deletion work; search and indexing return
+    /// [`SearchModelsMissing`] until [`Self::attach_search_models`]. A model
+    /// that is present but fails to load is logged when first used and then
+    /// treated the same way, so a damaged model never prevents the app from
+    /// starting.
     pub async fn new(config: RAGConfig) -> Result<Self> {
         std::fs::create_dir_all(&config.data_dir).ok();
 
@@ -279,14 +740,20 @@ impl RAGEngine {
             config.chunking.min_chunk_size,
         );
 
+        let structure_chunker = StructureChunker::new(config.chunking.max_tokens);
         let mut engine = Self {
             store,
             text_search,
             embeddings: None,
+            embedder: Arc::new(LazyModel::new("embedder")),
+            embedder_e5: false,
             chunker,
+            structure_chunker,
             parser: DocumentParser::new(),
             config,
-            reranker: None,
+            reranker: Arc::new(LazyModel::new("reranker")),
+            refinement_queue: None,
+            source_ranker: None,
         };
         if let Some(models) = models {
             if let Err(e) = engine.attach_search_models(models) {
@@ -312,9 +779,25 @@ impl RAGEngine {
         Ok(engine)
     }
 
-    /// Whether the search models are loaded (search and indexing work).
+    /// The shared slot holding the cross-encoder once it is loaded. The
+    /// handle stays valid for the engine's life; read it at use time, since
+    /// models attached later fill the same slot.
+    pub fn reranker_handle(&self) -> SharedReranker {
+        self.reranker.clone()
+    }
+
+    /// The slot holding the E5 model once it is loaded (for idle unloading and
+    /// the install check). Valid for the engine's life; models attached later
+    /// fill the same slot.
+    pub fn embedder_handle(&self) -> SharedEmbedder {
+        self.embedder.clone()
+    }
+
+    /// Whether the search models are attached (search and indexing work). The
+    /// E5 model may not be in memory yet: it loads on first use. A model that
+    /// failed to load counts as missing, so setup is offered again.
     pub fn has_search_models(&self) -> bool {
-        self.embeddings.is_some()
+        self.embeddings.is_some() && (!self.embedder_e5 || self.embedder.available())
     }
 
     /// Attach models loaded with [`SearchModels::load`]. Fails when the
@@ -327,11 +810,31 @@ impl RAGEngine {
                 self.config.embedding.dimension
             );
         }
-        self.embeddings = Some(models.embeddings);
-        self.reranker = models.reranker;
+        self.embeddings = Some(match models.embeddings {
+            EmbedderSource::E5(config) => {
+                self.embedder
+                    .set_loader(move || E5Embeddings::new(config.clone()));
+                self.embedder_e5 = true;
+                Arc::new(LazyEmbeddings {
+                    model: self.embedder.clone(),
+                    dimension,
+                })
+            }
+            EmbedderSource::Loaded(model) => {
+                self.embedder.uninstall();
+                self.embedder_e5 = false;
+                model
+            }
+        });
+        match models.reranker_dir {
+            Some(dir) => self
+                .reranker
+                .set_loader(move || CrossEncoderReranker::new(&dir)),
+            None => self.reranker.uninstall(),
+        }
         tracing::info!(
             dimension,
-            reranker = self.reranker.is_some(),
+            reranker = self.reranker.available(),
             "Search models attached"
         );
         Ok(())
@@ -365,7 +868,14 @@ impl RAGEngine {
         // Contextual chunking: prepend document-level context to each chunk
         // before embedding for better retrieval (Anthropic's contextual retrieval approach)
         let chunks = self.chunker.chunk_with_context(content, &title, &source);
-        let prepared = self.prepare_chunks(chunks, title, source, &metadata, &citation)?;
+        let prepared = prepare_chunks(
+            self.require_embeddings()?,
+            chunks,
+            title,
+            source,
+            &metadata,
+            &citation,
+        )?;
         self.store_prepared(prepared).await
     }
 
@@ -376,52 +886,178 @@ impl RAGEngine {
     /// embed leaves its existing index entries intact. Once the replacement is
     /// ready, old chunks are deleted and the new ones inserted, which keeps
     /// re-indexing idempotent (no duplicate copies of the same file).
+    ///
+    /// This parses and embeds while the caller holds the engine. Indexing that
+    /// shares the engine prepares with [`Self::file_preparer`] instead and stores
+    /// with [`Self::commit_file`].
     pub async fn add_document_from_file(
         &mut self,
         path: &Path,
         metadata: HashMap<String, String>,
     ) -> Result<Vec<Uuid>> {
-        self.require_embeddings()?;
-        let source = normalize_source_path(path);
+        let file = self.file_preparer()?.prepare(path, metadata)?;
+        self.commit_file(file).await
+    }
 
-        let parsed = self.parser.parse_file(path)?;
+    /// What prepares files apart from the engine. Fails with [`SearchModelsMissing`]
+    /// until the search models are attached.
+    pub fn file_preparer(&self) -> Result<FilePreparer> {
+        let embeddings = self
+            .embeddings
+            .clone()
+            .ok_or_else(|| anyhow::Error::from(SearchModelsMissing))?;
+        Ok(FilePreparer {
+            parser: self.parser.clone(),
+            chunker: self.chunker.clone(),
+            structure_chunker: self.structure_chunker.clone(),
+            embeddings,
+        })
+    }
 
-        let mut merged_metadata = parsed.metadata;
-        for (k, v) in metadata {
-            merged_metadata.insert(k, v);
-        }
-        // Ensure file_path in metadata matches the canonical source used for
-        // deletion below. This prevents mismatches if the caller passes a
-        // differently-formatted path string.
-        merged_metadata.insert("file_path".to_string(), source.clone());
-
-        let citation = Citation {
-            title: parsed.title.clone(),
-            source: source.clone(),
-            ..Citation::default()
-        };
-        let title = merged_metadata
-            .get("title")
-            .cloned()
-            .unwrap_or_else(|| parsed.title.clone());
-
-        // Use structure-aware chunking for documents with structured data (PDF forms,
-        // spreadsheet tables, relationships). Keeps related data together as atomic units
-        // instead of scattering them across naive sliding-window chunks.
-        let chunks = if parsed.structured_sections.is_empty() {
-            self.chunker
-                .chunk_with_context(&parsed.content, &title, &source)
-        } else {
-            self.chunker
-                .chunk_structured(&parsed.structured_sections, &title, &source)
-        };
-        let prepared =
-            self.prepare_chunks(chunks, title, source.clone(), &merged_metadata, &citation)?;
-
+    /// Stores a prepared file, replacing its previous chunks, and queues it for the
+    /// table model when it has table-candidate pages.
+    pub async fn commit_file(&mut self, file: PreparedFile) -> Result<Vec<Uuid>> {
         // Replacement is fully prepared — now drop the previous version of this file.
-        self.remove_source_chunks(&source).await?;
+        // Rows written before paths were canonicalized may carry another
+        // spelling of the same file; remove those too so nothing duplicates.
+        let store_started = std::time::Instant::now();
+        self.remove_source_chunks(&file.source).await?;
+        for legacy in legacy_source_spellings(&file.path, &file.source) {
+            self.remove_source_chunks(&legacy).await?;
+        }
 
-        self.store_prepared(prepared).await
+        let ids = self.store_prepared(file.document).await?;
+        tracing::info!(
+            source = %file.source,
+            chunks = ids.len(),
+            parse_ms = file.parse_ms,
+            chunk_ms = file.chunk_ms,
+            embed_ms = file.embed_ms,
+            store_ms = store_started.elapsed().as_millis(),
+            "Indexed file"
+        );
+        if file.refine {
+            if let Some(queue) = &self.refinement_queue {
+                // A closed queue only means no refinement runs; the index is complete.
+                let _ = queue.send(file.path);
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Sends every PDF indexed from now on that has table-candidate pages to `queue`.
+    pub fn set_refinement_queue(
+        &mut self,
+        queue: tokio::sync::mpsc::UnboundedSender<std::path::PathBuf>,
+    ) {
+        self.refinement_queue = Some(queue);
+    }
+
+    /// Fuses the citation graph's ranking of library files into every search from now
+    /// on (`None` removes it).
+    pub fn set_source_ranker(
+        &mut self,
+        ranker: Option<Arc<dyn crate::search::graph_fusion::SourceRanker>>,
+    ) {
+        self.source_ranker = ranker;
+    }
+
+    /// The graph's ranks of library files for `query`, when it is about the graph.
+    fn graph_ranks(&self, query: &str) -> Option<HashMap<String, usize>> {
+        let files = self.source_ranker.as_ref()?.rank_sources(query)?;
+        let ranks = crate::search::graph_fusion::rank_map(&files);
+        tracing::info!(
+            query,
+            graph_files = ranks.len(),
+            "Citation graph ranks fused into search"
+        );
+        (!ranks.is_empty()).then_some(ranks)
+    }
+
+    /// Replaces the indexed chunks of a file with those of `refined` (the file
+    /// re-parsed with the table model), keeping the document-level metadata the
+    /// file was indexed with. Nothing is written when the file changed since it was
+    /// re-parsed or is no longer indexed.
+    ///
+    /// This embeds while the caller holds the engine; the refinement worker uses
+    /// [`Self::refined_metadata`], [`FilePreparer::prepare_parsed`] and
+    /// [`Self::commit_refined`] to embed without it.
+    pub async fn apply_refined_tables(
+        &mut self,
+        refined: crate::table_refinement::RefinedTables,
+    ) -> Result<crate::table_refinement::RefineOutcome> {
+        let metadata = match self.refined_metadata(&refined).await? {
+            Ok(metadata) => metadata,
+            Err(outcome) => return Ok(outcome),
+        };
+        let file = self.file_preparer()?.prepare_parsed(
+            &refined.path,
+            refined.parsed,
+            metadata,
+            refined.parse_ms,
+        )?;
+        self.commit_refined(file, refined.stamp, refined.model_tables)
+            .await
+    }
+
+    /// The document-level metadata a refinement of `refined.path` keeps, or why it is
+    /// not applied (the file changed since it was re-parsed, or is no longer indexed).
+    pub async fn refined_metadata(
+        &self,
+        refined: &crate::table_refinement::RefinedTables,
+    ) -> Result<std::result::Result<HashMap<String, String>, crate::table_refinement::RefineOutcome>>
+    {
+        use crate::table_refinement::{document_metadata, FileStamp, RefineOutcome};
+        self.require_embeddings()?;
+        match FileStamp::of(&refined.path) {
+            Ok(stamp) if stamp == refined.stamp => {}
+            _ => return Ok(Err(RefineOutcome::FileChanged)),
+        }
+        let source = normalize_source_path(&refined.path);
+        let predicate = format!("source = '{}'", source.replace('\'', "''"));
+        let Some(existing) = self
+            .store
+            .list_chunks(Some(&predicate), 1)
+            .await?
+            .into_iter()
+            .next()
+        else {
+            return Ok(Err(RefineOutcome::NotIndexed));
+        };
+        let stored: HashMap<String, String> =
+            serde_json::from_str(&existing.metadata_json).unwrap_or_default();
+        Ok(Ok(document_metadata(&stored, &existing.space_id)))
+    }
+
+    /// Stores a refinement prepared from a re-parse of the file at `stamp`, unless the
+    /// file changed or was removed from the index meanwhile.
+    pub async fn commit_refined(
+        &mut self,
+        mut file: PreparedFile,
+        stamp: crate::table_refinement::FileStamp,
+        model_tables: usize,
+    ) -> Result<crate::table_refinement::RefineOutcome> {
+        use crate::table_refinement::{FileStamp, RefineOutcome};
+        match FileStamp::of(&file.path) {
+            Ok(now) if now == stamp => {}
+            _ => return Ok(RefineOutcome::FileChanged),
+        }
+        let predicate = format!("source = '{}'", file.source.replace('\'', "''"));
+        if self
+            .store
+            .list_chunks(Some(&predicate), 1)
+            .await?
+            .is_empty()
+        {
+            return Ok(RefineOutcome::NotIndexed);
+        }
+        // A refinement is never queued for refinement again.
+        file.refine = false;
+        let ids = self.commit_file(file).await?;
+        Ok(RefineOutcome::Replaced {
+            chunks: ids.len(),
+            model_tables,
+        })
     }
 
     /// Remove every stored chunk for `source` from both LanceDB and Tantivy.
@@ -436,102 +1072,6 @@ impl RAGEngine {
         self.text_search.delete_by_source(source)?;
         self.text_search.commit()?;
         Ok(())
-    }
-
-    /// Embed chunks and build the storage records for one document without
-    /// touching the stores. Fails (with nothing written) if embedding fails.
-    fn prepare_chunks(
-        &self,
-        chunks: Vec<ContextualChunkResult>,
-        title: String,
-        source: String,
-        metadata: &HashMap<String, String>,
-        citation: &Citation,
-    ) -> Result<PreparedDocument> {
-        let space_id = metadata.get("space_id").cloned().unwrap_or_default();
-        if chunks.is_empty() {
-            return Ok(PreparedDocument {
-                title,
-                space_id,
-                records: Vec::new(),
-                fts_batch: Vec::new(),
-                chunk_ids: Vec::new(),
-            });
-        }
-
-        // Embed the contextualized text (with document context prefix) for better
-        // vector representation
-        let chunk_texts: Vec<&str> = chunks
-            .iter()
-            .map(|c| c.contextualized_text.as_str())
-            .collect();
-        let embeddings = self.require_embeddings()?.embed_documents(&chunk_texts)?;
-
-        let doc_id = Uuid::new_v4();
-        let metadata_json = serde_json::to_string(metadata).unwrap_or_else(|_| "{}".to_string());
-        let now = chrono::Utc::now().timestamp();
-
-        let mut records = Vec::with_capacity(chunks.len());
-        let mut fts_batch = Vec::with_capacity(chunks.len());
-        let mut chunk_ids = Vec::with_capacity(chunks.len());
-
-        for (i, (chunk, embedding)) in chunks.iter().zip(embeddings).enumerate() {
-            let chunk_id = chunk.id;
-            chunk_ids.push(chunk_id);
-
-            let mut per_chunk_meta = metadata.clone();
-            if let Some(heading) = &chunk.heading {
-                per_chunk_meta.insert("chunk_type".to_string(), heading.clone());
-                per_chunk_meta.insert("heading".to_string(), heading.clone());
-            }
-            insert_page_metadata(&mut per_chunk_meta, chunk.page);
-            // Extract structured fields (emails, phones, etc.) at ingest time
-            for (k, v) in extract_structured_fields(&chunk.text) {
-                per_chunk_meta.insert(k, v);
-            }
-            let per_chunk_meta_json =
-                serde_json::to_string(&per_chunk_meta).unwrap_or_else(|_| metadata_json.clone());
-
-            // Citation is stored per chunk so its page survives into search results.
-            let chunk_citation = Citation {
-                page_numbers: chunk.page.map(|p| p.to_string()),
-                ..citation.clone()
-            };
-            let citation_json =
-                serde_json::to_string(&chunk_citation).unwrap_or_else(|_| "{}".to_string());
-
-            // Store the original text (without context prefix) for display
-            records.push(ChunkRecord {
-                id: chunk_id.to_string(),
-                doc_id: doc_id.to_string(),
-                chunk_index: i as u32,
-                text: chunk.text.clone(),
-                title: title.clone(),
-                source: source.clone(),
-                heading: chunk.heading.clone().unwrap_or_default(),
-                vector: embedding,
-                space_id: space_id.clone(),
-                metadata_json: per_chunk_meta_json,
-                citation_json,
-                created_at: now,
-            });
-
-            // Index contextualized text in FTS for richer BM25 matching
-            fts_batch.push((
-                chunk_id.to_string(),
-                chunk.contextualized_text.clone(),
-                title.clone(),
-                source.clone(),
-            ));
-        }
-
-        Ok(PreparedDocument {
-            title,
-            space_id,
-            records,
-            fts_batch,
-            chunk_ids,
-        })
     }
 
     /// Write prepared records to LanceDB and Tantivy.
@@ -609,6 +1149,10 @@ impl RAGEngine {
         // Checked before decomposition: sub-query failures are swallowed
         // there, which would turn "not installed" into "no results".
         self.require_embeddings()?;
+        // The graph is asked about the whole query, also when it is decomposed.
+        let graph_ranks = self.graph_ranks(query);
+        // Likewise the intent: a sub-query may lose the words that asked for references.
+        let keep_references = seeks_references(query);
         // Decompose complex queries into independent sub-queries
         let decomposed = crate::rag::query_decomposer::decompose_query(query);
 
@@ -623,7 +1167,16 @@ impl RAGEngine {
             // Search each sub-query independently
             let mut result_sets = Vec::new();
             for sub_query in &decomposed.sub_queries {
-                match self.search_single_query(sub_query, k, filter.clone()).await {
+                match self
+                    .search_single_query(
+                        sub_query,
+                        k,
+                        filter.clone(),
+                        graph_ranks.as_ref(),
+                        keep_references,
+                    )
+                    .await
+                {
                     Ok(results) => result_sets.push(results),
                     Err(e) => {
                         tracing::warn!(sub_query = sub_query, error = %e, "Sub-query search failed");
@@ -644,7 +1197,9 @@ impl RAGEngine {
             return Ok(merged);
         }
 
-        let mut results = self.search_single_query(query, k, filter).await?;
+        let mut results = self
+            .search_single_query(query, k, filter, graph_ranks.as_ref(), keep_references)
+            .await?;
         self.expand_with_neighbors(&mut results, 1).await;
         Ok(results)
     }
@@ -655,6 +1210,8 @@ impl RAGEngine {
         query: &str,
         k: usize,
         filter: Option<MetadataFilter>,
+        graph_ranks: Option<&HashMap<String, usize>>,
+        keep_references: bool,
     ) -> Result<Vec<ComprehensiveResult>> {
         // Use same candidate count for both vector and FTS for balanced fusion
         let candidate_count = k * self.config.search.candidate_multiplier;
@@ -788,6 +1345,32 @@ impl RAGEngine {
             // Skip results where we can't find full data (shouldn't happen now)
         }
 
+        // Every result honours the filter's source limits: keyword-only candidates were
+        // fetched by id without the vector store's predicate.
+        if let Some(filter) = &filter {
+            let before = results.len();
+            results.retain(|r| {
+                filter.admits(
+                    r.metadata.get("space_id").map_or("", String::as_str),
+                    r.metadata.get("source_file").map_or("", String::as_str),
+                )
+            });
+            if results.len() < before {
+                tracing::debug!(
+                    dropped = before - results.len(),
+                    "results outside the search's sources removed"
+                );
+            }
+        }
+
+        // Bibliography entries are short and dense in names and topics, so they score
+        // well on almost any query and pushed real content down. They answer only
+        // queries about citations; dropped before the threshold, reranking and the
+        // cut to `k`, so the k results returned are content.
+        if !keep_references {
+            results.retain(|r| !is_reference_entry(&r.metadata));
+        }
+
         // Log source diversity of built results
         {
             let built_sources: std::collections::HashSet<&str> = results
@@ -800,6 +1383,16 @@ impl RAGEngine {
                 sources = ?built_sources,
                 "Results built from fused candidates"
             );
+        }
+
+        // The citation graph as a third RRF list, before the threshold decides.
+        if let Some(ranks) = graph_ranks {
+            let boosted = crate::search::graph_fusion::boost_scores(
+                &mut results,
+                ranks,
+                self.config.search.rrf_k,
+            );
+            tracing::info!(boosted, "Graph list fused");
         }
 
         // Filter by minimum score threshold
@@ -818,7 +1411,8 @@ impl RAGEngine {
         Self::deduplicate_results(&mut results, 0.75);
 
         // Apply cross-encoder reranking if available (before MMR so diversity uses final scores)
-        if let Some(reranker) = &self.reranker {
+        let reranker = self.reranker.get();
+        if let Some(reranker) = &reranker {
             if results.len() > 1 {
                 let candidates: Vec<(String, String)> = results
                     .iter()
@@ -827,20 +1421,17 @@ impl RAGEngine {
 
                 match reranker.rerank(query, &candidates, candidates.len()) {
                     Ok(reranked) => {
-                        let rerank_scores: HashMap<String, f32> = reranked.into_iter().collect();
-
-                        // Update scores where reranking succeeded; keep original score
-                        // for any candidates the cross-encoder couldn't tokenize.
-                        for result in &mut results {
-                            if let Some(&new_score) = rerank_scores.get(&result.id.to_string()) {
-                                result.score = new_score;
-                            }
+                        let logits: HashMap<String, f32> = reranked.into_iter().collect();
+                        Self::apply_rerank_scores(&mut results, &logits);
+                        // The cross-encoder replaced every score; fuse the graph's order
+                        // again so its vote survives (scores keep their scale).
+                        if let Some(ranks) = graph_ranks {
+                            crate::search::graph_fusion::fuse_ranks(
+                                &mut results,
+                                ranks,
+                                self.config.search.rrf_k,
+                            );
                         }
-                        results.sort_by(|a, b| {
-                            b.score
-                                .partial_cmp(&a.score)
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        });
                     }
                     Err(e) => {
                         tracing::warn!("Reranking failed, using fusion scores: {}", e);
@@ -853,6 +1444,7 @@ impl RAGEngine {
         // Each additional chunk from the same source gets score *= lambda^count.
         // This naturally balances depth vs diversity without an artificial hard cap.
         Self::apply_mmr_diversity(&mut results, 0.5);
+        Self::demote_reference_entries(&mut results);
 
         // Log final diversity before truncation
         {
@@ -877,9 +1469,13 @@ impl RAGEngine {
 
     /// Expand top-k results with neighboring chunks from the same document.
     /// For each result, fetches ±window adjacent chunks by chunk_index and
-    /// concatenates them in reading order (prev + current + next).
-    async fn expand_with_neighbors(&self, results: &mut Vec<ComprehensiveResult>, window: u32) {
+    /// concatenates them in reading order (prev + current + next). Structure
+    /// chunks are left as they are (see [`wants_neighbor_expansion`]).
+    async fn expand_with_neighbors(&self, results: &mut [ComprehensiveResult], window: u32) {
         for result in results.iter_mut() {
+            if !wants_neighbor_expansion(&result.metadata) {
+                continue;
+            }
             let doc_id = match result.metadata.get("doc_id") {
                 Some(id) if !id.is_empty() => id.clone(),
                 _ => continue,
@@ -898,12 +1494,12 @@ impl RAGEngine {
                     for neighbor in &neighbors {
                         if neighbor.chunk_index < chunk_index {
                             if !before.is_empty() {
-                                before.push_str("\n");
+                                before.push('\n');
                             }
                             before.push_str(&neighbor.text);
                         } else if neighbor.chunk_index > chunk_index {
                             if !after.is_empty() {
-                                after.push_str("\n");
+                                after.push('\n');
                             }
                             after.push_str(&neighbor.text);
                         }
@@ -912,11 +1508,11 @@ impl RAGEngine {
                     let mut expanded = String::new();
                     if !before.is_empty() {
                         expanded.push_str(&before);
-                        expanded.push_str("\n");
+                        expanded.push('\n');
                     }
                     expanded.push_str(&result.snippet);
                     if !after.is_empty() {
-                        expanded.push_str("\n");
+                        expanded.push('\n');
                         expanded.push_str(&after);
                     }
 
@@ -1164,6 +1760,12 @@ impl RAGEngine {
         self.embeddings.as_deref()
     }
 
+    /// A shared handle to the embedding model, for callers that embed outside the
+    /// engine lock (inference is blocking; run it on a blocking thread).
+    pub fn shared_embeddings(&self) -> Option<Arc<dyn EmbeddingModel>> {
+        self.embeddings.clone()
+    }
+
     /// Access to config
     pub fn config(&self) -> &RAGConfig {
         &self.config
@@ -1260,14 +1862,60 @@ impl RAGEngine {
         });
     }
 
-    /// Hard cap on results per source file to guarantee diversity across documents.
-    /// After scoring and MMR, retain at most `max_per_source` chunks from any single file.
-    /// Maximal Marginal Relevance — diminishing returns per source file.
-    /// Maximal Marginal Relevance — diminishing returns per source file.
-    /// Each additional chunk from the same source gets score *= lambda^count.
-    /// This naturally balances depth (multiple chunks from one file) vs diversity
-    /// (spreading across files) without any hard cap.
-    fn apply_mmr_diversity(results: &mut Vec<ComprehensiveResult>, lambda: f32) {
+    /// On a query about citations (the only queries that see bibliography
+    /// entries), entries are kept below content chunks unless one outscores
+    /// every content chunk (a query about a cited work). Order is otherwise
+    /// unchanged.
+    fn demote_reference_entries(results: &mut Vec<ComprehensiveResult>) {
+        let is_reference = |r: &ComprehensiveResult| is_reference_entry(&r.metadata);
+        let best_content = results
+            .iter()
+            .filter(|r| !is_reference(r))
+            .map(|r| r.score)
+            .fold(f32::NEG_INFINITY, f32::max);
+        if best_content == f32::NEG_INFINITY {
+            return;
+        }
+        let (mut head, tail): (Vec<_>, Vec<_>) = std::mem::take(results)
+            .into_iter()
+            .partition(|r| !is_reference(r) || r.score > best_content);
+        head.extend(tail);
+        *results = head;
+    }
+
+    /// Replaces each result's score with the cross-encoder's relevance and sorts
+    /// by it. Candidates the cross-encoder could not tokenize keep their fused
+    /// score.
+    ///
+    /// The cross-encoder returns logits: unbounded, and negative for most
+    /// passages that do not answer the query. They are mapped through the
+    /// sigmoid to a relevance in 0..1 (the order is unchanged), the same range
+    /// as the fused scores, so that [`Self::apply_mmr_diversity`]'s
+    /// multiplicative decay lowers a repeated source's score. Applied to a
+    /// negative logit the decay raised it instead, by more for each further
+    /// chunk of the same file, and a file's weakest chunks overtook the best
+    /// passages of every other file.
+    fn apply_rerank_scores(results: &mut [ComprehensiveResult], logits: &HashMap<String, f32>) {
+        for result in results.iter_mut() {
+            if let Some(&logit) = logits.get(&result.id.to_string()) {
+                result.score = sigmoid(logit);
+            }
+        }
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+
+    /// Diminishing returns per source file: each further chunk of a file, in
+    /// score order, gets `score *= lambda^count` (count = chunks of that file
+    /// already seen), then the results are re-sorted. This balances depth
+    /// (several chunks of one file) against spreading across files without a
+    /// hard cap. Scores must be non-negative, as fused scores and the
+    /// cross-encoder relevance from [`Self::apply_rerank_scores`] are; on a
+    /// negative score the decay would raise it.
+    fn apply_mmr_diversity(results: &mut [ComprehensiveResult], lambda: f32) {
         let mut source_seen: HashMap<String, u32> = HashMap::new();
         for result in results.iter_mut() {
             let source = result
@@ -1292,6 +1940,323 @@ impl RAGEngine {
 #[cfg(test)]
 mod page_metadata_tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn mixed_separators_resolve_to_one_identity() {
+        let a = normalize_source_path(Path::new(
+            "C:/Users/V/Research Papers\\Test-Time Learning\\RoboTTT.pdf",
+        ));
+        let b = normalize_source_path(Path::new(
+            "C:\\Users\\V\\Research Papers\\Test-Time Learning\\RoboTTT.pdf",
+        ));
+        let c = normalize_source_path(Path::new(
+            "\\\\?\\C:\\Users\\V\\Research Papers\\.\\x\\..\\Test-Time Learning\\RoboTTT.pdf",
+        ));
+        assert_eq!(
+            a,
+            "c:/users/v/research papers/test-time learning/robottt.pdf"
+        );
+        assert_eq!(a, b);
+        assert_eq!(a, c);
+        assert_eq!(
+            canonical_path(Path::new("C:/Users/V/Research Papers\\a.pdf")),
+            std::path::PathBuf::from("C:\\Users\\V\\Research Papers\\a.pdf")
+        );
+        assert_eq!(
+            canonical_path(Path::new("\\\\?\\UNC\\server\\share\\a.pdf")),
+            std::path::PathBuf::from("\\\\server\\share\\a.pdf")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn legacy_spellings_cover_verbatim_and_forward_slash_forms() {
+        let path = Path::new("C:\\Papers\\A.pdf");
+        let canonical = normalize_source_path(path);
+        let legacy = legacy_source_spellings(path, &canonical);
+        assert!(legacy.contains(&"C:\\Papers\\A.pdf".to_string()));
+        assert!(legacy.contains(&"C:/Papers/A.pdf".to_string()));
+        assert!(!legacy.contains(&canonical));
+
+        // The previous normalization kept verbatim prefixes and `.` parts.
+        let verbatim = Path::new(r"\\?\C:\Papers\.\A.pdf");
+        let canonical = normalize_source_path(verbatim);
+        assert_eq!(canonical, "c:/papers/a.pdf");
+        assert!(legacy_source_spellings(verbatim, &canonical)
+            .contains(&"//?/c:/papers/./a.pdf".to_string()));
+    }
+
+    #[test]
+    fn layout_metadata_round_trips_to_citation_pages() {
+        use crate::processing::document_model::BBox;
+        use crate::processing::structure_chunker::{ChunkLayout, ChunkRegion};
+        let layout = ChunkLayout {
+            page_start: Some(3),
+            page_end: Some(4),
+            regions: vec![
+                ChunkRegion {
+                    page: 3,
+                    bbox: BBox::new(72.04, 400.0, 300.0, 700.0),
+                },
+                ChunkRegion {
+                    page: 4,
+                    bbox: BBox::new(72.0, 600.0, 300.0, 720.0),
+                },
+            ],
+            section_path: vec!["3 Method".to_string(), "3.2 Chunkwise form".to_string()],
+            block_kinds: vec!["paragraph", "equation"],
+            unit: "text",
+            incomplete: false,
+        };
+        let mut meta = HashMap::new();
+        insert_layout_metadata(&mut meta, &layout);
+        assert_eq!(page_numbers_from_metadata(&meta).as_deref(), Some("3-4"));
+        assert_eq!(meta["section_path"], "3 Method > 3.2 Chunkwise form");
+        assert_eq!(meta["block_kinds"], "paragraph,equation");
+        assert_eq!(meta["unit_kind"], "text");
+        assert!(!meta.contains_key(TABLE_INCOMPLETE_KEY));
+        let regions: Vec<ChunkRegion> = serde_json::from_str(&meta["bboxes"]).expect("bbox json");
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[0].page, 3);
+        assert_eq!(regions[0].bbox.x0, 72.0);
+        assert!(meta["bboxes"].contains("\"page\":3,\"x0\":72.0"));
+    }
+
+    fn result(score: f32, unit: &str) -> ComprehensiveResult {
+        let mut metadata = HashMap::new();
+        metadata.insert("unit_kind".to_string(), unit.to_string());
+        ComprehensiveResult {
+            id: Uuid::new_v4(),
+            score,
+            metadata,
+            citation: Citation::default(),
+            snippet: unit.to_string(),
+            source_index: "hybrid".to_string(),
+        }
+    }
+
+    fn chunk_of(source: &str, chunk_index: u32, fused: f32) -> ComprehensiveResult {
+        let mut metadata = HashMap::new();
+        metadata.insert("source_file".to_string(), source.to_string());
+        metadata.insert("chunk_index".to_string(), chunk_index.to_string());
+        ComprehensiveResult {
+            id: Uuid::new_v4(),
+            score: fused,
+            metadata,
+            citation: Citation::default(),
+            snippet: format!("{source} chunk {chunk_index}"),
+            source_index: "hybrid".to_string(),
+        }
+    }
+
+    #[test]
+    fn diversity_after_reranking_never_lifts_a_files_weak_chunks() {
+        // Cross-encoder logits observed for "How large is the security deposit
+        // under the Saffron Estates lease?": the lease's title chunk, then its
+        // rent-and-deposit chunk (the answer), then chunks that do not answer
+        // the question, most of them from one invoice.
+        let scored = [
+            ("lease.pdf", 0, 2.4448),
+            ("lease.pdf", 1, -3.8898),
+            ("invoice.pdf", 5, -10.4067),
+            ("lease.pdf", 2, -10.6107),
+            ("invoice.pdf", 3, -10.6670),
+            ("invoice.pdf", 6, -10.7457),
+            ("invoice.pdf", 4, -10.7980),
+            ("study.md", 1, -11.1144),
+            ("invoice.pdf", 2, -11.3587),
+            ("invoice.pdf", 0, -11.3590),
+            ("invoice.pdf", 1, -11.4041),
+        ];
+        // Fused order differs from the cross-encoder's, as in the real search.
+        let mut results: Vec<ComprehensiveResult> = scored
+            .iter()
+            .enumerate()
+            .map(|(i, (source, chunk, _))| chunk_of(source, *chunk, 1.0 - 0.05 * i as f32))
+            .rev()
+            .collect();
+        let logits: HashMap<String, f32> = results
+            .iter()
+            .zip(scored.iter().rev())
+            .map(|(r, (_, _, logit))| (r.id.to_string(), *logit))
+            .collect();
+
+        RAGEngine::apply_rerank_scores(&mut results, &logits);
+        let relevance: HashMap<Uuid, f32> = results.iter().map(|r| (r.id, r.score)).collect();
+
+        RAGEngine::apply_mmr_diversity(&mut results, 0.5);
+        let order: Vec<(&str, &str)> = results
+            .iter()
+            .map(|r| {
+                (
+                    r.metadata["source_file"].as_str(),
+                    r.metadata["chunk_index"].as_str(),
+                )
+            })
+            .collect();
+
+        // The answer stays right below the title chunk of the same lease; the
+        // invoice's repeated chunks do not climb over it.
+        assert_eq!(order[..2], [("lease.pdf", "0"), ("lease.pdf", "1")]);
+        assert_eq!(order[2], ("invoice.pdf", "5"));
+        // Diversity only ever lowers a score.
+        for r in &results {
+            assert!(r.score <= relevance[&r.id], "{:?} rose", r.metadata);
+        }
+        // Within a file, the cross-encoder's order is kept.
+        let invoice: Vec<&str> = order
+            .iter()
+            .filter(|(s, _)| *s == "invoice.pdf")
+            .map(|(_, c)| *c)
+            .collect();
+        assert_eq!(invoice, ["5", "3", "6", "4", "2", "0", "1"]);
+        // Relevance has the fused scores' range.
+        assert!(relevance.values().all(|s| (0.0..=1.0).contains(s)));
+    }
+
+    #[test]
+    fn reference_entries_rank_below_content_unless_they_beat_it() {
+        // Input is score-sorted, as after reranking and MMR.
+        let mut results = vec![
+            result(0.95, "reference_entry"),
+            result(0.9, "text"),
+            result(0.5, "reference_entry"),
+            result(0.4, "text"),
+        ];
+        RAGEngine::demote_reference_entries(&mut results);
+        let order: Vec<(f32, String)> = results
+            .iter()
+            .map(|r| (r.score, r.metadata["unit_kind"].clone()))
+            .collect();
+        let expected: Vec<(f32, String)> = [
+            (0.95, "reference_entry"),
+            (0.9, "text"),
+            (0.4, "text"),
+            (0.5, "reference_entry"),
+        ]
+        .iter()
+        .map(|(s, k)| (*s, k.to_string()))
+        .collect();
+        assert_eq!(order, expected);
+    }
+
+    #[test]
+    fn only_queries_about_citations_seek_references() {
+        for query in [
+            "which paper proposed the delta rule",
+            "Who introduced linear attention?",
+            "what does the DeltaNet paper cite",
+            "papers citing Katharopoulos et al.",
+            "list the references of the RWKV paper",
+            "bibliography of the survey",
+            "the original paper on fast weights",
+        ] {
+            assert!(seeks_references(query), "{query}");
+        }
+        for query in [
+            "delta rule parallelized over sequence length",
+            "how is the chunkwise form computed",
+            "what is the recall of HNSW",
+            "who won the benchmark",
+        ] {
+            assert!(!seeks_references(query), "{query}");
+        }
+    }
+
+    async fn engine_with_paper(dir: &Path) -> RAGEngine {
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.join("data");
+        config.embedding.model_dir = dir.join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        config.search.min_score_threshold = 0.0;
+        let mut engine = RAGEngine::new(config).await.unwrap();
+        engine
+            .attach_search_models(SearchModels::from_embedder(Arc::new(
+                crate::statements::testing::WordEmbedder::default(),
+            )))
+            .unwrap();
+        // The reported case: the References section shares the query's words with
+        // the introduction and outscored it.
+        let paper = dir.join("deltanet.tex");
+        std::fs::write(
+            &paper,
+            r"\documentclass{article}
+\begin{document}
+\section{Introduction}
+We show how the delta rule update of linear transformers is parallelized over
+sequence length with a chunkwise form, so training on long sequences is efficient.
+\section{Experiments}
+Language models trained on long documents reach lower perplexity.
+\begin{thebibliography}{9}
+\bibitem{yang} S. Yang. Parallelizing the delta rule over sequence length. 2024.
+\bibitem{schlag} I. Schlag. The delta rule over sequence length in fast weight programmers. 2021.
+\end{thebibliography}
+\end{document}
+",
+        )
+        .unwrap();
+        engine
+            .add_document_from_file(&paper, HashMap::new())
+            .await
+            .unwrap();
+        engine
+    }
+
+    #[tokio::test]
+    async fn reference_entries_answer_only_queries_about_citations() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine_with_paper(dir.path()).await;
+        let kinds = |results: &[ComprehensiveResult]| -> Vec<String> {
+            results
+                .iter()
+                .map(|r| r.metadata.get("unit_kind").cloned().unwrap_or_default())
+                .collect()
+        };
+
+        let content = Box::pin(engine.search_comprehensive(
+            "delta rule parallelized over sequence length",
+            5,
+            None,
+        ))
+        .await
+        .unwrap();
+        assert!(!content.is_empty());
+        assert!(
+            !kinds(&content).iter().any(|k| k == "reference_entry"),
+            "{:?}",
+            kinds(&content)
+        );
+        assert!(
+            content[0].snippet.contains("parallelized over"),
+            "{}",
+            content[0].snippet
+        );
+
+        let citations = Box::pin(engine.search_comprehensive(
+            "which paper proposed the delta rule over sequence length",
+            5,
+            None,
+        ))
+        .await
+        .unwrap();
+        assert!(
+            kinds(&citations).iter().any(|k| k == "reference_entry"),
+            "{:?}",
+            kinds(&citations)
+        );
+    }
+
+    #[test]
+    fn only_window_chunks_are_widened_with_neighbours() {
+        let mut window = HashMap::new();
+        window.insert("chunk_index".to_string(), "4".to_string());
+        assert!(wants_neighbor_expansion(&window));
+        let mut unit = window.clone();
+        unit.insert("unit_kind".to_string(), "reference_entry".to_string());
+        assert!(!wants_neighbor_expansion(&unit));
+    }
 
     #[test]
     fn paged_chunk_metadata_round_trips_to_page_label() {
@@ -1325,5 +2290,57 @@ mod page_metadata_tests {
         let mut blank = HashMap::new();
         blank.insert("page".to_string(), "  ".to_string());
         assert_eq!(page_numbers_from_metadata(&blank), None);
+    }
+}
+
+#[cfg(test)]
+mod lazy_embedder_tests {
+    use super::*;
+
+    /// An installed E5 model is located at startup and loaded only by the first
+    /// embedding; a model that cannot load turns search setup back on.
+    #[tokio::test]
+    async fn the_embedder_loads_on_first_use_not_at_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let e5 = dir.path().join("models").join("multilingual-e5-base");
+        std::fs::create_dir_all(&e5).unwrap();
+        // Present but not a model: loading it fails, which shows when it is tried.
+        std::fs::write(e5.join("model_O4.onnx"), b"not an onnx model").unwrap();
+        std::fs::write(e5.join("tokenizer.json"), b"{}").unwrap();
+        let mut config = RAGConfig::default();
+        config.data_dir = dir.path().join("data");
+        config.embedding.model_dir = dir.path().join("models");
+        config.embedding.use_e5 = true;
+        config.embedding.dimension = 768;
+
+        let engine = RAGEngine::new(config).await.unwrap();
+        let handle = engine.embedder_handle();
+        assert!(
+            engine.has_search_models(),
+            "installed models count as set up"
+        );
+        assert!(!handle.is_loaded(), "opening the engine loads nothing");
+        assert_eq!(engine.embeddings().unwrap().dimension(), 768);
+
+        // Nothing to embed (text too short to chunk): no load either.
+        assert!(engine
+            .embeddings()
+            .unwrap()
+            .embed_documents(&[])
+            .unwrap()
+            .is_empty());
+        assert!(handle.available() && !handle.is_loaded());
+
+        // The first real embedding tries to load it.
+        assert!(engine
+            .embeddings()
+            .unwrap()
+            .embed_query("tide pools")
+            .is_err());
+        assert!(!handle.available());
+        assert!(
+            !engine.has_search_models(),
+            "a model that cannot load offers setup again"
+        );
     }
 }

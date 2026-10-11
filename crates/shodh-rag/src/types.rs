@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Citation {
     pub title: String,
     pub authors: Vec<String>,
@@ -11,20 +11,6 @@ pub struct Citation {
     pub url: Option<String>,
     pub doi: Option<String>,
     pub page_numbers: Option<String>,
-}
-
-impl Default for Citation {
-    fn default() -> Self {
-        Self {
-            title: String::new(),
-            authors: Vec::new(),
-            source: String::new(),
-            year: String::new(),
-            url: None,
-            doi: None,
-            page_numbers: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,11 +113,74 @@ pub struct MetadataFilter {
     pub date_from: Option<i64>,
     pub date_to: Option<i64>,
     pub custom: Option<HashMap<String, String>>,
+    /// A result must belong to one of these sources or files (a workspace, or the sources
+    /// and files the user limited an answer to). `None` means no such limit.
+    #[serde(default)]
+    pub any_of: Option<SourceSet>,
+}
+
+/// Sources (`space_id`s) and indexed files (stored source paths) a search may return.
+/// Empty means nothing may be returned.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SourceSet {
+    pub space_ids: Vec<String>,
+    pub source_paths: Vec<String>,
+}
+
+impl SourceSet {
+    pub fn is_empty(&self) -> bool {
+        self.space_ids.is_empty() && self.source_paths.is_empty()
+    }
+
+    /// Whether a chunk of `space_id` from `source` is in the set.
+    pub fn contains(&self, space_id: &str, source: &str) -> bool {
+        self.space_ids.iter().any(|s| s == space_id)
+            || self.source_paths.iter().any(|p| p == source)
+    }
+
+    fn predicate(&self) -> String {
+        let list = |items: &[String]| {
+            items
+                .iter()
+                .map(|i| format!("'{}'", i.replace('\'', "''")))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut parts = Vec::new();
+        if !self.space_ids.is_empty() {
+            parts.push(format!("space_id IN ({})", list(&self.space_ids)));
+        }
+        if !self.source_paths.is_empty() {
+            parts.push(format!("source IN ({})", list(&self.source_paths)));
+        }
+        if parts.is_empty() {
+            // Nothing is in an empty set.
+            "1 = 0".to_string()
+        } else {
+            format!("({})", parts.join(" OR "))
+        }
+    }
 }
 
 impl MetadataFilter {
+    /// Whether a chunk of `space_id` from `source` passes the source limits of this
+    /// filter (space, file and `any_of`). Applied to every result after retrieval, so a
+    /// candidate that reached the results by another path (the keyword index is not
+    /// filtered by space) cannot leave the limit.
+    pub fn admits(&self, space_id: &str, source: &str) -> bool {
+        self.space_id.as_deref().is_none_or(|s| s == space_id)
+            && self.source_path.as_deref().is_none_or(|p| p == source)
+            && self
+                .any_of
+                .as_ref()
+                .is_none_or(|set| set.contains(space_id, source))
+    }
+
     pub fn to_lance_predicate(&self) -> Option<String> {
         let mut predicates = Vec::new();
+        if let Some(set) = &self.any_of {
+            predicates.push(set.predicate());
+        }
 
         if let Some(ref space_id) = self.space_id {
             predicates.push(format!("space_id = '{}'", space_id.replace('\'', "''")));

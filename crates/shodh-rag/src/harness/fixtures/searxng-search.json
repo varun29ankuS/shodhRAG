@@ -1,0 +1,27 @@
+{
+  "query": "rust async closures",
+  "number_of_results": 0,
+  "results": [
+    {
+      "url": "https://blog.rust-lang.org/2024/08/12/async-closures.html",
+      "title": "Async closures MVP",
+      "content": "We are happy to announce that async closures are now available on nightly.",
+      "engine": "duckduckgo",
+      "engines": ["duckduckgo", "brave"],
+      "score": 2.0,
+      "category": "general"
+    },
+    {
+      "url": "https://docs.rs/async-closure",
+      "title": "",
+      "content": "Documentation for async closures.",
+      "engine": "brave",
+      "engines": ["brave"],
+      "score": 1.0,
+      "category": "general"
+    }
+  ],
+  "answers": [],
+  "suggestions": [],
+  "unresponsive_engines": []
+}

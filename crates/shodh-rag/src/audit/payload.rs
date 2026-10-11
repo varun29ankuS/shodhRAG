@@ -8,6 +8,7 @@ use super::MAX_SNIPPET_CHARS;
 use crate::harness::events::RiskTier;
 use crate::harness::tools::documents::OPEN_DOCUMENT;
 use crate::harness::tools::search::SEARCH_DOCUMENTS;
+use crate::harness::tools::web::{FETCH_URL, SEARCH_PAPERS, WEB_SEARCH};
 use crate::harness::tools::ApprovalDecision;
 use crate::llm::{ApiProvider, LLMMode};
 
@@ -37,6 +38,13 @@ pub fn provider_id(provider: &ApiProvider) -> &'static str {
         ApiProvider::Replicate => "replicate",
         ApiProvider::Baseten => "baseten",
         ApiProvider::Ollama => "ollama",
+        ApiProvider::LmStudio => "lmstudio",
+        ApiProvider::Subscription(service) => match service {
+            crate::llm::SubscriptionService::Claude => "claude-sub",
+            crate::llm::SubscriptionService::ChatGpt => "chatgpt-sub",
+            crate::llm::SubscriptionService::Copilot => "copilot-sub",
+            crate::llm::SubscriptionService::Gemini => "gemini-sub",
+        },
         // The model id and endpoint can carry credentials in URLs; only the
         // kind is recorded.
         ApiProvider::HuggingFace { .. } => "huggingface",
@@ -55,7 +63,7 @@ pub fn is_cloud(provider_or_model: &str) -> bool {
         .to_ascii_lowercase();
     !matches!(
         provider.as_str(),
-        "" | "ollama" | "local" | "llamacpp" | "llama.cpp" | "lmstudio"
+        "" | "ollama" | "local" | "llamacpp" | "llama.cpp" | "lmstudio" | "lm-studio"
     )
 }
 
@@ -198,7 +206,38 @@ pub fn retrieval(tool: &str, args: &Value, detail: Option<&Value>) -> Option<Val
             "tool": tool,
             "path": detail.get("path").cloned().unwrap_or(Value::Null),
             "location": detail.get("location").cloned().unwrap_or(Value::Null),
+            "passages": detail
+                .get("passages")
+                .and_then(Value::as_array)
+                .map(|items| items.iter().map(passage_entry).collect::<Vec<_>>())
+                .unwrap_or_default(),
         })),
+        WEB_SEARCH | FETCH_URL | SEARCH_PAPERS => {
+            let sources: Vec<Value> = detail
+                .get("webSources")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|s| {
+                            json!({
+                                "n": s.get("n").cloned().unwrap_or(Value::Null),
+                                "title": s.get("title").and_then(Value::as_str).map(|t| truncate(t, 200)),
+                                "url": s.get("url").cloned().unwrap_or(Value::Null),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(json!({
+                "tool": tool,
+                "query": args.get("query").cloned().unwrap_or(Value::Null),
+                "url": args.get("url").cloned().unwrap_or(Value::Null),
+                "final_url": detail.get("finalUrl").cloned().unwrap_or(Value::Null),
+                "provider": detail.get("provider").cloned().unwrap_or(Value::Null),
+                "sources": sources,
+            }))
+        }
         _ => None,
     }
 }
@@ -337,11 +376,34 @@ mod tests {
         let open = retrieval(
             OPEN_DOCUMENT,
             &json!({"path": "c:/d/a.pdf"}),
-            Some(&json!({"path": "c:/d/a.pdf", "location": "page 4 of 9"})),
+            Some(&json!({"path": "c:/d/a.pdf", "location": "page 4", "passages": [
+                {"n": 7, "file": "a.pdf", "path": "c:/d/a.pdf", "page": "4", "score": 1.0, "text": "Page four."}
+            ]})),
         )
         .unwrap();
-        assert_eq!(open["location"], "page 4 of 9");
+        assert_eq!(open["location"], "page 4");
+        assert_eq!(open["passages"][0]["n"], 7);
+        assert_eq!(open["passages"][0]["snippet"], "Page four.");
         assert!(retrieval("list_sources", &json!({}), Some(&json!({}))).is_none());
+
+        let web = retrieval(
+            WEB_SEARCH,
+            &json!({"query": "rust 2024"}),
+            Some(&json!({"provider": "SearXNG", "webSources": [
+                {"n": 3, "title": "Rust", "url": "https://example.org/", "snippet": "long text"}
+            ]})),
+        )
+        .unwrap();
+        assert_eq!(web["query"], "rust 2024");
+        assert_eq!(web["sources"][0]["url"], "https://example.org/");
+        assert!(web["sources"][0].get("snippet").is_none());
+        let page = retrieval(
+            FETCH_URL,
+            &json!({"url": "http://example.org/a"}),
+            Some(&json!({"finalUrl": "https://example.org/a", "webSources": []})),
+        )
+        .unwrap();
+        assert_eq!(page["final_url"], "https://example.org/a");
         assert!(retrieval(SEARCH_DOCUMENTS, &json!({}), None).is_none());
     }
 

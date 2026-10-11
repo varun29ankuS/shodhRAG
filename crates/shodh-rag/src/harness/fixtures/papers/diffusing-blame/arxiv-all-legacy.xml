@@ -1,0 +1,289 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
+  <id>https://arxiv.org/api/f/AR7JD6TDACSjkvjZc/MeOMNn0</id>
+  <title>arXiv Query: search_query=all:Diffusing OR all:Blame: OR all:Task-Dependent OR all:Credit OR all:Assignment OR all:in OR all:Biologically OR all:Plausible OR all:Dual-Stream OR all:Networks&amp;id_list=&amp;start=0&amp;max_results=12</title>
+  <updated>2026-10-03T17:22:04Z</updated>
+  <link href="https://arxiv.org/api/query?search_query=all:Diffusing+OR+(all:Blame:+OR+(all:Task-Dependent+OR+(all:Credit+OR+(all:Assignment+OR+(all:in+OR+(all:Biologically+OR+(all:Plausible+OR+(all:Dual-Stream+OR+all:Networks))))))))&amp;start=0&amp;max_results=12&amp;id_list=" type="application/atom+xml"/>
+  <opensearch:itemsPerPage>12</opensearch:itemsPerPage>
+  <opensearch:totalResults>545487</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <entry>
+    <id>http://arxiv.org/abs/2606.31700v1</id>
+    <title>Diffusing Blame: Task-Dependent Credit Assignment in Biologically Plausible Dual-Stream Networks</title>
+    <updated>2026-06-30T14:09:40Z</updated>
+    <link href="https://arxiv.org/abs/2606.31700v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2606.31700v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Biological neural circuits obey Dale's principle: each neuron's synapses are uniformly excitatory or inhibitory. Artificial networks that respect this constraint must coordinate separate excitatory and inhibitory populations, fundamentally changing how credit is assigned during learning. Several biologically plausible learning rules avoid backpropagation's weight transport requirement, but it has been difficult to achieve strong performance under Dale's principle beyond MNIST. Error Diffusion (ED) was originally proposed in a dual-stream excitatory/inhibitory architecture, where learning is driven by routing global error signals to all layers without transporting transposed forward weights or relying on random feedback matrices. Whether such a rule can scale under Dale's principle across both supervised classification and reinforcement learning remains unknown. Here, we introduce modulo error routing to extend Error Diffusion beyond binary classification, and show that a dual-stream excitatory/inhibitory architecture trained with this method achieves 96.7% on MNIST and establishes a 61.7% baseline on CIFAR-10, demonstrating that representation learning is possible even when strictly enforcing Dale's principle. For the classification setting, we introduce three domain-specific innovations: layer-specific sigmoid widths, batch-centered class error signals, and asymmetric initialization, and ablation analysis reveals that their relative importance reverses between MNIST and CIFAR-10, exposing task-dependent credit-assignment bottlenecks invisible to single-benchmark evaluation. In reinforcement learning, we integrate ED with Proximal Policy Optimization (PPO) and evaluate it on continuous-control tasks in Google Brax and on Craftax, an open-ended exploration task. We show that ED-PPO achieves competitive performance relative to Direct Feedback Alignment, a backpropagation-free baseline.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.NE" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-06-30T14:09:40Z</published>
+    <arxiv:comment>ALIFE2026</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Yutaro Yamada</name>
+    </author>
+    <author>
+      <name>Luca Grillotti</name>
+    </author>
+    <author>
+      <name>Rujikorn Charakorn</name>
+    </author>
+    <author>
+      <name>Sebastian Risi</name>
+    </author>
+    <author>
+      <name>David Ha</name>
+    </author>
+    <author>
+      <name>Robert Tjarko Lange</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2001.03354v2</id>
+    <title>Learning credit assignment</title>
+    <updated>2020-10-03T09:35:22Z</updated>
+    <link href="https://arxiv.org/abs/2001.03354v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2001.03354v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Deep learning has achieved impressive prediction accuracies in a variety of scientific and industrial domains. However, the nested non-linear feature of deep learning makes the learning highly non-transparent, i.e., it is still unknown how the learning coordinates a huge number of parameters to achieve a decision making. To explain this hierarchical credit assignment, we propose a mean-field learning model by assuming that an ensemble of sub-networks, rather than a single network, are trained for a classification task. Surprisingly, our model reveals that apart from some deterministic synaptic weights connecting two neurons at neighboring layers, there exist a large number of connections that can be absent, and other connections can allow for a broad distribution of their weight values. Therefore, synaptic connections can be classified into three categories: very important ones, unimportant ones, and those of variability that may partially encode nuisance factors. Therefore, our model learns the credit assignment leading to the decision, and predicts an ensemble of sub-networks that can accomplish the same task, thereby providing insights toward understanding the macroscopic behavior of deep learning through the lens of distinct roles of synaptic weights.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cond-mat.dis-nn" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cond-mat.stat-mech" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="q-bio.NC" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="stat.ML" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2020-01-10T09:06:46Z</published>
+    <arxiv:comment>5 pages, 4 figures, a generalized BackProp proposed to learn credit assignment from an network ensemble perspective, to appear in Phys Rev Lett (2020)</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <arxiv:journal_ref>Phys. Rev. Lett. 125, 178301 (2020)</arxiv:journal_ref>
+    <author>
+      <name>Chan Li</name>
+    </author>
+    <author>
+      <name>Haiping Huang</name>
+    </author>
+    <arxiv:doi>10.1103/PhysRevLett.125.178301</arxiv:doi>
+    <link rel="related" href="https://doi.org/10.1103/PhysRevLett.125.178301" title="doi"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2208.01416v2</id>
+    <title>Biologically Plausible Training of Deep Neural Networks Using a Top-down Credit Assignment Network</title>
+    <updated>2024-02-28T04:06:35Z</updated>
+    <link href="https://arxiv.org/abs/2208.01416v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2208.01416v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Despite the widespread adoption of Backpropagation algorithm-based Deep Neural Networks, the biological infeasibility of the BP algorithm could potentially limit the evolution of new DNN models. To find a biologically plausible algorithm to replace BP, we focus on the top-down mechanism inherent in the biological brain. Although top-down connections in the biological brain play crucial roles in high-level cognitive functions, their application to neural network learning remains unclear. This study proposes a two-level training framework designed to train a bottom-up network using a Top-Down Credit Assignment Network (TDCA-network). The TDCA-network serves as a substitute for the conventional loss function and the back-propagation algorithm, widely used in neural network training. We further introduce a brain-inspired credit diffusion mechanism, significantly reducing the TDCA-network's parameter complexity, thereby greatly accelerating training without compromising the network's performance.Our experiments involving non-convex function optimization, supervised learning, and reinforcement learning reveal that a well-trained TDCA-network outperforms back-propagation across various settings. The visualization of the update trajectories in the loss landscape indicates the TDCA-network's ability to bypass local minima where BP-based trajectories typically become trapped. The TDCA-network also excels in multi-task optimization, demonstrating robust generalizability across different datasets in supervised learning and unseen task settings in reinforcement learning. Moreover, the results indicate that the TDCA-network holds promising potential to train neural networks across diverse architectures.</summary>
+    <category term="cs.NE" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2022-08-01T07:14:37Z</published>
+    <arxiv:primary_category term="cs.NE"/>
+    <author>
+      <name>Jian-Hui Chen</name>
+    </author>
+    <author>
+      <name>Cheng-Lin Liu</name>
+    </author>
+    <author>
+      <name>Zuoren Wang</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2603.08949v1</id>
+    <title>Diffusion of Neuromodulators for Temporal Credit Assignment</title>
+    <updated>2026-03-09T21:30:56Z</updated>
+    <link href="https://arxiv.org/abs/2603.08949v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2603.08949v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Biological learning achieves temporal credit assignment despite sparse and imprecise feedback, often relying on neuromodulatory signals acting over space and time. Here, we introduce a learning mechanism in which error information diffuses locally through the network, similar to volume transmission of neuromodulators. This distributed modulation allows neurons to learn even in the absence of direct feedback, using the local concentration of the diffusing credit signal. Applied to recurrent spiking neural networks with sparse feedback connectivity, diffusive credit signaling improves learning across three benchmark tasks. Using eligibility propagation as a baseline learning mechanism, we show how diffusion-based modulation can provide a plausible mechanism for credit assignment in sparsely connected neural circuits.</summary>
+    <category term="q-bio.NC" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-03-09T21:30:56Z</published>
+    <arxiv:primary_category term="q-bio.NC"/>
+    <author>
+      <name>João Barretto-Bittar</name>
+    </author>
+    <author>
+      <name>Anna Levina</name>
+    </author>
+    <author>
+      <name>Emmanouil Giannakakis</name>
+    </author>
+    <author>
+      <name>Roxana Zeraati</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2106.14993v3</id>
+    <title>Modularity in Reinforcement Learning via Algorithmic Independence in Credit Assignment</title>
+    <updated>2021-07-21T17:07:10Z</updated>
+    <link href="https://arxiv.org/abs/2106.14993v3" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2106.14993v3" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Many transfer problems require re-using previously optimal decisions for solving new tasks, which suggests the need for learning algorithms that can modify the mechanisms for choosing certain actions independently of those for choosing others. However, there is currently no formalism nor theory for how to achieve this kind of modular credit assignment. To answer this question, we define modular credit assignment as a constraint on minimizing the algorithmic mutual information among feedback signals for different decisions. We introduce what we call the modularity criterion for testing whether a learning algorithm satisfies this constraint by performing causal analysis on the algorithm itself. We generalize the recently proposed societal decision-making framework as a more granular formalism than the Markov decision process to prove that for decision sequences that do not contain cycles, certain single-step temporal difference action-value methods meet this criterion while all policy-gradient methods do not. Empirical evidence suggests that such action-value methods are more sample efficient than policy-gradient methods on transfer problems that require only sparse changes to a sequence of previously optimal decisions.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.IT" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.NE" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="stat.ML" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2021-06-28T21:29:13Z</published>
+    <arxiv:comment>Long Presentation at the Thirty-eighth International Conference on Machine Learning (ICML) 2021. 21 pages, 11 figures. v2: updated acknowledgments. v3: clarified that the internal function nodes of the credit assignment mechanism are not considered O(1)</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Michael Chang</name>
+    </author>
+    <author>
+      <name>Sidhant Kaushik</name>
+    </author>
+    <author>
+      <name>Sergey Levine</name>
+    </author>
+    <author>
+      <name>Thomas L. Griffiths</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/1411.6191v1</id>
+    <title>Kickback cuts Backprop's red-tape: Biologically plausible credit assignment in neural networks</title>
+    <updated>2014-11-23T04:58:22Z</updated>
+    <link href="https://arxiv.org/abs/1411.6191v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/1411.6191v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Error backpropagation is an extremely effective algorithm for assigning credit in artificial neural networks. However, weight updates under Backprop depend on lengthy recursive computations and require separate output and error messages -- features not shared by biological neurons, that are perhaps unnecessary. In this paper, we revisit Backprop and the credit assignment problem. We first decompose Backprop into a collection of interacting learning algorithms; provide regret bounds on the performance of these sub-algorithms; and factorize Backprop's error signals. Using these results, we derive a new credit assignment algorithm for nonparametric regression, Kickback, that is significantly simpler than Backprop. Finally, we provide a sufficient condition for Kickback to follow error gradients, and show that Kickback matches Backprop's performance on real-world regression benchmarks.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.NE" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="q-bio.NC" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2014-11-23T04:58:22Z</published>
+    <arxiv:comment>7 pages. To appear, AAAI-15</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>David Balduzzi</name>
+    </author>
+    <author>
+      <name>Hastagiri Vanchinathan</name>
+    </author>
+    <author>
+      <name>Joachim Buhmann</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2007.05112v2</id>
+    <title>Biological credit assignment through dynamic inversion of feedforward networks</title>
+    <updated>2021-01-04T00:31:24Z</updated>
+    <link href="https://arxiv.org/abs/2007.05112v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2007.05112v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Learning depends on changes in synaptic connections deep inside the brain. In multilayer networks, these changes are triggered by error signals fed back from the output, generally through a stepwise inversion of the feedforward processing steps. The gold standard for this process -- backpropagation -- works well in artificial neural networks, but is biologically implausible. Several recent proposals have emerged to address this problem, but many of these biologically-plausible schemes are based on learning an independent set of feedback connections. This complicates the assignment of errors to each synapse by making it dependent upon a second learning problem, and by fitting inversions rather than guaranteeing them. Here, we show that feedforward network transformations can be effectively inverted through dynamics. We derive this dynamic inversion from the perspective of feedback control, where the forward transformation is reused and dynamically interacts with fixed or random feedback to propagate error signals during the backward pass. Importantly, this scheme does not rely upon a second learning problem for feedback because accurate inversion is guaranteed through the network dynamics. We map these dynamics onto generic feedforward networks, and show that the resulting algorithm performs well on several supervised and unsupervised datasets. Finally, we discuss potential links between dynamic inversion and second-order optimization. Overall, our work introduces an alternative perspective on credit assignment in the brain, and proposes a special role for temporal dynamics and feedback control during learning.</summary>
+    <category term="q-bio.NC" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.NE" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2020-07-10T00:03:01Z</published>
+    <arxiv:comment>34th Conference on Neural Information Processing Systems (NeurIPS 2020), Vancouver, Canada</arxiv:comment>
+    <arxiv:primary_category term="q-bio.NC"/>
+    <author>
+      <name>William F. Podlaski</name>
+    </author>
+    <author>
+      <name>Christian K. Machens</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2010.04434v3</id>
+    <title>Tuning Convolutional Spiking Neural Network with Biologically-plausible Reward Propagation</title>
+    <updated>2021-05-31T13:50:56Z</updated>
+    <link href="https://arxiv.org/abs/2010.04434v3" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2010.04434v3" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Spiking Neural Networks (SNNs) contain more biologically realistic structures and biologically-inspired learning principles than those in standard Artificial Neural Networks (ANNs). SNNs are considered the third generation of ANNs, powerful on the robust computation with a low computational cost. The neurons in SNNs are non-differential, containing decayed historical states and generating event-based spikes after their states reaching the firing threshold. These dynamic characteristics of SNNs make it difficult to be directly trained with the standard backpropagation (BP), which is also considered not biologically plausible. In this paper, a Biologically-plausible Reward Propagation (BRP) algorithm is proposed and applied to the SNN architecture with both spiking-convolution (with both 1D and 2D convolutional kernels) and full-connection layers. Unlike the standard BP that propagates error signals from post to presynaptic neurons layer by layer, the BRP propagates target labels instead of errors directly from the output layer to all pre-hidden layers. This effort is more consistent with the top-down reward-guiding learning in cortical columns of the neocortex. Synaptic modifications with only local gradient differences are induced with pseudo-BP that might also be replaced with the Spike-Timing Dependent Plasticity (STDP). The performance of the proposed BRP-SNN is further verified on the spatial (including MNIST and Cifar-10) and temporal (including TIDigits and DvsGesture) tasks, where the SNN using BRP has reached a similar accuracy compared to other state-of-the-art BP-based SNNs and saved 50% more computational cost than ANNs. We think the introduction of biologically plausible learning rules to the training procedure of biologically realistic SNNs will give us more hints and inspirations toward a better understanding of the biological system's intelligent nature.</summary>
+    <category term="cs.NE" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2020-10-09T08:42:13Z</published>
+    <arxiv:comment>Final Version. Accepted by IEEE Transactions on Neural Networks and Learning Systems</arxiv:comment>
+    <arxiv:primary_category term="cs.NE"/>
+    <author>
+      <name>Tielin Zhang</name>
+    </author>
+    <author>
+      <name>Shuncheng Jia</name>
+    </author>
+    <author>
+      <name>Xiang Cheng</name>
+    </author>
+    <author>
+      <name>Bo Xu</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/1910.05300v1</id>
+    <title>Patterns of Multiplex Layer Entanglement across Real and Synthetic Networks</title>
+    <updated>2019-10-11T16:50:33Z</updated>
+    <link href="https://arxiv.org/abs/1910.05300v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/1910.05300v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Real world complex networks often exhibit multiplex structure, connecting entities from different aspects of physical systems such as social, transportation and biological networks. Little is known about general properties of such networks across disciplines. In this work, we first investigate how consistent are connectivity patterns across 35 real world multiplex networks. We demonstrate that entanglement homogeneity and intensity, two measures of layer consistency, indicate apparent differences between social and biological networks. We also investigate trade, co-authorship and transport networks. We show that real networks can be separated in the joint space of homogeneity and intensity, demonstrating the usefulness of the two measures for categorization of real multiplex networks. Finally, we design a multiplex network generator, where similar patterns (as observed in real networks), are emerging over the analysis of 11{,}905 synthetic multiplex networks with various topological properties.</summary>
+    <category term="cs.SI" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="physics.soc-ph" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2019-10-11T16:50:33Z</published>
+    <arxiv:comment>Accepted at Complex Networks 2019</arxiv:comment>
+    <arxiv:primary_category term="cs.SI"/>
+    <arxiv:journal_ref>Complex Networks 2019</arxiv:journal_ref>
+    <author>
+      <name>Blaž Škrlj</name>
+    </author>
+    <author>
+      <name>Benjamin Renoust</name>
+    </author>
+    <arxiv:doi>10.1007/978-3-030-36683-4_54</arxiv:doi>
+    <link rel="related" href="https://doi.org/10.1007/978-3-030-36683-4_54" title="doi"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2409.19841v2</id>
+    <title>Counter-Current Learning: A Biologically Plausible Dual Network Approach for Deep Learning</title>
+    <updated>2024-10-23T16:27:27Z</updated>
+    <link href="https://arxiv.org/abs/2409.19841v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2409.19841v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Despite its widespread use in neural networks, error backpropagation has faced criticism for its lack of biological plausibility, suffering from issues such as the backward locking problem and the weight transport problem. These limitations have motivated researchers to explore more biologically plausible learning algorithms that could potentially shed light on how biological neural systems adapt and learn. Inspired by the counter-current exchange mechanisms observed in biological systems, we propose counter-current learning (CCL), a biologically plausible framework for credit assignment in neural networks. This framework employs a feedforward network to process input data and a feedback network to process targets, with each network enhancing the other through anti-parallel signal propagation. By leveraging the more informative signals from the bottom layer of the feedback network to guide the updates of the top layer of the feedforward network and vice versa, CCL enables the simultaneous transformation of source inputs to target outputs and the dynamic mutual influence of these transformations. Experimental results on MNIST, FashionMNIST, CIFAR10, and CIFAR100 datasets using multi-layer perceptrons and convolutional neural networks demonstrate that CCL achieves comparable performance to other biologically plausible algorithms while offering a more biologically realistic learning mechanism. Furthermore, we showcase the applicability of our approach to an autoencoder task, underscoring its potential for unsupervised representation learning. Our work presents a direction for biologically inspired and plausible learning algorithms, offering an alternative mechanism of learning and adaptation in neural networks.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.NE" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2024-09-30T00:47:13Z</published>
+    <arxiv:comment>Accepted at NeurIPS 2024. Code available at https://github.com/IandRover/CCL-NeurIPS24</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Chia-Hsiang Kao</name>
+    </author>
+    <author>
+      <name>Bharath Hariharan</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2011.12351v1</id>
+    <title>Hindsight Network Credit Assignment</title>
+    <updated>2020-11-24T20:16:45Z</updated>
+    <link href="https://arxiv.org/abs/2011.12351v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2011.12351v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>We present Hindsight Network Credit Assignment (HNCA), a novel learning method for stochastic neural networks, which works by assigning credit to each neuron's stochastic output based on how it influences the output of its immediate children in the network. We prove that HNCA provides unbiased gradient estimates while reducing variance compared to the REINFORCE estimator. We also experimentally demonstrate the advantage of HNCA over REINFORCE in a contextual bandit version of MNIST. The computational complexity of HNCA is similar to that of backpropagation. We believe that HNCA can help stimulate new ways of thinking about credit assignment in stochastic compute graphs.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2020-11-24T20:16:45Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Kenny Young</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/1905.04101v2</id>
+    <title>Biologically plausible deep learning -- but how far can we go with shallow networks?</title>
+    <updated>2019-06-17T15:54:19Z</updated>
+    <link href="https://arxiv.org/abs/1905.04101v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/1905.04101v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Training deep neural networks with the error backpropagation algorithm is considered implausible from a biological perspective. Numerous recent publications suggest elaborate models for biologically plausible variants of deep learning, typically defining success as reaching around 98% test accuracy on the MNIST data set. Here, we investigate how far we can go on digit (MNIST) and object (CIFAR10) classification with biologically plausible, local learning rules in a network with one hidden layer and a single readout layer. The hidden layer weights are either fixed (random or random Gabor filters) or trained with unsupervised methods (PCA, ICA or Sparse Coding) that can be implemented by local learning rules. The readout layer is trained with a supervised, local learning rule. We first implement these models with rate neurons. This comparison reveals, first, that unsupervised learning does not lead to better performance than fixed random projections or Gabor filters for large hidden layers. Second, networks with localized receptive fields perform significantly better than networks with all-to-all connectivity and can reach backpropagation performance on MNIST. We then implement two of the networks - fixed, localized, random &amp; random Gabor filters in the hidden layer - with spiking leaky integrate-and-fire neurons and spike timing dependent plasticity to train the readout layer. These spiking models achieve &gt; 98.2% test accuracy on MNIST, which is close to the performance of rate networks with one hidden layer trained with backpropagation. The performance of our shallow network models is comparable to most current biologically plausible models of deep learning. Furthermore, our results with a shallow spiking network provide an important reference and suggest the use of datasets other than MNIST for testing the performance of future models of biologically plausible deep learning.</summary>
+    <category term="cs.NE" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="stat.ML" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2019-02-27T13:16:28Z</published>
+    <arxiv:comment>14 pages, 4 figures</arxiv:comment>
+    <arxiv:primary_category term="cs.NE"/>
+    <arxiv:journal_ref>Neural Networks, Volume 118, October 2019, Pages 90-101</arxiv:journal_ref>
+    <author>
+      <name>Bernd Illing</name>
+    </author>
+    <author>
+      <name>Wulfram Gerstner</name>
+    </author>
+    <author>
+      <name>Johanni Brea</name>
+    </author>
+    <arxiv:doi>10.1016/j.neunet.2019.06.001</arxiv:doi>
+    <link rel="related" href="https://doi.org/10.1016/j.neunet.2019.06.001" title="doi"/>
+  </entry>
+</feed>

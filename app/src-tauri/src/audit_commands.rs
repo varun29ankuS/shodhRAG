@@ -29,6 +29,9 @@ pub const DB_FILE: &str = "shodh.db";
 /// Managed state: the open log, or why it could not be opened.
 pub struct AuditState {
     log: Result<Arc<AuditLog>, String>,
+    /// The database path and key the log was opened with, for other tables in
+    /// `shodh.db` (statement dynamics). `None` when the log could not be opened.
+    database: Option<(PathBuf, Option<AuditKey>)>,
 }
 
 /// Fetch the database key from the OS credential store, creating it on
@@ -49,14 +52,19 @@ impl AuditState {
     /// log is reported by the audit commands and in the app log.
     pub fn open(app_data_dir: &Path) -> Self {
         let path = app_data_dir.join(DB_FILE);
-        let log = (|| {
+        let opened = (|| {
             let key = if encryption_compiled() {
                 Some(database_key()?)
             } else {
                 None
             };
-            AuditLog::open(&path, key.as_ref()).map_err(|e| e.to_string())
+            let log = AuditLog::open(&path, key.as_ref()).map_err(|e| e.to_string())?;
+            Ok::<_, String>((log, key))
         })();
+        let (log, database) = match opened {
+            Ok((log, key)) => (Ok(log), Some((path.clone(), key))),
+            Err(e) => (Err(e), None),
+        };
         match &log {
             Ok(log) => tracing::info!(
                 target: "shodh::audit",
@@ -70,7 +78,14 @@ impl AuditState {
         }
         Self {
             log: log.map(Arc::new),
+            database,
         }
+    }
+
+    /// Path and key of `shodh.db`, when the log opened (other components open
+    /// their tables with the same key).
+    pub fn database(&self) -> Option<(PathBuf, Option<AuditKey>)> {
+        self.database.clone()
     }
 
     pub fn log(&self) -> Option<Arc<AuditLog>> {

@@ -15,7 +15,10 @@ use std::time::Duration;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{params, params_from_iter, Connection, ErrorCode, OpenFlags, OptionalExtension};
+use rusqlite::{
+    params, params_from_iter, Connection, ErrorCode, OpenFlags, OptionalExtension,
+    TransactionBehavior,
+};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -34,10 +37,17 @@ const RETENTION_KEY: &str = "retention_days";
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 
-/// Ordered schema migrations. Never edit an applied entry; append a new one.
-const MIGRATIONS: &[(i64, &str)] = &[(
-    1,
-    "CREATE TABLE audit_events (
+/// Ordered schema migrations of `shodh.db`. Never edit an applied entry; append a new one.
+/// The database is shared: the audit chain (1), the dynamics of typed statements (2), the
+/// generated-visuals gallery (3), learned-memory suggestions (4), research objects (5: snippet
+/// images, Result extraction records and rejections), the citation graph (6: the scholarly
+/// API cache, per-file scans and the build report), the model catalog cache (7) and
+/// workspaces (8: workspaces, their versioned instructions and sources) and the Inbox (9) use one version
+/// sequence, so every component that opens it sees the same schema.
+const MIGRATIONS: &[(i64, &str)] = &[
+    (
+        1,
+        "CREATE TABLE audit_events (
         id INTEGER PRIMARY KEY,
         ts TEXT NOT NULL,
         principal TEXT NOT NULL,
@@ -56,7 +66,275 @@ const MIGRATIONS: &[(i64, &str)] = &[(
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
     );",
-)];
+    ),
+    (
+        2,
+        // Mutable state of statements whose content lives in LanceDB: recall strength is
+        // stored at an anchor time and decayed lazily at read time, so reads never rewrite
+        // rows. Links are undirected (from_id < to_id) Hebbian co-activation weights.
+        "CREATE TABLE statement_dynamics (
+            statement_id TEXT PRIMARY KEY,
+            scope TEXT NOT NULL,
+            class TEXT NOT NULL,
+            strength REAL NOT NULL CHECK (strength >= 0.0 AND strength <= 1.0),
+            anchor_at TEXT NOT NULL,
+            importance REAL NOT NULL CHECK (importance >= 0.0 AND importance <= 1.0),
+            use_count INTEGER NOT NULL DEFAULT 0,
+            last_used_at TEXT NULL,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX statement_dynamics_scope ON statement_dynamics(scope);
+        CREATE TABLE statement_links (
+            from_id TEXT NOT NULL,
+            to_id TEXT NOT NULL,
+            weight REAL NOT NULL CHECK (weight >= 0.0 AND weight <= 1.0),
+            co_activations INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (from_id, to_id),
+            CHECK (from_id < to_id)
+        );
+        CREATE INDEX statement_links_to ON statement_links(to_id);",
+    ),
+    (
+        3,
+        // Visuals generated in answers (diagrams, charts, sketches, plots, simulations,
+        // equations, tables), kept so they can be found, refined and reused. A refinement is
+        // a new row of the same chain (`root_id`, `version`), never an edit of an earlier one;
+        // title, pin, note and deletion belong to the whole chain. Captures of one answer are
+        // deduplicated by content hash (`generated_visuals_origin`); the index ignores
+        // deletion so a deleted visual is not captured again. `generated_visuals_fts` is an
+        // external-content FTS5 index over title, note and source, kept by triggers.
+        "CREATE TABLE generated_visuals (
+            seq INTEGER PRIMARY KEY,
+            id TEXT NOT NULL UNIQUE,
+            root_id TEXT NOT NULL,
+            parent_id TEXT NULL,
+            version INTEGER NOT NULL CHECK (version >= 1),
+            conversation_id TEXT NOT NULL,
+            message_id TEXT NULL,
+            thread_id TEXT NULL,
+            turn_id TEXT NULL,
+            kind TEXT NOT NULL CHECK (kind IN
+                ('mermaid', 'chart', 'svg', 'plot', 'simulation', 'equation', 'table')),
+            title TEXT NOT NULL,
+            source TEXT NOT NULL,
+            params_json TEXT NOT NULL DEFAULT '{}',
+            content_hash TEXT NOT NULL,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            note TEXT NOT NULL DEFAULT '',
+            instruction TEXT NULL,
+            created_by TEXT NOT NULL CHECK (created_by IN ('capture', 'user', 'agent')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT NULL,
+            UNIQUE (root_id, version)
+        );
+        CREATE UNIQUE INDEX generated_visuals_origin ON generated_visuals(
+            conversation_id, IFNULL(message_id, ''), IFNULL(thread_id, ''), IFNULL(turn_id, ''),
+            content_hash
+        ) WHERE parent_id IS NULL;
+        CREATE INDEX generated_visuals_root ON generated_visuals(root_id, version);
+        CREATE INDEX generated_visuals_conversation ON generated_visuals(conversation_id);
+        CREATE VIRTUAL TABLE generated_visuals_fts USING fts5(
+            title, note, source,
+            content = 'generated_visuals', content_rowid = 'seq', tokenize = 'unicode61'
+        );
+        CREATE TRIGGER generated_visuals_fts_insert AFTER INSERT ON generated_visuals BEGIN
+            INSERT INTO generated_visuals_fts(rowid, title, note, source)
+            VALUES (new.seq, new.title, new.note, new.source);
+        END;
+        CREATE TRIGGER generated_visuals_fts_delete AFTER DELETE ON generated_visuals BEGIN
+            INSERT INTO generated_visuals_fts(generated_visuals_fts, rowid, title, note, source)
+            VALUES ('delete', old.seq, old.title, old.note, old.source);
+        END;
+        CREATE TRIGGER generated_visuals_fts_update AFTER UPDATE OF title, note, source
+        ON generated_visuals BEGIN
+            INSERT INTO generated_visuals_fts(generated_visuals_fts, rowid, title, note, source)
+            VALUES ('delete', old.seq, old.title, old.note, old.source);
+            INSERT INTO generated_visuals_fts(rowid, title, note, source)
+            VALUES (new.seq, new.title, new.note, new.source);
+        END;
+        CREATE TABLE visual_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );",
+    ),
+    (
+        4,
+        // Learning from conversations: memories an LLM suggests from the user's turns (and
+        // from consolidation), waiting for the user's decision or applied by the user's
+        // automatic-learning policy. A suggestion is never edited after it is decided;
+        // `fingerprint` (class + rendered text) suppresses duplicates and re-suggesting what
+        // the user rejected. `memory_learn_usage` counts the learning model's calls per UTC
+        // day for the cost caps; `memory_learn_state` keeps small values such as the time of
+        // the last consolidation.
+        "CREATE TABLE memory_proposals (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK (kind IN
+                ('remember', 'revise', 'link', 'resolve', 'archive')),
+            origin TEXT NOT NULL CHECK (origin IN ('turn', 'evolve', 'consolidate')),
+            status TEXT NOT NULL CHECK (status IN
+                ('pending', 'accepted', 'rejected', 'learned', 'undone', 'stale', 'failed')),
+            fingerprint TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            conversation_id TEXT NULL,
+            turn_id TEXT NULL,
+            payload_json TEXT NOT NULL,
+            confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+            sensitive_json TEXT NOT NULL DEFAULT '[]',
+            outcome_json TEXT NULL,
+            error TEXT NULL,
+            created_at TEXT NOT NULL,
+            decided_at TEXT NULL
+        );
+        CREATE INDEX memory_proposals_status ON memory_proposals(status, created_at);
+        CREATE INDEX memory_proposals_fingerprint ON memory_proposals(fingerprint, status);
+        CREATE TABLE memory_learn_usage (
+            day TEXT PRIMARY KEY,
+            llm_calls INTEGER NOT NULL DEFAULT 0,
+            input_chars INTEGER NOT NULL DEFAULT 0,
+            output_chars INTEGER NOT NULL DEFAULT 0,
+            proposals INTEGER NOT NULL DEFAULT 0,
+            invalid INTEGER NOT NULL DEFAULT 0,
+            refused INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE memory_learn_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );",
+    ),
+    (
+        5,
+        // Research objects. Snippet images are stored here, not in the LanceDB statement
+        // rows: this database is encrypted when the app has a key (LanceDB is not), and
+        // statement rows are appended on every edit, which would copy the bytes each
+        // time. An image is content-addressed by the SHA-256 of its PNG bytes and referenced
+        // from the Snippet statement as `shodh-blob:sha256:<hex>`. `result_extractions`
+        // keeps the report of the last Result extraction per paper (what the comparison
+        // coverage notes count); `result_rejections` remembers Results the user rejected,
+        // by fingerprint, so a later extraction does not bring them back.
+        "CREATE TABLE snippet_images (
+            hash TEXT PRIMARY KEY CHECK (length(hash) = 64),
+            png BLOB NOT NULL,
+            width INTEGER NOT NULL CHECK (width > 0),
+            height INTEGER NOT NULL CHECK (height > 0),
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE result_extractions (
+            file_path TEXT PRIMARY KEY,
+            report_json TEXT NOT NULL,
+            extracted_at TEXT NOT NULL
+        );
+        CREATE TABLE result_rejections (
+            fingerprint TEXT PRIMARY KEY,
+            file_path TEXT NOT NULL,
+            rejected_at TEXT NOT NULL
+        );
+        CREATE INDEX result_rejections_file ON result_rejections(file_path);",
+    ),
+    (
+        6,
+        // The citation graph. `scholarly_cache` keeps OpenAlex answers (and "not found")
+        // per request until `expires_at`, so a rebuild sends nothing it already asked;
+        // `citation_scans` keeps each library PDF's parsed identity and references, keyed
+        // by the file's size and modification time, so a rebuild parses only changed
+        // files; `citation_graph_state` keeps the last build report.
+        "CREATE TABLE scholarly_cache (
+            key TEXT PRIMARY KEY,
+            status INTEGER NOT NULL,
+            body BLOB NOT NULL,
+            fetched_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        );
+        CREATE TABLE citation_scans (
+            file_path TEXT PRIMARY KEY,
+            fingerprint TEXT NOT NULL,
+            scan_json TEXT NOT NULL,
+            scanned_at TEXT NOT NULL
+        );
+        CREATE TABLE citation_graph_state (
+            key TEXT PRIMARY KEY,
+            value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );",
+    ),
+    (
+        7,
+        // The model picker's list of models (OpenRouter's public list, parsed), so the
+        // picker opens instantly and shows prices offline. Refreshed after its TTL.
+        "CREATE TABLE model_catalog_cache (
+            source TEXT PRIMARY KEY,
+            models_json TEXT NOT NULL,
+            fetched_at_ms INTEGER NOT NULL CHECK (fetched_at_ms >= 0)
+        );",
+    ),
+    (
+        8,
+        // Workspaces: a named set of sources (folders, files, snippets, papers) with
+        // instructions, where chats search only those sources. Instructions are versioned:
+        // every edit is a new row, never an update. `workspace_state` holds one-time
+        // bookkeeping (the import of conversations saved with a legacy space).
+        "CREATE TABLE workspaces (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL,
+            icon TEXT NOT NULL,
+            color TEXT NOT NULL,
+            template TEXT NOT NULL,
+            pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
+            archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_active_at TEXT NULL
+        );
+        CREATE TABLE workspace_instructions (
+            workspace_id TEXT NOT NULL,
+            version INTEGER NOT NULL CHECK (version >= 1),
+            text TEXT NOT NULL,
+            author TEXT NOT NULL CHECK (author IN ('user', 'agent', 'template', 'migration')),
+            note TEXT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, version)
+        );
+        CREATE TABLE workspace_sources (
+            workspace_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('folder', 'file', 'snippet', 'paper')),
+            ref TEXT NOT NULL,
+            label TEXT NOT NULL,
+            path TEXT NULL,
+            added_by TEXT NOT NULL CHECK (added_by IN ('user', 'agent', 'migration')),
+            added_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, kind, ref)
+        );
+        CREATE INDEX workspace_sources_ref ON workspace_sources(kind, ref);
+        CREATE TABLE workspace_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );",
+    ),
+    (
+        9,
+        // The Inbox: approvals waiting on the user and background work that finished or
+        // failed. `data_json` holds what an item's actions need (a session and step,
+        // a task id); `link_json` what Open shows. Done and failed items are pruned after
+        // their retention (see `crate::inbox`).
+        "CREATE TABLE inbox_items (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK (kind IN ('approval', 'memory', 'reminder', 'indexing',
+                'tables', 'citation_graph', 'export', 'install')),
+            status TEXT NOT NULL CHECK (status IN ('working', 'needs_you', 'done', 'failed')),
+            title TEXT NOT NULL,
+            detail TEXT NULL,
+            link_json TEXT NULL,
+            data_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX inbox_items_status ON inbox_items(status, updated_at);",
+    ),
+];
 
 fn latest_schema_version() -> i64 {
     MIGRATIONS.last().map(|(v, _)| *v).unwrap_or(0)
@@ -162,9 +440,11 @@ fn open_connection(path: &Path, key: Option<&AuditKey>) -> AuditResult<(Connecti
     Ok((conn, encrypted))
 }
 
-/// Apply pending migrations in one transaction.
+/// Apply pending migrations in one transaction. `IMMEDIATE` takes the write lock before the
+/// version is read, so two components opening the database at once cannot both apply the
+/// same migration.
 fn migrate(conn: &mut Connection) -> AuditResult<()> {
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (
             version INTEGER PRIMARY KEY,
@@ -192,6 +472,16 @@ fn migrate(conn: &mut Connection) -> AuditResult<()> {
     }
     tx.commit()?;
     Ok(())
+}
+
+/// Open `shodh.db` for a component other than the audit log (the statement store's
+/// dynamics tables): the same key and connection settings, with every migration applied.
+/// The connection is independent of the audit writer; SQLite's WAL and busy timeout
+/// serialise the two writers.
+pub fn open_shared_connection(path: &Path, key: Option<&AuditKey>) -> AuditResult<Connection> {
+    let (mut conn, _) = open_connection(path, key)?;
+    migrate(&mut conn)?;
+    Ok(conn)
 }
 
 fn read_retention(conn: &Connection) -> AuditResult<u32> {
@@ -435,6 +725,10 @@ fn filter_sql(q: &AuditQuery) -> (String, Vec<SqlValue>) {
     {
         clauses.push("conversation_id = ?".to_string());
         params.push(SqlValue::Text(conversation.to_string()));
+    }
+    if let Some(tool) = q.tool.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        clauses.push("json_extract(payload_json, '$.tool') = ?".to_string());
+        params.push(SqlValue::Text(tool.to_string()));
     }
     if let Some(text) = q.text.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         let escaped = text
@@ -1232,6 +1526,24 @@ mod tests {
             })
             .unwrap();
         assert_eq!(page.iter().map(|r| r.id).collect::<Vec<_>>(), vec![5, 4]);
+
+        log.append(AuditRecord::new(
+            AuditEventType::ToolCall,
+            json!({"tool": "web_search", "args": {"query": "list_tasks"}}),
+        ))
+        .unwrap();
+        log.append(AuditRecord::new(
+            AuditEventType::ToolCall,
+            json!({"tool": "list_tasks", "args": {}}),
+        ))
+        .unwrap();
+        let by_tool = AuditQuery {
+            tool: Some("list_tasks".into()),
+            ..AuditQuery::default()
+        };
+        let rows = log.query(&by_tool).unwrap();
+        assert_eq!(rows.len(), 1, "matches the tool, not a mention in the args");
+        assert_eq!(rows[0].payload["tool"], "list_tasks");
     }
 
     #[test]
@@ -1324,6 +1636,106 @@ mod tests {
             .unwrap();
         assert_eq!(versions, latest_schema_version());
         assert!(log.verify().unwrap().ok);
+    }
+
+    #[test]
+    fn a_version_1_database_migrates_to_statement_tables_with_its_chain_intact() {
+        let (dir, log) = temp_log();
+        fill(&log, 3);
+        drop(log);
+        // Reduce the database to exactly what a version-1 app left behind.
+        raw(&dir)
+            .execute_batch(
+                "DROP TABLE statement_dynamics;
+                 DROP TABLE statement_links;
+                 DROP TABLE generated_visuals_fts;
+                 DROP TABLE generated_visuals;
+                 DROP TABLE visual_settings;
+                 DROP TABLE memory_proposals;
+                 DROP TABLE memory_learn_usage;
+                 DROP TABLE memory_learn_state;
+                 DROP TABLE snippet_images;
+                 DROP TABLE result_extractions;
+                 DROP TABLE result_rejections;
+                 DROP TABLE scholarly_cache;
+                 DROP TABLE citation_scans;
+                 DROP TABLE citation_graph_state;
+                 DROP TABLE model_catalog_cache;
+                 DROP TABLE workspaces;
+                 DROP TABLE workspace_instructions;
+                 DROP TABLE workspace_sources;
+                 DROP TABLE workspace_state;
+                 DROP TABLE inbox_items;
+                 DELETE FROM schema_version WHERE version > 1;",
+            )
+            .unwrap();
+        let path = dir.path().join("shodh.db");
+        // The statement store may open the database before the audit log does.
+        let shared = open_shared_connection(&path, None).unwrap();
+        let version: i64 = shared
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, latest_schema_version());
+        let tables: i64 = shared
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table'                  AND name IN ('statement_dynamics', 'statement_links')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 2);
+        let learning: i64 = shared
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table'
+                 AND name IN ('memory_proposals', 'memory_learn_usage', 'memory_learn_state')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(learning, 3);
+        let research: i64 = shared
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table'
+                 AND name IN ('snippet_images', 'result_extractions', 'result_rejections')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(research, 3);
+        let citations: i64 = shared
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table'
+                 AND name IN ('scholarly_cache', 'citation_scans', 'citation_graph_state')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(citations, 3);
+        let workspaces: i64 = shared
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table'
+                 AND name IN ('workspaces', 'workspace_instructions', 'workspace_sources',
+                              'workspace_state')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(workspaces, 4);
+        // Opening again (the audit log after the statement store) applies nothing twice.
+        let log = AuditLog::open(&path, None).unwrap();
+        let versions: i64 = raw(&dir)
+            .query_row("SELECT count(*) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(versions, latest_schema_version());
+        let report = log.verify().unwrap();
+        assert!(report.ok, "{report:?}");
+        assert_eq!(report.checked, 3);
+        // Links are stored once per unordered pair.
+        let reversed = shared.execute(
+            "INSERT INTO statement_links(from_id, to_id, weight, updated_at) VALUES ('b', 'a', 0.5, 'x')",
+            [],
+        );
+        assert!(reversed.is_err());
     }
 
     #[test]

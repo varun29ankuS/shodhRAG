@@ -23,16 +23,27 @@ tauri-build = { version = "2.0", features = [] }
 audit-encryption = ["shodh-rag/sqlcipher"]
 
 [dependencies]
-tauri = { version = "2.0", features = [] }
+# image-png: the clipboard plugin decodes PNG bytes for Copy image of a snippet
+tauri = { version = "2.0", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2.2"
 tauri-plugin-fs = "2.0"
 tauri-plugin-dialog = "2.0"
 tauri-plugin-clipboard-manager = "2.0"
+# Native reminder notifications (desktop: title and body only, see reminders.rs)
+tauri-plugin-notification = "~2.3.3"
+# Optional "start with Windows" (off by default)
+tauri-plugin-autostart = "~2.5.1"
+# One Shodh per user: a second launch (e.g. while hidden in the tray) shows the
+# running window instead of starting another process on the same data
+tauri-plugin-single-instance = "=2.3.6"
 # tauri-plugin-updater = "2.0"  # Disabled until update server is configured
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
+thiserror = "1"
+url = "2"
+sha2 = "0.10"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.21"
@@ -42,12 +53,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Document generation libraries
-printpdf = "0.7"  # For PDF generation
 docx-rs = "0.4"   # For Word documents
-rust_xlsxwriter = "0.60"  # For Excel files
+pulldown-cmark = { version = "0.13", default-features = false }
+regex = "1"
 
 # Include our RAG system
 shodh-rag = { path = "../../crates/shodh-rag" }
+shodh-ontology = { path = "../../crates/shodh-ontology" }
 
 # File watching
 notify = { version = "6.1", features = ["serde"] }
@@ -56,13 +68,23 @@ notify = { version = "6.1", features = ["serde"] }
 # macOS Keychain, Secret Service on Linux)
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 
-# MCP Protocol (Model Context Protocol) for tool integrations
+# MCP servers and skills for the agent (mcp/): downloads (enola), archives
+# and skill folders
 async-trait = "0.1"
 futures = "0.3"
 dashmap = "5.5"
+reqwest = "0.11"
+hex = "0.4"
+flate2 = "1"
+tar = "0.4"
+walkdir = "2"
 
 # Windows OCR
 [target.'cfg(windows)'.dependencies]
+# WebView2 PrintToPdf for PDF export (pdf_export.rs). Same versions as wry
+# uses, so `PlatformWebview::controller()` returns these exact types.
+webview2-com = "0.38.2"
+windows-core = "0.61.2"
 windows = { version = "0.58", features = [
     "Media_Ocr",
     "Graphics_Imaging",
@@ -70,4 +92,9 @@ windows = { version = "0.58", features = [
     "Globalization",
 ] }
 
-
+[dev-dependencies]
+tempfile = "3"
+zip = "2"
+bytes = "1"
+# Time zones with daylight saving for the reminder scheduler tests
+chrono-tz = "0.10"

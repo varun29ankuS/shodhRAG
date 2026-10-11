@@ -1,0 +1,107 @@
+{
+  "about": "The curated model table behind Settings > Model's four picks (Best quality, Fast & cheap, Free, Private). Each provider lists its candidates in order; the first one the provider offers is used. Ids are the agent runtime's (omp 18.4.10) model ids for that provider; `openrouter` is the same model's OpenRouter id, used only to show its price. Free picks come only from providers that offer free models (OpenRouter `:free`). Private picks are the models loaded in LM Studio and need no entry here. Edit this file to update the picks; model_picks::tests checks it.",
+  "order": [
+    "claude-sub",
+    "chatgpt-sub",
+    "copilot-sub",
+    "gemini-sub",
+    "anthropic",
+    "openai",
+    "google",
+    "grok",
+    "openrouter",
+    "lmstudio"
+  ],
+  "providers": {
+    "anthropic": {
+      "best": ["claude-opus-5-5"],
+      "fast": ["claude-haiku-4-5"],
+      "models": [
+        { "id": "claude-opus-5-5", "name": "Claude Opus 5.5", "openrouter": "anthropic/claude-opus-5.5" },
+        { "id": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5", "openrouter": "anthropic/claude-sonnet-5.5" },
+        { "id": "claude-sonnet-4-5", "name": "Claude Sonnet 4.5", "openrouter": "anthropic/claude-sonnet-4.5" },
+        { "id": "claude-haiku-4-5", "name": "Claude Haiku 4.5", "openrouter": "anthropic/claude-haiku-4.5" }
+      ]
+    },
+    "openai": {
+      "best": ["gpt-5.5"],
+      "fast": ["gpt-5.4-mini", "gpt-5-mini"],
+      "models": [
+        { "id": "gpt-5.5", "name": "GPT-5.5", "openrouter": "openai/gpt-5.5" },
+        { "id": "gpt-5", "name": "GPT-5", "openrouter": "openai/gpt-5" },
+        { "id": "gpt-5.4-mini", "name": "GPT-5.4 mini", "openrouter": "openai/gpt-5.4-mini" },
+        { "id": "gpt-5-mini", "name": "GPT-5 mini", "openrouter": "openai/gpt-5-mini" }
+      ]
+    },
+    "google": {
+      "best": ["gemini-3.1-pro-preview"],
+      "fast": ["gemini-3-flash-preview"],
+      "models": [
+        { "id": "gemini-3.1-pro-preview", "name": "Gemini 3.1 Pro Preview", "openrouter": "google/gemini-3.1-pro-preview" },
+        { "id": "gemini-3-flash-preview", "name": "Gemini 3 Flash Preview", "openrouter": "google/gemini-3-flash-preview" },
+        { "id": "gemini-2.5-pro", "name": "Gemini 2.5 Pro", "openrouter": "google/gemini-2.5-pro" },
+        { "id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash", "openrouter": "google/gemini-2.5-flash" }
+      ]
+    },
+    "grok": {
+      "best": ["grok-4.7"],
+      "fast": ["grok-4-1-fast"],
+      "models": [
+        { "id": "grok-4.7", "name": "Grok 4.7", "openrouter": "x-ai/grok-4.7" },
+        { "id": "grok-4-1-fast", "name": "Grok 4.1 Fast" }
+      ]
+    },
+    "openrouter": {
+      "best": ["anthropic/claude-opus-5.5", "openai/gpt-5.5"],
+      "fast": ["anthropic/claude-haiku-4.5", "openai/gpt-5-mini"],
+      "free": [
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "google/gemma-4-31b-it:free",
+        "nvidia/nemotron-3-ultra-550b-a55b:free"
+      ],
+      "models": []
+    },
+    "claude-sub": {
+      "best": ["claude-opus-5-5"],
+      "fast": ["claude-haiku-4-5"],
+      "models": [
+        { "id": "claude-opus-5-5", "name": "Claude Opus 5.5" },
+        { "id": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5" },
+        { "id": "claude-haiku-4-5", "name": "Claude Haiku 4.5" }
+      ]
+    },
+    "chatgpt-sub": {
+      "best": ["gpt-5.5"],
+      "fast": ["gpt-5.6-luna"],
+      "models": [
+        { "id": "gpt-5.5", "name": "GPT-5.5" },
+        { "id": "gpt-5.6-terra", "name": "GPT-5.6 Terra" },
+        { "id": "gpt-5.6-luna", "name": "GPT-5.6 Luna" }
+      ]
+    },
+    "copilot-sub": {
+      "best": ["gpt-5.5"],
+      "fast": ["gpt-5-mini"],
+      "models": [
+        { "id": "gpt-5.5", "name": "GPT-5.5" },
+        { "id": "claude-sonnet-5", "name": "Claude Sonnet 5" },
+        { "id": "gemini-3.1-pro-preview", "name": "Gemini 3.1 Pro Preview" },
+        { "id": "claude-haiku-4.5", "name": "Claude Haiku 4.5" },
+        { "id": "gpt-5-mini", "name": "GPT-5 mini" }
+      ]
+    },
+    "gemini-sub": {
+      "best": ["gemini-3.1-pro-preview"],
+      "fast": ["gemini-3-flash-preview"],
+      "models": [
+        { "id": "gemini-3.1-pro-preview", "name": "Gemini 3.1 Pro Preview" },
+        { "id": "gemini-3-flash-preview", "name": "Gemini 3 Flash Preview" },
+        { "id": "gemini-2.5-pro", "name": "Gemini 2.5 Pro" },
+        { "id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash" }
+      ]
+    },
+    "lmstudio": {
+      "models": []
+    }
+  }
+}

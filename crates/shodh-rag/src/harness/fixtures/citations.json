@@ -1,0 +1,22 @@
+{
+  "about": "Citation marker grammar shared by the Rust verifier (harness/grounding/citations.rs) and the transcript renderer (app/src/features/agent/grounding.ts). `markers` lists each marker's numbers in order of appearance.",
+  "cases": [
+    { "text": "The notice period is 60 days [1].", "markers": [[1]] },
+    { "text": "Both agree [2, 3] and [Document 4][5].", "markers": [[2, 3], [4], [5]] },
+    { "text": "Ranges expand [1-3] and [4–5].", "markers": [[1, 2, 3], [4, 5]] },
+    { "text": "Mixed [2, 6-7, Document 9].", "markers": [[2, 6, 7, 9]] },
+    { "text": "Lenticular 【6†source】 too.", "markers": [[6]] },
+    { "text": "An interval [0, 1] is not a citation.", "markers": [] },
+    { "text": "A wide range [1-100] is prose.", "markers": [] },
+    { "text": "A backwards range [5-2] is prose.", "markers": [] },
+    { "text": "A link [3](https://example.org) is not a citation.", "markers": [] },
+    { "text": "Code `x[1]` is code; this [2] is not.", "markers": [[2]] },
+    { "text": "```\nlet y = v[7];\n```\nAfter the fence [8].", "markers": [[8]] },
+    { "text": "Repeated numbers [3, 3] are a tuple.", "markers": [] },
+    { "text": "A KAN of shape [4, 9, 1] is a tuple.", "markers": [] },
+    { "text": "Out of order [5, 2] is a tuple.", "markers": [] },
+    { "text": "Spaces [ 4 ] are not a citation.", "markers": [] },
+    { "text": "Case does not matter [document 2].", "markers": [[2]] },
+    { "text": "Not numbers [x] or [1a].", "markers": [] }
+  ]
+}

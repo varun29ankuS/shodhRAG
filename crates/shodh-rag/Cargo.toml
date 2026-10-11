@@ -10,13 +10,12 @@ authors = ["Roshera Team"]
 lancedb = "0.26"
 arrow-array = "57"
 arrow-schema = "57"
-arrow = { version = "57", features = ["prettyprint"] }
 
 # Full-text search
 tantivy = "0.22"
 
 # Embeddings (ONNX)
-ort = "2.0.0-rc.10"
+ort = "2.0.0-rc.13"
 # default-features = false drops `esaxx_fast`, whose esaxx-rs build script hardcodes
 # `static_crt(true)` (/MT). Every other native dep (llama.cpp, onnxruntime, onig) is
 # built against the dynamic CRT (/MD), so the static esaxx object caused LNK2038
@@ -38,15 +37,30 @@ parking_lot = "0.12"
 tracing = "0.1"
 lru = "0.12"
 futures = "0.3"
-futures-util = "0.3"
 
 # LLM providers (llama.cpp GGUF, external APIs) and the search model downloader
 llama-cpp-2 = "0.1"
 async-trait = "0.1"
 reqwest = { version = "0.11", features = ["json", "stream"] }
+# Agent web tools: URL parsing, HTML to text, arXiv Atom feeds.
+url = "2"
+html2text = "0.14"
+roxmltree = "0.20"
 bytes = "1"
 
-# Document parsing
+# Document parsing. pdf_oxide supplies positioned text runs and table
+# detection for the layout parser (docs/adr/0002-document-parser.md).
+pdf_oxide = "=0.3.78"
+# pdf_oxide 0.3.78 does not compile against office_oxide >= 0.1.11 (a field
+# was added to a struct it constructs); pin the last compatible release.
+office_oxide = { version = "=0.1.10", default-features = false }
+# Table structure on table-candidate pages (docs/adr/0002-document-parser.md,
+# "Table model"): docling.rs's layout model finds table regions and its
+# TableFormer port recovers rows, columns and spans. Models are optional and
+# downloaded on demand (embeddings::model_store::table_model_artifacts).
+docling-pdf = { version = "=1.91.0", default-features = false, features = ["ml"] }
+docling-core = "=1.91.0"
+image = { version = "0.25", default-features = false, features = ["png"] }
 pdf-extract = "0.7"
 lopdf = "0.32"
 zip = "2"
@@ -61,6 +75,12 @@ jsonschema = { version = "0.46", default-features = false }
 tokio-util = { version = "0.7", features = ["codec"] }
 sha2 = "0.10"
 hex = "0.4"
+# Images sent to a vision model (equation transcription)
+base64 = "0.21"
+
+# Typed statements (memory, records, graph) are validated against the ontology.
+shodh-ontology = { path = "../shodh-ontology" }
+semver = "1"
 
 # Audit log: SQLite store. Plain bundled SQLite by default; the `sqlcipher`
 # feature switches to SQLCipher with a vendored OpenSSL (needs a Windows-native
@@ -95,3 +115,5 @@ windows = { version = "0.58", features = [
 
 [dev-dependencies]
 tempfile = "3"
+# Per-file timing logs in the corpus benchmark example.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

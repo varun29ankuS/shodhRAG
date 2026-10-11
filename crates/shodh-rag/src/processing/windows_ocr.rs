@@ -9,7 +9,8 @@ use windows::Storage::StorageFile;
 use windows::Storage::Streams::InMemoryRandomAccessStream;
 
 /// OCR a scanned PDF by rendering each page and running Windows OCR.
-pub fn ocr_pdf(path: &Path) -> Result<String> {
+/// Returns one string per page, in page order (empty for blank pages).
+pub fn ocr_pdf_pages(path: &Path) -> Result<Vec<String>> {
     let abs_path = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -31,7 +32,7 @@ pub fn ocr_pdf(path: &Path) -> Result<String> {
         .context("Windows OCR engine not available — install a language pack")?;
 
     let page_count = pdf.PageCount().context("Failed to get PDF page count")?;
-    let mut all_text = String::new();
+    let mut pages = Vec::with_capacity(page_count as usize);
 
     for i in 0..page_count {
         let page = pdf
@@ -73,22 +74,10 @@ pub fn ocr_pdf(path: &Path) -> Result<String> {
             .with_context(|| format!("Failed to get OCR text for page {}", i))?
             .to_string();
 
-        if !page_text.is_empty() {
-            if !all_text.is_empty() {
-                all_text.push('\n');
-            }
-            all_text.push_str(&page_text);
-        }
+        pages.push(page_text);
     }
 
-    if all_text.trim().is_empty() {
-        return Err(anyhow::anyhow!(
-            "OCR produced no text for PDF: {}",
-            path.display()
-        ));
-    }
-
-    Ok(all_text)
+    Ok(pages)
 }
 
 /// OCR an image file (PNG, JPG, BMP, TIFF) using Windows OCR API.

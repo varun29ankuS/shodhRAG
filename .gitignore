@@ -36,3 +36,6 @@ nul
 *.log
 combined_extraction.txt
 *.json.new
+
+# Evaluation runs (private corpora, generated questions, reports, models)
+/.eval-local/

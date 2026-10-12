@@ -3,8 +3,9 @@
 | System | File |
 | --- | --- |
 | Windows 10 or 11 (64-bit) | `shodh-rag-app_<version>_x64-setup.exe` |
-| macOS on Apple Silicon (M1 and later) | `shodh-rag-app_<version>_aarch64.dmg` |
-| macOS on Intel | `shodh-rag-app_<version>_x64.dmg` |
+| macOS 13.3 or later on Apple Silicon (M1 and later) | `shodh-rag-app_<version>_aarch64.dmg` |
+
+There is no build for Intel Macs yet.
 
 The installer does not contain the search models (about 620 MB), the OCR model (about 31 MB) or the agent runtime. Shodh downloads each one, checks its SHA-256 hash, and keeps it the first time you need it.
 

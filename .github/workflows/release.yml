@@ -4,11 +4,11 @@ name: Release
 #
 # Tag push (v*): creates a draft release named after the tag (body from
 # .github/release-notes.md) and uploads the Windows NSIS installer and the
-# macOS dmg for Apple Silicon and Intel to it. Nothing is published: a
-# maintainer reviews the draft and publishes it.
+# Apple Silicon dmg to it. Nothing is published: a maintainer reviews the
+# draft and publishes it.
 #
-# Pull request touching the release inputs: builds the same three installers
-# and uploads them as workflow artifacts only. No release is created.
+# Pull request touching the release inputs: builds the same installers and
+# uploads them as workflow artifacts only. No release is created.
 #
 # Updates (tauri-plugin-updater): when the TAURI_SIGNING_PRIVATE_KEY secret
 # exists and tauri.conf.json carries the matching public key, the build also
@@ -16,11 +16,12 @@ name: Release
 # installed apps read from releases/latest/download/latest.json. Without
 # either, the installers are built without update bundles.
 #
-# macOS builds are separate per architecture rather than one universal app:
-# ONNX Runtime is linked statically and its prebuilt library (ort-sys) exists
-# for aarch64-apple-darwin only, so the Intel build needs its own library and
-# a universal binary would need both linked into one; separate builds are
-# also half the download for each user.
+# No Intel Mac build, and so no universal one: ONNX Runtime is linked
+# statically from ort-sys's prebuilt libraries, and ort 2.0.0-rc.13 has none
+# for x86_64-apple-darwin ("no prebuilt binaries available for target
+# x86_64-apple-darwin"). Microsoft's last x86_64 macOS release (1.23.2) is
+# older than the ONNX Runtime API 27 that ort requires, so an Intel build
+# needs ONNX Runtime built from source.
 
 on:
   push:
@@ -70,6 +71,8 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          notes="${RUNNER_TEMP}/release-notes.md"
+          sed "s/<version>/${TAG#v}/g" .github/release-notes.md > "$notes"
           id=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
             --jq ".[] | select(.tag_name == \"${TAG}\") | .id" | head -n 1)
           if [ -n "$id" ]; then
@@ -83,7 +86,7 @@ jobs:
             id=$(gh api -X POST "repos/${GITHUB_REPOSITORY}/releases" \
               -f tag_name="${TAG}" \
               -f name="${TAG}" \
-              -F body=@.github/release-notes.md \
+              -F body=@"$notes" \
               -F draft=true \
               -F prerelease=false \
               --jq .id)
@@ -111,11 +114,6 @@ jobs:
           - name: macos-aarch64
             runner: macos-latest
             target: aarch64-apple-darwin
-            bundles: app,dmg
-            rustflags: ''
-          - name: macos-x64
-            runner: macos-15-intel
-            target: x86_64-apple-darwin
             bundles: app,dmg
             rustflags: ''
     runs-on: ${{ matrix.runner }}
@@ -165,6 +163,35 @@ jobs:
       # Update bundles need both halves of the signing key: the private key
       # (secret) signs them, the public key in tauri.conf.json lets installed
       # apps verify them. With only one half they are not built.
+      # The app links the C++ runtime dynamically (-crt-static off, as ONNX
+      # Runtime's prebuilt library requires) and llama.cpp uses OpenMP, so it
+      # imports MSVCP140*.dll and VCOMP140.DLL, which a clean Windows does not
+      # have. They are installed next to shodh-rag-app.exe (Microsoft's
+      # app-local deployment of the Visual C++ Redistributable files).
+      - name: Visual C++ runtime for the installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vs = & "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -property installationPath
+          $redist = Get-ChildItem "$vs/VC/Redist/MSVC" -Directory |
+            Where-Object { $_.Name -match '^\d+\.\d+\.\d+$' -and (Test-Path "$($_.FullName)/x64") } |
+            Sort-Object { [version]$_.Name } -Descending |
+            Select-Object -First 1
+          if (-not $redist) { throw "No Visual C++ redistributable files under $vs/VC/Redist/MSVC" }
+          $dirs = Get-ChildItem "$($redist.FullName)/x64" -Directory |
+            Where-Object { $_.Name -match '^Microsoft\.VC\d+\.(CRT|OpenMP)$' }
+          if (@($dirs | Where-Object Name -match 'CRT$').Count -ne 1 -or @($dirs | Where-Object Name -match 'OpenMP$').Count -ne 1) {
+            throw "Expected one CRT and one OpenMP folder in $($redist.FullName)/x64, found: $($dirs.Name -join ', ')"
+          }
+          $resources = [ordered]@{}
+          foreach ($dll in $dirs | Get-ChildItem -Filter *.dll) {
+            $resources[($dll.FullName -replace '\\', '/')] = $dll.Name
+            Write-Host "Bundling $($dll.Name) $($dll.VersionInfo.FileVersion) from $($redist.Name)"
+          }
+          @{ bundle = @{ resources = $resources } } | ConvertTo-Json -Depth 4 |
+            Set-Content -Encoding utf8NoBOM "$env:RUNNER_TEMP/vc-runtime.conf.json"
+
       - name: Build arguments
         id: args
         shell: bash
@@ -174,11 +201,9 @@ jobs:
           set -euo pipefail
           args="--target ${{ matrix.target }} --bundles ${{ matrix.bundles }}"
           pubkey=$(node -e "const c=require('./app/src-tauri/tauri.conf.json'); process.stdout.write(((c.plugins||{}).updater||{}).pubkey||'')")
+          updater=false
           if [ "$HAS_SIGNING_KEY" = "true" ] && [ -n "$pubkey" ]; then
-            conf="${RUNNER_TEMP}/updater.conf.json"
-            echo '{"bundle":{"createUpdaterArtifacts":true}}' > "$conf"
-            if command -v cygpath >/dev/null; then conf=$(cygpath -m "$conf"); fi
-            args="$args --config $conf"
+            updater=true
             echo "Update bundles: signed"
           elif [ "$HAS_SIGNING_KEY" = "true" ]; then
             echo "::warning::TAURI_SIGNING_PRIVATE_KEY is set but tauri.conf.json has no updater public key: update bundles are not built."
@@ -187,6 +212,19 @@ jobs:
           else
             echo "Update bundles: skipped (no signing key)"
           fi
+          # One merged --config file: the bundled runtime (Windows) and the
+          # update bundles (when signed).
+          conf="${RUNNER_TEMP}/ci.conf.json"
+          UPDATER="$updater" VC_CONF="${RUNNER_TEMP}/vc-runtime.conf.json" node -e '
+            const fs = require("fs");
+            const bundle = {};
+            if (fs.existsSync(process.env.VC_CONF)) Object.assign(bundle, JSON.parse(fs.readFileSync(process.env.VC_CONF, "utf8")).bundle);
+            if (process.env.UPDATER === "true") bundle.createUpdaterArtifacts = true;
+            fs.writeFileSync(process.argv[1], JSON.stringify({ bundle }, null, 2));
+          ' "$conf"
+          cat "$conf"
+          if command -v cygpath >/dev/null; then conf=$(cygpath -m "$conf"); fi
+          args="$args --config $conf"
           echo "args=$args" >> "$GITHUB_OUTPUT"
 
       - name: Build installer
@@ -231,9 +269,18 @@ jobs:
             if ($line -match 'delay load dependencies') { break }
             if ($line -match '^\s+(\S+\.dll)\s*$') { $deps += $Matches[1] }
           }
-          $installed = $files | ForEach-Object { Split-Path $_ -Leaf }
+          # Libraries installed next to the app (not NSIS plug-ins).
+          $installed = $files | Where-Object { $_ -notmatch '^\$PLUGINSDIR' -and $_ -notmatch '[\\/]' }
+          Write-Host "Installed next to the app: $($installed -join ', ')"
+          # API sets resolve inside Windows. The Visual C++ runtime may sit in
+          # the runner's System32 (Visual Studio is installed) but not on a
+          # clean Windows, so it must be in the installer.
+          $vcRuntime = '^(vcruntime|msvcp|vcomp|concrt|vccorlib)\d'
           $missing = $deps | Where-Object {
-            -not (Test-Path (Join-Path "$env:WINDIR/System32" $_)) -and ($installed -notcontains $_)
+            $dll = $_
+            $inInstaller = @($installed | Where-Object { $_ -ieq $dll }).Count -gt 0
+            $system = ($dll -match '^(api|ext)-ms-') -or (($dll -notmatch $vcRuntime) -and (Test-Path (Join-Path "$env:WINDIR/System32" $dll)))
+            -not $inInstaller -and -not $system
           }
           if ($missing) { throw "The app imports libraries that are neither part of Windows nor in the installer: $($missing -join ', ')" }
 
@@ -280,7 +327,6 @@ jobs:
           case "${{ matrix.target }}" in
             x86_64-pc-windows-msvc) asset=omp-windows-x64.exe ;;
             aarch64-apple-darwin) asset=omp-darwin-arm64 ;;
-            x86_64-apple-darwin) asset=omp-darwin-x64 ;;
           esac
           base="https://github.com/can1357/oh-my-pi/releases/download/v${version}"
           dir=$(mktemp -d)

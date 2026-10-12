@@ -166,7 +166,7 @@ jobs:
       # The app links the C++ runtime dynamically (-crt-static off, as ONNX
       # Runtime's prebuilt library requires) and llama.cpp uses OpenMP, so it
       # imports MSVCP140*.dll and VCOMP140.DLL, which a clean Windows does not
-      # have. They are installed next to shodh-rag-app.exe (Microsoft's
+      # have. They are installed next to Shodh.exe (Microsoft's
       # app-local deployment of the Visual C++ Redistributable files).
       - name: Visual C++ runtime for the installer
         if: runner.os == 'Windows'
@@ -265,7 +265,12 @@ jobs:
 
           $vs = & "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -property installationPath
           $dumpbin = Get-ChildItem "$vs/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe" | Select-Object -First 1
-          $report = & $dumpbin.FullName /nologo /dependents "$release/shodh-rag-app.exe"
+          # The bundled exe is named by mainBinaryName (tauri build renames
+          # cargo's shodh-rag-app.exe).
+          $main = (Get-Content -Raw app/src-tauri/tauri.conf.json | ConvertFrom-Json).mainBinaryName
+          if (-not $main) { throw 'tauri.conf.json has no mainBinaryName' }
+          if ($files -notcontains "$main.exe") { throw "The installer does not install $main.exe" }
+          $report = & $dumpbin.FullName /nologo /dependents "$release/$main.exe"
           $report | Write-Host
           # Load-time imports precede the delay-load section.
           $deps = @()

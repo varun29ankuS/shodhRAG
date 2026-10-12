@@ -1,6 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "shodh-rag-app",
+  "productName": "Shodh",
+  "mainBinaryName": "Shodh",
   "version": "0.0.1",
   "identifier": "com.shodh.rag-app",
   "build": {
@@ -14,7 +15,7 @@
       {
         "label": "main",
         "create": false,
-        "title": "Shodh-RAG",
+        "title": "Shodh",
         "width": 1400,
         "height": 900,
         "resizable": true,

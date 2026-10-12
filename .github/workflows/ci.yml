@@ -227,7 +227,7 @@ jobs:
   #     the ratio still reaches this ceiling.
   # The base commit's build comes from master's push run (artifact
   # footprint-exe-<sha>, uploaded right after its build), else from this PR's
-  # cache, else it is built here (about 20 more minutes). The anchor is cached
+  # cache, else it is built here (about 35 more minutes). The anchor is cached
   # and built the same way. Push runs on master upload their build and record
   # their time against the anchor.
   footprint:

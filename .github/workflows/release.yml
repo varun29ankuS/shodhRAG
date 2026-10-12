@@ -338,7 +338,7 @@ jobs:
           curl -fsSL --retry 3 -o "$dir/$asset" "$base/$asset"
           expected=$(awk -v a="$asset" '{ n=$2; sub(/^\*/, "", n); if (n == a) print $1 }' "$dir/SHA256SUMS.txt")
           if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
-            pinned=$(tr -d '\n ' < "$src" | sed -n 's/.*pub const OMP_WINDOWS_X64_SHA256: &str ="\([0-9a-f]*\)";.*/\1/p')
+            pinned=$(grep -A1 '^pub const OMP_WINDOWS_X64_SHA256' "$src" | grep -o '[0-9a-f]\{64\}' || true)
             [ "$pinned" = "$expected" ] || { echo "::error::The pinned hash ($pinned) differs from the release checksums ($expected)"; exit 1; }
           fi
           actual=$( (sha256sum "$dir/$asset" 2>/dev/null || shasum -a 256 "$dir/$asset") | awk '{print $1}')

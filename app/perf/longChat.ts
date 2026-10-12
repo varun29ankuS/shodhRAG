@@ -21,7 +21,8 @@ interface PerfApi {
   stream: (deltas: number, intervalMs: number) => Promise<void>;
 }
 
-const conversations = [shortConversation(), longConversation(TURNS)];
+// `empty=1`: a first start (no conversations yet), as the footprint check runs.
+const conversations = params.get('empty') === '1' ? [] : [shortConversation(), longConversation(TURNS)];
 let lastSend: { sessionId: string; runId: string } | null = null;
 
 const perf: PerfApi = {

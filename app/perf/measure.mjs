@@ -495,6 +495,76 @@ async function oneRun(run) {
   }
 }
 
+/**
+ * `--startup N`: N loads of an empty first start; the time from navigation to
+ * the shell's `shodh:shell-mounted` mark (what the footprint check's time to
+ * window ends on), and to first contentful paint.
+ */
+const STARTUP = Number(arg('startup', '0'));
+if (STARTUP > 0) {
+  const profileDir = mkdtempSync(path.join(tmpdir(), 'shodh-perf-'));
+  const debugPort = 9300 + Math.floor(Math.random() * 500);
+  const browser = spawn(EDGE, [
+    '--headless=new', '--disable-gpu', `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profileDir}`,
+    '--window-size=1400,900', '--no-first-run', '--no-default-browser-check', '--disable-extensions', 'about:blank',
+  ], { stdio: 'ignore' });
+  try {
+    let target = null;
+    for (let i = 0; i < 100 && !target; i++) {
+      try {
+        target = (await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json()).find(t => t.type === 'page');
+      } catch {
+        await sleep(100);
+      }
+    }
+    const cdp = new Cdp(target.webSocketDebuggerUrl);
+    await cdp.open();
+    await cdp.send('Page.enable');
+    await cdp.send('Runtime.enable');
+    // The disk cache stays warm across loads, as an installed app's assets are local.
+    const shell = [];
+    const fcp = [];
+    for (let i = 0; i < STARTUP + 1; i++) {
+      await cdp.send('Page.navigate', { url: `http://127.0.0.1:${port}/perf/long-chat.html?empty=1&theme=${THEME}` });
+      let at = null;
+      for (let k = 0; k < 200 && at === null; k++) {
+        await sleep(50);
+        try {
+          at = await cdp.eval(`(() => { const m = performance.getEntriesByName('shodh:shell-mounted', 'mark')[0]; return m ? m.startTime : null; })()`);
+        } catch {
+          at = null;
+        }
+      }
+      await sleep(500);
+      const paint = await cdp.eval(`(performance.getEntriesByName('first-contentful-paint')[0] || {}).startTime ?? null`);
+      // The first load fills the cache; it is not counted.
+      if (i > 0) {
+        shell.push(at);
+        fcp.push(paint);
+      }
+    }
+    cdp.close();
+    console.log('STARTUP ' + JSON.stringify({
+      loads: STARTUP,
+      shellMountedMedianMs: round(median(shell)),
+      shellMountedMinMs: round(Math.min(...shell)),
+      shellMountedMaxMs: round(Math.max(...shell)),
+      firstContentfulPaintMedianMs: round(median(fcp)),
+      shellMountedMs: shell.map(round),
+    }));
+  } finally {
+    browser.kill();
+    server.close();
+    await sleep(800);
+    try {
+      rmSync(profileDir, { recursive: true, force: true });
+    } catch {
+      // Edge may still hold the profile for a moment; it is a temp directory.
+    }
+  }
+  process.exit(0);
+}
+
 const results = [];
 for (let r = 1; r <= RUNS; r++) {
   const result = await oneRun(r);

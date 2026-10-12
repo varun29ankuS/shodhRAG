@@ -48,19 +48,15 @@ import { appendToDraft } from '../research/snippetModel';
 import { ModelChip } from '../modelPicker/ModelChip';
 import { CodeModeSwitch } from '../agent/CodeModeSwitch';
 import { DiagramHostContext } from './visual/diagramHost';
-import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
-import type { Range } from '@tanstack/react-virtual';
-import {
-  MESSAGE_GAP_PX,
-  distanceFromBottom,
-  estimateMessageHeight,
-  followsOutput,
-  mountedIndexes,
-} from './conversationWindow';
+import type { ConversationLogHandle } from './ConversationLog';
+import { CONVERSATION_TOP_PX, MESSAGE_INDEX_ATTR } from './windowLayout';
 import { ToolsChip } from '../tools/ToolsChip';
 import type { ConversationMode } from '../../hooks/useConversations';
 
 // The artifact side panel (editors, previews) loads when an artifact is first opened.
+// The windowed conversation (and its virtualizer) loads with the first
+// conversation that has messages, not at startup.
+const ConversationLog = lazy(() => import('./ConversationLog'));
 // Find in the conversation loads with the first Ctrl+F.
 const ConversationFind = lazy(() => import('./ConversationFind').then(m => ({ default: m.ConversationFind })));
 const EnhancedArtifactPanel = lazy(() => import('../../components/EnhancedArtifactPanel').then(m => ({ default: m.EnhancedArtifactPanel })));
@@ -74,18 +70,6 @@ const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
 
 const VISIBLE_SOURCE_CHIPS = 6;
-
-/** Space above the first message inside the scroller (its top padding). */
-const CONVERSATION_TOP_PX = 18;
-
-/** Messages rendered beyond the visible ones, above and below. */
-const OVERSCAN_MESSAGES = 3;
-
-/** Marks a mounted message with its index in the conversation (the window measures by it). */
-const MESSAGE_INDEX_ATTR = 'data-message-index';
-
-/** Frames to wait for a message brought into view to mount. */
-const REVEAL_MAX_FRAMES = 90;
 
 /** Width from which the task list docks to the right of the conversation. */
 const WIDE_LAYOUT_QUERY = '(min-width: 1440px)';
@@ -585,26 +569,6 @@ function SystemNotice({ message }: { message: ChatMessage }) {
   );
 }
 
-/** Estimates per message object (a streamed answer is a new object per frame). */
-const heightEstimates = new WeakMap<ChatMessage, number>();
-function estimatedHeight(message: ChatMessage): number {
-  let height = heightEstimates.get(message);
-  if (height === undefined) {
-    height = estimateMessageHeight(message);
-    heightEstimates.set(message, height);
-  }
-  return height;
-}
-
-/**
- * Rises into place when first shown. Decided once per mount, so a message
- * scrolled out of the window and back is not animated again.
- */
-function RiseOnce({ animate, children }: { animate: boolean; children: React.ReactNode }) {
-  const [rise] = useState(animate);
-  return <div className={rise ? 'ask-rise' : undefined}>{children}</div>;
-}
-
 /**
  * The Ask screen: empty state with a centered composer, or the conversation
  * (centered 700px column) with a floating composer and a source preview
@@ -638,8 +602,6 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     observer.observe(composerArea);
     return () => observer.disconnect();
   }, [composerArea]);
-  /** Conversation and message count last laid out: a change is a new message (or another conversation). */
-  const lastShownRef = useRef<{ conversationId: string | null; count: number }>({ conversationId: null, count: 0 });
 
   // Start the agent runtime while the question is being typed (it is not
   // started with the app); once per draft, and again after a mode or
@@ -703,10 +665,8 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     setRevealIndex(null);
   }, [conversationId]);
 
-  // The conversation is windowed: only the messages in view (and a few kept
-  // ones) are mounted, so long conversations open, scroll and take typing
-  // without every answer's markdown, charts and tables in the document.
-  // Older messages render as the reader scrolls up to them.
+  // The conversation is windowed (ConversationLog): only the messages in
+  // view are mounted. These keep a message mounted wherever the view is.
   const [findOpen, setFindOpen] = useState(false);
   const [findIndex, setFindIndex] = useState<number | null>(null);
   const [revealIndex, setRevealIndex] = useState<number | null>(null);
@@ -715,51 +675,17 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     () => (preview ? messages.findIndex(m => m.id === preview.messageId) : -1),
     [preview, messages],
   );
-  const rangeExtractor = useCallback(
-    (range: Range) => mountedIndexes(
-      defaultRangeExtractor(range),
-      [range.count - 1, focusedIndex, previewIndex, findIndex, revealIndex],
-      range.count,
-    ),
+  const keepMounted = useMemo(
+    () => [focusedIndex, previewIndex, findIndex, revealIndex],
     [focusedIndex, previewIndex, findIndex, revealIndex],
   );
-  // Stable while the messages are: the window's measurements are rebuilt
-  // when these change, so typing in the composer must not change them.
-  const estimateSize = useCallback((index: number) => estimatedHeight(messages[index]), [messages]);
-  const getItemKey = useCallback((index: number) => messages[index].id, [messages]);
-  const virtualizer = useVirtualizer({
-    count: messages.length,
-    getScrollElement: () => scrollerRef.current,
-    estimateSize,
-    getItemKey,
-    overscan: OVERSCAN_MESSAGES,
-    scrollMargin: CONVERSATION_TOP_PX,
-    indexAttribute: MESSAGE_INDEX_ATTR,
-    rangeExtractor,
-  });
-  const totalSize = virtualizer.getTotalSize();
-
-  // Whether the view follows new output: decided from scroll events (where
-  // the reader put the view), never from the size of what just arrived.
-  const followRef = useRef(true);
-  const onScroll = useCallback(() => {
-    const el = scrollerRef.current;
-    if (el) followRef.current = followsOutput(el.scrollHeight, el.scrollTop, el.clientHeight);
+  // The scroller as state: the window attaches to it once it is in the document.
+  const [scroller, setScroller] = useState<HTMLDivElement | null>(null);
+  const setScrollerRef = useCallback((el: HTMLDivElement | null) => {
+    scrollerRef.current = el;
+    setScroller(el);
   }, []);
-
-  // Keep the newest content in view: always for a new message, and while
-  // streaming (or while answers above are measured) only when following.
-  useLayoutEffect(() => {
-    const last = lastShownRef.current;
-    const isNew = last.conversationId !== conversationId || last.count !== messages.length;
-    lastShownRef.current = { conversationId, count: messages.length };
-    if (isNew) followRef.current = true;
-    const el = scrollerRef.current;
-    if (!el) return;
-    if (followRef.current && distanceFromBottom(el.scrollHeight, el.scrollTop, el.clientHeight) > 0) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [messages, conversationId, totalSize, composerSpace]);
+  const windowRef = useRef<ConversationLogHandle>(null);
 
   // The message holding keyboard focus stays mounted while it is scrolled away.
   const onFocusIn = useCallback((e: React.FocusEvent<HTMLDivElement>) => {
@@ -772,17 +698,12 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
 
   /** Bring the message at `index` into view and return its element once mounted. */
   const revealMessage = useCallback(async (index: number): Promise<HTMLElement | null> => {
-    const scroller = scrollerRef.current;
-    if (!scroller) return null;
-    followRef.current = false;
-    virtualizer.scrollToIndex(index, { align: 'start' });
-    for (let frame = 0; frame < REVEAL_MAX_FRAMES; frame++) {
+    // The window may still be loading (first conversation with messages).
+    for (let frame = 0; frame < 120 && !windowRef.current; frame++) {
       await new Promise(resolve => requestAnimationFrame(resolve));
-      const element = scroller.querySelector<HTMLElement>(`[${MESSAGE_INDEX_ATTR}="${index}"]`);
-      if (element) return element;
     }
-    return null;
-  }, [virtualizer]);
+    return windowRef.current ? windowRef.current.reveal(index) : null;
+  }, []);
 
   // Ctrl+F finds in the whole conversation (unmounted answers included), in
   // place of the browser's find, which only sees what is mounted. Dialogs
@@ -799,12 +720,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [messages.length]);
-  const firstVisibleIndex = useCallback(() => {
-    const scroller = scrollerRef.current;
-    const offset = scroller ? scroller.scrollTop : 0;
-    const item = virtualizer.getVirtualItems().find(v => v.end > offset);
-    return item ? item.index : 0;
-  }, [virtualizer]);
+  const firstVisibleIndex = useCallback(() => windowRef.current?.firstVisibleIndex() ?? 0, []);
   const closeFind = useCallback(() => {
     setFindOpen(false);
     setFindIndex(null);
@@ -814,6 +730,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
   // Messages already shown do not rise again when they remount (window
   // scrolls); new ones, and those of a conversation as it opens, do.
   const shownRef = useRef<{ conversationId: string | null; ids: Set<string> }>({ conversationId: null, ids: new Set() });
+  const wasShown = useCallback((id: string) => shownRef.current.ids.has(id), []);
   useEffect(() => {
     if (shownRef.current.conversationId !== conversationId) {
       shownRef.current = { conversationId, ids: new Set() };
@@ -1212,43 +1129,26 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     <section aria-label="Ask" className="relative h-full flex flex-col bg-shodh-ground" {...dropHandlers}>
       {dropOverlay}
       <div
-        ref={scrollerRef}
-        onScroll={onScroll}
+        ref={setScrollerRef}
         onFocus={onFocusIn}
         onBlur={onFocusOut}
         className="flex-1 overflow-y-auto scrollbar-thin"
         style={{ paddingTop: CONVERSATION_TOP_PX, paddingBottom: composerSpace }}
       >
-        <div
-          className="relative max-w-[700px] mx-auto"
-          style={{ height: totalSize }}
-          role="log"
-          aria-label="Conversation"
-          aria-live="off"
-        >
-          <DiagramHostContext.Provider value={diagramHost}>
-          {virtualizer.getVirtualItems().map(item => {
-            const index = item.index;
-            const message = messages[index];
-            return (
-              <div
-                key={item.key}
-                {...{ [MESSAGE_INDEX_ATTR]: index }}
-                ref={virtualizer.measureElement}
-                className="absolute left-0 right-0 top-0 px-7"
-                style={{
-                  transform: `translateY(${item.start - CONVERSATION_TOP_PX}px)`,
-                  paddingBottom: index === messages.length - 1 ? 0 : MESSAGE_GAP_PX,
-                }}
-              >
-                <RiseOnce animate={!shownRef.current.ids.has(message.id)}>
-                  {renderMessage(message, index)}
-                </RiseOnce>
-              </div>
-            );
-          })}
-          </DiagramHostContext.Provider>
-        </div>
+        <DiagramHostContext.Provider value={diagramHost}>
+          <Suspense fallback={null}>
+            <ConversationLog
+              ref={windowRef}
+              scroller={scroller}
+              conversationId={conversationId}
+              messages={messages}
+              keep={keepMounted}
+              bottomSpace={composerSpace}
+              wasShown={wasShown}
+              renderMessage={renderMessage}
+            />
+          </Suspense>
+        </DiagramHostContext.Provider>
       </div>
 
       {findOpen && (

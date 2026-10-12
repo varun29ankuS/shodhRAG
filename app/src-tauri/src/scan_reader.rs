@@ -5,10 +5,18 @@
 //! ([`ScanReaderRequest`]): on Windows the file was read with Windows OCR
 //! instead, on macOS it could not be read. The first report puts one Install
 //! item in the Inbox; the offer is made once (a dismissed offer does not come
-//! back; the Library's failure advice still offers the install on macOS). The
-//! reported files are kept in `scan-reader.json` in the app data folder until
-//! the reader is installed through the search model installer, and are then
-//! read again ([`reread_after_install`]).
+//! back: Settings → Search → Scan reader installs it, and on macOS so does the
+//! Library's failure advice). The reported files are kept in `scan-reader.json`
+//! in the app data folder until the reader is installed through the search
+//! model installer (by any of those routes), and are then read again
+//! ([`reread_after_install`]).
+//!
+//! Scans indexed before the OCR engine was recorded with their chunks were
+//! read with Windows OCR and never reported. Once the reader is installed
+//! they are found on disk ([`legacy_ocr_scans`]) and read again with the
+//! reported ones, once: at the install, or at the first start with the
+//! reader installed ([`reread_on_start`]), for a reader installed before
+//! this check existed.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -40,6 +48,10 @@ struct Pending {
     /// Files to read again once the reader is installed: path -> the metadata
     /// they were indexed with (their Library source among it).
     files: BTreeMap<String, HashMap<String, String>>,
+    /// Scans indexed before the OCR engine was recorded were looked for with
+    /// the reader installed (and handed over to be read again).
+    #[serde(default)]
+    legacy_checked: bool,
 }
 
 /// Managed by Tauri.
@@ -109,6 +121,55 @@ impl ScanReaderState {
             }
         }
         files
+    }
+
+    /// Whether scans indexed before the OCR engine was recorded were looked for.
+    async fn legacy_checked(&self) -> bool {
+        let _guard = self.lock.lock().await;
+        self.load().legacy_checked
+    }
+
+    /// Puts the scans found indexed before the OCR engine was recorded on the
+    /// list of files to read again and records that they were looked for, in
+    /// one save: an app closed before they are read reads them next time.
+    async fn add_legacy(&self, scans: Vec<shodh_rag::folder_sync::LegacyScan>) {
+        let _guard = self.lock.lock().await;
+        let mut pending = self.load();
+        merge_legacy(&mut pending.files, scans);
+        pending.legacy_checked = true;
+        if let Err(e) = self.save(&pending) {
+            tracing::warn!(error = %e, "scan reader list not saved");
+        }
+    }
+
+    /// Whether files wait to be read again.
+    async fn has_files(&self) -> bool {
+        let _guard = self.lock.lock().await;
+        !self.load().files.is_empty()
+    }
+}
+
+/// Adds the legacy scans to the files to read again (a file already listed
+/// keeps the metadata it was reported with).
+fn merge_legacy(
+    files: &mut BTreeMap<String, HashMap<String, String>>,
+    legacy: Vec<shodh_rag::folder_sync::LegacyScan>,
+) {
+    let listed: BTreeSet<String> = files
+        .keys()
+        .map(|path| normalize_source_path(Path::new(path)))
+        .collect();
+    for scan in legacy {
+        if listed.contains(&scan.source) {
+            continue;
+        }
+        let mut metadata = scan.metadata;
+        if !scan.space_id.is_empty() {
+            metadata
+                .entry("space_id".to_string())
+                .or_insert(scan.space_id);
+        }
+        files.entry(scan.source).or_insert(metadata);
     }
 }
 
@@ -191,10 +252,63 @@ pub fn start_worker(app: AppHandle, mut rx: UnboundedReceiver<ScanReaderRequest>
 /// still indexed. Files that are gone, or whose source was removed, are
 /// skipped.
 pub async fn reread_after_install(app: AppHandle, rag: Arc<AsyncRwLock<ComprehensiveRAG>>) {
+    reread(app, rag, true).await;
+}
+
+/// At the first start with the reader installed and the Library's folders
+/// watched: reads again what an install did not (scans indexed before the OCR
+/// engine was recorded, for a reader installed before they were looked for;
+/// files recorded while an install was cut short). Says nothing when there
+/// is nothing to read.
+pub async fn reread_on_start(app: AppHandle, rag: Arc<AsyncRwLock<ComprehensiveRAG>>) {
+    if !reader_reads(&rag).await {
+        return;
+    }
+    let state = app.state::<ScanReaderState>();
+    if state.legacy_checked().await && !state.has_files().await {
+        return;
+    }
+    reread(app, rag, false).await;
+}
+
+/// Whether scans are read with the reader: it is installed and the OCR
+/// setting does not choose the system OCR.
+async fn reader_reads(rag: &AsyncRwLock<ComprehensiveRAG>) -> bool {
+    let engine = rag.read().await;
+    engine.ocr_handle().available()
+        && engine.config().ocr.engine != shodh_rag::config::OcrEngineChoice::System
+}
+
+/// Finds, once with the reader installed, the scans indexed before the OCR
+/// engine was recorded and puts them on the list of files to read again. A
+/// failure is tried again next time.
+async fn queue_legacy_scans(app: &AppHandle, rag: &AsyncRwLock<ComprehensiveRAG>) {
+    let state = app.state::<ScanReaderState>();
+    if state.legacy_checked().await || !reader_reads(rag).await {
+        return;
+    }
+    match crate::file_watcher::legacy_ocr_scans_in_turn(app).await {
+        Ok(scans) => {
+            if !scans.is_empty() {
+                tracing::info!(
+                    scans = scans.len(),
+                    "scans read with Windows OCR before the engine was recorded"
+                );
+            }
+            state.add_legacy(scans).await;
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "scans indexed before the OCR engine was recorded not looked for");
+        }
+    }
+}
+
+async fn reread(app: AppHandle, rag: Arc<AsyncRwLock<ComprehensiveRAG>>, announce: bool) {
+    queue_legacy_scans(&app, &rag).await;
     let files = app.state::<ScanReaderState>().take_files().await;
     let offered = app.state::<ScanReaderState>().load().offered;
     if files.is_empty() {
-        if offered {
+        if offered && announce {
             crate::inbox_commands::post(&app, progress_item(InboxStatus::Done, 0)).await;
         }
         return;
@@ -271,6 +385,73 @@ mod tests {
         assert!(again.take_files().await.is_empty(), "taken files are gone");
         // After the install, a scan reported again does not offer again.
         assert!(!again.record(request("C:/docs/c-scan.pdf", "s2")).await);
+    }
+
+    #[tokio::test]
+    async fn the_legacy_scan_check_is_kept_across_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        // A list written before the check existed reads as not checked.
+        std::fs::write(
+            dir.path().join(PENDING_FILE),
+            r#"{"offered":true,"files":{}}"#,
+        )
+        .unwrap();
+        let state = ScanReaderState::new(dir.path());
+        assert!(!state.legacy_checked().await);
+        assert!(!state.has_files().await);
+        state
+            .add_legacy(vec![shodh_rag::folder_sync::LegacyScan {
+                source: "c:/docs/old-scan.pdf".into(),
+                space_id: "s1".into(),
+                metadata: HashMap::new(),
+            }])
+            .await;
+        // A new run (the app closed before they were read) still has them.
+        let again = ScanReaderState::new(dir.path());
+        assert!(again.legacy_checked().await);
+        assert!(again.has_files().await);
+        assert!(again.load().offered, "the offer stays made");
+        assert!(!again.record(request("C:/docs/a-scan.pdf", "s1")).await);
+        let files = again.take_files().await;
+        assert_eq!(files.len(), 2);
+        assert_eq!(files["c:/docs/old-scan.pdf"]["space_id"], "s1");
+        assert!(!again.has_files().await);
+        assert!(again.legacy_checked().await, "recording keeps the check");
+    }
+
+    #[test]
+    fn legacy_scans_join_the_reported_files_once() {
+        use shodh_rag::folder_sync::LegacyScan;
+        let reported = PathBuf::from("C:/Docs/Lease-Scan.pdf");
+        let mut files = BTreeMap::from([(
+            reported.display().to_string(),
+            HashMap::from([("space_id".to_string(), "s1".to_string())]),
+        )]);
+        merge_legacy(
+            &mut files,
+            vec![
+                LegacyScan {
+                    source: normalize_source_path(&reported),
+                    space_id: "s1".into(),
+                    metadata: HashMap::new(),
+                },
+                LegacyScan {
+                    source: "c:/docs/old/invoice-scan.pdf".into(),
+                    space_id: "s2".into(),
+                    metadata: HashMap::from([("title".to_string(), "invoice-scan".to_string())]),
+                },
+                LegacyScan {
+                    source: "c:/elsewhere/receipt.png".into(),
+                    space_id: String::new(),
+                    metadata: HashMap::new(),
+                },
+            ],
+        );
+        assert_eq!(files.len(), 3, "{files:?}");
+        let invoice = &files["c:/docs/old/invoice-scan.pdf"];
+        assert_eq!(invoice["space_id"], "s2", "its folder syncs it");
+        assert_eq!(invoice["title"], "invoice-scan");
+        assert!(!files["c:/elsewhere/receipt.png"].contains_key("space_id"));
     }
 
     #[tokio::test]

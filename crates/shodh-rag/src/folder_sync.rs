@@ -400,6 +400,64 @@ pub async fn upgrade_unowned(
     Ok(report)
 }
 
+/// A file indexed by OCR before the OCR engine was recorded with its chunks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyScan {
+    /// The file (its index identity, a path).
+    pub source: String,
+    /// The Library source it belongs to (empty for files outside the Library).
+    pub space_id: String,
+    /// The metadata it was indexed with by its caller, to index it again with.
+    pub metadata: std::collections::HashMap<String, String>,
+}
+
+/// Scans indexed before the OCR engine was recorded with their chunks: then
+/// every scan was read with the system OCR, since there was no scan reader.
+/// They are files whose chunks name no OCR engine and that the parser reads
+/// with OCR (images, and PDFs without a text layer, checked on disk). A scan
+/// whose chunks name the system OCR was read with it on purpose (JBIG2 or
+/// JPEG 2000 images) or is recorded for reading again; those are not listed.
+/// Files that are gone are skipped; `scheme://` sources are not files.
+pub async fn legacy_ocr_scans(rag: &RwLock<RAGEngine>) -> Result<Vec<LegacyScan>, String> {
+    let rows = rag
+        .read()
+        .await
+        .documents_without_ocr_engine()
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    let mut scans = Vec::new();
+    for row in rows {
+        if row.source.contains("://") {
+            continue;
+        }
+        let path = PathBuf::from(&row.source);
+        let check = path.clone();
+        let needs_ocr = tokio::task::spawn_blocking(move || {
+            check.is_file() && crate::processing::parser::needs_ocr(&check)
+        })
+        .await
+        .map_err(|e| format!("Checking {} failed: {e}", row.source))?;
+        if !needs_ocr {
+            continue;
+        }
+        let metadata = rag
+            .read()
+            .await
+            .document_metadata(&row.source)
+            .await
+            .map_err(|e| format!("{e:#}"))?
+            .into_iter()
+            .filter(|(key, _)| DOCUMENT_KEYS.contains(&key.as_str()))
+            .collect();
+        scans.push(LegacyScan {
+            source: row.source,
+            space_id: row.space_id,
+            metadata,
+        });
+    }
+    Ok(scans)
+}
+
 /// Bring the index of `source_id` in step with `folder`. The folder must
 /// exist: a folder that is missing (an unplugged drive) changes nothing.
 /// `stop` is asked before each file; when it says so the sync ends early with
@@ -1019,6 +1077,91 @@ mod tests {
             .await
             .expect("sync");
         assert_eq!((settled.indexed, settled.removed), (0, 0));
+    }
+
+    /// Scans indexed before the OCR engine was recorded with their chunks are
+    /// found by looking at the files; text files, text PDFs, scans whose
+    /// chunks name their engine and files that are gone are not listed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scans_indexed_before_the_ocr_engine_was_recorded_are_found() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.path().join("data");
+        config.embedding.model_dir = dir.path().join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        config.ocr.engine = crate::config::OcrEngineChoice::PpOcr;
+        let cache = crate::processing::ocr::cache::OcrCache::new(
+            config.data_dir.join(crate::rag_engine::OCR_CACHE_DIR),
+        );
+        let mut engine = RAGEngine::new(config).await.expect("engine");
+        engine
+            .attach_search_models(crate::rag_engine::SearchModels::from_embedder(Arc::new(
+                crate::statements::testing::WordEmbedder::default(),
+            )))
+            .expect("models");
+        let rag = Arc::new(RwLock::new(engine));
+        let folder = dir.path().join("library");
+        std::fs::create_dir_all(&folder).expect("folder");
+        let corpus_scan = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../shodh-eval/data/scanned/corpus/contracts/lease-saffron-tidewater-scan.pdf");
+        let text_pdf = || {
+            let lines: Vec<_> = (0..30)
+                .map(|i| {
+                    crate::processing::pdf_fixtures::text(
+                        72.0,
+                        740.0 - 20.0 * i as f32,
+                        11.0,
+                        "Either party may end this agreement with sixty days written notice.",
+                    )
+                })
+                .collect();
+            crate::processing::pdf_fixtures::build_pdf(&[lines], None)
+        };
+
+        std::fs::write(folder.join("lease.txt"), PASSAGE).expect("file");
+        std::fs::write(folder.join("notice.pdf"), text_pdf()).expect("text pdf");
+        // A scan read now: its chunks name the engine that read it.
+        let recorded = folder.join("lease-scan.pdf");
+        std::fs::copy(&corpus_scan, &recorded).expect("scan");
+        cache
+            .put(&crate::processing::parser::tests::cached_scan(
+                &canonical_path(&recorded),
+                "Monthly rent is INR 4,85,000, payable by the 5th day of each month.",
+            ))
+            .expect("cached");
+        // A scan as an earlier build indexed it: chunks without an engine.
+        // Indexed here from a text PDF, then the scan takes its place on disk.
+        let legacy = folder.join("msa-scan.pdf");
+        std::fs::write(&legacy, text_pdf()).expect("legacy");
+        for file in ["lease.txt", "notice.pdf", "lease-scan.pdf", "msa-scan.pdf"] {
+            let metadata = std::collections::HashMap::from([
+                ("space_id".to_string(), "s1".to_string()),
+                ("title".to_string(), file.to_string()),
+            ]);
+            crate::indexing::index_file(&rag, &canonical_path(&folder.join(file)), metadata)
+                .await
+                .expect("indexed");
+        }
+        std::fs::copy(&corpus_scan, &legacy).expect("scan in place");
+
+        let scans = legacy_ocr_scans(&rag).await.expect("listed");
+        assert_eq!(
+            scans
+                .iter()
+                .map(|s| s.source.rsplit('/').next().unwrap_or_default())
+                .collect::<Vec<_>>(),
+            ["msa-scan.pdf"]
+        );
+        assert_eq!(scans[0].space_id, "s1");
+        assert_eq!(
+            scans[0].metadata.get("title").map(String::as_str),
+            Some("msa-scan.pdf"),
+            "indexed again with the metadata it was indexed with"
+        );
+
+        std::fs::remove_file(&legacy).expect("delete");
+        assert!(legacy_ocr_scans(&rag).await.expect("listed").is_empty());
     }
 
     /// A folder indexed by an earlier version before manifests existed is

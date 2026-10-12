@@ -1806,6 +1806,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_checked_answer_has_neither_the_preamble_nor_the_repair_apology() {
+        let (inner, mut events, mut out) = offline_inner(Some(GroundingConfig::lexical()));
+        start(&inner);
+        let (first_prompt, _) = sent_prompt(&mut out);
+        say(
+            &inner,
+            "m0",
+            "I'll search the agreement for the notice period.",
+        );
+        feed(
+            &inner,
+            r#"{"type":"message_update","messageId":"m0","assistantMessageEvent":{"type":"toolcall_end","toolCall":{"type":"toolCall","id":"t1","name":"update_plan","arguments":{}}}}"#,
+        );
+        say(
+            &inner,
+            "m1",
+            "Either party may terminate the agreement with 90 days written notice [1].",
+        );
+        complete(&inner, &first_prompt);
+        let round0 = events_until(&mut events, |e| {
+            matches!(e, AgentEvent::RevisionStarted { .. })
+        })
+        .await;
+        let report = round0
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::Grounding { report, .. } => Some(report.clone()),
+                _ => None,
+            })
+            .expect("a grounding report");
+        assert_eq!(
+            report.message_ids,
+            vec!["m1"],
+            "the preamble is not checked"
+        );
+        assert_eq!(report.claims.len(), 1);
+
+        let (repair_prompt, _) = sent_prompt(&mut out);
+        let answer = "Either party may terminate the agreement with 60 days written notice [1].";
+        for piece in [
+            "I apologize for the error in my previous ",
+            "response. Here is the corrected answer:\n",
+            "\nEither party may terminate the agreement ",
+            "with 60 days written notice [1].",
+        ] {
+            say(&inner, "m2", piece);
+        }
+        complete(&inner, &repair_prompt);
+        let round1 =
+            events_until(&mut events, |e| matches!(e, AgentEvent::RunFinished { .. })).await;
+        let shown: String = round1
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::TextDelta {
+                    message_id, delta, ..
+                } if message_id == "m2" => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(shown, answer, "the apology is never shown");
+        let last = round1
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::Grounding { report, .. } => Some(report.clone()),
+                _ => None,
+            })
+            .expect("a final report");
+        assert_eq!(last.message_ids, vec!["m2"]);
+        assert!(
+            answer.contains(&last.claims[0].anchor),
+            "flags anchor in the shown text"
+        );
+        assert_eq!(last.summary.supported, 1);
+    }
+
+    #[tokio::test]
     async fn a_second_failure_is_flagged_not_repaired_again() {
         let (inner, mut events, mut out) = offline_inner(Some(GroundingConfig::lexical()));
         start(&inner);

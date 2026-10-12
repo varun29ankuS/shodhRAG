@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ChevronDown,
@@ -26,7 +26,8 @@ import { baseName } from './fileTree';
 import type { FileNode } from './fileTree';
 import { FileBrowser } from './FileBrowser';
 import { showInFolder } from './fileActions';
-import { adviceForFailures, indexingAdvice } from './indexingAdvice';
+import { explainFailure, groupFailures } from './indexingAdvice';
+import { FailureDetails } from './FailureDetails';
 import type { IndexingAction, IndexingAdvice } from './indexingAdvice';
 import { useSearchModels } from '../setup/SearchModelsContext';
 import { groupSourcesByKind, progressPercent } from './sources';
@@ -328,7 +329,10 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
     else if (action === 'show_in_folder') void showInFolder(source.path);
     else if (action === 'install_search_models') void install();
   };
-  const failureAdvice = source.status === 'indexing' ? null : adviceForFailures(failures.map(f => f.reason));
+  // Grouped by kind of reason: a folder of hundreds of files reads as a few reasons,
+  // with the exact files (by their path in the folder) under each.
+  const failureGroups = useMemo(() => groupFailures(failures, source.path), [failures, source.path]);
+  const runError = explainFailure(source.lastError, source.path);
 
   let statusLine: React.ReactNode;
   if (source.status === 'indexing') {
@@ -369,9 +373,10 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
       <div className="flex flex-col gap-1">
         <p className="m-0 text-[12.5px] text-shodh-error flex items-start gap-1.5">
           <AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0" aria-hidden="true" />
-          <span className="break-words">{source.lastError ? `Indexing failed: ${source.lastError}` : 'Indexing failed.'}</span>
+          <span className="break-words">{source.lastError ? `Indexing failed: ${runError.reason}` : 'Indexing failed.'}</span>
         </p>
-        <AdviceLine advice={indexingAdvice(source.lastError)} onAction={act} />
+        <FailureDetails detail={runError.detail} />
+        <AdviceLine advice={runError.advice} onAction={act} />
       </div>
     );
   } else if (source.status === 'interrupted') {
@@ -442,18 +447,33 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
             className={cn('self-start inline-flex items-center gap-1 text-[12px] text-shodh-error hover:underline rounded', FOCUS_RING)}
           >
             {showFailures ? <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" /> : <ChevronRight className="w-3.5 h-3.5" aria-hidden="true" />}
-            {`${failures.length} file${failures.length === 1 ? '' : 's'} could not be indexed`}
+            {`${failures.length.toLocaleString()} file${failures.length === 1 ? '' : 's'} could not be indexed`}
           </button>
-          {failureAdvice && <AdviceLine advice={failureAdvice} onAction={act} />}
+          {!showFailures && (
+            <p className="m-0 text-[12px] text-shodh-text-secondary break-words">
+              {failureGroups.map(g => `${g.reason} (${g.files.length.toLocaleString()})`).join(' · ')}
+            </p>
+          )}
+          {!showFailures && failureGroups.length === 1 && <AdviceLine advice={failureGroups[0].advice} onAction={act} />}
           {showFailures && (
-            <ul id={failuresId} className="max-h-40 overflow-y-auto scrollbar-thin flex flex-col gap-1 rounded-lg bg-shodh-raised p-2">
-              {failures.map(f => (
-                <li key={f.file} className="text-[11.5px] leading-snug">
-                  <span className="text-shodh-text-secondary break-all">{baseName(f.file)}</span>
-                  {f.reason && <span className="block text-shodh-text-faint break-words">{f.reason}</span>}
-                </li>
+            <div id={failuresId} className="max-h-72 overflow-y-auto scrollbar-thin flex flex-col gap-3 rounded-lg bg-shodh-raised p-2">
+              {failureGroups.map(group => (
+                <section key={group.kind} className="flex flex-col gap-1.5">
+                  <h4 className="m-0 text-[12px] font-semibold text-shodh-text">
+                    {`${group.reason} · ${group.files.length.toLocaleString()} file${group.files.length === 1 ? '' : 's'}`}
+                  </h4>
+                  <AdviceLine advice={group.advice} onAction={act} />
+                  <ul className="flex flex-col gap-1" aria-label={group.reason}>
+                    {group.files.map(f => (
+                      <li key={f.file} className="text-[11.5px] leading-snug">
+                        <span className="text-shodh-text-secondary break-all" title={f.file}>{f.relative}</span>
+                        <FailureDetails detail={f.detail} />
+                      </li>
+                    ))}
+                  </ul>
+                </section>
               ))}
-            </ul>
+            </div>
           )}
         </div>
       )}

@@ -229,3 +229,34 @@ test('plan items from older builds get need defaults and coverage is kept', () =
   assert.equal(state.plan?.[0].coverage, 'covered');
   assert.deepEqual(state.plan?.[0].evidence, [3]);
 });
+
+test('a working note before tool calls stays visible but is not the answer', () => {
+  const events: AgentEvent[] = [
+    { type: 'run_started', runId: RUN, sessionId: 's1', model: 'openrouter/x', atMs: 1000, warning: null },
+    { type: 'text_delta', runId: RUN, messageId: 'm1', delta: "I'll search for the monthly retainer." },
+    { type: 'text_interim', runId: RUN, messageId: 'm1', interim: true },
+    ...spikeRun().slice(1, 3),
+    { type: 'text_delta', runId: RUN, messageId: 'm2', delta: 'The retainer is INR 2,75,000 [1].' },
+    { type: 'run_finished', runId: RUN, status: 'completed', durationMs: 900, error: null, providerError: null },
+  ];
+  const state = reduceAll(initialTranscript(RUN, 1000), events);
+  assert.deepEqual(state.blocks.map(b => b.kind), ['text', 'step', 'text'], 'the note is never removed');
+  assert.equal(answerText(state), 'The retainer is INR 2,75,000 [1].');
+  const restored = fromPersisted(JSON.parse(JSON.stringify(toPersisted(state))));
+  assert.ok(restored);
+  assert.equal(answerText(restored), 'The retainer is INR 2,75,000 [1].', 'notes are persisted');
+});
+
+test('a note taken back as the answer counts again', () => {
+  const state = reduceAll(initialTranscript(RUN, 1000), [
+    { type: 'text_delta', runId: RUN, messageId: 'm1', delta: 'Sixty days [1].' },
+    { type: 'text_interim', runId: RUN, messageId: 'm1', interim: true },
+    { type: 'text_interim', runId: RUN, messageId: 'm1', interim: false },
+  ]);
+  assert.equal(answerText(state), 'Sixty days [1].');
+  const old = { ...toPersisted(state) } as Record<string, unknown>;
+  delete old.interimIds;
+  const restored = fromPersisted(old);
+  assert.ok(restored);
+  assert.deepEqual(restored.interimIds, [], 'transcripts saved before notes restore without any');
+});

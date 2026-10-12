@@ -282,6 +282,19 @@ pub enum AgentEvent {
         message_id: String,
         delta: String,
     },
+    /// Whether the text of `message_id` is the model's working note rather
+    /// than the answer. A message that calls tools is interim: its text
+    /// ("I'll search the contracts first") led into the calls, and the answer
+    /// is the turn that follows them. Sent when the first tool call of the
+    /// message is seen (`interim: true`), and with `interim: false` when a
+    /// round ends without any other text, so its last interim text is the
+    /// answer after all. Answer text is every text block not interim and not
+    /// superseded by a revision.
+    TextInterim {
+        run_id: String,
+        message_id: String,
+        interim: bool,
+    },
     Thinking {
         run_id: String,
         message_id: String,
@@ -375,6 +388,7 @@ impl AgentEvent {
         match self {
             AgentEvent::RunStarted { run_id, .. }
             | AgentEvent::TextDelta { run_id, .. }
+            | AgentEvent::TextInterim { run_id, .. }
             | AgentEvent::Thinking { run_id, .. }
             | AgentEvent::StepStarted { run_id, .. }
             | AgentEvent::StepProgress { run_id, .. }
@@ -420,6 +434,15 @@ mod tests {
                 },
                 "text_delta",
                 vec!["runId", "messageId", "delta"],
+            ),
+            (
+                AgentEvent::TextInterim {
+                    run_id: "r".into(),
+                    message_id: "m".into(),
+                    interim: true,
+                },
+                "text_interim",
+                vec!["runId", "messageId", "interim"],
             ),
             (
                 AgentEvent::Thinking {

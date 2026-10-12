@@ -121,6 +121,11 @@ export interface TranscriptState {
   passages: Passage[];
   /** Grounding checks of the answer, one per round; the final one describes the answer. */
   groundings: GroundingReport[];
+  /**
+   * Text blocks that are the model's working notes before its tool calls, not the answer
+   * (absent in transcripts saved before notes were told apart).
+   */
+  interimIds?: string[];
   /** The answer is being checked against its sources (not persisted). */
   checking: boolean;
   /** Latest reasoning text (not persisted). */
@@ -171,6 +176,7 @@ export function initialTranscript(runId: string, startedAtMs: number, fallback: 
     usage: null,
     passages: [],
     groundings: [],
+    interimIds: [],
     checking: false,
     thinking: '',
     interrupting: false,
@@ -338,6 +344,11 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
     case 'text_delta':
       if (action.delta.length === 0) return state;
       return { ...state, status: 'running', blocks: appendText(state.blocks, action.messageId, action.delta), thinking: '' };
+
+    case 'text_interim': {
+      const ids = (state.interimIds ?? []).filter(id => id !== action.messageId);
+      return { ...state, interimIds: action.interim ? [...ids, action.messageId] : ids };
+    }
 
     case 'thinking':
       return { ...state, status: 'running', thinking: (state.thinking + action.delta).slice(-600) };
@@ -519,11 +530,26 @@ export function supersededBlocks(state: TranscriptState): Set<string> {
   return out;
 }
 
-/** The answer text: every text block of the run, in order, without replaced drafts. */
+/** Text blocks that are working notes before tool calls ("I'll search the contracts"). */
+export function interimBlocks(state: TranscriptState): Set<string> {
+  return new Set(state.interimIds ?? []);
+}
+
+/** Text blocks that are not the answer: replaced drafts and working notes. */
+export function notAnswerBlocks(state: TranscriptState): Set<string> {
+  const out = supersededBlocks(state);
+  for (const id of state.interimIds ?? []) out.add(id);
+  return out;
+}
+
+/**
+ * The answer text: every text block of the run, in order, without replaced drafts and
+ * without the working notes that led into tool calls.
+ */
 export function answerText(state: TranscriptState): string {
-  const superseded = supersededBlocks(state);
+  const excluded = notAnswerBlocks(state);
   return state.blocks
-    .filter((b): b is { kind: 'text'; id: string; text: string } => b.kind === 'text' && !superseded.has(b.id))
+    .filter((b): b is { kind: 'text'; id: string; text: string } => b.kind === 'text' && !excluded.has(b.id))
     .map(b => b.text.trim())
     .filter(t => t.length > 0)
     .join('\n\n');
@@ -569,6 +595,7 @@ export function fromPersisted(value: unknown): TranscriptState | null {
     passages: Array.isArray(state.passages) ? state.passages : [],
     plan: Array.isArray(state.plan) ? state.plan.map(planItem) : null,
     groundings: Array.isArray(state.groundings) ? state.groundings : [],
+    interimIds: Array.isArray(state.interimIds) ? state.interimIds.filter(id => typeof id === 'string') : [],
     checking: false,
     thinking: '',
     interrupting: false,

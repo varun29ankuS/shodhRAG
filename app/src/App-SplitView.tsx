@@ -33,6 +33,7 @@ function safeStorage(): Storage | null {
 
 // Core components
 import { applyFolderSync, parseStoredSources, readIndexingResult, scannedPagesStep, serializeSources, SOURCES_STORAGE_KEY, syncedFolders } from './features/library/sources';
+import { explainFailure } from './features/library/indexingAdvice';
 import type { FolderSyncOutcome, LibrarySource } from './features/library/sources';
 import type { FileNode } from './features/library/fileTree';
 import { errorMessage as searchErrorMessage } from './features/setup/searchModels';
@@ -395,6 +396,13 @@ function AppSplitView() {
   };
 
 
+  /** The chat notice for a document that could not be indexed: the plain reason, what to do, and what the indexer said. */
+  const indexFailureNotice = (fileName: string, error: string): string => {
+    const failure = explainFailure(error, fileName);
+    const detail = failure.detail ? `\n\nDetails: \`${failure.detail.replace(/`/g, "'")}\`` : '';
+    return `❌ Could not index **${fileName}**: ${failure.reason}.\n\n${failure.advice.hint}${detail}`;
+  };
+
   // Enhanced file drop handler - supports images AND documents
   const handleImageDrop = async (e: React.DragEvent) => {
     e.preventDefault();
@@ -455,11 +463,11 @@ function AppSplitView() {
                    `💾 Size: ${result.fileSizeMb.toFixed(2)} MB\n\n` +
                    `*Ask me anything about this document!*` });
       } else {
-        updateMessage(messageId, { content: `❌ Failed to index **${result.fileName}**\n\nError: ${result.error}` });
+        updateMessage(messageId, { content: indexFailureNotice(result.fileName, result.error ?? '') });
       }
     } catch (error) {
       console.error('Upload error:', error);
-      updateMessage(messageId, { content: `❌ Upload failed: ${error}` });
+      updateMessage(messageId, { content: indexFailureNotice(file.name, String(error)) });
     }
   };
 
@@ -975,7 +983,7 @@ function AppSplitView() {
       setSources(prev => prev.map(s => s.id === source.id
         ? { ...s, status: 'error' as const, lastError: message, progress: undefined, currentFile: undefined, currentStep: undefined, processedCount: undefined }
         : s));
-      notify.error('Indexing failed', { description: message });
+      notify.error('Indexing failed', { description: `${source.name}: ${explainFailure(message, source.path).reason}` });
     } finally {
       setCurrentlyIndexing(null);
     }

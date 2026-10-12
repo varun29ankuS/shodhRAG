@@ -29,7 +29,8 @@ import { buildFileTree, countTree, displayPath, findDir, folderEntries, pathKey,
 import type { DirNode, FileNode, IndexedFileRow, SortKey, TreeEntry, TypeFamily } from './fileTree';
 import { copyPath, joinPath, openInDefaultApp, showInFolder } from './fileActions';
 import { FileViewer } from './FileViewer';
-import { indexingAdvice } from './indexingAdvice';
+import { explainFailure } from './indexingAdvice';
+import { FailureDetails } from './FailureDetails';
 import type { FileHighlight } from './FileViewer';
 import { SnippetShelf } from '../research/SnippetShelf';
 import { ResultsView } from '../research/ResultsView';
@@ -722,7 +723,7 @@ function ResizeHandle({ width, min, max, controls, onResize, onCommit, onReset }
 function StatusChip({ file }: { file: FileNode }) {
   if (file.status === 'failed') {
     return (
-      <span className="shrink-0 inline-flex items-center gap-1 text-[11px] px-1.5 h-5 rounded-full bg-shodh-error/10 text-shodh-error" title={file.reason || undefined}>
+      <span className="shrink-0 inline-flex items-center gap-1 text-[11px] px-1.5 h-5 rounded-full bg-shodh-error/10 text-shodh-error" title={file.reason ? explainFailure(file.reason, file.path).reason : undefined}>
         <AlertTriangle className="w-3 h-3" aria-hidden="true" />
         Failed
       </span>
@@ -778,7 +779,7 @@ function EntryRow({ entry, rowKey, tabbable, selected, showFolder, folderPath, f
         title ? `${title}, file ${entry.name}` : entry.name,
         entry.extension ? `${entry.extension.toUpperCase()} file` : null,
         pages,
-        entry.status === 'failed' ? `failed to index${entry.reason ? `: ${entry.reason}` : ''}` : 'indexed',
+        entry.status === 'failed' ? `failed to index${entry.reason ? `: ${explainFailure(entry.reason, entry.path).reason}` : ''}` : 'indexed',
       ]
         .filter(Boolean)
         .join(', ');
@@ -1002,6 +1003,7 @@ function OpenFilePane({ paneRef, file, shownPath, focusMode, onToggleFocus, onCl
   );
   const meta = usePdfMeta(file.extension === 'pdf' ? file.path : null);
   const title = meta?.title ?? null;
+  const failure = explainFailure(file.reason, file.path);
   return (
     <section
       ref={paneRef}
@@ -1090,9 +1092,10 @@ function OpenFilePane({ paneRef, file, shownPath, focusMode, onToggleFocus, onCl
         {file.status === 'failed' && (
           <p role="note" className="text-[12px] text-shodh-error flex items-start gap-1.5">
             <AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0" aria-hidden="true" />
-            <span>
-              {file.reason ? `Not indexed: ${file.reason}` : 'This file could not be indexed.'}
-              <span className="block text-shodh-text-secondary">{indexingAdvice(file.reason).hint}</span>
+            <span className="min-w-0">
+              {file.reason ? `Not indexed: ${failure.reason}` : 'This file could not be indexed.'}
+              <span className="block text-shodh-text-secondary">{failure.advice.hint}</span>
+              <FailureDetails detail={failure.detail} className="mt-1" />
             </span>
           </p>
         )}

@@ -15,6 +15,7 @@
 //!   "Stop learning" in Settings turns it off, drops queued turns and rejects waiting
 //!   suggestions.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -374,6 +375,8 @@ struct PendingRun {
     user_text: String,
     /// Answer text by text block (a revised answer drops the draft it replaced).
     answer: Vec<(String, String)>,
+    /// Text blocks that are the model's working notes before its tool calls, not answer.
+    interim: HashSet<String>,
     answer_len: usize,
     at: DateTime<Utc>,
 }
@@ -495,6 +498,7 @@ impl LearnState {
                 workspace: workspace.map(str::to_string),
                 user_text: user_text.trim().to_string(),
                 answer: Vec::new(),
+                interim: HashSet::new(),
                 answer_len: 0,
                 at: Utc::now(),
             },
@@ -519,6 +523,19 @@ impl LearnState {
                     }
                 }
             }
+            AgentEvent::TextInterim {
+                run_id,
+                message_id,
+                interim,
+            } => {
+                if let Some(mut run) = self.inner.runs.get_mut(run_id) {
+                    if *interim {
+                        run.interim.insert(message_id.clone());
+                    } else {
+                        run.interim.remove(message_id);
+                    }
+                }
+            }
             AgentEvent::Grounding { run_id, report } => {
                 if let Some(mut run) = self.inner.runs.get_mut(run_id) {
                     run.answer
@@ -540,6 +557,7 @@ impl LearnState {
                     assistant_context: Some(
                         run.answer
                             .into_iter()
+                            .filter(|(id, _)| !run.interim.contains(id))
                             .map(|(_, text)| text)
                             .collect::<Vec<_>>()
                             .join(

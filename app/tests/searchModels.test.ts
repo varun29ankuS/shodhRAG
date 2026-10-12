@@ -10,6 +10,7 @@ import {
   installFraction,
   isInstallProgress,
   isSearchModelsStatus,
+  scanReaderSummary,
   summarizeSetup,
 } from '../src/features/setup/searchModels.ts';
 import type { ArtifactStatus, SearchModelsStatus } from '../src/features/setup/searchModels.ts';
@@ -95,4 +96,26 @@ test('payload guards reject malformed values', () => {
   assert.equal(isSearchModelsStatus(status([])), true);
   assert.equal(isSearchModelsStatus({ ready: 'yes' }), false);
   assert.equal(isSearchModelsStatus(null), false);
+});
+
+test('the scan reader is read from its own model files', () => {
+  const search = artifact({ state: 'verified', presentBytes: 1000 });
+  const det = (over: Partial<ArtifactStatus>) => artifact({ name: 'OCR text detector', relativePath: 'pp-ocrv6/det.onnx', size: 4000, ...over });
+  const rec = (over: Partial<ArtifactStatus>) => artifact({ name: 'OCR text recogniser', relativePath: 'pp-ocrv6/rec.onnx', size: 27000, ...over });
+
+  assert.equal(scanReaderSummary(status([search], true)), null, 'a build without it lists none');
+
+  const missing = scanReaderSummary(status([search, det({}), rec({})], true));
+  assert.deepEqual(missing, { installed: false, resumable: false, totalBytes: 31000, remainingBytes: 31000 });
+
+  const partial = scanReaderSummary(status([search, det({ state: 'verified', presentBytes: 4000 }), rec({ state: 'partial', presentBytes: 7000 })], true));
+  assert.deepEqual(partial, { installed: false, resumable: true, totalBytes: 31000, remainingBytes: 20000 });
+
+  // Once search is ready the status does not hash files: present counts as installed.
+  const present = scanReaderSummary(status([search, det({ state: 'unverified', presentBytes: 4000 }), rec({ state: 'verified', presentBytes: 27000 })], true));
+  assert.equal(present?.installed, true);
+  assert.equal(present?.remainingBytes, 0);
+
+  const windowsPaths = scanReaderSummary(status([det({ relativePath: 'pp-ocrv6\\det.onnx' })]));
+  assert.equal(windowsPaths?.installed, false);
 });

@@ -184,9 +184,13 @@ jobs:
           if (@($dirs | Where-Object Name -match 'CRT$').Count -ne 1 -or @($dirs | Where-Object Name -match 'OpenMP$').Count -ne 1) {
             throw "Expected one CRT and one OpenMP folder in $($redist.FullName)/x64, found: $($dirs.Name -join ', ')"
           }
+          # Resource sources are paths relative to src-tauri (tauri-build
+          # drops the drive letter of an absolute one).
+          $staging = New-Item -ItemType Directory -Force -Path 'app/src-tauri/vc-runtime'
           $resources = [ordered]@{}
           foreach ($dll in $dirs | Get-ChildItem -Filter *.dll) {
-            $resources[($dll.FullName -replace '\\', '/')] = $dll.Name
+            Copy-Item -LiteralPath $dll.FullName -Destination $staging
+            $resources["vc-runtime/$($dll.Name)"] = $dll.Name
             Write-Host "Bundling $($dll.Name) $($dll.VersionInfo.FileVersion) from $($redist.Name)"
           }
           @{ bundle = @{ resources = $resources } } | ConvertTo-Json -Depth 4 |

@@ -152,6 +152,16 @@ jobs:
         working-directory: app
         run: npm ci
 
+      # app/src-tauri/.cargo/config.toml holds a developer machine's Windows
+      # settings (target-dir C:/build/kalki-rag, MSVC /MD flags, the Visual
+      # Studio CMake generator) that the Tauri CLI would pick up: it breaks
+      # the macOS builds outright. These builds use the same settings as
+      # ci.yml and the footprint job, which never read that file: the
+      # workspace target/ directory and the job's RUSTFLAGS.
+      - name: Use the CI build settings
+        shell: bash
+        run: rm app/src-tauri/.cargo/config.toml
+
       # Update bundles need both halves of the signing key: the private key
       # (secret) signs them, the public key in tauri.conf.json lets installed
       # apps verify them. With only one half they are not built.

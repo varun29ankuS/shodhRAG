@@ -1,143 +1,72 @@
 import { useEffect, useState } from 'react';
-import { check } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
-import { toast } from 'sonner';
+import { listen } from '@tauri-apps/api/event';
 import { notify } from '../lib/notify';
-import { captureError, addBreadcrumb } from '../lib/errorReporting';
+import { addBreadcrumb } from '../lib/errorReporting';
+import {
+  UPDATE_AVAILABLE,
+  UPDATE_PROGRESS,
+  installUpdate,
+  progressPercent,
+  type UpdateInfo,
+  type UpdateProgress,
+} from '../lib/updates';
 
-export interface UpdateInfo {
-  version: string;
-  date?: string;
-  body?: string;
-  currentVersion: string;
-}
-
+/**
+ * The update the backend announced (`update-available`, from its quiet check
+ * or from Settings → Privacy → Check now) and the install the user starts.
+ */
 export function useUpdater() {
-  const [updateAvailable, setUpdateAvailable] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [downloading, setDownloading] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState(0);
-  const [checking, setChecking] = useState(false);
+  const [progress, setProgress] = useState<UpdateProgress | null>(null);
 
   useEffect(() => {
-    checkForUpdates();
-
-    const interval = setInterval(() => {
-      checkForUpdates(true);
-    }, 1000 * 60 * 60); // Check every hour
-
-    return () => clearInterval(interval);
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+    const keep = (unlisten: () => void) => {
+      if (disposed) unlisten();
+      else unlisteners.push(unlisten);
+    };
+    listen<UpdateInfo>(UPDATE_AVAILABLE, event => {
+      setUpdateInfo(event.payload);
+      addBreadcrumb('Update available', 'update', {
+        version: event.payload.version,
+        currentVersion: event.payload.currentVersion,
+      });
+    }).then(keep, err => console.error('Listening for updates failed:', err));
+    listen<UpdateProgress>(UPDATE_PROGRESS, event => setProgress(event.payload)).then(keep, err =>
+      console.error('Listening for update progress failed:', err),
+    );
+    return () => {
+      disposed = true;
+      unlisteners.forEach(unlisten => unlisten());
+    };
   }, []);
 
-  async function checkForUpdates(silent: boolean = false) {
-    if (checking) return;
-
-    setChecking(true);
-    addBreadcrumb('Checking for updates', 'update', { silent });
-
-    try {
-      const update = await check();
-
-      if (update) {
-        const info: UpdateInfo = {
-          version: update.version,
-          date: update.date,
-          body: update.body,
-          currentVersion: update.currentVersion,
-        };
-
-        setUpdateInfo(info);
-        setUpdateAvailable(true);
-
-        if (!silent) {
-          toast.info(`Update ${update.version} is available!`, {
-            duration: 10000,
-            action: {
-              label: 'Download',
-              onClick: () => downloadAndInstall(),
-            },
-          });
-        }
-
-        addBreadcrumb('Update available', 'update', {
-          version: update.version,
-          currentVersion: update.currentVersion,
-        });
-      } else if (!silent) {
-        notify.success('You are on the latest version');
-      }
-    } catch (error) {
-      // Silently fail if updater is disabled/not configured
-      if (!silent) {
-        console.log('Update check unavailable (updater disabled or not configured)');
-      }
-    } finally {
-      setChecking(false);
-    }
-  }
-
   async function downloadAndInstall() {
-    if (!updateInfo) return;
-
+    if (!updateInfo || downloading) return;
     setDownloading(true);
-    setDownloadProgress(0);
-
-    addBreadcrumb('Downloading update', 'update', { version: updateInfo.version });
-
+    setProgress(null);
+    addBreadcrumb('Installing update', 'update', { version: updateInfo.version });
     try {
-      const update = await check();
-
-      if (!update) {
-        notify.error('Update no longer available');
-        return;
-      }
-
-      let downloaded = 0;
-      let contentLength = 0;
-
-      await update.downloadAndInstall((event) => {
-        switch (event.event) {
-          case 'Started':
-            contentLength = event.data.contentLength || 0;
-            notify.info('Downloading update...');
-            break;
-          case 'Progress':
-            downloaded += event.data.chunkLength;
-            const progress = contentLength > 0 ? (downloaded / contentLength) * 100 : 0;
-            setDownloadProgress(progress);
-            break;
-          case 'Finished':
-            setDownloadProgress(100);
-            notify.success('Update downloaded! Restarting...');
-            addBreadcrumb('Update installed', 'update', { version: updateInfo.version });
-
-            setTimeout(async () => {
-              await relaunch();
-            }, 2000);
-            break;
-        }
-      });
+      // Restarts into the new version when it succeeds.
+      await installUpdate();
     } catch (error) {
-      console.error('Failed to download update:', error);
-      captureError(error as Error, { context: 'update_download' });
-      notify.error(`Failed to download update: ${(error as Error).message}`);
+      notify.error('The update was not installed', { description: String(error) });
       setDownloading(false);
-      setDownloadProgress(0);
+      setProgress(null);
     }
   }
 
   function dismissUpdate() {
-    setUpdateAvailable(false);
-    setUpdateInfo(null);
+    if (!downloading) setUpdateInfo(null);
   }
 
   return {
-    updateAvailable,
+    updateAvailable: updateInfo !== null,
     updateInfo,
     downloading,
-    downloadProgress,
-    checking,
-    checkForUpdates,
+    downloadProgress: progressPercent(progress),
     downloadAndInstall,
     dismissUpdate,
   };

@@ -1,4 +1,7 @@
-export const APP_VERSION = import.meta.env.VITE_APP_VERSION || '0.1.0-beta';
+// package.json, tauri.conf.json and the app's Cargo.toml carry the same version.
+import { version } from '../../package.json';
+
+export const APP_VERSION: string = version;
 export const APP_BUILD_DATE = import.meta.env.VITE_APP_BUILD_DATE || new Date().toISOString();
 export const IS_BETA = APP_VERSION.includes('beta') || APP_VERSION.includes('alpha');
 export const IS_DEV = import.meta.env.DEV;

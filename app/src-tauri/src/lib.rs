@@ -167,7 +167,6 @@ pub fn run() {
         ))
         .on_window_event(background::on_window_event)
         .setup(|app| {
-            std::thread::sleep(std::time::Duration::from_millis(80));
             // The main window is created here rather than from the config, so
             // its WebView storage follows the profile.
             for config in app.config().app.windows.iter() {

@@ -213,8 +213,11 @@ jobs:
   # 0.52-0.64 s on one windows-latest machine and 0.87-1.07 s on another, so a
   # raw number is not gated. The build is launched interleaved with other
   # builds on the same runner (each on its own profile, order rotating every
-  # pair, one warm-up pair discarded, PAIRS measured pairs) and gated on
-  # ratios of medians:
+  # pair, one warm-up pair discarded, PAIRS measured pairs). Each build's time
+  # is the mean of its fastest 20% of launches: runner noise only adds time,
+  # and on the noisier runners it moves the median of 9 launches by more than
+  # a 10% regression (measured on this PR's runs; medians are still logged).
+  # Gated on ratios of those times:
   #   - Against the base commit's build (the merge commit's first parent), at
   #     most MAX_WINDOW_RATIO, set from master-against-itself runs.
   #   - Against a fixed anchor build (FOOTPRINT_ANCHOR_SHA, the code the 0.94 s
@@ -237,8 +240,8 @@ jobs:
     env:
       FOOTPRINT_ANCHOR_SHA: 76bf22ff6df23370b58b6af5d0684f0529efd2ab
       FOOTPRINT_ANCHOR_SECONDS: "0.857"
-      PAIRS: "9"
-      MAX_WINDOW_RATIO: "1.05"
+      PAIRS: "15"
+      MAX_WINDOW_RATIO: "1.06"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -307,7 +310,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $name = 'footprint-exe-${{ steps.builds.outputs.reference }}'
-          $runId = gh api "repos/${{ github.repository }}/actions/artifacts?name=$name" --jq '[.artifacts[] | select(.expired == false)][0].workflow_run.id // empty'
+          $runId = gh api "repos/${{ github.repository }}/actions/artifacts?name=$name" --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "master")][0].workflow_run.id // empty'
           if ($LASTEXITCODE -ne 0) { throw "Listing the artifact $name failed" }
           if (-not $runId) {
             Write-Host "No artifact $name (master's push run has not uploaded it yet, or it expired): trying this PR's cache, else building it here."

@@ -37,14 +37,23 @@
     -Pairs measured rounds. Every round launches each executable once (start,
     wait for the shell-mounted mark, stop: no idle, no memory sampling, so
     nothing but the app competes for the CPU during startup), and the order
-    rotates every round so no executable always goes first. The comparison is
-    the ratio of the medians: -Exe against -ReferenceExe (normally the base
-    commit's build) is gated by -MaxWindowRatio; -Exe against -AnchorExe (a
-    fixed old build whose time to window on the budget's machine is
-    -AnchorWindowSeconds) turns -BudgetWindowSeconds into a ceiling that holds
-    on any machine: -Exe's median / -AnchorExe's median x -AnchorWindowSeconds
-    must not exceed it. Both assume a machine's speed scales every build's
-    time to window by the same factor.
+    rotates every round so no executable always goes first.
+
+    Each executable's time is the mean of its fastest -FastestFraction of the
+    measured launches (at least one). On a shared machine the noise only ever
+    adds time: launches sit on a floor set by the build and some are pushed
+    far above it by whatever else the machine runs. With 9 launches on a
+    noisy GitHub runner, 3 or 4 can be pushed up, which moves the median by
+    more than a 10% regression does; the fastest launches stay on the floor.
+    The comparisons are ratios of these times: -Exe against -ReferenceExe
+    (normally the base commit's build) is gated by -MaxWindowRatio; -Exe
+    against -AnchorExe (a fixed old build whose time to window on the
+    budget's machine is -AnchorWindowSeconds) turns -BudgetWindowSeconds into
+    a ceiling that holds on any machine: -Exe's time / -AnchorExe's time x
+    -AnchorWindowSeconds must not exceed it. Both assume a machine's speed
+    scales every build's time to window by the same factor. A regression that
+    slows only some launches (a race, say) can stay under the fastest
+    launches; medians are reported beside them for that reason.
 
     Memory: private bytes (commit charge, Win32_Process.PrivatePageCount) of
     each process, summed per group: core (the Shodh process), webview2,
@@ -76,7 +85,8 @@
 
 .PARAMETER ReferenceExe
     A second build to time interleaved with -Exe, normally the base commit's
-    build. Its median time to window is the denominator of -MaxWindowRatio.
+    build. Its time to window (see Paired time to window) is the denominator
+    of -MaxWindowRatio.
 
 .PARAMETER AnchorExe
     A fixed build to time interleaved with -Exe, whose time to window on the
@@ -94,8 +104,12 @@
     Rounds launched before the measured ones and discarded.
 
 .PARAMETER MaxWindowRatio
-    When above zero, exit with code 1 if -Exe's median time to window divided
-    by -ReferenceExe's exceeds it.
+    When above zero, exit with code 1 if -Exe's time to window divided by
+    -ReferenceExe's (see Paired time to window) exceeds it.
+
+.PARAMETER FastestFraction
+    The share of each executable's measured launches, fastest first, whose
+    mean is its time to window in the paired comparison.
 
 .EXAMPLE
     ./scripts/measure-footprint.ps1 -Exe C:\build\release\shodh-rag-app.exe -ModelPath D:\models -Output footprint.json
@@ -153,7 +167,10 @@ param(
     [ValidateRange(0, 20)]
     [int]$WarmupPairs = 1,
 
-    [double]$MaxWindowRatio = 0
+    [double]$MaxWindowRatio = 0,
+
+    [ValidateRange(0.01, 1.0)]
+    [double]$FastestFraction = 0.2
 )
 
 Set-StrictMode -Version 3.0
@@ -206,6 +223,13 @@ function Get-Median([double[]]$Values) {
     $n = $sorted.Count
     if ($n % 2 -eq 1) { return [double]$sorted[($n - 1) / 2] }
     return ([double]$sorted[$n / 2 - 1] + [double]$sorted[$n / 2]) / 2
+}
+
+# Mean of the fastest $Fraction of the values (at least one value).
+function Get-FastestMean([double[]]$Values, [double]$Fraction) {
+    $sorted = @($Values | Sort-Object)
+    $k = [math]::Max(1, [int][math]::Ceiling($sorted.Count * $Fraction))
+    return ($sorted[0..($k - 1)] | Measure-Object -Average).Average
 }
 
 function Get-Group([string]$Name) {
@@ -760,35 +784,47 @@ function Invoke-Paired {
     }
 
     $medians = [ordered]@{}
+    $fastest = [ordered]@{}
     foreach ($s in $subjects) {
-        $medians[$s.Label] = [math]::Round((Get-Median @($rounds | ForEach-Object { [double]$_.seconds[$s.Label] })), 3)
+        $values = @($rounds | ForEach-Object { [double]$_.seconds[$s.Label] })
+        $medians[$s.Label] = [math]::Round((Get-Median $values), 3)
+        $fastest[$s.Label] = [math]::Round((Get-FastestMean $values $FastestFraction), 4)
     }
-    Write-Host ("medians: {0}" -f (($subjects | ForEach-Object { '{0} {1:N3} s' -f $_.Label, $medians[$_.Label] }) -join ', '))
+    $count = [math]::Max(1, [int][math]::Ceiling($rounds.Count * $FastestFraction))
+    Write-Host ("medians (reported): {0}" -f (($subjects | ForEach-Object { '{0} {1:N3} s' -f $_.Label, $medians[$_.Label] }) -join ', '))
+    Write-Host ("mean of the fastest {0} of {1} (compared): {2}" -f $count, $rounds.Count, (($subjects | ForEach-Object { '{0} {1:N3} s' -f $_.Label, $fastest[$_.Label] }) -join ', '))
     $paired = [ordered]@{
-        pairs          = $Pairs
-        warmupPairs    = $WarmupPairs
-        executables    = [ordered]@{}
-        primeSeconds   = $prime
-        mediansSeconds = $medians
-        rounds         = $rounds
+        pairs           = $Pairs
+        warmupPairs     = $WarmupPairs
+        fastestFraction = $FastestFraction
+        fastestCount    = $count
+        executables     = [ordered]@{}
+        primeSeconds    = $prime
+        mediansSeconds  = $medians
+        fastestSeconds  = $fastest
+        rounds          = $rounds
     }
     foreach ($s in $subjects) { $paired.executables[$s.Label] = $s.Exe }
     if ($ReferenceExe) {
-        $ratio = [math]::Round($medians['pr'] / $medians['reference'], 4)
-        $pairRatio = [math]::Round((Get-Median @($rounds | ForEach-Object { [double]$_.seconds['pr'] / [double]$_.seconds['reference'] })), 4)
+        $ratio = [math]::Round($fastest['pr'] / $fastest['reference'], 4)
         $paired.ratioToReference = $ratio
-        $paired.medianPairRatioToReference = $pairRatio
+        $paired.medianRatioToReference = [math]::Round($medians['pr'] / $medians['reference'], 4)
         $paired.maxRatioToReference = $MaxWindowRatio
         $verdict = if ($MaxWindowRatio -le 0) { 'not gated' } elseif ($ratio -le $MaxWindowRatio) { "pass (limit $MaxWindowRatio)" } else { "FAIL (limit $MaxWindowRatio)" }
-        Write-Host ("pr/reference: ratio of medians {0:N3} (median of pair ratios {1:N3}): {2}" -f $ratio, $pairRatio, $verdict)
+        Write-Host ("pr/reference: {0:N3} (ratio of medians {1:N3}, reported): {2}" -f $ratio, $paired.medianRatioToReference, $verdict)
     }
     if ($AnchorExe) {
-        $normalised = [math]::Round($medians['pr'] / $medians['anchor'] * $AnchorWindowSeconds, 3)
         $paired.anchorWindowSeconds = $AnchorWindowSeconds
-        $paired.ratioToAnchor = [math]::Round($medians['pr'] / $medians['anchor'], 4)
+        $paired.ratioToAnchor = [math]::Round($fastest['pr'] / $fastest['anchor'], 4)
+        $paired.medianRatioToAnchor = [math]::Round($medians['pr'] / $medians['anchor'], 4)
+        $normalised = [math]::Round($paired.ratioToAnchor * $AnchorWindowSeconds, 3)
         $paired.normalisedWindowSeconds = $normalised
+        if ($ReferenceExe) {
+            $paired.referenceRatioToAnchor = [math]::Round($fastest['reference'] / $fastest['anchor'], 4)
+            Write-Host ("reference/anchor: {0:N3} (ratio of medians {1:N3}, reported)" -f $paired.referenceRatioToAnchor, ($medians['reference'] / $medians['anchor']))
+        }
         $verdict = if ($BudgetWindowSeconds -le 0) { 'not gated' } elseif ($normalised -le $BudgetWindowSeconds) { "pass (ceiling $BudgetWindowSeconds s)" } else { "FAIL (ceiling $BudgetWindowSeconds s)" }
-        Write-Host ("pr/anchor: ratio of medians {0:N3} x anchor's {1} s = {2:N3} s normalised: {3}" -f $paired.ratioToAnchor, $AnchorWindowSeconds, $normalised, $verdict)
+        Write-Host ("pr/anchor: {0:N3} x anchor's {1} s = {2:N3} s normalised (ratio of medians {3:N3}, reported): {4}" -f $paired.ratioToAnchor, $AnchorWindowSeconds, $normalised, $paired.medianRatioToAnchor, $verdict)
     }
     return [pscustomobject]$paired
 }
@@ -881,7 +917,7 @@ if ($results.Contains('idle')) {
 }
 if ($null -ne $paired) {
     if ($MaxWindowRatio -gt 0 -and $paired.ratioToReference -gt $MaxWindowRatio) {
-        [void]$failures.Add("time to window is $($paired.ratioToReference) x the reference build's on this machine ($($paired.mediansSeconds['pr']) s against $($paired.mediansSeconds['reference']) s), over the $MaxWindowRatio limit")
+        [void]$failures.Add("time to window is $($paired.ratioToReference) x the reference build's on this machine ($($paired.fastestSeconds['pr']) s against $($paired.fastestSeconds['reference']) s, mean of the fastest $($paired.fastestCount) launches), over the $MaxWindowRatio limit")
     }
     if ($BudgetWindowSeconds -gt 0 -and $AnchorExe -and $paired.normalisedWindowSeconds -gt $BudgetWindowSeconds) {
         [void]$failures.Add("time to window normalised through the anchor is $($paired.normalisedWindowSeconds) s ($($paired.ratioToAnchor) x the anchor's $AnchorWindowSeconds s), over the $BudgetWindowSeconds s budget")

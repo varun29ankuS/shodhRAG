@@ -238,7 +238,7 @@ jobs:
       FOOTPRINT_ANCHOR_SHA: 76bf22ff6df23370b58b6af5d0684f0529efd2ab
       FOOTPRINT_ANCHOR_SECONDS: "0.857"
       PAIRS: "9"
-      MAX_WINDOW_RATIO: "1.10"
+      MAX_WINDOW_RATIO: "1.05"
     steps:
       - uses: actions/checkout@v4
         with:

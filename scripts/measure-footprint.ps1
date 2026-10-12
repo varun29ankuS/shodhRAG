@@ -28,6 +28,33 @@
     The mark carries its own timestamp, so the polling interval does not
     affect the number.
 
+    Paired time to window (-ReferenceExe, -AnchorExe): time to window depends
+    on the machine (on GitHub's windows-latest runners the same build measures
+    anywhere from 0.5 s to 1.1 s), so an absolute number can only be gated on
+    the machine it was set on. With -ReferenceExe (and/or -AnchorExe) the
+    executables are launched interleaved on this machine: each on its own
+    throwaway profile, primed once, then -WarmupPairs discarded rounds and
+    -Pairs measured rounds. Every round launches each executable once (start,
+    wait for the shell-mounted mark, stop: no idle, no memory sampling, so
+    nothing but the app competes for the CPU during startup), and the order
+    rotates every round so no executable always goes first.
+
+    Each executable's time is the mean of its fastest -FastestFraction of the
+    measured launches (at least one). On a shared machine the noise only ever
+    adds time: launches sit on a floor set by the build and some are pushed
+    far above it by whatever else the machine runs. With 9 launches on a
+    noisy GitHub runner, 3 or 4 can be pushed up, which moves the median by
+    more than a 10% regression does; the fastest launches stay on the floor.
+    The comparisons are ratios of these times: -Exe against -ReferenceExe
+    (normally the base commit's build) is gated by -MaxWindowRatio; -Exe
+    against -AnchorExe (a fixed old build whose time to window on the
+    budget's machine is -AnchorWindowSeconds) turns -BudgetWindowSeconds into
+    a ceiling that holds on any machine: -Exe's time / -AnchorExe's time x
+    -AnchorWindowSeconds must not exceed it. Both assume a machine's speed
+    scales every build's time to window by the same factor. A regression that
+    slows only some launches (a race, say) can stay under the fastest
+    launches; medians are reported beside them for that reason.
+
     Memory: private bytes (commit charge, Win32_Process.PrivatePageCount) of
     each process, summed per group: core (the Shodh process), webview2,
     agent-runtime (omp), other. "Idle" is the median of the samples taken in
@@ -52,10 +79,43 @@
 
 .PARAMETER BudgetWindowSeconds
     When above zero, exit with code 1 if the median time to window of the
-    idle scenario exceeds it.
+    idle scenario exceeds it. With -AnchorExe it applies to the time to
+    window normalised through the anchor instead (see Paired time to window);
+    the idle scenario's own time is then reported, not gated.
+
+.PARAMETER ReferenceExe
+    A second build to time interleaved with -Exe, normally the base commit's
+    build. Its time to window (see Paired time to window) is the denominator
+    of -MaxWindowRatio.
+
+.PARAMETER AnchorExe
+    A fixed build to time interleaved with -Exe, whose time to window on the
+    machine -BudgetWindowSeconds was set on is -AnchorWindowSeconds.
+
+.PARAMETER AnchorWindowSeconds
+    The anchor's median time to window on the machine the window budget was
+    set on. Required with -AnchorExe.
+
+.PARAMETER Pairs
+    Measured rounds of the paired comparison (each executable launched once
+    per round).
+
+.PARAMETER WarmupPairs
+    Rounds launched before the measured ones and discarded.
+
+.PARAMETER MaxWindowRatio
+    When above zero, exit with code 1 if -Exe's time to window divided by
+    -ReferenceExe's (see Paired time to window) exceeds it.
+
+.PARAMETER FastestFraction
+    The share of each executable's measured launches, fastest first, whose
+    mean is its time to window in the paired comparison.
 
 .EXAMPLE
     ./scripts/measure-footprint.ps1 -Exe C:\build\release\shodh-rag-app.exe -ModelPath D:\models -Output footprint.json
+
+.EXAMPLE
+    ./scripts/measure-footprint.ps1 -Exe pr\shodh-rag-app.exe -ReferenceExe master\shodh-rag-app.exe -Scenario idle -Pairs 9 -MaxWindowRatio 1.10
 #>
 [CmdletBinding()]
 param(
@@ -93,7 +153,24 @@ param(
 
     [switch]$KeepProfiles,
 
-    [switch]$InstallModels
+    [switch]$InstallModels,
+
+    [string]$ReferenceExe,
+
+    [string]$AnchorExe,
+
+    [double]$AnchorWindowSeconds = 0,
+
+    [ValidateRange(1, 100)]
+    [int]$Pairs = 9,
+
+    [ValidateRange(0, 20)]
+    [int]$WarmupPairs = 1,
+
+    [double]$MaxWindowRatio = 0,
+
+    [ValidateRange(0.01, 1.0)]
+    [double]$FastestFraction = 0.2
 )
 
 Set-StrictMode -Version 3.0
@@ -103,6 +180,14 @@ $ExePath = (Resolve-Path -LiteralPath $Exe).Path
 $ExeName = [System.IO.Path]::GetFileName($ExePath)
 if ($InstallModels -and -not $ModelPath) {
     throw '-InstallModels needs -ModelPath (the folder to install the models into).'
+}
+if ($ReferenceExe) { $ReferenceExe = (Resolve-Path -LiteralPath $ReferenceExe).Path }
+if ($AnchorExe) {
+    $AnchorExe = (Resolve-Path -LiteralPath $AnchorExe).Path
+    if ($AnchorWindowSeconds -le 0) { throw '-AnchorExe needs -AnchorWindowSeconds (the anchor''s time to window on the machine the budget was set on).' }
+}
+if ($MaxWindowRatio -gt 0 -and -not $ReferenceExe) {
+    throw '-MaxWindowRatio needs -ReferenceExe (the build the ratio is taken against).'
 }
 if ($ModelPath) {
     if ($InstallModels) { New-Item -ItemType Directory -Force -Path $ModelPath | Out-Null }
@@ -138,6 +223,13 @@ function Get-Median([double[]]$Values) {
     $n = $sorted.Count
     if ($n % 2 -eq 1) { return [double]$sorted[($n - 1) / 2] }
     return ([double]$sorted[$n / 2 - 1] + [double]$sorted[$n / 2]) / 2
+}
+
+# Mean of the fastest $Fraction of the values (at least one value).
+function Get-FastestMean([double[]]$Values, [double]$Fraction) {
+    $sorted = @($Values | Sort-Object)
+    $k = [math]::Max(1, [int][math]::Ceiling($sorted.Count * $Fraction))
+    return ($sorted[0..($k - 1)] | Measure-Object -Average).Average
 }
 
 function Get-Group([string]$Name) {
@@ -342,7 +434,7 @@ function New-Fixtures([string]$Folder) {
 
 # --- Launch and measure ----------------------------------------------------------
 
-function Start-Shodh([string]$ProfileDir) {
+function Start-Shodh([string]$ProfileDir, [string]$Program = $ExePath) {
     # The app inherits this process's environment: set the measured
     # environment here for the launch and put everything back after.
     $saved = @{}
@@ -358,7 +450,7 @@ function Start-Shodh([string]$ProfileDir) {
         $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $WebViewArgs
         if ($ModelPath) { $env:MODEL_PATH = $ModelPath }
         $launchMs = Get-EpochMs
-        $process = Start-Process -FilePath $ExePath -WorkingDirectory ([IO.Path]::GetDirectoryName($ExePath)) -PassThru `
+        $process = Start-Process -FilePath $Program -WorkingDirectory ([IO.Path]::GetDirectoryName($Program)) -PassThru `
             -RedirectStandardOutput (Join-Path $logDir ("app-{0}.log" -f $launchMs)) -RedirectStandardError (Join-Path $logDir ("app-{0}.err.log" -f $launchMs))
     } finally {
         foreach ($name in 'SHODH_DATA_DIR', 'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS', 'MODEL_PATH') {
@@ -384,13 +476,13 @@ function Stop-Shodh($App) {
 }
 
 # Wait for the shell-mounted mark. Returns the marks (ms after launch) and the
-# DevTools connection, sampling memory every second meanwhile.
+# DevTools connection, sampling memory meanwhile (unless $Samples is null).
 function Wait-Window($App, [System.Collections.ArrayList]$Samples) {
     $deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
     $cdp = $null
     while ((Get-Date) -lt $deadline) {
         if ($App.Process.HasExited) { throw "Shodh exited during startup (code $($App.Process.ExitCode))" }
-        [void]$Samples.Add((Get-Sample $App.Process.Id $App.Start $App.LaunchMs))
+        if ($null -ne $Samples) { [void]$Samples.Add((Get-Sample $App.Process.Id $App.Start $App.LaunchMs)) }
         if ($null -eq $cdp) {
             $url = Get-PageSocketUrl
             if ($url) { $cdp = Connect-Cdp $url }
@@ -632,6 +724,111 @@ function Get-Summary([object[]]$RunResults) {
     }
 }
 
+# One launch for the paired comparison: start, wait for the shell-mounted
+# mark without sampling memory, stop. Returns the time to window in seconds.
+function Measure-Launch([string]$Program, [string]$ProfileDir) {
+    $app = Start-Shodh $ProfileDir $Program
+    try {
+        $window = Wait-Window $app $null
+        Close-Cdp $window.Cdp
+    } finally {
+        Stop-Shodh $app
+    }
+    return [double]$window.Marks.shellMounted
+}
+
+# Time to window of -Exe interleaved with -ReferenceExe and/or -AnchorExe on
+# this machine (see "Paired time to window" above).
+function Invoke-Paired {
+    $work = Join-Path ([IO.Path]::GetTempPath()) ("shodh-footprint-" + [guid]::NewGuid().ToString('N'))
+    $subjects = New-Object System.Collections.ArrayList
+    [void]$subjects.Add([pscustomobject]@{ Label = 'pr'; Exe = $ExePath })
+    if ($ReferenceExe) { [void]$subjects.Add([pscustomobject]@{ Label = 'reference'; Exe = $ReferenceExe }) }
+    if ($AnchorExe) { [void]$subjects.Add([pscustomobject]@{ Label = 'anchor'; Exe = $AnchorExe }) }
+    $n = $subjects.Count
+    $width = ($subjects | ForEach-Object { $_.Label.Length } | Measure-Object -Maximum).Maximum
+    Write-Host ''
+    Write-Host "Paired time to window: $Pairs measured pairs after $WarmupPairs warm-up, order rotating every pair"
+    foreach ($s in $subjects) { Write-Host ("  {0} = {1}" -f $s.Label.PadRight($width), $s.Exe) }
+    $rounds = New-Object System.Collections.ArrayList
+    try {
+        # Each executable on its own profile, created by a prime launch.
+        $prime = [ordered]@{}
+        foreach ($s in $subjects) {
+            $profileDir = Join-Path $work (Join-Path $s.Label 'profile')
+            New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
+            $s | Add-Member -NotePropertyName Profile -NotePropertyValue $profileDir
+            $prime[$s.Label] = Measure-Launch $s.Exe $profileDir
+        }
+        Write-Host ("prime (discarded): {0}" -f (($subjects | ForEach-Object { '{0} {1:N3} s' -f $_.Label, $prime[$_.Label] }) -join ', '))
+
+        for ($r = 0; $r -lt $WarmupPairs + $Pairs; $r++) {
+            $order = @(for ($k = 0; $k -lt $n; $k++) { $subjects[($r + $k) % $n] })
+            $times = [ordered]@{}
+            foreach ($s in $order) { $times[$s.Label] = Measure-Launch $s.Exe $s.Profile }
+            $warmup = $r -lt $WarmupPairs
+            $name = if ($warmup) { "warm-up $($r + 1) (discarded)" } else { "pair $($r - $WarmupPairs + 1)" }
+            $line = "{0}: {1}" -f $name, (($order | ForEach-Object { '{0} {1:N3} s' -f $_.Label, $times[$_.Label] }) -join ', ')
+            if ($times.Contains('reference')) { $line += (" -> pr/reference {0:N3}" -f ($times['pr'] / $times['reference'])) }
+            Write-Host $line
+            if (-not $warmup) {
+                [void]$rounds.Add([pscustomobject][ordered]@{
+                        pair    = $r - $WarmupPairs + 1
+                        order   = @($order | ForEach-Object { $_.Label })
+                        seconds = $times
+                    })
+            }
+        }
+    } finally {
+        Remove-Folder $work
+    }
+
+    $medians = [ordered]@{}
+    $fastest = [ordered]@{}
+    foreach ($s in $subjects) {
+        $values = @($rounds | ForEach-Object { [double]$_.seconds[$s.Label] })
+        $medians[$s.Label] = [math]::Round((Get-Median $values), 3)
+        $fastest[$s.Label] = [math]::Round((Get-FastestMean $values $FastestFraction), 4)
+    }
+    $count = [math]::Max(1, [int][math]::Ceiling($rounds.Count * $FastestFraction))
+    Write-Host ("medians (reported): {0}" -f (($subjects | ForEach-Object { '{0} {1:N3} s' -f $_.Label, $medians[$_.Label] }) -join ', '))
+    Write-Host ("mean of the fastest {0} of {1} (compared): {2}" -f $count, $rounds.Count, (($subjects | ForEach-Object { '{0} {1:N3} s' -f $_.Label, $fastest[$_.Label] }) -join ', '))
+    $paired = [ordered]@{
+        pairs           = $Pairs
+        warmupPairs     = $WarmupPairs
+        fastestFraction = $FastestFraction
+        fastestCount    = $count
+        executables     = [ordered]@{}
+        primeSeconds    = $prime
+        mediansSeconds  = $medians
+        fastestSeconds  = $fastest
+        rounds          = $rounds
+    }
+    foreach ($s in $subjects) { $paired.executables[$s.Label] = $s.Exe }
+    if ($ReferenceExe) {
+        $ratio = [math]::Round($fastest['pr'] / $fastest['reference'], 4)
+        $paired.ratioToReference = $ratio
+        $paired.medianRatioToReference = [math]::Round($medians['pr'] / $medians['reference'], 4)
+        $paired.maxRatioToReference = $MaxWindowRatio
+        $verdict = if ($MaxWindowRatio -le 0) { 'not gated' } elseif ($ratio -le $MaxWindowRatio) { "pass (limit $MaxWindowRatio)" } else { "FAIL (limit $MaxWindowRatio)" }
+        Write-Host ("pr/reference: {0:N3} (ratio of medians {1:N3}, reported): {2}" -f $ratio, $paired.medianRatioToReference, $verdict)
+    }
+    if ($AnchorExe) {
+        $paired.anchorWindowSeconds = $AnchorWindowSeconds
+        $paired.ratioToAnchor = [math]::Round($fastest['pr'] / $fastest['anchor'], 4)
+        $paired.medianRatioToAnchor = [math]::Round($medians['pr'] / $medians['anchor'], 4)
+        $normalised = [math]::Round($paired.ratioToAnchor * $AnchorWindowSeconds, 3)
+        $paired.normalisedWindowSeconds = $normalised
+        if ($ReferenceExe) {
+            $paired.referenceRatioToAnchor = [math]::Round($fastest['reference'] / $fastest['anchor'], 4)
+            Write-Host ("reference/anchor: {0:N3} (ratio of medians {1:N3}, reported)" -f $paired.referenceRatioToAnchor, ($medians['reference'] / $medians['anchor']))
+        }
+        $verdict = if ($BudgetWindowSeconds -le 0) { 'not gated' } elseif ($normalised -le $BudgetWindowSeconds) { "pass (ceiling $BudgetWindowSeconds s)" } else { "FAIL (ceiling $BudgetWindowSeconds s)" }
+        Write-Host ("pr/anchor: {0:N3} x anchor's {1} s = {2:N3} s normalised (ratio of medians {3:N3}, reported): {4}" -f $paired.ratioToAnchor, $AnchorWindowSeconds, $normalised, $paired.medianRatioToAnchor, $verdict)
+    }
+    return [pscustomobject]$paired
+}
+
 # Launch the app on a throwaway profile with MODEL_PATH = -ModelPath and run
 # its own `install_search_models` (pinned URLs, SHA-256 checked).
 function Install-SearchModels {
@@ -675,6 +872,7 @@ foreach ($kind in $scenarios) {
     }
     $results[$kind] = [ordered]@{ summary = Get-Summary $runResults; runs = $runResults }
 }
+$paired = if ($ReferenceExe -or $AnchorExe) { Invoke-Paired } else { $null }
 
 $os = Get-CimInstance -ClassName Win32_OperatingSystem -Property Caption, Version, TotalVisibleMemorySize
 $cpu = Get-CimInstance -ClassName Win32_Processor -Property Name, NumberOfLogicalProcessors | Select-Object -First 1
@@ -696,6 +894,7 @@ $report = [ordered]@{
     settings            = [ordered]@{ runs = $Runs; idleSeconds = $IdleSeconds; intervalSeconds = $IntervalSeconds; webViewArgs = $WebViewArgs }
     scenarios           = $results
 }
+if ($null -ne $paired) { $report.paired = $paired }
 $json = $report | ConvertTo-Json -Depth 12
 if ($Output) {
     [IO.File]::WriteAllText($Output, $json, (New-Object System.Text.UTF8Encoding($false)))
@@ -710,8 +909,18 @@ if ($results.Contains('idle')) {
     if ($BudgetIdleMB -gt 0 -and $summary.idleTotalMBMedian -gt $BudgetIdleMB) {
         [void]$failures.Add("idle memory $($summary.idleTotalMBMedian) MB is over the $BudgetIdleMB MB budget")
     }
-    if ($BudgetWindowSeconds -gt 0 -and $summary.windowSecondsMedian -gt $BudgetWindowSeconds) {
+    if ($BudgetWindowSeconds -gt 0 -and $AnchorExe) {
+        Write-Host "Time to window of the idle scenario ($($summary.windowSecondsMedian) s) is this machine's own and is not gated; the $BudgetWindowSeconds s budget applies to the time normalised through the anchor."
+    } elseif ($BudgetWindowSeconds -gt 0 -and $summary.windowSecondsMedian -gt $BudgetWindowSeconds) {
         [void]$failures.Add("time to window $($summary.windowSecondsMedian) s is over the $BudgetWindowSeconds s budget")
+    }
+}
+if ($null -ne $paired) {
+    if ($MaxWindowRatio -gt 0 -and $paired.ratioToReference -gt $MaxWindowRatio) {
+        [void]$failures.Add("time to window is $($paired.ratioToReference) x the reference build's on this machine ($($paired.fastestSeconds['pr']) s against $($paired.fastestSeconds['reference']) s, mean of the fastest $($paired.fastestCount) launches), over the $MaxWindowRatio limit")
+    }
+    if ($BudgetWindowSeconds -gt 0 -and $AnchorExe -and $paired.normalisedWindowSeconds -gt $BudgetWindowSeconds) {
+        [void]$failures.Add("time to window normalised through the anchor is $($paired.normalisedWindowSeconds) s ($($paired.ratioToAnchor) x the anchor's $AnchorWindowSeconds s), over the $BudgetWindowSeconds s budget")
     }
 }
 if ($failures.Count -gt 0) {

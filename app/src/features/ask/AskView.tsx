@@ -585,6 +585,17 @@ function SystemNotice({ message }: { message: ChatMessage }) {
   );
 }
 
+/** Estimates per message object (a streamed answer is a new object per frame). */
+const heightEstimates = new WeakMap<ChatMessage, number>();
+function estimatedHeight(message: ChatMessage): number {
+  let height = heightEstimates.get(message);
+  if (height === undefined) {
+    height = estimateMessageHeight(message);
+    heightEstimates.set(message, height);
+  }
+  return height;
+}
+
 /**
  * Rises into place when first shown. Decided once per mount, so a message
  * scrolled out of the window and back is not animated again.
@@ -712,11 +723,15 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     ),
     [focusedIndex, previewIndex, findIndex, revealIndex],
   );
+  // Stable while the messages are: the window's measurements are rebuilt
+  // when these change, so typing in the composer must not change them.
+  const estimateSize = useCallback((index: number) => estimatedHeight(messages[index]), [messages]);
+  const getItemKey = useCallback((index: number) => messages[index].id, [messages]);
   const virtualizer = useVirtualizer({
     count: messages.length,
     getScrollElement: () => scrollerRef.current,
-    estimateSize: index => estimateMessageHeight(messages[index]),
-    getItemKey: index => messages[index].id,
+    estimateSize,
+    getItemKey,
     overscan: OVERSCAN_MESSAGES,
     scrollMargin: CONVERSATION_TOP_PX,
     indexAttribute: MESSAGE_INDEX_ATTR,

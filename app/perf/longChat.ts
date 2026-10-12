@@ -6,13 +6,17 @@
  */
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { emit } from '@tauri-apps/api/event';
+import { requestReveal } from '../src/features/visuals/reveal';
 import { longConversation, shortConversation } from './fixture';
 
-const TURNS = Number(new URLSearchParams(location.search).get('turns') ?? '160');
+const params = new URLSearchParams(location.search);
+const TURNS = Number(params.get('turns') ?? '160');
 
 interface PerfApi {
   commands: Record<string, number>;
   sends: number;
+  /** "Go to message", as the Visuals gallery asks for it. */
+  reveal: (conversationId: string, messageId: string) => void;
   /** Stream `deltas` text chunks into the running answer, one every `intervalMs`. */
   stream: (deltas: number, intervalMs: number) => Promise<void>;
 }
@@ -23,6 +27,7 @@ let lastSend: { sessionId: string; runId: string } | null = null;
 const perf: PerfApi = {
   commands: {},
   sends: 0,
+  reveal: requestReveal,
   async stream(deltas, intervalMs) {
     const send = lastSend;
     if (!send) throw new Error('No answer is running');
@@ -83,5 +88,7 @@ mockIPC((cmd, args) => {
 
 // Setup is done: the welcome flow would cover the conversation.
 localStorage.setItem('shodh.firstRun.status', 'completed');
+const theme = params.get('theme');
+if (theme === 'light' || theme === 'dark') localStorage.setItem('theme', theme);
 
 void import('../src/main.tsx');

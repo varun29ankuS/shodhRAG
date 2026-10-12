@@ -32,6 +32,7 @@ const TURNS = Number(arg('turns', '160'));
 const OUT = arg('out', null);
 const SHOTS = arg('shots', null);
 const PROFILE = arg('profile', null);
+const THEME = arg('theme', 'dark');
 const EDGE = arg('browser', 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe');
 
 if (!existsSync(path.join(distDir, 'perf', 'long-chat.html'))) {
@@ -160,7 +161,7 @@ async function oneRun(run) {
     await cdp.send('Performance.enable');
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false });
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: PAGE_SETUP });
-    await cdp.send('Page.navigate', { url: `http://127.0.0.1:${port}/perf/long-chat.html?turns=${TURNS}` });
+    await cdp.send('Page.navigate', { url: `http://127.0.0.1:${port}/perf/long-chat.html?turns=${TURNS}&theme=${THEME}` });
 
     // The short conversation is shown first.
     for (let i = 0; i < 200; i++) {
@@ -317,8 +318,12 @@ async function oneRun(run) {
       rendererWorkingSetShortMB: before.workingSetMB,
     };
 
+    // A screenshot with the find bar open and its match highlighted.
+    if (SHOTS) {
+      await cdp.eval(`window.__beforeFindClose = () => new Promise(r => { window.__findShot = r; }); true`);
+    }
     // --- Find in the conversation: a word only in the oldest answer's question.
-    const find = await cdp.eval(`(async () => {
+    const findPromise = cdp.eval(`(async () => {
       const t = document.querySelector('section[aria-label="Ask"] textarea');
       t.focus();
       t.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true, cancelable: true }));
@@ -336,6 +341,7 @@ async function oneRun(run) {
         const status = document.querySelector('[role="search"] [role="status"]')?.textContent ?? '';
         if (/of/.test(status) && CSS.highlights?.get('conversation-find-current')) break;
       }
+      if (window.__beforeFindClose) await window.__beforeFindClose();
       const status = document.querySelector('[role="search"] [role="status"]')?.textContent ?? '';
       const current = CSS.highlights?.get('conversation-find-current');
       let visible = false;
@@ -348,7 +354,57 @@ async function oneRun(run) {
       await new Promise(r => setTimeout(r, 200));
       return { opened: true, status, highlighted: Boolean(current), visible, closed: !document.querySelector('[role="search"]') };
     })()`);
+    if (SHOTS) {
+      for (let i = 0; i < 100; i++) {
+        if (await cdp.eval(`typeof window.__findShot === 'function'`)) break;
+        await sleep(50);
+      }
+      if (await cdp.eval(`typeof window.__findShot === 'function'`)) {
+        await sleep(300);
+        await shot(`find-${THEME}`);
+        await cdp.eval(`window.__findShot(); true`);
+      }
+    }
+    const find = await findPromise;
     // Native find is available when the conversation is not windowed (before): there is no find bar to test.
+
+    // --- Go to message (the gallery's reveal) on an early answer, and a source
+    // preview's answer kept mounted while scrolled away.
+    const reveal = await cdp.eval(`(async () => {
+      window.__perf.reveal('conv-perf-long', 'msg-a-3');
+      let el = null;
+      for (let i = 0; i < 100; i++) {
+        await new Promise(r => setTimeout(r, 50));
+        el = document.querySelector('[data-message-id="msg-a-3"]');
+        if (el && el.dataset.revealed === 'true') break;
+      }
+      if (!el) return { mounted: false };
+      await new Promise(r => setTimeout(r, 600));
+      const box = window.__scroller().getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      return { mounted: true, highlighted: el.dataset.revealed === 'true', topInView: r.top >= box.top - 1 && r.top < box.bottom, focused: document.activeElement === el };
+    })()`);
+    const previewKept = await cdp.eval(`(async () => {
+      const s = window.__scroller();
+      s.scrollTop = s.scrollHeight;
+      await new Promise(r => setTimeout(r, 400));
+      const answers = [...document.querySelectorAll('[data-message-id]')];
+      const last = answers[answers.length - 1];
+      const badge = last && [...last.querySelectorAll('button[aria-label^="Source "]')][0];
+      if (!badge) return { opened: false };
+      const id = last.dataset.messageId;
+      badge.click();
+      await new Promise(r => setTimeout(r, 600));
+      const dialog = document.querySelector('aside[role="dialog"]');
+      s.scrollTop = 0;
+      await new Promise(r => setTimeout(r, 600));
+      const still = document.querySelector('[data-message-id="' + id + '"]');
+      const pressed = Boolean(still && still.querySelector('button[aria-pressed="true"]'));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await new Promise(r => setTimeout(r, 400));
+      return { opened: Boolean(dialog), keptMounted: Boolean(still), badgePressed: pressed };
+    })()`);
 
     // --- Streaming: at the bottom, a new answer streams and stays pinned.
     await cdp.eval(`(() => { const s = window.__scroller(); s.scrollTop = s.scrollHeight; return true; })()`);
@@ -424,6 +480,8 @@ async function oneRun(run) {
       scrollModerate,
       memory,
       find,
+      reveal,
+      previewKept,
       streaming,
     };
   } finally {
@@ -485,6 +543,8 @@ const summary = {
   streamEndDistanceFromBottomPx: Math.max(...results.map(r => r.streaming.endDistanceFromBottomPx)),
   streamScrolledUpAnchorMovedPx: Math.max(...results.map(r => r.streaming.scrolledUpMovedPx)),
   find: results.map(r => r.find),
+  reveal: results.map(r => r.reveal),
+  previewKept: results.map(r => r.previewKept),
 };
 console.log('SUMMARY ' + JSON.stringify(summary, null, 2));
 if (OUT) writeFileSync(OUT, JSON.stringify({ summary, results }, null, 2));

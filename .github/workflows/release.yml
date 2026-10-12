@@ -1,0 +1,300 @@
+name: Release
+
+# Unsigned desktop installers on GitHub Releases.
+#
+# Tag push (v*): creates a draft release named after the tag (body from
+# .github/release-notes.md) and uploads the Windows NSIS installer and the
+# macOS dmg for Apple Silicon and Intel to it. Nothing is published: a
+# maintainer reviews the draft and publishes it.
+#
+# Pull request touching the release inputs: builds the same three installers
+# and uploads them as workflow artifacts only. No release is created.
+#
+# Updates (tauri-plugin-updater): when the TAURI_SIGNING_PRIVATE_KEY secret
+# exists and tauri.conf.json carries the matching public key, the build also
+# signs update bundles and tauri-action uploads them with latest.json, which
+# installed apps read from releases/latest/download/latest.json. Without
+# either, the installers are built without update bundles.
+#
+# macOS builds are separate per architecture rather than one universal app:
+# ONNX Runtime is linked statically and its prebuilt library (ort-sys) exists
+# for aarch64-apple-darwin only, so the Intel build needs its own library and
+# a universal binary would need both linked into one; separate builds are
+# also half the download for each user.
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/release.yml
+      - .github/release-notes.md
+      - app/src-tauri/tauri.conf.json
+      - app/src-tauri/build.rs
+      - app/src-tauri/windows-app-manifest.xml
+      - app/src-tauri/icons/**
+      - app/package.json
+      - app/package-lock.json
+      - '**/Cargo.toml'
+      - Cargo.lock
+      - rust-toolchain.toml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-release:
+    name: Create draft release
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release-id: ${{ steps.release.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # A re-run of the same tag reuses its draft instead of adding another.
+      - name: Create or reuse the draft release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          id=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"${TAG}\") | .id" | head -n 1)
+          if [ -n "$id" ]; then
+            draft=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${id}" --jq .draft)
+            if [ "$draft" != "true" ]; then
+              echo "::error::The release for ${TAG} is already published; delete it or push a new tag."
+              exit 1
+            fi
+            echo "Reusing draft release ${id} for ${TAG}"
+          else
+            id=$(gh api -X POST "repos/${GITHUB_REPOSITORY}/releases" \
+              -f tag_name="${TAG}" \
+              -f name="${TAG}" \
+              -F body=@.github/release-notes.md \
+              -F draft=true \
+              -F prerelease=false \
+              --jq .id)
+            echo "Created draft release ${id} for ${TAG}"
+          fi
+          echo "id=${id}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: create-release
+    # Runs on pull requests too, where create-release is skipped.
+    if: ${{ !cancelled() && (needs.create-release.result == 'success' || needs.create-release.result == 'skipped') }}
+    permissions:
+      contents: write  # upload to the draft release (tag runs)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+            # Same as ci.yml: the Windows MSVC builds link the CRT dynamically.
+            rustflags: '-C target-feature=-crt-static'
+          - name: macos-aarch64
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+            rustflags: ''
+          - name: macos-x64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            bundles: app,dmg
+            rustflags: ''
+    runs-on: ${{ matrix.runner }}
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      # LanceDB's protobuf definitions are compiled at build time.
+      - name: Install Protobuf compiler (Windows)
+        if: runner.os == 'Windows'
+        run: choco install protoc -y
+
+      - name: Install Protobuf compiler (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      # Update bundles need both halves of the signing key: the private key
+      # (secret) signs them, the public key in tauri.conf.json lets installed
+      # apps verify them. With only one half they are not built.
+      - name: Build arguments
+        id: args
+        shell: bash
+        env:
+          HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          args="--target ${{ matrix.target }} --bundles ${{ matrix.bundles }}"
+          pubkey=$(node -e "const c=require('./app/src-tauri/tauri.conf.json'); process.stdout.write(((c.plugins||{}).updater||{}).pubkey||'')")
+          if [ "$HAS_SIGNING_KEY" = "true" ] && [ -n "$pubkey" ]; then
+            conf="${RUNNER_TEMP}/updater.conf.json"
+            echo '{"bundle":{"createUpdaterArtifacts":true}}' > "$conf"
+            if command -v cygpath >/dev/null; then conf=$(cygpath -m "$conf"); fi
+            args="$args --config $conf"
+            echo "Update bundles: signed"
+          elif [ "$HAS_SIGNING_KEY" = "true" ]; then
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY is set but tauri.conf.json has no updater public key: update bundles are not built."
+          elif [ -n "$pubkey" ]; then
+            echo "::warning::tauri.conf.json has an updater public key but the TAURI_SIGNING_PRIVATE_KEY secret is not available: update bundles are not built, so installed apps will not be offered this build."
+          else
+            echo "Update bundles: skipped (no signing key)"
+          fi
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+
+      - name: Build installer
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f  # action-v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: app
+          tauriScript: npm run tauri
+          args: ${{ steps.args.outputs.args }}
+          releaseId: ${{ needs.create-release.outputs.release-id }}
+
+      # What the installer ships: the app binary's non-system libraries and
+      # the installer's file list. Search and OCR models are downloaded at
+      # first use and must not be in it.
+      - name: Check the installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = 'target/${{ matrix.target }}/release'
+          $installer = Get-ChildItem "$release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          if (-not $installer) { throw 'No NSIS installer was built' }
+          Get-ChildItem -Recurse "$release/bundle" -File | ForEach-Object { '{0,12:N0}  {1}' -f $_.Length, $_.FullName }
+
+          $files = & 7z l -slt $installer.FullName | Select-String '^Path = ' | ForEach-Object { $_.Line.Substring(7) }
+          if ($LASTEXITCODE -ne 0) { throw '7-Zip could not list the installer' }
+          Write-Host "Files in $($installer.Name):"
+          $files | ForEach-Object { Write-Host "  $_" }
+          $models = $files | Where-Object { $_ -match '\.(onnx|gguf|safetensors)$' }
+          if ($models) { throw "The installer contains model files: $($models -join ', ')" }
+
+          $vs = & "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe" | Select-Object -First 1
+          $report = & $dumpbin.FullName /nologo /dependents "$release/shodh-rag-app.exe"
+          $report | Write-Host
+          # Load-time imports precede the delay-load section.
+          $deps = @()
+          foreach ($line in $report) {
+            if ($line -match 'delay load dependencies') { break }
+            if ($line -match '^\s+(\S+\.dll)\s*$') { $deps += $Matches[1] }
+          }
+          $installed = $files | ForEach-Object { Split-Path $_ -Leaf }
+          $missing = $deps | Where-Object {
+            -not (Test-Path (Join-Path "$env:WINDIR/System32" $_)) -and ($installed -notcontains $_)
+          }
+          if ($missing) { throw "The app imports libraries that are neither part of Windows nor in the installer: $($missing -join ', ')" }
+
+      - name: Check the installer (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="target/${{ matrix.target }}/release/bundle"
+          find "$bundle" -maxdepth 2 \( -name '*.dmg' -o -name '*.app' -o -name '*.tar.gz' -o -name '*.sig' \) -exec du -sh {} \;
+          app=$(find "$bundle/macos" -maxdepth 1 -name '*.app' | head -n 1)
+          dmg=$(find "$bundle/dmg" -maxdepth 1 -name '*.dmg' | head -n 1)
+          [ -n "$app" ] && [ -n "$dmg" ] || { echo "::error::No .app or .dmg was built"; exit 1; }
+          exe="$app/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
+          case "${{ matrix.target }}" in aarch64-*) want=arm64 ;; *) want=x86_64 ;; esac
+          archs=$(lipo -archs "$exe")
+          echo "Architectures: $archs"
+          [ "$archs" = "$want" ] || { echo "::error::Expected $want, got $archs"; exit 1; }
+          otool -L "$exe"
+          foreign=$(otool -L "$exe" | tail -n +2 | awk '{print $1}' | grep -v -E '^(/usr/lib/|/System/Library/)' || true)
+          [ -z "$foreign" ] || { echo "::error::The app links libraries macOS does not provide: $foreign"; exit 1; }
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv "$app" 2>&1
+          models=$(find "$app" -name '*.onnx' -o -name '*.gguf' -o -name '*.safetensors')
+          [ -z "$models" ] || { echo "::error::The app contains model files: $models"; exit 1; }
+          hdiutil verify "$dmg"
+          mount=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg" >/dev/null
+          echo "Contents of $(basename "$dmg"):"
+          ls -la "$mount"
+          hdiutil detach "$mount" >/dev/null
+
+      # The agent runtime (omp) is not in the installer: the app downloads
+      # the pinned release for its platform at first use and checks its
+      # SHA-256 (crates/shodh-rag/src/harness/sidecar.rs). This checks that
+      # the pinned release has a binary for this target, that it matches the
+      # release's checksums, and that it starts here.
+      - name: Check the agent runtime download
+        shell: bash
+        run: |
+          set -euo pipefail
+          src=crates/shodh-rag/src/harness/sidecar.rs
+          version=$(sed -n 's/^pub const OMP_VERSION: &str = "\(.*\)";/\1/p' "$src")
+          case "${{ matrix.target }}" in
+            x86_64-pc-windows-msvc) asset=omp-windows-x64.exe ;;
+            aarch64-apple-darwin) asset=omp-darwin-arm64 ;;
+            x86_64-apple-darwin) asset=omp-darwin-x64 ;;
+          esac
+          base="https://github.com/can1357/oh-my-pi/releases/download/v${version}"
+          dir=$(mktemp -d)
+          curl -fsSL --retry 3 -o "$dir/SHA256SUMS.txt" "$base/SHA256SUMS.txt"
+          curl -fsSL --retry 3 -o "$dir/$asset" "$base/$asset"
+          expected=$(awk -v a="$asset" '{ n=$2; sub(/^\*/, "", n); if (n == a) print $1 }' "$dir/SHA256SUMS.txt")
+          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
+            pinned=$(tr -d '\n ' < "$src" | sed -n 's/.*pub const OMP_WINDOWS_X64_SHA256: &str ="\([0-9a-f]*\)";.*/\1/p')
+            [ "$pinned" = "$expected" ] || { echo "::error::The pinned hash ($pinned) differs from the release checksums ($expected)"; exit 1; }
+          fi
+          actual=$( (sha256sum "$dir/$asset" 2>/dev/null || shasum -a 256 "$dir/$asset") | awk '{print $1}')
+          [ -n "$expected" ] && [ "$actual" = "$expected" ] || { echo "::error::$asset: SHA-256 $actual, release lists '$expected'"; exit 1; }
+          echo "$asset $version: SHA-256 $actual matches the release checksums"
+          chmod +x "$dir/$asset"
+          if [ "${{ runner.os }}" = "macOS" ]; then codesign -dv "$dir/$asset" 2>&1 || true; fi
+          "$dir/$asset" --version
+
+      - name: Upload the installer (pull requests)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: shodh-${{ matrix.name }}
+          path: |
+            target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
+            target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          retention-days: 14
+          if-no-files-found: error

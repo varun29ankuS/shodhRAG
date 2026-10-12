@@ -2,7 +2,7 @@
   "about": "Footage per scene. Files live in public/footage/<scene>/. 'files': one MP4/WebM clip, or PNG/JPG stills (shown in turn, cross-faded). 'sequence': a numbered PNG sequence instead of listing frames ('pattern' with %0Nd, 'count', 'start', 'fps'). 'aspect': footage width/height. 'keyframes': at = 0..1 of the scene; focus = rect in footage coordinates (0..1) that the zoom centres on; scale = zoom at that point. 'fade': {'in': false} / {'out': false} keeps the window fully shown at that edge (first frame; a take that runs on into the next scene). A scene with no files and no sequence fails the render.",
   "scenes": {
     "1": {
-      "label": "Ask view on the indexed paper library; the question is typed",
+      "label": "Library: the 12 indexed papers; cut to Ask, the question is typed",
       "files": [
         "clip.mp4"
       ],
@@ -23,7 +23,7 @@
           }
         },
         {
-          "at": 0.35,
+          "at": 0.45,
           "scale": 1.0,
           "focus": {
             "x": 0.4,

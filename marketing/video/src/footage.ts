@@ -13,11 +13,12 @@ export type FootageEntry = {
   files: string[];
   sequence?: Sequence;
   aspect?: number;
+  /** Fade the window in at the scene's start / out at its end (default both). */
+  fade?: { in?: boolean; out?: boolean };
   keyframes: Keyframe[];
 };
 
 export type Media =
-  | { kind: "placeholder" }
   | { kind: "video"; src: string }
   | { kind: "stills"; srcs: string[] }
   | { kind: "frames"; srcs: string[]; fps: number };
@@ -61,7 +62,9 @@ export function mediaOf(scene: number, entry: FootageEntry): Media {
       fps: entry.sequence.fps ?? 30,
     };
   }
-  if (entry.files.length === 0) return { kind: "placeholder" };
+  if (entry.files.length === 0) {
+    throw new Error(`public/footage.json scene ${scene} has no footage: list its files or a sequence`);
+  }
   const video = entry.files.find((f) => VIDEO.test(f));
   if (video) return { kind: "video", src: path(video) };
   return { kind: "stills", srcs: entry.files.map(path) };

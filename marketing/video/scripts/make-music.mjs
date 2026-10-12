@@ -3,14 +3,15 @@
 // a quiet root an octave down, gentle stereo detune and a low-pass, faded in
 // and out. Deterministic: the same file every run.
 //
-// Output: public/music/shodh-ambient.wav (16-bit PCM stereo, 44.1 kHz, 75 s).
+// Output: public/music/shodh-ambient.wav (16-bit PCM stereo, 44.1 kHz, 79 s:
+// the length of ShodhLaunch in src/timeline.ts).
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SAMPLE_RATE = 44100;
-const DURATION_S = 75;
+const DURATION_S = 79;
 const FADE_IN_S = 3;
 const FADE_OUT_S = 6;
 const PEAK = 10 ** (-14 / 20); // -14 dBFS: the video mixes it lower still.

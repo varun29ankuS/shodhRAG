@@ -3,15 +3,6 @@
 import { Easing } from "remotion";
 
 export const color = {
-  dark: {
-    ground: "#0b0b0d",
-    surface: "#121215",
-    raised: "#1b1b1f",
-    border: "#222227",
-    text: "#ececee",
-    muted: "#9b9ba4",
-    faint: "#8d8d96",
-  },
   light: {
     ground: "#fafaf9",
     surface: "#ffffff",
@@ -29,7 +20,6 @@ export const color = {
 
 export const font = {
   sans: '"Geist Variable", system-ui, "Segoe UI", sans-serif',
-  devanagari: '"Noto Sans Devanagari", "Nirmala UI", sans-serif',
 } as const;
 
 /** Calm ease used for every move: slow in, slower out. */

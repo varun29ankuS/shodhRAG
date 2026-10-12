@@ -14,7 +14,6 @@
   },
   "dependencies": {
     "@fontsource-variable/geist": "5.3.0",
-    "@fontsource/noto-sans-devanagari": "5.3.0",
     "@remotion/cli": "4.0.534",
     "react": "19.3.0",
     "react-dom": "19.3.0",

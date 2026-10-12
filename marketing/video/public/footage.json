@@ -1,59 +1,336 @@
 {
-  "about": "Footage per scene. Files live in public/footage/<scene>/. 'files': one MP4/WebM clip, or PNG/JPG stills (shown in turn, cross-faded). 'sequence': a numbered PNG sequence instead of listing frames ('pattern' with %0Nd, 'count', 'start', 'fps'). 'aspect': footage width/height. 'keyframes': at = 0..1 of the scene; focus = rect in footage coordinates (0..1) that the zoom centres on; scale = zoom at that point. Empty 'files' and no 'sequence' renders a placeholder.",
+  "about": "Footage per scene. Files live in public/footage/<scene>/. 'files': one MP4/WebM clip, or PNG/JPG stills (shown in turn, cross-faded). 'sequence': a numbered PNG sequence instead of listing frames ('pattern' with %0Nd, 'count', 'start', 'fps'). 'aspect': footage width/height. 'keyframes': at = 0..1 of the scene; focus = rect in footage coordinates (0..1) that the zoom centres on; scale = zoom at that point. 'fade': {'in': false} / {'out': false} keeps the window fully shown at that edge (first frame; a take that runs on into the next scene). A scene with no files and no sequence fails the render.",
   "scenes": {
+    "1": {
+      "label": "Ask view on the indexed paper library; the question is typed",
+      "files": [
+        "clip.mp4"
+      ],
+      "aspect": 1.7778,
+      "fade": {
+        "in": false,
+        "out": false
+      },
+      "keyframes": [
+        {
+          "at": 0,
+          "scale": 1.0,
+          "focus": {
+            "x": 0.4,
+            "y": 0.4,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 0.35,
+          "scale": 1.0,
+          "focus": {
+            "x": 0.4,
+            "y": 0.4,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 1,
+          "scale": 1.3,
+          "focus": {
+            "x": 0.465,
+            "y": 0.38,
+            "w": 0.2,
+            "h": 0.2
+          }
+        }
+      ]
+    },
+    "2": {
+      "label": "The agent searches the papers (tool steps)",
+      "files": [
+        "clip.mp4"
+      ],
+      "aspect": 1.7778,
+      "fade": {
+        "in": false,
+        "out": false
+      },
+      "keyframes": [
+        {
+          "at": 0,
+          "scale": 1.3,
+          "focus": {
+            "x": 0.465,
+            "y": 0.38,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 0.5,
+          "scale": 1.3,
+          "focus": {
+            "x": 0.465,
+            "y": 0.25,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 1,
+          "scale": 1.3,
+          "focus": {
+            "x": 0.465,
+            "y": 0.25,
+            "w": 0.2,
+            "h": 0.2
+          }
+        }
+      ]
+    },
+    "3": {
+      "label": "The cited answer arrives, with its sources",
+      "files": [
+        "clip.mp4"
+      ],
+      "aspect": 1.7778,
+      "fade": {
+        "in": false
+      },
+      "keyframes": [
+        {
+          "at": 0,
+          "scale": 1.3,
+          "focus": {
+            "x": 0.465,
+            "y": 0.25,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 1,
+          "scale": 1.3,
+          "focus": {
+            "x": 0.465,
+            "y": 0.45,
+            "w": 0.2,
+            "h": 0.2
+          }
+        }
+      ]
+    },
     "4": {
-      "label": "Cited answer streaming",
-      "files": [],
+      "label": "Follow-up across other papers, answer streaming, scroll back through the chat",
+      "files": [
+        "clip.mp4"
+      ],
       "aspect": 1.7778,
       "keyframes": [
-        { "at": 0, "scale": 1.0, "focus": { "x": 0.25, "y": 0.2, "w": 0.5, "h": 0.6 } },
-        { "at": 1, "scale": 1.08, "focus": { "x": 0.25, "y": 0.25, "w": 0.5, "h": 0.6 } }
+        {
+          "at": 0,
+          "scale": 1.3,
+          "focus": {
+            "x": 0.465,
+            "y": 0.4,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 1,
+          "scale": 1.33,
+          "focus": {
+            "x": 0.465,
+            "y": 0.4,
+            "w": 0.2,
+            "h": 0.2
+          }
+        }
       ]
     },
     "5": {
-      "label": "Citation opens the exact PDF page, highlighted",
-      "files": [],
+      "label": "Citation opens the PDF at the cited page, passage outlined",
+      "files": [
+        "clip.mp4"
+      ],
       "aspect": 1.7778,
       "keyframes": [
-        { "at": 0, "scale": 1.0, "focus": { "x": 0.4, "y": 0.4, "w": 0.2, "h": 0.1 } },
-        { "at": 0.45, "scale": 1.45, "focus": { "x": 0.4, "y": 0.4, "w": 0.2, "h": 0.1 } },
-        { "at": 1, "scale": 1.15, "focus": { "x": 0.55, "y": 0.45, "w": 0.3, "h": 0.3 } }
+        {
+          "at": 0,
+          "scale": 1.0,
+          "focus": {
+            "x": 0.25,
+            "y": 0.25,
+            "w": 0.5,
+            "h": 0.5
+          }
+        },
+        {
+          "at": 0.3,
+          "scale": 1.15,
+          "focus": {
+            "x": 0.6,
+            "y": 0.6,
+            "w": 0.2,
+            "h": 0.15
+          }
+        },
+        {
+          "at": 0.68,
+          "scale": 1.32,
+          "focus": {
+            "x": 0.78,
+            "y": 0.55,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 1,
+          "scale": 1.32,
+          "focus": {
+            "x": 0.78,
+            "y": 0.55,
+            "w": 0.2,
+            "h": 0.2
+          }
+        }
       ]
     },
     "6": {
-      "label": "Grounding badge expands; one claim flagged",
-      "files": [],
+      "label": "A claim flagged 'not found in the cited source'; grounding panel expands",
+      "files": [
+        "clip.mp4"
+      ],
       "aspect": 1.7778,
       "keyframes": [
-        { "at": 0, "scale": 1.0, "focus": { "x": 0.3, "y": 0.6, "w": 0.4, "h": 0.2 } },
-        { "at": 1, "scale": 1.25, "focus": { "x": 0.3, "y": 0.6, "w": 0.4, "h": 0.2 } }
+        {
+          "at": 0,
+          "scale": 1.3,
+          "focus": {
+            "x": 0.465,
+            "y": 0.4,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 1,
+          "scale": 1.38,
+          "focus": {
+            "x": 0.465,
+            "y": 0.52,
+            "w": 0.2,
+            "h": 0.2
+          }
+        }
       ]
     },
     "7": {
-      "label": "Select text, Ask about this, side discussion, linked diagram",
-      "files": [],
+      "label": "Select text, Ask about this, side discussion",
+      "files": [
+        "clip.mp4"
+      ],
       "aspect": 1.7778,
       "keyframes": [
-        { "at": 0, "scale": 1.1, "focus": { "x": 0.2, "y": 0.3, "w": 0.4, "h": 0.3 } },
-        { "at": 1, "scale": 1.1, "focus": { "x": 0.45, "y": 0.3, "w": 0.4, "h": 0.4 } }
+        {
+          "at": 0,
+          "scale": 1.0,
+          "focus": {
+            "x": 0.4,
+            "y": 0.4,
+            "w": 0.3,
+            "h": 0.15
+          }
+        },
+        {
+          "at": 0.55,
+          "scale": 1.05,
+          "focus": {
+            "x": 0.4,
+            "y": 0.3,
+            "w": 0.3,
+            "h": 0.3
+          }
+        },
+        {
+          "at": 1,
+          "scale": 1.15,
+          "focus": {
+            "x": 0.63,
+            "y": 0.2,
+            "w": 0.21,
+            "h": 0.6
+          }
+        }
       ]
     },
     "8": {
-      "label": "Workspace page",
-      "files": [],
+      "label": "Library indexes the papers folder; a workspace takes it as its source",
+      "files": [
+        "clip.mp4"
+      ],
       "aspect": 1.7778,
       "keyframes": [
-        { "at": 0, "scale": 1.0, "focus": { "x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5 } },
-        { "at": 1, "scale": 1.05, "focus": { "x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5 } }
+        {
+          "at": 0,
+          "scale": 1.3,
+          "focus": {
+            "x": 0.465,
+            "y": 0.3,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 1,
+          "scale": 1.3,
+          "focus": {
+            "x": 0.465,
+            "y": 0.3,
+            "w": 0.2,
+            "h": 0.2
+          }
+        }
       ]
     },
     "9": {
-      "label": "Settings > Model",
-      "files": [],
+      "label": "Settings > Models",
+      "files": [
+        "clip.mp4"
+      ],
       "aspect": 1.7778,
       "keyframes": [
-        { "at": 0, "scale": 1.0, "focus": { "x": 0.3, "y": 0.3, "w": 0.4, "h": 0.4 } },
-        { "at": 1, "scale": 1.06, "focus": { "x": 0.3, "y": 0.3, "w": 0.4, "h": 0.4 } }
+        {
+          "at": 0,
+          "scale": 1.0,
+          "focus": {
+            "x": 0.4,
+            "y": 0.4,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 0.3,
+          "scale": 1.0,
+          "focus": {
+            "x": 0.4,
+            "y": 0.4,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 1,
+          "scale": 1.45,
+          "focus": {
+            "x": 0.35,
+            "y": 0.62,
+            "w": 0.2,
+            "h": 0.2
+          }
+        }
       ]
     }
   }

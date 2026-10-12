@@ -4,7 +4,9 @@ export type SceneId = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 
 export type Orientation = "landscape" | "portrait";
 
-/** Scene lengths in seconds, per the approved storyboard (75 s in all). */
+/** Scene lengths in seconds (79 s in all): the approved storyboard's, with
+ * scene 8 lengthened to 12 s to show the Library indexing the folder before a
+ * workspace takes it. Every scene but the close shows real footage. */
 export const SCENE_SECONDS: Record<SceneId, number> = {
   1: 6,
   2: 6,
@@ -13,7 +15,7 @@ export const SCENE_SECONDS: Record<SceneId, number> = {
   5: 8,
   6: 8,
   7: 10,
-  8: 8,
+  8: 12,
   9: 8,
   10: 5,
 };

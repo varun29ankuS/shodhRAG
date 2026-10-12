@@ -20,6 +20,7 @@ import { FocusAnchorProvider, useFocus } from '../focus/FocusContext';
 import type { FocusThread } from '../focus/focusTypes';
 import { sourceTarget } from '../focus/targets';
 import { activeRootThreads, descendantCount, nodeLabel } from '../focus/threadTree';
+import { FOCUS_OVERLAY_SELECTOR } from '../focus/focusDom';
 import type { SideSummaryRef } from '../focus/summary';
 import { UserText } from './UserText';
 import { useChatSession } from './ChatSessionContext';
@@ -47,10 +48,21 @@ import { appendToDraft } from '../research/snippetModel';
 import { ModelChip } from '../modelPicker/ModelChip';
 import { CodeModeSwitch } from '../agent/CodeModeSwitch';
 import { DiagramHostContext } from './visual/diagramHost';
+import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
+import type { Range } from '@tanstack/react-virtual';
+import {
+  MESSAGE_GAP_PX,
+  distanceFromBottom,
+  estimateMessageHeight,
+  followsOutput,
+  mountedIndexes,
+} from './conversationWindow';
 import { ToolsChip } from '../tools/ToolsChip';
 import type { ConversationMode } from '../../hooks/useConversations';
 
 // The artifact side panel (editors, previews) loads when an artifact is first opened.
+// Find in the conversation loads with the first Ctrl+F.
+const ConversationFind = lazy(() => import('./ConversationFind').then(m => ({ default: m.ConversationFind })));
 const EnhancedArtifactPanel = lazy(() => import('../../components/EnhancedArtifactPanel').then(m => ({ default: m.EnhancedArtifactPanel })));
 
 /** Room kept below the conversation before the composer is measured. */
@@ -63,8 +75,17 @@ const FOCUS_RING =
 
 const VISIBLE_SOURCE_CHIPS = 6;
 
-/** Distance from the bottom within which streaming output keeps the view pinned. */
-const STICK_TO_BOTTOM_PX = 160;
+/** Space above the first message inside the scroller (its top padding). */
+const CONVERSATION_TOP_PX = 18;
+
+/** Messages rendered beyond the visible ones, above and below. */
+const OVERSCAN_MESSAGES = 3;
+
+/** Marks a mounted message with its index in the conversation (the window measures by it). */
+const MESSAGE_INDEX_ATTR = 'data-message-index';
+
+/** Frames to wait for a message brought into view to mount. */
+const REVEAL_MAX_FRAMES = 90;
 
 /** Width from which the task list docks to the right of the conversation. */
 const WIDE_LAYOUT_QUERY = '(min-width: 1440px)';
@@ -408,7 +429,7 @@ function AssistantMessageView({
 
   const article = (
     <article
-      className="ask-rise group/msg flex flex-col gap-4 rounded-xl outline-none data-[revealed=true]:ring-2 data-[revealed=true]:ring-shodh-accent data-[revealed=true]:ring-offset-4 data-[revealed=true]:ring-offset-shodh-ground"
+      className="group/msg flex flex-col gap-4 rounded-xl outline-none data-[revealed=true]:ring-2 data-[revealed=true]:ring-shodh-accent data-[revealed=true]:ring-offset-4 data-[revealed=true]:ring-offset-shodh-ground"
       aria-busy={running}
       // Selected text in a finished answer can be asked about (features/focus/SelectionAsk).
       data-ask-scope={!running && conversationId ? 'answer' : undefined}
@@ -524,7 +545,7 @@ const SideSummaryCard = React.memo(function SideSummaryCard({
   onOpen: (summary: SideSummaryRef, trigger: HTMLElement) => void;
 }) {
   return (
-    <div className="ask-rise flex justify-end">
+    <div className="flex justify-end">
       <section
         aria-label={`From a side discussion about ${summary.label}`}
         className="w-full max-w-[560px] min-w-0 rounded-[18px] border border-shodh-border bg-shodh-surface px-4 py-3 flex flex-col gap-2"
@@ -558,10 +579,19 @@ const SideSummaryCard = React.memo(function SideSummaryCard({
 
 function SystemNotice({ message }: { message: ChatMessage }) {
   return (
-    <div className="self-center max-w-[560px] w-full rounded-xl border border-shodh-border-subtle bg-shodh-surface px-4 py-3 text-[13.5px]">
+    <div className="mx-auto max-w-[560px] w-full rounded-xl border border-shodh-border-subtle bg-shodh-surface px-4 py-3 text-[13.5px]">
       <MessageContentRenderer content={message.content} hits={[]} onOpenCitation={() => undefined} />
     </div>
   );
+}
+
+/**
+ * Rises into place when first shown. Decided once per mount, so a message
+ * scrolled out of the window and back is not animated again.
+ */
+function RiseOnce({ animate, children }: { animate: boolean; children: React.ReactNode }) {
+  const [rise] = useState(animate);
+  return <div className={rise ? 'ask-rise' : undefined}>{children}</div>;
 }
 
 /**
@@ -597,7 +627,8 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     observer.observe(composerArea);
     return () => observer.disconnect();
   }, [composerArea]);
-  const lastCountRef = useRef(0);
+  /** Conversation and message count last laid out: a change is a new message (or another conversation). */
+  const lastShownRef = useRef<{ conversationId: string | null; count: number }>({ conversationId: null, count: 0 });
 
   // Start the agent runtime while the question is being typed (it is not
   // started with the app); once per draft, and again after a mode or
@@ -656,21 +687,124 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     setPreview(null);
     setOpenArtifactId(null);
     setSearchAll(false);
-    lastCountRef.current = 0;
+    setFindOpen(false);
+    setFindIndex(null);
+    setRevealIndex(null);
   }, [conversationId]);
 
+  // The conversation is windowed: only the messages in view (and a few kept
+  // ones) are mounted, so long conversations open, scroll and take typing
+  // without every answer's markdown, charts and tables in the document.
+  // Older messages render as the reader scrolls up to them.
+  const [findOpen, setFindOpen] = useState(false);
+  const [findIndex, setFindIndex] = useState<number | null>(null);
+  const [revealIndex, setRevealIndex] = useState<number | null>(null);
+  const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
+  const previewIndex = useMemo(
+    () => (preview ? messages.findIndex(m => m.id === preview.messageId) : -1),
+    [preview, messages],
+  );
+  const rangeExtractor = useCallback(
+    (range: Range) => mountedIndexes(
+      defaultRangeExtractor(range),
+      [range.count - 1, focusedIndex, previewIndex, findIndex, revealIndex],
+      range.count,
+    ),
+    [focusedIndex, previewIndex, findIndex, revealIndex],
+  );
+  const virtualizer = useVirtualizer({
+    count: messages.length,
+    getScrollElement: () => scrollerRef.current,
+    estimateSize: index => estimateMessageHeight(messages[index]),
+    getItemKey: index => messages[index].id,
+    overscan: OVERSCAN_MESSAGES,
+    scrollMargin: CONVERSATION_TOP_PX,
+    indexAttribute: MESSAGE_INDEX_ATTR,
+    rangeExtractor,
+  });
+  const totalSize = virtualizer.getTotalSize();
+
+  // Whether the view follows new output: decided from scroll events (where
+  // the reader put the view), never from the size of what just arrived.
+  const followRef = useRef(true);
+  const onScroll = useCallback(() => {
+    const el = scrollerRef.current;
+    if (el) followRef.current = followsOutput(el.scrollHeight, el.scrollTop, el.clientHeight);
+  }, []);
+
   // Keep the newest content in view: always for a new message, and while
-  // streaming only when the reader has not scrolled up.
+  // streaming (or while answers above are measured) only when following.
   useLayoutEffect(() => {
+    const last = lastShownRef.current;
+    const isNew = last.conversationId !== conversationId || last.count !== messages.length;
+    lastShownRef.current = { conversationId, count: messages.length };
+    if (isNew) followRef.current = true;
     const el = scrollerRef.current;
     if (!el) return;
-    const isNew = messages.length !== lastCountRef.current;
-    lastCountRef.current = messages.length;
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (isNew || distance < STICK_TO_BOTTOM_PX) {
+    if (followRef.current && distanceFromBottom(el.scrollHeight, el.scrollTop, el.clientHeight) > 0) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, conversationId, totalSize, composerSpace]);
+
+  // The message holding keyboard focus stays mounted while it is scrolled away.
+  const onFocusIn = useCallback((e: React.FocusEvent<HTMLDivElement>) => {
+    const item = (e.target as HTMLElement).closest<HTMLElement>(`[${MESSAGE_INDEX_ATTR}]`);
+    setFocusedIndex(item ? Number(item.getAttribute(MESSAGE_INDEX_ATTR)) : null);
+  }, []);
+  const onFocusOut = useCallback((e: React.FocusEvent<HTMLDivElement>) => {
+    if (!(e.relatedTarget instanceof Node) || !e.currentTarget.contains(e.relatedTarget)) setFocusedIndex(null);
+  }, []);
+
+  /** Bring the message at `index` into view and return its element once mounted. */
+  const revealMessage = useCallback(async (index: number): Promise<HTMLElement | null> => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return null;
+    followRef.current = false;
+    virtualizer.scrollToIndex(index, { align: 'start' });
+    for (let frame = 0; frame < REVEAL_MAX_FRAMES; frame++) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      const element = scroller.querySelector<HTMLElement>(`[${MESSAGE_INDEX_ATTR}="${index}"]`);
+      if (element) return element;
+    }
+    return null;
+  }, [virtualizer]);
+
+  // Ctrl+F finds in the whole conversation (unmounted answers included), in
+  // place of the browser's find, which only sees what is mounted. Dialogs
+  // over the conversation (source preview, palette, pop-out) keep their own.
+  useEffect(() => {
+    if (messages.length === 0) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== 'f') return;
+      const target = e.target instanceof Element ? e.target : null;
+      if (target?.closest(`[role="dialog"], [aria-modal="true"], ${FOCUS_OVERLAY_SELECTOR}`)) return;
+      e.preventDefault();
+      setFindOpen(true);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [messages.length]);
+  const firstVisibleIndex = useCallback(() => {
+    const scroller = scrollerRef.current;
+    const offset = scroller ? scroller.scrollTop : 0;
+    const item = virtualizer.getVirtualItems().find(v => v.end > offset);
+    return item ? item.index : 0;
+  }, [virtualizer]);
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    setFindIndex(null);
+    composerRef.current?.focus();
+  }, []);
+
+  // Messages already shown do not rise again when they remount (window
+  // scrolls); new ones, and those of a conversation as it opens, do.
+  const shownRef = useRef<{ conversationId: string | null; ids: Set<string> }>({ conversationId: null, ids: new Set() });
+  useEffect(() => {
+    if (shownRef.current.conversationId !== conversationId) {
+      shownRef.current = { conversationId, ids: new Set() };
+    }
+    for (const m of messages) shownRef.current.ids.add(m.id);
+  }, [messages, conversationId]);
 
   // "Go to message" from the gallery: scroll to that answer once it is shown.
   const [reveal, setReveal] = useState<MessageReveal | null>(() => pendingReveal());
@@ -685,10 +819,8 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
   }, []);
   useEffect(() => {
     if (!reveal || reveal.conversationId !== conversationId) return;
-    const scroller = scrollerRef.current;
-    if (!scroller) return;
-    const target = scroller.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(reveal.messageId)}"]`);
-    if (!target) {
+    const index = messages.findIndex(m => m.id === reveal.messageId);
+    if (index < 0) {
       // The view may still show the previous conversation's messages: wait
       // while the stored conversation has the answer.
       const stored = session.activeConversation?.id === reveal.conversationId ? session.activeConversation.messages : null;
@@ -700,23 +832,29 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     }
     clearReveal(reveal);
     setReveal(null);
-    target.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
-    target.setAttribute('tabindex', '-1');
-    target.focus({ preventScroll: true });
-    const previous = revealTimerRef.current;
-    if (previous) {
-      window.clearTimeout(previous.timer);
-      delete previous.target.dataset.revealed;
-    }
-    target.dataset.revealed = 'true';
-    revealTimerRef.current = {
-      target,
-      timer: window.setTimeout(() => {
-        delete target.dataset.revealed;
-        revealTimerRef.current = null;
-      }, REVEAL_HIGHLIGHT_MS),
-    };
-  }, [reveal, conversationId, messages, session.activeConversation]);
+    setRevealIndex(index);
+    void revealMessage(index).then(item => {
+      const target = item?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(reveal.messageId)}"]`) ?? item;
+      if (!target) return;
+      target.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
+      target.setAttribute('tabindex', '-1');
+      target.focus({ preventScroll: true });
+      const previous = revealTimerRef.current;
+      if (previous) {
+        window.clearTimeout(previous.timer);
+        delete previous.target.dataset.revealed;
+      }
+      target.dataset.revealed = 'true';
+      revealTimerRef.current = {
+        target,
+        timer: window.setTimeout(() => {
+          delete target.dataset.revealed;
+          revealTimerRef.current = null;
+          setRevealIndex(null);
+        }, REVEAL_HIGHLIGHT_MS),
+      };
+    });
+  }, [reveal, conversationId, messages, session.activeConversation, revealMessage]);
 
   const latest = useMemo(() => latestTranscript(messages), [messages]);
   const liveTranscript = isStreaming && latest && isLive(latest) ? latest : null;
@@ -955,6 +1093,53 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
     </div>
   );
 
+  const canRetry = streamingConversationId === null && sideRun === null;
+  const renderMessage = (message: ChatMessage, index: number): React.ReactNode => {
+    if (message.role === 'user') {
+      const summary = message.sideSummary;
+      if (summary) {
+        return (
+          <SideSummaryCard
+            summary={summary}
+            content={message.content}
+            canOpen={summaryThreadExists(summary)}
+            onOpen={openSummaryThread}
+          />
+        );
+      }
+      return (
+        <div className="flex justify-end">
+          <div className="max-w-[520px] min-w-0 px-4 py-[11px] rounded-[18px] bg-shodh-raised-2 text-[15px] leading-[1.55] text-shodh-text">
+            <UserText text={message.content} />
+          </div>
+        </div>
+      );
+    }
+    if (message.role === 'system') {
+      return <SystemNotice message={message} />;
+    }
+    const isPreviewed = preview?.messageId === message.id;
+    return (
+      <AssistantMessage
+        conversationId={conversationId}
+        message={message}
+        question={index > 0 && messages[index - 1].role === 'user' ? messages[index - 1].content : null}
+        activeCitation={isPreviewed ? preview.hit.number : null}
+        activeFile={isPreviewed ? preview.hit.sourceFile : null}
+        canRetry={canRetry}
+        latest={index === messages.length - 1}
+        inlinePlan={!wide}
+        onOpenSource={openSource}
+        onOpenArtifact={setOpenArtifactId}
+        onRetry={handleRetry}
+        onDecide={approve}
+        onRuntimeInstalled={markRuntimeInstalled}
+        onOpenSettings={openSettings}
+        onOpenThread={openThread}
+      />
+    );
+  };
+
   if (messages.length === 0) {
     return (
       <section aria-label="Ask" className="relative h-full overflow-y-auto bg-shodh-ground" {...dropHandlers}>
@@ -1011,64 +1196,59 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
   return (
     <section aria-label="Ask" className="relative h-full flex flex-col bg-shodh-ground" {...dropHandlers}>
       {dropOverlay}
-      <div ref={scrollerRef} className="flex-1 overflow-y-auto scrollbar-thin pt-[18px]" style={{ paddingBottom: composerSpace }}>
+      <div
+        ref={scrollerRef}
+        onScroll={onScroll}
+        onFocus={onFocusIn}
+        onBlur={onFocusOut}
+        className="flex-1 overflow-y-auto scrollbar-thin"
+        style={{ paddingTop: CONVERSATION_TOP_PX, paddingBottom: composerSpace }}
+      >
         <div
-          className="max-w-[700px] mx-auto px-7 flex flex-col gap-[26px]"
+          className="relative max-w-[700px] mx-auto"
+          style={{ height: totalSize }}
           role="log"
           aria-label="Conversation"
           aria-live="off"
         >
           <DiagramHostContext.Provider value={diagramHost}>
-          {messages.map((message, index) => {
-            if (message.role === 'user') {
-              const summary = message.sideSummary;
-              if (summary) {
-                return (
-                  <SideSummaryCard
-                    key={message.id}
-                    summary={summary}
-                    content={message.content}
-                    canOpen={summaryThreadExists(summary)}
-                    onOpen={openSummaryThread}
-                  />
-                );
-              }
-              return (
-                <div key={message.id} className="ask-rise flex justify-end">
-                  <div className="max-w-[520px] min-w-0 px-4 py-[11px] rounded-[18px] bg-shodh-raised-2 text-[15px] leading-[1.55] text-shodh-text">
-                    <UserText text={message.content} />
-                  </div>
-                </div>
-              );
-            }
-            if (message.role === 'system') {
-              return <SystemNotice key={message.id} message={message} />;
-            }
-            const isPreviewed = preview?.messageId === message.id;
+          {virtualizer.getVirtualItems().map(item => {
+            const index = item.index;
+            const message = messages[index];
             return (
-              <AssistantMessage
-                key={message.id}
-                conversationId={conversationId}
-                message={message}
-                question={index > 0 && messages[index - 1].role === 'user' ? messages[index - 1].content : null}
-                activeCitation={isPreviewed ? preview.hit.number : null}
-                activeFile={isPreviewed ? preview.hit.sourceFile : null}
-                canRetry={streamingConversationId === null && sideRun === null}
-                latest={index === messages.length - 1}
-                inlinePlan={!wide}
-                onOpenSource={openSource}
-                onOpenArtifact={setOpenArtifactId}
-                onRetry={handleRetry}
-                onDecide={approve}
-                onRuntimeInstalled={markRuntimeInstalled}
-                onOpenSettings={openSettings}
-                onOpenThread={openThread}
-              />
+              <div
+                key={item.key}
+                {...{ [MESSAGE_INDEX_ATTR]: index }}
+                ref={virtualizer.measureElement}
+                className="absolute left-0 right-0 top-0 px-7"
+                style={{
+                  transform: `translateY(${item.start - CONVERSATION_TOP_PX}px)`,
+                  paddingBottom: index === messages.length - 1 ? 0 : MESSAGE_GAP_PX,
+                }}
+              >
+                <RiseOnce animate={!shownRef.current.ids.has(message.id)}>
+                  {renderMessage(message, index)}
+                </RiseOnce>
+              </div>
             );
           })}
           </DiagramHostContext.Provider>
         </div>
       </div>
+
+      {findOpen && (
+        <div className="absolute top-3 right-6 z-20">
+          <Suspense fallback={null}>
+            <ConversationFind
+              messages={messages}
+              firstVisibleIndex={firstVisibleIndex}
+              reveal={revealMessage}
+              onTarget={setFindIndex}
+              onClose={closeFind}
+            />
+          </Suspense>
+        </div>
+      )}
 
       <div ref={setComposerArea} className="absolute left-0 right-0 bottom-0 px-7 pt-10 pb-[22px] bg-gradient-to-b from-transparent via-shodh-ground via-[38%] to-shodh-ground pointer-events-none">
         <div className="max-w-[700px] mx-auto pointer-events-auto flex flex-col gap-2">

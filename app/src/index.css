@@ -235,6 +235,20 @@
 }
 
 /*
+ * Find in the conversation (features/ask/ConversationFind): every match of the
+ * message in view, and the current one, from the theme's tokens.
+ */
+::highlight(conversation-find) {
+  background-color: color-mix(in srgb, var(--c-accent) 22%, transparent);
+  color: inherit;
+}
+
+::highlight(conversation-find-current) {
+  background-color: var(--c-accent);
+  color: var(--c-on-accent);
+}
+
+/*
  * Ask view motion. Transform/opacity only; entrance durations come from the
  * motion tokens (which collapse to 0ms under prefers-reduced-motion), and the
  * looping indicators are switched off entirely for reduced motion.

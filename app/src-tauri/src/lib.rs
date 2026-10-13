@@ -30,6 +30,7 @@ mod source_viewer_commands;
 mod space_manager;
 mod storage_commands;
 mod table_model_commands;
+mod ui_state_commands;
 mod visual_commands;
 mod workspace_commands;
 
@@ -605,6 +606,8 @@ pub fn run() {
             agent_session_commands::code_settings_set,
             agent_session_commands::agent_install_runtime,
             library_profile::library_profile,
+            ui_state_commands::ui_state_get,
+            ui_state_commands::ui_state_set,
             audit_commands::audit_query,
             audit_commands::audit_verify,
             audit_commands::audit_export,

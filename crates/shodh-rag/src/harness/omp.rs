@@ -518,15 +518,28 @@ impl NormaliserState {
         events
     }
 
-    /// Streamed text of `message_id`; in a follow-up turn it passes the
-    /// message's opening gate first.
+    /// Streamed text of `message_id`. In a follow-up turn it passes the
+    /// message's opening gate first (preface to the app); so does a message
+    /// begun after a tool call of the run (narration opening the answer, see
+    /// [`super::grounding::preface`]). A message that started streaming
+    /// before is never gated midway.
     fn on_text(&mut self, run_id: String, message_id: &str, delta: &str) -> Vec<AgentEvent> {
         let shown = match self.run.as_mut() {
             Some(run) if run.follow_up => run
                 .gates
                 .entry(message_id.to_string())
-                .or_default()
+                .or_insert_with(OpeningGate::preface)
                 .push(delta),
+            Some(run)
+                if run.gates.contains_key(message_id)
+                    || (!run.interim.is_empty()
+                        && !run.messages.iter().any(|(id, _)| id == message_id)) =>
+            {
+                run.gates
+                    .entry(message_id.to_string())
+                    .or_insert_with(OpeningGate::narration)
+                    .push(delta)
+            }
             Some(_) => delta.to_string(),
             None => return Vec::new(),
         };
@@ -1638,6 +1651,24 @@ mod tests {
             shown_text(&events),
             "I apologize, the documents say nothing."
         );
+    }
+
+    #[test]
+    fn narration_opening_the_answer_after_a_search_is_dropped() {
+        let mut state = NormaliserState::new(catalog());
+        state.begin_run("r", "s", "m", "p1", 0);
+        // The model searches without writing a note first, then opens its
+        // answer by announcing it (recorded on the release build).
+        normalise(&tool_call("m1", "t1"), &mut state, 1);
+        let mut events = Vec::new();
+        for delta in [
+            "Based on the documents I've found, I can now provide ",
+            "a comprehensive answer.\\n\\n",
+            "HNSW keeps the graph connected [28].",
+        ] {
+            events.extend(normalise(&text_frame("m2", delta), &mut state, 2));
+        }
+        assert_eq!(shown_text(&events), "HNSW keeps the graph connected [28].");
     }
 
     #[test]

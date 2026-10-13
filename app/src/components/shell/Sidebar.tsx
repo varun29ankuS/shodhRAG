@@ -23,6 +23,7 @@ import type { Conversation } from '../../hooks/useConversations';
 import type { GroupableWorkspace } from '../../features/workspaces/model';
 import { ActivityTray } from './ActivityTray';
 import { ConversationHistory } from './ConversationHistory';
+import { countOf } from '../../lib/plural';
 
 export interface SidebarSource {
   id: string;
@@ -350,7 +351,7 @@ function IndexingStatus({
   const percent = Math.max(0, Math.min(100, Math.round(source.progress ?? 0)));
   const total = source.fileCount ?? 0;
   const processed = source.processedCount ?? 0;
-  const detail = total > 0 ? `${processed.toLocaleString()} of ${total.toLocaleString()} files` : 'Preparing files';
+  const detail = total > 0 ? `${processed.toLocaleString()} of ${countOf(total, 'file')}` : 'Preparing files';
   const label = `Indexing ${source.name}: ${detail}, ${percent}%. Open Library`;
 
   if (collapsed) {

@@ -666,6 +666,7 @@ impl Inner {
             ),
             detail: Some(json!({ "branch": branch.branch, "base": branch.base })),
             duration_ms: 0,
+            invalid_arguments: false,
         });
     }
 
@@ -717,6 +718,7 @@ impl Inner {
                     ok: outcome.ok,
                     summary: outcome.summary.clone(),
                     detail: outcome.detail.clone(),
+                    invalid_arguments: outcome.invalid_arguments,
                 },
             );
             lock(&inner.inflight).remove(&task_host_id);
@@ -745,6 +747,7 @@ impl Inner {
                     ok: false,
                     summary: "Cancelled".to_string(),
                     detail: None,
+                    invalid_arguments: false,
                 },
             );
         }
@@ -815,6 +818,7 @@ impl Inner {
                 state.begin_run(&run_id, &self.session_id, &self.model, &prompt_id, now_ms());
             self.calls_in_run.store(0, Ordering::SeqCst);
             self.passages_in_run.reset();
+            self.passages_in_run.seed(&scope.carried);
             self.plan_in_run.reset();
             *lock(&self.grounding_run) = GroundingRun {
                 run_id: run_id.clone(),

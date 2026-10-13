@@ -73,3 +73,43 @@ export function regionToCssRect(region: PdfRegion, transform: readonly number[])
   const top = Math.min(ay, by);
   return { left, top, width: Math.abs(bx - ax), height: Math.abs(by - ay) };
 }
+
+/** The vertical span of a highlighted passage on its page, in CSS pixels from the page's top. */
+export interface VerticalExtent {
+  top: number;
+  bottom: number;
+}
+
+/** The span the highlight `rects` cover (top of the highest to bottom of the lowest); null when there are none. */
+export function verticalExtent(rects: readonly { top: number; height: number }[]): VerticalExtent | null {
+  if (rects.length === 0) return null;
+  let top = Infinity;
+  let bottom = -Infinity;
+  for (const r of rects) {
+    top = Math.min(top, r.top);
+    bottom = Math.max(bottom, r.top + r.height);
+  }
+  return Number.isFinite(top) && Number.isFinite(bottom) ? { top, bottom } : null;
+}
+
+/** Room kept above a passage too tall to centre. */
+export const PASSAGE_SCROLL_MARGIN = 24;
+
+/**
+ * The scroll position that shows a highlighted passage: centred in the
+ * viewport when it fits (with a margin above and below), else its top a
+ * margin below the viewport's top, so it is read from its start.
+ * `pageOffset` is the page's offset in the scrolled content.
+ */
+export function passageScrollTop(
+  pageOffset: number,
+  extent: VerticalExtent,
+  viewportHeight: number,
+  margin = PASSAGE_SCROLL_MARGIN,
+): number {
+  const height = extent.bottom - extent.top;
+  const target = height + 2 * margin <= viewportHeight
+    ? pageOffset + (extent.top + extent.bottom) / 2 - viewportHeight / 2
+    : pageOffset + extent.top - margin;
+  return Math.max(0, target);
+}

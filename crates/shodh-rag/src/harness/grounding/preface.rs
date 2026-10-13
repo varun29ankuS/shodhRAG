@@ -15,6 +15,17 @@
 //! earlier answer or the check, or an announcement of the revision. Only the
 //! sentences before the first sentence of the answer itself are dropped, in at
 //! most [`MAX_PREFACE_PARAGRAPHS`] paragraphs.
+//!
+//! The answer that follows a model's searches opens the same way, addressed
+//! to nobody: "Based on the documents I've found, I can now provide a
+//! comprehensive answer." The earlier messages' working notes are set apart
+//! (`TextInterim`), but this sentence opens the answer itself. The system
+//! prompt already asks for the answer first, and free models write it anyway,
+//! so a message written after a tool call passes a gate that drops such
+//! narration ([`is_narration`]): a sentence with no citation, no number and
+//! no word of the subject that announces the answer. A sentence that says
+//! anything about the subject ("Based on the documents I found, here's how
+//! SPANN keeps search fast:") is kept as written.
 
 /// Held text that is released even without a paragraph break, so a turn
 /// written as one long paragraph streams after its opening sentences.
@@ -22,16 +33,45 @@ pub const MAX_HELD_CHARS: usize = 600;
 /// Paragraphs of preface dropped at most before the rest is released as is.
 pub const MAX_PREFACE_PARAGRAPHS: usize = 3;
 
-/// Holds the opening of one message of a follow-up turn until its preface
-/// can be told apart from its answer.
-#[derive(Debug, Clone, Default)]
+/// Holds the opening of one message until the sentences that open it
+/// without being part of the answer (a follow-up turn's preface, an
+/// answer's narration) can be told apart from the answer.
+#[derive(Debug, Clone)]
 pub struct OpeningGate {
     held: String,
     open: bool,
     dropped: usize,
+    /// Whether a sentence is dropped.
+    judge: fn(&str) -> bool,
+}
+
+impl Default for OpeningGate {
+    fn default() -> Self {
+        Self::preface()
+    }
 }
 
 impl OpeningGate {
+    fn with_judge(judge: fn(&str) -> bool) -> Self {
+        Self {
+            held: String::new(),
+            open: false,
+            dropped: 0,
+            judge,
+        }
+    }
+
+    /// For a message of a follow-up turn: drops its preface to the app and
+    /// any narration.
+    pub fn preface() -> Self {
+        Self::with_judge(|s| is_preface(s) || is_narration(s))
+    }
+
+    /// For a message written after a tool call: drops narration only.
+    pub fn narration() -> Self {
+        Self::with_judge(is_narration)
+    }
+
     /// Takes a streamed delta; returns the text to show now (empty while the
     /// opening is held).
     pub fn push(&mut self, delta: &str) -> String {
@@ -63,7 +103,7 @@ impl OpeningGate {
             // Without a break and before the end, the last sentence may still
             // be streaming: only finished sentences are judged.
             let partial = boundary.is_none() && !done;
-            let opening = preface_end(&self.held[..end], partial);
+            let opening = opening_end(&self.held[..end], partial, self.judge);
             if !opening.answer_found {
                 if partial && self.held.chars().count() < MAX_HELD_CHARS {
                     return String::new();
@@ -102,9 +142,15 @@ pub struct Opening {
 /// sentences. With `partial`, a last sentence without its closing
 /// punctuation is not judged yet.
 pub fn preface_end(paragraph: &str, partial: bool) -> Opening {
+    opening_end(paragraph, partial, is_preface)
+}
+
+/// Where the answer begins in `paragraph`: after its leading sentences that
+/// `judge` drops.
+fn opening_end(paragraph: &str, partial: bool, judge: fn(&str) -> bool) -> Opening {
     let mut offset = 0;
     for (start, end) in sentences(paragraph, partial) {
-        if !is_preface(&paragraph[start..end]) {
+        if !judge(&paragraph[start..end]) {
             return Opening {
                 offset: start,
                 answer_found: true,
@@ -289,6 +335,174 @@ pub fn is_preface(sentence: &str) -> bool {
     false
 }
 
+/// How a model announces the answer it is about to write.
+const NARRATION_ANNOUNCERS: &[&str] = &[
+    "i can now provide",
+    "i can now give",
+    "i can now answer",
+    "i can now explain",
+    "i can now offer",
+    "i can now present",
+    "i can now summarize",
+    "i can now summarise",
+    "i can now compile",
+    "i can provide",
+    "i can give you",
+    "i will now provide",
+    "i'll now provide",
+    "i will provide",
+    "i'll provide",
+    "let me provide",
+    "let me now provide",
+    "let me compile",
+    "let me now compile",
+    "let me put together",
+    "let me summarize",
+    "let me summarise",
+    "let me explain",
+    "let me now explain",
+    "now i can provide",
+    "now i can answer",
+    "now i can explain",
+    "i now have",
+    "now i have",
+    "i have enough",
+    "i've enough",
+    "i have gathered",
+    "i've gathered",
+    "i have found enough",
+    "i've found enough",
+    "i have sufficient",
+    "here is a comprehensive",
+    "here's a comprehensive",
+    "here is a detailed",
+    "here's a detailed",
+    "here is a complete",
+    "here's a complete",
+    "here is a thorough",
+    "here's a thorough",
+];
+
+/// Words narration is made of besides function words: the search, the
+/// documents and the answer it announces. A word outside these and the
+/// stopwords is about the subject, and the sentence is kept.
+const NARRATION_WORDS: &[&str] = &[
+    "able",
+    "after",
+    "answer",
+    "answers",
+    "available",
+    "based",
+    "can",
+    "clear",
+    "complete",
+    "compile",
+    "comprehensive",
+    "detailed",
+    "details",
+    "document",
+    "documents",
+    "enough",
+    "explain",
+    "explanation",
+    "file",
+    "files",
+    "find",
+    "findings",
+    "found",
+    "gather",
+    "gathered",
+    "give",
+    "good",
+    "have",
+    "having",
+    "here",
+    "i",
+    "i'll",
+    "i'm",
+    "i've",
+    "information",
+    "let",
+    "look",
+    "looked",
+    "looking",
+    "me",
+    "now",
+    "offer",
+    "overview",
+    "paper",
+    "papers",
+    "passage",
+    "passages",
+    "picture",
+    "present",
+    "provide",
+    "put",
+    "query",
+    "question",
+    "questions",
+    "relevant",
+    "research",
+    "result",
+    "results",
+    "retrieved",
+    "review",
+    "reviewed",
+    "reviewing",
+    "search",
+    "searched",
+    "searches",
+    "searching",
+    "source",
+    "sources",
+    "sufficient",
+    "summarise",
+    "summarize",
+    "summary",
+    "thorough",
+    "together",
+    "understanding",
+    "will",
+    "your",
+];
+
+/// Whether one sentence is narration: it announces the answer ("Based on the
+/// documents I've found, I can now provide a comprehensive answer.") and
+/// says nothing about the subject. Never a sentence with a citation or a
+/// number.
+pub fn is_narration(sentence: &str) -> bool {
+    let text = sentence
+        .trim()
+        .trim_start_matches(['#', '*', '_', '>', '-', ' '])
+        .replace(['\u{2019}', '\u{2018}'], "'")
+        .to_lowercase();
+    let text = text.trim_end_matches(['*', '_', ' ']).trim();
+    if text.is_empty() || text.chars().any(|c| c.is_ascii_digit() || c == '[') {
+        return false;
+    }
+    if !NARRATION_ANNOUNCERS.iter().any(|a| contains_words(text, a)) {
+        return false;
+    }
+    text.split(|c: char| !(c.is_alphanumeric() || c == '\''))
+        .filter(|w| !w.is_empty())
+        .all(|w| {
+            NARRATION_WORDS.contains(&w)
+                || crate::harness::web::relevance::is_stopword(w)
+                || w.strip_suffix("'s")
+                    .is_some_and(|base| NARRATION_WORDS.contains(&base))
+        })
+}
+
+/// Whether `text` contains the words `phrase` (not inside a longer word).
+fn contains_words(text: &str, phrase: &str) -> bool {
+    text.match_indices(phrase).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + phrase.len()..].chars().next();
+        before.is_none_or(|c| !c.is_alphanumeric())
+            && after.is_none_or(|c| !(c.is_alphanumeric() || c == '\''))
+    })
+}
+
 /// Whether `text` starts with the words `prefix` ("sorry," yes, "sorry-free" no).
 fn starts_with_words(text: &str, prefix: &str) -> bool {
     text.strip_prefix(prefix).is_some_and(|rest| {
@@ -415,6 +629,63 @@ mod tests {
             stream(after_error, 4),
             "The documents do not cover the termination fee.\n\nThe notice period is sixty days [1]."
         );
+    }
+
+    /// Streams `text` through a narration gate (a message after a tool call).
+    fn stream_answer(text: &str, step: usize) -> String {
+        let mut gate = OpeningGate::narration();
+        let chars: Vec<char> = text.chars().collect();
+        let mut out = String::new();
+        for chunk in chars.chunks(step) {
+            out.push_str(&gate.push(&chunk.iter().collect::<String>()));
+        }
+        out.push_str(&gate.finish());
+        out
+    }
+
+    #[test]
+    fn the_recorded_narration_opening_an_answer_is_dropped() {
+        // The opening of an answer recorded on the release build (Nemotron).
+        let answer = "HNSW keeps at most M neighbours per element and prunes them with a \
+                      heuristic [28].\n\nNSG approximates the MRNG [21].";
+        for opening in [
+            "Based on the documents I've found, I can now provide a comprehensive answer.",
+            "Based on the documents I\u{2019}ve found, I can now provide a comprehensive answer \
+             to your question.",
+            "Now I have enough information to answer your question.",
+            "I now have sufficient information. Let me provide a detailed explanation:",
+        ] {
+            for sep in [" ", "\n\n"] {
+                let turn = format!("{opening}{sep}{answer}");
+                for step in [1, 5, 40, 10_000] {
+                    assert_eq!(stream_answer(&turn, step), answer, "{turn:?} in {step}s");
+                }
+            }
+        }
+        // A heading of its own.
+        let turn = format!("**Here is a comprehensive overview:**\n\n{answer}");
+        assert_eq!(stream_answer(&turn, 7), answer);
+    }
+
+    #[test]
+    fn narration_that_says_anything_of_the_subject_is_kept() {
+        for sentence in [
+            "Based on the documents I found, here's how FreshDiskANN and SPANN maintain fast search performance when indexes exceed RAM capacity:",
+            "I can now provide a comprehensive answer about how HNSW and NSG prune neighbours.",
+            "Based on the documents I've found, the notice period is sixty days [1].",
+            "I now have the 2021 results.",
+            "Let me explain the pruning rule.",
+            "The documents I found describe a comprehensive answer key.",
+        ] {
+            assert!(!is_narration(sentence), "{sentence:?}");
+        }
+        for turn in [
+            "The monthly retainer is INR 2,75,000 plus GST [11].",
+            "Based on the documents I found, here's how SPANN works:\n\n- It clusters [1].",
+            "",
+        ] {
+            assert_eq!(stream_answer(turn, 3), turn, "{turn:?}");
+        }
     }
 
     #[test]

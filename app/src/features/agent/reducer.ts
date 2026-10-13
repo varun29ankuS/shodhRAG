@@ -14,7 +14,12 @@ import { parseRegions } from '../ask/viewer/regionGeometry.ts';
 import { readProviderError } from '../modelPicker/modelTypes.ts';
 import type { ProviderError, ProviderErrorKind } from '../modelPicker/modelTypes.ts';
 
-export type StepStatus = 'running' | 'awaiting_approval' | 'done' | 'failed';
+/**
+ * `retried`: the call was refused for its arguments and a later call of the
+ * same tool succeeded, so the failure was the model correcting itself, not
+ * a failure of the answer.
+ */
+export type StepStatus = 'running' | 'awaiting_approval' | 'done' | 'failed' | 'retried';
 
 export type ApprovalDecision = 'pending' | 'approved' | 'denied';
 
@@ -42,6 +47,8 @@ export interface TranscriptStep {
   approval: StepApproval | null;
   /** Ids of nested sub-steps, in start order. */
   children: string[];
+  /** Failed because its arguments did not fit the tool (see `StepStatus` `retried`). */
+  invalidArguments?: boolean;
 }
 
 /**
@@ -298,6 +305,24 @@ function updateStep(
   return { ...state, steps: { ...state.steps, [stepId]: patch(step) } };
 }
 
+/**
+ * A call of `tool` succeeded: its earlier calls refused for their arguments
+ * were the model correcting itself, and show as retried.
+ */
+function markRetried(steps: Record<string, TranscriptStep>, tool: string): Record<string, TranscriptStep> {
+  let changed = false;
+  const next: Record<string, TranscriptStep> = {};
+  for (const [id, step] of Object.entries(steps)) {
+    if (step.tool === tool && step.status === 'failed' && step.invalidArguments) {
+      changed = true;
+      next[id] = { ...step, status: 'retried' };
+    } else {
+      next[id] = step;
+    }
+  }
+  return changed ? next : steps;
+}
+
 /** Close any step still open (the run ended without reporting it). */
 function closeOpenSteps(steps: Record<string, TranscriptStep>, summary: string, atMs: number) {
   let changed = false;
@@ -400,6 +425,7 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
     case 'step_finished': {
       const step = state.steps[action.stepId];
       if (!step) return state;
+      const invalidArguments = !action.ok && action.invalidArguments === true;
       const next = updateStep(state, action.stepId, s => ({
         ...s,
         status: action.ok ? 'done' : 'failed',
@@ -410,10 +436,14 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
         approval: s.approval && s.approval.decision === 'pending'
           ? { ...s.approval, decision: action.ok ? 'approved' : 'denied' }
           : s.approval,
+        ...(invalidArguments ? { invalidArguments: true } : {}),
       }));
-      return action.ok
-        ? { ...next, passages: mergePassages(next.passages, passagesFromDetail(action.detail)) }
-        : next;
+      if (!action.ok) return next;
+      return {
+        ...next,
+        steps: markRetried(next.steps, step.tool),
+        passages: mergePassages(next.passages, passagesFromDetail(action.detail)),
+      };
     }
 
     case 'plan_updated':

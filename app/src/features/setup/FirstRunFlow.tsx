@@ -11,6 +11,7 @@ import { useSearchModels } from './SearchModelsContext';
 import { AnswerCheckModelRow } from '../../components/AnswerCheckSettings';
 import { FIRST_RUN_STEPS, FIRST_RUN_STEP_LABELS, nextStep, previousStep, stepIndex } from './firstRun';
 import type { FirstRunStep } from './firstRun';
+import { countOf } from '../../lib/plural';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -337,7 +338,7 @@ function FolderStep({ sources, onAddFolder, ...props }: StepProps & { sources: F
                   ? s.fileCount > 0
                     ? `${(s.processedCount ?? 0).toLocaleString()} of ${s.fileCount.toLocaleString()}`
                     : 'Preparing…'
-                  : `${s.fileCount.toLocaleString()} files`}
+                  : countOf(s.fileCount, 'file')}
               </span>
             </li>
           ))}

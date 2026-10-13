@@ -211,3 +211,22 @@ export function chipEntries(
   }
   return entries;
 }
+
+/**
+ * The pick shown as selected in Settings → Model. A pick chosen in settings
+ * is selected while its model answers. A model the environment (or this
+ * session) set was not chosen as a pick, but the pick it belongs to is shown
+ * selected all the same: the pick whose model it is, else the pick that
+ * falls back to it. Null when no pick has it.
+ */
+export function selectedPick(view: Pick<PickerView, 'active' | 'prefs' | 'picks'>): PickId | null {
+  const active = view.active;
+  if (!active) return null;
+  if (active.source === 'settings') {
+    const chosen = view.picks.find(p => p.pick === view.prefs.pick);
+    return chosen && sameModel(active.model, chosen.model) ? chosen.pick : null;
+  }
+  const primary = view.picks.find(p => sameModel(active.model, p.model));
+  if (primary) return primary.pick;
+  return view.picks.find(p => p.fallbacks.some(f => sameModel(active.model, f)))?.pick ?? null;
+}

@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Database, Trash2, FolderOpen, RefreshCw, AlertTriangle, HardDrive, FileText } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
 import { notify } from '../lib/notify';
+import { countOf } from '../lib/plural';
 
 interface IndexStats {
   total_spaces: number;
@@ -213,7 +214,7 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
           {showIndexed ? 'Hide' : 'Show'} Actual Indexed Files
           {indexedSources.length > 0 && (
             <span className="ml-auto text-[10px]" style={{ color: colors.textMuted }}>
-              {indexedSources.length} files
+              {countOf(indexedSources.length, 'file')}
             </span>
           )}
         </button>

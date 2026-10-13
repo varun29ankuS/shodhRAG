@@ -260,3 +260,35 @@ test('a note taken back as the answer counts again', () => {
   assert.ok(restored);
   assert.deepEqual(restored.interimIds, [], 'transcripts saved before notes restore without any');
 });
+test('a call refused for its arguments shows as retried once the tool succeeds', () => {
+  const started = (stepId: string, tool: string): AgentEvent => ({
+    type: 'step_started', runId: RUN, stepId, parentStepId: null, tool, label: tool, args: {}, tier: 'read', atMs: 1010,
+  });
+  let state = reduceAll(initialTranscript(RUN, 1000), [
+    { type: 'run_started', runId: RUN, sessionId: 's1', model: 'm', atMs: 1000, warning: null },
+    started('bad', 'search_documents'),
+    {
+      type: 'step_finished', runId: RUN, stepId: 'bad', ok: false, summary: 'Invalid arguments',
+      detail: { error: 'Validation failed for tool "search_documents"' }, durationMs: 9, invalidArguments: true,
+    },
+    started('other-fail', 'open_document'),
+    { type: 'step_finished', runId: RUN, stepId: 'other-fail', ok: false, summary: 'Not found', detail: null, durationMs: 3 },
+  ]);
+  assert.equal(state.steps.bad.status, 'failed', 'failed until a later call of the tool succeeds');
+  // Another tool succeeding does not retry it.
+  state = reduceAll(state, [
+    started('sources', 'list_sources'),
+    { type: 'step_finished', runId: RUN, stepId: 'sources', ok: true, summary: '1 folder', detail: null, durationMs: 14 },
+  ]);
+  assert.equal(state.steps.bad.status, 'failed');
+  state = reduceAll(state, [
+    started('good', 'search_documents'),
+    { type: 'step_finished', runId: RUN, stepId: 'good', ok: true, summary: '10 passages', detail: null, durationMs: 1700 },
+  ]);
+  assert.equal(state.steps.bad.status, 'retried');
+  assert.equal(state.steps.good.status, 'done');
+  // A failure for any other reason stays a failure.
+  assert.equal(state.steps['other-fail'].status, 'failed');
+  // A stored transcript keeps it.
+  assert.equal(fromPersisted(JSON.parse(JSON.stringify(toPersisted(state))))?.steps.bad.status, 'retried');
+});

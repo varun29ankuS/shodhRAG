@@ -89,3 +89,19 @@ export function previousStep(step: FirstRunStep): FirstRunStep {
 export function resumeStep(state: FirstRunState): FirstRunStep {
   return state.step === 'done' ? 'welcome' : state.step;
 }
+
+/**
+ * Whether `store` holds a first-run state (this build's or the previous
+ * onboarding's). Without one, `readFirstRun` gives the state of a fresh
+ * install, which a state saved elsewhere (the backend's copy) overrides.
+ */
+export function hasSavedFirstRun(store: KeyValueStore | null): boolean {
+  if (!store) return false;
+  try {
+    return [FIRST_RUN_KEYS.status, FIRST_RUN_KEYS.legacyCompleted, FIRST_RUN_KEYS.legacySkipped].some(
+      key => store.getItem(key) !== null,
+    );
+  } catch {
+    return false;
+  }
+}

@@ -54,6 +54,8 @@ pub struct StepOutcome {
     pub ok: bool,
     pub summary: String,
     pub detail: Option<Value>,
+    /// The host rejected the call's arguments (see `StepFinished`).
+    pub invalid_arguments: bool,
 }
 
 const MAX_PROGRESS_CHARS: usize = 400;
@@ -366,6 +368,7 @@ impl NormaliserState {
                     ok: false,
                     summary: interrupted_summary.to_string(),
                     detail: None,
+                    invalid_arguments: false,
                 });
                 AgentEvent::StepFinished {
                     run_id: run.run_id.clone(),
@@ -374,6 +377,7 @@ impl NormaliserState {
                     summary: outcome.summary,
                     detail: outcome.detail,
                     duration_ms: now_ms.saturating_sub(step.started_at_ms),
+                    invalid_arguments: outcome.invalid_arguments,
                 }
             })
             .collect();
@@ -514,15 +518,28 @@ impl NormaliserState {
         events
     }
 
-    /// Streamed text of `message_id`; in a follow-up turn it passes the
-    /// message's opening gate first.
+    /// Streamed text of `message_id`. In a follow-up turn it passes the
+    /// message's opening gate first (preface to the app); so does a message
+    /// begun after a tool call of the run (narration opening the answer, see
+    /// [`super::grounding::preface`]). A message that started streaming
+    /// before is never gated midway.
     fn on_text(&mut self, run_id: String, message_id: &str, delta: &str) -> Vec<AgentEvent> {
         let shown = match self.run.as_mut() {
             Some(run) if run.follow_up => run
                 .gates
                 .entry(message_id.to_string())
-                .or_default()
+                .or_insert_with(OpeningGate::preface)
                 .push(delta),
+            Some(run)
+                if run.gates.contains_key(message_id)
+                    || (!run.interim.is_empty()
+                        && !run.messages.iter().any(|(id, _)| id == message_id)) =>
+            {
+                run.gates
+                    .entry(message_id.to_string())
+                    .or_insert_with(OpeningGate::narration)
+                    .push(delta)
+            }
             Some(_) => delta.to_string(),
             None => return Vec::new(),
         };
@@ -811,6 +828,21 @@ fn fill_placeholders(segment: &str, args: &Value) -> (String, bool) {
     (out, complete)
 }
 
+/// How omp's tool-argument validation answers when a call's arguments do
+/// not fit the tool's schema (and its coercions cannot fix them).
+const RUNTIME_VALIDATION_PREFIX: &str = "Validation failed for tool";
+/// Transcript summary of a call refused for its arguments (the host's
+/// `ToolError::InvalidArguments` summary).
+pub const INVALID_ARGUMENTS_SUMMARY: &str = "Invalid arguments";
+
+/// The runtime's validation message, when `payload` is one.
+fn runtime_validation_error(payload: Option<&ToolResultPayload>) -> Option<String> {
+    let text = payload.map(ToolResultPayload::joined_text)?;
+    let text = text.trim();
+    text.starts_with(RUNTIME_VALIDATION_PREFIX)
+        .then(|| truncate_chars(text, MAX_PROGRESS_CHARS))
+}
+
 fn first_line_summary(payload: Option<&ToolResultPayload>, ok: bool) -> String {
     let text = payload
         .map(ToolResultPayload::joined_text)
@@ -932,9 +964,17 @@ pub fn normalise(
                 .host_calls
                 .retain(|_, step_id| step_id != &end.tool_call_id);
             let ok = !end.is_error;
-            let (summary, detail) = match step.outcome {
-                Some(outcome) => (outcome.summary, outcome.detail),
-                None => (first_line_summary(end.result.as_ref(), ok), None),
+            let (summary, detail, invalid_arguments) = match step.outcome {
+                Some(outcome) => (outcome.summary, outcome.detail, outcome.invalid_arguments),
+                None => match runtime_validation_error(end.result.as_ref()).filter(|_| !ok) {
+                    // The runtime refused the call before the host saw it.
+                    Some(message) => (
+                        INVALID_ARGUMENTS_SUMMARY.to_string(),
+                        Some(serde_json::json!({ "error": message })),
+                        true,
+                    ),
+                    None => (first_line_summary(end.result.as_ref(), ok), None, false),
+                },
             };
             vec![AgentEvent::StepFinished {
                 run_id,
@@ -943,6 +983,7 @@ pub fn normalise(
                 summary,
                 detail,
                 duration_ms: now_ms.saturating_sub(step.started_at_ms),
+                invalid_arguments,
             }]
         }
         InboundFrame::Ready(_)
@@ -1188,6 +1229,7 @@ mod tests {
                 ok: true,
                 summary: "4 passages from 2 files".into(),
                 detail: Some(json!({"files": 2})),
+                invalid_arguments: false,
             },
         );
         let end = parse_frame(
@@ -1204,6 +1246,7 @@ mod tests {
                 summary: "4 passages from 2 files".into(),
                 detail: Some(json!({"files": 2})),
                 duration_ms: 15,
+                invalid_arguments: false,
             }]
         );
     }
@@ -1232,6 +1275,51 @@ mod tests {
             })
         ));
         assert!(state.active_run_id().is_none());
+    }
+
+    #[test]
+    fn a_call_the_runtime_refused_for_its_arguments_is_marked() {
+        let mut state = NormaliserState::new(catalog());
+        state.begin_run("r", "s", "m", "p1", 0);
+        // omp validates arguments itself: the host never sees this call.
+        let start = parse_frame(
+            r#"{"type":"tool_execution_start","toolCallId":"t1","toolName":"search_documents","args":{"query":"pruning","sources":null}}"#,
+        )
+        .unwrap();
+        normalise(&start, &mut state, 1);
+        let end = parse_frame(
+            r#"{"type":"tool_execution_end","toolCallId":"t1","toolName":"search_documents","result":{"content":[{"type":"text","text":"Validation failed for tool \"search_documents\":\n  - sources: must be array\n\nReceived arguments:\n{}"}]},"isError":true}"#,
+        )
+        .unwrap();
+        match normalise(&end, &mut state, 10).as_slice() {
+            [AgentEvent::StepFinished {
+                ok: false,
+                summary,
+                detail: Some(detail),
+                invalid_arguments: true,
+                ..
+            }] => {
+                assert_eq!(summary, INVALID_ARGUMENTS_SUMMARY);
+                assert!(detail["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("sources: must be array"));
+            }
+            other => panic!("{other:?}"),
+        }
+        // Any other failure is not.
+        normalise(&start, &mut state, 11);
+        let failed = parse_frame(
+            r#"{"type":"tool_execution_end","toolCallId":"t1","toolName":"search_documents","result":{"content":[{"type":"text","text":"Search failed: index locked"}]},"isError":true}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            normalise(&failed, &mut state, 12).as_slice(),
+            [AgentEvent::StepFinished {
+                invalid_arguments: false,
+                ..
+            }]
+        ));
     }
 
     #[test]

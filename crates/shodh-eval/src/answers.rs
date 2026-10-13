@@ -617,6 +617,7 @@ mod tests {
                     {"n": 2, "path": "c:/elsewhere/b.pdf", "text": "other", "file": "b.pdf", "score": 0.1}
                 ]})),
                 duration_ms: 3,
+                invalid_arguments: false,
             },
             delta("m1", "Draft answer."),
             delta("m2", "The total is INR 7,96,500"),
@@ -695,6 +696,7 @@ mod tests {
                 summary: String::new(),
                 detail: Some(json!({ "passages": passages })),
                 duration_ms: 1,
+                invalid_arguments: false,
             },
         ]
     }

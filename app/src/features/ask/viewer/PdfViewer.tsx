@@ -8,7 +8,8 @@ import type { PageSpan, PdfRegion } from '../types';
 import { findPassage, matchScore, prepareHaystack, type PassageMatch, type PreparedHaystack, type TextRange } from './passageMatch';
 import { acquirePdf, holdForeground, readPdfMeta, type PdfDocLease } from './pdfDocCache';
 import { isRenderCancelled, loadPdfJs } from './pdfjs';
-import { firstRegionPage, regionToCssRect, regionsOnPages } from './regionGeometry';
+import { firstRegionPage, passageScrollTop, regionToCssRect, regionsOnPages, verticalExtent } from './regionGeometry';
+import type { VerticalExtent } from './regionGeometry';
 import { scrollBehavior } from './sourceAccess';
 import { findInText, viewerCommand } from './viewerKeys';
 import { getPdfMeta, pdfViewStates, rememberPdfMeta } from './viewerStores';
@@ -20,6 +21,7 @@ import { openSnippet } from '../../research/snippetBus';
 import { cssToSnippetRect, rectToRegion, type CssBox } from '../../research/snippetGeometry';
 import { renderSnippet, snippetText } from '../../research/snippetRender';
 import type { SnippetRect } from '../../research/types';
+import { countOf } from '../../../lib/plural';
 
 type TextContent = Awaited<ReturnType<PDFPageProxy['getTextContent']>>;
 type TextLayerInstance = InstanceType<Awaited<ReturnType<typeof loadPdfJs>>['TextLayer']>;
@@ -135,8 +137,8 @@ interface PdfPageViewProps {
   /** Layout boxes of the cited passage on this page (PDF points). */
   boxes: PdfRegion[] | null;
   highlightToken: number | null;
-  /** `top` is the first highlight's offset in the page, or null if none could be drawn. */
-  onHighlightRendered: (page: number, token: number, top: number | null) => void;
+  /** `extent` is where the highlight lies on the page, or null if none could be drawn. */
+  onHighlightRendered: (page: number, token: number, extent: VerticalExtent | null) => void;
   onPainted: (page: number, sharp: boolean) => void;
   registerElement: (page: number, el: HTMLDivElement | null) => void;
 }
@@ -343,7 +345,7 @@ function PdfPageView({
 
   useEffect(() => {
     if (highlightToken === null || ranges?.length || boxRects === null) return;
-    onHighlightRendered(pageNumber, highlightToken, boxRects.length > 0 ? boxRects.reduce((m, r) => Math.min(m, r.top), Infinity) : null);
+    onHighlightRendered(pageNumber, highlightToken, verticalExtent(boxRects));
   }, [boxRects, ranges, highlightToken, pageNumber, onHighlightRendered]);
 
   useEffect(() => {
@@ -351,7 +353,7 @@ function PdfPageView({
     if (layerUnusable) {
       onHighlightRendered(pageNumber, highlightToken, null);
     } else if (rects !== null) {
-      onHighlightRendered(pageNumber, highlightToken, rects.length > 0 ? rects.reduce((m, r) => Math.min(m, r.top), Infinity) : null);
+      onHighlightRendered(pageNumber, highlightToken, verticalExtent(rects));
     }
   }, [rects, layerUnusable, ranges, highlightToken, pageNumber, onHighlightRendered]);
 
@@ -895,10 +897,13 @@ export function PdfViewer({
     const citedList: number[] = [];
     if (start !== null && end !== null) for (let p = start; p <= end; p += 1) citedList.push(p);
     // Without a cited page the document stays where it is: the top, or the
-    // remembered position.
+    // remembered position. The page is shown while the passage is located;
+    // once its outline is drawn the view moves to it, and a page scroll still
+    // pending then must not move it back to the page's top.
+    const outlined = () => scrolledToken.current === token;
     if (start !== null) {
       requestAnimationFrame(() => {
-        if (isCurrent()) scrollToPage(start);
+        if (isCurrent() && !outlined()) scrollToPage(start);
       });
     }
 
@@ -912,7 +917,7 @@ export function PdfViewer({
         setTarget({ page, ranges: [], boxes, token });
         if (page !== start) {
           requestAnimationFrame(() => {
-            if (isCurrent()) scrollToPage(page);
+            if (isCurrent() && !outlined()) scrollToPage(page);
           });
         }
         onLocateRef.current({ status: 'found', message: `Cited passage outlined on page ${page}.` });
@@ -952,7 +957,7 @@ export function PdfViewer({
         for (let p = 1; p <= total; p += 1) if (!citedList.includes(p)) rest.push(p);
         rest.sort((a, b) => Math.abs(a - anchor) - Math.abs(b - anchor) || a - b);
         best = await search(rest, done => {
-          if (isCurrent()) onLocateRef.current({ status: 'searching', message: `Searching the PDF for the passage… (${done} of ${rest.length} pages)` });
+          if (isCurrent()) onLocateRef.current({ status: 'searching', message: `Searching the PDF for the passage… (${done} of ${countOf(rest.length, 'page')})` });
         });
         if (!isCurrent()) return;
       }
@@ -969,7 +974,7 @@ export function PdfViewer({
       }
 
       setTarget({ page: best.page, ranges: best.match.ranges, boxes: [], token });
-      scrollToPage(best.page);
+      if (!outlined()) scrollToPage(best.page);
       const moved = start !== null && (best.page < start || best.page > (end ?? start));
       const where = `page ${best.page}`;
       if (best.match.partial || best.match.coverage < 0.6) {
@@ -992,13 +997,13 @@ export function PdfViewer({
     });
   }, [doc, passage, citedStart, citedEnd, regionsKey, getText, scrollToPage]);
 
-  const onHighlightRendered = useCallback((page: number, token: number, top: number | null) => {
+  const onHighlightRendered = useCallback((page: number, token: number, extent: VerticalExtent | null) => {
     if (scrolledToken.current === token || token !== locateToken.current) return;
     const scroller = scrollerRef.current;
     const el = pageEls.current.get(page);
     if (!scroller || !el) return;
     scrolledToken.current = token;
-    if (top === null) {
+    if (extent === null) {
       // The match is in the page text but could not be outlined on the
       // rendered page (text layer unavailable or out of step with it).
       if (targetKind.current === 'passage') {
@@ -1009,7 +1014,8 @@ export function PdfViewer({
       }
       return;
     }
-    scroller.scrollTo({ top: Math.max(0, el.offsetTop + top - scroller.clientHeight / 3), behavior: scrollBehavior() });
+    // The outlined passage in view: centred when it fits, else from its top.
+    scroller.scrollTo({ top: passageScrollTop(el.offsetTop, extent, scroller.clientHeight), behavior: scrollBehavior() });
   }, []);
 
   // Find in document: search the page text once the query settles, from the

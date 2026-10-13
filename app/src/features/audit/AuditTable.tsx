@@ -5,6 +5,7 @@ import { prettyJson } from '../agent/format';
 import { formatTimestamp, summarise } from './summary';
 import { eventLabel } from './types';
 import type { AuditRow } from './types';
+import { countOf } from '../../lib/plural';
 
 const ROW_HEIGHT = 34;
 const OVERSCAN = 8;
@@ -248,7 +249,7 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
       <div className="h-8 px-3 flex items-center border-t border-shodh-border-subtle text-[11.5px] text-shodh-text-faint tabular-nums">
         {loading && rows.length > 0
           ? `Loading… ${rows.length.toLocaleString()} of ${total.toLocaleString()}`
-          : `${rows.length.toLocaleString()} of ${total.toLocaleString()} events`}
+          : `${rows.length.toLocaleString()} of ${countOf(total, 'event')}`}
       </div>
     </div>
   );

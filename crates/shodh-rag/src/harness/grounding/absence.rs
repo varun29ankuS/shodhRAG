@@ -99,11 +99,21 @@ pub const DOMAINS: &[Domain] = &[
 /// negation and the noun.
 const GAP: &str = r"(?:[a-z][a-z'’-]*\s+){0,3}";
 
-/// "You have no (open) tasks", "you don't have any events", "there are no
-/// tasks", "I found no files", "No tasks are due", "your task list is
-/// empty", "nothing is indexed": the noun is captured.
-fn absence_patterns() -> &'static [Regex] {
-    static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
+/// One way of saying the user has none of something; the noun is captured.
+struct AbsencePattern {
+    regex: Regex,
+    /// The pattern alone does not say whose data it is ("there are no
+    /// tasks", "no events are scheduled", "found no papers" are as likely
+    /// about a paper or a meeting record), so the claim must also address
+    /// the user ("you", "your").
+    needs_you: bool,
+}
+
+/// "You have no (open) tasks", "you don't have any events", "your task list
+/// is empty", "nothing is indexed", and, in a claim addressed to the user,
+/// "there are no tasks", "I found no events", "No tasks are due".
+fn absence_patterns() -> &'static [AbsencePattern] {
+    static PATTERNS: OnceLock<Vec<AbsencePattern>> = OnceLock::new();
     PATTERNS.get_or_init(|| {
         let nouns: Vec<String> = DOMAINS
             .iter()
@@ -112,27 +122,63 @@ fn absence_patterns() -> &'static [Regex] {
             .collect();
         let noun = format!(r"(?P<noun>{})\b", nouns.join("|"));
         [
-            format!(
-                r"\byou(?:\s+currently|\s+still)?\s+(?:have|has|['’]ve\s+got|have\s+got)\s+(?:no|zero)\s+{GAP}{noun}"
+            (
+                format!(
+                    r"\byou(?:\s+currently|\s+still)?\s+(?:have|has|['’]ve\s+got|have\s+got)\s+(?:no|zero)\s+{GAP}{noun}"
+                ),
+                false,
             ),
-            format!(
-                r"\byou(?:\s+currently)?\s+(?:do\s+not|don['’]t|dont)\s+(?:currently\s+)?have\s+any\s+{GAP}{noun}"
+            (
+                format!(
+                    r"\byou(?:\s+currently)?\s+(?:do\s+not|don['’]t|dont)\s+(?:currently\s+)?have\s+any\s+{GAP}{noun}"
+                ),
+                false,
             ),
-            format!(
-                r"\bthere\s+(?:are|is|were|was)\s+(?:currently\s+)?(?:no|not\s+any)\s+{GAP}{noun}"
+            (
+                r"\byour\s+(?P<noun>task|to-do|todo|calendar|memory|snippet|workspace)\s+(?:list\s+)?(?:is|looks)\s+(?:empty|clear)".to_string(),
+                false,
             ),
-            format!(r"\b(?:found|see|could\s+find|can\s+see)\s+no\s+{GAP}{noun}"),
-            format!(
-                r"(?:^|[.:;!]\s+)no\s+{GAP}{noun}\s+(?:(?:are|is|were|was|have\s+been)\s+)?(?:found|indexed|scheduled|due|saved|listed|yet|available)"
+            (
+                r"\bnothing\s+(?:is\s+|has\s+been\s+)?(?P<noun>indexed)\b".to_string(),
+                false,
             ),
-            r"\byour\s+(?P<noun>task|to-do|todo|calendar|memory|snippet|workspace)\s+(?:list\s+)?(?:is|looks)\s+(?:empty|clear)".to_string(),
-            r"\bnothing\s+(?:is\s+|has\s+been\s+)?(?P<noun>indexed)\b".to_string(),
-            r"\byou\s+have\s+nothing\s+(?P<noun>scheduled|due|planned)\b".to_string(),
+            (
+                r"\byou\s+have\s+nothing\s+(?P<noun>scheduled|due|planned)\b".to_string(),
+                false,
+            ),
+            (
+                format!(
+                    r"\bthere\s+(?:are|is|were|was)\s+(?:currently\s+)?(?:no|not\s+any)\s+{GAP}{noun}"
+                ),
+                true,
+            ),
+            (
+                format!(r"\b(?:found|see|could\s+find|can\s+see)\s+no\s+{GAP}{noun}"),
+                true,
+            ),
+            (
+                format!(
+                    r"(?:^|[.:;!]\s+)no\s+{GAP}{noun}\s+(?:(?:are|is|were|was|have\s+been)\s+)?(?:found|indexed|scheduled|due|saved|listed|yet|available)"
+                ),
+                true,
+            ),
         ]
-        .iter()
-        .filter_map(|p| Regex::new(&format!("(?i){p}")).ok())
+        .into_iter()
+        .filter_map(|(pattern, needs_you)| {
+            Regex::new(&format!("(?i){pattern}"))
+                .ok()
+                .map(|regex| AbsencePattern { regex, needs_you })
+        })
         .collect()
     })
+}
+
+/// Whether a claim addresses the user ("you", "your").
+fn addresses_user(claim: &str) -> bool {
+    static YOU: OnceLock<Option<Regex>> = OnceLock::new();
+    YOU.get_or_init(|| Regex::new(r"(?i)\b(?:you|your|yours)\b").ok())
+        .as_ref()
+        .is_some_and(|re| re.is_match(claim))
 }
 
 /// The domain a captured noun belongs to.
@@ -149,17 +195,24 @@ fn domain_of_noun(noun: &str) -> Option<&'static Domain> {
 
 /// The kind of the user's data `claim` says the user has none of, if any.
 pub fn absence_domain(claim: &str) -> Option<&'static Domain> {
-    absence_patterns().iter().find_map(|re| {
-        re.captures_iter(claim)
-            .filter_map(|c| c.name("noun"))
-            .find_map(|noun| domain_of_noun(noun.as_str()))
-    })
+    let to_user = addresses_user(claim);
+    absence_patterns()
+        .iter()
+        .filter(|p| to_user || !p.needs_you)
+        .find_map(|p| {
+            p.regex
+                .captures_iter(claim)
+                .filter_map(|c| c.name("noun"))
+                .find_map(|noun| domain_of_noun(noun.as_str()))
+        })
 }
 
 /// Flag the claims of `messages` that say the user has none of some data
-/// no successful tool call of the run read (`tools_ok`). A claim that was
-/// already checked keeps its place and gets the new outcome; an unchecked
-/// one (absence claims cite nothing) is added in reading order.
+/// no successful tool call of the run read (`tools_ok`). A claim that cites
+/// a passage is about that passage ("There are no tasks in GLUE where BM25
+/// wins [3]") and is left to the passage checks. A flagged claim that was
+/// already checked (an uncited statement) keeps its place and gets the new
+/// outcome; one that was not is added in reading order.
 pub fn flag_unverified_absence(
     messages: &[AnswerMessage],
     tools_ok: &HashSet<String>,
@@ -175,8 +228,12 @@ pub fn flag_unverified_absence(
                 .iter()
                 .position(|c| c.message_id == message.id && c.anchor == claim.anchor)
                 .map(|i| remaining.remove(i));
-            let unbacked = absence_domain(&claim.text)
-                .filter(|d| !d.tools.iter().any(|t| tools_ok.contains(*t)));
+            let unbacked = if claim.citations.is_empty() {
+                absence_domain(&claim.text)
+                    .filter(|d| !d.tools.iter().any(|t| tools_ok.contains(*t)))
+            } else {
+                None
+            };
             match (existing, unbacked) {
                 (Some(mut check), Some(_)) => {
                     check.outcome = ClaimOutcome::UnverifiedAbsence;
@@ -223,13 +280,13 @@ mod tests {
             ("You don’t have any tasks yet.", "tasks"),
             ("You do not have any tasks due today.", "tasks"),
             ("There are no tasks in your list.", "tasks"),
-            ("I found no events scheduled for Friday.", "events"),
-            ("No tasks are due this week.", "tasks"),
+            ("I found no events on your calendar for Friday.", "events"),
+            ("No tasks are due for you this week.", "tasks"),
             ("Your task list is empty.", "tasks"),
             ("You have nothing scheduled tomorrow.", "events"),
             ("Nothing is indexed yet.", "indexed documents"),
             ("You have no indexed documents.", "indexed documents"),
-            ("There are no saved snippets.", "snippets"),
+            ("There are no saved snippets in your library.", "snippets"),
             ("You have no memories stored about that.", "memories"),
             ("You have no workspaces.", "workspaces"),
         ] {
@@ -250,6 +307,13 @@ mod tests {
             "There is no information about the renewal fee in the passages.",
             "HNSW has no global index; it uses a layered graph [2].",
             "No relevant passages were found for the 2019 figures.",
+            // What the instructions ask for after an empty paper or web search.
+            "No relevant papers or sources were found.",
+            "I searched and found no relevant papers.",
+            // Papers and records talk about tasks and meetings too.
+            "There are no tasks in GLUE where BM25 wins.",
+            "There were no meetings in the third quarter.",
+            "No events were recorded after the outage.",
             "You have to give sixty days of notice [1].",
             "The task of the encoder is to map queries to vectors [3].",
         ] {
@@ -282,6 +346,43 @@ mod tests {
         for tool in ["list_tasks", "show_calendar"] {
             let read: HashSet<String> = [tool.to_string()].into();
             assert!(flag_unverified_absence(&messages, &read, Vec::new()).is_empty());
+        }
+    }
+
+    #[test]
+    fn claims_citing_a_passage_or_backed_by_their_search_are_not_flagged() {
+        let after_search: HashSet<String> = ["search_papers".to_string()].into();
+        let messages = answer("No relevant papers or sources were found.");
+        assert!(flag_unverified_absence(&messages, &after_search, Vec::new()).is_empty());
+        let after_web: HashSet<String> = ["web_search".to_string()].into();
+        let messages = answer("I searched and found no relevant papers.");
+        assert!(flag_unverified_absence(&messages, &after_web, Vec::new()).is_empty());
+        // A cited claim keeps the verdict of the passage checks.
+        let searched: HashSet<String> = ["search_documents".to_string()].into();
+        for text in [
+            "There are no tasks in GLUE where BM25 wins [3].",
+            "There were no meetings mentioned in the minutes [2].",
+            "You have no obligation to renew after the first term [1].",
+        ] {
+            let messages = answer(text);
+            let anchor = split_claims(text)[0].anchor.clone();
+            let supported = ClaimCheck {
+                message_id: "m1".into(),
+                text: text.into(),
+                anchor,
+                kind: crate::harness::events::ClaimKind::Sentence,
+                outcome: ClaimOutcome::Supported,
+                cited: vec![3],
+                invalid: Vec::new(),
+                support: Some(0.9),
+                contradiction: None,
+                missing_numbers: Vec::new(),
+                closest: None,
+                closest_score: None,
+            };
+            let out = flag_unverified_absence(&messages, &searched, vec![supported.clone()]);
+            assert_eq!(out, vec![supported], "{text}");
+            assert!(flag_unverified_absence(&messages, &HashSet::new(), Vec::new()).is_empty());
         }
     }
 

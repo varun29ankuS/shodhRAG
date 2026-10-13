@@ -7,14 +7,18 @@
 //! 3. otherwise the claim is checked against the text of the passages it
 //!    cites (plus what the run read of the same document with
 //!    `open_document`):
-//!    * every number it states must appear in that text (spec §7.4),
+//!    * every number it states must appear in that text (spec §7.4), and
+//!      every quote of four words or more must appear in it word for word
+//!      ([`misquoted`]),
 //!    * with the entailment model installed, the text is cut into windows of
 //!      three sentences, the windows sharing most words with the claim are
 //!      classified (premise = window, hypothesis = claim) and the best
 //!      entailment probability is the support score;
 //!    * without it, the cross-encoder's best sigmoid over the cited
-//!      passages is (it measures relevance, so it cannot see a reversed or
-//!      swapped statement; `calibration.rs` shows the difference), and
+//!      passages and their sentence windows that hold most of the claim's
+//!      words is ([`relevance_texts`]; it measures relevance, so it cannot
+//!      see a reversed or swapped statement; `calibration.rs` shows the
+//!      difference), and
 //!      without either model the share of the claim's significant words
 //!      found in the text is,
 //!    * thresholds ([`Thresholds`], calibrated in `calibration.rs` on
@@ -162,6 +166,21 @@ const MAX_CLOSEST_SEARCHES: usize = 16;
 const SENTENCES_PER_WINDOW: usize = 3;
 /// Windows classified per claim (those sharing most words with it).
 const ENTAILMENT_WINDOWS: usize = 4;
+/// Share of a claim's significant words a sentence window must hold before
+/// the cross-encoder scores the claim against it. A claim about one
+/// sentence of a long passage (a figure caption among body text) scores
+/// low against the whole passage, so the window holding it is scored too;
+/// a window holding few of the claim's words is only on topic, and the
+/// cross-encoder scores such windows high (relevance is not support), so it
+/// is not scored. Checked on the public ANN claims in `calibration.rs`
+/// (`cross_encoder_check_on_public_ann_claims`), not swept.
+pub(crate) const WINDOW_MIN_COVERAGE: f32 = 0.7;
+/// Words a quoted fragment of a claim needs before it must appear verbatim
+/// in the cited text. Shorter quotes are usually terms ("traffic hubs"),
+/// which a paraphrase may quote loosely.
+const MIN_QUOTE_WORDS: usize = 4;
+/// Words a piece of a quote (between ellipses) needs to be looked up.
+const MIN_QUOTE_PIECE_WORDS: usize = 3;
 
 /// What a document tool showed the model from a file, beyond numbered passages.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -368,7 +387,7 @@ pub fn support(scorers: Scorers<'_>, claim: &str, texts: &[String]) -> Support {
             }
         }
     }
-    match neural_scores(scorers.relevance, claim, &texts) {
+    match neural_scores(scorers.relevance, claim, &relevance_texts(claim, &texts)) {
         Some(scores) => Support {
             score: scores.into_iter().fold(0.0_f32, f32::max),
             method: ScoringMethod::CrossEncoder,
@@ -380,6 +399,109 @@ pub fn support(scorers: Scorers<'_>, claim: &str, texts: &[String]) -> Support {
             contradiction: None,
         },
     }
+}
+
+/// What the cross-encoder scores `claim` against: each whole text, then
+/// the sentence windows that hold most of the claim's words
+/// ([`WINDOW_MIN_COVERAGE`]). `texts` are already cleaned.
+pub(crate) fn relevance_texts(claim: &str, texts: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(texts.len() + ENTAILMENT_WINDOWS);
+    for text in texts {
+        if !out.contains(text) {
+            out.push(text.clone());
+        }
+    }
+    for window in entailment_windows(claim, texts) {
+        if word_coverage(claim, &window) >= WINDOW_MIN_COVERAGE && !out.contains(&window) {
+            out.push(window);
+        }
+    }
+    out
+}
+
+/// Typographic variants read as their plain form (ligatures of PDF text,
+/// curly apostrophes).
+fn plain_letters(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\u{fb00}' => out.push_str("ff"),
+            '\u{fb01}' => out.push_str("fi"),
+            '\u{fb02}' => out.push_str("fl"),
+            '\u{fb03}' => out.push_str("ffi"),
+            '\u{fb04}' => out.push_str("ffl"),
+            '\u{2019}' | '\u{2018}' => out.push('\''),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// The text between double quotes ("…" or “…”) in `claim`.
+fn quoted_fragments(claim: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = claim;
+    loop {
+        let Some(open) = rest.find(['"', '\u{201c}']) else {
+            break;
+        };
+        let opener = rest[open..].chars().next().unwrap_or('"');
+        let after = &rest[open + opener.len_utf8()..];
+        let closers: &[char] = if opener == '"' {
+            &['"']
+        } else {
+            &['\u{201d}', '"']
+        };
+        let Some(close) = after.find(closers) else {
+            break;
+        };
+        out.push(&after[..close]);
+        let closer_len = after[close..].chars().next().map_or(1, char::len_utf8);
+        rest = &after[close + closer_len..];
+    }
+    out
+}
+
+/// Whether `needle` occurs as consecutive words of `haystack`.
+fn contains_words(haystack: &[String], needle: &[String]) -> bool {
+    !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// The quotes of `claim` (of at least [`MIN_QUOTE_WORDS`] words) that none
+/// of `evidence` contains word for word. A quote may skip text with an
+/// ellipsis ("...", "…", "[...]"); each piece is looked up on its own.
+/// Case, punctuation, line-break hyphenation, ligatures and curly
+/// apostrophes do not count as differences.
+pub fn misquoted(claim: &str, evidence: &[&str]) -> Vec<String> {
+    let quotes: Vec<&str> = quoted_fragments(claim)
+        .into_iter()
+        .filter(|q| words(&plain_letters(q)).len() >= MIN_QUOTE_WORDS)
+        .collect();
+    if quotes.is_empty() {
+        return Vec::new();
+    }
+    let haystacks: Vec<Vec<String>> = evidence
+        .iter()
+        .map(|e| words(&plain_letters(&clean_evidence(e))))
+        .collect();
+    quotes
+        .into_iter()
+        .filter(|quote| {
+            let pieces: Vec<Vec<String>> = quote
+                .split("[...]")
+                .flat_map(|p| p.split("[\u{2026}]"))
+                .flat_map(|p| p.split("..."))
+                .flat_map(|p| p.split('\u{2026}'))
+                .map(|p| words(&plain_letters(p)))
+                .filter(|p| p.len() >= MIN_QUOTE_PIECE_WORDS)
+                .collect();
+            !pieces.is_empty()
+                && !pieces
+                    .iter()
+                    .all(|piece| haystacks.iter().any(|h| contains_words(h, piece)))
+        })
+        .map(|q| q.trim().to_string())
+        .collect()
 }
 
 /// The checkable passage that best supports `claim`, with its score, when
@@ -484,11 +606,15 @@ fn check_claim(
             // The cited passages, plus text the run opened from their files.
             let mut texts: Vec<String> = Vec::new();
             let mut all_texts: Vec<&str> = Vec::new();
+            // Whole texts a quote is looked up in (the scored texts are
+            // windows of what was opened, and stop after a few).
+            let mut quote_sources: Vec<&str> = Vec::new();
             let mut paths: Vec<&str> = Vec::new();
             for p in &cited {
                 all_texts.push(&p.text);
                 if p.checkable {
                     texts.push(p.text.clone());
+                    quote_sources.push(&p.text);
                 }
                 if !paths.contains(&p.path.as_str()) {
                     paths.push(&p.path);
@@ -500,6 +626,7 @@ fn check_claim(
                 .filter(|o| paths.contains(&o.path.as_str()))
             {
                 all_texts.push(&opened.text);
+                quote_sources.push(&opened.text);
                 texts.extend(windows(&opened.text));
             }
             check.missing_numbers = missing_numbers(&claim.text, &all_texts);
@@ -514,7 +641,10 @@ fn check_claim(
                 methods.insert(found.method);
                 check.support = Some(found.score);
                 check.contradiction = found.contradiction;
-                check.outcome = if check.missing_numbers.is_empty() {
+                // A quote the cited text does not contain is not from it,
+                // however close the rest of the claim is.
+                let misquotes = misquoted(&claim.text, &quote_sources);
+                check.outcome = if check.missing_numbers.is_empty() && misquotes.is_empty() {
                     outcome_for(found.score, found.method, thresholds)
                 } else {
                     ClaimOutcome::Unsupported
@@ -552,6 +682,7 @@ fn check_claim(
                 methods.insert(found.method);
                 if outcome_for(found.score, found.method, thresholds) == ClaimOutcome::Supported
                     && missing_numbers(&claim.text, &[p.text.as_str()]).is_empty()
+                    && misquoted(&claim.text, &[p.text.as_str()]).is_empty()
                 {
                     check.outcome = ClaimOutcome::Supported;
                     check.cited = vec![n];

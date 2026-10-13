@@ -441,10 +441,7 @@ fn plain_letters(text: &str) -> String {
 fn quoted_fragments(claim: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut rest = claim;
-    loop {
-        let Some(open) = rest.find(['"', '\u{201c}']) else {
-            break;
-        };
+    while let Some(open) = rest.find(['"', '\u{201c}']) {
         let opener = rest[open..].chars().next().unwrap_or('"');
         let after = &rest[open + opener.len_utf8()..];
         let closers: &[char] = if opener == '"' {

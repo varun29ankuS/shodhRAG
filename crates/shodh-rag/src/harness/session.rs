@@ -818,6 +818,7 @@ impl Inner {
                 state.begin_run(&run_id, &self.session_id, &self.model, &prompt_id, now_ms());
             self.calls_in_run.store(0, Ordering::SeqCst);
             self.passages_in_run.reset();
+            self.passages_in_run.seed(&scope.carried);
             self.plan_in_run.reset();
             *lock(&self.grounding_run) = GroundingRun {
                 run_id: run_id.clone(),

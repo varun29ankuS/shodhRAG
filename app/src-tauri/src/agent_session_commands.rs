@@ -29,7 +29,9 @@ use shodh_rag::harness::model::EnvValue;
 use shodh_rag::harness::model_catalog::ProviderId;
 use shodh_rag::harness::model_choice::base_url_var;
 use shodh_rag::harness::profile::{app_tools, is_valid_slug};
-use shodh_rag::harness::tools::{HostTool, RunScope, ToolRegistry};
+use shodh_rag::harness::tools::{
+    carried_passages_block, CitedPassage, HostTool, RunScope, ToolRegistry,
+};
 use shodh_rag::harness::{
     fetch_omp, resolve_binary_path, select_model_with, stealth_allowed_by_env, AgentEvent,
     AgentHarness, AgentProfile, CodeSession, HarnessError, LaunchSpec, OmpLayout, OmpModel,
@@ -622,6 +624,79 @@ pub struct SendScope {
     /// "Search all my library" for this one question: the workspace's instructions and
     /// memories still apply, its source limit does not.
     pub search_all: bool,
+    /// Passages of the answer a side question is about, under that answer's citation
+    /// numbers (`RunScope::carried`).
+    pub passages: Option<Vec<CarriedPassage>>,
+}
+
+/// One passage an earlier answer cites, as the frontend holds it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CarriedPassage {
+    pub n: u32,
+    pub file: String,
+    pub path: String,
+    #[serde(default)]
+    pub page: Option<String>,
+    pub text: String,
+    /// A web page or paper; `path` is its URL.
+    #[serde(default)]
+    pub web: bool,
+}
+
+/// Most passages carried into one side question.
+const MAX_CARRIED_PASSAGES: usize = 40;
+/// Most characters of passage text carried into one side question; passages past it are
+/// left out (an answer citing a left-out number then fails its check, as it should).
+const MAX_CARRIED_CHARS: usize = 24_000;
+/// Most characters of one carried passage (`search_documents` gives at most 1 500).
+const MAX_CARRIED_PASSAGE_CHARS: usize = 4_000;
+/// Highest citation number accepted.
+const MAX_CITATION_NUMBER: u32 = 100_000;
+
+/// Carried passages as the run holds them, in the order given (the frontend puts the ones
+/// the question is about first): numbers in range and not repeated, text present and
+/// capped, within [`MAX_CARRIED_PASSAGES`] and [`MAX_CARRIED_CHARS`]. Web passages are
+/// checked for numbers only, as a search provider's text is (the frontend does not know
+/// which web text was a provider's).
+fn carried_passages(passages: Vec<CarriedPassage>) -> CommandResult<Vec<CitedPassage>> {
+    let mut out: Vec<CitedPassage> = Vec::new();
+    let mut used = 0usize;
+    for p in passages {
+        if p.n == 0 || p.n > MAX_CITATION_NUMBER {
+            return Err(AgentCommandError::invalid(format!(
+                "Citation number {} is out of range",
+                p.n
+            )));
+        }
+        if p.file.len() > 2048 || p.path.len() > 2048 {
+            return Err(AgentCommandError::invalid(
+                "A carried passage's source is too long",
+            ));
+        }
+        let text = truncate(p.text.trim(), MAX_CARRIED_PASSAGE_CHARS);
+        if text.is_empty() || out.iter().any(|c| c.n == p.n) {
+            continue;
+        }
+        let size = text.chars().count();
+        if out.len() == MAX_CARRIED_PASSAGES || used + size > MAX_CARRIED_CHARS {
+            break;
+        }
+        used += size;
+        out.push(CitedPassage {
+            n: p.n,
+            file: p.file.trim().to_string(),
+            path: p.path.trim().to_string(),
+            page: p
+                .page
+                .map(|pg| pg.trim().to_string())
+                .filter(|pg| !pg.is_empty()),
+            web: p.web,
+            text,
+            checkable: !p.web,
+        });
+    }
+    Ok(out)
 }
 
 impl SendScope {
@@ -673,6 +748,7 @@ impl SendScope {
             files,
             pages,
             workspace,
+            carried: carried_passages(self.passages.unwrap_or_default())?,
             ..RunScope::default()
         })
     }
@@ -718,9 +794,13 @@ pub(crate) fn compose_message(
     memories: Option<&str>,
     workspace_block: Option<&str>,
     search_all: bool,
+    passages_block: Option<&str>,
 ) -> String {
     let mut preamble: Vec<&str> = Vec::new();
     if let Some(block) = workspace_block {
+        preamble.push(block);
+    }
+    if let Some(block) = passages_block {
         preamble.push(block);
     }
     if search_all {
@@ -1435,12 +1515,21 @@ pub async fn agent_send(
     } else {
         None
     };
+    // The carried passages' text is read once per agent session: with the replayed
+    // conversation that cites them. Later questions of the session have it already (and the
+    // run is seeded with the passages every time).
+    let passages_block = if replay {
+        carried_passages_block(&scope.carried)
+    } else {
+        None
+    };
     let message = compose_message(
         &text,
         history.as_deref().filter(|_| replay),
         memories.as_deref(),
         workspace_block.as_deref(),
         search_all && workspace.is_some(),
+        passages_block.as_deref(),
     );
     let scoped = !scope.is_empty();
     // Registered before prompting: the run id is `request_id`, and the first events may
@@ -2337,6 +2426,74 @@ mod tests {
         assert!(old.validated().unwrap().pages.is_empty());
     }
 
+    #[test]
+    fn carried_passages_keep_the_answers_numbers_within_limits() {
+        let wire: SendScope = serde_json::from_str(
+            r#"{"passages": [
+                {"n": 28, "file": "hnsw.pdf", "path": "c:/p/hnsw.pdf", "page": "3", "text": " Fig. 2 caption "},
+                {"n": 21, "file": "nsg.pdf", "path": "c:/p/nsg.pdf", "text": "MRNG"},
+                {"n": 28, "file": "hnsw.pdf", "path": "c:/p/hnsw.pdf", "text": "repeated number"},
+                {"n": 5, "file": "x.pdf", "path": "c:/p/x.pdf", "text": "   "},
+                {"n": 9, "file": "Page", "path": "https://example.org", "text": "web text", "web": true}
+            ]}"#,
+        )
+        .unwrap();
+        let scope = wire.validated().unwrap();
+        // Carried passages are context, not a source limit: the side question still
+        // searches the whole library.
+        assert!(scope.is_empty());
+        let carried = scope.carried;
+        let numbers: Vec<u32> = carried.iter().map(|p| p.n).collect();
+        assert_eq!(
+            numbers,
+            vec![28, 21, 9],
+            "order kept, repeats and blanks dropped"
+        );
+        assert_eq!(carried[0].text, "Fig. 2 caption");
+        assert_eq!(carried[0].page.as_deref(), Some("3"));
+        assert!(carried[0].checkable && !carried[2].checkable && carried[2].web);
+
+        let zero: SendScope = serde_json::from_str(
+            r#"{"passages": [{"n": 0, "file": "a", "path": "a", "text": "t"}]}"#,
+        )
+        .unwrap();
+        assert!(zero.validated().is_err());
+
+        // The text budget: passages past it are left out.
+        let long = "x".repeat(MAX_CARRIED_PASSAGE_CHARS);
+        let many = SendScope {
+            passages: Some(
+                (1..=20)
+                    .map(|n| CarriedPassage {
+                        n,
+                        file: "a.pdf".into(),
+                        path: "c:/a.pdf".into(),
+                        page: None,
+                        text: long.clone(),
+                        web: false,
+                    })
+                    .collect(),
+            ),
+            ..SendScope::default()
+        };
+        let kept = many.validated().unwrap().carried;
+        assert_eq!(kept.len(), MAX_CARRIED_CHARS / MAX_CARRIED_PASSAGE_CHARS);
+    }
+
+    #[test]
+    fn carried_passages_are_read_with_the_replayed_conversation() {
+        let block = "Passages the answer this question is about cites [28]";
+        let history = vec![HistoryTurn {
+            role: "assistant".into(),
+            content: "HNSW keeps global connectivity [28].".into(),
+        }];
+        let message = compose_message("Why?", Some(&history), None, None, false, Some(block));
+        let at_block = message.find(block).unwrap();
+        let at_history = message.find("Earlier in this conversation").unwrap();
+        assert!(at_block < at_history, "{message}");
+        assert!(message.ends_with("Current message:\nWhy?"), "{message}");
+    }
+
     fn thesis() -> AnswerWorkspace {
         AnswerWorkspace {
             id: "ws-1".into(),
@@ -2389,9 +2546,10 @@ mod tests {
     #[test]
     fn instructions_and_memories_come_before_the_question_in_every_path() {
         let block = instructions_block("Thesis", "Cite page numbers.").unwrap();
-        let plain = compose_message("What is X?", None, None, None, false);
+        let plain = compose_message("What is X?", None, None, None, false, None);
         assert_eq!(plain, "What is X?");
-        let with_block = compose_message("What is X?", None, Some("MEM"), Some(&block), false);
+        let with_block =
+            compose_message("What is X?", None, Some("MEM"), Some(&block), false, None);
         let ws = with_block.find("<workspace_instructions").unwrap();
         let mem = with_block.find("MEM").unwrap();
         let question = with_block.find("Current message:\nWhat is X?").unwrap();
@@ -2401,13 +2559,20 @@ mod tests {
             role: "user".into(),
             content: "Earlier question".into(),
         }];
-        let replayed = compose_message("What is X?", Some(&history), None, Some(&block), false);
+        let replayed = compose_message(
+            "What is X?",
+            Some(&history),
+            None,
+            Some(&block),
+            false,
+            None,
+        );
         let earlier = replayed.find("Earlier question").unwrap();
         assert!(replayed.find("<workspace_instructions").unwrap() < earlier);
         assert!(earlier < replayed.find("What is X?").unwrap());
         assert_eq!(replayed.matches("Cite page numbers.").count(), 1);
         // Search all: the note says so.
-        let all = compose_message("What is X?", None, None, Some(&block), true);
+        let all = compose_message("What is X?", None, None, Some(&block), true, None);
         assert!(all.contains("search all my library"));
     }
 

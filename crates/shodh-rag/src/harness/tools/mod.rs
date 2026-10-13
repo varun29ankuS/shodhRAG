@@ -171,6 +171,47 @@ impl RunPassages {
         self.issued.load(Ordering::SeqCst)
     }
 
+    /// Start the run with `passages` under their own numbers (see
+    /// [`RunScope::carried`]); numbers issued later follow the highest.
+    pub fn seed(&self, passages: &[CitedPassage]) {
+        let Some(highest) = passages.iter().map(|p| p.n).max() else {
+            return;
+        };
+        let mut cited = self.lock();
+        for passage in passages {
+            cited.insert(passage.n, passage.clone());
+        }
+        self.issued.fetch_max(highest, Ordering::SeqCst);
+    }
+}
+
+/// The carried passages as the model reads them: each under its number, as
+/// fenced data. `None` when there are none.
+pub fn carried_passages_block(passages: &[CitedPassage]) -> Option<String> {
+    if passages.is_empty() {
+        return None;
+    }
+    let mut out = String::from(
+        "Passages the answer this question is about cites, under the numbers it uses. Cite \
+         them with these numbers; passages you find by searching get new numbers.\n",
+    );
+    out.push_str(UNTRUSTED_NOTICE);
+    for p in passages {
+        let page = p
+            .page
+            .as_deref()
+            .map(|pg| format!(", page {pg}"))
+            .unwrap_or_default();
+        let longest = p.text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+        let fence = "`".repeat(longest.max(2) + 1);
+        out.push_str(&format!(
+            "\n\n[{}] {}{page}:\n{fence}text\n{}\n{fence}",
+            p.n,
+            p.file,
+            p.text.trim()
+        ));
+    }
+    Some(out)
 }
 
 /// What the user limited one answer to ("Ask about this file", the sources
@@ -199,6 +240,12 @@ pub struct RunScope {
     pub folders: Vec<String>,
     /// Snippets of the workspace, searched by their text.
     pub snippets: Vec<ScopedSnippet>,
+    /// Passages of the earlier answer this question is about (a side
+    /// discussion of an answer), under the numbers that answer cites them
+    /// with. The run starts with them ([`RunPassages::seed`]): the model can
+    /// cite them as the answer does, its claims citing them are checked
+    /// against them, and its own searches number on after them.
+    pub carried: Vec<CitedPassage>,
 }
 
 /// A snippet an answer may use: the region of a page the user saved.
@@ -1271,6 +1318,50 @@ mod tests {
             &json!({"id": "t1", "limit": null, "status": null, "due": null, "filter": null})
         ));
         assert!(!runtime.is_valid(&json!({"id": null})));
+    }
+
+    fn carried(n: u32, text: &str) -> CitedPassage {
+        CitedPassage {
+            n,
+            file: "hnsw.pdf".into(),
+            path: "c:/papers/hnsw.pdf".into(),
+            page: Some("3".into()),
+            web: false,
+            text: text.into(),
+            checkable: true,
+        }
+    }
+
+    #[test]
+    fn carried_passages_keep_their_numbers_and_new_ones_follow() {
+        let run = RunPassages::new();
+        run.seed(&[
+            carried(28, "Fig. 2 caption"),
+            carried(21, "MRNG definition"),
+        ]);
+        assert_eq!(run.get(28).unwrap().text, "Fig. 2 caption");
+        assert_eq!(run.get(21).unwrap().text, "MRNG definition");
+        assert_eq!(run.issued(), 28);
+        // A search in the same run numbers after the highest carried number.
+        assert_eq!(run.reserve(3), 29);
+        // Citing the same span again reuses its carried number.
+        assert_eq!(run.cite(carried(0, "Fig. 2 caption")), 28);
+        // Nothing carried: numbering starts at 1.
+        let fresh = RunPassages::new();
+        fresh.seed(&[]);
+        assert_eq!(fresh.reserve(1), 1);
+    }
+
+    #[test]
+    fn carried_passages_are_shown_as_numbered_data() {
+        assert_eq!(carried_passages_block(&[]), None);
+        let block =
+            carried_passages_block(&[carried(28, "maintaining the global ``` connectivity")])
+                .unwrap();
+        assert!(block.contains(UNTRUSTED_NOTICE));
+        assert!(block.contains("[28] hnsw.pdf, page 3:"));
+        // The fence is longer than any backtick run in the passage.
+        assert!(block.contains("````text\nmaintaining the global ``` connectivity\n````"));
     }
 
     #[test]

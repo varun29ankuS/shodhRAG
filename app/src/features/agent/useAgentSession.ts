@@ -12,6 +12,7 @@ import { AGENT_SESSIONS_EVENT, isSessionCounts } from './sessionCounts';
 import type { SessionCounts } from './sessionCounts';
 import type { ModelOverride } from '../modelPicker/modelTypes';
 import type { ConversationMode } from '../../hooks/useConversations';
+import type { CarriedPassageWire } from '../focus/carriedPassages';
 
 export const AGENT_EVENT = 'agent_event';
 export const RUNTIME_PROGRESS_EVENT = 'agent_runtime_progress';
@@ -60,6 +61,11 @@ export interface AnswerScope {
   workspaceId?: string;
   /** "Search all my library" for this one question (only with `workspaceId`). */
   searchAll?: boolean;
+  /**
+   * Passages of the answers a side question continues, under their numbers
+   * (`features/focus/carriedPassages`): the run starts with them.
+   */
+  passages?: CarriedPassageWire[];
 }
 
 /** How a conversation's answers work, sent with `agent_start`. */

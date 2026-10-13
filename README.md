@@ -5,7 +5,7 @@
 <h1 align="center">Shodh</h1>
 
 <p align="center">
-  <strong>Ask questions across your papers and folders and get answers cited to the exact page. Private by default, for researchers and teams.</strong>
+  <strong>Ask questions across your papers and folders and get answers cited to the exact page. Your documents stay on your computer.</strong>
 </p>
 
 <p align="center">
@@ -132,7 +132,7 @@ The core of Shodh is free and open source (Apache-2.0), and it stays that way: a
   - The hash is pinned in the source on Windows. On macOS it is taken from the release's checksum file.
 - Every tool runs in Rust and is permission-checked:
   - Each answer has a budget of tool calls.
-  - Writes and deletions wait for your approval.
+  - By default, writes and deletions wait for your approval. MCP tools can be set to run automatically.
 - **Built-in tools:**
   - Library search and documents
   - Web search and pages
@@ -142,9 +142,10 @@ The core of Shodh is free and open source (Apache-2.0), and it stays that way: a
   - Workspaces, conversations and settings
   - Exports
 - **More tools:** add MCP servers and skills in **Settings → Tools & connections**.
-- **Code mode:** the **Research | Code** switch in Ask lets a conversation read and change a workspace's code folder.
-  - Changes go on a branch of their own and can be discarded.
-  - The approval level decides what runs without asking.
+- **Code mode:** the **Research | Code** switch in Ask lets a conversation read, change and run commands in a workspace's code folder.
+  - File tools are confined to that folder. Shell commands cannot be confined by path.
+  - Each edit and command asks first, unless you choose a level that applies edits by themselves or runs allowlisted commands.
+  - In a git repository, changes go on a branch of their own and can be discarded.
 
 **Models**
 - **Cloud with your API key:** OpenRouter, Anthropic, OpenAI, Google Gemini and xAI.
@@ -179,7 +180,7 @@ Baselines ([synthetic](crates/shodh-eval/data/synthetic/baseline.json), [scanned
 | hit, page_hit and passage_hit @5 and @10 | 1.000 | 1.000 |
 | Files indexed | 1.000 | 1.000 |
 
-These are small fictional sets, and the pipeline was tuned against them. They catch regressions; they do not predict quality on your documents. `shodh-eval generate` writes questions about your own folder and `shodh-eval retrieval` scores them. Everything stays in a git-ignored local folder.
+These are small fictional sets. They catch regressions; they do not predict quality on your documents. For your own folder, `shodh-eval generate` writes questions with a language model you choose, and `shodh-eval retrieval` scores them. Generating sends passages to that model, so use a local provider for private folders. Questions and reports stay in a git-ignored local folder.
 
 Answer quality is measured by `shodh-eval answers`: fact recall, citation correctness, grounding verdicts and correct refusals. It needs a language model, so it does not run in CI, and no baseline has been published yet.
 
@@ -199,7 +200,7 @@ Nothing below works yet. The larger items have a section in the [design spec](do
 | **Pro: structured extraction** | Tables of facts across many documents, every value cited. |
 | **Pro: automations** | Questions and tasks that run on a schedule or a trigger. |
 | **Pro: connectors** | Sources such as Zotero. |
-| **Installers** | Code signing, and builds for Intel Macs and Linux. |
+| **Code signing** | Signed installers for Windows and macOS. |
 
 ## Quickstart
 
@@ -278,18 +279,19 @@ Run one instance per folder. WebView storage is separated on Windows, Linux and 
 | Data | Where it goes |
 |---|---|
 | Your files, their text, OCR results and embeddings | Stay on this computer. Indexing makes no network calls. |
-| Questions, and the passages retrieved to answer them | Sent to the model provider you choose, together with workspace instructions and any memories recalled for that answer. With Ollama or LM Studio they stay on this computer. |
+| Questions, and the passages retrieved to answer them | Sent to the model provider you choose, together with workspace instructions and any memories recalled for that answer. Memory suggestions are learned by sending conversation text to that model. With Ollama or LM Studio, and web access off (or Local-only mode on), nothing leaves this computer. |
 | Web searches and pages | When web access is on (the default), web searches go through OpenRouter's web plugin, Gemini with Google Search, or your SearXNG (`SHODH_SEARXNG_URL`), and pages are fetched directly. Off in Local-only mode. |
 | Paper lookups | Building the citation graph online looks papers up on OpenAlex. Only when you ask for it and the web is allowed. |
 | Downloads | Models come from Hugging Face and the agent runtime from GitHub, each pinned and checked by SHA-256. The update check contacts GitHub once a day. It is off in Local-only mode, and you can turn it off yourself. |
-| Agent runtime | The pinned runtime also fetches public model metadata from its catalog (`catalog.stencil.so`). |
-| API keys | Stored in the OS credential store (Windows Credential Manager, macOS Keychain, Secret Service on Linux). They are never kept in the app's web storage or shown back in the UI. Keys saved by older builds are moved there on first launch. A key set through an environment variable applies to that session only. |
+| Agent runtime | With a cloud provider, the pinned runtime was also observed fetching public model metadata from its catalog (`catalog.stencil.so`). |
+| API keys | Stored in the OS credential store (Windows Credential Manager, macOS Keychain, Secret Service on Linux). They are never kept in the app's web storage or shown back in the UI. Keys saved by older builds are moved there on first launch. A key set through an environment variable applies to that session only. Subscription sign-ins are held by the agent runtime's own account store, in Shodh's app data folder. |
 | Audit log | Kept in `shodh.db` on this computer. Document snippets in it are limited to 300 characters of text you were already shown. |
 
 **Known gaps.** Each is tracked in the spec and will land as a reviewed PR.
 - **Unencrypted storage:** released builds do not encrypt the local index (LanceDB, Tantivy) or the app database (`shodh.db`). Use OS full-disk encryption (BitLocker or FileVault).
 - **Audit chain without a key:** the hash chain shows edited, deleted or reordered events. Someone who can write to `shodh.db` could still rebuild the whole chain.
 - **Agent runtime egress:** the pinned runtime's catalog fetch cannot be turned off yet (see [ADR 0001](docs/adr/0001-agent-harness-omp.md)).
+- **Code mode commands run as you:** approved shell commands run with your user account's permissions, without a sandbox.
 - **No messaging channels or Google Drive sync:** the old WhatsApp, Telegram and Discord bot backends and the Google Drive connector have been removed. They ran unauthenticated local HTTP servers. Messaging channels will return through a separate, authenticated gateway.
 
 ## Architecture

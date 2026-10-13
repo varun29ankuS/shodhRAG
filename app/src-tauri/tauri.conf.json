@@ -73,7 +73,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJFQzJGNkY3NzE0ODBFQ0QKUldUTkRraHg5L2JDdnFNWlR6UldHYjRNOEFaamlmYzhzdHBZdFpPNWxuRXlUV0piWE9PeENCaWUK",
       "endpoints": [
         "https://github.com/varun29ankuS/shodhRAG/releases/latest/download/latest.json"
       ],

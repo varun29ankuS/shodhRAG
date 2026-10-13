@@ -16,6 +16,7 @@ import {
   modelName,
   pickerSections,
   privacyText,
+  selectedPick,
   sourceText,
 } from '../src/features/modelPicker/modelFormat.ts';
 import {
@@ -271,4 +272,27 @@ test('the composer menu lists only connected picks and recent models', () => {
   assert.equal(chipEntries(view, 1).length, 3);
   assert.equal(pickUnavailableText('free', { localOnly: false, lmstudio: { running: false, models: [] } }), 'Connect OpenRouter for free models.');
   assert.equal(pickUnavailableText('private', { localOnly: false, lmstudio: { running: true, models: [] } }), 'Load a model in LM Studio.');
+});
+
+test('the pick of a model the environment sets is shown selected', () => {
+  const nemotron = { provider: 'openrouter' as const, model: 'nvidia/nemotron-3-super-120b-a12b:free' };
+  const other = { provider: 'openrouter' as const, model: 'meta-llama/llama-3.3-70b-instruct:free' };
+  const picks = [
+    { pick: 'best' as const, label: 'Best quality', model: { provider: 'openrouter' as const, model: 'x/best' }, name: null, fallbacks: [] },
+    { pick: 'free' as const, label: 'Free', model: nemotron, name: null, fallbacks: [other] },
+  ];
+  const prefs = { ...EMPTY_MODEL_PREFS, pick: 'best' as const };
+  // Set by the environment: the pick whose model it is.
+  assert.equal(selectedPick({ active: { model: nemotron, source: 'environment' }, prefs, picks }), 'free');
+  // A pick's fallback set by the environment: that pick.
+  assert.equal(selectedPick({ active: { model: other, source: 'environment' }, prefs, picks }), 'free');
+  // No pick has it: none selected.
+  assert.equal(
+    selectedPick({ active: { model: { provider: 'openrouter', model: 'z/none' }, source: 'session' }, prefs, picks }),
+    null,
+  );
+  // Chosen in settings: that pick while its own model answers, never another.
+  assert.equal(selectedPick({ active: { model: { provider: 'openrouter', model: 'x/best' }, source: 'settings' }, prefs, picks }), 'best');
+  assert.equal(selectedPick({ active: { model: nemotron, source: 'settings' }, prefs, picks }), null);
+  assert.equal(selectedPick({ active: null, prefs, picks }), null);
 });

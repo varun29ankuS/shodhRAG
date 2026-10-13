@@ -36,6 +36,27 @@ const RELEASE_BASE_URL: &str = "https://github.com/can1357/oh-my-pi/releases/dow
 const SHA256SUMS_ASSET: &str = "SHA256SUMS.txt";
 const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 
+/// The reasoning effort every session asks for (omp's `--thinking`).
+///
+/// `low` is the lowest level that makes every reasoning-capable model stream
+/// its reasoning, which the transcript's Reasoning panel shows:
+/// * `off` sends OpenRouter `reasoning: {enabled: false}`, so no reasoning is
+///   ever streamed (the panel never appeared);
+/// * omp clamps a level to the efforts the model lists, so a model without
+///   `minimal` gets its lowest effort anyway, while on a model that lists it
+///   `minimal` may mean almost no reasoning (OpenAI's), so `minimal` would
+///   not reliably show any;
+/// * a model omp knows cannot reason gets no reasoning parameter at all
+///   (checked against omp 18.4.10: its `thinkingLevel` is null and the
+///   request carries neither `reasoning` nor `reasoning_effort`), so one
+///   level serves every model.
+///
+/// Measured on `nvidia/nemotron-3-super-120b-a12b:free` (three one-search
+/// questions, `off` against `low`): reasoning streamed from 0.6 s (850 to
+/// 1150 characters per answer), 200 to 290 more output tokens per answer,
+/// and the first answer word 3 to 18 s later than with `off`.
+pub const THINKING_LEVEL: &str = "low";
+
 /// Launch flags (plan, Global Constraints). Built-in tools, extensions,
 /// skills, rules, LSP and PTY are off; host tools are the only tools.
 pub const BASE_FLAGS: [&str; 12] = [
@@ -50,7 +71,7 @@ pub const BASE_FLAGS: [&str; 12] = [
     "--no-pty",
     "--no-session",
     "--thinking",
-    "off",
+    THINKING_LEVEL,
 ];
 
 /// Every model provider omp 18.4.10 discovers models from at startup
@@ -941,6 +962,10 @@ mod tests {
             "Be brief.",
         );
         assert_eq!(&args[..12], &BASE_FLAGS.map(String::from));
+        // Reasoning is asked for, so reasoning models stream it (with `off`
+        // the Reasoning panel never had anything to show).
+        let thinking = args.iter().position(|a| a == "--thinking").unwrap();
+        assert_eq!(args[thinking + 1], "low");
         assert!(args.contains(&"--no-tools".to_string()));
         assert!(!args.iter().any(|a| a == "--tools"));
         assert!(args.contains(&"--model=openai/gpt-5-mini".to_string()));

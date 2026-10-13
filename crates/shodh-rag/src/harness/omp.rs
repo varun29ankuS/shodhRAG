@@ -1022,10 +1022,14 @@ mod tests {
     /// Replay the fixture the way the session runtime does: a run begins when
     /// a prompt is acknowledged (the runtime begins it when sending).
     fn replay() -> Vec<AgentEvent> {
+        replay_fixture(FIXTURE)
+    }
+
+    fn replay_fixture(fixture: &str) -> Vec<AgentEvent> {
         let mut state = NormaliserState::new(catalog());
         let mut events = Vec::new();
         let mut now = 1_000u64;
-        for line in FIXTURE.lines().filter(|l| !l.trim().is_empty()) {
+        for line in fixture.lines().filter(|l| !l.trim().is_empty()) {
             now += 5;
             let frame = parse_frame(line).unwrap();
             if let InboundFrame::Response(r) = &frame {
@@ -1047,6 +1051,75 @@ mod tests {
 
     fn run_events<'a>(events: &'a [AgentEvent], run: &str) -> Vec<&'a AgentEvent> {
         events.iter().filter(|e| e.run_id() == run).collect()
+    }
+
+    /// A Research session launched with `--thinking low`, recorded from omp
+    /// 18.4.10 against `nvidia/nemotron-3-super-120b-a12b:free` on OpenRouter
+    /// (synthetic question and passages; omp's command list left out).
+    const THINKING_FIXTURE: &str = include_str!("fixtures/omp-thinking-low-events.jsonl");
+
+    #[test]
+    fn reasoning_streamed_at_the_launch_level_reaches_the_transcript() {
+        // The session ran at the level the sidecar launches with.
+        let state: Value = THINKING_FIXTURE
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .find(|f| f["command"] == "get_state")
+            .unwrap();
+        assert_eq!(
+            state["data"]["thinkingLevel"],
+            crate::harness::sidecar::THINKING_LEVEL
+        );
+        let streamed: String = THINKING_FIXTURE
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .filter(|f| f["assistantMessageEvent"]["type"] == "thinking_delta")
+            .filter_map(|f| {
+                f["assistantMessageEvent"]["delta"]
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .collect();
+        assert!(streamed.len() > 100, "the provider streamed reasoning");
+
+        let events = replay_fixture(THINKING_FIXTURE);
+        let run = run_events(&events, "run-p0");
+        let reasoning: String = run
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::Thinking { delta, .. } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        // Every streamed character reaches the transcript as `thinking`.
+        assert_eq!(reasoning, streamed);
+        // Reasoning before the search and after it, in order with the step.
+        let first_thinking = run
+            .iter()
+            .position(|e| matches!(e, AgentEvent::Thinking { .. }))
+            .unwrap();
+        let step = run
+            .iter()
+            .position(|e| matches!(e, AgentEvent::StepStarted { .. }))
+            .unwrap();
+        let last_thinking = run
+            .iter()
+            .rposition(|e| matches!(e, AgentEvent::Thinking { .. }))
+            .unwrap();
+        assert!(first_thinking < step && step < last_thinking);
+        let text: String = run
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::TextDelta { delta, .. } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            text.contains("60"),
+            "the answer itself is still text: {text}"
+        );
+        let opening: String = streamed.chars().take(40).collect();
+        assert!(!text.contains(&opening), "reasoning is not answer text");
     }
 
     #[test]

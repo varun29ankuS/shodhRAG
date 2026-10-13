@@ -35,7 +35,9 @@ export type ClaimOutcome =
   | "unsupported"
   | "uncited_factual"
   | "invalid_citation"
-  | "unchecked";
+  | "unchecked"
+  /** Says the user has none of their own data (tasks, events, files) without a tool reading it in this answer. */
+  | "unverified_absence";
 
 /** How support was scored: the local models plus number checks, or word overlap only. */
 export type ScoringMethod = "entailment" | "cross_encoder" | "lexical";

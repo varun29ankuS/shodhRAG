@@ -94,6 +94,13 @@ test('flag labels say what is wrong in plain words', () => {
   );
   assert.ok(isFlagged('invalid_citation') && isFlagged('uncited_factual') && isFlagged('unsupported'));
   assert.ok(!isFlagged('weak') && !isFlagged('supported') && !isFlagged('unchecked'));
+  // "You have no tasks" with no tool reading the tasks in that answer.
+  assert.ok(isFlagged('unverified_absence'));
+  assert.equal(flagLabel(check({ outcome: 'unverified_absence' })), 'not looked up');
+  assert.equal(
+    flagDescription(check({ outcome: 'unverified_absence' }), null),
+    'This says you have none of something, but nothing in this answer looked it up.',
+  );
 });
 
 function summary(partial: Partial<GroundingSummary>): GroundingSummary {

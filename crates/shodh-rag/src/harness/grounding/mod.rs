@@ -11,12 +11,16 @@
 //!   information needs against every passage;
 //! * [`followup`] decides whether to ask the model once to re-ground flagged
 //!   claims and/or (at most twice) to search for uncovered needs;
+//! * [`absence`] flags a claim that the user has none of their own data
+//!   ("You have no tasks") unless a tool that reads that data succeeded in
+//!   the run;
 //! * [`preface`] keeps a follow-up turn's opening words to the app (an
 //!   apology, "here is the corrected answer") out of the answer.
 //!
 //! Every check is emitted as an `AgentEvent::Grounding` and audited with the
 //! answer.
 
+pub mod absence;
 pub mod citations;
 pub mod claims;
 pub mod followup;

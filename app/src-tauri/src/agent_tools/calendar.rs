@@ -322,10 +322,13 @@ impl HostTool for ListTasksTool {
         "Listing[ {status!}] tasks[ due from {due_from!}][ due by {due_to!}][ matching {text}]"
     }
     fn description(&self) -> &'static str {
-        "List calendar tasks with their ids, titles, due dates, status and priority. Filter by \
-         status, an inclusive due-date range (YYYY-MM-DD; tasks without a due date are left out \
-         when a range is given) and text in the title, notes, tags or project. Use it to find a \
-         task's id before changing it, and to check your own changes."
+        "List the user's tasks (to-dos) with their ids, titles, due dates, status and priority. \
+         Call it for every question about the user's tasks (what they have, what is open, due, \
+         overdue or done): the tasks are not in the indexed documents. Without filters it lists \
+         all tasks (up to limit) and says how many there are. Filter by status, an inclusive due-date range (YYYY-MM-DD; tasks without a \
+         due date are left out when a range is given) and text in the title, notes, tags or \
+         project. Also use it to find a task's id before changing it, and to check your own \
+         changes."
     }
     fn schema(&self) -> Value {
         json!({
@@ -393,8 +396,10 @@ impl HostTool for ListEventsTool {
         "Listing events[ from {from!}][ to {to!}][ matching {text}]"
     }
     fn description(&self) -> &'static str {
-        "List calendar events with their ids, titles and times. Filter by an inclusive date range \
-         (YYYY-MM-DD; events overlapping it are included) and text in the title or notes."
+        "List the user's calendar events (meetings, appointments) with their ids, titles and \
+         times. Call it for every question about the user's events or schedule: the events are \
+         not in the indexed documents. Filter by an inclusive date range (YYYY-MM-DD; events \
+         overlapping it are included) and text in the title or notes."
     }
     fn schema(&self) -> Value {
         json!({

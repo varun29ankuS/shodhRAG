@@ -12,7 +12,7 @@
 //!   against its passages ([`super::grounding`]) and the run either
 //!   finishes or continues with one bounded follow-up prompt.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -33,6 +33,7 @@ use super::code_mode::{
 };
 use super::error::HarnessError;
 use super::events::{AgentEvent, ClaimCheck, GroundingReport, NeedCheck, RiskTier, ScoringMethod};
+use super::grounding::absence::flag_unverified_absence;
 use super::grounding::followup::{self, Next, Rounds};
 use super::grounding::verify::{check_needs, summarise, verify_answer, Thresholds};
 use super::grounding::{AnswerMessage, Evidence, GroundingConfig, OpenedText, VerifyInput};
@@ -197,6 +198,10 @@ struct Inner {
     /// host_tool_call id → (step id, task)
     inflight: Mutex<HashMap<String, (String, AbortHandle)>>,
     calls_in_run: AtomicU32,
+    /// Tools that succeeded in the active run: a claim that the user has
+    /// none of some data stands only on one that reads it
+    /// ([`flag_unverified_absence`]).
+    tools_ok_in_run: Mutex<HashSet<String>>,
     /// Citation numbers handed out in the active run (see `search_documents`).
     passages_in_run: Arc<RunPassages>,
     /// The active run's task list (information needs are checked).
@@ -694,6 +699,7 @@ impl Inner {
             .with_audit(self.audit.clone());
         let host_id = call.id.clone();
         let step_id = call.tool_call_id.clone();
+        let task_tool = call.tool_name.clone();
         let tool_call = ToolCall {
             tool: call.tool_name,
             args: call.arguments,
@@ -711,6 +717,9 @@ impl Inner {
                 .registry
                 .dispatch(tool_call, &inner.profile, &inner.approvals, &ctx)
                 .await;
+            if outcome.ok {
+                lock(&inner.tools_ok_in_run).insert(task_tool);
+            }
             // Record the UI summary before omp can answer with tool_execution_end.
             lock(&inner.state).record_outcome(
                 &task_step_id,
@@ -817,6 +826,7 @@ impl Inner {
             let started =
                 state.begin_run(&run_id, &self.session_id, &self.model, &prompt_id, now_ms());
             self.calls_in_run.store(0, Ordering::SeqCst);
+            lock(&self.tools_ok_in_run).clear();
             self.passages_in_run.reset();
             self.passages_in_run.seed(&scope.carried);
             self.plan_in_run.reset();
@@ -913,6 +923,7 @@ impl Inner {
             .filter(|i| i.need && !i.text.trim().is_empty())
             .map(|i| (i.id, i.text))
             .collect();
+        let tools_ok: HashSet<String> = lock(&self.tools_ok_in_run).clone();
         let auto_repair = config.follow_ups && (config.auto_repair)();
         let scorers = (config.scorers)();
         if !messages.is_empty() || !needs.is_empty() {
@@ -928,12 +939,20 @@ impl Inner {
                 passages.clone(),
                 opened.clone(),
                 needs.clone(),
+                tools_ok.clone(),
             );
             let checked = tokio::time::timeout(
                 CHECK_TIMEOUT,
                 tokio::task::spawn_blocking(move || {
-                    let (messages, passages, opened, needs) = job;
-                    run_checks(&messages, &passages, &opened, &needs, Some(&scorers))
+                    let (messages, passages, opened, needs, tools_ok) = job;
+                    run_checks(
+                        &messages,
+                        &passages,
+                        &opened,
+                        &needs,
+                        &tools_ok,
+                        Some(&scorers),
+                    )
                 }),
             )
             .await;
@@ -941,11 +960,11 @@ impl Inner {
                 Ok(Ok(result)) => result,
                 Ok(Err(e)) => {
                     tracing::warn!(target: "shodh::grounding", run_id = %held.run_id, error = %e, "answer check failed; using word and number checks");
-                    run_checks(&messages, &passages, &opened, &needs, None)
+                    run_checks(&messages, &passages, &opened, &needs, &tools_ok, None)
                 }
                 Err(_) => {
                     tracing::warn!(target: "shodh::grounding", run_id = %held.run_id, "answer check timed out; using word and number checks");
-                    run_checks(&messages, &passages, &opened, &needs, None)
+                    run_checks(&messages, &passages, &opened, &needs, &tools_ok, None)
                 }
             }
         };
@@ -1086,12 +1105,14 @@ impl Inner {
 }
 
 /// Verify the answer and check the needs; without `scorers`, by words and
-/// numbers only.
+/// numbers only. `tools_ok` are the tools that succeeded in the run, which
+/// back claims that the user has none of some data.
 fn run_checks(
     messages: &[AnswerMessage],
     passages: &[Evidence],
     opened: &[OpenedText],
     needs: &[(String, String)],
+    tools_ok: &HashSet<String>,
     scorers: Option<&super::grounding::ScorerSet>,
 ) -> (Vec<ClaimCheck>, Vec<NeedCheck>, ScoringMethod) {
     let thresholds: &Thresholds = &super::grounding::THRESHOLDS;
@@ -1102,6 +1123,7 @@ fn run_checks(
     };
     let views = scorers.map(|s| s.scorers()).unwrap_or_default();
     let (checks, method) = verify_answer(&input, views, thresholds);
+    let checks = flag_unverified_absence(messages, tools_ok, checks);
     let need_checks = check_needs(needs, passages, views.relevance, thresholds);
     (checks, need_checks, method)
 }
@@ -1305,6 +1327,7 @@ impl OmpSession {
             pending: Mutex::new(HashMap::new()),
             inflight: Mutex::new(HashMap::new()),
             calls_in_run: AtomicU32::new(0),
+            tools_ok_in_run: Mutex::new(HashSet::new()),
             passages_in_run: Arc::new(RunPassages::new()),
             plan_in_run: Arc::new(RunPlan::new()),
             grounding,
@@ -1616,9 +1639,21 @@ mod tests {
         mpsc::UnboundedReceiver<AgentEvent>,
         mpsc::UnboundedReceiver<OutboundFrame>,
     ) {
+        offline_session_with(grounding, code, ToolRegistry::new())
+    }
+
+    fn offline_session_with(
+        grounding: Option<GroundingConfig>,
+        code: Option<Arc<CodeRuntime>>,
+        registry: ToolRegistry,
+    ) -> (
+        Arc<Inner>,
+        mpsc::UnboundedReceiver<AgentEvent>,
+        mpsc::UnboundedReceiver<OutboundFrame>,
+    ) {
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (out_tx, out_rx) = mpsc::unbounded_channel();
-        let registry = Arc::new(ToolRegistry::new());
+        let registry = Arc::new(registry);
         let catalog = if code.is_some() {
             code_catalog()
         } else {
@@ -1641,6 +1676,7 @@ mod tests {
             pending: Mutex::new(HashMap::new()),
             inflight: Mutex::new(HashMap::new()),
             calls_in_run: AtomicU32::new(0),
+            tools_ok_in_run: Mutex::new(HashSet::new()),
             passages_in_run: Arc::new(RunPassages::new()),
             plan_in_run: Arc::new(RunPlan::new()),
             grounding,
@@ -1883,6 +1919,143 @@ mod tests {
             "flags anchor in the shown text"
         );
         assert_eq!(last.summary.supported, 1);
+    }
+
+    /// `list_tasks` reading the user's (synthetic) task list.
+    struct ThreeTasks;
+
+    #[async_trait::async_trait]
+    impl crate::harness::tools::HostTool for ThreeTasks {
+        fn name(&self) -> &str {
+            crate::harness::profile::app_tools::LIST_TASKS
+        }
+        fn label(&self) -> &str {
+            "List tasks"
+        }
+        fn label_template(&self) -> &str {
+            "Listing tasks"
+        }
+        fn description(&self) -> &str {
+            "List the user's tasks."
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false})
+        }
+        fn tier(&self) -> RiskTier {
+            RiskTier::Read
+        }
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &crate::harness::tools::ToolContext,
+        ) -> Result<crate::harness::tools::ToolOutput, crate::harness::tools::ToolError> {
+            Ok(crate::harness::tools::ToolOutput {
+                text_for_model: "3 tasks matched.\n[{\"title\": \"Submit expense report\"}, \
+                                 {\"title\": \"Book dentist appointment\"}, \
+                                 {\"title\": \"Renew library card\"}]"
+                    .into(),
+                summary_for_ui: "3 tasks".into(),
+                detail: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn saying_the_user_has_no_tasks_without_reading_them_is_repaired_with_list_tasks() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(ThreeTasks)).unwrap();
+        let (inner, mut events, mut out) =
+            offline_session_with(Some(GroundingConfig::lexical()), None, registry);
+        inner
+            .start_run(
+                "what are my tasks?",
+                Some("run-1".into()),
+                RunScope::default(),
+            )
+            .unwrap();
+        let (first_prompt, _) = sent_prompt(&mut out);
+        // The answer v0.0.1 gave: no tool call, and no tasks.
+        say(&inner, "m1", "You have no tasks right now.");
+        complete(&inner, &first_prompt);
+
+        let round0 = events_until(&mut events, |e| {
+            matches!(e, AgentEvent::RevisionStarted { .. })
+        })
+        .await;
+        let report = round0
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::Grounding { report, .. } => Some(report.clone()),
+                _ => None,
+            })
+            .expect("a grounding report");
+        assert_eq!(report.claims.len(), 1);
+        assert_eq!(report.claims[0].outcome, ClaimOutcome::UnverifiedAbsence);
+        assert_eq!(report.summary.unsupported, 1);
+        let (repair_prompt, message) = sent_prompt(&mut out);
+        assert!(
+            message.contains("call list_tasks or show_calendar"),
+            "{message}"
+        );
+
+        // The model reads the tasks and answers from them.
+        feed(
+            &inner,
+            r#"{"type":"host_tool_call","id":"h1","toolCallId":"t1","toolName":"list_tasks","arguments":{}}"#,
+        );
+        let result = tokio::time::timeout(Duration::from_secs(10), out.recv())
+            .await
+            .expect("a tool result within 10 s")
+            .expect("outbound open");
+        assert!(
+            matches!(
+                &result,
+                OutboundFrame::HostToolResult {
+                    is_error: false,
+                    ..
+                }
+            ),
+            "{result:?}"
+        );
+        say(
+            &inner,
+            "m2",
+            "You have 3 tasks: Submit expense report, Book dentist appointment and Renew library card.",
+        );
+        complete(&inner, &repair_prompt);
+        let round1 =
+            events_until(&mut events, |e| matches!(e, AgentEvent::RunFinished { .. })).await;
+        let last = round1
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::Grounding { report, .. } => Some(report.clone()),
+                _ => None,
+            })
+            .expect("a final report");
+        assert!(last.is_final);
+        assert!(last
+            .claims
+            .iter()
+            .all(|c| c.outcome != ClaimOutcome::UnverifiedAbsence));
+        assert!(out.try_recv().is_err(), "no further prompt");
+
+        // In the next answer the earlier list_tasks call does not count: a
+        // new "no tasks" needs a new read.
+        inner
+            .start_run("and now?", Some("run-2".into()), RunScope::default())
+            .unwrap();
+        let (third_prompt, _) = sent_prompt(&mut out);
+        say(&inner, "m3", "You have no tasks left.");
+        complete(&inner, &third_prompt);
+        let round = events_until(&mut events, |e| {
+            matches!(e, AgentEvent::RevisionStarted { .. })
+        })
+        .await;
+        assert!(round.iter().any(|e| matches!(
+            e,
+            AgentEvent::Grounding { report, .. }
+                if report.claims.iter().any(|c| c.outcome == ClaimOutcome::UnverifiedAbsence)
+        )));
     }
 
     #[tokio::test]

@@ -175,6 +175,9 @@ fn code_launch_args_enable_exactly_the_code_tools_with_the_guard() {
     assert!(args.contains(&"--approval-mode=always-ask".to_string()));
     assert!(args.contains(&"--no-extensions".to_string()));
     assert!(args.contains(&"--model=anthropic/claude-sonnet-4-5".to_string()));
+    // Reasoning at the Research level, for the same Reasoning panel.
+    let thinking = args.iter().position(|a| a == "--thinking").unwrap();
+    assert_eq!(args[thinking + 1], "low");
     // Approvals travel over the dialog channel, which --no-ui would close.
     for absent in ["--no-tools", "--no-ui", "--auto-approve", "--yolo"] {
         assert!(!args.iter().any(|a| a == absent), "{absent} present");

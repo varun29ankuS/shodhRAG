@@ -6,7 +6,9 @@
 //!   the check can stand behind deterministically are sent back once, with
 //!   the closest passage, to be re-grounded or removed ([`needs_repair`]): a
 //!   citation number no source has, or a number the cited text does not
-//!   contain. Claims the models did not find support for, and uncited
+//!   contain, or a claim that the user has none of their own data that no
+//!   tool of the answer read ([`super::absence`]). Claims the models did not
+//!   find support for, and uncited
 //!   statements, are flagged in the answer but not sent back. On the user's
 //!   11 stored sourced answers every answer had some of those, and reading
 //!   them showed the models' verdicts unreliable on that text (notation,
@@ -22,6 +24,7 @@
 //! Both can share one turn. The decision is a pure function of the checks,
 //! the rounds so far and the remaining budget.
 
+use super::absence::absence_domain;
 use crate::harness::events::{ClaimCheck, ClaimOutcome, CoverageState, NeedCheck, RevisionReason};
 use crate::harness::truncate_chars;
 
@@ -55,10 +58,11 @@ pub enum Next {
 }
 
 /// Whether a checked claim is sent back for repair: a citation number no
-/// source has, or a number the cited text does not contain.
+/// source has, a number the cited text does not contain, or a claim that the
+/// user has none of some data no tool of the answer read.
 pub fn needs_repair(check: &ClaimCheck) -> bool {
     match check.outcome {
-        ClaimOutcome::InvalidCitation => true,
+        ClaimOutcome::InvalidCitation | ClaimOutcome::UnverifiedAbsence => true,
         ClaimOutcome::Unsupported => !check.missing_numbers.is_empty(),
         ClaimOutcome::Supported
         | ClaimOutcome::Weak
@@ -77,6 +81,17 @@ fn reason_text(check: &ClaimCheck) -> String {
             )
         }
         ClaimOutcome::UncitedFactual => "states a fact without citing a source".to_string(),
+        ClaimOutcome::UnverifiedAbsence => match absence_domain(&check.text) {
+            Some(domain) => format!(
+                "says the user has no {} without reading them in this answer: call {} now and \
+                 answer from its result",
+                domain.name,
+                domain.tools.join(" or ")
+            ),
+            None => "says the user has none of something without checking with a tool in this \
+                     answer: call the tool that lists it and answer from its result"
+                .to_string(),
+        },
         _ if !check.missing_numbers.is_empty() => format!(
             "the cited source does not contain {}",
             check.missing_numbers.join(", ")
@@ -161,6 +176,15 @@ pub fn decide(
             "For each one: cite the passage that actually supports it, correct it to what the \
              passages say, or remove it. Use only passage numbers you were given.",
         );
+        if repair
+            .iter()
+            .any(|&i| checks[i].outcome == ClaimOutcome::UnverifiedAbsence)
+        {
+            prompt.push_str(
+                " A statement that the user has none of their own data stands only on the \
+                 result of the tool named for it, called in this answer.",
+            );
+        }
     }
     prompt.push_str(
         "\n\nThen write your complete revised answer from the beginning, with citations. It \
@@ -211,6 +235,39 @@ mod tests {
             closest: Some(4),
             closest_score: Some(0.7),
         }
+    }
+
+    #[test]
+    fn an_unverified_absence_is_sent_back_with_the_tool_that_reads_the_data() {
+        let mut absent = check(ClaimOutcome::UnverifiedAbsence);
+        absent.text = "You have no tasks.".into();
+        absent.cited = vec![];
+        absent.missing_numbers = vec![];
+        absent.closest = None;
+        assert!(needs_repair(&absent));
+        let Next::FollowUp {
+            reason,
+            repair,
+            prompt,
+            ..
+        } = decide(&[absent], &[], Rounds::default(), true, 0)
+        else {
+            panic!("an unverified absence was not repaired");
+        };
+        assert_eq!(reason, RevisionReason::Repair);
+        assert_eq!(repair, vec![0]);
+        assert!(
+            prompt.contains("says the user has no tasks without reading them"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("call list_tasks or show_calendar now"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("stands only on the result of the tool"),
+            "{prompt}"
+        );
     }
 
     fn need(id: &str, state: CoverageState) -> NeedCheck {

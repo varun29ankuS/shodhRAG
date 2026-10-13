@@ -97,6 +97,10 @@ pub enum ClaimOutcome {
     InvalidCitation,
     /// Its only sources cannot be checked (a search provider's answer fragments).
     Unchecked,
+    /// It says the user has none of some of their own data ("You have no
+    /// tasks") but no tool that reads that data succeeded in this answer
+    /// (`grounding::absence`).
+    UnverifiedAbsence,
 }
 
 /// How support was scored.

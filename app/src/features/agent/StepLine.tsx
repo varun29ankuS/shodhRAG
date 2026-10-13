@@ -3,12 +3,17 @@ import { ChevronRight } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { ApprovalPrompt } from './ApprovalPrompt';
 import { formatMs, prettyJson } from './format';
-import { passagesFromDetail, webSourcesFromDetail } from './reducer';
+import { awaitingRetry, passagesFromDetail, webSourcesFromDetail } from './reducer';
 import type { TranscriptStep } from './reducer';
 import { AttributionFrame, WebSources } from './WebSources';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-ground';
+
+/** What a retried step says instead of its error (which stays in its detail). */
+export const RETRIED_SUMMARY = 'Retried with corrected arguments';
+/** What a step refused for its arguments says while the model can still retry it. */
+export const RETRYING_SUMMARY = 'Arguments rejected; the model is retrying';
 
 /** Rotating ring while a step runs (static under reduced motion). */
 export function Spinner({ className }: { className?: string }) {
@@ -78,6 +83,8 @@ interface StepLineProps {
   onDecide?: (stepId: string, approved: boolean) => void;
   compact?: boolean;
   depth?: number;
+  /** The run is still going (a call refused for its arguments may yet be retried). */
+  live?: boolean;
 }
 
 /**
@@ -89,12 +96,18 @@ interface StepLineProps {
  * The label row expands to the monospace arguments and result. Sub-steps
  * are indented under their parent.
  */
-export function StepLine({ step, steps, onDecide, compact = false, depth = 0 }: StepLineProps) {
+export function StepLine({ step, steps, onDecide, compact = false, depth = 0, live = false }: StepLineProps) {
   const [open, setOpen] = useState(false);
   const detailId = useId();
   const running = step.status === 'running';
   const waiting = step.status === 'awaiting_approval';
-  const failed = step.status === 'failed';
+  // Refused for its arguments while the run goes on: the model normally
+  // corrects the call next, so it is not shown as a failure yet.
+  const retrying = awaitingRetry(step, live);
+  const failed = step.status === 'failed' && !retrying;
+  // Refused for its arguments, then the same tool succeeded: the model
+  // corrected itself. Shown quietly, never as a failure.
+  const retried = step.status === 'retried' || retrying;
   const expandable = hasContent(step.args) || hasContent(step.detail);
   const attribution = step.status === 'done' ? detailString(step.detail, 'attributionHtml') : null;
 
@@ -104,21 +117,30 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0 }: 
     <span
       className={cn(
         'mt-[5px] w-[9px] h-[9px] rounded-full shrink-0',
-        failed ? 'bg-shodh-error' : waiting ? 'bg-shodh-warning ask-breathe' : step.tier === 'read' ? 'bg-shodh-success' : 'bg-shodh-info',
+        failed
+          ? 'bg-shodh-error'
+          : retried
+            ? 'bg-transparent border border-shodh-text-faint'
+            : waiting
+              ? 'bg-shodh-warning ask-breathe'
+              : step.tier === 'read'
+                ? 'bg-shodh-success'
+                : 'bg-shodh-info',
       )}
       aria-hidden="true"
     />
   );
 
   const resultParts: string[] = [];
-  if (step.summary) resultParts.push(step.summary);
+  if (retried) resultParts.push(retrying ? RETRYING_SUMMARY : RETRIED_SUMMARY);
+  else if (step.summary) resultParts.push(step.summary);
   if (step.durationMs !== null && !running && !waiting) resultParts.push(formatMs(step.durationMs));
   const result = running ? step.progress : resultParts.join(' · ');
-  const stateText = running ? 'running' : waiting ? 'waiting for your approval' : failed ? 'failed' : 'done';
+  const stateText = running ? 'running' : waiting ? 'waiting for your approval' : failed ? 'failed' : retrying ? 'retrying' : retried ? 'retried' : 'done';
 
   const labelBody = (
     <>
-      <span className={cn('font-medium text-shodh-text break-words', running && 'ask-breathe-soft')}>{step.label}</span>
+      <span className={cn('font-medium break-words', retried ? 'text-shodh-text-muted' : 'text-shodh-text', running && 'ask-breathe-soft')}>{step.label}</span>
       <span className="sr-only">{` (${stateText})`}</span>
       {expandable && (
         <ChevronRight
@@ -171,7 +193,7 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0 }: 
           {step.children.map(childId => {
             const child = steps[childId];
             return child ? (
-              <StepLine key={childId} step={child} steps={steps} onDecide={onDecide} compact={compact} depth={depth + 1} />
+              <StepLine key={childId} step={child} steps={steps} onDecide={onDecide} compact={compact} depth={depth + 1} live={live} />
             ) : null;
           })}
         </div>

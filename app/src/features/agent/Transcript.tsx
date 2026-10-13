@@ -3,6 +3,7 @@ import { ChevronRight, CornerDownRight, RefreshCw, Settings2 } from 'lucide-reac
 import { cn } from '../../lib/utils';
 import { MessageContentRenderer } from '../ask/MessageContentRenderer';
 import type { SearchHit } from '../ask/types';
+import { ReasoningPanel } from './ReasoningPanel';
 import { RuntimeCard } from './RuntimeCard';
 import { Spinner, StepLine } from './StepLine';
 import { currentStep, interimBlocks, isLive, notAnswerBlocks, supersededBlocks } from './reducer';
@@ -152,7 +153,7 @@ export function Transcript({
             {transcript.blocks.slice(0, fold.answerIndex).map(block => {
               if (block.kind === 'step') {
                 const s = transcript.steps[block.stepId];
-                return s ? <StepLine key={block.stepId} step={s} steps={transcript.steps} compact={compact} /> : null;
+                return s ? <StepLine key={block.stepId} step={s} steps={transcript.steps} compact={compact} live={live} /> : null;
               }
               if (block.kind === 'steer') {
                 return (
@@ -194,7 +195,7 @@ export function Transcript({
         if (block.kind === 'step') {
           const s = transcript.steps[block.stepId];
           return s ? (
-            <StepLine key={block.stepId} step={s} steps={transcript.steps} onDecide={live ? onDecide : undefined} compact={compact} />
+            <StepLine key={block.stepId} step={s} steps={transcript.steps} onDecide={live ? onDecide : undefined} compact={compact} live={live} />
           ) : null;
         }
         if (block.kind === 'steer') {
@@ -232,6 +233,8 @@ export function Transcript({
       })}
 
       {activity && <ActivityRow text={activity} compact={compact} />}
+
+      <ReasoningPanel transcript={transcript} compact={compact} />
 
       {!live && answer && <GroundingChip report={answer} hits={hits} onOpenCitation={onOpenCitation} compact={compact} />}
 

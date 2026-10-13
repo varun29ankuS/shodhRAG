@@ -4,7 +4,7 @@ import { AlertTriangle, Check, Loader2, Settings2 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { ModelPickerHandle } from './modelApi';
 import type { ChipEntry } from './modelFormat';
-import { chipEntries } from './modelFormat';
+import { chipEntries, selectedPick } from './modelFormat';
 import type { PickerError } from './modelTypes';
 import { PROVIDER_LABELS, sameModel } from './modelTypes';
 
@@ -56,7 +56,8 @@ export function ChipMenu({ picker, answerRunning, onManage, onSelected }: ChipMe
   }
 
   const entries = chipEntries(view);
-  const activePick = view.active?.source === 'settings' ? view.prefs.pick : null;
+  // The pick of the answering model, also when the environment set it (see `selectedPick`).
+  const activePick = selectedPick(view);
 
   const run = async (entry: ChipEntry, sessionOverride: boolean) => {
     setBusy(true);

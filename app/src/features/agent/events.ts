@@ -164,6 +164,12 @@ export interface StepFinishedEvent {
   summary: string;
   detail: unknown | null;
   durationMs: number;
+  /**
+   * The call failed because its arguments did not fit the tool's schema: the
+   * model's mistake, usually corrected by its next call. Absent from older
+   * backends.
+   */
+  invalidArguments?: boolean;
 }
 
 export interface ApprovalRequestedEvent {

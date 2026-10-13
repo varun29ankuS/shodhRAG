@@ -5,9 +5,9 @@ import { notify } from '../../lib/notify';
 import type { ModelPickerHandle } from './modelApi';
 import { ModelPickerPanel } from './ModelPicker';
 import { BUTTON, FOCUS_RING } from './ConnectPanel';
-import { PICK_HINTS, modelName, pickUnavailableText, sourceText } from './modelFormat';
+import { PICK_HINTS, modelName, pickUnavailableText, selectedPick, sourceText } from './modelFormat';
 import type { PickId, PickerError } from './modelTypes';
-import { PROVIDER_LABELS, sameModel } from './modelTypes';
+import { PROVIDER_LABELS } from './modelTypes';
 
 /**
  * Settings → Model → Model: the four picks (Best quality, Fast & cheap,
@@ -36,7 +36,7 @@ export function ModelPicks({ picker }: { picker: ModelPickerHandle }) {
     else notify.success(`${view.picks.find(p => p.pick === pick)?.label ?? 'The model'} will answer from now on`);
   };
 
-  const activePick = view.active?.source === 'settings' ? view.prefs.pick : null;
+  const activePick = selectedPick(view);
   const source = sourceText(view.active);
 
   return (
@@ -52,7 +52,7 @@ export function ModelPicks({ picker }: { picker: ModelPickerHandle }) {
         </span>
         {view.picks.map(option => {
           const available = option.model !== null;
-          const selected = activePick === option.pick && sameModel(view.active?.model, option.model);
+          const selected = activePick === option.pick;
           return (
             <button
               key={option.pick}

@@ -12,6 +12,7 @@ import {
 } from './conversationWindow';
 import type { FindCursor } from './conversationWindow';
 import type { ChatMessage } from './types';
+import { countOf } from '../../lib/plural';
 
 /** CSS custom highlight names (styled in index.css). */
 const HIGHLIGHT_ALL = 'conversation-find';
@@ -189,7 +190,7 @@ export function ConversationFind({ messages, firstVisibleIndex, reveal, onTarget
         ? 'No matches'
         : cursor
           ? `${occurrenceNumber(matches, { match: cursor.match, occurrence: shownOccurrence ?? cursor.occurrence })} of ${total}`
-          : `${total} matches`;
+          : countOf(total, 'match', 'matches');
 
   return (
     <div

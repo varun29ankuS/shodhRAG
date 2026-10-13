@@ -5,7 +5,15 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { firstRegionPage, parseRegions, regionToCssRect, regionsOnPages } from '../src/features/ask/viewer/regionGeometry.ts';
+import {
+  firstRegionPage,
+  parseRegions,
+  passageScrollTop,
+  PASSAGE_SCROLL_MARGIN,
+  regionToCssRect,
+  regionsOnPages,
+  verticalExtent,
+} from '../src/features/ask/viewer/regionGeometry.ts';
 import { passagesFromDetail } from '../src/features/agent/reducer.ts';
 import { toSearchHits } from '../src/features/ask/searchResults.ts';
 
@@ -83,4 +91,29 @@ test('passages from a step detail carry section and regions; search hits read th
   assert.deepEqual(hit.page, { start: 5, end: 6 });
   assert.equal(hit.section, '3 Method');
   assert.equal(hit.regions?.length, 1);
+});
+
+test('the outlined passage is scrolled into view, centred when it fits', () => {
+  // A 1080p window: the viewer is about 900 px tall. The passage (a figure
+  // caption) sits 1,000 px down a 1,400 px page that starts 3,000 px into
+  // the document: below the fold when the page is shown from its top.
+  const extent = verticalExtent([
+    { top: 1000, height: 20 },
+    { top: 1040, height: 20 },
+    { top: 1020, height: 20 },
+  ]);
+  assert.deepEqual(extent, { top: 1000, bottom: 1060 });
+  const viewport = 900;
+  const scroll = passageScrollTop(3000, extent!, viewport);
+  // Centred: equal room above and below the passage.
+  const above = 3000 + 1000 - scroll;
+  const below = scroll + viewport - (3000 + 1060);
+  assert.equal(above, below);
+  assert.ok(above > 0 && below > 0, 'in view');
+  // Taller than the viewport: shown from its start, under a margin.
+  const tall = passageScrollTop(3000, { top: 200, bottom: 1300 }, viewport);
+  assert.equal(tall, 3000 + 200 - PASSAGE_SCROLL_MARGIN);
+  // Near the top of the document: never a negative scroll.
+  assert.equal(passageScrollTop(0, { top: 10, bottom: 40 }, viewport), 0);
+  assert.equal(verticalExtent([]), null);
 });

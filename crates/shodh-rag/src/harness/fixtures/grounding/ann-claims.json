@@ -1,0 +1,441 @@
+{
+ "about": "Labeled claim/passage pairs from public arXiv papers on approximate nearest neighbor search (HNSW 1603.09320, NSG 1707.00143, the graph-based ANNS survey 2101.12631, FreshDiskANN 2105.09613, SPANN 2111.08566, the Faiss library 2401.08281). Passages are verbatim text extracted from the arXiv PDFs, cut to the 1500 characters search_documents gives the model; several hold a figure caption among body text. Claims are written the way answers state them. Labels: supported = the passage states it (category: paraphrase, or quote = it quotes the passage word for word); unsupported = it does not (number = wrong number, swap = roles exchanged, negation = reversed statement, topical = on topic but not stated, misquote = a quote the passage does not contain). Used by harness/grounding/calibration.rs to measure the cross-encoder check (no entailment model).",
+ "passages": {
+  "hnsw-abstract": {
+   "source": "HNSW - Hierarchical Navigable Small World graphs (arXiv:1603.09320)",
+   "text": "We present a new approach for the approximate K-nearest neighbor search based on navigable small world \ngraphs with controllable hierarchy (Hierarchical NSW, HNSW). The proposed solution is fully graph-based, without any need for \nadditional search structures, which are typically used at the coarse search stage of the most proximity graph techniques. \nHierarchical NSW incrementally builds a multi-layer structure consisting from hierarchical set of proximity graphs (layers) for \nnested subsets of the stored elements. The maximum layer in which an element is present is selected randomly with an \nexponentially decaying probability distribution. This allows producing graphs similar to the previously studied Navigable Small \nWorld (NSW) structures while additionally having the links separated by their characteristic distance scales. Starting search \nfrom the upper layer together with utilizing the scale separation boosts the performance compared to NSW and allows a \nlogarithmic complexity scaling. Additional employment of a heuristic for selecting proximity graph neighbors significantly \nincreases performance at high recall and in case of highly clustered data. Performance evaluation has demonstrated that the \nproposed general metric space search index is able to strongly outperform previous opensource state-of-the-art vector-only \napproaches. Similarity of the algorithm to the skip list structure allows straightforward balanced distributed implementation. \nIndex Terms — Graph and"
+  },
+  "hnsw-fig2": {
+   "source": "HNSW - Hierarchical Navigable Small World graphs (arXiv:1603.09320)",
+   "text": "The Hierarchical NSW idea is also very similar to a \nwell-known 1D probabilistic skip list structure [27] and \ncan be described using its terms. The major difference to \nskip list is that we generalize the structure by replacing \nthe linked list with proximity graphs. The Hierarchical \nLayer=0\nLayer=1\nLayer=2\nDecreasing characteristic radius\nCluster 2\nInserted \nelement\ne2\nCluster 1\n \nFig. 1. Illustration of the Hierarchical NSW idea. The search starts \nfrom an element from the top layer (shown red). Red arrows show \ndirection of the greedy algorithm from the entry point to the query \n(shown green). \nFig. 2. Illustration of the heuristic used to select the graph neigh-\nbors for two isolated clusters. A new element is inserted on the \nboundary of Cluster 1. All of the closest neighbors of the element \nbelong to the Cluster 1, thus missing the edges of Delaunay graph \nbetween the clusters. The heuristic, however, selects element e2 \nfrom Cluster 2, thus, maintaining the global connectivity in case the \ninserted element is the closest to e2 compared to any other element \nfrom Cluster 1. \n\n4 \nIEEE TRANSACTIONS ON JOURNAL NAME,  MANUSCRIPT ID \n \nNSW approach thus can utilize the same methods for \nmaking the distributed approximate search/overlay \nstructures [45]. \nFor the selection of the proximity graph connections \nduring the element insertion we utilize a heuristic that \ntakes into account the distances between the candidate \nelements to create diverse connections (a similar alg"
+  },
+  "survey-hnsw": {
+   "source": "A Comprehensive Survey and Experimental Comparison of Graph-Based ANN Search (arXiv:2101.12631)",
+   "text": "[67]. The long edges formed in the begin-\nning of construction have small-world navigation performance to\nensure search efficiency, and the vertices inserted later form short-\nrange edges, which ensure search accuracy. NSW also achieved\nexcellent results in the maximum inner product search [63, 71].\nHowever, according to the evaluation of [77], NSW provides lim-\nited best tradeoffs between efficiency and effectiveness compared\nto non-graph-based indexes, because its search complexity is poly-\nlogarithmic [73]. In addition, NSW uses undirected edges to connect\nvertices, which results in vertices in dense areas acting as the “traffic\nhubs” (high out-degrees), thus damaging search efficiency.\nA2: Hierarchical Navigable Small World graphs (HNSW). An\nimprovement direction is put forth by [19, 66] to overcome NSW’s\npoly-logarithmic search complexity. Motivated by this, HNSW [67]\ngenerates a hierarchical graph and fixes the upper bound of each\nvertex’s number of neighbors, thereby allowing a logarithmic com-\nplexity scaling of search. Its basic idea is to separate neighbors to\ndifferent levels according to the distance scale, and the search is an\niterative process from top to bottom. For an inserted point, HNSW\nnot only selects its nearest neighbors (approximate DG), but also\nconsiders the distribution of neighbors (approximate RNG). HNSW\nhas been deployed in various applications [17, 22, 57] because of its\n4\n\nTable 2: Summary of important representative graph-based ANNS algorithms"
+  },
+  "nsg-abstract": {
+   "source": "NSG - Navigating Spreading-out Graph (arXiv:1707.00143)",
+   "text": "Approximate nearest neighbor search (ANNS) is a fundamental\nproblem in databases and data mining. A scalable ANNS algorithm\nshould be both memory efficient and fast. Some early graph-based\napproaches have shown attractive theoretical guarantees on search\ntime complexity, but they all suffer from the problem of high in-\ndexing time complexity. Recently, some graph-based methods have\nbeen proposed to reduce indexing complexity by approximating\nthe traditional graphs; these methods have achieved revolution-\nary performance on million-scale datasets. Yet, they still can not\nscale to billion-node databases. In this paper, to further improve\nthe search-efficiency and scalability of graph-based methods, we\nstart by introducing four aspects: (1) ensuring the connectivity of\nthe graph; (2) lowering the average out-degree of the graph for fast\ntraversal; (3) shortening the search path; and (4) reducing the index\nsize. Then, we propose a novel graph structure called Monotonic\nRelative Neighborhood Graph (MRNG) which guarantees very low\nsearch complexity (close to logarithmic time). To further lower the\nindexing complexity and make it practical for billion-node ANNS\nproblems, we propose a novel graph structure named Navigating\nSpreading-out Graph (NSG) by approximating the MRNG. The NSG\ntakes the four aspects into account simultaneously. Extensive ex-\nperiments show that NSG outperforms all the existing algorithms\nsignificantly. In addition, NSG shows superior performance in the\nE-commer"
+  },
+  "nsg-taobao": {
+   "source": "NSG - Navigating Spreading-out Graph (arXiv:1707.00143)",
+   "text": "venly. The time of building one\nNSG on 𝐷is 𝑡1. The time of building an NSG on one subset is 𝑡2. It\nis easy to verify that we can have 𝑡1 > 𝑟𝑡2 if we select a proper 𝑟.\nConsequently, sequentially indexing on subsets can be faster than\nindexing on the complete set.\n4.3\nSearch In E-commercial Scenario\nWe have collaborated with Taobao on the billion-scale high-dimensional\nANNS problem in the E-commercial scenario. The billion-scale data,\ndaily updating, and response time limit are the main challenges. We\nevaluate NSG on the E-commercial data (128-dimension vectors of\nusers and commodities) with different scales to work out a solution.\nWe compare NSG with the baseline (a well-optimized imple-\nmentation of IVFPQ [26]) on the e-commerce database. We use a\n10M dataset to test the performance on a single thread, and a 45M\ndataset to test the Distributed Search performance in a simula-\ntion environment. The simulation environment is a online scenario\nstress testing system based on MPI. We split the dataset and place\nthe subsets on different machines. At search stage, we search each\nsubset in parallel and merge the results to return. In our experi-\nments, we randomly partition the dataset evenly into 12 subsets\nand build 12 NSGs. NSG is 5-10 times faster than the baseline at the\nsame precision (See the appendix for details) and meet the response\ntime requirement.\nOn the complete dataset (about 2 billion vectors), we find it im-\npossible to build one NSG within one day. So we use the dis"
+  },
+  "fresh-abstract": {
+   "source": "FreshDiskANN (arXiv:2105.09613)",
+   "text": "Approximate nearest neighbor search (ANNS) is a funda-\nmental building block in information retrieval with graph-\nbased indices being the current state-of-the-art [7] and widely\nused in the industry. Recent advances [51] in graph-based in-\ndices have made it possible to index and search billion-point\ndatasets with high recall and millisecond-level latency on a\nsingle commodity machine with an SSD.\nHowever, existing graph algorithms for ANNS support\nonly static indices that cannot reflect real-time changes to\nthe corpus required by many key real-world scenarios (e.g.\nindex of sentences in documents, email or a news index).\nTo overcome this drawback, the current industry practice\nfor manifesting updates into such indices is to periodically\nre-build these indices, which can be prohibitively expensive.\nIn this paper, we present the first graph-based ANNS in-\ndex that reflects corpus updates into the index in real-time\nwithout compromising on search performance. Using update\nrules for this index, we design FreshDiskANN, a system that\ncan index over a billion points on a workstation with an SSD\nand limited memory, and support thousands of concurrent\nreal-time inserts, deletes and searches per second each, while\nretaining > 95% 5-recall@5. This represents a 5-10x reduc-\ntion in the cost of maintaining freshness in indices when\ncompared to existing methods.\n1\nIntroduction\nIn the Nearest Neighbor Search problem, we are given a\ndataset 𝑃of points along with a pairwise distance function"
+  },
+  "spann-abstract": {
+   "source": "SPANN (arXiv:2111.08566)",
+   "text": "The in-memory algorithms for approximate nearest neighbor search (ANNS) have\nachieved great success for fast high-recall search, but are extremely expensive\nwhen handling very large scale database. Thus, there is an increasing request for\nthe hybrid ANNS solutions with small memory and inexpensive solid-state drive\n(SSD). In this paper, we present a simple but efﬁcient memory-disk hybrid indexing\nand search system, named SPANN, that follows the inverted index methodology. It\nstores the centroid points of the posting lists in the memory and the large posting\nlists in the disk. We guarantee both disk-access efﬁciency (low latency) and\nhigh recall by effectively reducing the disk-access number and retrieving high-\nquality posting lists. In the index-building stage, we adopt a hierarchical balanced\nclustering algorithm to balance the length of posting lists and augment the posting\nlist by adding the points in the closure of the corresponding clusters. In the search\nstage, we use a query-aware scheme to dynamically prune the access of unnecessary\nposting lists. Experiment results demonstrate that SPANN is 2× faster than the\nstate-of-the-art ANNS solution DiskANN to reach the same recall quality 90%\nwith same memory cost in three billion-scale datasets. It can reach 90% recall@1\nand recall@10 in just around one millisecond with only 32GB memory cost. Code\nis available at: https://github.com/microsoft/SPTAG.\n1\nIntroduction\nVector nearest neighbor search has played an important role"
+  },
+  "faiss-ivf": {
+   "source": "The Faiss library (arXiv:2401.08281)",
+   "text": "Inverted files\nIVF indexing is a technique that clusters the database\nvectors at indexing time. This clustering uses a vec-\ntor quantizer (the coarse quantizer) that outputs KIVF\ndistinct indices (the nlist field of the IndexIVF ob-\nject). The coarse quantizer’s KIVF reproduction val-\nues are called centroids. The vectors of each cluster\n(possibly compressed) are stored contiguously into in-\nverted lists, forming an inverted file (IVF). At search\ntime, only a subset of PIVF clusters are visited (a.k.a.\nnprobe). The subset is formed by searching the PIVF\nnearest centroids, as in (2).\nSetting the number of lists.\nThe KIVF parameter is\ncentral. In the simplest case, when PIVF is fixed, the\ncoarse quantizer is exhaustive, the inverted lists con-\ntain uncompressed vectors, and the inverted lists are\nall the same size, then the number of distance compu-\ntations is\nNdistances = KIVF + PIVF × N/KIVF\n(18)\nreaching a minimum when KIVF = √PIVFN. This\nyields the usual recommendation to set PIVF propor-\ntional to\n√\nN.\nIn practice, this is just a rough approximation be-\ncause (1) the PIVF has to increase with the number of\nlists in order to keep a fixed accuracy (2) the inverted\nlists sizes are not balanced (3) often the coarse quan-\ntizer is not exhaustive itself, so the quantization uses\nfewer than KIVF distance computations, for example\nit is common to use a non-exhaustive HNSW index to\nperform the coarse quantization.\nThe imbalance factor is the relative variance of in-\nverted list siz"
+  }
+ },
+ "claims": [
+  {
+   "passage": "hnsw-abstract",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "HNSW builds a multi-layer structure of proximity graphs for nested subsets of the stored elements."
+  },
+  {
+   "passage": "hnsw-abstract",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "In HNSW, the maximum layer of an element is chosen randomly with an exponentially decaying probability distribution."
+  },
+  {
+   "passage": "hnsw-abstract",
+   "label": "supported",
+   "category": "quote",
+   "claim": "Starting the search from the upper layer and using the scale separation \"allows a logarithmic complexity scaling\"."
+  },
+  {
+   "passage": "hnsw-abstract",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "The neighbor-selection heuristic improves performance at high recall and on highly clustered data."
+  },
+  {
+   "passage": "hnsw-abstract",
+   "label": "unsupported",
+   "category": "negation",
+   "claim": "HNSW requires additional search structures for the coarse search stage."
+  },
+  {
+   "passage": "hnsw-abstract",
+   "label": "unsupported",
+   "category": "swap",
+   "claim": "The skip list is a generalization of HNSW in which proximity graphs are replaced by linked lists."
+  },
+  {
+   "passage": "hnsw-abstract",
+   "label": "unsupported",
+   "category": "topical",
+   "claim": "HNSW stores compressed vectors on an SSD to reduce its memory cost."
+  },
+  {
+   "passage": "hnsw-abstract",
+   "label": "unsupported",
+   "category": "misquote",
+   "claim": "The abstract says HNSW \"guarantees exact nearest neighbor results in constant time\"."
+  },
+  {
+   "passage": "hnsw-abstract",
+   "label": "unsupported",
+   "category": "topical",
+   "claim": "HNSW was evaluated on billion-scale datasets on a single machine."
+  },
+  {
+   "passage": "hnsw-fig2",
+   "label": "supported",
+   "category": "quote",
+   "claim": "The heuristic approach in HNSW specifically addresses the issue where \"all of the closest neighbors of the element belong to the Cluster 1, thus missing the edges of Delaunay graph between the clusters\""
+  },
+  {
+   "passage": "hnsw-fig2",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "By selecting neighbors based on both distance and angular distribution, the algorithms maintain \"global connectivity\" while avoiding redundant connections"
+  },
+  {
+   "passage": "hnsw-fig2",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "In Fig. 2 of the HNSW paper, the heuristic selects element e2 from Cluster 2, which keeps the two clusters connected."
+  },
+  {
+   "passage": "hnsw-fig2",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "The Hierarchical NSW idea resembles a probabilistic skip list in which the linked lists are replaced by proximity graphs."
+  },
+  {
+   "passage": "hnsw-fig2",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "In Fig. 1, the search starts from an element in the top layer and greedily moves toward the query."
+  },
+  {
+   "passage": "hnsw-fig2",
+   "label": "unsupported",
+   "category": "negation",
+   "claim": "The heuristic connects the new element only to its closest neighbors in Cluster 1, which breaks the connectivity between the clusters."
+  },
+  {
+   "passage": "hnsw-fig2",
+   "label": "unsupported",
+   "category": "swap",
+   "claim": "In Fig. 2, the new element is inserted on the boundary of Cluster 2 and the heuristic selects e2 from Cluster 1."
+  },
+  {
+   "passage": "hnsw-fig2",
+   "label": "unsupported",
+   "category": "misquote",
+   "claim": "The caption states that the heuristic \"guarantees that every cluster is fully connected to every other cluster\"."
+  },
+  {
+   "passage": "hnsw-fig2",
+   "label": "unsupported",
+   "category": "topical",
+   "claim": "The heuristic reduces the memory footprint of the index by pruning half of its edges."
+  },
+  {
+   "passage": "survey-hnsw",
+   "label": "supported",
+   "category": "quote",
+   "claim": "HNSW's hierarchical structure combined with neighbor pruning \"fixes the upper bound of each vertex's number of neighbors, thereby allowing a logarithmic complexity scaling of search\""
+  },
+  {
+   "passage": "survey-hnsw",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "According to the survey, NSW's search complexity is poly-logarithmic, which limits its tradeoff between efficiency and effectiveness."
+  },
+  {
+   "passage": "survey-hnsw",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "In NSW, undirected edges make vertices in dense areas act as traffic hubs with high out-degrees, which hurts search efficiency."
+  },
+  {
+   "passage": "survey-hnsw",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "For an inserted point, HNSW considers both its nearest neighbors and the distribution of its neighbors."
+  },
+  {
+   "passage": "survey-hnsw",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "HNSW's search is an iterative process from the top level of the hierarchy to the bottom."
+  },
+  {
+   "passage": "survey-hnsw",
+   "label": "unsupported",
+   "category": "negation",
+   "claim": "The survey reports that NSW offers the best tradeoff between efficiency and effectiveness of all indexes."
+  },
+  {
+   "passage": "survey-hnsw",
+   "label": "unsupported",
+   "category": "swap",
+   "claim": "HNSW searches from the bottom layer up to the top layer."
+  },
+  {
+   "passage": "survey-hnsw",
+   "label": "unsupported",
+   "category": "misquote",
+   "claim": "HNSW \"removes the upper bound on each vertex's number of neighbors\" so that search scales logarithmically."
+  },
+  {
+   "passage": "survey-hnsw",
+   "label": "unsupported",
+   "category": "topical",
+   "claim": "HNSW uses product quantization to compress the vectors stored at each level."
+  },
+  {
+   "passage": "nsg-abstract",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "MRNG guarantees a very low search complexity, close to logarithmic time."
+  },
+  {
+   "passage": "nsg-abstract",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "NSG approximates the MRNG to lower the indexing complexity enough for billion-node problems."
+  },
+  {
+   "passage": "nsg-abstract",
+   "label": "supported",
+   "category": "quote",
+   "claim": "NSG was designed around four aspects, starting with \"ensuring the connectivity of the graph\"."
+  },
+  {
+   "passage": "nsg-abstract",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "The NSG authors aim to lower the average out-degree of the graph and to shorten the search path."
+  },
+  {
+   "passage": "nsg-abstract",
+   "label": "unsupported",
+   "category": "number",
+   "claim": "The paper introduces three aspects for improving graph-based search."
+  },
+  {
+   "passage": "nsg-abstract",
+   "label": "unsupported",
+   "category": "negation",
+   "claim": "Early graph-based approaches had a low indexing time complexity."
+  },
+  {
+   "passage": "nsg-abstract",
+   "label": "unsupported",
+   "category": "swap",
+   "claim": "The MRNG is proposed as an approximation of the NSG."
+  },
+  {
+   "passage": "nsg-abstract",
+   "label": "unsupported",
+   "category": "topical",
+   "claim": "NSG supports real-time inserts and deletes without rebuilding the index."
+  },
+  {
+   "passage": "nsg-taobao",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "NSG was evaluated with Taobao on 128-dimension vectors of users and commodities."
+  },
+  {
+   "passage": "nsg-taobao",
+   "label": "supported",
+   "category": "quote",
+   "claim": "On the Taobao data, \"NSG is 5-10 times faster than the baseline at the same precision\"."
+  },
+  {
+   "passage": "nsg-taobao",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "In the distributed test, the dataset was split into 12 subsets and 12 NSGs were built."
+  },
+  {
+   "passage": "nsg-taobao",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "The baseline in the e-commerce comparison was a well-optimized IVFPQ implementation."
+  },
+  {
+   "passage": "nsg-taobao",
+   "label": "unsupported",
+   "category": "number",
+   "claim": "NSG was 50 times faster than the IVFPQ baseline on the e-commerce data."
+  },
+  {
+   "passage": "nsg-taobao",
+   "label": "unsupported",
+   "category": "number",
+   "claim": "The single-thread test used a 100M dataset."
+  },
+  {
+   "passage": "nsg-taobao",
+   "label": "unsupported",
+   "category": "negation",
+   "claim": "Building one NSG on the complete dataset of about 2 billion vectors took less than a day."
+  },
+  {
+   "passage": "nsg-taobao",
+   "label": "unsupported",
+   "category": "topical",
+   "claim": "Taobao runs NSG on GPUs to meet its response time limit."
+  },
+  {
+   "passage": "fresh-abstract",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "FreshDiskANN can index over a billion points on a workstation with an SSD and limited memory."
+  },
+  {
+   "passage": "fresh-abstract",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "FreshDiskANN supports thousands of concurrent real-time inserts, deletes and searches per second while retaining more than 95% 5-recall@5."
+  },
+  {
+   "passage": "fresh-abstract",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "Before FreshDiskANN, the industry practice was to periodically rebuild graph indices to reflect updates, which can be very expensive."
+  },
+  {
+   "passage": "fresh-abstract",
+   "label": "supported",
+   "category": "quote",
+   "claim": "The authors present \"the first graph-based ANNS index that reflects corpus updates into the index in real-time\"."
+  },
+  {
+   "passage": "fresh-abstract",
+   "label": "unsupported",
+   "category": "number",
+   "claim": "FreshDiskANN reduces the cost of maintaining freshness by 50-100x."
+  },
+  {
+   "passage": "fresh-abstract",
+   "label": "unsupported",
+   "category": "negation",
+   "claim": "Existing graph algorithms for ANNS already support dynamic indices that reflect real-time changes."
+  },
+  {
+   "passage": "fresh-abstract",
+   "label": "unsupported",
+   "category": "topical",
+   "claim": "FreshDiskANN keeps the whole index in RAM and uses the SSD only for backups."
+  },
+  {
+   "passage": "fresh-abstract",
+   "label": "unsupported",
+   "category": "misquote",
+   "claim": "FreshDiskANN \"trades search accuracy for update speed\"."
+  },
+  {
+   "passage": "spann-abstract",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "SPANN keeps the centroids of the posting lists in memory and the large posting lists on disk."
+  },
+  {
+   "passage": "spann-abstract",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "SPANN uses a hierarchical balanced clustering algorithm to balance the lengths of the posting lists."
+  },
+  {
+   "passage": "spann-abstract",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "At search time, SPANN uses a query-aware scheme to prune the access of unnecessary posting lists."
+  },
+  {
+   "passage": "spann-abstract",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "SPANN reaches 90% recall@1 and recall@10 in about one millisecond with only 32GB of memory."
+  },
+  {
+   "passage": "spann-abstract",
+   "label": "unsupported",
+   "category": "number",
+   "claim": "SPANN is 5x faster than DiskANN at 90% recall with the same memory cost."
+  },
+  {
+   "passage": "spann-abstract",
+   "label": "unsupported",
+   "category": "swap",
+   "claim": "SPANN stores the posting lists in memory and the centroids on disk."
+  },
+  {
+   "passage": "spann-abstract",
+   "label": "unsupported",
+   "category": "negation",
+   "claim": "SPANN follows a graph-based methodology rather than the inverted index methodology."
+  },
+  {
+   "passage": "spann-abstract",
+   "label": "unsupported",
+   "category": "topical",
+   "claim": "SPANN supports real-time deletion of vectors from its posting lists."
+  },
+  {
+   "passage": "faiss-ivf",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "IVF indexing clusters the database vectors at indexing time with a coarse quantizer."
+  },
+  {
+   "passage": "faiss-ivf",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "At search time, only a subset of the IVF clusters is visited, formed by the nearest centroids."
+  },
+  {
+   "passage": "faiss-ivf",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "The vectors of each cluster are stored contiguously in inverted lists."
+  },
+  {
+   "passage": "faiss-ivf",
+   "label": "supported",
+   "category": "paraphrase",
+   "claim": "It is common to use a non-exhaustive HNSW index to perform the coarse quantization."
+  },
+  {
+   "passage": "faiss-ivf",
+   "label": "unsupported",
+   "category": "negation",
+   "claim": "At search time, an IVF index visits every cluster of the inverted file."
+  },
+  {
+   "passage": "faiss-ivf",
+   "label": "unsupported",
+   "category": "topical",
+   "claim": "Faiss recommends setting the number of lists proportional to the vector dimension."
+  },
+  {
+   "passage": "faiss-ivf",
+   "label": "unsupported",
+   "category": "misquote",
+   "claim": "The paper says the inverted list sizes are \"always perfectly balanced\"."
+  },
+  {
+   "passage": "faiss-ivf",
+   "label": "unsupported",
+   "category": "topical",
+   "claim": "IVF indexes in Faiss require a GPU for the coarse quantization."
+  }
+ ]
+}

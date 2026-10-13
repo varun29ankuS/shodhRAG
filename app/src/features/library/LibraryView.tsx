@@ -32,6 +32,7 @@ import type { IndexingAction, IndexingAdvice } from './indexingAdvice';
 import { useSearchModels } from '../setup/SearchModelsContext';
 import { groupSourcesByKind, progressPercent } from './sources';
 import type { LibrarySource } from './sources';
+import { countOf } from '../../lib/plural';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -163,7 +164,7 @@ export function LibraryView({
             <p className="text-sm text-shodh-text-muted">
               {sources.length === 0
                 ? 'Everything Shodh can search. Nothing has been added yet.'
-                : `${Math.max(totalDocs, fileTotal).toLocaleString()} files in ${sources.length} source${sources.length === 1 ? '' : 's'}${indexing > 0 ? ` · indexing ${indexing}` : ''}`}
+                : `${countOf(Math.max(totalDocs, fileTotal), 'file')} in ${countOf(sources.length, 'source')}${indexing > 0 ? ` · indexing ${indexing}` : ''}`}
             </p>
           </div>
           {sources.length > 0 && (
@@ -341,7 +342,7 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
     statusLine = (
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between text-[12px] text-shodh-text-secondary">
-          <span>{total > 0 ? `Indexing ${done.toLocaleString()} of ${total.toLocaleString()} files` : 'Preparing files…'}</span>
+          <span>{total > 0 ? `Indexing ${done.toLocaleString()} of ${countOf(total, 'file')}` : 'Preparing files…'}</span>
           <span className="font-mono text-[11px]">{percent}%</span>
         </div>
         <div
@@ -350,7 +351,7 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={percent}
-          aria-valuetext={total > 0 ? `${done} of ${total} files, ${percent}%` : 'Preparing files'}
+          aria-valuetext={total > 0 ? `${done} of ${countOf(total, 'file')}, ${percent}%` : 'Preparing files'}
           className="h-1.5 rounded-full bg-shodh-raised-2 overflow-hidden"
         >
           <div

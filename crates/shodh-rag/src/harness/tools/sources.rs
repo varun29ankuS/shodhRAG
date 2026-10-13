@@ -243,7 +243,7 @@ impl HostTool for ListSourcesTool {
                 text_for_model: format!(
                     "{total} indexed files in source {source_id}.{more}\n{body}"
                 ),
-                summary_for_ui: format!("{total} files"),
+                summary_for_ui: format!("{total} {}", if total == 1 { "file" } else { "files" }),
                 detail: Some(json!({ "sourceId": source_id, "total": total, "files": shown })),
             });
         }
@@ -270,9 +270,10 @@ impl HostTool for ListSourcesTool {
             )
         };
         let folder_noun = if folders == 1 { "folder" } else { "folders" };
+        let file_noun = if files == 1 { "file" } else { "files" };
         Ok(ToolOutput {
             text_for_model: text,
-            summary_for_ui: format!("{folders} {folder_noun}, {files} files"),
+            summary_for_ui: format!("{folders} {folder_noun}, {files} {file_noun}"),
             detail: Some(json!({ "sources": sources })),
         })
     }

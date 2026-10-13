@@ -14,6 +14,13 @@
 //! recording against the live models when `SHODH_TEST_MODELS` is set;
 //! `record_model_scores` (ignored) rewrites it.
 //!
+//! `fixtures/grounding/ann-claims.json` holds passages of public arXiv
+//! papers on nearest neighbor search (several with a figure caption among
+//! body text) and 67 labeled claims about them, quotes and misquotes
+//! included. `cross_encoder_check_on_public_ann_claims` measures the check
+//! the app runs without the entailment model (its default) on them, against
+//! scoring the whole passage only.
+//!
 //! Each test sweeps its cutoff and asserts that the shipped threshold is one
 //! of the cutoffs with the best accuracy: the thresholds are calibrated, not
 //! picked. Run with `--nocapture` to see the tables.
@@ -25,14 +32,16 @@ use serde::{Deserialize, Serialize};
 
 use super::numbers::missing_numbers;
 use super::verify::{
-    clean_evidence, need_coverage, outcome_for, support, EntailmentScorer, Scorers, Thresholds,
-    THRESHOLDS,
+    clean_evidence, misquoted, need_coverage, outcome_for, support, EntailmentScorer, Scorers,
+    Thresholds, THRESHOLDS,
 };
 use crate::harness::events::{ClaimOutcome, ScoringMethod};
+use crate::harness::web::relevance::sigmoid;
 use crate::harness::web::relevance::PassageScorer;
 use crate::reranking::Entailment;
 
 const FIXTURE: &str = include_str!("../fixtures/grounding/claims.json");
+const ANN_FIXTURE: &str = include_str!("../fixtures/grounding/ann-claims.json");
 const SCORES: &str = include_str!("../fixtures/grounding/model-scores.json");
 const SCORES_PATH: &str = "src/harness/fixtures/grounding/model-scores.json";
 /// Separates query and passage in recorded keys.
@@ -67,6 +76,17 @@ struct Fixture {
 
 fn fixture() -> Fixture {
     serde_json::from_str(FIXTURE).expect("claims.json parses")
+}
+
+/// Labeled claims about passages of public papers (no needs).
+#[derive(Debug, Deserialize)]
+struct ClaimFixture {
+    passages: BTreeMap<String, PassageEntry>,
+    claims: Vec<LabeledClaim>,
+}
+
+fn ann_fixture() -> ClaimFixture {
+    serde_json::from_str(ANN_FIXTURE).expect("ann-claims.json parses")
 }
 
 /// Recorded model output: cross-encoder logits and NLI probabilities
@@ -147,7 +167,8 @@ fn rows(scorers: Scorers<'_>, expected: ScoringMethod) -> Vec<Row> {
             Row {
                 category: c.category.clone(),
                 supported: c.label == "supported",
-                numbers_missing: !missing_numbers(&c.claim, &[text]).is_empty(),
+                numbers_missing: !missing_numbers(&c.claim, &[text]).is_empty()
+                    || !misquoted(&c.claim, &[text]).is_empty(),
                 score: found.score,
             }
         })
@@ -162,6 +183,37 @@ fn flagged(row: &Row, method: ScoringMethod, t: &Thresholds) -> bool {
 /// Whether the claim counts as supported (not weak, not flagged).
 fn accepted(row: &Row, method: ScoringMethod, t: &Thresholds) -> bool {
     !row.numbers_missing && outcome_for(row.score, method, t) == ClaimOutcome::Supported
+}
+
+/// Precision and recall of accepting claims as supported, and the claims
+/// accepted, given `accept` per labeled claim.
+struct Measured {
+    precision: f32,
+    recall: f32,
+    accepted: Vec<bool>,
+}
+
+fn measure(labels: &[bool], accept: Vec<bool>) -> Measured {
+    let tp = labels
+        .iter()
+        .zip(&accept)
+        .filter(|(l, a)| **l && **a)
+        .count();
+    let accepted_n = accept.iter().filter(|a| **a).count();
+    let positives = labels.iter().filter(|l| **l).count();
+    Measured {
+        precision: if accepted_n == 0 {
+            0.0
+        } else {
+            tp as f32 / accepted_n as f32
+        },
+        recall: if positives == 0 {
+            0.0
+        } else {
+            tp as f32 / positives as f32
+        },
+        accepted: accept,
+    }
 }
 
 fn accuracy(rows: &[Row], predict: impl Fn(&Row) -> bool, positive: impl Fn(&Row) -> bool) -> f32 {
@@ -334,8 +386,124 @@ fn need_cut_is_calibrated() {
     assert!(shipped >= 0.85, "{shipped}");
 }
 
+/// The reranker-only check on public claims, before and after scoring the
+/// sentence windows that hold the claim and looking quotes up: true support
+/// is accepted far more often, and no unsupported claim is accepted that
+/// scoring the whole passage flagged.
+#[test]
+fn cross_encoder_check_on_public_ann_claims() {
+    let f = ann_fixture();
+    let replay = replay();
+    let scorers = Scorers {
+        relevance: Some(&replay),
+        entailment: None,
+    };
+    let labels: Vec<bool> = f.claims.iter().map(|c| c.label == "supported").collect();
+    // Before: the whole passage only, numbers checked.
+    let before: Vec<bool> = f
+        .claims
+        .iter()
+        .map(|c| {
+            let text = &f.passages[&c.passage].text;
+            let logit = replay
+                .score(&c.claim, &[clean_evidence(text)])
+                .expect("recorded")[0];
+            missing_numbers(&c.claim, &[text]).is_empty()
+                && outcome_for(sigmoid(logit), ScoringMethod::CrossEncoder, &THRESHOLDS)
+                    == ClaimOutcome::Supported
+        })
+        .collect();
+    // After: what the verifier does now.
+    let after: Vec<bool> = f
+        .claims
+        .iter()
+        .map(|c| {
+            let text = &f.passages[&c.passage].text;
+            let found = support(scorers, &c.claim, std::slice::from_ref(text));
+            assert_eq!(found.method, ScoringMethod::CrossEncoder);
+            missing_numbers(&c.claim, &[text]).is_empty()
+                && misquoted(&c.claim, &[text]).is_empty()
+                && outcome_for(found.score, found.method, &THRESHOLDS) == ClaimOutcome::Supported
+        })
+        .collect();
+    let before = measure(&labels, before);
+    let after = measure(&labels, after);
+    println!(
+        "public ANN claims ({} supported, {} unsupported), cross-encoder check:",
+        labels.iter().filter(|l| **l).count(),
+        labels.iter().filter(|l| !**l).count()
+    );
+    println!(
+        "  whole passage: precision {:.3}, recall {:.3}",
+        before.precision, before.recall
+    );
+    println!(
+        "  windows + quotes: precision {:.3}, recall {:.3}",
+        after.precision, after.recall
+    );
+    for (i, c) in f.claims.iter().enumerate() {
+        if after.accepted[i] != labels[i] {
+            println!("  wrong after: {} {:?}", c.category, c.claim);
+        }
+    }
+    // Nothing unsupported that the whole-passage check flagged is now let
+    // through: the gain is on true support only.
+    for (i, c) in f.claims.iter().enumerate() {
+        assert!(
+            labels[i] || before.accepted[i] || !after.accepted[i],
+            "an unsupported claim is now accepted: {:?}",
+            c.claim
+        );
+    }
+    assert!(
+        after.recall >= before.recall + 0.1,
+        "recall {} -> {}",
+        before.recall,
+        after.recall
+    );
+    assert!(
+        after.precision >= before.precision,
+        "precision {} -> {}",
+        before.precision,
+        after.precision
+    );
+    // Claims the whole-passage score flagged although the passage states
+    // them: a quote of the survey (flagged in a recorded answer), a quote of
+    // the HNSW paper's Fig. 2 caption, and a sentence of its abstract.
+    for claim in [
+        "fixes the upper bound of each vertex",
+        "all of the closest neighbors of the element belong to the Cluster 1",
+        "improves performance at high recall and on highly clustered data",
+    ] {
+        let i = f
+            .claims
+            .iter()
+            .position(|c| c.claim.contains(claim))
+            .expect("in the fixture");
+        assert!(after.accepted[i], "{:?} is not accepted", f.claims[i].claim);
+    }
+    // Every misquote is flagged.
+    for (i, c) in f.claims.iter().enumerate() {
+        if c.category == "misquote" {
+            assert!(!after.accepted[i], "misquote accepted: {:?}", c.claim);
+        }
+    }
+}
+
 /// Every pair the tests above score, with the live models.
 fn score_everything(relevance: &dyn PassageScorer, nli: &dyn EntailmentScorer) {
+    let ann = ann_fixture();
+    for c in &ann.claims {
+        let text = std::slice::from_ref(&ann.passages[&c.passage].text);
+        support(
+            Scorers {
+                relevance: Some(relevance),
+                entailment: None,
+            },
+            &c.claim,
+            text,
+        );
+    }
     let f = fixture();
     for c in &f.claims {
         let text = std::slice::from_ref(&f.passages[&c.passage].text);
@@ -398,25 +566,38 @@ impl EntailmentScorer for Recording<'_> {
     }
 }
 
+/// The live reranker, and the live NLI model when it is installed (the
+/// app's default install has the reranker only; the entailment results are
+/// then replayed from the recording).
 fn live_models() -> (
     crate::reranking::CrossEncoderReranker,
-    crate::reranking::NliModel,
+    Option<crate::reranking::NliModel>,
 ) {
     let root = std::path::PathBuf::from(
         std::env::var_os("SHODH_TEST_MODELS").expect("SHODH_TEST_MODELS must point at the models"),
     );
     let reranker = crate::reranking::CrossEncoderReranker::new(&root.join("ms-marco-MiniLM-L6-v2"))
         .expect("load the reranker");
-    let nli = crate::reranking::NliModel::new(&root.join("nli-deberta-v3-xsmall"))
-        .expect("load the NLI model");
+    let nli_dir = root.join("nli-deberta-v3-xsmall");
+    let nli = nli_dir
+        .exists()
+        .then(|| crate::reranking::NliModel::new(&nli_dir).expect("load the NLI model"));
     (reranker, nli)
 }
 
 fn record_live() -> Recorded {
     let (reranker, nli) = live_models();
+    let recorded = replay();
+    let nli: &dyn EntailmentScorer = match &nli {
+        Some(model) => model,
+        None => {
+            println!("nli-deberta-v3-xsmall is not installed: entailment results are replayed");
+            &recorded
+        }
+    };
     let recording = Recording {
         relevance: &reranker,
-        nli: &nli,
+        nli,
         out: Mutex::new(Recorded::default()),
     };
     score_everything(&recording, &recording);

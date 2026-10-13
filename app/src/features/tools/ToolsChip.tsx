@@ -4,6 +4,7 @@ import { cn } from '../../lib/utils';
 import { errorText, toolsApi } from './api';
 import type { ChatToolsView, ToolMode } from './api';
 import { chipLabel } from './format';
+import { nounFor } from '../../lib/plural';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
@@ -123,7 +124,7 @@ export function ToolsChip({ workspaceId, mode, answerRunning, onOpenSettings }: 
                 </p>
               )}
               <p className="m-0 text-[12.5px] text-shodh-text-secondary">
-                {view.builtin} built-in {mode === 'code' ? 'Code mode' : 'Research'} tools
+                {view.builtin} built-in {mode === 'code' ? 'Code mode' : 'Research'} {nounFor(view.builtin, 'tool')}
               </p>
               {view.servers.length > 0 && (
                 <section aria-label="MCP servers" className="flex flex-col gap-1.5">

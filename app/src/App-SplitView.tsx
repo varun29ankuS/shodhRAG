@@ -31,6 +31,32 @@ function safeStorage(): Storage | null {
   }
 }
 
+/** The backend's copy of a durable UI state (see lib/durableState). */
+async function readDurable(key: DurableKey): Promise<StoredRead> {
+  try {
+    const value = await invoke<unknown>('ui_state_get', { key });
+    return value === null || value === undefined ? { kind: 'none' } : { kind: 'value', value };
+  } catch (error) {
+    console.error(`The saved ${key} could not be read:`, error);
+    return { kind: 'failed' };
+  }
+}
+
+/** The last save of each durable UI state, so saves reach the disk in the order they were made. */
+const durableWrites = new Map<DurableKey, Promise<void>>();
+
+/**
+ * Save a durable UI state on disk (resolves once it is written). Saves of one
+ * key are chained: the backend writes each on a blocking thread, so two quick
+ * saves sent together could otherwise land older-last and leave a stale value.
+ */
+function writeDurable(key: DurableKey, value: unknown): Promise<void> {
+  const previous = durableWrites.get(key) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(() => invoke<void>('ui_state_set', { key, value }));
+  durableWrites.set(key, next);
+  return next;
+}
+
 // Core components
 import { applyFolderSync, parseStoredSources, readIndexingResult, scannedPagesStep, serializeSources, SOURCES_STORAGE_KEY, syncedFolders } from './features/library/sources';
 import { explainFailure } from './features/library/indexingAdvice';
@@ -62,7 +88,9 @@ import type { PaletteAction } from './components/CommandPalette';
 import { ViewSkeleton } from './components/shell/ViewSkeleton';
 import { useSearchConfig } from './components/SearchSettings';
 import { FirstRunFlow } from './features/setup/FirstRunFlow';
-import { readFirstRun, resumeStep, writeFirstRun } from './features/setup/firstRun';
+import { hasSavedFirstRun, readFirstRun, resumeStep, writeFirstRun } from './features/setup/firstRun';
+import { reconcileFirstRun, reconcileSources } from './lib/durableState';
+import type { DurableKey, StoredRead } from './lib/durableState';
 import type { FirstRunState, FirstRunStep } from './features/setup/firstRun';
 import { useSearchModels } from './features/setup/SearchModelsContext';
 import { markStartup } from './lib/startupTiming';
@@ -74,6 +102,7 @@ import { removeWithUndo, restoreAt } from './lib/undoToast';
 import { migrateLegacyApiKeys } from './lib/apiKeyMigration';
 import { InboxButton, OPEN_INBOX_EVENT } from './features/inbox/InboxButton';
 import { useNavigationTarget } from './features/agent/useNavigationTarget';
+import { countOf } from './lib/plural';
 
 // Debug logging — set to true during development, false for demo/production
 const DEBUG = false;
@@ -152,14 +181,48 @@ function AppSplitView() {
   const [askDraft, setAskDraft] = useState<{ text: string; seq: number } | null>(null);
   const clearAskDraft = useCallback(() => setAskDraft(null), []);
 
+  // The sources are kept on disk by the backend, so a force-quit cannot lose
+  // them (localStorage, read above for the first frame, is written lazily).
+  // Once the backend's copy is read it replaces the local one; a list only
+  // older builds saved (localStorage) is moved to the backend once.
+  const sourcesRestoredRef = useRef(false);
+  const startSourcesRef = useRef<string | null>(null);
+  if (startSourcesRef.current === null) startSourcesRef.current = serializeSources(sources);
+  const savedSourcesRef = useRef<string | null>(null);
+  const saveSourcesDurably = useCallback((list: readonly Source[]) => {
+    const text = serializeSources(list);
+    if (text === savedSourcesRef.current) return;
+    savedSourcesRef.current = text;
+    writeDurable('library_sources', JSON.parse(text)).catch(error => {
+      savedSourcesRef.current = null;
+      console.error('The Library sources could not be saved:', error);
+    });
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    void readDurable('library_sources').then(stored => {
+      if (cancelled) return;
+      const local = sourcesRef.current;
+      const changed = serializeSources(local) !== startSourcesRef.current;
+      const { sources: restored, save } = reconcileSources(stored, local, changed);
+      sourcesRestoredRef.current = true;
+      if (save) saveSourcesDurably(restored);
+      else savedSourcesRef.current = serializeSources(restored);
+      if (restored !== local) setSources(restored);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [saveSourcesDurably]);
   // Persist sources on every change (live progress fields are not stored).
   useEffect(() => {
     try {
       localStorage.setItem(SOURCES_STORAGE_KEY, serializeSources(sources));
     } catch {
-      // Storage unavailable: sources last for this session only.
+      // Storage unavailable: the backend's copy still keeps them.
     }
-  }, [sources]);
+    if (sourcesRestoredRef.current) saveSourcesDurably(sources);
+  }, [sources, saveSourcesDurably]);
   // Keep finished folders in sync with the index (watched, and checked once
   // the index is open); each sync updates its source's card.
   const syncedFoldersKey = JSON.stringify(syncedFolders(sources));
@@ -188,8 +251,32 @@ function AppSplitView() {
 
   // Onboarding & Feedback
   // First-run setup: shown over the shell until finished or skipped; resumable.
+  // Kept on disk by the backend too (see lib/durableState): without a local
+  // copy (a fresh install, or one lost to a force-quit) setup opens only once
+  // the backend's copy is read, so a finished setup never starts again.
+  const firstRunSavedLocallyRef = useRef<boolean | null>(null);
+  if (firstRunSavedLocallyRef.current === null) firstRunSavedLocallyRef.current = hasSavedFirstRun(safeStorage());
   const [firstRun, setFirstRun] = useState<FirstRunState>(() => readFirstRun(safeStorage()));
-  const [firstRunOpen, setFirstRunOpen] = useState(() => firstRun.status === 'pending');
+  const [firstRunOpen, setFirstRunOpen] = useState(() => firstRun.status === 'pending' && firstRunSavedLocallyRef.current === true);
+  const firstRunRef = useRef(firstRun);
+  firstRunRef.current = firstRun;
+  const firstRunChangedRef = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    void readDurable('first_run').then(stored => {
+      if (cancelled || firstRunChangedRef.current) return;
+      const { state, save } = reconcileFirstRun(stored, firstRunRef.current, firstRunSavedLocallyRef.current === true);
+      setFirstRun(state);
+      setFirstRunOpen(state.status === 'pending');
+      writeFirstRun(safeStorage(), state);
+      if (save) {
+        writeDurable('first_run', state).catch(error => console.error('The setup progress could not be saved:', error));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const { status: searchModelsStatus } = useSearchModels();
   const [showFeedback, setShowFeedback] = useState(false);
 
@@ -304,10 +391,16 @@ function AppSplitView() {
     startChat(workspaceForNewChat(activeTab === 'workspaces' ? openWorkspaceId : null, activeConversation?.workspaceId));
   };
 
+  const persistFirstRun = useCallback((next: FirstRunState) => {
+    firstRunChangedRef.current = true;
+    writeFirstRun(safeStorage(), next);
+    writeDurable('first_run', next).catch(error => console.error('The setup progress could not be saved:', error));
+  }, []);
+
   const saveFirstRun = useCallback((next: FirstRunState) => {
     setFirstRun(next);
-    writeFirstRun(safeStorage(), next);
-  }, []);
+    persistFirstRun(next);
+  }, [persistFirstRun]);
 
   // Reopening a finished setup and closing it again must not mark it skipped.
   const statusBeforeOpenRef = useRef(firstRun.status);
@@ -329,12 +422,13 @@ function AppSplitView() {
 
   const skipFirstRun = useCallback(() => {
     setFirstRunOpen(false);
-    setFirstRun(prev => {
-      const next: FirstRunState = { status: statusBeforeOpenRef.current === 'completed' ? 'completed' : 'skipped', step: prev.step };
-      writeFirstRun(safeStorage(), next);
-      return next;
-    });
-  }, []);
+    const next: FirstRunState = {
+      status: statusBeforeOpenRef.current === 'completed' ? 'completed' : 'skipped',
+      step: firstRunRef.current.step,
+    };
+    setFirstRun(next);
+    persistFirstRun(next);
+  }, [persistFirstRun]);
 
   useEffect(() => {
     markStartup('shell-mounted');
@@ -459,7 +553,7 @@ function AppSplitView() {
       // Update message with result
       if (result.success) {
         updateMessage(messageId, { content: `✅ **${result.fileName}** indexed successfully!\n\n` +
-                   `📊 **${result.chunksCreated} chunks** created in ${result.processingTimeMs}ms\n` +
+                   `📊 **${countOf(result.chunksCreated, 'chunk')}** created in ${result.processingTimeMs}ms\n` +
                    `💾 Size: ${result.fileSizeMb.toFixed(2)} MB\n\n` +
                    `*Ask me anything about this document!*` });
       } else {
@@ -1176,7 +1270,7 @@ function AppSplitView() {
                   className="text-[10px] px-2 py-0.5 rounded-full font-medium"
                   style={{ backgroundColor: `${colors.secondary}14`, color: colors.secondary }}
                 >
-                  {messages.length} msgs
+                  {countOf(messages.length, 'msg')}
                 </span>
                 <span
                   className="text-[10px] px-2 py-0.5 rounded-full font-medium"
@@ -1382,7 +1476,7 @@ function AppSplitView() {
             )}
             <Badge variant="outline" className="text-[10px] px-2 py-0.5 h-auto" style={{ borderColor: colors.border, color: colors.textMuted }}>
               <Database className="w-3 h-3 mr-1" />
-              {sources.filter(s => s.selected).length} sources
+              {countOf(sources.filter(s => s.selected).length, 'source')}
             </Badge>
           </div>
         </div>

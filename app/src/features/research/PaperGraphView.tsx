@@ -24,6 +24,7 @@ import {
 } from './graphViewport';
 import type { Bounds, Point, View } from './graphViewport';
 import { BUTTON, FOCUS_RING, ICON_BUTTON, INPUT, PRIMARY_BUTTON, SECTION_TITLE } from './ui';
+import { countOf } from '../../lib/plural';
 
 type Load<T> = { status: 'loading' } | { status: 'ready'; value: T } | { status: 'error'; message: string };
 
@@ -448,7 +449,7 @@ export function PaperGraphView({
           {`${report.size.libraryPapers} library papers, ${report.size.papers - report.size.libraryPapers} cited works, ${report.size.cites} citations · ${report.identifiableReferences} of ${report.references} references read`}
           {report.online || report.referencesResolved > 0 ? ` · ${report.referencesResolved} matched on OpenAlex` : ''}
           {report.halted ? ` · lookups stopped: ${report.halted}` : ''}
-          {report.failed.length > 0 ? ` · ${report.failed.length} files could not be read` : ''}
+          {report.failed.length > 0 ? ` · ${countOf(report.failed.length, 'file')} could not be read` : ''}
         </p>
       )}
 
@@ -629,7 +630,7 @@ export function PaperGraphView({
             </figure>
           ) : (
             <section aria-label="Papers in the graph" className="flex flex-col gap-2">
-              <h3 className={SECTION_TITLE}>{`${rows.length} papers`}</h3>
+              <h3 className={SECTION_TITLE}>{countOf(rows.length, 'paper')}</h3>
               <ul className="flex flex-col divide-y divide-shodh-border-subtle rounded-xl border border-shodh-border max-h-[520px] overflow-y-auto scrollbar-thin">
                 {rows.map(row => (
                   <li key={row.node.id}>

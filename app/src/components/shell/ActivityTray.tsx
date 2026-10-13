@@ -9,6 +9,7 @@ import type { TranscriptState } from '../../features/agent/reducer';
 import { useChatSession } from '../../features/ask/ChatSessionContext';
 import { useSessionCounts } from '../../features/agent/useAgentSession';
 import { sessionCountsLabel } from '../../features/agent/sessionCounts';
+import { countOf } from '../../lib/plural';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-sidebar';
@@ -210,7 +211,7 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
                   </div>
                   <span className="text-[11px] font-mono text-shodh-text-faint tabular-nums">
                     {paused ? 'Paused · ' : ''}
-                    {total > 0 ? `${processed.toLocaleString()} of ${total.toLocaleString()} files · ${percent}%` : 'Preparing files'}
+                    {total > 0 ? `${processed.toLocaleString()} of ${countOf(total, 'file')} · ${percent}%` : 'Preparing files'}
                   </span>
                   {job.currentStep && (
                     <span className="text-[11px] text-shodh-text-faint tabular-nums">{job.currentStep}</span>

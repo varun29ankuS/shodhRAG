@@ -322,6 +322,13 @@ pub enum AgentEvent {
         summary: String,
         detail: Option<serde_json::Value>,
         duration_ms: u64,
+        /// The call failed because its arguments did not fit the tool's
+        /// schema (the runtime's or the host's validation): the model's
+        /// mistake, which it usually corrects with its next call. The
+        /// transcript shows such a step as retried once a later call of the
+        /// same tool succeeds.
+        #[serde(default)]
+        invalid_arguments: bool,
     },
     ApprovalRequested {
         run_id: String,
@@ -493,9 +500,18 @@ mod tests {
                     summary: "3 passages".into(),
                     detail: Some(json!({"n": 3})),
                     duration_ms: 12,
+                    invalid_arguments: false,
                 },
                 "step_finished",
-                vec!["runId", "stepId", "ok", "summary", "detail", "durationMs"],
+                vec![
+                    "runId",
+                    "stepId",
+                    "ok",
+                    "summary",
+                    "detail",
+                    "durationMs",
+                    "invalidArguments",
+                ],
             ),
             (
                 AgentEvent::ApprovalRequested {
@@ -865,8 +881,10 @@ mod tests {
                 "events.ts is missing variant {tag}"
             );
             for key in keys {
+                // Optional in TypeScript (`key?:`) when older saved runs lack it.
                 assert!(
-                    TS_CONTRACT.contains(&format!("{key}:")),
+                    TS_CONTRACT.contains(&format!("{key}:"))
+                        || TS_CONTRACT.contains(&format!("{key}?:")),
                     "events.ts is missing key {key} (variant {tag})"
                 );
             }

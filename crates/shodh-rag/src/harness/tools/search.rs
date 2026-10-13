@@ -215,6 +215,65 @@ fn passage(n: u32, result: &ComprehensiveResult, max_chars: usize) -> Passage {
     }
 }
 
+/// The arguments of `search_documents`.
+///
+/// Bounds the host enforces itself (the number of passages, blank source
+/// ids, the query's length) are normalised in `execute`, not refused here:
+/// the runtime refuses a call that breaks the schema before the host sees
+/// it, and models reasonably send `k: 25`, `sources: [""]` or a long query.
+fn search_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "minLength": 1,
+                "description": "What to look for, in words likely to appear in the passages."
+            },
+            "sources": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 200},
+                "maxItems": MAX_SOURCES,
+                "description": "Source ids from list_sources (not file names) to search only those; omit to search every source."
+            },
+            "k": {
+                "type": "integer",
+                "description": "How many passages to return (1 to 20; larger values return 20). Omit for the default."
+            }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+    })
+}
+
+/// Longest query searched, in characters (a longer one is cut at a word).
+const MAX_QUERY_CHARS: usize = 500;
+
+/// `query` cut to [`MAX_QUERY_CHARS`] at a word boundary.
+fn truncate_query(query: &str) -> String {
+    let query = query.trim();
+    if query.chars().count() <= MAX_QUERY_CHARS {
+        return query.to_string();
+    }
+    let cut: String = query.chars().take(MAX_QUERY_CHARS).collect();
+    match cut.rfind(char::is_whitespace) {
+        Some(at) if at > 0 => cut[..at].trim_end().to_string(),
+        _ => cut,
+    }
+}
+
+/// The passage count the model asked for, within 1..=[`MAX_K`]; `None` when
+/// it gave none (or something that is not a count).
+fn requested_k(args: &Value) -> Option<usize> {
+    let k = args.get("k")?;
+    let n = k.as_i64().or_else(|| {
+        k.as_f64()
+            .filter(|f| f.is_finite())
+            .map(|f| f.round() as i64)
+    })?;
+    Some(usize::try_from(n.clamp(1, MAX_K as i64)).unwrap_or(1))
+}
+
 /// Most snippet passages one search returns (they come before document passages).
 const MAX_SNIPPET_PASSAGES: usize = 3;
 
@@ -397,20 +456,7 @@ impl HostTool for SearchDocumentsTool {
          specific queries; search again with different wording if the first results miss."
     }
     fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "minLength": 1, "maxLength": 500},
-                "sources": {
-                    "type": "array",
-                    "items": {"type": "string", "minLength": 1, "maxLength": 200},
-                    "maxItems": MAX_SOURCES
-                },
-                "k": {"type": "integer", "minimum": 1, "maximum": MAX_K}
-            },
-            "required": ["query"],
-            "additionalProperties": false
-        })
+        search_schema()
     }
     fn tier(&self) -> RiskTier {
         RiskTier::Read
@@ -421,12 +467,9 @@ impl HostTool for SearchDocumentsTool {
 
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let query = req_str(&args, "query", SEARCH_DOCUMENTS)?;
-        let k = args
-            .get("k")
-            .and_then(Value::as_u64)
-            .and_then(|k| usize::try_from(k).ok())
-            .unwrap_or_else(|| self.default_k())
-            .clamp(1, MAX_K);
+        let query_owned = truncate_query(query);
+        let query = query_owned.as_str();
+        let k = requested_k(&args).unwrap_or_else(|| self.default_k());
         let sources: Vec<String> = args
             .get("sources")
             .and_then(Value::as_array)
@@ -576,9 +619,62 @@ impl HostTool for SearchDocumentsTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::tools::{nullable_optionals, without_unaccepted_nulls};
     use crate::types::Citation;
     use std::collections::HashMap;
     use uuid::Uuid;
+
+    /// What the runtime validates (the schema it is sent) and what the host
+    /// then validates (after dropping `null`s the tool does not accept).
+    fn accepted(args: Value) -> bool {
+        let runtime = jsonschema::validator_for(&nullable_optionals(search_schema())).unwrap();
+        let host = jsonschema::validator_for(&search_schema()).unwrap();
+        runtime.is_valid(&args) && host.is_valid(&without_unaccepted_nulls(args, &search_schema()))
+    }
+
+    #[test]
+    fn arguments_capable_models_send_are_accepted() {
+        // Unused optional parameters sent as null, a count above the
+        // maximum the schema used to state, a blank source id and a query
+        // longer than the old limit: each was refused before the call ran.
+        for args in [
+            json!({"query": "neighbor pruning", "sources": null, "k": null}),
+            json!({"query": "neighbor pruning", "k": 25}),
+            json!({"query": "neighbor pruning", "sources": [""]}),
+            json!({"query": "pruning ".repeat(120)}),
+            json!({"query": "neighbor pruning", "sources": ["src-1"], "k": 5}),
+        ] {
+            assert!(accepted(args.clone()), "{args}");
+        }
+    }
+
+    #[test]
+    fn garbage_arguments_are_still_refused() {
+        for args in [
+            json!({}),
+            json!({"query": ""}),
+            json!({"query": null}),
+            json!({"query": "x", "k": "many"}),
+            json!({"query": "x", "sources": [7]}),
+        ] {
+            assert!(!accepted(args.clone()), "{args}");
+        }
+    }
+
+    #[test]
+    fn counts_and_queries_are_normalised() {
+        assert_eq!(requested_k(&json!({"k": 25})), Some(MAX_K));
+        assert_eq!(requested_k(&json!({"k": 0})), Some(1));
+        assert_eq!(requested_k(&json!({"k": -3})), Some(1));
+        assert_eq!(requested_k(&json!({"k": 7.0})), Some(7));
+        assert_eq!(requested_k(&json!({})), None);
+        assert_eq!(requested_k(&json!({"k": "seven"})), None);
+        let long = format!("{} tail", "word ".repeat(120));
+        let cut = truncate_query(&long);
+        assert!(cut.chars().count() <= MAX_QUERY_CHARS);
+        assert!(cut.ends_with("word"), "cut at a word: {cut:?}");
+        assert_eq!(truncate_query("  short query "), "short query");
+    }
 
     #[test]
     fn passages_carry_file_page_and_number() {

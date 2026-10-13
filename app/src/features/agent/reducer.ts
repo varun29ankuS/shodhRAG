@@ -14,7 +14,12 @@ import { parseRegions } from '../ask/viewer/regionGeometry.ts';
 import { readProviderError } from '../modelPicker/modelTypes.ts';
 import type { ProviderError, ProviderErrorKind } from '../modelPicker/modelTypes.ts';
 
-export type StepStatus = 'running' | 'awaiting_approval' | 'done' | 'failed';
+/**
+ * `retried`: the call was refused for its arguments and a later call of the
+ * same tool succeeded, so the failure was the model correcting itself, not
+ * a failure of the answer.
+ */
+export type StepStatus = 'running' | 'awaiting_approval' | 'done' | 'failed' | 'retried';
 
 export type ApprovalDecision = 'pending' | 'approved' | 'denied';
 
@@ -42,6 +47,8 @@ export interface TranscriptStep {
   approval: StepApproval | null;
   /** Ids of nested sub-steps, in start order. */
   children: string[];
+  /** Failed because its arguments did not fit the tool (see `StepStatus` `retried`). */
+  invalidArguments?: boolean;
 }
 
 /**
@@ -128,14 +135,96 @@ export interface TranscriptState {
   interimIds?: string[];
   /** The answer is being checked against its sources (not persisted). */
   checking: boolean;
-  /** Latest reasoning text (not persisted). */
+  /** Latest reasoning text, for the live status line (not persisted). */
   thinking: string;
+  /**
+   * The reasoning text the provider streamed alongside the answer, kept so it
+   * can be read afterwards (the "Reasoning" panel). Never part of the answer,
+   * its citations or its check. Absent when the provider sent none, and in
+   * transcripts saved before it was kept.
+   */
+  reasoning?: ReasoningLog | null;
   /** The user asked to interrupt; waiting for the run to stop. */
   interrupting: boolean;
   /** The provider failure behind an `error` status (absent in transcripts saved before it existed). */
   providerError?: ProviderError | null;
   /** This answer was retried with a fallback model (absent when it was not). */
   fallback?: TranscriptFallback | null;
+}
+
+/** Most characters of reasoning kept per answer (about 32 KB); the rest is dropped and marked. */
+export const MAX_REASONING_CHARS = 32 * 1024;
+
+/** One stretch of reasoning, placed among the run's blocks. */
+export interface ReasoningSegment {
+  /** How many transcript blocks there were when it began: it comes after those. */
+  at: number;
+  text: string;
+}
+
+/** The reasoning text of one answer, in order with its tool steps. */
+export interface ReasoningLog {
+  segments: ReasoningSegment[];
+  /** More reasoning arrived than `MAX_REASONING_CHARS` keeps. */
+  truncated: boolean;
+}
+
+/** `log` with `delta` appended at block position `at`, within `MAX_REASONING_CHARS`. */
+function appendReasoning(log: ReasoningLog | null | undefined, at: number, delta: string): ReasoningLog {
+  const current = log ?? { segments: [], truncated: false };
+  if (current.truncated) return current;
+  const used = current.segments.reduce((n, seg) => n + seg.text.length, 0);
+  const room = MAX_REASONING_CHARS - used;
+  const kept = delta.length <= room ? delta : delta.slice(0, Math.max(0, room));
+  const truncated = kept.length < delta.length;
+  if (kept.length === 0) return { ...current, truncated };
+  const last = current.segments[current.segments.length - 1];
+  const segments = last && last.at === at
+    ? [...current.segments.slice(0, -1), { at, text: last.text + kept }]
+    : [...current.segments, { at, text: kept }];
+  return { segments, truncated };
+}
+
+/** A stored reasoning log, validated and capped; null when there is none. */
+function readReasoning(value: unknown): ReasoningLog | null {
+  if (!isRecord(value) || !Array.isArray(value.segments)) return null;
+  let log: ReasoningLog | null = null;
+  for (const seg of value.segments) {
+    if (!isRecord(seg) || typeof seg.text !== 'string' || typeof seg.at !== 'number') continue;
+    if (!Number.isInteger(seg.at) || seg.at < 0 || seg.text.length === 0) continue;
+    log = appendReasoning(log, seg.at, seg.text);
+  }
+  if (!log) return null;
+  return { ...log, truncated: log.truncated || value.truncated === true };
+}
+
+/** One section of the reasoning panel: the reasoning before the first step, or after a step. */
+export interface ReasoningSection {
+  /** Label of the tool step it follows; null before any step. */
+  afterStep: string | null;
+  text: string;
+}
+
+/**
+ * The reasoning of `state` as the panel shows it: consecutive segments with
+ * no step between them are joined, and each section names the step it
+ * follows. Empty when the provider sent no reasoning.
+ */
+export function reasoningSections(state: TranscriptState): ReasoningSection[] {
+  const out: ReasoningSection[] = [];
+  for (const seg of state.reasoning?.segments ?? []) {
+    let afterStep: string | null = null;
+    for (let i = Math.min(seg.at, state.blocks.length) - 1; i >= 0; i--) {
+      const block = state.blocks[i];
+      if (block.kind !== 'step') continue;
+      afterStep = state.steps[block.stepId]?.label ?? null;
+      break;
+    }
+    const last = out[out.length - 1];
+    if (last && last.afterStep === afterStep) last.text += seg.text;
+    else out.push({ afterStep, text: seg.text });
+  }
+  return out.filter(section => section.text.trim().length > 0);
 }
 
 /** Why an answer came from a fallback model. */
@@ -298,6 +387,33 @@ function updateStep(
   return { ...state, steps: { ...state.steps, [stepId]: patch(step) } };
 }
 
+/**
+ * A call of `tool` succeeded: its earlier calls refused for their arguments
+ * were the model correcting itself, and show as retried.
+ */
+function markRetried(steps: Record<string, TranscriptStep>, tool: string): Record<string, TranscriptStep> {
+  let changed = false;
+  const next: Record<string, TranscriptStep> = {};
+  for (const [id, step] of Object.entries(steps)) {
+    if (step.tool === tool && step.status === 'failed' && step.invalidArguments) {
+      changed = true;
+      next[id] = { ...step, status: 'retried' };
+    } else {
+      next[id] = step;
+    }
+  }
+  return changed ? next : steps;
+}
+
+/**
+ * Whether `step` was refused for its arguments in a run that is still going:
+ * the model normally corrects the call next, so it is shown as being retried,
+ * not as a failure. Once the run ends without a corrected call it is a failure.
+ */
+export function awaitingRetry(step: TranscriptStep, live: boolean): boolean {
+  return live && step.status === 'failed' && step.invalidArguments === true;
+}
+
 /** Close any step still open (the run ended without reporting it). */
 function closeOpenSteps(steps: Record<string, TranscriptStep>, summary: string, atMs: number) {
   let changed = false;
@@ -351,7 +467,13 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
     }
 
     case 'thinking':
-      return { ...state, status: 'running', thinking: (state.thinking + action.delta).slice(-600) };
+      if (action.delta.length === 0) return state;
+      return {
+        ...state,
+        status: 'running',
+        thinking: (state.thinking + action.delta).slice(-600),
+        reasoning: appendReasoning(state.reasoning, state.blocks.length, action.delta),
+      };
 
     case 'step_started': {
       if (state.steps[action.stepId]) return state;
@@ -400,6 +522,7 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
     case 'step_finished': {
       const step = state.steps[action.stepId];
       if (!step) return state;
+      const invalidArguments = !action.ok && action.invalidArguments === true;
       const next = updateStep(state, action.stepId, s => ({
         ...s,
         status: action.ok ? 'done' : 'failed',
@@ -410,10 +533,14 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
         approval: s.approval && s.approval.decision === 'pending'
           ? { ...s.approval, decision: action.ok ? 'approved' : 'denied' }
           : s.approval,
+        ...(invalidArguments ? { invalidArguments: true } : {}),
       }));
-      return action.ok
-        ? { ...next, passages: mergePassages(next.passages, passagesFromDetail(action.detail)) }
-        : next;
+      if (!action.ok) return next;
+      return {
+        ...next,
+        steps: markRetried(next.steps, step.tool),
+        passages: mergePassages(next.passages, passagesFromDetail(action.detail)),
+      };
     }
 
     case 'plan_updated':
@@ -573,7 +700,7 @@ export function pendingApproval(state: TranscriptState): TranscriptStep | null {
   return null;
 }
 
-/** Form stored with the conversation: no transient reasoning text. */
+/** Form stored with the conversation: no transient status text (the reasoning log is kept). */
 export function toPersisted(state: TranscriptState): TranscriptState {
   return { ...state, thinking: '', interrupting: false, checking: false };
 }
@@ -588,10 +715,12 @@ export function fromPersisted(value: unknown): TranscriptState | null {
   if (!isRecord(value) || typeof value.runId !== 'string' || typeof value.startedAtMs !== 'number') return null;
   if (!STATUSES.includes(value.status as TranscriptStatus)) return null;
   if (!Array.isArray(value.blocks) || !isRecord(value.steps)) return null;
-  const state = value as unknown as TranscriptState;
+  const { reasoning: storedReasoning, ...state } = value as unknown as TranscriptState;
+  const reasoning = readReasoning(storedReasoning);
   const restored: TranscriptState = {
     ...initialTranscript(state.runId, state.startedAtMs),
     ...state,
+    ...(reasoning ? { reasoning } : {}),
     passages: Array.isArray(state.passages) ? state.passages : [],
     plan: Array.isArray(state.plan) ? state.plan.map(planItem) : null,
     groundings: Array.isArray(state.groundings) ? state.groundings : [],

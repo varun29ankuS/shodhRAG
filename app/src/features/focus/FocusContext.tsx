@@ -1,8 +1,10 @@
 import React, { Suspense, createContext, lazy, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { notify } from '../../lib/notify';
 import type { AgentEventEnvelope } from '../agent/events';
-import { answerText, initialTranscript, isLive, reduceAll, toPersisted } from '../agent/reducer';
-import type { TranscriptAction, TranscriptState } from '../agent/reducer';
+import { answerText, fromPersisted, initialTranscript, isLive, reduceAll, toPersisted } from '../agent/reducer';
+import type { Passage, TranscriptAction, TranscriptState } from '../agent/reducer';
+import { carriedPassages, toWire } from './carriedPassages';
+import type { ContinuedAnswer } from './carriedPassages';
 import { toAgentError, useAgentSession } from '../agent/useAgentSession';
 import { useChatSession } from '../ask/ChatSessionContext';
 import { composeSideQuestion } from './contextBlock';
@@ -543,6 +545,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     onSummary: ((result: SummaryResult) => void) | null,
     onRefine: SideLive['onRefine'] = null,
     onRepair: SideLive['onRepair'] = null,
+    carried: readonly Passage[] = [],
   ): SideLive | null => {
     if (liveRef.current) return null;
     const { conversationId, parentMessageId, threadId } = level;
@@ -554,7 +557,9 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       anchor: { conversationId, parentMessageId, target: level.target },
       purpose,
       sessionId: null,
-      transcript: initialTranscript(runId, Date.now()),
+      // Passages carried from the answers the question continues keep their
+      // numbers, so the side answer's citations of them open them.
+      transcript: { ...initialTranscript(runId, Date.now()), passages: [...carried] },
       queue: [],
       frame: null,
       settled: false,
@@ -588,7 +593,24 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     const { conversationId, parentMessageId, threadId } = level;
     const list = locationThreads(conversationId, parentMessageId);
     const prior = list.find(t => t.id === threadId)?.turns ?? [];
-    const live = beginRun(level, 'answer', level.target.label, null);
+    // The answers this question continues (the anchored answer, the outer
+    // levels' answers, this thread's earlier answers): their citations are
+    // in the context the agent is given, so the passages they cite travel
+    // with the question under the same numbers.
+    const continued: ContinuedAnswer[] = [];
+    const anchoredRaw = parentMessageId
+      ? conversationsRef.current.find(c => c.id === conversationId)?.messages.find(m => m.id === parentMessageId)?.transcript
+      : null;
+    const anchored = anchoredRaw ? fromPersisted(anchoredRaw) : null;
+    if (anchored) continued.push({ text: answerText(anchored), passages: anchored.passages });
+    const outer = level.parentThreadId ? threadPath(list, level.parentThreadId) : [];
+    for (const turn of [...outer.flatMap(t => t.turns), ...prior]) {
+      if (turn.role !== 'assistant' || !turn.transcript) continue;
+      const restored = fromPersisted(turn.transcript);
+      if (restored) continued.push({ text: answerText(restored), passages: restored.passages });
+    }
+    const carried = carriedPassages(continued, `${extras.selection ?? ''}\n${question}`);
+    const live = beginRun(level, 'answer', level.target.label, null, null, null, carried);
     if (!live) return false;
 
     const selection = extras.selection?.trim() || undefined;
@@ -626,7 +648,11 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       live.sessionId = sessionId;
       setRuntimeInstalled(true);
       const message = composeSideQuestion(level.target, text, extras, { ancestors, notes, followups: true });
-      await api.send(sessionId, message, live.runId, history, answerScope(scopeForLevels(scopeTargets, extras), workspaceOf(conversationId), false));
+      const scope = answerScope(scopeForLevels(scopeTargets, extras), workspaceOf(conversationId), false);
+      const withPassages = carried.length > 0
+        ? { ...(scope ?? { sourceIds: [], sourceFiles: [] }), passages: toWire(carried) }
+        : scope;
+      await api.send(sessionId, message, live.runId, history, withPassages);
     } catch (error) {
       const failure = toAgentError(error);
       enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);

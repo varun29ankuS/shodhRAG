@@ -29,6 +29,12 @@ use crate::audit_commands::AuditState;
 /// floating widget) close normally.
 pub const MAIN_WINDOW: &str = "main";
 
+/// Name of the autostart entry (the Windows Run value, the macOS launch
+/// agent). Fixed rather than taken from the product name, which the plugin
+/// would otherwise use: an entry made before the app was renamed to Shodh
+/// keeps being found, so it is never orphaned.
+pub const AUTOSTART_ENTRY: &str = "shodh-rag-app";
+
 /// Command-line flag the autostart entry passes: start hidden in the tray.
 pub const BACKGROUND_FLAG: &str = "--background";
 

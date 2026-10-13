@@ -27,6 +27,7 @@ import {
 } from '../features/memory/suggestions';
 import type { LearnStatus, Suggestion } from '../features/memory/suggestions';
 import { formatDate, propertyLabel } from '../features/memory/model';
+import { countOf } from '../lib/plural';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -491,7 +492,7 @@ export default function SuggestedMemories({
                     const results = await acceptSuggestions(batch.map(s => s.id));
                     const failed = results.filter(r => !r.ok).length;
                     if (failed > 0) notify.error(`${failed} of ${results.length} were not saved`);
-                    else notify.success(`${results.length} memories saved`);
+                    else notify.success(`${countOf(results.length, 'memory', 'memories')} saved`);
                   }, 'The suggestions were not accepted')
                 }
               >

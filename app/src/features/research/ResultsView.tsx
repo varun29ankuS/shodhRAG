@@ -9,6 +9,7 @@ import { showSourceBox } from './snippetBus';
 import { fileNameOf } from './snippetModel';
 import type { ExtractionReport, PaperResults, ResultRecord } from './types';
 import { BUTTON, FOCUS_RING, PRIMARY_BUTTON, SECTION_TITLE } from './ui';
+import { countOf } from '../../lib/plural';
 
 type State = { status: 'loading' } | { status: 'ready'; data: PaperResults } | { status: 'error'; message: string };
 
@@ -168,7 +169,7 @@ export function ResultsView({ filePath, workspace = null }: { filePath: string; 
     setExtracting(true);
     try {
       const report = await researchApi.extractResults(filePath, workspace, useModel);
-      notify.success(`${report.added} results added, ${report.review} to review`);
+      notify.success(`${countOf(report.added, 'result')} added, ${report.review} to review`);
       setTick(t => t + 1);
     } catch (error) {
       notify.error('Results could not be extracted', { description: toResearchError(error).message });

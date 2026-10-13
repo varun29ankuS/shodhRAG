@@ -21,6 +21,7 @@ import { openSnippet } from '../../research/snippetBus';
 import { cssToSnippetRect, rectToRegion, type CssBox } from '../../research/snippetGeometry';
 import { renderSnippet, snippetText } from '../../research/snippetRender';
 import type { SnippetRect } from '../../research/types';
+import { countOf } from '../../../lib/plural';
 
 type TextContent = Awaited<ReturnType<PDFPageProxy['getTextContent']>>;
 type TextLayerInstance = InstanceType<Awaited<ReturnType<typeof loadPdfJs>>['TextLayer']>;
@@ -956,7 +957,7 @@ export function PdfViewer({
         for (let p = 1; p <= total; p += 1) if (!citedList.includes(p)) rest.push(p);
         rest.sort((a, b) => Math.abs(a - anchor) - Math.abs(b - anchor) || a - b);
         best = await search(rest, done => {
-          if (isCurrent()) onLocateRef.current({ status: 'searching', message: `Searching the PDF for the passage… (${done} of ${rest.length} pages)` });
+          if (isCurrent()) onLocateRef.current({ status: 'searching', message: `Searching the PDF for the passage… (${done} of ${countOf(rest.length, 'page')})` });
         });
         if (!isCurrent()) return;
       }

@@ -10,6 +10,7 @@ import { errorText, toolsApi } from '../features/tools/api';
 import type { Approval, ServerView, StagedInstall, ToolMode, ToolsOverview } from '../features/tools/api';
 import { formToConfig } from '../features/tools/format';
 import type { ServerForm } from '../features/tools/format';
+import { countOf } from '../lib/plural';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -169,7 +170,7 @@ function ServerCard({ server, workspaceId, onChanged, onTested }: ServerCardProp
           {expanded ? <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" /> : <ChevronRight className="w-3.5 h-3.5" aria-hidden="true" />}
           {server.tools.length === 0
             ? 'Tools appear once it connects'
-            : `${server.tools.filter(t => t.enabled).length} of ${server.tools.length} tools on`}
+            : `${server.tools.filter(t => t.enabled).length} of ${countOf(server.tools.length, 'tool')} on`}
         </button>
         <span className="ml-auto" />
         <button type="button" onClick={() => void test()} disabled={testing} className={BUTTON}>
@@ -581,7 +582,7 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
             {staged.skills.map(s => (
               <li key={s.name}>
                 <span className="font-semibold text-shodh-text">{s.name}</span>
-                <span className="text-shodh-text-muted"> · {s.description} · {s.files} files</span>
+                <span className="text-shodh-text-muted"> · {s.description} · {countOf(s.files, 'file')}</span>
                 {s.replaces && <span className="text-shodh-warning"> · replaces the installed one</span>}
               </li>
             ))}
@@ -801,7 +802,7 @@ export default function ToolsSettings() {
           className={cn('self-start inline-flex items-center gap-1 text-[12.5px] text-shodh-text-secondary hover:text-shodh-text rounded', FOCUS_RING)}
         >
           {builtinOpen ? <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" /> : <ChevronRight className="w-3.5 h-3.5" aria-hidden="true" />}
-          {overview.builtin.reduce((n, g) => n + g.tools.length, 0)} tools in {overview.builtin.length} groups
+          {countOf(overview.builtin.reduce((n, g) => n + g.tools.length, 0), 'tool')} in {countOf(overview.builtin.length, 'group')}
         </button>
         {builtinOpen &&
           overview.builtin.map(group => (

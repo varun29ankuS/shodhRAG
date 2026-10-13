@@ -12,6 +12,7 @@ import { workspaceError, workspacesApi } from './api';
 import { SOURCE_KIND_LABELS, sourceStateLabel } from './model';
 import type { NewSource, SourceHealth, SourceKind, SourceState, WorkspaceDetail, WorkspaceSource } from './types';
 import { FOCUS_RING, INPUT, OUTLINE_BUTTON, PRIMARY_BUTTON, QUIET_BUTTON, SECTION_TITLE } from './ui';
+import { countOf } from '../../lib/plural';
 
 /** A Library folder that can be added. */
 export interface LibraryFolder {
@@ -455,7 +456,7 @@ export function SourcesTab({
                         {status?.files !== null && status?.files !== undefined && s.kind === 'folder' && (
                           <span className="text-[11.5px] text-shodh-text-muted">
                             {`${status.files.toLocaleString()} ${status.files === 1 ? 'file' : 'files'}`}
-                            {status.chunks !== null ? ` · ${status.chunks.toLocaleString()} passages` : ''}
+                            {status.chunks !== null ? ` · ${countOf(status.chunks, 'passage')}` : ''}
                           </span>
                         )}
                         {s.addedBy === 'agent' && <span className="text-[11.5px] text-shodh-text-muted">Added by Shodh (you approved)</span>}

@@ -74,6 +74,7 @@ import { removeWithUndo, restoreAt } from './lib/undoToast';
 import { migrateLegacyApiKeys } from './lib/apiKeyMigration';
 import { InboxButton, OPEN_INBOX_EVENT } from './features/inbox/InboxButton';
 import { useNavigationTarget } from './features/agent/useNavigationTarget';
+import { countOf } from './lib/plural';
 
 // Debug logging — set to true during development, false for demo/production
 const DEBUG = false;
@@ -459,7 +460,7 @@ function AppSplitView() {
       // Update message with result
       if (result.success) {
         updateMessage(messageId, { content: `✅ **${result.fileName}** indexed successfully!\n\n` +
-                   `📊 **${result.chunksCreated} chunks** created in ${result.processingTimeMs}ms\n` +
+                   `📊 **${countOf(result.chunksCreated, 'chunk')}** created in ${result.processingTimeMs}ms\n` +
                    `💾 Size: ${result.fileSizeMb.toFixed(2)} MB\n\n` +
                    `*Ask me anything about this document!*` });
       } else {
@@ -1176,7 +1177,7 @@ function AppSplitView() {
                   className="text-[10px] px-2 py-0.5 rounded-full font-medium"
                   style={{ backgroundColor: `${colors.secondary}14`, color: colors.secondary }}
                 >
-                  {messages.length} msgs
+                  {countOf(messages.length, 'msg')}
                 </span>
                 <span
                   className="text-[10px] px-2 py-0.5 rounded-full font-medium"
@@ -1382,7 +1383,7 @@ function AppSplitView() {
             )}
             <Badge variant="outline" className="text-[10px] px-2 py-0.5 h-auto" style={{ borderColor: colors.border, color: colors.textMuted }}>
               <Database className="w-3 h-3 mr-1" />
-              {sources.filter(s => s.selected).length} sources
+              {countOf(sources.filter(s => s.selected).length, 'source')}
             </Badge>
           </div>
         </div>

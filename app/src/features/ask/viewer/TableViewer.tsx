@@ -5,6 +5,7 @@ import { readSourceTable, scrollBehavior, type SourceSheet } from './sourceAcces
 import { locateTableRows, type TableLocation } from './tableMatch';
 import type { LocateResult } from './viewerTypes';
 import { VIEWER_FOCUS_RING } from './viewerTypes';
+import { countOf } from '../../../lib/plural';
 
 const ROW_HEIGHT = 32;
 const OVERSCAN = 12;
@@ -95,7 +96,7 @@ export function TableViewer({ filePath, passage, onLocate, onError }: TableViewe
     const where = `${describeRows(found.rows)}${sheets.length > 1 ? ` of “${sheet.name}”` : ''}`;
     const beyond = sheet.truncated && found.rows.some(r => r >= sheet.rows.length);
     if (beyond) {
-      onLocateRef.current({ status: 'approximate', message: `The cited ${where} lie beyond the ${sheet.rows.length.toLocaleString()} rows shown here.` });
+      onLocateRef.current({ status: 'approximate', message: `The cited ${where} lie beyond the ${countOf(sheet.rows.length, 'row')} shown here.` });
     } else if (found.confirmed) {
       onLocateRef.current({ status: 'found', message: `Cited ${where} highlighted.` });
     } else {

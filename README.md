@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="#download">Download</a> &middot;
   <a href="#what-works-today">What works today</a> &middot;
   <a href="#in-progress">In progress</a> &middot;
   <a href="#quickstart">Quickstart</a> &middot;
@@ -33,6 +34,26 @@
 
 > **Status: pre-release.** The core ask-your-files loop works. The enterprise-grade pieces are being built in the open and tracked in the [design spec](docs/superpowers/specs/2026-10-02-folder-sources-grounded-answers-design.md): the agent harness, folder sync, the knowledge graph, evaluation, and server mode. This README describes only what works today. Everything else is listed under [In progress](#in-progress).
 
+## Download
+
+Get the latest installer from [Releases](https://github.com/varun29ankuS/shodhRAG/releases/latest):
+
+- **Windows 10 (1903+) and 11, 64-bit:** `Shodh_<version>_x64-setup.exe`
+- **macOS 13.3+ on Apple Silicon:** `Shodh_<version>_aarch64.dmg`. There is no Intel Mac build yet.
+
+The installers are not code-signed yet:
+
+- **Windows:** SmartScreen shows "Windows protected your PC". Click **More info**, then **Run anyway**.
+- **macOS:** the first open is blocked. Open **System Settings → Privacy & Security** and click **Open Anyway**, or run `xattr -dr com.apple.quarantine /Applications/Shodh.app`.
+
+Shodh checks for updates once a day and installs one only when you click it. You can turn the check off in **Settings → Privacy**.
+
+## Pricing
+
+The core of Shodh is free and open source (Apache-2.0), and it stays that way: asking with citations, the Library, scanned documents, reasoning and long chats.
+
+**Pro** and **Team** plans are coming. They will add structured extraction (tables of facts across many documents, every value cited), automations, connectors such as Zotero, and shared team workspaces. Paid features will never lock you out of your own library.
+
 ## What works today
 
 **Ask your files**
@@ -47,7 +68,7 @@
 - **Spreadsheets:** `.xlsx`, `.xls`, `.xlsm`, `.xlsb`, `.ods`, plus CSV and TSV.
   - Sheets are indexed row by row, and every chunk repeats the header row. That way any single row can be retrieved on its own.
   - CSV encodings (UTF-8, UTF-16, Windows-1252) are detected automatically.
-- **Failures:** if a file can't be indexed, the reason is recorded and logged instead of the file being skipped silently. Showing these in the Library is in progress.
+- **Failures:** if a file can't be indexed, the reason is recorded and logged instead of the file being skipped silently. The Library lists each failed file with a plain reason, such as password-protected, damaged or unsupported.
 
 **Retrieval**
 - **Hybrid search:** dense vectors (multilingual E5, ONNX, on device) and BM25 keyword search (Tantivy), fused with reciprocal rank fusion.

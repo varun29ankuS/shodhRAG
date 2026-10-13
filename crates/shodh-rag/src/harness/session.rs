@@ -666,6 +666,7 @@ impl Inner {
             ),
             detail: Some(json!({ "branch": branch.branch, "base": branch.base })),
             duration_ms: 0,
+            invalid_arguments: false,
         });
     }
 
@@ -717,6 +718,7 @@ impl Inner {
                     ok: outcome.ok,
                     summary: outcome.summary.clone(),
                     detail: outcome.detail.clone(),
+                    invalid_arguments: outcome.invalid_arguments,
                 },
             );
             lock(&inner.inflight).remove(&task_host_id);
@@ -745,6 +747,7 @@ impl Inner {
                     ok: false,
                     summary: "Cancelled".to_string(),
                     detail: None,
+                    invalid_arguments: false,
                 },
             );
         }

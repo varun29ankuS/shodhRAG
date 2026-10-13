@@ -384,6 +384,7 @@ mod tests {
                 {"n": 2, "file": "b.pdf", "path": "c:/b.pdf", "score": 0.3, "text": "u"}
             ]})),
             duration_ms: 10,
+            invalid_arguments: false,
         });
         for delta in ["Notice is sixty", " days [1]."] {
             tap.observe(&AgentEvent::TextDelta {

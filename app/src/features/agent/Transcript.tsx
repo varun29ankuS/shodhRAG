@@ -152,7 +152,7 @@ export function Transcript({
             {transcript.blocks.slice(0, fold.answerIndex).map(block => {
               if (block.kind === 'step') {
                 const s = transcript.steps[block.stepId];
-                return s ? <StepLine key={block.stepId} step={s} steps={transcript.steps} compact={compact} /> : null;
+                return s ? <StepLine key={block.stepId} step={s} steps={transcript.steps} compact={compact} live={live} /> : null;
               }
               if (block.kind === 'steer') {
                 return (
@@ -194,7 +194,7 @@ export function Transcript({
         if (block.kind === 'step') {
           const s = transcript.steps[block.stepId];
           return s ? (
-            <StepLine key={block.stepId} step={s} steps={transcript.steps} onDecide={live ? onDecide : undefined} compact={compact} />
+            <StepLine key={block.stepId} step={s} steps={transcript.steps} onDecide={live ? onDecide : undefined} compact={compact} live={live} />
           ) : null;
         }
         if (block.kind === 'steer') {

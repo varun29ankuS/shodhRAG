@@ -11,6 +11,7 @@ mod file_watcher;
 mod graph_commands;
 mod image_upload_commands;
 mod inbox_commands;
+mod library_profile;
 mod llm_bootstrap;
 mod llm_commands;
 mod mcp;
@@ -603,6 +604,7 @@ pub fn run() {
             agent_session_commands::code_settings_get,
             agent_session_commands::code_settings_set,
             agent_session_commands::agent_install_runtime,
+            library_profile::library_profile,
             audit_commands::audit_query,
             audit_commands::audit_verify,
             audit_commands::audit_export,

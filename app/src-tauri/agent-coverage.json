@@ -169,6 +169,7 @@
     "agent_code_status": { "excluded": "Reports whether the assistant's own Code mode can run and on which branch; it describes the assistant's sandbox, not anything the assistant acts on." },
     "agent_code_discard": { "excluded": "Undoes the assistant's own Code changes; only the user may decide to throw away what the assistant did." },
     "agent_code_paths": { "excluded": "Checks which files a diagram in an answer names exist in the code folder, so the reader can open them; the assistant reads the folder with its own Code tools." },
+    "library_profile": { "excluded": "Picks the starter questions Ask suggests for the kind of documents in the library; the assistant reads the documents themselves with search_documents." },
     "code_settings_get": { "excluded": "Shows the workspace's Code approval level; the assistant must not inspect or manage its own permissions." },
     "code_settings_set": { "excluded": "Sets which Code changes and commands run without asking; the assistant must never change which of its actions need approval." },
     "agent_runtime_status": { "excluded": "Reports whether the assistant's runtime is installed; it only matters before the assistant can run." },

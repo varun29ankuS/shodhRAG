@@ -1,6 +1,7 @@
 import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpRight, Check, Copy, CornerLeftUp, FileDown, FolderPlus, Globe, MessagesSquare, RotateCcw } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
+import { invoke } from '@tauri-apps/api/core';
 import { cn } from '../../lib/utils';
 import type { ViewTab } from '../../lib/viewTabs';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
@@ -52,6 +53,8 @@ import type { ConversationLogHandle } from './ConversationLog';
 import { CONVERSATION_TOP_PX, MESSAGE_INDEX_ATTR } from './windowLayout';
 import { ToolsChip } from '../tools/ToolsChip';
 import type { ConversationMode } from '../../hooks/useConversations';
+import { readLibraryKind, starterPrompts } from './starterPrompts';
+import type { LibraryKind } from './starterPrompts';
 
 // The artifact side panel (editors, previews) loads when an artifact is first opened.
 // The windowed conversation (and its virtualizer) loads with the first
@@ -87,13 +90,6 @@ export function latestTranscript(messages: readonly ChatMessage[]): TranscriptSt
   }
   return null;
 }
-
-const STARTER_PROMPTS = [
-  'Summarize the key points across my documents',
-  'What dates and deadlines are mentioned in my files?',
-  'Which documents mention payments or amounts owed?',
-  'List the people and organizations that appear most often',
-] as const;
 
 export interface AskSource {
   id: string;
@@ -647,6 +643,26 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
         : null;
 
   const indexedCount = sources.filter(s => s.status !== 'error').length;
+  // Starter questions fit the library: papers get methods, results and
+  // comparisons. Read again when the sources change (a folder added or
+  // finished indexing); the general questions show until it is known.
+  const [libraryKind, setLibraryKind] = useState<LibraryKind | null>(null);
+  const readySourcesKey = sources.filter(s => s.status === 'ready').map(s => s.id).join('|');
+  const showStarters = messages.length === 0 && indexedCount > 0;
+  useEffect(() => {
+    if (!showStarters) return;
+    let cancelled = false;
+    invoke<unknown>('library_profile')
+      .then(profile => {
+        if (!cancelled) setLibraryKind(readLibraryKind(profile));
+      })
+      .catch(() => {
+        // The index is not open yet or could not be read: keep the general questions.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showStarters, readySourcesKey]);
   // In a workspace chat, answers search only the workspace's sources unless "Search all my
   // library" is on for the next question (it switches off again once that is sent).
   const { byId: workspaceById, openWorkspace } = useWorkspaces();
@@ -1103,7 +1119,7 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
               </div>
             ) : (
               <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2.5" aria-label="Starter questions">
-                {STARTER_PROMPTS.map(prompt => (
+                {starterPrompts(libraryKind).map(prompt => (
                   <li key={prompt}>
                     <button
                       type="button"

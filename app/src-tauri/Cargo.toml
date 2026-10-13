@@ -1,6 +1,6 @@
 [package]
 name = "shodh-rag-app"
-version = "0.0.1"
+version = "0.0.2"
 description = "Shodh-RAG Tauri App with Tree-sitter Intelligence"
 authors = ["Roshera Team"]
 edition = "2021"

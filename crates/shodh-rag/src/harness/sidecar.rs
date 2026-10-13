@@ -36,30 +36,56 @@ const RELEASE_BASE_URL: &str = "https://github.com/can1357/oh-my-pi/releases/dow
 const SHA256SUMS_ASSET: &str = "SHA256SUMS.txt";
 const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 
-/// The reasoning effort every session asks for (omp's `--thinking`).
+/// Whether a session asks the model to reason before it answers (omp's
+/// `--thinking`), from the user's "Think before answering" setting. Read
+/// at launch: a change starts a new session for the next answer.
 ///
-/// `low` is the lowest level that makes every reasoning-capable model stream
-/// its reasoning, which the transcript's Reasoning panel shows:
-/// * `off` sends OpenRouter `reasoning: {enabled: false}`, so no reasoning is
-///   ever streamed (the panel never appeared);
+/// Off by default. `--thinking off` makes omp send OpenRouter `reasoning:
+/// {enabled: false}`, so nothing is streamed and the Reasoning panel stays
+/// hidden. On is `low`, the lowest level that makes every reasoning-capable
+/// model stream its reasoning:
 /// * omp clamps a level to the efforts the model lists, so a model without
 ///   `minimal` gets its lowest effort anyway, while on a model that lists it
 ///   `minimal` may mean almost no reasoning (OpenAI's), so `minimal` would
 ///   not reliably show any;
 /// * a model omp knows cannot reason gets no reasoning parameter at all
 ///   (checked against omp 18.4.10: its `thinkingLevel` is null and the
-///   request carries neither `reasoning` nor `reasoning_effort`), so one
-///   level serves every model.
+///   request carries neither `reasoning` nor `reasoning_effort`).
 ///
 /// Measured on `nvidia/nemotron-3-super-120b-a12b:free` (three one-search
-/// questions, `off` against `low`): reasoning streamed from 0.6 s (850 to
-/// 1150 characters per answer), 200 to 290 more output tokens per answer,
-/// and the first answer word 3 to 18 s later than with `off`.
-pub const THINKING_LEVEL: &str = "low";
+/// questions, off against low): reasoning streamed from 0.6 s (850 to 1150
+/// characters per answer), 200 to 290 more output tokens per answer, and
+/// the first answer word 3 to 18 s later. A local thinking model (Ollama,
+/// LM Studio) reasons only when the setting is on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Thinking {
+    #[default]
+    Off,
+    Low,
+}
+
+impl Thinking {
+    /// The level for the "Think before answering" setting.
+    pub fn from_setting(think_before_answering: bool) -> Self {
+        if think_before_answering {
+            Self::Low
+        } else {
+            Self::Off
+        }
+    }
+
+    /// omp's `--thinking` value.
+    pub fn flag(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Low => "low",
+        }
+    }
+}
 
 /// Launch flags (plan, Global Constraints). Built-in tools, extensions,
 /// skills, rules, LSP and PTY are off; host tools are the only tools.
-pub const BASE_FLAGS: [&str; 12] = [
+pub const BASE_FLAGS: [&str; 10] = [
     "--mode",
     "rpc",
     "--no-ui",
@@ -70,8 +96,6 @@ pub const BASE_FLAGS: [&str; 12] = [
     "--no-lsp",
     "--no-pty",
     "--no-session",
-    "--thinking",
-    THINKING_LEVEL,
 ];
 
 /// Every model provider omp 18.4.10 discovers models from at startup
@@ -464,8 +488,15 @@ pub fn provider_overlay_config(provider: &str) -> Value {
 }
 
 /// Full argument list for one session.
-pub fn launch_args(model_arg: &str, overlay: &Path, system_prompt: &str) -> Vec<String> {
+pub fn launch_args(
+    model_arg: &str,
+    overlay: &Path,
+    system_prompt: &str,
+    thinking: Thinking,
+) -> Vec<String> {
     let mut args: Vec<String> = BASE_FLAGS.iter().map(|s| s.to_string()).collect();
+    args.push("--thinking".to_string());
+    args.push(thinking.flag().to_string());
     args.push(format!("--model={model_arg}"));
     args.push(format!("--config={}", overlay.display()));
     args.push(format!("--system-prompt={system_prompt}"));
@@ -572,6 +603,8 @@ pub struct LaunchSpec {
     pub code: Option<CodeFolder>,
     /// Code mode: the session's host tools (set by `OmpSession::start`).
     pub host_tools: Vec<String>,
+    /// Whether the model reasons before answering (the user's setting).
+    pub thinking: Thinking,
 }
 
 impl LaunchSpec {
@@ -616,6 +649,7 @@ impl LaunchSpec {
                     &self.model.model_arg,
                     &self.layout.overlay,
                     &self.system_prompt,
+                    self.thinking,
                 ),
                 self.layout.session_dir(&self.session_id)?,
             ),
@@ -626,6 +660,7 @@ impl LaunchSpec {
                     &self.layout.code_overlay,
                     &self.layout.guard_hook,
                     &self.system_prompt,
+                    self.thinking,
                 ),
                 folder.root().to_path_buf(),
             ),
@@ -960,17 +995,37 @@ mod tests {
             "openai/gpt-5-mini",
             Path::new("/data/omp/overlay.yml"),
             "Be brief.",
+            Thinking::Off,
         );
-        assert_eq!(&args[..12], &BASE_FLAGS.map(String::from));
-        // Reasoning is asked for, so reasoning models stream it (with `off`
-        // the Reasoning panel never had anything to show).
-        let thinking = args.iter().position(|a| a == "--thinking").unwrap();
-        assert_eq!(args[thinking + 1], "low");
+        assert_eq!(&args[..10], &BASE_FLAGS.map(String::from));
+        assert_eq!(&args[10..12], ["--thinking", "off"]);
         assert!(args.contains(&"--no-tools".to_string()));
         assert!(!args.iter().any(|a| a == "--tools"));
         assert!(args.contains(&"--model=openai/gpt-5-mini".to_string()));
         assert!(args.contains(&"--config=/data/omp/overlay.yml".to_string()));
         assert!(args.contains(&"--system-prompt=Be brief.".to_string()));
+    }
+
+    #[test]
+    fn think_before_answering_maps_to_the_thinking_flag() {
+        // Off by default: no reasoning is requested.
+        assert_eq!(Thinking::default(), Thinking::Off);
+        assert_eq!(Thinking::from_setting(false).flag(), "off");
+        assert_eq!(Thinking::from_setting(true).flag(), "low");
+        let data = tempfile::tempdir().unwrap();
+        let code = tempfile::tempdir().unwrap();
+        for folder in [None, Some(CodeFolder::open(code.path()).unwrap())] {
+            for (setting, flag) in [(false, "off"), (true, "low")] {
+                let launch = LaunchSpec {
+                    thinking: Thinking::from_setting(setting),
+                    ..spec(data.path(), folder.clone())
+                };
+                let (args, _) = launch.command_line().unwrap();
+                let at = args.iter().position(|a| a == "--thinking").unwrap();
+                assert_eq!(args[at + 1], flag, "code: {}", folder.is_some());
+                assert_eq!(args.iter().filter(|a| *a == "--thinking").count(), 1);
+            }
+        }
     }
 
     #[test]
@@ -1033,6 +1088,7 @@ mod tests {
             session_id: "s1".into(),
             code: None,
             host_tools: Vec::new(),
+            thinking: Thinking::Off,
         };
         let text = spec.describe();
         assert!(text.contains("ANTHROPIC_API_KEY"));
@@ -1049,6 +1105,7 @@ mod tests {
             session_id: "s1".into(),
             code,
             host_tools: Vec::new(),
+            thinking: Thinking::default(),
         }
     }
 
@@ -1057,7 +1114,7 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let spec = spec(data.path(), None);
         let (args, cwd) = spec.command_line().unwrap();
-        assert_eq!(&args[..12], &BASE_FLAGS.map(String::from));
+        assert_eq!(&args[..10], &BASE_FLAGS.map(String::from));
         assert!(!args
             .iter()
             .any(|a| a.starts_with("--tools") || a.starts_with("--hook")));

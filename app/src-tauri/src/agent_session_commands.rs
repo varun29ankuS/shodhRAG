@@ -35,7 +35,7 @@ use shodh_rag::harness::tools::{
 use shodh_rag::harness::{
     fetch_omp, resolve_binary_path, select_model_with, stealth_allowed_by_env, AgentEvent,
     AgentHarness, AgentProfile, CodeSession, HarnessError, LaunchSpec, OmpLayout, OmpModel,
-    OmpSession, SessionConfig, OMP_VERSION,
+    OmpSession, SessionConfig, Thinking, OMP_VERSION,
 };
 use shodh_rag::llm::{ApiProvider, LLMMode};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -191,6 +191,10 @@ struct SessionEntry {
     /// The chat's MCP and skill tools (see [`crate::mcp::ChatTools`]); a
     /// change restarts the session.
     tools_fingerprint: u64,
+    /// "Think before answering" as the session was launched with: omp reads
+    /// `--thinking` only at launch, so a change starts a new session for the
+    /// next answer.
+    thinking: Thinking,
     session: Arc<OmpSession>,
     /// Earlier turns have been replayed (or there were none to replay).
     primed: AtomicBool,
@@ -1086,6 +1090,7 @@ pub async fn agent_start(
         return Err(HarnessError::LocalOnlyCloudModel(model.model_arg.clone()).into());
     }
     let fingerprint = model_fingerprint(&model);
+    let thinking = Thinking::from_setting(settings.answers.think_before_answering);
     let app_data_dir = app_data_dir(&app)?;
     let registry = base_registry(&app).await?;
     // Side threads (summaries, refinements) get no MCP servers or skills.
@@ -1122,7 +1127,8 @@ pub async fn agent_start(
                 && e.instructions == instructions
                 && e.code_folder == code_key
                 && e.model_fingerprint == fingerprint
-                && e.tools_fingerprint == tools_fingerprint;
+                && e.tools_fingerprint == tools_fingerprint
+                && e.thinking == thinking;
             session_reuse(
                 e.session.is_closed(),
                 e.session.active_run_id().is_some(),
@@ -1213,6 +1219,7 @@ More tools, from the MCP servers and skills the user connected: {}.             
         session_id: session_id.clone(),
         code: code_folder,
         host_tools: Vec::new(),
+        thinking,
     };
 
     let audit_conversation = parent_conversation_id
@@ -1297,6 +1304,7 @@ More tools, from the MCP servers and skills the user connected: {}.             
             code_folder: code_key,
             model_fingerprint: fingerprint,
             tools_fingerprint,
+            thinking,
             session,
             primed: AtomicBool::new(false),
             last_used_ms,

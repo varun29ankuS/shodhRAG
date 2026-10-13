@@ -1053,14 +1053,15 @@ mod tests {
         events.iter().filter(|e| e.run_id() == run).collect()
     }
 
-    /// A Research session launched with `--thinking low`, recorded from omp
+    /// A Research session launched with `--thinking low` (the "Think before
+    /// answering" setting on), recorded from omp
     /// 18.4.10 against `nvidia/nemotron-3-super-120b-a12b:free` on OpenRouter
     /// (synthetic question and passages; omp's command list left out).
     const THINKING_FIXTURE: &str = include_str!("fixtures/omp-thinking-low-events.jsonl");
 
     #[test]
     fn reasoning_streamed_at_the_launch_level_reaches_the_transcript() {
-        // The session ran at the level the sidecar launches with.
+        // The session ran at the level the setting launches with.
         let state: Value = THINKING_FIXTURE
             .lines()
             .map(|l| serde_json::from_str::<Value>(l).unwrap())
@@ -1068,7 +1069,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             state["data"]["thinkingLevel"],
-            crate::harness::sidecar::THINKING_LEVEL
+            crate::harness::sidecar::Thinking::from_setting(true).flag()
         );
         let streamed: String = THINKING_FIXTURE
             .lines()

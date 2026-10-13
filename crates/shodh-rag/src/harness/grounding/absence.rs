@@ -21,7 +21,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use super::claims::{inherit_citations, split_claims};
+use super::claims::split_claims;
 use super::verify::AnswerMessage;
 use crate::harness::events::{ClaimCheck, ClaimOutcome};
 
@@ -209,10 +209,13 @@ pub fn absence_domain(claim: &str) -> Option<&'static Domain> {
 
 /// Flag the claims of `messages` that say the user has none of some data
 /// no successful tool call of the run read (`tools_ok`). A claim that cites
-/// a passage is about that passage ("There are no tasks in GLUE where BM25
-/// wins [3]") and is left to the passage checks. A flagged claim that was
-/// already checked (an uncited statement) keeps its place and gets the new
-/// outcome; one that was not is added in reading order.
+/// a passage itself is about that passage ("There are no tasks in GLUE where
+/// BM25 wins [3]") and is left to the passage checks. Citations a claim only
+/// inherits from its neighbours (`inherit_citations`) do not count: "The
+/// lease runs to 2027 [1]. You have no events about it." says nothing about
+/// passage 1 in its second sentence. A flagged claim that was already
+/// checked keeps its place and gets the new outcome; one that was not is
+/// added in reading order.
 pub fn flag_unverified_absence(
     messages: &[AnswerMessage],
     tools_ok: &HashSet<String>,
@@ -221,9 +224,7 @@ pub fn flag_unverified_absence(
     let mut remaining = checks;
     let mut out = Vec::with_capacity(remaining.len());
     for message in messages {
-        let mut claims = split_claims(&message.text);
-        inherit_citations(&message.text, &mut claims);
-        for claim in claims {
+        for claim in split_claims(&message.text) {
             let existing = remaining
                 .iter()
                 .position(|c| c.message_id == message.id && c.anchor == claim.anchor)

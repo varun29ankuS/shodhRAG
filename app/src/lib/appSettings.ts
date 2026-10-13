@@ -92,17 +92,22 @@ export function parseMemoryPrefs(value: unknown): MemoryPrefs | null {
 export interface AnswerPrefs {
   /** When the grounding check flags statements, ask the model once to re-ground or remove them. */
   autoRepair: boolean;
+  /** Ask the model to reason before answering (slower; the reasoning is shown). Takes effect from the next answer. */
+  thinkBeforeAnswering: boolean;
 }
 
-export const DEFAULT_ANSWER_PREFS: AnswerPrefs = { autoRepair: true };
+export const DEFAULT_ANSWER_PREFS: AnswerPrefs = { autoRepair: true, thinkBeforeAnswering: false };
 
 /** Parse the answers section; settings written before it existed get the defaults. */
 export function parseAnswerPrefs(value: unknown): AnswerPrefs | null {
   if (value === undefined) return DEFAULT_ANSWER_PREFS;
   if (!isRecord(value)) return null;
-  const autoRepair = value.autoRepair === undefined ? true : value.autoRepair;
+  const autoRepair = value.autoRepair === undefined ? DEFAULT_ANSWER_PREFS.autoRepair : value.autoRepair;
   if (typeof autoRepair !== 'boolean') return null;
-  return { autoRepair };
+  const thinkBeforeAnswering =
+    value.thinkBeforeAnswering === undefined ? DEFAULT_ANSWER_PREFS.thinkBeforeAnswering : value.thinkBeforeAnswering;
+  if (typeof thinkBeforeAnswering !== 'boolean') return null;
+  return { autoRepair, thinkBeforeAnswering };
 }
 
 export interface AppSettings {

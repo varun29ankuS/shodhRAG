@@ -138,7 +138,7 @@ test('the panel opens only when the reader opens it, and stays open across unmou
 
 /**
  * omp frames recorded from a Research session launched with `--thinking low`
- * (the sidecar's level) against Nemotron on OpenRouter. The Rust normaliser
+ * ("Think before answering" on) against Nemotron on OpenRouter. The Rust normaliser
  * turns each `thinking_delta` into a `thinking` event with the frame's
  * `messageId` and `delta` (checked in omp.rs against the same file); this
  * replays that stream through the reducer the transcript uses.
@@ -173,7 +173,7 @@ function recordedEvents(): AgentEvent[] {
 
 test('reasoning recorded at the launch level is stored and gets the Reasoning panel', () => {
   const state = getStateFrame();
-  assert.equal(state.data.thinkingLevel, 'low', 'recorded at the level the sidecar launches with');
+  assert.equal(state.data.thinkingLevel, 'low', 'recorded at the level the setting launches with');
   const streamed = RECORDED.filter(f => f.assistantMessageEvent?.type === 'thinking_delta')
     .map(f => f.assistantMessageEvent.delta as string)
     .join('');

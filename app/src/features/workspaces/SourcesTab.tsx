@@ -481,7 +481,8 @@ export function SourcesTab({
 
       <div className="flex flex-col gap-2">
         <button type="button" className={cn(OUTLINE_BUTTON, 'self-start')} aria-expanded={adding} onClick={() => setAdding(a => !a)}>
-          <Plus className="w-3.5 h-3.5" aria-hidden="true" /> {adding ? 'Close' : 'Add sources'}
+          {adding ? <X className="w-3.5 h-3.5" aria-hidden="true" /> : <Plus className="w-3.5 h-3.5" aria-hidden="true" />}
+          {adding ? 'Done adding sources' : 'Add sources'}
         </button>
         {adding && <AddSources workspace={workspace} library={library} onAdded={onChanged} />}
       </div>

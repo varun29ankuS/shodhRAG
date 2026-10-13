@@ -881,8 +881,10 @@ mod tests {
                 "events.ts is missing variant {tag}"
             );
             for key in keys {
+                // Optional in TypeScript (`key?:`) when older saved runs lack it.
                 assert!(
-                    TS_CONTRACT.contains(&format!("{key}:")),
+                    TS_CONTRACT.contains(&format!("{key}:"))
+                        || TS_CONTRACT.contains(&format!("{key}?:")),
                     "events.ts is missing key {key} (variant {tag})"
                 );
             }

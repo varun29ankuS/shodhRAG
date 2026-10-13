@@ -1663,7 +1663,7 @@ mod tests {
         let mut events = Vec::new();
         for delta in [
             "Based on the documents I've found, I can now provide ",
-            "a comprehensive answer.\\n\\n",
+            "a comprehensive answer.\n\n",
             "HNSW keeps the graph connected [28].",
         ] {
             events.extend(normalise(&text_frame("m2", delta), &mut state, 2));

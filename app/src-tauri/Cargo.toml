@@ -1,6 +1,6 @@
 [package]
 name = "shodh-rag-app"
-version = "0.1.0"
+version = "0.0.1"
 description = "Shodh-RAG Tauri App with Tree-sitter Intelligence"
 authors = ["Roshera Team"]
 edition = "2021"
@@ -36,7 +36,9 @@ tauri-plugin-autostart = "~2.5.1"
 # One Shodh per user: a second launch (e.g. while hidden in the tray) shows the
 # running window instead of starting another process on the same data
 tauri-plugin-single-instance = "=2.3.6"
-# tauri-plugin-updater = "2.0"  # Disabled until update server is configured
+# Signed in-app updates from GitHub Releases (updater.rs). 2.9 is the last
+# release that supports tauri 2.9; later ones need tauri 2.10+.
+tauri-plugin-updater = "~2.9.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

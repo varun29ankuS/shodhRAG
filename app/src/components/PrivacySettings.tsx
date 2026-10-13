@@ -3,9 +3,17 @@ import { cn } from '../lib/utils';
 import { notify } from '../lib/notify';
 import { getAppSettings, onAppSettingsChanged, setPolicy } from '../lib/appSettings';
 import type { Policy } from '../lib/appSettings';
+import { checkForUpdate, getUpdateStatus, setUpdateChecks } from '../lib/updates';
+import type { UpdateStatus } from '../lib/updates';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
+
+const BUTTON = cn(
+  'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-[12.5px] text-shodh-text',
+  'hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro',
+  FOCUS_RING,
+);
 
 interface SwitchRowProps {
   label: string;
@@ -104,6 +112,85 @@ export default function PrivacySettings() {
         disabled={saving || policy.localOnly}
         onChange={webAccess => void change({ ...policy, webAccess })}
       />
+      <UpdateSettings />
+    </div>
+  );
+}
+
+/**
+ * Whether Shodh asks the release server for a newer version of itself. The
+ * check sends nothing about the user or their documents; an update found is
+ * shown with an Install button and installed only when the user chooses.
+ */
+function UpdateSettings() {
+  const [status, setStatus] = useState<UpdateStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () =>
+      getUpdateStatus()
+        .then(next => {
+          if (!cancelled) setStatus(next);
+        })
+        .catch(err => notify.error('Update settings could not be loaded', { description: String(err) }));
+    void refresh();
+    // Local-only mode changes whether checks may run.
+    const unsubscribe = onAppSettingsChanged(() => void refresh());
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
+  if (!status) return null;
+
+  const toggle = async (enabled: boolean) => {
+    setBusy(true);
+    try {
+      setStatus(await setUpdateChecks(enabled));
+    } catch (err) {
+      notify.error('The update setting was not saved', { description: String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const checkNow = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const update = await checkForUpdate();
+      setResult(update ? `Version ${update.version} is available.` : 'Shodh is up to date.');
+    } catch (err) {
+      setResult(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const blocked = status.blockedReason !== null;
+  return (
+    <div className="flex flex-col gap-3 pt-5 border-t border-shodh-border">
+      <SwitchRow
+        label="Check for updates"
+        description="A few minutes after start and then once a day, Shodh asks GitHub whether a newer version exists. Nothing about you or your documents is sent, and nothing is installed until you choose to. Never in Local-only mode."
+        checked={status.checkAutomatically && !blocked}
+        disabled={busy || blocked}
+        onChange={enabled => void toggle(enabled)}
+      />
+      <div className="flex flex-wrap items-center gap-3">
+        <button type="button" className={BUTTON} onClick={() => void checkNow()} disabled={busy || blocked}>
+          Check now
+        </button>
+        <span className="text-[12.5px] text-shodh-text-muted">Version {status.currentVersion}</span>
+      </div>
+      {blocked ? (
+        <p className="m-0 text-[12.5px] text-shodh-text-muted">{status.blockedReason}</p>
+      ) : result ? (
+        <p className="m-0 text-[12.5px] text-shodh-text-muted" role="status">{result}</p>
+      ) : null}
     </div>
   );
 }

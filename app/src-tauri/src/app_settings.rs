@@ -243,6 +243,24 @@ impl Default for AnswerPrefs {
     }
 }
 
+/// Update checks (see [`crate::updater`]). User-only: whether the app
+/// contacts the update server is the user's privacy decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct UpdatePrefs {
+    /// Ask the release server for a newer version shortly after start and
+    /// once a day while the app runs. Never in Local-only mode.
+    pub check_automatically: bool,
+}
+
+impl Default for UpdatePrefs {
+    fn default() -> Self {
+        Self {
+            check_automatically: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
@@ -251,6 +269,7 @@ pub struct AppSettings {
     pub background: BackgroundPrefs,
     pub memory: MemoryPrefs,
     pub answers: AnswerPrefs,
+    pub updates: UpdatePrefs,
     /// The model picker: chosen model, fallback, recent and starred models.
     /// User-only (no keys; those stay in the OS keychain).
     pub models: ModelPrefs,
@@ -296,7 +315,7 @@ pub const AGENT_WRITABLE: [SettingKey; 2] = [SettingKey::Theme, SettingKey::Sear
 /// these by name (in addition to its schema only listing [`AGENT_WRITABLE`]),
 /// so a prompt-injected request gets a clear refusal rather than a
 /// best-effort match.
-pub const AGENT_DENIED: [(&str, &str); 22] = [
+pub const AGENT_DENIED: [(&str, &str); 23] = [
     ("api_keys", "API keys are secrets; a manipulated agent could leak or replace them."),
     ("provider", "Switching the model provider changes who receives the user's documents."),
     ("model", "Switching the model changes who receives the user's documents and what it costs."),
@@ -319,6 +338,7 @@ pub const AGENT_DENIED: [(&str, &str); 22] = [
     ("models", "The model picker's settings (chosen and fallback models, stealth consent) decide who receives the user's documents; only the user may change them."),
     ("fallback_model", "The fallback model receives the user's documents when the main one fails; choosing who receives them is the user's decision."),
     ("always_fall_back", "Switching models without asking changes who receives the user's documents; only the user may allow that."),
+    ("check_for_updates", "Whether Shodh contacts the update server, and which version of itself it runs, is the user's decision."),
 ];
 
 /// Why `key` is withheld from the agent, if it is.
@@ -611,6 +631,21 @@ pub async fn set_answer_preferences(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_checks_default_on_and_are_user_only() {
+        assert!(AppSettings::default().updates.check_automatically);
+        let old: AppSettings = serde_json::from_str(r#"{"preferences":{"theme":"dark"}}"#).unwrap();
+        assert!(
+            old.updates.check_automatically,
+            "settings from before the field get the default"
+        );
+        let off: AppSettings =
+            serde_json::from_str(r#"{"updates":{"checkAutomatically":false}}"#).unwrap();
+        assert!(!off.updates.check_automatically);
+        assert!(denied_reason("check_for_updates").is_some());
+        assert!(SettingKey::parse("check_for_updates").is_none());
+    }
 
     #[test]
     fn answer_preferences_default_to_auto_repair_and_are_user_only() {

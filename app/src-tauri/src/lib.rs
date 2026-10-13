@@ -29,6 +29,7 @@ mod source_viewer_commands;
 mod space_manager;
 mod storage_commands;
 mod table_model_commands;
+mod updater;
 mod visual_commands;
 mod workspace_commands;
 
@@ -161,10 +162,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            Some(vec![background::BACKGROUND_FLAG]),
-        ))
+        .plugin(
+            // macOS: a launch agent (the builder's default launcher).
+            tauri_plugin_autostart::Builder::new()
+                .arg(background::BACKGROUND_FLAG)
+                .app_name(background::AUTOSTART_ENTRY)
+                .build(),
+        )
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(background::on_window_event)
         .setup(|app| {
             // The main window is created here rather than from the config, so
@@ -458,6 +463,11 @@ pub fn run() {
             agent_session_commands::start_idle_reaper(app.handle().clone());
             pdf_export::manage(app.handle());
 
+            // Quiet update checks (off in Local-only mode or when the user
+            // turns them off; none without an update key).
+            app.manage(updater::UpdaterState::default());
+            updater::spawn_background_checks(app.handle().clone());
+
             // MCP servers and skills for the agent (Settings → Tools & connections).
             app.manage(mcp_commands::McpState(mcp::McpManager::new(
                 app_data_dir.clone(),
@@ -623,6 +633,11 @@ pub fn run() {
             app_settings::set_app_policy,
             app_settings::set_memory_preferences,
             app_settings::set_answer_preferences,
+            // Updates (Settings → Privacy)
+            updater::get_update_status,
+            updater::set_update_checks,
+            updater::check_for_update,
+            updater::install_update,
             // Long-term memory (Settings → Memory)
             memory_commands::memory_list,
             memory_commands::memory_history,

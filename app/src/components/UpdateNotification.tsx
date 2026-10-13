@@ -60,7 +60,7 @@ export function UpdateNotification() {
 
           {/* Body */}
           <div className="p-4">
-            {updateInfo.body && (
+            {updateInfo.notes && (
               <div className="mb-4">
                 <p className="text-xs font-medium mb-2" style={{ color: colors.textSecondary }}>
                   What's new:
@@ -72,7 +72,7 @@ export function UpdateNotification() {
                     color: colors.text,
                   }}
                 >
-                  {updateInfo.body.split('\n').map((line, idx) => (
+                  {updateInfo.notes.split('\n').map((line, idx) => (
                     <p key={idx} className="mb-1">
                       {line}
                     </p>
@@ -88,9 +88,11 @@ export function UpdateNotification() {
                   <span className="text-xs" style={{ color: colors.textMuted }}>
                     Downloading...
                   </span>
-                  <span className="text-xs font-medium" style={{ color: colors.primary }}>
-                    {Math.round(downloadProgress)}%
-                  </span>
+                  {downloadProgress !== null && (
+                    <span className="text-xs font-medium" style={{ color: colors.primary }}>
+                      {downloadProgress}%
+                    </span>
+                  )}
                 </div>
                 <div
                   className="h-2 rounded-full overflow-hidden"
@@ -100,7 +102,7 @@ export function UpdateNotification() {
                     className="h-full"
                     style={{ background: colors.primary }}
                     initial={{ width: 0 }}
-                    animate={{ width: `${downloadProgress}%` }}
+                    animate={{ width: `${downloadProgress ?? 0}%` }}
                     transition={{ duration: 0.3 }}
                   />
                 </div>
@@ -149,32 +151,5 @@ export function UpdateNotification() {
         </div>
       </motion.div>
     </AnimatePresence>
-  );
-}
-
-interface ManualUpdateCheckProps {
-  onCheck?: () => void;
-}
-
-export function ManualUpdateCheck({ onCheck }: ManualUpdateCheckProps) {
-  const { colors } = useTheme();
-  const { checking, checkForUpdates } = useUpdater();
-
-  const handleCheck = async () => {
-    await checkForUpdates(false);
-    onCheck?.();
-  };
-
-  return (
-    <Button
-      variant="ghost"
-      size="sm"
-      onClick={handleCheck}
-      disabled={checking}
-      className="w-full"
-    >
-      <RefreshCw className={`w-4 h-4 mr-2 ${checking ? 'animate-spin' : ''}`} />
-      {checking ? 'Checking for updates...' : 'Check for Updates'}
-    </Button>
   );
 }

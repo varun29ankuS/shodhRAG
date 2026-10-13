@@ -1,7 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "shodh-rag-app",
-  "version": "0.1.0",
+  "productName": "Shodh",
+  "mainBinaryName": "Shodh",
+  "version": "0.0.1",
   "identifier": "com.shodh.rag-app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -14,7 +15,7 @@
       {
         "label": "main",
         "create": false,
-        "title": "Shodh-RAG",
+        "title": "Shodh",
         "width": 1400,
         "height": 900,
         "resizable": true,
@@ -64,6 +65,21 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "minimumSystemVersion": "13.3",
+      "signingIdentity": "-"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJFQzJGNkY3NzE0ODBFQ0QKUldUTkRraHg5L2JDdnFNWlR6UldHYjRNOEFaamlmYzhzdHBZdFpPNWxuRXlUV0piWE9PeENCaWUK",
+      "endpoints": [
+        "https://github.com/varun29ankuS/shodhRAG/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

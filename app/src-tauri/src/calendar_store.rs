@@ -81,6 +81,10 @@ pub struct TodoItem {
     pub subtasks: Vec<SubTask>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// The workspace the task belongs to (its project). Tasks written before
+    /// workspaces held tasks have none; deleting a workspace clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     #[serde(default = "default_source")]
     pub source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -245,7 +249,13 @@ pub fn check_reminder(value: &str) -> CalendarResult<String> {
 /// The optional fields of a task an update may clear. Absent from an
 /// update means "keep"; naming a field in `clear` is the only way to empty
 /// it, so a client that omits a value can never erase it by accident.
-pub const TASK_CLEARABLE: [&str; 4] = ["due_date", "project", "description", "reminder"];
+pub const TASK_CLEARABLE: [&str; 5] = [
+    "due_date",
+    "project",
+    "description",
+    "reminder",
+    "workspace_id",
+];
 
 /// The optional fields of an event an update may clear.
 pub const EVENT_CLEARABLE: [&str; 3] = ["description", "end_time", "location"];
@@ -385,6 +395,8 @@ pub struct NewTask {
     pub priority: Option<String>,
     pub tags: Option<Vec<String>>,
     pub project: Option<String>,
+    /// Id of the workspace the task belongs to. Callers check that it exists.
+    pub workspace_id: Option<String>,
     pub source: Option<String>,
     pub source_ref: Option<String>,
     pub reminder: Option<String>,
@@ -409,6 +421,8 @@ pub struct TaskPatch {
     pub status: Option<String>,
     pub tags: Option<Vec<String>>,
     pub project: Option<Option<String>>,
+    /// The workspace the task belongs to; callers check that it exists.
+    pub workspace_id: Option<Option<String>>,
     pub reminder: Option<Option<String>>,
     /// Replaces the subtask list.
     pub subtasks: Option<Vec<SubtaskSpec>>,
@@ -427,6 +441,7 @@ impl TaskPatch {
                 "due_date" => clear_slot(&mut self.due_date, name)?,
                 "project" => clear_slot(&mut self.project, name)?,
                 "reminder" => clear_slot(&mut self.reminder, name)?,
+                "workspace_id" => clear_slot(&mut self.workspace_id, name)?,
                 _ => clear_text(&mut self.description, name)?,
             }
         }
@@ -557,6 +572,9 @@ pub fn apply_task_patch(
     if let Some(v) = &patch.project {
         task.project = optional_text(v.clone());
     }
+    if let Some(v) = &patch.workspace_id {
+        task.workspace_id = optional_text(v.clone());
+    }
     if let Some(v) = reminder {
         if v != task.reminder {
             // A new or removed reminder starts over: not yet shown, not snoozed.
@@ -586,6 +604,11 @@ pub fn apply_task_patch(
     diff("status", json!(before.status), json!(task.status));
     diff("tags", json!(before.tags), json!(task.tags));
     diff("project", json!(before.project), json!(task.project));
+    diff(
+        "workspace",
+        json!(before.workspace_id),
+        json!(task.workspace_id),
+    );
     diff("reminder", json!(before.reminder), json!(task.reminder));
     diff(
         "subtasks",
@@ -650,6 +673,7 @@ impl CalendarData {
             tags: new.tags.unwrap_or_default(),
             subtasks: Vec::new(),
             project: optional_text(new.project),
+            workspace_id: optional_text(new.workspace_id),
             source: new.source.unwrap_or_else(default_source),
             source_ref: new.source_ref,
             created_at: stamp.clone(),
@@ -673,6 +697,21 @@ impl CalendarData {
         let before = task.clone();
         let changes = apply_task_patch(task, patch)?;
         Ok((before, task.clone(), changes))
+    }
+
+    /// Take the tasks of a deleted workspace out of it. The tasks are kept,
+    /// with no workspace; returns them as changed.
+    pub fn detach_workspace(&mut self, workspace_id: &str) -> Vec<TodoItem> {
+        let stamp = now();
+        self.tasks
+            .iter_mut()
+            .filter(|t| t.workspace_id.as_deref() == Some(workspace_id))
+            .map(|t| {
+                t.workspace_id = None;
+                t.updated_at = stamp.clone();
+                t.clone()
+            })
+            .collect()
     }
 
     pub fn delete_task(&mut self, id: &str) -> CalendarResult<TodoItem> {
@@ -949,6 +988,8 @@ pub struct TaskFilter {
     pub due_to: Option<NaiveDate>,
     /// Case-insensitive substring of title, notes, tags or project.
     pub text: Option<String>,
+    /// Only the tasks of this workspace.
+    pub workspace_id: Option<String>,
 }
 
 fn contains_ci(haystack: &str, needle_lower: &str) -> bool {
@@ -963,6 +1004,12 @@ pub fn list_tasks<'a>(data: &'a CalendarData, filter: &TaskFilter) -> Vec<&'a To
         .tasks
         .iter()
         .filter(|t| filter.status.as_deref().is_none_or(|s| t.status == s))
+        .filter(|t| {
+            filter
+                .workspace_id
+                .as_deref()
+                .is_none_or(|w| t.workspace_id.as_deref() == Some(w))
+        })
         .filter(|t| {
             if filter.due_from.is_none() && filter.due_to.is_none() {
                 return true;
@@ -1421,6 +1468,140 @@ mod tests {
         };
         let (_, after, _) = store.update(|d| d.patch_task(&t.id, &blank)).unwrap();
         assert_eq!(after.project, None);
+    }
+
+    fn task_in(store: &CalendarStore, title: &str, workspace: Option<&str>) -> TodoItem {
+        store
+            .update(|d| {
+                d.insert_task(NewTask {
+                    title: title.into(),
+                    workspace_id: workspace.map(str::to_string),
+                    ..NewTask::default()
+                })
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn tasks_written_before_workspaces_load_without_one() {
+        let old = r#"{"tasks": [{"id": "t1", "title": "Pay rent", "project": "Home",
+                       "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"}]}"#;
+        let data: CalendarData = serde_json::from_str(old).unwrap();
+        let task = data.task("t1").unwrap();
+        assert_eq!(task.workspace_id, None);
+        assert_eq!(
+            task.project.as_deref(),
+            Some("Home"),
+            "the project text is kept"
+        );
+        let text = serde_json::to_string(&data).unwrap();
+        assert!(!text.contains("workspaceId"), "absent stays absent");
+
+        let (dir, store) = store();
+        let t = task_in(&store, "Draft", Some("ws-1"));
+        let raw = std::fs::read_to_string(dir.path().join(CALENDAR_FILE)).unwrap();
+        assert!(raw.contains(r#""workspaceId": "ws-1""#), "{raw}");
+        assert_eq!(store.load().unwrap().task(&t.id).unwrap(), &t);
+    }
+
+    #[test]
+    fn task_lists_filter_by_workspace() {
+        let (_dir, store) = store();
+        let a = task_in(&store, "Read paper", Some("ws-1"));
+        let b = task_in(&store, "Write review", Some("ws-2"));
+        let c = task_in(&store, "Loose end", None);
+        let data = store.load().unwrap();
+        let ids = |workspace: Option<&str>| -> Vec<String> {
+            let filter = TaskFilter {
+                workspace_id: workspace.map(str::to_string),
+                ..TaskFilter::default()
+            };
+            let mut ids: Vec<String> = list_tasks(&data, &filter)
+                .iter()
+                .map(|t| t.id.clone())
+                .collect();
+            ids.sort();
+            ids
+        };
+        assert_eq!(ids(Some("ws-1")), vec![a.id.clone()]);
+        assert_eq!(ids(Some("ws-2")), vec![b.id.clone()]);
+        assert!(ids(Some("ws-3")).is_empty());
+        let mut all = vec![a.id, b.id, c.id];
+        all.sort();
+        assert_eq!(ids(None), all);
+    }
+
+    #[test]
+    fn workspaces_can_be_set_moved_and_cleared() {
+        let (_dir, store) = store();
+        let t = store
+            .update(|d| {
+                d.insert_task(NewTask {
+                    title: "Read paper".into(),
+                    description: Some("Section 3".into()),
+                    project: Some("Thesis".into()),
+                    workspace_id: Some("ws-1".into()),
+                    ..NewTask::default()
+                })
+            })
+            .unwrap();
+        let moved = TaskPatch {
+            workspace_id: Some(Some("ws-2".into())),
+            ..TaskPatch::default()
+        };
+        let (_, after, changes) = store.update(|d| d.patch_task(&t.id, &moved)).unwrap();
+        assert_eq!(after.workspace_id.as_deref(), Some("ws-2"));
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].field, "workspace");
+        assert_eq!(changes[0].before, json!("ws-1"));
+        assert_eq!(changes[0].after, json!("ws-2"));
+
+        let both = TaskPatch {
+            workspace_id: Some(Some("ws-3".into())),
+            ..TaskPatch::default()
+        }
+        .clearing(&["workspace_id".into()]);
+        assert!(both.is_err(), "set and cleared at once");
+
+        let clear = TaskPatch::default()
+            .clearing(&["workspace_id".into()])
+            .unwrap();
+        let (_, cleared, changes) = store.update(|d| d.patch_task(&t.id, &clear)).unwrap();
+        assert_eq!(cleared.workspace_id, None);
+        assert_eq!(cleared.description, "Section 3", "the notes are untouched");
+        assert_eq!(cleared.project.as_deref(), Some("Thesis"));
+        let fields: Vec<&str> = changes.iter().map(|c| c.field).collect();
+        assert_eq!(fields, vec!["workspace"]);
+        assert_eq!(
+            store.load().unwrap().task(&t.id).unwrap().workspace_id,
+            None
+        );
+    }
+
+    #[test]
+    fn deleting_a_workspace_detaches_its_tasks_and_keeps_them() {
+        let (_dir, store) = store();
+        let a = task_in(&store, "Read paper", Some("ws-1"));
+        let b = task_in(&store, "Cite it", Some("ws-1"));
+        let other = task_in(&store, "Other", Some("ws-2"));
+        let loose = task_in(&store, "Loose", None);
+        let detached = store.update(|d| Ok(d.detach_workspace("ws-1"))).unwrap();
+        let mut ids: Vec<&str> = detached.iter().map(|t| t.id.as_str()).collect();
+        ids.sort_unstable();
+        let mut expected = vec![a.id.as_str(), b.id.as_str()];
+        expected.sort_unstable();
+        assert_eq!(ids, expected);
+        assert!(detached.iter().all(|t| t.workspace_id.is_none()));
+
+        let data = store.load().unwrap();
+        assert_eq!(data.tasks.len(), 4, "no task is deleted");
+        assert_eq!(data.task(&a.id).unwrap().workspace_id, None);
+        assert_eq!(data.task(&a.id).unwrap().title, "Read paper");
+        assert_eq!(data.task(&b.id).unwrap().workspace_id, None);
+        assert_eq!(data.task(&other.id).unwrap(), &other);
+        assert_eq!(data.task(&loose.id).unwrap(), &loose);
+        let again = store.update(|d| Ok(d.detach_workspace("ws-1"))).unwrap();
+        assert!(again.is_empty());
     }
 
     #[test]

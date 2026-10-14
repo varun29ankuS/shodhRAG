@@ -35,7 +35,7 @@ function reqString(value: unknown): string | null {
 }
 
 /** Tabs of a workspace page a target may open. */
-const WORKSPACE_TABS: readonly string[] = ['overview', 'sources', 'chats', 'memory', 'visuals', 'results'];
+const WORKSPACE_TABS: readonly string[] = ['overview', 'sources', 'chats', 'tasks', 'memory', 'visuals', 'results'];
 
 /** A valid target, or null for anything malformed or unknown. */
 export function parseTarget(value: unknown): NavigationTarget | null {

@@ -31,6 +31,8 @@ export interface NewTaskInput {
   dueDate?: string | null;
   priority?: string;
   project?: string | null;
+  /** The workspace the task belongs to. */
+  workspaceId?: string | null;
 }
 
 export interface NewEventInput {
@@ -119,8 +121,12 @@ interface PendingDelete {
  * listener, optimistic mutations with rollback, delete-with-undo, and which
  * detail sheet is open. Mounted above the List/Calendar switch so a
  * pending undo survives switching layouts.
+ *
+ * A workspace's task board mounts its own store with `followAgent` off: only
+ * the Tasks view applies the agent's `show_calendar` requests, so the board
+ * never takes one meant for it.
  */
-export function TasksStoreProvider({ children }: { children: React.ReactNode }) {
+export function TasksStoreProvider({ children, followAgent = true }: { children: React.ReactNode; followAgent?: boolean }) {
   const [state, dispatch] = useReducer(storeReducer, initialStore);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -196,6 +202,7 @@ export function TasksStoreProvider({ children }: { children: React.ReactNode }) 
     if (requested.dueDate !== undefined && !requested.dueDate) requested.dueDate = null;
     if (requested.reminder !== undefined && !requested.reminder) requested.reminder = null;
     if (requested.project !== undefined) requested.project = requested.project?.trim() || null;
+    if (requested.workspaceId !== undefined) requested.workspaceId = requested.workspaceId || null;
     if (requested.title !== undefined && !requested.title.trim()) delete requested.title;
     const changes = changedFields(current, requested as Partial<TodoItem>) as TaskPatch;
     if (changes.dueDate && sameMoment(changes.dueDate, current.dueDate)) delete changes.dueDate;
@@ -218,6 +225,7 @@ export function TasksStoreProvider({ children }: { children: React.ReactNode }) 
     if (input.dueDate) args.dueDate = input.dueDate;
     if (input.priority) args.priority = input.priority;
     if (input.project?.trim()) args.project = input.project.trim();
+    if (input.workspaceId) args.workspaceId = input.workspaceId;
     try {
       const task = await invoke<TodoItem>('create_task', args);
       dispatch({ type: 'insertTask', task });
@@ -411,8 +419,11 @@ export function TasksStoreProvider({ children }: { children: React.ReactNode }) 
 
   // The agent pointed at a day, task or event. Reload first: the agent
   // usually just wrote the record, and a sheet opened for an id the list
-  // does not have yet would be closed as deleted.
+  // does not have yet would be closed as deleted. A store that does not
+  // follow the agent neither applies nor consumes the request, which stays
+  // pending for the Tasks view.
   useNavigationTarget('calendar', target => {
+    if (!followAgent) return;
     const seq = ++focusSeq.current;
     void refresh().then(() => {
       if (seq !== focusSeq.current) return;
@@ -420,7 +431,7 @@ export function TasksStoreProvider({ children }: { children: React.ReactNode }) 
       if (target.taskId) setDetail({ kind: 'task', id: target.taskId });
       else if (target.eventId) setDetail({ kind: 'event', id: target.eventId });
     });
-  });
+  }, { consume: followAgent });
 
   const detailTask = detail?.kind === 'task' ? tasks.find(t => t.id === detail.id) ?? null : null;
   const detailEvent = detail?.kind === 'event' ? events.find(e => e.id === detail.id) ?? null : null;

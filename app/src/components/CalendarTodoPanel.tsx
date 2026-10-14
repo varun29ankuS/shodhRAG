@@ -7,11 +7,13 @@ import { cn } from '../lib/utils';
 import { dayKey, monthGrid } from '../features/tasks/calendarGrid';
 import { fromInputs, isOverdue, storedDayKey, storedTime } from '../features/tasks/dueDate';
 import { FOCUS_RING } from '../features/tasks/fields';
-import { DueMenu, PriorityMenu } from '../features/tasks/QuickMenus';
+import { workspaceChoices } from '../features/tasks/board';
+import { DueMenu, PriorityMenu, WorkspaceMenu } from '../features/tasks/QuickMenus';
 import { ReminderBadge } from '../features/tasks/ReminderField';
 import { useTasksStore } from '../features/tasks/TasksStore';
 import { isDone, PRIORITIES, PRIORITY_LABELS } from '../features/tasks/types';
 import type { CalendarEvent, TodoItem } from '../features/tasks/types';
+import { useWorkspaces } from '../features/workspaces/WorkspaceContext';
 
 type FilterTab = 'all' | 'pending' | 'completed';
 
@@ -138,6 +140,8 @@ function TaskRow({
   onMove: (to: 'prev' | 'next' | 'first' | 'last') => void;
 }) {
   const { updateTask, openTask } = useTasksStore();
+  const { allWorkspaces } = useWorkspaces();
+  const workspaceOptions = useMemo(() => workspaceChoices(allWorkspaces, task.workspaceId), [allWorkspaces, task.workspaceId]);
   const done = isDone(task);
   const overdue = !done && isOverdue(task.dueDate);
   const subDone = task.subtasks.filter(s => s.completed).length;
@@ -275,6 +279,17 @@ function TaskRow({
               tabIndex={inner}
               onChange={priority => void updateTask(task.id, { priority })}
             />
+            {(workspaceOptions.length > 0 || task.workspaceId) && (
+              <WorkspaceMenu
+                workspaceId={task.workspaceId}
+                workspaces={workspaceOptions}
+                taskTitle={task.title}
+                tabIndex={inner}
+                // An unfiled task offers the menu on hover or focus only, to keep rows quiet.
+                className={task.workspaceId ? undefined : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100'}
+                onChange={workspaceId => void updateTask(task.id, { workspaceId })}
+              />
+            )}
             {task.project && (
               <span className="h-6 px-1.5 inline-flex items-center gap-1 rounded-md text-[11.5px] text-shodh-text-muted">
                 <FolderOpen className="w-3 h-3" aria-hidden="true" />

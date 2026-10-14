@@ -130,6 +130,11 @@ test('workspace targets carry the workspace and a known tab', () => {
     workspaceId: 'ws-1',
     tab: 'sources',
   });
+  assert.deepEqual(parseTarget({ kind: 'workspace', workspaceId: 'ws-1', tab: 'tasks' }), {
+    kind: 'workspace',
+    workspaceId: 'ws-1',
+    tab: 'tasks',
+  });
   assert.deepEqual(parseTarget({ kind: 'workspace', workspaceId: 'ws-1', tab: 'settings' }), {
     kind: 'workspace',
     workspaceId: 'ws-1',

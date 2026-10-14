@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, Clock, Flag } from 'lucide-react';
+import { Briefcase, Check, CircleDot, Clock, Flag } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { dateInputValue, dueLabel, formatMoment, fromLocalDate, isOverdue, rescheduleTo } from './dueDate';
 import { FOCUS_RING } from './fields';
-import { PRIORITIES, PRIORITY_LABELS } from './types';
+import { workspaceName } from './board';
+import { PRIORITIES, PRIORITY_LABELS, STATUS_LABELS, STATUSES } from './types';
 
 export const PRIORITY_TEXT: Record<string, string> = {
   high: 'text-shodh-error',
@@ -59,15 +60,37 @@ function usePopover() {
   return { open, setOpen, close, pos, triggerRef, popRef };
 }
 
-/** Quick priority menu (menu of radio items). */
-export function PriorityMenu({
-  priority,
-  taskTitle,
+export interface Choice {
+  value: string;
+  label: string;
+  icon?: React.ReactNode;
+}
+
+/**
+ * A quick menu of radio items under a small trigger (priority, status,
+ * workspace). Arrow keys, Home and End move between items; Esc and Tab close
+ * it and return focus to the trigger.
+ */
+function ChoiceMenu({
+  value,
+  choices,
+  menuLabel,
+  triggerLabel,
+  triggerTitle,
+  triggerClassName,
+  triggerContent,
   tabIndex,
   onChange,
 }: {
-  priority: string;
-  taskTitle: string;
+  value: string;
+  choices: readonly Choice[];
+  /** Accessible name of the open menu. */
+  menuLabel: string;
+  /** Accessible name of the trigger: the current value and what it changes. */
+  triggerLabel: string;
+  triggerTitle?: string;
+  triggerClassName: string;
+  triggerContent: React.ReactNode;
   tabIndex: number;
   onChange: (next: string) => void;
 }) {
@@ -111,51 +134,179 @@ export function PriorityMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
-        aria-label={`Priority: ${PRIORITY_LABELS[priority] ?? priority}. Change priority of ${taskTitle}`}
-        title={`Priority: ${PRIORITY_LABELS[priority] ?? priority}`}
+        aria-label={triggerLabel}
+        title={triggerTitle}
         onClick={e => { e.stopPropagation(); setOpen(!open); }}
         className={cn(
           'h-6 px-1.5 rounded-md inline-flex items-center gap-1 text-[11.5px] hover:bg-shodh-raised-2 transition-colors duration-micro',
-          PRIORITY_TEXT[priority] ?? 'text-shodh-text-muted',
+          triggerClassName,
           FOCUS_RING,
         )}
       >
-        <Flag className="w-3 h-3" aria-hidden="true" />
-        <span className="capitalize">{PRIORITY_LABELS[priority] ?? priority}</span>
+        {triggerContent}
       </button>
       {open && createPortal(
         <div
           ref={popRef}
           id={menuId}
           role="menu"
-          aria-label="Priority"
+          aria-label={menuLabel}
           onKeyDown={onMenuKeyDown}
           onClick={e => e.stopPropagation()}
-          className={POPOVER}
+          className={cn(POPOVER, 'max-h-[min(320px,60vh)] overflow-y-auto scrollbar-thin')}
           style={pos ? { left: pos.left, top: pos.top } : { opacity: 0, left: 0, top: 0 }}
         >
-          {PRIORITIES.map(p => (
+          {choices.map(choice => (
             <button
-              key={p}
+              key={choice.value}
               type="button"
               role="menuitemradio"
-              aria-checked={p === priority}
+              aria-checked={choice.value === value}
               tabIndex={-1}
               onClick={() => {
                 close(true);
-                if (p !== priority) onChange(p);
+                if (choice.value !== value) onChange(choice.value);
               }}
               className={MENU_ITEM}
             >
-              <Flag className={cn('w-3.5 h-3.5', PRIORITY_TEXT[p])} aria-hidden="true" />
-              <span className="flex-1">{PRIORITY_LABELS[p]}</span>
-              {p === priority && <Check className="w-3.5 h-3.5 text-shodh-text-muted" aria-hidden="true" />}
+              {choice.icon}
+              <span className="flex-1 truncate">{choice.label}</span>
+              {choice.value === value && <Check className="w-3.5 h-3.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />}
             </button>
           ))}
         </div>,
         document.body,
       )}
     </>
+  );
+}
+
+/** Quick priority menu (menu of radio items). */
+export function PriorityMenu({
+  priority,
+  taskTitle,
+  tabIndex,
+  onChange,
+}: {
+  priority: string;
+  taskTitle: string;
+  tabIndex: number;
+  onChange: (next: string) => void;
+}) {
+  const label = PRIORITY_LABELS[priority] ?? priority;
+  return (
+    <ChoiceMenu
+      value={priority}
+      choices={PRIORITIES.map(p => ({
+        value: p,
+        label: PRIORITY_LABELS[p],
+        icon: <Flag className={cn('w-3.5 h-3.5', PRIORITY_TEXT[p])} aria-hidden="true" />,
+      }))}
+      menuLabel="Priority"
+      triggerLabel={`Priority: ${label}. Change priority of ${taskTitle}`}
+      triggerTitle={`Priority: ${label}`}
+      triggerClassName={PRIORITY_TEXT[priority] ?? 'text-shodh-text-muted'}
+      triggerContent={
+        <>
+          <Flag className="w-3 h-3" aria-hidden="true" />
+          <span className="capitalize">{label}</span>
+        </>
+      }
+      tabIndex={tabIndex}
+      onChange={onChange}
+    />
+  );
+}
+
+/** Quick status menu: moves a task between To do, In progress and Done. */
+export function StatusMenu({
+  status,
+  taskTitle,
+  tabIndex,
+  onChange,
+}: {
+  status: string;
+  taskTitle: string;
+  tabIndex: number;
+  onChange: (next: string) => void;
+}) {
+  const label = STATUS_LABELS[status] ?? status;
+  return (
+    <ChoiceMenu
+      value={status}
+      choices={STATUSES.map(s => ({
+        value: s,
+        label: STATUS_LABELS[s],
+        icon: <CircleDot className="w-3.5 h-3.5 text-shodh-text-muted" aria-hidden="true" />,
+      }))}
+      menuLabel="Status"
+      triggerLabel={`Status: ${label}. Move ${taskTitle}`}
+      triggerTitle="Move to another column"
+      triggerClassName="text-shodh-text-muted"
+      triggerContent={
+        <>
+          <CircleDot className="w-3 h-3" aria-hidden="true" />
+          {label}
+        </>
+      }
+      tabIndex={tabIndex}
+      onChange={onChange}
+    />
+  );
+}
+
+/** Value of the "No workspace" choice. */
+const NO_WORKSPACE = '';
+
+/**
+ * Quick workspace menu. A task naming a workspace that is not listed (it was
+ * deleted, or the list has not loaded) reads as "No workspace"; choosing a
+ * workspace or "No workspace" replaces it.
+ */
+export function WorkspaceMenu({
+  workspaceId,
+  workspaces,
+  taskTitle,
+  tabIndex,
+  className,
+  onChange,
+}: {
+  workspaceId: string | null | undefined;
+  workspaces: readonly { id: string; name: string }[];
+  taskTitle: string;
+  tabIndex: number;
+  className?: string;
+  /** The new workspace id, or null for none. */
+  onChange: (next: string | null) => void;
+}) {
+  const name = workspaceName(workspaceId, workspaces);
+  // An unlisted id checks nothing, so choosing "No workspace" still clears it.
+  const value = workspaceId || NO_WORKSPACE;
+  const label = name ?? 'No workspace';
+  return (
+    <ChoiceMenu
+      value={value}
+      choices={[
+        { value: NO_WORKSPACE, label: 'No workspace' },
+        ...workspaces.map(w => ({
+          value: w.id,
+          label: w.name,
+          icon: <Briefcase className="w-3.5 h-3.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />,
+        })),
+      ]}
+      menuLabel="Workspace"
+      triggerLabel={`Workspace: ${label}. Change workspace of ${taskTitle}`}
+      triggerTitle={`Workspace: ${label}`}
+      triggerClassName={cn(name ? 'text-shodh-text-muted max-w-[14rem]' : 'text-shodh-text-faint', className)}
+      triggerContent={
+        <>
+          <Briefcase className="w-3 h-3 shrink-0" aria-hidden="true" />
+          <span className="truncate">{label}</span>
+        </>
+      }
+      tabIndex={tabIndex}
+      onChange={next => onChange(next === NO_WORKSPACE ? null : next)}
+    />
   );
 }
 

@@ -45,7 +45,7 @@ export function providerErrorCopy(error: ProviderError, model: string, provider:
     case 'auth':
       return {
         title: `Your ${who} key was rejected`,
-        hint: 'Update the key in Settings → Model. It is kept in the system keychain.',
+        hint: 'Use Fix key to paste a new one in Settings → Model. Keys are kept in the system keychain.',
       };
     case 'other':
       return {

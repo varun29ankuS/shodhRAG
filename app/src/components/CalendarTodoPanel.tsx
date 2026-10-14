@@ -1,13 +1,24 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
-  AlertCircle, Bot, Check, CheckCircle2, ChevronLeft, ChevronRight, FileText, FolderOpen,
+  AlertCircle, Bot, Briefcase, Check, CheckCircle2, ChevronLeft, ChevronRight, FileText, FolderOpen,
   ListTodo, Loader2, Plus, RotateCcw, Trash2, X,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { dayKey, monthGrid } from '../features/tasks/calendarGrid';
 import { fromInputs, isOverdue, storedDayKey, storedTime } from '../features/tasks/dueDate';
 import { FOCUS_RING } from '../features/tasks/fields';
-import { workspaceChoices } from '../features/tasks/board';
+import {
+  ALL_WORKSPACES,
+  effectiveWorkspaceFilter,
+  matchesWorkspaceFilter,
+  parseWorkspaceFilter,
+  sameWorkspaceFilter,
+  serializeWorkspaceFilter,
+  workspaceChoices,
+  workspaceFilterChoices,
+  workspaceName,
+} from '../features/tasks/board';
+import type { WorkspaceFilter } from '../features/tasks/board';
 import { DueMenu, PriorityMenu, WorkspaceMenu } from '../features/tasks/QuickMenus';
 import { ReminderBadge } from '../features/tasks/ReminderField';
 import { useTasksStore } from '../features/tasks/TasksStore';
@@ -16,6 +27,25 @@ import type { CalendarEvent, TodoItem } from '../features/tasks/types';
 import { useWorkspaces } from '../features/workspaces/WorkspaceContext';
 
 type FilterTab = 'all' | 'pending' | 'completed';
+
+const WORKSPACE_FILTER_KEY = 'shodh.tasksWorkspaceFilter';
+const NO_WORKSPACE_FILTER: WorkspaceFilter = { kind: 'none' };
+
+function readWorkspaceFilter(): WorkspaceFilter {
+  try {
+    return parseWorkspaceFilter(window.localStorage.getItem(WORKSPACE_FILTER_KEY));
+  } catch {
+    return ALL_WORKSPACES;
+  }
+}
+
+function storeWorkspaceFilter(filter: WorkspaceFilter) {
+  try {
+    window.localStorage.setItem(WORKSPACE_FILTER_KEY, serializeWorkspaceFilter(filter));
+  } catch {
+    // Storage unavailable; the choice lasts for this session only.
+  }
+}
 
 /** A click on a title waits this long for a second click (double-click edits the title). */
 const TITLE_CLICK_DELAY_MS = 220;
@@ -51,7 +81,11 @@ function formatEventWhen(event: CalendarEvent): string {
 
 // ── Quick add ────────────────────────────────────────────────────
 
-function QuickAdd({ defaultDay }: { defaultDay: string | null }) {
+/**
+ * `workspace` is the workspace the list is filtered to: a task added there
+ * goes to it, so it does not vanish from the list it was added to.
+ */
+function QuickAdd({ defaultDay, workspace }: { defaultDay: string | null; workspace: { id: string; name: string } | null }) {
   const { createTask } = useTasksStore();
   const [title, setTitle] = useState('');
   const [date, setDate] = useState(defaultDay ?? '');
@@ -70,7 +104,12 @@ function QuickAdd({ defaultDay }: { defaultDay: string | null }) {
     const text = title.trim();
     if (!text || busy) return;
     setBusy(true);
-    const created = await createTask({ title: text, dueDate: date ? fromInputs(date, '') : null, priority });
+    const created = await createTask({
+      title: text,
+      dueDate: date ? fromInputs(date, '') : null,
+      priority,
+      ...(workspace ? { workspaceId: workspace.id } : {}),
+    });
     setBusy(false);
     if (created) {
       setTitle('');
@@ -85,7 +124,7 @@ function QuickAdd({ defaultDay }: { defaultDay: string | null }) {
   return (
     <form onSubmit={submit} aria-label="Add a task" className="flex items-center gap-2 p-1.5 pl-3 rounded-xl border border-shodh-border bg-shodh-raised">
       <Plus className="w-4 h-4 shrink-0 text-shodh-text-faint" aria-hidden="true" />
-      <label htmlFor={titleId} className="sr-only">New task</label>
+      <label htmlFor={titleId} className="sr-only">{workspace ? `New task in ${workspace.name}` : 'New task'}</label>
       <input
         ref={titleRef}
         id={titleId}
@@ -93,7 +132,7 @@ function QuickAdd({ defaultDay }: { defaultDay: string | null }) {
         value={title}
         onChange={e => setTitle(e.target.value)}
         onKeyDown={e => { if (e.key === 'Escape' && title) { e.preventDefault(); setTitle(''); } }}
-        placeholder="Add a task"
+        placeholder={workspace ? `Add a task to ${workspace.name}` : 'Add a task'}
         className="flex-1 min-w-0 h-8 bg-transparent text-[13px] text-shodh-text placeholder:text-shodh-text-faint focus:outline-none"
       />
       <input
@@ -417,9 +456,16 @@ export default function CalendarTodoPanel() {
   const [filter, setFilter] = useState<FilterTab>('all');
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
+  const [storedWorkspaceFilter, setStoredWorkspaceFilter] = useState<WorkspaceFilter>(readWorkspaceFilter);
+  const { allWorkspaces, status: workspacesStatus } = useWorkspaces();
+  const workspaceFilter = useMemo(
+    () => effectiveWorkspaceFilter(storedWorkspaceFilter, allWorkspaces, workspacesStatus === 'ready'),
+    [storedWorkspaceFilter, allWorkspaces, workspacesStatus],
+  );
   const [activeId, setActiveId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const listRef = useRef<HTMLUListElement>(null);
+  const workspacesHeadingId = useId();
   const focusAfterDelete = useRef<string | null>(null);
   // Agent focus requests already applied; one made before this layout mounted is not replayed.
   const appliedFocusSeq = useRef(focusRequest?.seq ?? 0);
@@ -436,14 +482,34 @@ export default function CalendarTodoPanel() {
     return set;
   }, [tasks, events]);
 
+  const chooseWorkspaceFilter = (next: WorkspaceFilter) => {
+    setStoredWorkspaceFilter(next);
+    storeWorkspaceFilter(next);
+  };
+
+  const workspaceOptions = useMemo(
+    () => workspaceFilterChoices(allWorkspaces, tasks, workspaceFilter),
+    [allWorkspaces, tasks, workspaceFilter],
+  );
+  const filteredWorkspace = workspaceFilter.kind === 'workspace'
+    ? { id: workspaceFilter.id, name: workspaceName(workspaceFilter.id, allWorkspaces) ?? 'this workspace' }
+    : null;
+  const workspaceFilterLabel = filteredWorkspace ? filteredWorkspace.name : 'No workspace';
+
+  // The workspace filter scopes everything the list counts; the other filters narrow within it.
+  const scopedTasks = useMemo(
+    () => tasks.filter(t => matchesWorkspaceFilter(t, workspaceFilter)),
+    [tasks, workspaceFilter],
+  );
+
   const filteredTasks = useMemo(() => {
-    let result = tasks;
+    let result = scopedTasks;
     if (filter === 'pending') result = result.filter(t => !isDone(t));
     if (filter === 'completed') result = result.filter(isDone);
     if (selectedDay) result = result.filter(t => storedDayKey(t.dueDate) === selectedDay);
     if (projectFilter) result = result.filter(t => t.project === projectFilter);
     return sortTasks(result);
-  }, [tasks, filter, selectedDay, projectFilter]);
+  }, [scopedTasks, filter, selectedDay, projectFilter]);
 
   const upcomingEvents = useMemo(() => {
     const today = dayKey(new Date());
@@ -493,6 +559,8 @@ export default function CalendarTodoPanel() {
     const task = focusRequest.taskId ? tasks.find(t => t.id === focusRequest.taskId) ?? null : null;
     setFilter('all');
     setProjectFilter(null);
+    // For this request only: the remembered choice is not overwritten.
+    setStoredWorkspaceFilter(ALL_WORKSPACES);
     setSelectedDay(task && storedDayKey(task.dueDate) !== focusRequest.day ? null : focusRequest.day);
     if (!task) return;
     setActiveId(task.id);
@@ -503,9 +571,10 @@ export default function CalendarTodoPanel() {
     });
   }, [focusRequest, tasks]);
 
-  const pendingCount = tasks.filter(t => !isDone(t)).length;
-  const completedCount = tasks.length - pendingCount;
-  const overdueCount = tasks.filter(t => !isDone(t) && isOverdue(t.dueDate)).length;
+  const pendingCount = scopedTasks.filter(t => !isDone(t)).length;
+  const completedCount = scopedTasks.length - pendingCount;
+  const overdueCount = scopedTasks.filter(t => !isDone(t) && isOverdue(t.dueDate)).length;
+  const openCount = (scope: WorkspaceFilter) => tasks.filter(t => !isDone(t) && matchesWorkspaceFilter(t, scope)).length;
 
   if (loading && tasks.length === 0) {
     return (
@@ -537,7 +606,7 @@ export default function CalendarTodoPanel() {
   }
 
   const tabs: { id: FilterTab; label: string; count: number }[] = [
-    { id: 'all', label: 'All', count: tasks.length },
+    { id: 'all', label: 'All', count: scopedTasks.length },
     { id: 'pending', label: 'To do', count: pendingCount },
     { id: 'completed', label: 'Done', count: completedCount },
   ];
@@ -555,7 +624,7 @@ export default function CalendarTodoPanel() {
 
       <div className="flex-1 min-h-0 flex gap-5 px-6 pb-6">
         <section aria-label="Task list" className="flex-1 min-w-0 flex flex-col min-h-0 gap-3">
-          <QuickAdd defaultDay={selectedDay} />
+          <QuickAdd defaultDay={selectedDay} workspace={filteredWorkspace} />
 
           <div className="flex items-center gap-1 shrink-0 flex-wrap">
             {tabs.map(tab => (
@@ -575,6 +644,18 @@ export default function CalendarTodoPanel() {
               </button>
             ))}
             <div className="ml-auto flex items-center gap-1">
+              {workspaceFilter.kind !== 'all' && (
+                <button
+                  type="button"
+                  onClick={() => chooseWorkspaceFilter(ALL_WORKSPACES)}
+                  aria-label={`Clear workspace filter ${workspaceFilterLabel}`}
+                  className={cn('h-7 px-2 rounded-full inline-flex items-center gap-1 text-[11.5px] bg-shodh-raised text-shodh-text-secondary hover:text-shodh-text', FOCUS_RING)}
+                >
+                  <Briefcase className="w-3 h-3" aria-hidden="true" />
+                  {workspaceFilterLabel}
+                  <X className="w-3 h-3" aria-hidden="true" />
+                </button>
+              )}
               {projectFilter && (
                 <button
                   type="button"
@@ -606,10 +687,14 @@ export default function CalendarTodoPanel() {
               <div className="flex flex-col items-center justify-center py-12 text-center gap-1">
                 <CheckCircle2 className="w-9 h-9 mb-2 text-shodh-text-faint opacity-50" aria-hidden="true" />
                 <p className="text-[13px] font-medium text-shodh-text-secondary">
-                  {filter === 'completed' ? 'No completed tasks' : selectedDay ? 'Nothing due on this day' : 'No tasks yet'}
+                  {filter === 'completed' ? 'No completed tasks'
+                    : selectedDay ? 'Nothing due on this day'
+                      : filteredWorkspace ? `No tasks in ${filteredWorkspace.name}`
+                        : workspaceFilter.kind === 'none' ? 'No tasks outside workspaces'
+                          : 'No tasks yet'}
                 </p>
                 <p className="text-[12px] text-shodh-text-faint">
-                  {filter === 'all' && !selectedDay && !projectFilter
+                  {filter === 'all' && !selectedDay && !projectFilter && workspaceFilter.kind === 'all'
                     ? 'Add one above, or ask Shodh to create tasks for you.'
                     : 'Try a different filter or day.'}
                 </p>
@@ -636,6 +721,36 @@ export default function CalendarTodoPanel() {
 
         <aside aria-label="Calendar and projects" className="w-64 shrink-0 flex flex-col gap-5 min-h-0 overflow-y-auto scrollbar-thin">
           <MiniCalendar activeDays={activeDays} selected={selectedDay} onSelect={setSelectedDay} />
+
+          {workspaceOptions.length > 0 && (
+            <div className="flex flex-col gap-1" role="group" aria-labelledby={workspacesHeadingId}>
+              <h2 id={workspacesHeadingId} className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint mb-1">Workspaces</h2>
+              {[
+                { filter: ALL_WORKSPACES, label: 'All' },
+                { filter: NO_WORKSPACE_FILTER, label: 'No workspace' },
+                ...workspaceOptions.map(w => ({ filter: { kind: 'workspace', id: w.id } as WorkspaceFilter, label: w.name })),
+              ].map(option => {
+                const isActive = sameWorkspaceFilter(workspaceFilter, option.filter);
+                return (
+                  <button
+                    key={serializeWorkspaceFilter(option.filter)}
+                    type="button"
+                    aria-pressed={isActive}
+                    onClick={() => chooseWorkspaceFilter(option.filter)}
+                    className={cn(
+                      'h-8 px-2.5 rounded-lg flex items-center gap-2 text-left text-[12.5px] transition-colors duration-micro',
+                      isActive ? 'bg-shodh-accent-soft text-shodh-accent-text' : 'text-shodh-text-secondary hover:bg-shodh-raised',
+                      FOCUS_RING,
+                    )}
+                  >
+                    <Briefcase className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    <span className="flex-1 truncate">{option.label}</span>
+                    <span className="tabular-nums opacity-70">{openCount(option.filter)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {allProjects.length > 0 && (
             <div className="flex flex-col gap-1">
@@ -693,7 +808,7 @@ export default function CalendarTodoPanel() {
           </div>
 
           <dl className="p-3 rounded-xl border border-shodh-border bg-shodh-surface grid grid-cols-[1fr_auto] gap-y-1.5 text-[12px]">
-            <dt className="text-shodh-text-muted">Total tasks</dt><dd className="tabular-nums font-semibold text-shodh-text text-right">{tasks.length}</dd>
+            <dt className="text-shodh-text-muted">Total tasks</dt><dd className="tabular-nums font-semibold text-shodh-text text-right">{scopedTasks.length}</dd>
             <dt className="text-shodh-text-muted">To do</dt><dd className="tabular-nums font-semibold text-shodh-warning text-right">{pendingCount}</dd>
             <dt className="text-shodh-text-muted">Overdue</dt><dd className="tabular-nums font-semibold text-shodh-error text-right">{overdueCount}</dd>
             <dt className="text-shodh-text-muted">Done</dt><dd className="tabular-nums font-semibold text-shodh-success text-right">{completedCount}</dd>

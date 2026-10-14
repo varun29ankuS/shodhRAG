@@ -77,3 +77,83 @@ export function workspaceChoices<W extends { id: string; archived: boolean }>(
 ): W[] {
   return workspaces.filter(w => !w.archived || w.id === currentId);
 }
+
+// ── Workspace filter of the Tasks list ─────────────────────────────────────
+
+/** Which tasks the Tasks list shows by workspace: all, those in none, or one workspace's. */
+export type WorkspaceFilter =
+  | { kind: 'all' }
+  | { kind: 'none' }
+  | { kind: 'workspace'; id: string };
+
+export const ALL_WORKSPACES: WorkspaceFilter = { kind: 'all' };
+
+/** Stored form of a workspace's filter; the prefix keeps an id from reading as `all` or `none`. */
+const WORKSPACE_PREFIX = 'workspace:';
+
+/** The filter as stored per viewer. */
+export function serializeWorkspaceFilter(filter: WorkspaceFilter): string {
+  switch (filter.kind) {
+    case 'all':
+      return 'all';
+    case 'none':
+      return 'none';
+    case 'workspace':
+      return `${WORKSPACE_PREFIX}${filter.id}`;
+  }
+}
+
+/** A stored filter; anything missing or unreadable is All. */
+export function parseWorkspaceFilter(raw: string | null | undefined): WorkspaceFilter {
+  if (raw === 'none') return { kind: 'none' };
+  if (raw?.startsWith(WORKSPACE_PREFIX)) {
+    const id = raw.slice(WORKSPACE_PREFIX.length);
+    if (id) return { kind: 'workspace', id };
+  }
+  return ALL_WORKSPACES;
+}
+
+export function sameWorkspaceFilter(a: WorkspaceFilter, b: WorkspaceFilter): boolean {
+  return serializeWorkspaceFilter(a) === serializeWorkspaceFilter(b);
+}
+
+/** Whether `task` shows under `filter`. */
+export function matchesWorkspaceFilter(task: Pick<TodoItem, 'workspaceId'>, filter: WorkspaceFilter): boolean {
+  switch (filter.kind) {
+    case 'all':
+      return true;
+    case 'none':
+      return !task.workspaceId;
+    case 'workspace':
+      return task.workspaceId === filter.id;
+  }
+}
+
+/**
+ * The workspaces the filter offers: those not archived, plus archived ones
+ * that still hold tasks (else those tasks would be reachable only under All)
+ * and the one chosen (so the choice stays visible).
+ */
+export function workspaceFilterChoices<W extends { id: string; archived: boolean }>(
+  workspaces: readonly W[],
+  tasks: readonly Pick<TodoItem, 'workspaceId'>[],
+  filter: WorkspaceFilter,
+): W[] {
+  const used = new Set(tasks.map(t => t.workspaceId).filter((id): id is string => !!id));
+  if (filter.kind === 'workspace') used.add(filter.id);
+  return workspaces.filter(w => !w.archived || used.has(w.id));
+}
+
+/**
+ * The filter in effect: a remembered workspace that is no longer listed
+ * (deleted) falls back to All. Only once the list has loaded (`listed`),
+ * so a slow load never discards a valid choice.
+ */
+export function effectiveWorkspaceFilter(
+  filter: WorkspaceFilter,
+  workspaces: readonly { id: string }[],
+  listed: boolean,
+): WorkspaceFilter {
+  if (filter.kind !== 'workspace' || !listed) return filter;
+  return workspaces.some(w => w.id === filter.id) ? filter : ALL_WORKSPACES;
+}

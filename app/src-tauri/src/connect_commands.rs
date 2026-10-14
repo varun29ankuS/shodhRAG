@@ -519,25 +519,20 @@ pub struct KeyStatus {
     pub source: &'static str,
 }
 
-/// Providers with a key, and where each key comes from.
+/// Providers with a key, and where the key in use comes from (a saved key
+/// wins over the environment, see [`api_key_store::choose_key`]).
 pub fn key_statuses(llm: &LLMState) -> Vec<KeyStatus> {
-    let env = |name: &str| std::env::var(name).ok();
     let keys = lock(&llm.api_keys).clone();
     ProviderId::KEYED
         .into_iter()
         .filter_map(|provider| {
             let id = provider.as_str();
-            let source = if api_key_store::env_key(id, &env).is_some() {
-                "environment"
-            } else if keys.get(id).is_some_and(|k| !k.trim().is_empty()) {
-                "vault"
-            } else {
-                return None;
-            };
+            let (_, origin) =
+                api_key_store::choose_key(keys.get(id), api_key_store::process_env_key(id))?;
             Some(KeyStatus {
                 provider,
                 label: provider.label(),
-                source,
+                source: origin.as_str(),
             })
         })
         .collect()
@@ -611,7 +606,7 @@ pub async fn connect_save_key(
     })
 }
 
-/// Remove a saved key (an environment key stays in force).
+/// Remove a saved key (an environment key, if set, is used from then on).
 #[tauri::command]
 pub async fn connect_remove_key(
     provider: ProviderId,

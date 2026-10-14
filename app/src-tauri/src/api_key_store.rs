@@ -145,11 +145,44 @@ pub fn env_key(provider: &str, env: &impl Fn(&str) -> Option<String>) -> Option<
         })
 }
 
+/// The environment key of `provider` in this process.
+pub fn process_env_key(provider: &str) -> Option<String> {
+    env_key(provider, &|var| std::env::var(var).ok())
+}
+
+/// Where the key in use comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyOrigin {
+    /// Saved in the app (the OS credential store).
+    Saved,
+    /// A provider environment variable such as `OPENROUTER_API_KEY`.
+    Environment,
+}
+
+impl KeyOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KeyOrigin::Saved => "vault",
+            KeyOrigin::Environment => "environment",
+        }
+    }
+}
+
+/// The key to use: a key saved in the app wins over an environment
+/// variable, so the key the person pastes (and the app verifies) is the
+/// one sent. The environment is the fallback when nothing is saved.
+pub fn choose_key(saved: Option<String>, env: Option<String>) -> Option<(String, KeyOrigin)> {
+    let non_empty = |v: Option<String>| v.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
+    non_empty(saved)
+        .map(|k| (k, KeyOrigin::Saved))
+        .or_else(|| non_empty(env).map(|k| (k, KeyOrigin::Environment)))
+}
+
 /// One-time copy of provider keys found in the environment
 /// (`OPENROUTER_API_KEY`, …) into the vault, so the app keeps them after
 /// the variables are gone. A key already in the vault is never replaced.
-/// Returns the providers whose key was copied. The environment still wins
-/// at run time (an override for power users); the caller records that the
+/// Returns the providers whose key was copied. At run time a saved key
+/// wins over the environment ([`choose_key`]); the caller records that the
 /// migration ran so a key the person removes is not copied back.
 pub fn migrate_env_keys(
     vault: &impl KeyVault,
@@ -284,6 +317,27 @@ mod tests {
         for (provider, _) in ENV_KEY_VARS {
             assert!(is_known_provider(provider));
         }
+    }
+
+    #[test]
+    fn a_saved_key_wins_over_the_environment() {
+        assert_eq!(
+            choose_key(Some("sk-or-saved".into()), Some("sk-or-env".into())),
+            Some(("sk-or-saved".to_string(), KeyOrigin::Saved)),
+            "a key pasted in the app is the one used, even with a stale variable set"
+        );
+        assert_eq!(
+            choose_key(None, Some(" sk-or-env ".into())),
+            Some(("sk-or-env".to_string(), KeyOrigin::Environment))
+        );
+        assert_eq!(
+            choose_key(Some("  ".into()), Some("sk-or-env".into())),
+            Some(("sk-or-env".to_string(), KeyOrigin::Environment)),
+            "a blank saved key does not hide the environment"
+        );
+        assert_eq!(choose_key(None, Some(String::new())), None);
+        assert_eq!(KeyOrigin::Saved.as_str(), "vault");
+        assert_eq!(KeyOrigin::Environment.as_str(), "environment");
     }
 
     #[test]

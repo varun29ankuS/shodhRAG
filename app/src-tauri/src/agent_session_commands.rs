@@ -866,15 +866,14 @@ fn with_history(text: &str, history: &[HistoryTurn]) -> String {
     )
 }
 
-/// Provider id used by the key store, and the provider's conventional
-/// environment variables.
-fn key_source(provider: &ApiProvider) -> Option<(&'static str, &'static [&'static str])> {
+/// Provider id used by the key store.
+fn key_store_id(provider: &ApiProvider) -> Option<&'static str> {
     match provider {
-        ApiProvider::OpenAI => Some(("openai", &["OPENAI_API_KEY"])),
-        ApiProvider::Anthropic => Some(("anthropic", &["ANTHROPIC_API_KEY"])),
-        ApiProvider::OpenRouter => Some(("openrouter", &["OPENROUTER_API_KEY"])),
-        ApiProvider::Google => Some(("google", &["GEMINI_API_KEY", "GOOGLE_API_KEY"])),
-        ApiProvider::Grok => Some(("grok", &["XAI_API_KEY"])),
+        ApiProvider::OpenAI => Some("openai"),
+        ApiProvider::Anthropic => Some("anthropic"),
+        ApiProvider::OpenRouter => Some("openrouter"),
+        ApiProvider::Google => Some("google"),
+        ApiProvider::Grok => Some("grok"),
         _ => None,
     }
 }
@@ -885,9 +884,11 @@ fn non_empty(value: Option<String>) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// Resolve the provider key: environment first, then the configured mode,
-/// then the in-memory keys (loaded from the OS credential store at startup),
-/// then the credential store itself (startup loading may not have finished).
+/// Resolve the provider key. A key saved in the app wins: the in-memory keys
+/// (updated the moment a key is saved or removed), then the credential store
+/// itself (startup loading may not have finished), then the key the mode was
+/// configured with. The provider's environment variable is the fallback, so
+/// a stale `OPENROUTER_API_KEY` never overrides the key the person pasted.
 pub(crate) async fn resolve_key(llm: &LLMState, mode: &LLMMode) -> Option<String> {
     let LLMMode::External {
         provider, api_key, ..
@@ -895,41 +896,28 @@ pub(crate) async fn resolve_key(llm: &LLMState, mode: &LLMMode) -> Option<String
     else {
         return None;
     };
-    let (store_id, env_vars) = key_source(provider)?;
-    if let Some(key) = env_vars
-        .iter()
-        .find_map(|var| non_empty(std::env::var(var).ok()))
-    {
-        return Some(key);
-    }
-    if let Some(key) = non_empty(Some(api_key.clone())) {
-        return Some(key);
-    }
-    let in_memory = {
-        let keys = llm.api_keys.lock().unwrap_or_else(|e| e.into_inner());
-        match provider {
-            ApiProvider::OpenAI => keys.openai.clone(),
-            ApiProvider::Anthropic => keys.anthropic.clone(),
-            ApiProvider::OpenRouter => keys.openrouter.clone(),
-            ApiProvider::Google => keys.google.clone(),
-            ApiProvider::Grok => keys.grok.clone(),
-            _ => None,
-        }
+    let store_id = key_store_id(provider)?;
+    let in_memory = llm
+        .api_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(store_id);
+    let saved = match non_empty(in_memory) {
+        Some(key) => Some(key),
+        None => match tokio::task::spawn_blocking(move || api_key_store::load(store_id)).await {
+            Ok(Ok(key)) => non_empty(key),
+            Ok(Err(e)) => {
+                tracing::warn!(target: "shodh::harness", "{e}");
+                None
+            }
+            Err(e) => {
+                tracing::warn!(target: "shodh::harness", error = %e, "credential store lookup failed");
+                None
+            }
+        },
     };
-    if let Some(key) = non_empty(in_memory) {
-        return Some(key);
-    }
-    match tokio::task::spawn_blocking(move || api_key_store::load(store_id)).await {
-        Ok(Ok(key)) => non_empty(key),
-        Ok(Err(e)) => {
-            tracing::warn!(target: "shodh::harness", "{e}");
-            None
-        }
-        Err(e) => {
-            tracing::warn!(target: "shodh::harness", error = %e, "credential store lookup failed");
-            None
-        }
-    }
+    let saved = saved.or_else(|| non_empty(Some(api_key.clone())));
+    api_key_store::choose_key(saved, api_key_store::process_env_key(store_id)).map(|(key, _)| key)
 }
 
 /// What `agent_start` does with a conversation's existing session.

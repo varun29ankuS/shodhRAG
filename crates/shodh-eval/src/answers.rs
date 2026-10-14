@@ -28,7 +28,7 @@ use shodh_rag::harness::tools::ToolRegistry;
 use shodh_rag::harness::web::relevance::SharedScorer;
 use shodh_rag::harness::{
     fetch_omp, resolve_binary_path, select_model, AgentEvent, AgentHarness, LaunchSpec, OmpLayout,
-    OmpModel, OmpSession, ProviderError, ProviderErrorKind, SessionConfig,
+    OmpModel, OmpSession, ProviderError, ProviderErrorKind, SessionConfig, Thinking,
 };
 use shodh_rag::reranking::NliModel;
 
@@ -322,6 +322,8 @@ impl Answerer {
             session_id: format!("eval-{}", uuid_like(&case.id)),
             code: None,
             host_tools: Vec::new(),
+            // As the app answers by default ("Think before answering" off).
+            thinking: Thinking::default(),
         };
         let (session, mut events) = OmpSession::start(SessionConfig {
             launch,

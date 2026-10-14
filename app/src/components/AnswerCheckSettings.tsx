@@ -157,21 +157,32 @@ export default function AnswerCheckSettings() {
     };
   }, []);
 
-  const toggleRepair = useCallback(async (autoRepair: boolean) => {
-    setSaving(true);
-    setError(null);
-    try {
-      const settings = await setAnswerPreferences({ autoRepair });
-      if (settings) setAnswers(settings.answers);
-    } catch (e) {
-      setError(`The setting could not be saved: ${String(e)}`);
-    } finally {
-      setSaving(false);
-    }
-  }, []);
+  const change = useCallback(
+    async (patch: Partial<AnswerPrefs>) => {
+      if (!answers) return;
+      setSaving(true);
+      setError(null);
+      try {
+        const settings = await setAnswerPreferences({ ...answers, ...patch });
+        if (settings) setAnswers(settings.answers);
+      } catch (e) {
+        setError(`The setting could not be saved: ${String(e)}`);
+      } finally {
+        setSaving(false);
+      }
+    },
+    [answers],
+  );
 
   return (
     <div className="mt-6 pt-6 border-t border-shodh-border-subtle flex flex-col gap-4">
+      <SwitchRow
+        label="Think before answering"
+        description="Slower: answers start later. Shows the model's reasoning."
+        checked={answers?.thinkBeforeAnswering ?? false}
+        disabled={answers === null || saving}
+        onChange={value => void change({ thinkBeforeAnswering: value })}
+      />
       <div className="flex flex-col gap-1">
         <h3 className="m-0 text-[15px] font-semibold text-shodh-text">Answer checking</h3>
         <p className="m-0 text-[12.5px] text-shodh-text-muted">
@@ -184,7 +195,7 @@ export default function AnswerCheckSettings() {
         description="When statements are flagged, ask the model once to cite the right passage, correct them or remove them. Costs one extra turn; the earlier draft stays in the conversation."
         checked={answers?.autoRepair ?? true}
         disabled={answers === null || saving}
-        onChange={value => void toggleRepair(value)}
+        onChange={value => void change({ autoRepair: value })}
       />
       <AnswerCheckModelRow />
       {error && (

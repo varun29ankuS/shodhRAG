@@ -9,6 +9,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import type { AgentEvent } from '../src/features/agent/events.ts';
 import {
   MAX_REASONING_CHARS,
@@ -134,3 +135,67 @@ test('the panel opens only when the reader opens it, and stays open across unmou
   assert.equal(store.isOpen(RUN), false);
   assert.equal(notified, 1, 'an unsubscribed listener is not called');
 });
+
+/**
+ * omp frames recorded from a Research session launched with `--thinking low`
+ * ("Think before answering" on) against Nemotron on OpenRouter. The Rust normaliser
+ * turns each `thinking_delta` into a `thinking` event with the frame's
+ * `messageId` and `delta` (checked in omp.rs against the same file); this
+ * replays that stream through the reducer the transcript uses.
+ */
+const RECORDED = readFileSync(
+  new URL('../../crates/shodh-rag/src/harness/fixtures/omp-thinking-low-events.jsonl', import.meta.url),
+  'utf8',
+)
+  .split('\n')
+  .filter(line => line.trim() !== '')
+  .map(line => JSON.parse(line) as Record<string, any>);
+
+function recordedEvents(): AgentEvent[] {
+  const events: AgentEvent[] = [];
+  for (const frame of RECORDED) {
+    const update = frame.assistantMessageEvent;
+    if (frame.type === 'message_update' && update?.type === 'thinking_delta' && update.delta) {
+      events.push(thinking(update.delta, frame.messageId));
+    } else if (frame.type === 'message_update' && update?.type === 'text_delta' && update.delta) {
+      events.push({ type: 'text_delta', runId: RUN, messageId: frame.messageId, delta: update.delta });
+    } else if (frame.type === 'host_tool_call') {
+      events.push({
+        type: 'step_started', runId: RUN, stepId: frame.toolCallId, parentStepId: null, tool: frame.toolName,
+        label: 'Searching documents', args: frame.arguments, tier: 'read', atMs: 1010,
+      });
+      events.push({ type: 'step_finished', runId: RUN, stepId: frame.toolCallId, ok: true, summary: '3 passages', durationMs: 5, detail: null });
+    }
+  }
+  events.push({ type: 'run_finished', runId: RUN, status: 'completed', durationMs: 900, error: null } as AgentEvent);
+  return events;
+}
+
+test('reasoning recorded at the launch level is stored and gets the Reasoning panel', () => {
+  const state = getStateFrame();
+  assert.equal(state.data.thinkingLevel, 'low', 'recorded at the level the setting launches with');
+  const streamed = RECORDED.filter(f => f.assistantMessageEvent?.type === 'thinking_delta')
+    .map(f => f.assistantMessageEvent.delta as string)
+    .join('');
+  assert.ok(streamed.length > 100, 'the provider streamed reasoning');
+
+  const transcript = run(recordedEvents());
+  const sections = reasoningSections(transcript);
+  // ReasoningPanel renders its button exactly when there are sections.
+  assert.equal(sections.length, 2, 'reasoning before the search and after it');
+  assert.equal(sections[0].afterStep, null);
+  assert.equal(sections[1].afterStep, 'Searching documents');
+  assert.equal(sections.map(s => s.text).join(''), streamed, 'every streamed character is kept');
+  assert.equal(transcript.reasoning?.truncated, false);
+  assert.ok(answerText(transcript).includes('sixty (60) days'));
+  assert.ok(!answerText(transcript).includes(streamed.slice(0, 40)), 'reasoning stays out of the answer');
+  // Saved with the conversation, so the panel is there after a restart too.
+  const restored = fromPersisted(JSON.parse(JSON.stringify(toPersisted(transcript))));
+  assert.deepEqual(restored && reasoningSections(restored), sections);
+});
+
+function getStateFrame(): Record<string, any> {
+  const frame = RECORDED.find(f => f.type === 'response' && f.command === 'get_state');
+  assert.ok(frame, 'the recording holds the session state');
+  return frame;
+}

@@ -235,11 +235,19 @@ pub struct AnswerPrefs {
     /// When the grounding check flags statements, ask the model once to
     /// re-ground or remove them (one extra turn).
     pub auto_repair: bool,
+    /// Ask the model to reason before it answers (omp `--thinking low`
+    /// instead of `off`): answers start later, and the reasoning is shown.
+    /// Read when a session starts; a change starts a new session for the
+    /// next answer.
+    pub think_before_answering: bool,
 }
 
 impl Default for AnswerPrefs {
     fn default() -> Self {
-        Self { auto_repair: true }
+        Self {
+            auto_repair: true,
+            think_before_answering: false,
+        }
     }
 }
 
@@ -315,7 +323,7 @@ pub const AGENT_WRITABLE: [SettingKey; 2] = [SettingKey::Theme, SettingKey::Sear
 /// these by name (in addition to its schema only listing [`AGENT_WRITABLE`]),
 /// so a prompt-injected request gets a clear refusal rather than a
 /// best-effort match.
-pub const AGENT_DENIED: [(&str, &str); 23] = [
+pub const AGENT_DENIED: [(&str, &str); 24] = [
     ("api_keys", "API keys are secrets; a manipulated agent could leak or replace them."),
     ("provider", "Switching the model provider changes who receives the user's documents."),
     ("model", "Switching the model changes who receives the user's documents and what it costs."),
@@ -335,6 +343,7 @@ pub const AGENT_DENIED: [(&str, &str); 23] = [
     ("auto_min_confidence", "Lowering the bar for storing memories without asking weakens the user's approval."),
     ("learn_caps", "The daily limits bound what learning costs; only the user may raise them."),
     ("auto_repair", "Re-checking flagged statements guards the assistant's own answers; only the user may turn it off."),
+    ("think_before_answering", "Thinking before answering makes every answer slower and costs more tokens; only the user may turn it on."),
     ("models", "The model picker's settings (chosen and fallback models, stealth consent) decide who receives the user's documents; only the user may change them."),
     ("fallback_model", "The fallback model receives the user's documents when the main one fails; choosing who receives them is the user's decision."),
     ("always_fall_back", "Switching models without asking changes who receives the user's documents; only the user may allow that."),
@@ -659,6 +668,30 @@ mod tests {
         assert!(!off.answers.auto_repair);
         assert!(denied_reason("auto_repair").is_some());
         assert!(SettingKey::parse("auto_repair").is_none());
+    }
+
+    #[test]
+    fn thinking_before_answering_defaults_off_persists_and_is_user_only() {
+        assert!(!AppSettings::default().answers.think_before_answering);
+        // Settings written before the switch existed: off, the rest kept.
+        let old: AppSettings = serde_json::from_str(r#"{"answers":{"autoRepair":false}}"#).unwrap();
+        assert!(!old.answers.think_before_answering);
+        assert!(!old.answers.auto_repair);
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::in_dir(dir.path());
+        store
+            .update(|s| {
+                s.answers.think_before_answering = true;
+                Ok(())
+            })
+            .unwrap();
+        let reloaded = SettingsStore::in_dir(dir.path()).load().unwrap();
+        assert!(reloaded.answers.think_before_answering);
+        assert!(reloaded.answers.auto_repair);
+        let json = serde_json::to_value(&reloaded.answers).unwrap();
+        assert_eq!(json["thinkBeforeAnswering"], true);
+        assert!(denied_reason("think_before_answering").is_some());
+        assert!(SettingKey::parse("think_before_answering").is_none());
     }
 
     #[test]

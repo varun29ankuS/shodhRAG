@@ -115,7 +115,12 @@ export function citedNumbersIn(text: string): Set<number> {
 
 /** Outcomes shown as a flag in the answer. */
 export function isFlagged(outcome: ClaimOutcome): boolean {
-  return outcome === 'unsupported' || outcome === 'uncited_factual' || outcome === 'invalid_citation';
+  return (
+    outcome === 'unsupported' ||
+    outcome === 'uncited_factual' ||
+    outcome === 'invalid_citation' ||
+    outcome === 'unverified_absence'
+  );
 }
 
 /** Short visible text of a claim's flag. */
@@ -133,6 +138,8 @@ export function flagLabel(check: ClaimCheck): string {
         : 'not found in the cited source';
     case 'weak':
       return 'partly supported';
+    case 'unverified_absence':
+      return 'not looked up';
     default:
       return '';
   }
@@ -152,6 +159,8 @@ export function flagDescription(check: ClaimCheck, closestLabel: string | null):
           : 'This statement was not found in the cited source.';
       case 'weak':
         return 'The cited source supports this statement only in part.';
+      case 'unverified_absence':
+        return 'This says you have none of something, but nothing in this answer looked it up.';
       default:
         return '';
     }

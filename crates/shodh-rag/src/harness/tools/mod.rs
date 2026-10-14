@@ -958,7 +958,10 @@ impl ToolRegistry {
         let started = Instant::now();
         let args = strip_intent(call.args);
         let args = match self.get(&call.tool) {
-            Some(registered) => without_unaccepted_nulls(args, &registered.schema),
+            Some(registered) => without_unaccepted_nulls(
+                unset_markers_as_null(args, &registered.schema),
+                &registered.schema,
+            ),
             None => args,
         };
         let tier = self.get(&call.tool).map(|r| r.tool.tier());
@@ -1163,6 +1166,11 @@ fn strip_intent(args: Value) -> Value {
 /// and validates the rest against that schema, so there `null` means "not
 /// given". A tool whose schema accepts `null` (a task update clearing its due
 /// date) still receives it.
+///
+/// For the same reason an optional property loses its `minLength` here: an
+/// empty string is how some models leave an optional string out, and the
+/// host reads it as not given ([`unset_markers_as_null`]) before checking the
+/// tool's own schema, which keeps the limit.
 pub(crate) fn nullable_optionals(mut schema: Value) -> Value {
     let required: Vec<String> = schema
         .get("required")
@@ -1184,6 +1192,7 @@ pub(crate) fn nullable_optionals(mut schema: Value) -> Value {
         let Some(property) = property.as_object_mut() else {
             continue;
         };
+        property.remove("minLength");
         if let Some(values) = property.get_mut("enum").and_then(Value::as_array_mut) {
             if !values.contains(&Value::Null) {
                 values.push(Value::Null);
@@ -1251,6 +1260,74 @@ pub(crate) fn without_unaccepted_nulls(args: Value, schema: &Value) -> Value {
         }
         other => other,
     }
+}
+
+/// What models send for an optional argument they mean to leave out besides
+/// `null`: their language's null written as a string (`"None"`, `"null"`) or
+/// an empty string. Compared trimmed and ignoring ASCII case.
+const UNSET_MARKERS: [&str; 3] = ["", "none", "null"];
+
+/// Whether `value` is one of [`UNSET_MARKERS`].
+pub(crate) fn is_unset_marker(value: &str) -> bool {
+    let value = value.trim();
+    UNSET_MARKERS
+        .iter()
+        .any(|marker| value.eq_ignore_ascii_case(marker))
+}
+
+/// Whether `schema` lists `value` among its allowed values (then it is a
+/// value, not a marker).
+fn enum_lists(schema: Option<&Value>, value: &str) -> bool {
+    schema
+        .and_then(|s| s.get("enum"))
+        .and_then(Value::as_array)
+        .is_some_and(|values| values.iter().any(|v| v.as_str() == Some(value)))
+}
+
+/// Call arguments with the "not given" markers of optional arguments read as
+/// `null`, the way [`without_unaccepted_nulls`] then treats it: an optional
+/// string that is a marker ([`UNSET_MARKERS`]) becomes `null`, and marker
+/// items are removed from an optional array of strings (`"sources":
+/// ["None"]`), which becomes `null` when only markers were in it. Without
+/// this, `"source_id": "None"` reached a tool as an id and failed as "no
+/// source has id None", call after call. A required argument is never
+/// changed, and a value the property's `enum` lists is kept.
+pub(crate) fn unset_markers_as_null(args: Value, schema: &Value) -> Value {
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|r| r.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let properties = schema.get("properties").and_then(Value::as_object);
+    let mut map = match args {
+        Value::Object(map) => map,
+        other => return other,
+    };
+    for (key, value) in map.iter_mut() {
+        if required.contains(&key.as_str()) {
+            continue;
+        }
+        let property = properties.and_then(|p| p.get(key));
+        match value {
+            Value::String(text) if is_unset_marker(text) && !enum_lists(property, text) => {
+                *value = Value::Null;
+            }
+            Value::Array(items) => {
+                let item_schema = property.and_then(|p| p.get("items"));
+                let before = items.len();
+                items.retain(|item| {
+                    !item
+                        .as_str()
+                        .is_some_and(|s| is_unset_marker(s) && !enum_lists(item_schema, s))
+                });
+                if items.is_empty() && before > 0 {
+                    *value = Value::Null;
+                }
+            }
+            _ => {}
+        }
+    }
+    Value::Object(map)
 }
 
 fn cap_for_model(text: &str) -> String {
@@ -1379,6 +1456,50 @@ mod tests {
         assert!(!jsonschema::validator_for(&schema)
             .unwrap()
             .is_valid(&missing));
+    }
+
+    #[test]
+    fn none_null_and_empty_strings_mean_not_given() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "source_id": {"type": "string", "minLength": 1, "maxLength": 200},
+                "mode": {"type": "string", "enum": ["none", "all"]},
+                "due": {"type": ["string", "null"]},
+                "sources": {"type": "array", "items": {"type": "string"}},
+                "tags": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["id"],
+            "additionalProperties": false
+        });
+        let read =
+            |args: Value| without_unaccepted_nulls(unset_markers_as_null(args, &schema), &schema);
+        // The markers models send for "not given", alone or in a list.
+        for marker in ["None", "NULL", "null", "", "  ", " none "] {
+            assert_eq!(
+                read(json!({"id": "t1", "source_id": marker, "sources": [marker]})),
+                json!({"id": "t1"}),
+                "{marker:?}"
+            );
+        }
+        // A required argument is never rewritten; a value an enum lists is
+        // a value; null where the tool accepts it (clearing a due date) is
+        // passed on; real list items stay and an empty list stays a list.
+        assert_eq!(
+            read(json!({
+                "id": "None", "mode": "none", "due": "null",
+                "sources": ["None", "s1", ""], "tags": []
+            })),
+            json!({"id": "None", "mode": "none", "due": null, "sources": ["s1"], "tags": []})
+        );
+        // The runtime lets an empty optional string reach the host, which
+        // reads it as not given; a required one still has its limit.
+        let runtime = jsonschema::validator_for(&nullable_optionals(schema.clone())).unwrap();
+        assert!(runtime.is_valid(&json!({"id": "t1", "source_id": ""})));
+        assert!(!runtime.is_valid(&json!({"id": ""})));
+        let host = jsonschema::validator_for(&schema).unwrap();
+        assert!(host.is_valid(&read(json!({"id": "t1", "source_id": ""}))));
     }
 
     struct Probe {

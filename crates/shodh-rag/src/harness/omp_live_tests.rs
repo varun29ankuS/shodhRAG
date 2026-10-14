@@ -16,7 +16,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 use super::code_mode::CodeFolder;
 use super::model::{EnvValue, OmpModel, Secret};
-use super::sidecar::{spawn, LaunchSpec, OmpLayout};
+use super::sidecar::{spawn, LaunchSpec, OmpLayout, Thinking};
 
 const PRIMARY: &str = "claude-haiku-4-5";
 const OTHER: &str = "claude-sonnet-4-5";
@@ -229,6 +229,7 @@ fn spec(data: &std::path::Path, provider: u16, proxy: u16, code: Option<CodeFold
         session_id: "live".into(),
         code,
         host_tools: Vec::new(),
+        thinking: Thinking::Off,
     }
 }
 

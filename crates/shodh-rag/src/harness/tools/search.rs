@@ -8,9 +8,10 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
+use super::sources::{resolve_sources, SourceResolution, SOURCES_ACCEPTED};
 use super::{
-    req_str, CitedPassage, HostTool, RunScope, ScopedSnippet, ToolContext, ToolError, ToolOutput,
-    MAX_MODEL_OUTPUT_CHARS, UNTRUSTED_NOTICE,
+    is_unset_marker, req_str, CitedPassage, HostTool, RunScope, ScopedSnippet, ToolContext,
+    ToolError, ToolOutput, MAX_MODEL_OUTPUT_CHARS, UNTRUSTED_NOTICE,
 };
 use crate::harness::events::RiskTier;
 use crate::harness::protocol::ToolLoadMode;
@@ -232,9 +233,13 @@ fn search_schema() -> Value {
             },
             "sources": {
                 "type": "array",
-                "items": {"type": "string", "maxLength": 200},
+                "items": {"type": "string", "maxLength": 1000},
                 "maxItems": MAX_SOURCES,
-                "description": "Source ids from list_sources (not file names) to search only those; omit to search every source."
+                "description": format!(
+                    "Search only these: {SOURCES_ACCEPTED}. Omit it to search everything. A value \
+                     that matches nothing is an error listing the valid sources, never an empty \
+                     result."
+                )
             },
             "k": {
                 "type": "integer",
@@ -286,8 +291,11 @@ struct SearchPlan {
     limited: bool,
     space_ids: Vec<String>,
     use_scope_files: bool,
-    /// The sources the model asked for, as given.
+    /// The sources the model asked for, resolved to source ids.
     model_sources: Vec<String>,
+    /// Files the model asked for (single files and parts of sources), by
+    /// normalised path, within the scope.
+    model_files: Vec<String>,
     /// Told to the model with the results.
     notes: Vec<String>,
 }
@@ -295,16 +303,21 @@ struct SearchPlan {
 /// The search a call may run. Without a restriction the model's own sources win over the
 /// user's limit (as before workspaces); with one they are narrowed to the scope, and a
 /// scope with nothing in it searches nothing.
-fn plan_search(scope: &RunScope, model_sources: &[String]) -> SearchPlan {
-    let mut sorted: Vec<String> = model_sources.to_vec();
+fn plan_search(scope: &RunScope, model: &SourceResolution) -> SearchPlan {
+    let mut sorted: Vec<String> = model.source_ids.clone();
     sorted.sort();
+    let mut files: Vec<&super::sources::ResolvedFile> = model.files.iter().collect();
+    files.sort_by(|a, b| a.path.cmp(&b.path));
     let mut plan = SearchPlan {
         model_sources: sorted.clone(),
+        model_files: files.iter().map(|f| f.path.clone()).collect(),
+        notes: model.notes.clone(),
         ..SearchPlan::default()
     };
+    let asked = !sorted.is_empty() || !files.is_empty();
     if scope.restricted {
         plan.limited = true;
-        if sorted.is_empty() {
+        if !asked {
             plan.space_ids = scope.source_ids.clone();
             plan.use_scope_files = true;
         } else {
@@ -315,8 +328,17 @@ fn plan_search(scope: &RunScope, model_sources: &[String]) -> SearchPlan {
                     .push(scope.outside_message(&format!("Source {}", outside.join(", "))));
             }
             plan.space_ids = inside;
+            let (inside, outside): (Vec<_>, Vec<_>) = files
+                .into_iter()
+                .partition(|f| scope.allows_source(&f.source_id) || scope.allows_path(&f.path));
+            if !outside.is_empty() {
+                let paths: Vec<&str> = outside.iter().map(|f| f.path.as_str()).collect();
+                plan.notes
+                    .push(scope.outside_message(&format!("File {}", paths.join(", "))));
+            }
+            plan.model_files = inside.into_iter().map(|f| f.path.clone()).collect();
         }
-    } else if !sorted.is_empty() {
+    } else if asked {
         plan.limited = true;
         plan.space_ids = sorted;
     } else if !scope.is_empty() {
@@ -342,7 +364,7 @@ fn limit_note(
             pages_text(pages),
             scoped_files.join(", ")
         ));
-    } else if scope.restricted && plan.model_sources.is_empty() {
+    } else if scope.restricted && plan.model_sources.is_empty() && plan.model_files.is_empty() {
         if set.is_empty() && scope.snippets.is_empty() {
             notes.push(match &scope.workspace_name {
                 Some(name) => format!(
@@ -452,8 +474,10 @@ impl HostTool for SearchDocumentsTool {
     }
     fn description(&self) -> &'static str {
         "Search the user's indexed documents (hybrid keyword + semantic). Returns passages with \
-         file, path, page and score. Optionally restrict to source ids from list_sources. Use \
-         specific queries; search again with different wording if the first results miss."
+         file, path, page and score. Optionally restrict it with sources: source ids from \
+         list_sources, folder or file paths inside an indexed folder, a folder or file name, \
+         \"notes\" or \"calendar\". Use specific queries; search again with different wording \
+         if the first results miss."
     }
     fn schema(&self) -> Value {
         search_schema()
@@ -470,23 +494,33 @@ impl HostTool for SearchDocumentsTool {
         let query_owned = truncate_query(query);
         let query = query_owned.as_str();
         let k = requested_k(&args).unwrap_or_else(|| self.default_k());
-        let sources: Vec<String> = args
+        let mut sources: Vec<String> = args
             .get("sources")
             .and_then(Value::as_array)
             .map(|a| {
                 a.iter()
                     .filter_map(Value::as_str)
                     .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
+                    .filter(|s| !is_unset_marker(s))
                     .collect::<HashSet<_>>()
                     .into_iter()
                     .collect()
             })
             .unwrap_or_default();
+        sources.sort();
 
         let scope = ctx.scope();
-        let plan = plan_search(scope, &sources);
         let rag = self.rag.read().await;
+        let resolution = if sources.is_empty() {
+            SourceResolution::default()
+        } else {
+            let rows = rag
+                .document_sources()
+                .await
+                .map_err(|e| ToolError::Failed(format!("Could not read the index: {e}")))?;
+            resolve_sources(&rows, &sources)?
+        };
+        let plan = plan_search(scope, &resolution);
         // The user's files, as the index stores them.
         let mut scoped_files = Vec::new();
         if plan.use_scope_files {
@@ -507,9 +541,13 @@ impl HostTool for SearchDocumentsTool {
         } else {
             &scope.pages
         };
+        let mut source_paths = scoped_files.clone();
+        source_paths.extend(plan.model_files.iter().cloned());
+        source_paths.sort();
+        source_paths.dedup();
         let set = SourceSet {
             space_ids: plan.space_ids.clone(),
-            source_paths: scoped_files.clone(),
+            source_paths,
         };
         let mut results = if !plan.limited {
             rag.search_comprehensive(query, k, None)
@@ -822,6 +860,13 @@ mod tests {
         assert_eq!(passage_budget(DEFAULT_K), MAX_PASSAGE_CHARS);
     }
 
+    fn ids(source_ids: &[&str]) -> SourceResolution {
+        SourceResolution {
+            source_ids: source_ids.iter().map(|s| s.to_string()).collect(),
+            ..SourceResolution::default()
+        }
+    }
+
     fn workspace_scope(source_ids: &[&str], files: &[&str]) -> RunScope {
         RunScope {
             source_ids: source_ids.iter().map(|s| s.to_string()).collect(),
@@ -838,24 +883,24 @@ mod tests {
     fn a_restricted_scope_narrows_the_models_sources_and_never_widens() {
         let scope = workspace_scope(&["space-a"], &["C:/x/one.pdf"]);
         // No sources from the model: the workspace's sources and files.
-        let plan = plan_search(&scope, &[]);
+        let plan = plan_search(&scope, &ids(&[]));
         assert!(plan.limited && plan.use_scope_files);
         assert_eq!(plan.space_ids, vec!["space-a"]);
         // The model asks for another source: it is refused, and nothing widens.
-        let plan = plan_search(&scope, &["space-b".to_string()]);
+        let plan = plan_search(&scope, &ids(&["space-b"]));
         assert!(plan.limited);
         assert!(plan.space_ids.is_empty());
         assert!(plan.notes[0].contains("outside the workspace \"Thesis\""));
-        let plan = plan_search(&scope, &["space-a".to_string(), "space-b".to_string()]);
+        let plan = plan_search(&scope, &ids(&["space-a", "space-b"]));
         assert_eq!(plan.space_ids, vec!["space-a"]);
         // An empty workspace is still limited: it finds nothing, not everything.
         let empty = workspace_scope(&[], &[]);
         assert!(!empty.is_empty());
-        let plan = plan_search(&empty, &[]);
+        let plan = plan_search(&empty, &ids(&[]));
         assert!(plan.limited && plan.space_ids.is_empty());
         // Without a restriction (no workspace, or "search all my library").
-        assert!(!plan_search(&RunScope::default(), &[]).limited);
-        let plan = plan_search(&RunScope::default(), &["space-b".to_string()]);
+        assert!(!plan_search(&RunScope::default(), &ids(&[])).limited);
+        let plan = plan_search(&RunScope::default(), &ids(&["space-b"]));
         assert_eq!(plan.space_ids, vec!["space-b"]);
         // Sources and files of an unrestricted limit are searched together.
         let library = RunScope {
@@ -863,7 +908,7 @@ mod tests {
             files: vec!["C:/x/one.pdf".into()],
             ..RunScope::default()
         };
-        let plan = plan_search(&library, &[]);
+        let plan = plan_search(&library, &ids(&[]));
         assert!(plan.limited && plan.use_scope_files);
         assert_eq!(plan.space_ids, vec!["space-a"]);
     }
@@ -1049,5 +1094,60 @@ mod tests {
         let (none, text) = search_paths(&tool, stale, query).await;
         assert!(none.is_empty());
         assert!(text.contains("not indexed"));
+    }
+
+    #[tokio::test]
+    async fn sources_given_as_folders_files_and_names_search_what_they_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let rag = Box::pin(engine_with_two_spaces(dir.path())).await;
+        let tool = SearchDocumentsTool::new(rag);
+        let search = |sources: Value| json!({"query": "notice period days", "sources": sources});
+        let other = vec![
+            stored("C:/docs/other/file.txt"),
+            stored("C:/docs/other/outside.txt"),
+        ];
+
+        // A folder path as the model writes it (another case, backslashes,
+        // a trailing separator), and the folder's name: its source.
+        for folder in [
+            json!([r"C:\Docs\Other\"]),
+            json!(["c:/docs/other"]),
+            json!(["other"]),
+        ] {
+            let (paths, text) =
+                search_paths(&tool, RunScope::default(), search(folder.clone())).await;
+            assert_eq!(paths, other, "{folder}");
+            assert!(text.contains("is the folder"), "{text}");
+        }
+        // A file path and a file name: that file only.
+        for file in [json!(["C:/docs/other/file.txt"]), json!(["file.txt"])] {
+            let (paths, _) = search_paths(&tool, RunScope::default(), search(file.clone())).await;
+            assert_eq!(paths, vec![stored("C:/docs/other/file.txt")], "{file}");
+        }
+        // "None" is not a source: the search covers everything.
+        let (all, _) = search_paths(&tool, RunScope::default(), search(json!(["None"]))).await;
+        assert_eq!(all.len(), 3, "{all:?}");
+
+        // A source that matches nothing is an error naming the valid ones,
+        // not an empty result.
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let ctx = ToolContext::new("run-1", "step-1", tx);
+        let error = Box::pin(tool.execute(search(json!(["c:/docs/thesis/drafts"])), &ctx))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("No indexed source matches"), "{error}");
+        assert!(error.contains("space-a (\"thesis\""), "{error}");
+        assert!(error.contains("space-b (\"other\""), "{error}");
+
+        // In a workspace chat a file of another source stays outside.
+        let (paths, text) = search_paths(
+            &tool,
+            workspace_scope(&["space-a"], &[]),
+            search(json!(["file.txt"])),
+        )
+        .await;
+        assert!(paths.is_empty(), "{paths:?}");
+        assert!(text.contains("outside the workspace"), "{text}");
     }
 }

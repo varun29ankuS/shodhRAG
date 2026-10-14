@@ -35,6 +35,7 @@ use super::error::HarnessError;
 use super::events::RiskTier;
 use super::omp::StepMeta;
 use super::profile::DIAGRAM_GUIDE;
+use super::sidecar::Thinking;
 use super::truncate_chars;
 
 /// The tools a Code session has, exactly (omp names). `find` in omp 18.4.10
@@ -244,13 +245,15 @@ fn insert_path(map: &mut serde_json::Map<String, Value>, key: &str, value: Value
 }
 
 /// Launch flags of a Code session. Unlike Research sessions, omp's dialog
-/// channel stays on (no `--no-ui`): approvals travel over it.
+/// channel stays on (no `--no-ui`): approvals travel over it. Reasoning
+/// follows the same setting as Research sessions ([`Thinking`]).
 pub fn code_launch_args(
     model_arg: &str,
     base_overlay: &Path,
     code_overlay: &Path,
     guard_hook: &Path,
     system_prompt: &str,
+    thinking: Thinking,
 ) -> Vec<String> {
     let mut args: Vec<String> = [
         "--mode",
@@ -262,7 +265,7 @@ pub fn code_launch_args(
         "--no-pty",
         "--no-session",
         "--thinking",
-        "off",
+        thinking.flag(),
         "--approval-mode=always-ask",
     ]
     .iter()

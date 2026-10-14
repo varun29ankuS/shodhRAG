@@ -747,7 +747,8 @@ pub fn summarise(checks: &[ClaimCheck]) -> GroundingSummary {
         match c.outcome {
             ClaimOutcome::Supported => s.supported += 1,
             ClaimOutcome::Weak => s.weak += 1,
-            ClaimOutcome::Unsupported => s.unsupported += 1,
+            // A claim of absence no tool backed is unsupported by the run.
+            ClaimOutcome::Unsupported | ClaimOutcome::UnverifiedAbsence => s.unsupported += 1,
             ClaimOutcome::UncitedFactual => s.uncited += 1,
             ClaimOutcome::InvalidCitation => s.invalid += 1,
             ClaimOutcome::Unchecked => s.unchecked += 1,

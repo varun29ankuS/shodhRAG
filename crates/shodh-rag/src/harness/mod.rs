@@ -41,7 +41,7 @@ pub use provider_error::{ProviderError, ProviderErrorKind};
 pub use session::{CodeSession, OmpSession, SessionConfig};
 pub use sidecar::{
     fetch_omp, resolve_binary_path, FetchProgress, InstalledRuntime, LaunchSpec, OmpLayout,
-    OMP_VERSION,
+    Thinking, OMP_VERSION,
 };
 
 /// One agent session as the app sees it. `OmpSession` is the production

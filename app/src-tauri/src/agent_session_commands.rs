@@ -1078,6 +1078,11 @@ pub async fn agent_start(
         return Err(HarnessError::LocalOnlyCloudModel(model.model_arg.clone()).into());
     }
     let fingerprint = model_fingerprint(&model);
+    // The provider this session's answers go to, for the connection status.
+    let answer_provider = match &mode {
+        LLMMode::External { provider, .. } => ProviderId::from_api(provider),
+        _ => None,
+    };
     let thinking = Thinking::from_setting(settings.answers.think_before_answering);
     let app_data_dir = app_data_dir(&app)?;
     let registry = base_registry(&app).await?;
@@ -1255,6 +1260,8 @@ More tools, from the MCP servers and skills the user connected: {}.             
             forward_used.store(now_ms(), Ordering::Relaxed);
             // Learning sees only runs `agent_send` registered (the user's own words).
             forward_learn.observe(&event);
+            // A finished answer shows whether its provider's key works.
+            crate::connection_health::observe_answer(&forward_app, answer_provider, &event);
             if let (Some(answer), Some(audit)) = (tap.observe(&event), &tool_audit) {
                 audit.log.submit(audit.scope.record(
                     &answer.run_id,

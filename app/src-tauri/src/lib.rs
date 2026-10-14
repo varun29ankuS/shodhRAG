@@ -4,6 +4,7 @@ mod app_settings;
 mod audit_commands;
 mod background;
 mod connect_commands;
+mod connection_health;
 mod database_commands;
 mod document_upload_commands;
 mod enhanced_rag_commands;
@@ -267,6 +268,7 @@ pub fn run() {
 
             app.manage(model_picker_commands::ModelPickerState::default());
             app.manage(connect_commands::ConnectState::default());
+            app.manage(connection_health::ConnectionHealthState::default());
             app.manage(LLMState {
                 manager: shared_llm_manager.clone(),
                 config: Arc::new(Mutex::new(LLMConfig::default())),
@@ -323,6 +325,9 @@ pub fn run() {
                 // The saved model choice applies unless the environment set one.
                 model_picker_commands::apply_startup_choice(&llm_bootstrap_handle, environment)
                     .await;
+                // The top bar's connection status: checked once keys are
+                // loaded, in the background, without spending a chat request.
+                connection_health::check_at_startup(&llm_bootstrap_handle);
             });
 
             // Initialize the RAG engine. Without the search models (first
@@ -565,6 +570,8 @@ pub fn run() {
             connect_commands::connect_sign_out,
             connect_commands::connect_save_key,
             connect_commands::connect_remove_key,
+            connection_health::connection_status,
+            connection_health::connection_check,
             // Database management commands
             database_commands::reset_database,
             database_commands::clear_all_documents,

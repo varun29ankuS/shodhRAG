@@ -237,32 +237,42 @@ fn retry_after(lower: &str, now_ms: u64) -> Option<u32> {
             }
         }
     }
-    let reset_marker = "x-ratelimit-reset";
-    if let Some(at) = lower.find(reset_marker) {
-        let after = &lower[at + reset_marker.len()..];
-        let digits: String = after
-            .chars()
-            .skip_while(|c| !c.is_ascii_digit())
-            .take_while(char::is_ascii_digit)
-            .collect();
-        if let Ok(reset) = digits.parse::<u64>() {
-            // Milliseconds since the epoch (13 digits) or seconds (10 digits).
-            let reset_ms = if digits.len() >= 13 {
-                reset
-            } else {
-                reset.saturating_mul(1_000)
-            };
-            if reset_ms > now_ms {
-                let secs = (reset_ms - now_ms).div_ceil(1_000);
-                return Some(
-                    u32::try_from(secs)
-                        .unwrap_or(u32::MAX)
-                        .min(MAX_RETRY_AFTER_SECS),
-                );
-            }
-        }
-    }
-    None
+    let reset_ms = limit_reset_at_ms(lower, now_ms)?;
+    let secs = (reset_ms - now_ms).div_ceil(1_000);
+    Some(
+        u32::try_from(secs)
+            .unwrap_or(u32::MAX)
+            .min(MAX_RETRY_AFTER_SECS),
+    )
+}
+
+/// The moment an `X-RateLimit-Reset` value names, in Unix milliseconds: the
+/// first number in `value`, read as milliseconds since the epoch (13
+/// digits) or seconds (10 digits).
+pub fn reset_epoch_ms(value: &str) -> Option<u64> {
+    let digits: String = value
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
+        .collect();
+    let reset = digits.parse::<u64>().ok()?;
+    Some(if digits.len() >= 13 {
+        reset
+    } else {
+        reset.saturating_mul(1_000)
+    })
+}
+
+/// When the limit a provider message reports resets (Unix milliseconds):
+/// the `X-RateLimit-Reset` it carries (OpenRouter puts the response headers
+/// in its error body), when that is still ahead of `now_ms`. Unlike
+/// `retry_after_secs` it is not capped, so a daily limit keeps its real
+/// reset time.
+pub fn limit_reset_at_ms(message: &str, now_ms: u64) -> Option<u64> {
+    const MARKER: &str = "x-ratelimit-reset";
+    let lower = message.to_ascii_lowercase();
+    let at = lower.find(MARKER)?;
+    reset_epoch_ms(&lower[at + MARKER.len()..]).filter(|reset| *reset > now_ms)
 }
 
 /// The first duration in `text` (skipping punctuation such as `": "`): a
@@ -329,6 +339,24 @@ mod tests {
         let e = classify(body, None, NOW_MS);
         assert_eq!(e.kind, ProviderErrorKind::RateLimited);
         assert_eq!(e.retry_after_secs, None);
+    }
+
+    #[test]
+    fn a_daily_limit_keeps_its_reset_time_uncapped() {
+        let tomorrow = NOW_MS + 20 * 3_600_000;
+        let body = format!(
+            r#"429 {{"error":{{"message":"Rate limit exceeded: free-models-per-day.","code":429,"metadata":{{"headers":{{"X-RateLimit-Limit":"50","X-RateLimit-Remaining":"0","X-RateLimit-Reset":"{tomorrow}"}}}}}}}}"#
+        );
+        let e = classify(&body, None, NOW_MS);
+        assert_eq!(e.kind, ProviderErrorKind::QuotaExhausted);
+        assert_eq!(limit_reset_at_ms(&body, NOW_MS), Some(tomorrow));
+        // Seconds since the epoch read as such; a reset already past is none.
+        assert_eq!(reset_epoch_ms("1759750012"), Some(1_759_750_012_000));
+        assert_eq!(
+            limit_reset_at_ms(r#""X-RateLimit-Reset":"1759740000000""#, NOW_MS),
+            None
+        );
+        assert_eq!(limit_reset_at_ms("no header here", NOW_MS), None);
     }
 
     #[test]

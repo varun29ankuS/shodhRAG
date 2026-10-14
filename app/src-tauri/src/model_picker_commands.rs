@@ -197,7 +197,7 @@ pub(crate) fn connected_providers(llm: &LLMState, connect: &ConnectState) -> Vec
     out
 }
 
-fn ollama_host() -> String {
+pub(crate) fn ollama_host() -> String {
     std::env::var("OLLAMA_HOST")
         .ok()
         .map(|h| h.trim().to_string())

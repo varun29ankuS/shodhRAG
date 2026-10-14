@@ -39,6 +39,8 @@ const DEFAULT_LIST: usize = 25;
 const MAX_LIST: usize = 100;
 /// Most workspaces listed in an error.
 const MAX_LISTED_WORKSPACES: usize = 20;
+/// How an approval card shows a task that belongs to no workspace.
+const NO_WORKSPACE: &str = "No workspace";
 
 pub(super) fn register(
     registry: &mut ToolRegistry,
@@ -230,6 +232,35 @@ async fn workspace_arg(
     }
 }
 
+/// The workspace a new task is saved in, as `(id, name)`: the one the call
+/// names (`null` for none), else the chat's workspace (the app sets the scope
+/// from the conversation's workspace). The preview and the write both call
+/// this, so the approval card names the workspace the task lands in.
+async fn new_task_workspace(
+    host: &AgentHost,
+    tool: &str,
+    args: &Value,
+    ctx: &ToolContext,
+) -> Result<Option<(String, String)>, ToolError> {
+    if let Some(chosen) = workspace_arg(host, tool, args).await? {
+        return Ok(chosen.map(|w| (w.id, w.name)));
+    }
+    let Some(id) = ctx.scope().workspace.clone() else {
+        return Ok(None);
+    };
+    let name = match ctx.scope().workspace_name.clone() {
+        Some(name) => name,
+        // The name is only for display: when the scope lacks it and the
+        // workspace list cannot be read, the id still identifies it.
+        None => all_workspaces(host)
+            .await
+            .ok()
+            .and_then(|all| all.into_iter().find(|w| w.id == id).map(|w| w.name))
+            .unwrap_or_else(|| id.clone()),
+    };
+    Ok(Some((id, name)))
+}
+
 /// Show workspace changes by name (the approval card is read by the user).
 fn name_workspace_changes(changes: &mut [FieldChange], names: &WorkspaceNames) {
     for change in changes.iter_mut().filter(|c| c.field == "workspace") {
@@ -298,7 +329,15 @@ impl HostTool for CreateTaskTool {
     fn tier(&self) -> RiskTier {
         RiskTier::Write
     }
-    async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
+    /// The card shows the workspace the task will be saved in, decided by
+    /// the same function the write uses: the one the call names, else the
+    /// chat's workspace.
+    async fn preview_in(
+        &self,
+        args: &Value,
+        ctx: &ToolContext,
+    ) -> Result<ApprovalPreview, ToolError> {
+        let workspace = new_task_workspace(&self.host, app_tools::CREATE_TASK, args, ctx).await?;
         Ok(ApprovalPreview {
             label: None,
             details: json!({
@@ -308,10 +347,9 @@ impl HostTool for CreateTaskTool {
                 "notes": str_arg(args, "notes"),
                 "reminder": str_arg(args, "reminder"),
                 "sourceRef": str_arg(args, "source_ref"),
-                "workspace": match args.get("workspace") {
-                    Some(Value::Null) => json!("none"),
-                    _ => json!(str_arg(args, "workspace")),
-                },
+                "workspace": workspace
+                    .map(|(_, name)| name)
+                    .unwrap_or_else(|| NO_WORKSPACE.to_string()),
             }),
         })
     }
@@ -319,20 +357,7 @@ impl HostTool for CreateTaskTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::CREATE_TASK;
         let title = str_arg(&args, "title").ok_or_else(|| invalid(tool, "`title` is required"))?;
-        // Absent: the chat's workspace, if it has one (the app sets the scope
-        // from the conversation's workspace).
-        let workspace: Option<(String, String)> =
-            match workspace_arg(&self.host, tool, &args).await? {
-                Some(chosen) => chosen.map(|w| (w.id, w.name)),
-                None => ctx.scope().workspace.clone().map(|id| {
-                    let name = ctx
-                        .scope()
-                        .workspace_name
-                        .clone()
-                        .unwrap_or_else(|| id.clone());
-                    (id, name)
-                }),
-            };
+        let workspace = new_task_workspace(&self.host, tool, &args, ctx).await?;
         let new = NewTask {
             title: title.to_string(),
             due_date: str_arg(&args, "due").map(str::to_string),
@@ -1745,6 +1770,76 @@ mod tests {
             .unwrap();
         let id = out.detail.unwrap()["id"].as_str().unwrap().to_string();
         assert_eq!(stored_workspace(&t, &id), None);
+    }
+
+    #[tokio::test]
+    async fn create_task_preview_names_the_workspace_the_task_lands_in() {
+        let t = testing::host().await;
+        let thesis = workspace(&t, "Thesis").await;
+        workspace(&t, "Tax").await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let in_thesis = ToolContext::new("run-1", "step-1", tx).with_scope(Arc::new(RunScope {
+            workspace: Some(thesis.id.clone()),
+            workspace_name: Some(thesis.name.clone()),
+            ..RunScope::default()
+        }));
+        let create = CreateTaskTool {
+            host: t.host.clone(),
+        };
+        let shown = |preview: ApprovalPreview| preview.details["workspace"].clone();
+
+        // The chat's workspace is the default.
+        let preview = create
+            .preview_in(&json!({"title": "Outline chapter 2"}), &in_thesis)
+            .await
+            .unwrap();
+        assert_eq!(shown(preview), "Thesis");
+        // null files the task under no workspace, even in a workspace chat.
+        let preview = create
+            .preview_in(&json!({"title": "Buy milk", "workspace": null}), &in_thesis)
+            .await
+            .unwrap();
+        assert_eq!(shown(preview), "No workspace");
+        // A workspace the call names wins over the chat's, shown by name.
+        let preview = create
+            .preview_in(
+                &json!({"title": "File return", "workspace": "tax"}),
+                &in_thesis,
+            )
+            .await
+            .unwrap();
+        assert_eq!(shown(preview), "Tax");
+        // Outside a workspace chat, nothing named: no workspace.
+        let (plain, _rx) = testing::ctx();
+        let preview = create
+            .preview_in(&json!({"title": "Outside any workspace"}), &plain)
+            .await
+            .unwrap();
+        assert_eq!(shown(preview), "No workspace");
+
+        // A scope without the name still shows the name, looked up by id.
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let unnamed = ToolContext::new("run-2", "step-1", tx).with_scope(Arc::new(RunScope {
+            workspace: Some(thesis.id.clone()),
+            ..RunScope::default()
+        }));
+        let preview = create
+            .preview_in(&json!({"title": "Read paper"}), &unnamed)
+            .await
+            .unwrap();
+        assert_eq!(shown(preview), "Thesis");
+
+        // An unknown workspace fails before the user is asked.
+        assert!(matches!(
+            create
+                .preview_in(&json!({"title": "x", "workspace": "Groceries"}), &in_thesis)
+                .await,
+            Err(ToolError::NotFound(_))
+        ));
+        assert!(
+            store(&t.host).load().unwrap().tasks.is_empty(),
+            "a preview saves nothing"
+        );
     }
 
     #[tokio::test]

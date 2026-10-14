@@ -392,17 +392,20 @@ pub async fn workspaces_delete(
 ) -> WorkspaceCommandResult<bool> {
     let dir = data_dir(&app)?;
     let workspace_id = id.clone();
-    let removed = state.run(move |s| s.delete(&id)).await?;
-    if removed {
-        crate::mcp_commands::forget_workspace(&app, &workspace_id);
-    }
-    let detached = detach_conversations(&dir, &workspace_id)?;
+    // Tasks first: if the calendar cannot be written nothing is deleted, and
+    // if the delete then fails the tasks are unfiled rather than left naming
+    // a workspace that no longer exists.
     crate::calendar_commands::detach_workspace_tasks(&app, &workspace_id).map_err(|message| {
         WorkspaceCommandError {
             code: "storage",
             message,
         }
     })?;
+    let removed = state.run(move |s| s.delete(&id)).await?;
+    if removed {
+        crate::mcp_commands::forget_workspace(&app, &workspace_id);
+    }
+    let detached = detach_conversations(&dir, &workspace_id)?;
     if removed || detached > 0 {
         broadcast_change(&app, Some(&workspace_id));
     }

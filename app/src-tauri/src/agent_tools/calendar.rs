@@ -6,7 +6,14 @@
 //! [`super::HostEffects::calendar_changed`] (re-index + refresh). Update
 //! previews compute the change with the same function the write uses, so
 //! the approval card shows exactly the before → after that will be saved.
+//!
+//! A task may belong to a workspace (its project). The task tools take the
+//! workspace by id or name (resolved like `resolve_sources` resolves sources:
+//! nothing matching is an error that lists the valid workspaces), and a task
+//! created in a workspace chat goes to that workspace unless the model says
+//! otherwise.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -19,6 +26,7 @@ use shodh_rag::harness::tools::{
     ApprovalPreview, HostTool, RegistryError, ToolContext, ToolError, ToolOutput, ToolRegistry,
 };
 use shodh_rag::harness::RiskTier;
+use shodh_rag::workspaces::Workspace;
 
 use super::{invalid, limit_arg, str_arg, AgentHost, CalendarChange};
 use crate::calendar_store::{
@@ -29,6 +37,8 @@ use crate::calendar_store::{
 
 const DEFAULT_LIST: usize = 25;
 const MAX_LIST: usize = 100;
+/// Most workspaces listed in an error.
+const MAX_LISTED_WORKSPACES: usize = 20;
 
 pub(super) fn register(
     registry: &mut ToolRegistry,
@@ -82,8 +92,15 @@ fn changes_json(changes: &[FieldChange]) -> Value {
     Value::Array(changes.iter().map(FieldChange::to_json).collect())
 }
 
-fn task_line(task: &TodoItem) -> Value {
+/// Workspace names by id.
+type WorkspaceNames = HashMap<String, String>;
+
+fn task_line(task: &TodoItem, names: &WorkspaceNames) -> Value {
     let done = task.subtasks.iter().filter(|s| s.completed).count();
+    let workspace = task
+        .workspace_id
+        .as_ref()
+        .map(|id| json!({ "id": id, "name": names.get(id) }));
     json!({
         "id": task.id,
         "title": task.title,
@@ -91,6 +108,7 @@ fn task_line(task: &TodoItem) -> Value {
         "status": task.status,
         "priority": task.priority,
         "project": task.project,
+        "workspace": workspace,
         "reminder": task.snoozed_until.as_ref().or(task.reminder.as_ref()),
         "subtasks": if task.subtasks.is_empty() {
             Value::Null
@@ -109,6 +127,118 @@ fn event_line(event: &CalendarEvent) -> Value {
         "allDay": event.all_day,
         "location": event.location,
     })
+}
+
+// ── Workspaces of tasks ───────────────────────────────────────────────────
+
+/// Every workspace, archived ones included (a task may stay in an archived
+/// workspace).
+async fn all_workspaces(host: &AgentHost) -> Result<Vec<Workspace>, ToolError> {
+    host.workspaces
+        .run(|s| s.list(true))
+        .await
+        .map_err(|e| match e.code {
+            "unavailable" => ToolError::Unavailable(e.message),
+            _ => ToolError::Failed(e.message),
+        })
+}
+
+fn workspace_names(workspaces: &[Workspace]) -> WorkspaceNames {
+    workspaces
+        .iter()
+        .map(|w| (w.id.clone(), w.name.clone()))
+        .collect()
+}
+
+/// The valid workspaces, for an error.
+fn valid_workspaces_text(workspaces: &[Workspace]) -> String {
+    if workspaces.is_empty() {
+        return "The user has no workspaces; leave workspace out.".to_string();
+    }
+    let listed: Vec<String> = workspaces
+        .iter()
+        .take(MAX_LISTED_WORKSPACES)
+        .map(|w| {
+            let archived = if w.archived { ", archived" } else { "" };
+            format!("\"{}\" (id {}{archived})", w.name, w.id)
+        })
+        .collect();
+    let more = workspaces.len().saturating_sub(MAX_LISTED_WORKSPACES);
+    let more = if more > 0 {
+        format!(" and {more} more (call list_workspaces)")
+    } else {
+        String::new()
+    };
+    format!("Valid workspaces: {}{more}.", listed.join(", "))
+}
+
+/// The workspace `value` names: its id, or its name (ignoring case). A value
+/// that matches nothing, or a name several workspaces share, is an error that
+/// lists the candidates; nothing is guessed.
+fn resolve_workspace<'a>(
+    workspaces: &'a [Workspace],
+    value: &str,
+) -> Result<&'a Workspace, ToolError> {
+    let value = value.trim();
+    if let Some(w) = workspaces.iter().find(|w| w.id == value) {
+        return Ok(w);
+    }
+    let lower = value.to_lowercase();
+    if let Some(w) = workspaces.iter().find(|w| w.id.to_lowercase() == lower) {
+        return Ok(w);
+    }
+    let named: Vec<&Workspace> = workspaces
+        .iter()
+        .filter(|w| w.name.trim().to_lowercase() == lower)
+        .collect();
+    match named.as_slice() {
+        [one] => Ok(*one),
+        [] => Err(ToolError::NotFound(format!(
+            "No workspace matches \"{value}\"; workspace takes a workspace id or name. {}",
+            valid_workspaces_text(workspaces)
+        ))),
+        several => Err(ToolError::NotFound(format!(
+            "\"{value}\" names more than one workspace: {}; pass its id instead.",
+            several
+                .iter()
+                .map(|w| format!("\"{}\" (id {})", w.name, w.id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+/// The `workspace` argument: `None` when absent, `Some(None)` for `null`
+/// (no workspace), else the workspace it names.
+async fn workspace_arg(
+    host: &AgentHost,
+    tool: &str,
+    args: &Value,
+) -> Result<Option<Option<Workspace>>, ToolError> {
+    match nullable_arg(args, "workspace") {
+        None => Ok(None),
+        Some(None) => Ok(Some(None)),
+        Some(Some(value)) if value.is_empty() => Err(invalid(
+            tool,
+            "`workspace` is empty: give a workspace id or name, or null for no workspace",
+        )),
+        Some(Some(value)) => {
+            let workspaces = all_workspaces(host).await?;
+            let found = resolve_workspace(&workspaces, &value)?;
+            Ok(Some(Some(found.clone())))
+        }
+    }
+}
+
+/// Show workspace changes by name (the approval card is read by the user).
+fn name_workspace_changes(changes: &mut [FieldChange], names: &WorkspaceNames) {
+    for change in changes.iter_mut().filter(|c| c.field == "workspace") {
+        for value in [&mut change.before, &mut change.after] {
+            if let Some(name) = value.as_str().and_then(|id| names.get(id)) {
+                *value = json!(name);
+            }
+        }
+    }
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
@@ -145,7 +275,9 @@ impl HostTool for CreateTaskTool {
         "Create a calendar task (a to-do with an optional due date, priority and reminder). \
          reminder is when to notify the user: a local date-time YYYY-MM-DDTHH:MM (or an RFC 3339 \
          timestamp), e.g. an hour before the due time. source_ref can hold the file the task came \
-         from, e.g. a contract path."
+         from, e.g. a contract path. workspace files the task under a workspace (its id or name \
+         from list_workspaces); in a workspace chat it defaults to that workspace, and null files \
+         it under no workspace."
     }
     fn schema(&self) -> Value {
         json!({
@@ -156,7 +288,8 @@ impl HostTool for CreateTaskTool {
                 "priority": {"type": "string", "enum": PRIORITIES},
                 "notes": {"type": "string", "maxLength": 4000},
                 "reminder": {"type": "string", "minLength": 16, "maxLength": 40},
-                "source_ref": {"type": "string", "minLength": 1, "maxLength": 1024}
+                "source_ref": {"type": "string", "minLength": 1, "maxLength": 1024},
+                "workspace": {"type": ["string", "null"], "minLength": 1, "maxLength": 200}
             },
             "required": ["title"],
             "additionalProperties": false
@@ -175,13 +308,31 @@ impl HostTool for CreateTaskTool {
                 "notes": str_arg(args, "notes"),
                 "reminder": str_arg(args, "reminder"),
                 "sourceRef": str_arg(args, "source_ref"),
+                "workspace": match args.get("workspace") {
+                    Some(Value::Null) => json!("none"),
+                    _ => json!(str_arg(args, "workspace")),
+                },
             }),
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::CREATE_TASK;
         let title = str_arg(&args, "title").ok_or_else(|| invalid(tool, "`title` is required"))?;
+        // Absent: the chat's workspace, if it has one (the app sets the scope
+        // from the conversation's workspace).
+        let workspace: Option<(String, String)> =
+            match workspace_arg(&self.host, tool, &args).await? {
+                Some(chosen) => chosen.map(|w| (w.id, w.name)),
+                None => ctx.scope().workspace.clone().map(|id| {
+                    let name = ctx
+                        .scope()
+                        .workspace_name
+                        .clone()
+                        .unwrap_or_else(|| id.clone());
+                    (id, name)
+                }),
+            };
         let new = NewTask {
             title: title.to_string(),
             due_date: str_arg(&args, "due").map(str::to_string),
@@ -190,6 +341,7 @@ impl HostTool for CreateTaskTool {
             reminder: str_arg(&args, "reminder").map(str::to_string),
             source: Some("agent".to_string()),
             source_ref: str_arg(&args, "source_ref").map(str::to_string),
+            workspace_id: workspace.as_ref().map(|(id, _)| id.clone()),
             ..NewTask::default()
         };
         let task = store(&self.host)
@@ -203,13 +355,22 @@ impl HostTool for CreateTaskTool {
             .as_deref()
             .map(|d| format!(", due {d}"))
             .unwrap_or_default();
+        let in_workspace = workspace
+            .as_ref()
+            .map(|(_, name)| format!(" in workspace “{name}”"))
+            .unwrap_or_default();
         Ok(ToolOutput {
             text_for_model: format!(
-                "Created task \"{}\" (id {}{due_text}). Use show_calendar with this task_id to show it.",
+                "Created task \"{}\" (id {}{due_text}){in_workspace}. Use show_calendar with this task_id to show it.",
                 task.title, task.id
             ),
-            summary_for_ui: format!("Created task “{}”{due_text}", task.title),
-            detail: Some(json!({ "id": task.id, "title": task.title, "due": task.due_date })),
+            summary_for_ui: format!("Created task “{}”{due_text}{in_workspace}", task.title),
+            detail: Some(json!({
+                "id": task.id,
+                "title": task.title,
+                "due": task.due_date,
+                "workspaceId": task.workspace_id,
+            })),
         })
     }
 }
@@ -319,16 +480,16 @@ impl HostTool for ListTasksTool {
         "List tasks"
     }
     fn label_template(&self) -> &'static str {
-        "Listing[ {status!}] tasks[ due from {due_from!}][ due by {due_to!}][ matching {text}]"
+        "Listing[ {status!}] tasks[ in {workspace}][ due from {due_from!}][ due by {due_to!}][ matching {text}]"
     }
     fn description(&self) -> &'static str {
         "List the user's tasks (to-dos) with their ids, titles, due dates, status and priority. \
          Call it for every question about the user's tasks (what they have, what is open, due, \
          overdue or done): the tasks are not in the indexed documents. Without filters it lists \
          all tasks (up to limit) and says how many there are. Filter by status, an inclusive due-date range (YYYY-MM-DD; tasks without a \
-         due date are left out when a range is given) and text in the title, notes, tags or \
-         project. Also use it to find a task's id before changing it, and to check your own \
-         changes."
+         due date are left out when a range is given), text in the title, notes, tags or \
+         project, and workspace (an id or name: only that workspace's tasks). Also use it to \
+         find a task's id before changing it, and to check your own changes."
     }
     fn schema(&self) -> Value {
         json!({
@@ -338,6 +499,7 @@ impl HostTool for ListTasksTool {
                 "due_from": {"type": "string", "minLength": 10, "maxLength": 40},
                 "due_to": {"type": "string", "minLength": 10, "maxLength": 40},
                 "text": {"type": "string", "minLength": 1, "maxLength": 200},
+                "workspace": {"type": "string", "minLength": 1, "maxLength": 200},
                 "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIST}
             },
             "additionalProperties": false
@@ -349,17 +511,38 @@ impl HostTool for ListTasksTool {
 
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::LIST_TASKS;
+        let (workspace_id, mut names) = match str_arg(&args, "workspace") {
+            Some(value) => {
+                let workspaces = all_workspaces(&self.host).await?;
+                let id = resolve_workspace(&workspaces, value)?.id.clone();
+                (Some(id), Some(workspace_names(&workspaces)))
+            }
+            None => (None, None),
+        };
         let filter = TaskFilter {
             status: str_arg(&args, "status").map(str::to_string),
             due_from: date_arg(tool, &args, "due_from")?,
             due_to: date_arg(tool, &args, "due_to")?,
             text: str_arg(&args, "text").map(str::to_string),
+            workspace_id,
         };
         let limit = limit_arg(&args, DEFAULT_LIST, MAX_LIST);
         let data = store(&self.host).load().map_err(|e| tool_error(tool, e))?;
         let matched = list_tasks(&data, &filter);
         let total = matched.len();
-        let shown: Vec<Value> = matched.iter().take(limit).map(|t| task_line(t)).collect();
+        if names.is_none() && matched.iter().any(|t| t.workspace_id.is_some()) {
+            // Names are a convenience: without the workspace store the ids still show.
+            names = all_workspaces(&self.host)
+                .await
+                .ok()
+                .map(|w| workspace_names(&w));
+        }
+        let names = names.unwrap_or_default();
+        let shown: Vec<Value> = matched
+            .iter()
+            .take(limit)
+            .map(|t| task_line(t, &names))
+            .collect();
         let more = if total > shown.len() {
             format!(
                 " Showing the first {}; narrow the filter to see the rest.",
@@ -461,7 +644,11 @@ fn nullable_arg(args: &Value, key: &str) -> Option<Option<String>> {
     }
 }
 
-fn task_patch_from_args(tool: &str, args: &Value) -> Result<TaskPatch, ToolError> {
+async fn task_patch_from_args(
+    host: &AgentHost,
+    tool: &str,
+    args: &Value,
+) -> Result<TaskPatch, ToolError> {
     let due_date = nullable_arg(args, "due");
     let subtasks = args.get("subtasks").and_then(Value::as_array).map(|items| {
         items
@@ -486,6 +673,9 @@ fn task_patch_from_args(tool: &str, args: &Value) -> Result<TaskPatch, ToolError
         priority: str_arg(args, "priority").map(str::to_string),
         status: str_arg(args, "status").map(str::to_string),
         project: nullable_arg(args, "project"),
+        workspace_id: workspace_arg(host, tool, args)
+            .await?
+            .map(|chosen| chosen.map(|w| w.id)),
         reminder: nullable_arg(args, "reminder"),
         subtasks,
         ..TaskPatch::default()
@@ -494,7 +684,7 @@ fn task_patch_from_args(tool: &str, args: &Value) -> Result<TaskPatch, ToolError
         return Err(invalid(
             tool,
             "give at least one field to change: title, notes, due, priority, status, project, \
-             reminder or subtasks",
+             workspace, reminder or subtasks",
         ));
     }
     Ok(patch)
@@ -581,8 +771,9 @@ impl HostTool for UpdateTaskTool {
     }
     fn description(&self) -> &'static str {
         "Change a task (id from list_tasks): title, notes (\"\" clears them), due date, priority, \
-         status, project, reminder, or the full subtask list (keep a subtask's id to keep it; omit \
-         the id to add one; leave one out to remove it). null clears due, project or reminder. \
+         status, project, workspace (an id or name from list_workspaces), reminder, or the full \
+         subtask list (keep a subtask's id to keep it; omit the id to add one; leave one out to \
+         remove it). null clears due, project, workspace or reminder. \
          reminder is when to notify the user, a local date-time YYYY-MM-DDTHH:MM (or RFC 3339); \
          setting it again re-arms a reminder that already rang. Only the fields you pass change."
     }
@@ -597,6 +788,7 @@ impl HostTool for UpdateTaskTool {
                 "priority": {"type": "string", "enum": PRIORITIES},
                 "status": {"type": "string", "enum": STATUSES},
                 "project": {"type": ["string", "null"], "maxLength": 200},
+                "workspace": {"type": ["string", "null"], "minLength": 1, "maxLength": 200},
                 "reminder": {"type": ["string", "null"], "maxLength": 40},
                 "subtasks": {
                     "type": "array",
@@ -624,8 +816,14 @@ impl HostTool for UpdateTaskTool {
         let tool = app_tools::UPDATE_TASK;
         let task_id =
             str_arg(args, "task_id").ok_or_else(|| invalid(tool, "`task_id` is required"))?;
-        let patch = task_patch_from_args(tool, args)?;
-        let (before, changes) = preview_task_patch(&self.host, tool, task_id, &patch)?;
+        let patch = task_patch_from_args(&self.host, tool, args).await?;
+        let (before, mut changes) = preview_task_patch(&self.host, tool, task_id, &patch)?;
+        if changes.iter().any(|c| c.field == "workspace") {
+            // Names read better than ids; the ids stay when the store is unavailable.
+            if let Ok(workspaces) = all_workspaces(&self.host).await {
+                name_workspace_changes(&mut changes, &workspace_names(&workspaces));
+            }
+        }
         Ok(ApprovalPreview {
             label: Some(format!("Update task “{}”", before.title)),
             details: json!({ "task": before.title, "changes": changes_json(&changes) }),
@@ -636,7 +834,7 @@ impl HostTool for UpdateTaskTool {
         let tool = app_tools::UPDATE_TASK;
         let task_id =
             str_arg(&args, "task_id").ok_or_else(|| invalid(tool, "`task_id` is required"))?;
-        let patch = task_patch_from_args(tool, &args)?;
+        let patch = task_patch_from_args(&self.host, tool, &args).await?;
         save_task_patch(&self.host, tool, task_id, &patch)
     }
 }
@@ -1059,7 +1257,9 @@ impl HostTool for ShowCalendarTool {
 mod tests {
     use super::super::testing;
     use super::*;
+    use shodh_rag::harness::tools::RunScope;
     use shodh_rag::harness::AgentEvent;
+    use shodh_rag::workspaces::{NewWorkspace, WorkspaceAuthor};
 
     async fn create(t: &testing::TestHost, title: &str, due: &str) -> String {
         let (ctx, _rx) = testing::ctx();
@@ -1369,5 +1569,226 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    // ── Workspaces ─────────────────────────────────────────────────────────
+
+    async fn workspace(t: &testing::TestHost, name: &str) -> Workspace {
+        let new = NewWorkspace {
+            name: name.to_string(),
+            ..NewWorkspace::default()
+        };
+        t.host
+            .workspaces
+            .run(move |s| s.create(&new, WorkspaceAuthor::User))
+            .await
+            .unwrap()
+    }
+
+    fn listed(id: &str, name: &str) -> Workspace {
+        Workspace {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: String::new(),
+            icon: "folder".to_string(),
+            color: "neutral".to_string(),
+            template: "blank".to_string(),
+            pinned: false,
+            archived: false,
+            created_at: String::new(),
+            updated_at: String::new(),
+            last_active_at: None,
+            instructions_version: 0,
+            source_counts: Default::default(),
+        }
+    }
+
+    fn stored_workspace(t: &testing::TestHost, task_id: &str) -> Option<String> {
+        store(&t.host)
+            .load()
+            .unwrap()
+            .task(task_id)
+            .unwrap()
+            .workspace_id
+            .clone()
+    }
+
+    #[test]
+    fn workspaces_resolve_by_id_or_name_and_unknown_ones_list_the_valid_ones() {
+        let all = vec![
+            listed("ws-1", "Thesis"),
+            listed("ws-2", "Tax 2026"),
+            listed("ws-3", "Reading"),
+            listed("ws-4", "reading"),
+        ];
+        assert_eq!(resolve_workspace(&all, "ws-2").unwrap().id, "ws-2");
+        assert_eq!(resolve_workspace(&all, " WS-1 ").unwrap().id, "ws-1");
+        assert_eq!(resolve_workspace(&all, "thesis").unwrap().id, "ws-1");
+        assert_eq!(resolve_workspace(&all, "TAX 2026").unwrap().id, "ws-2");
+        match resolve_workspace(&all, "Reading") {
+            Err(ToolError::NotFound(message)) => {
+                assert!(message.contains("more than one"), "{message}");
+                assert!(
+                    message.contains("ws-3") && message.contains("ws-4"),
+                    "{message}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        match resolve_workspace(&all, "Groceries") {
+            Err(ToolError::NotFound(message)) => {
+                assert!(
+                    message.contains("No workspace matches \"Groceries\""),
+                    "{message}"
+                );
+                assert!(message.contains("\"Thesis\" (id ws-1)"), "{message}");
+                assert!(message.contains("\"Tax 2026\" (id ws-2)"), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
+        match resolve_workspace(&[], "Thesis") {
+            Err(ToolError::NotFound(message)) => {
+                assert!(message.contains("no workspaces"), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn tasks_take_a_workspace_by_name_or_id_and_list_by_it() {
+        let t = testing::host().await;
+        let thesis = workspace(&t, "Thesis").await;
+        let tax = workspace(&t, "Tax").await;
+        let (ctx, _rx) = testing::ctx();
+        let create = CreateTaskTool {
+            host: t.host.clone(),
+        };
+        let out = create
+            .execute(json!({"title": "Read paper", "workspace": "thesis"}), &ctx)
+            .await
+            .unwrap();
+        let read = out.detail.unwrap()["id"].as_str().unwrap().to_string();
+        assert_eq!(stored_workspace(&t, &read), Some(thesis.id.clone()));
+        assert!(out.text_for_model.contains("in workspace “Thesis”"));
+        let out = create
+            .execute(json!({"title": "File return", "workspace": tax.id}), &ctx)
+            .await
+            .unwrap();
+        let file = out.detail.unwrap()["id"].as_str().unwrap().to_string();
+        assert_eq!(stored_workspace(&t, &file), Some(tax.id.clone()));
+
+        let unknown = create
+            .execute(json!({"title": "x", "workspace": "Groceries"}), &ctx)
+            .await;
+        match unknown {
+            Err(ToolError::NotFound(message)) => {
+                assert!(
+                    message.contains("Thesis") && message.contains("Tax"),
+                    "{message}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            store(&t.host).load().unwrap().tasks.len(),
+            2,
+            "nothing created"
+        );
+
+        let list = ListTasksTool {
+            host: t.host.clone(),
+        };
+        let out = list
+            .execute(json!({"workspace": "Thesis"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out.summary_for_ui, "1 task");
+        let rows = &out.detail.unwrap()["tasks"];
+        assert_eq!(rows[0]["id"], read.as_str());
+        assert_eq!(rows[0]["workspace"]["name"], "Thesis");
+        assert!(matches!(
+            list.execute(json!({"workspace": "nope"}), &ctx).await,
+            Err(ToolError::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn tasks_created_in_a_workspace_chat_go_to_that_workspace() {
+        let t = testing::host().await;
+        let thesis = workspace(&t, "Thesis").await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let ctx = ToolContext::new("run-1", "step-1", tx).with_scope(Arc::new(RunScope {
+            workspace: Some(thesis.id.clone()),
+            workspace_name: Some(thesis.name.clone()),
+            ..RunScope::default()
+        }));
+        let create = CreateTaskTool {
+            host: t.host.clone(),
+        };
+        let out = create
+            .execute(json!({"title": "Outline chapter 2"}), &ctx)
+            .await
+            .unwrap();
+        let id = out.detail.unwrap()["id"].as_str().unwrap().to_string();
+        assert_eq!(stored_workspace(&t, &id), Some(thesis.id.clone()));
+        let out = create
+            .execute(json!({"title": "Buy milk", "workspace": null}), &ctx)
+            .await
+            .unwrap();
+        let id = out.detail.unwrap()["id"].as_str().unwrap().to_string();
+        assert_eq!(stored_workspace(&t, &id), None, "null means no workspace");
+
+        let (plain, _rx) = testing::ctx();
+        let out = create
+            .execute(json!({"title": "Outside any workspace"}), &plain)
+            .await
+            .unwrap();
+        let id = out.detail.unwrap()["id"].as_str().unwrap().to_string();
+        assert_eq!(stored_workspace(&t, &id), None);
+    }
+
+    #[tokio::test]
+    async fn update_task_moves_and_clears_the_workspace_and_previews_names() {
+        let t = testing::host().await;
+        let thesis = workspace(&t, "Thesis").await;
+        let tax = workspace(&t, "Tax").await;
+        let id = create(&t, "Read paper", "2026-10-20").await;
+        let (ctx, _rx) = testing::ctx();
+        let update = UpdateTaskTool {
+            host: t.host.clone(),
+        };
+        update
+            .execute(json!({"task_id": id, "workspace": "Thesis"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(stored_workspace(&t, &id), Some(thesis.id.clone()));
+
+        let preview = update
+            .preview(&json!({"task_id": id, "workspace": "tax"}))
+            .await
+            .unwrap();
+        let change = &preview.details["changes"][0];
+        assert_eq!(change["field"], "workspace");
+        assert_eq!(change["before"], "Thesis");
+        assert_eq!(change["after"], "Tax");
+        update
+            .execute(json!({"task_id": id, "workspace": tax.id}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(stored_workspace(&t, &id), Some(tax.id.clone()));
+
+        assert!(matches!(
+            update
+                .preview(&json!({"task_id": id, "workspace": "Groceries"}))
+                .await,
+            Err(ToolError::NotFound(_))
+        ));
+        update
+            .execute(json!({"task_id": id, "workspace": null}), &ctx)
+            .await
+            .unwrap();
+        let task = store(&t.host).load().unwrap().task(&id).unwrap().clone();
+        assert_eq!(task.workspace_id, None);
+        assert_eq!(task.title, "Read paper", "the task is kept");
     }
 }

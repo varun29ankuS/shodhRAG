@@ -255,8 +255,8 @@ pub enum NavigationTarget {
         visual_id: String,
         version: Option<u32>,
     },
-    /// Open a workspace's page, at a tab (`overview`, `sources`, `chats`, `memory`,
-    /// `visuals`, `results`; the overview when absent).
+    /// Open a workspace's page, at a tab (`overview`, `sources`, `chats`, `tasks`,
+    /// `memory`, `visuals`, `results`; the overview when absent).
     Workspace {
         workspace_id: String,
         tab: Option<String>,

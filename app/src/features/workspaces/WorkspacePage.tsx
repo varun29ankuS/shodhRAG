@@ -10,6 +10,7 @@ import { VisualGallery } from '../visuals/VisualGallery';
 import { CompareResults } from '../research/CompareResults';
 import { PaperGraphView } from '../research/PaperGraphView';
 import { PaperPage } from '../research/PaperPage';
+import WorkspaceTaskBoard from '../tasks/TaskBoard';
 import { ConceptPage } from '../research/ConceptPage';
 import type { GraphPage, ViewNode } from '../research/graphTypes';
 import { onWorkspacesChanged, workspaceError, workspacesApi } from './api';
@@ -114,7 +115,7 @@ function ResultsTab({ workspace }: { workspace: WorkspaceDetail }) {
 
 /**
  * One workspace: its header (name, what it searches, new chat, pin, archive, delete) and
- * tabs for the overview and instructions, sources, chats, memory, visuals, and results
+ * tabs for the overview and instructions, sources, chats, its task board, memory, visuals, and results
  * and the citation graph.
  */
 export function WorkspacePage({
@@ -215,7 +216,7 @@ export function WorkspacePage({
   const remove = async () => {
     setMenuOpen(false);
     const confirmed = await ask(
-      `Delete the workspace “${detail.name}”? Its instructions and their history and its list of sources are deleted. Its ${chatIds.length} ${chatIds.length === 1 ? 'chat moves' : 'chats move'} to No workspace; your files, snippets and memories are kept.`,
+      `Delete the workspace “${detail.name}”? Its instructions and their history and its list of sources are deleted. Its ${chatIds.length} ${chatIds.length === 1 ? 'chat moves' : 'chats move'} to No workspace, and so do its tasks; your files, snippets and memories are kept.`,
       { title: 'Delete workspace', kind: 'warning', okLabel: 'Delete', cancelLabel: 'Keep' },
     );
     if (!confirmed) return;
@@ -347,6 +348,7 @@ export function WorkspacePage({
         {tab === 'overview' && <OverviewTab workspace={detail} onChanged={() => void load()} />}
         {tab === 'sources' && <SourcesTab workspace={detail} library={library} onChanged={() => void load()} />}
         {tab === 'chats' && <ChatsTab workspace={detail} onNewChat={() => onNewChat(detail.id)} onOpenChat={onOpenChat} />}
+        {tab === 'tasks' && <WorkspaceTaskBoard workspaceId={detail.id} workspaceName={detail.name} />}
         {tab === 'memory' && (
           <MemorySettings
             scope={`workspace:${detail.id}`}

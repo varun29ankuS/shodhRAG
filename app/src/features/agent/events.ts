@@ -241,7 +241,7 @@ export interface VisualTarget {
 export interface WorkspaceTarget {
   kind: "workspace";
   workspaceId: string;
-  /** "overview", "sources", "chats", "memory", "visuals" or "results". */
+  /** "overview", "sources", "chats", "tasks", "memory", "visuals" or "results". */
   tab: string | null;
 }
 

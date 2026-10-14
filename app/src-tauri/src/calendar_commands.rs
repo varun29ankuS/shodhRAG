@@ -3,11 +3,12 @@
 //! change is reported through [`HostEffects::calendar_changed`], which
 //! re-indexes the record and emits [`CALENDAR_CHANGED_EVENT`].
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, State};
 
 use crate::agent_tools::{CalendarChange, HostEffects, TauriEffects};
 use crate::calendar_store::{CalendarStore, EventPatch, TaskPatch};
 use crate::rag_commands::RagState;
+use crate::workspace_commands::WorkspaceState;
 
 pub use crate::calendar_store::{CalendarEvent, NewEvent, NewTask, TodoItem};
 
@@ -22,6 +23,37 @@ fn store(app: &AppHandle) -> Result<CalendarStore, String> {
 
 fn report(app: &AppHandle, change: CalendarChange) {
     TauriEffects::new(app.clone()).calendar_changed(change);
+}
+
+/// Fails unless `id` (when given) names an existing workspace, so a task is
+/// never filed under a workspace that does not exist.
+async fn check_workspace(workspaces: &WorkspaceState, id: Option<&str>) -> Result<(), String> {
+    let Some(id) = id.map(str::trim).filter(|id| !id.is_empty()) else {
+        return Ok(());
+    };
+    let id = id.to_string();
+    workspaces
+        .run(move |s| s.get(&id))
+        .await
+        .map(|_| ())
+        .map_err(|e| e.message)
+}
+
+/// Takes the tasks of a deleted workspace out of it. The tasks are kept with
+/// no workspace; each is re-indexed and open views refresh. Returns how many
+/// tasks changed.
+pub fn detach_workspace_tasks(app: &AppHandle, workspace_id: &str) -> Result<usize, String> {
+    let detached = store(app)?
+        .update(|d| Ok(d.detach_workspace(workspace_id)))
+        .map_err(|e| e.to_string())?;
+    let count = detached.len();
+    for task in detached {
+        report(app, CalendarChange::TaskSaved(task));
+    }
+    if count > 0 {
+        tracing::info!(workspace_id = %workspace_id, tasks = count, "Tasks of a deleted workspace kept without it");
+    }
+    Ok(count)
 }
 
 // ── RAG Indexing Helpers ─────────────────────────────────────────
@@ -143,16 +175,19 @@ pub async fn load_tasks(app: AppHandle) -> Result<Vec<TodoItem>, String> {
 #[allow(clippy::too_many_arguments)] // Tauri passes each field as its own argument.
 pub async fn create_task(
     app: AppHandle,
+    workspaces: State<'_, WorkspaceState>,
     title: String,
     description: Option<String>,
     due_date: Option<String>,
     priority: Option<String>,
     tags: Option<Vec<String>>,
     project: Option<String>,
+    workspace_id: Option<String>,
     source: Option<String>,
     source_ref: Option<String>,
     reminder: Option<String>,
 ) -> Result<TodoItem, String> {
+    check_workspace(&workspaces, workspace_id.as_deref()).await?;
     let task = store(&app)?
         .update(|d| {
             d.insert_task(NewTask {
@@ -162,6 +197,7 @@ pub async fn create_task(
                 priority,
                 tags,
                 project,
+                workspace_id,
                 source,
                 source_ref,
                 reminder,
@@ -175,11 +211,13 @@ pub async fn create_task(
 
 /// Change a task. A field left out keeps its value; `clear` names the
 /// optional fields to empty (`due_date`, `project`, `description`,
-/// `reminder`), since an absent value can never mean "remove".
+/// `reminder`, `workspace_id`), since an absent value can never mean
+/// "remove".
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri passes each field as its own argument.
 pub async fn update_task(
     app: AppHandle,
+    workspaces: State<'_, WorkspaceState>,
     id: String,
     title: Option<String>,
     description: Option<String>,
@@ -188,9 +226,11 @@ pub async fn update_task(
     status: Option<String>,
     tags: Option<Vec<String>>,
     project: Option<String>,
+    workspace_id: Option<String>,
     reminder: Option<String>,
     clear: Option<Vec<String>>,
 ) -> Result<TodoItem, String> {
+    check_workspace(&workspaces, workspace_id.as_deref()).await?;
     let patch = TaskPatch {
         title,
         description,
@@ -199,6 +239,7 @@ pub async fn update_task(
         status,
         tags,
         project: project.map(Some),
+        workspace_id: workspace_id.map(Some),
         reminder: reminder.map(Some),
         subtasks: None,
     }

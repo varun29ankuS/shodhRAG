@@ -17,6 +17,8 @@ export interface TodoItem {
   tags: string[];
   subtasks: SubTask[];
   project?: string | null;
+  /** The workspace the task belongs to. It may name a workspace that is no longer listed. */
+  workspaceId?: string | null;
   /** `user`, `agent` or `document`. */
   source: string;
   sourceRef?: string | null;
@@ -48,11 +50,12 @@ export interface CalendarEvent {
 /** Priorities the backend and agent use (`default_priority` is `medium`). */
 export const PRIORITIES = ['high', 'medium', 'low'] as const;
 
-/** Statuses the backend uses; only `completed` is special-cased there. */
-export const STATUSES = ['pending', 'completed'] as const;
+/** Statuses the backend accepts (`calendar_store.rs::STATUSES`); only `completed` is special-cased there. */
+export const STATUSES = ['pending', 'in_progress', 'completed'] as const;
 
 export const STATUS_LABELS: Record<string, string> = {
   pending: 'To do',
+  in_progress: 'In progress',
   completed: 'Done',
 };
 

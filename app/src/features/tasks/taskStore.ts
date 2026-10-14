@@ -142,6 +142,8 @@ export interface TaskPatch {
   status?: string;
   tags?: string[];
   project?: string | null;
+  /** The workspace the task belongs to; `null` takes it out of its workspace. */
+  workspaceId?: string | null;
   reminder?: string | null;
 }
 
@@ -156,10 +158,11 @@ export interface EventPatch {
 }
 
 /** Backend names of the fields a `null` clears (`calendar_store.rs::TASK_CLEARABLE`). */
-const TASK_CLEAR: Record<'dueDate' | 'project' | 'reminder', string> = {
+const TASK_CLEAR: Record<'dueDate' | 'project' | 'reminder' | 'workspaceId', string> = {
   dueDate: 'due_date',
   project: 'project',
   reminder: 'reminder',
+  workspaceId: 'workspace_id',
 };
 
 /** `calendar_store.rs::EVENT_CLEARABLE`. */

@@ -383,7 +383,7 @@ pub async fn workspaces_remove_source(
 }
 
 /// Deletes a workspace (its instructions history and source list; never the sources).
-/// Its chats are kept and move to "No workspace".
+/// Its chats and tasks are kept and move to "No workspace".
 #[tauri::command]
 pub async fn workspaces_delete(
     app: AppHandle,
@@ -392,6 +392,15 @@ pub async fn workspaces_delete(
 ) -> WorkspaceCommandResult<bool> {
     let dir = data_dir(&app)?;
     let workspace_id = id.clone();
+    // Tasks first: if the calendar cannot be written nothing is deleted, and
+    // if the delete then fails the tasks are unfiled rather than left naming
+    // a workspace that no longer exists.
+    crate::calendar_commands::detach_workspace_tasks(&app, &workspace_id).map_err(|message| {
+        WorkspaceCommandError {
+            code: "storage",
+            message,
+        }
+    })?;
     let removed = state.run(move |s| s.delete(&id)).await?;
     if removed {
         crate::mcp_commands::forget_workspace(&app, &workspace_id);

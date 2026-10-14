@@ -9,6 +9,8 @@ import { useChatSession } from '../ask/ChatSessionContext';
 import { useFocus } from '../focus/FocusContext';
 import { taskTarget } from '../focus/targets';
 import { isTempSubtaskId } from './taskStore';
+import { workspaceChoices, workspaceName } from './board';
+import { useWorkspaces } from '../workspaces/WorkspaceContext';
 import { PRIORITIES, PRIORITY_LABELS, STATUSES, STATUS_LABELS } from './types';
 import type { TodoItem } from './types';
 
@@ -188,6 +190,40 @@ function SubtaskList({ task }: { task: TodoItem }) {
   );
 }
 
+/**
+ * The workspace a task belongs to (its project). A task naming a workspace
+ * that is not listed keeps the id until the user picks another or none.
+ */
+function WorkspaceField({ task }: { task: TodoItem }) {
+  const { updateTask } = useTasksStore();
+  const { allWorkspaces, status } = useWorkspaces();
+  const selectId = useId();
+  const options = workspaceChoices(allWorkspaces, task.workspaceId);
+  const unlisted = !!task.workspaceId && workspaceName(task.workspaceId, allWorkspaces) === null;
+  return (
+    <div className="px-2.5 flex flex-col gap-1">
+      <label htmlFor={selectId} className={FIELD_LABEL}>Workspace</label>
+      <select
+        id={selectId}
+        value={task.workspaceId ?? ''}
+        onChange={e => void updateTask(task.id, { workspaceId: e.target.value || null })}
+        className={cn(
+          'h-8 w-full max-w-[20rem] rounded-lg border border-shodh-border bg-shodh-surface px-2 text-[13px] text-shodh-text hover:border-shodh-border-strong',
+          FOCUS_RING,
+        )}
+      >
+        <option value="">No workspace</option>
+        {unlisted && task.workspaceId && (
+          <option value={task.workspaceId}>{status === 'loading' ? 'Loading workspaces…' : 'A workspace that no longer exists'}</option>
+        )}
+        {options.map(w => (
+          <option key={w.id} value={w.id}>{w.archived ? `${w.name} (archived)` : w.name}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 /** Task detail and editing sheet. Every field saves on its own (blur/Enter/click). */
 /**
  * Opens the task in the focus pop-out with a side discussion about it. The
@@ -336,6 +372,7 @@ export default function TaskDetailSheet({ task, onClose }: { task: TodoItem | nu
           {projects.map(p => <option key={p} value={p} />)}
         </datalist>
       </div>
+      <WorkspaceField key={`workspace-${shown.id}`} task={shown} />
       <div className="px-1">
         <ChipInput
           key={`tags-${shown.id}`}

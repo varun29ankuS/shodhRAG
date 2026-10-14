@@ -117,11 +117,8 @@ impl HostEffects for TauriEffects {
     }
 
     fn openrouter_key(&self) -> Option<String> {
-        let non_empty =
-            |v: Option<String>| v.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
-        if let Some(key) = non_empty(std::env::var("OPENROUTER_API_KEY").ok()) {
-            return Some(key);
-        }
+        // A key saved in the app wins over `OPENROUTER_API_KEY`
+        // (see `api_key_store::choose_key`).
         let llm = self.app.state::<LLMState>();
         let stored = llm
             .api_keys
@@ -129,18 +126,17 @@ impl HostEffects for TauriEffects {
             .unwrap_or_else(|e| e.into_inner())
             .openrouter
             .clone();
-        if let Some(key) = non_empty(stored) {
-            return Some(key);
-        }
-        let config = llm.config.lock().unwrap_or_else(|e| e.into_inner());
-        match &config.mode {
+        let configured = match &llm.config.lock().unwrap_or_else(|e| e.into_inner()).mode {
             LLMMode::External {
                 provider: shodh_rag::llm::ApiProvider::OpenRouter,
                 api_key,
                 ..
-            } => non_empty(Some(api_key.clone())),
+            } => Some(api_key.clone()),
             _ => None,
-        }
+        };
+        let saved = crate::api_key_store::choose_key(stored, configured).map(|(key, _)| key);
+        crate::api_key_store::choose_key(saved, crate::api_key_store::process_env_key("openrouter"))
+            .map(|(key, _)| key)
     }
 
     fn model_info(&self) -> Option<ModelInfo> {

@@ -281,7 +281,7 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let llm_state = llm_bootstrap_handle.state::<LLMState>();
                 // Once: keys from the environment are saved in the OS
-                // credential store (the environment still wins at run time).
+                // credential store (a saved key wins over the environment at run time).
                 let migrate_handle = llm_bootstrap_handle.clone();
                 if let Err(e) = tokio::task::spawn_blocking(move || {
                     connect_commands::migrate_env_keys_once(&migrate_handle)

@@ -169,32 +169,13 @@ fn data_dir(app: &AppHandle) -> PickerResult<PathBuf> {
         .map_err(|e| PickerError::failed(format!("The app data folder is unavailable: {e}")))
 }
 
-/// Provider key environment variables (they are used without being saved).
-fn env_key_vars(provider: ProviderId) -> &'static [&'static str] {
-    match provider {
-        ProviderId::OpenRouter => &["OPENROUTER_API_KEY"],
-        ProviderId::Anthropic => &["ANTHROPIC_API_KEY"],
-        ProviderId::OpenAI => &["OPENAI_API_KEY"],
-        ProviderId::Google => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-        ProviderId::Grok => &["XAI_API_KEY"],
-        _ => &[],
-    }
-}
-
-/// The key for `provider`: environment first, then the keys loaded from the
-/// OS keychain. Never logged.
+/// The key for `provider`: the one saved in the app (loaded from the OS
+/// keychain), else the provider's environment variable. Never logged.
 fn provider_key(llm: &LLMState, provider: ProviderId) -> Option<String> {
-    let from_env = env_key_vars(provider).iter().find_map(|var| {
-        std::env::var(var)
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-    });
-    from_env.or_else(|| {
-        lock(&llm.api_keys)
-            .get(provider.as_str())
-            .filter(|k| !k.trim().is_empty())
-    })
+    let id = provider.as_str();
+    let saved = lock(&llm.api_keys).get(id);
+    crate::api_key_store::choose_key(saved, crate::api_key_store::process_env_key(id))
+        .map(|(key, _)| key)
 }
 
 /// Providers that have a key.
@@ -1015,12 +996,11 @@ mod tests {
     fn keys_come_from_the_keychain_copy_and_ollama_needs_none() {
         let llm = llm_with(LLMMode::Disabled);
         lock(&llm.api_keys).openrouter = Some("sk-or-test".into());
-        if std::env::var("OPENROUTER_API_KEY").is_err() {
-            assert_eq!(
-                provider_key(&llm, ProviderId::OpenRouter).as_deref(),
-                Some("sk-or-test")
-            );
-        }
+        assert_eq!(
+            provider_key(&llm, ProviderId::OpenRouter).as_deref(),
+            Some("sk-or-test"),
+            "the saved key is used whatever the environment holds"
+        );
         assert!(keyed_providers(&llm).contains(&ProviderId::OpenRouter));
         let ollama = mode_for(&llm, &ModelRef::new(ProviderId::Ollama, "qwen3:4b")).unwrap();
         assert!(matches!(

@@ -674,8 +674,9 @@ pub fn check_at_startup(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let connect = app.state::<ConnectState>();
+        let host = ollama_host();
         tokio::join!(
-            refresh_local(&app, &connect, &ollama_host()),
+            refresh_local(&app, &connect, &host),
             refresh_subscriptions(&app, &connect, false),
         );
         check(&app, None).await;

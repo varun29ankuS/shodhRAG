@@ -554,7 +554,12 @@ pub async fn verify_key(
         KeyHealth::Limited {
             status: 200..=299, ..
         } => Ok(()),
-        KeyHealth::Rejected { .. } => Err(KeyCheckError::Rejected(label)),
+        // As before the status check existed: a 400/403 refuses the key,
+        // whatever the reason the provider gives.
+        KeyHealth::Rejected { .. }
+        | KeyHealth::Limited {
+            status: 400 | 403, ..
+        } => Err(KeyCheckError::Rejected(label)),
         KeyHealth::Limited { status, .. } => {
             Err(KeyCheckError::Unreachable(label, format!("HTTP {status}")))
         }

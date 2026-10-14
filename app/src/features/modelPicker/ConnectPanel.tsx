@@ -7,7 +7,7 @@ import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import type { ModelPickerHandle, SignInEvent } from './modelApi';
 import { SIGN_IN_EVENT, connectApi, toConnectError } from './modelApi';
-import type { ProviderId, SubscriptionStatus } from './modelTypes';
+import type { PickerView, ProviderId, SubscriptionStatus } from './modelTypes';
 import { KEY_PROVIDERS, PROVIDER_LABELS } from './modelTypes';
 import { FIX_KEY_EVENT, takeFixKeyRequest } from './navigation';
 
@@ -49,6 +49,18 @@ function statusText(s: SubscriptionStatus): string | null {
 }
 
 /**
+ * The provider whose row "Fix key" for `provider` shows. A Claude Pro/Max
+ * sign-in answers as `anthropic` too, so without an Anthropic key a rejected
+ * `anthropic` answer came from the sign-in.
+ */
+function fixTargetOf(provider: ProviderId, view: PickerView | null): ProviderId {
+  if (provider !== 'anthropic' || !view) return provider;
+  const hasKey = view.keys.some(k => k.provider === 'anthropic');
+  const signedIn = view.subscriptions.some(s => s.provider === 'claude-sub' && s.state !== 'signed_out');
+  return !hasKey && signedIn ? 'claude-sub' : provider;
+}
+
+/**
  * Settings → Model → Connect: sign in with a subscription, paste an API
  * key, or run a model on this computer. The first-run setup uses it too.
  */
@@ -61,6 +73,7 @@ export function ConnectPanel({ picker }: { picker: ModelPickerHandle }) {
   const [fixFor, setFixFor] = useState<ProviderId | null>(() => takeFixKeyRequest());
   const containerRef = useRef<HTMLDivElement>(null);
   const ready = view !== null;
+  const fixTarget = fixFor ? fixTargetOf(fixFor, view) : null;
 
   useEffect(() => {
     const onRequest = () => {
@@ -74,14 +87,14 @@ export function ConnectPanel({ picker }: { picker: ModelPickerHandle }) {
   // Bring the requested provider's row into view and focus it: the key field,
   // the subscription's sign-in button, or the local servers.
   useEffect(() => {
-    if (!fixFor || !ready) return;
-    const target = KEY_PROVIDERS.includes(fixFor) ? 'key' : fixFor === 'lmstudio' || fixFor === 'ollama' ? 'local' : fixFor;
+    if (!fixTarget || !ready) return;
+    const target = KEY_PROVIDERS.includes(fixTarget) ? 'key' : fixTarget === 'lmstudio' || fixTarget === 'ollama' ? 'local' : fixTarget;
     const row = containerRef.current?.querySelector<HTMLElement>(`[data-connect-target="${target}"]`);
     if (!row) return;
     row.scrollIntoView({ block: 'center' });
     const focusable = row.matches('input, button') ? row : row.querySelector<HTMLElement>('input:not([disabled]), button:not([disabled])');
     focusable?.focus({ preventScroll: true });
-  }, [fixFor, ready]);
+  }, [fixTarget, ready]);
 
   useEffect(() => {
     let disposed = false;
@@ -164,7 +177,7 @@ export function ConnectPanel({ picker }: { picker: ModelPickerHandle }) {
       />
       <ApiKeyRow
         picker={picker}
-        fixFor={fixFor && KEY_PROVIDERS.includes(fixFor) ? fixFor : null}
+        fixFor={fixTarget && KEY_PROVIDERS.includes(fixTarget) ? fixTarget : null}
         onSaved={() => setFixFor(null)}
       />
       <LocalRow picker={picker} />
@@ -390,7 +403,7 @@ function ApiKeyRow({ picker, fixFor, onSaved }: { picker: ModelPickerHandle; fix
         )}
         <p id={helpId} className="m-0 text-[12px] text-shodh-text-muted">
           {view && view.keys.length > 0
-            ? `Connected: ${view.keys.map(k => (k.source === 'environment' ? `${k.label} (set by environment)` : k.label)).join(', ')}.`
+            ? `Keys: ${view.keys.map(k => (k.source === 'environment' ? `${k.label} (from the environment)` : k.label)).join(', ')}. Whether each one works shows in the top bar.`
             : 'OpenRouter, Anthropic, OpenAI, Google and xAI keys work.'}
         </p>
         {error && (

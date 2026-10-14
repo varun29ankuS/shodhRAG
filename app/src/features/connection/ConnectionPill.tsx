@@ -51,11 +51,13 @@ function ProviderRow({
   inUse,
   nowMs,
   onCheck,
+  onFix,
 }: {
   status: ProviderStatus;
   inUse: boolean;
   nowMs: number;
   onCheck: (provider: ProviderId) => void;
+  onFix: (provider: ProviderId) => void;
 }) {
   const note = keyOriginNote(status);
   return (
@@ -90,7 +92,7 @@ function ProviderRow({
           )}
           Check now
         </button>
-        <button type="button" className={SMALL_BUTTON} onClick={() => requestFixKey(status.provider)}>
+        <button type="button" className={SMALL_BUTTON} onClick={() => onFix(status.provider)}>
           <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />
           {fixLabel(status)}
         </button>
@@ -257,6 +259,10 @@ export function ConnectionPill() {
                   inUse={status.provider === activeProvider}
                   nowMs={nowMs}
                   onCheck={provider => void check(provider)}
+                  onFix={provider => {
+                    close(false);
+                    requestFixKey(provider);
+                  }}
                 />
               ))}
             </ul>

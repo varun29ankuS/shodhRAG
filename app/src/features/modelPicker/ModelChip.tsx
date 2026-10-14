@@ -6,6 +6,7 @@ import { notify } from '../../lib/notify';
 import { OPEN_MODEL_PICKER_EVENT, useModelPicker } from './modelApi';
 import { ChipMenu } from './ChipMenu';
 import { modelName, sourceText } from './modelFormat';
+import { OPEN_PICKER_REQUEST_EVENT, takeModelPickerRequest } from './navigation';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
@@ -71,6 +72,17 @@ export function ModelChip({ answerRunning, onOpenSettings }: ModelChipProps) {
     const onOpen = () => setOpen(true);
     window.addEventListener(OPEN_MODEL_PICKER_EVENT, onOpen);
     return () => window.removeEventListener(OPEN_MODEL_PICKER_EVENT, onOpen);
+  }, []);
+
+  // "Switch model" in the top bar's connection status: asked for before or
+  // after this chip mounted.
+  useEffect(() => {
+    if (takeModelPickerRequest()) setOpen(true);
+    const onRequest = () => {
+      if (takeModelPickerRequest()) setOpen(true);
+    };
+    window.addEventListener(OPEN_PICKER_REQUEST_EVENT, onRequest);
+    return () => window.removeEventListener(OPEN_PICKER_REQUEST_EVENT, onRequest);
   }, []);
 
   // Reopening shows current prices and installed local models.

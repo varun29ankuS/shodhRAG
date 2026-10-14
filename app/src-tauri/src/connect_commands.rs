@@ -341,6 +341,7 @@ pub async fn connect_sign_in(
         if state.signed_in().contains(&provider) {
             record(&handle, provider, "sign_in");
             emit(&handle, event("connected", None));
+            crate::connection_health::notify(&handle);
             return;
         }
         let message = match outcome {
@@ -498,6 +499,7 @@ pub async fn connect_sign_out(
     omp_auth::sign_out(&binary, &OmpLayout::new(&dir), service).await?;
     state.set_status(service, SignInState::SignedOut, Vec::new());
     record(&app, provider, "sign_out");
+    crate::connection_health::notify(&app);
     Ok(())
 }
 
@@ -577,6 +579,7 @@ pub fn key_provider(key: &str, chosen: Option<ProviderId>) -> ConnectResult<Prov
 /// store. `provider` is the person's choice when the prefix was ambiguous.
 #[tauri::command]
 pub async fn connect_save_key(
+    app: AppHandle,
     key: String,
     provider: Option<ProviderId>,
     llm: State<'_, LLMState>,
@@ -595,7 +598,11 @@ pub async fn connect_save_key(
         .await
         .map_err(|e| ConnectError::new("failed", format!("Credential store task failed: {e}")))?
         .map_err(|e| ConnectError::new("failed", e))?;
+    // The check above is the provider's answer for this key: the status
+    // shows it works without a second request.
+    crate::connection_health::record_verified_key(&app, provider, &key);
     lock(&llm.api_keys).set(id, Some(key));
+    crate::connection_health::notify(&app);
     audit.record(AuditRecord::new(
         AuditEventType::SettingsChange,
         audit_payload::api_key_change(id, audit_payload::KeyAction::Set),
@@ -609,6 +616,7 @@ pub async fn connect_save_key(
 /// Remove a saved key (an environment key, if set, is used from then on).
 #[tauri::command]
 pub async fn connect_remove_key(
+    app: AppHandle,
     provider: ProviderId,
     llm: State<'_, LLMState>,
     audit: State<'_, AuditState>,
@@ -625,6 +633,7 @@ pub async fn connect_remove_key(
         .map_err(|e| ConnectError::new("failed", format!("Credential store task failed: {e}")))?
         .map_err(|e| ConnectError::new("failed", e))?;
     lock(&llm.api_keys).set(id, None);
+    crate::connection_health::notify(&app);
     audit.record(AuditRecord::new(
         AuditEventType::SettingsChange,
         audit_payload::api_key_change(id, audit_payload::KeyAction::Deleted),

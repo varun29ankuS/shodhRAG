@@ -7,8 +7,9 @@ import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import type { ModelPickerHandle, SignInEvent } from './modelApi';
 import { SIGN_IN_EVENT, connectApi, toConnectError } from './modelApi';
-import type { ProviderId, SubscriptionStatus } from './modelTypes';
-import { PROVIDER_LABELS } from './modelTypes';
+import type { PickerView, ProviderId, SubscriptionStatus } from './modelTypes';
+import { KEY_PROVIDERS, PROVIDER_LABELS } from './modelTypes';
+import { FIX_KEY_EVENT, takeFixKeyRequest } from './navigation';
 
 export const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -48,6 +49,18 @@ function statusText(s: SubscriptionStatus): string | null {
 }
 
 /**
+ * The provider whose row "Fix key" for `provider` shows. A Claude Pro/Max
+ * sign-in answers as `anthropic` too, so without an Anthropic key a rejected
+ * `anthropic` answer came from the sign-in.
+ */
+function fixTargetOf(provider: ProviderId, view: PickerView | null): ProviderId {
+  if (provider !== 'anthropic' || !view) return provider;
+  const hasKey = view.keys.some(k => k.provider === 'anthropic');
+  const signedIn = view.subscriptions.some(s => s.provider === 'claude-sub' && s.state !== 'signed_out');
+  return !hasKey && signedIn ? 'claude-sub' : provider;
+}
+
+/**
  * Settings → Model → Connect: sign in with a subscription, paste an API
  * key, or run a model on this computer. The first-run setup uses it too.
  */
@@ -56,6 +69,32 @@ export function ConnectPanel({ picker }: { picker: ModelPickerHandle }) {
   const [signIn, setSignIn] = useState<SignInProgress | null>(null);
   const [starting, setStarting] = useState<ProviderId | null>(null);
   const [signInError, setSignInError] = useState<string | null>(null);
+  // "Fix key" elsewhere (the top bar, an answer's error card) asked for one provider's row.
+  const [fixFor, setFixFor] = useState<ProviderId | null>(() => takeFixKeyRequest());
+  const containerRef = useRef<HTMLDivElement>(null);
+  const ready = view !== null;
+  const fixTarget = fixFor ? fixTargetOf(fixFor, view) : null;
+
+  useEffect(() => {
+    const onRequest = () => {
+      const provider = takeFixKeyRequest();
+      if (provider) setFixFor(provider);
+    };
+    window.addEventListener(FIX_KEY_EVENT, onRequest);
+    return () => window.removeEventListener(FIX_KEY_EVENT, onRequest);
+  }, []);
+
+  // Bring the requested provider's row into view and focus it: the key field,
+  // the subscription's sign-in button, or the local servers.
+  useEffect(() => {
+    if (!fixTarget || !ready) return;
+    const target = KEY_PROVIDERS.includes(fixTarget) ? 'key' : fixTarget === 'lmstudio' || fixTarget === 'ollama' ? 'local' : fixTarget;
+    const row = containerRef.current?.querySelector<HTMLElement>(`[data-connect-target="${target}"]`);
+    if (!row) return;
+    row.scrollIntoView({ block: 'center' });
+    const focusable = row.matches('input, button') ? row : row.querySelector<HTMLElement>('input:not([disabled]), button:not([disabled])');
+    focusable?.focus({ preventScroll: true });
+  }, [fixTarget, ready]);
 
   useEffect(() => {
     let disposed = false;
@@ -123,7 +162,7 @@ export function ConnectPanel({ picker }: { picker: ModelPickerHandle }) {
   }
 
   return (
-    <div className="flex flex-col divide-y divide-shodh-border-subtle">
+    <div ref={containerRef} className="flex flex-col divide-y divide-shodh-border-subtle">
       <SubscriptionsRow
         subscriptions={view.subscriptions}
         signIn={signIn}
@@ -136,7 +175,11 @@ export function ConnectPanel({ picker }: { picker: ModelPickerHandle }) {
           setSignIn(null);
         }}
       />
-      <ApiKeyRow picker={picker} />
+      <ApiKeyRow
+        picker={picker}
+        fixFor={fixTarget && KEY_PROVIDERS.includes(fixTarget) ? fixTarget : null}
+        onSaved={() => setFixFor(null)}
+      />
       <LocalRow picker={picker} />
     </div>
   );
@@ -182,7 +225,7 @@ function SubscriptionsRow({
           const status = statusText(s);
           const busy = starting === s.provider || signIn?.provider === s.provider;
           return (
-            <li key={s.provider} className="flex flex-col gap-1">
+            <li key={s.provider} data-connect-target={s.provider} className="flex flex-col gap-1">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                 <span className="min-w-[10rem] text-[13px] font-medium text-shodh-text">{s.label}</span>
                 {status && (
@@ -254,7 +297,7 @@ function SubscriptionsRow({
   );
 }
 
-function ApiKeyRow({ picker }: { picker: ModelPickerHandle }) {
+function ApiKeyRow({ picker, fixFor, onSaved }: { picker: ModelPickerHandle; fixFor: ProviderId | null; onSaved: () => void }) {
   const { view, reload } = picker;
   const [key, setKey] = useState('');
   const [candidates, setCandidates] = useState<ProviderId[]>([]);
@@ -277,6 +320,7 @@ function ApiKeyRow({ picker }: { picker: ModelPickerHandle }) {
       setCandidates([]);
       setChosen('');
       notify.success(`${saved.label} is connected`);
+      onSaved();
       await reload(false);
     } catch (e) {
       const err = toConnectError(e);
@@ -305,12 +349,18 @@ function ApiKeyRow({ picker }: { picker: ModelPickerHandle }) {
         }}
       >
         <label htmlFor={keyId} className="text-[12.5px] font-medium text-shodh-text-secondary">
-          API key
+          {fixFor ? `New ${PROVIDER_LABELS[fixFor]} API key` : 'API key'}
         </label>
+        {fixFor && (
+          <p className="m-0 text-[12px] text-shodh-text-muted max-w-[65ch]">
+            {`Paste a new ${PROVIDER_LABELS[fixFor]} key. It is checked once with ${PROVIDER_LABELS[fixFor]}, saved in the system keychain and used from the next answer.`}
+          </p>
+        )}
         <div className="flex flex-wrap gap-2">
           <input
             ref={inputRef}
             id={keyId}
+            data-connect-target="key"
             type="password"
             autoComplete="off"
             spellCheck={false}
@@ -353,7 +403,7 @@ function ApiKeyRow({ picker }: { picker: ModelPickerHandle }) {
         )}
         <p id={helpId} className="m-0 text-[12px] text-shodh-text-muted">
           {view && view.keys.length > 0
-            ? `Connected: ${view.keys.map(k => (k.source === 'environment' ? `${k.label} (set by environment)` : k.label)).join(', ')}.`
+            ? `Keys: ${view.keys.map(k => (k.source === 'environment' ? `${k.label} (from the environment)` : k.label)).join(', ')}. Whether each one works shows in the top bar.`
             : 'OpenRouter, Anthropic, OpenAI, Google and xAI keys work.'}
         </p>
         {error && (
@@ -371,7 +421,7 @@ function LocalRow({ picker }: { picker: ModelPickerHandle }) {
   if (!view) return null;
   const { lmstudio, ollama } = view;
   return (
-    <section className="py-4 last:pb-0 flex flex-col gap-3" aria-label="Run locally">
+    <section data-connect-target="local" className="py-4 last:pb-0 flex flex-col gap-3" aria-label="Run locally">
       <RowHeading icon={Monitor} title="Run locally">
         Models on this computer answer without anything leaving it.
       </RowHeading>

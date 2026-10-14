@@ -1,17 +1,19 @@
 //! Fetching the model lists the picker shows: OpenRouter's public model list
 //! (no key is sent), the models installed in Ollama and loaded in LM Studio,
-//! and the one request that checks a pasted API key with its provider.
+//! and the one request that checks an API key with its provider (a pasted
+//! key before it is saved, and the key in use for the connection status).
 //!
 //! Both requests are bounded (time and size) and identify the app with its
 //! generic User-Agent only. Nothing about the user is sent.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
 use serde::Deserialize;
 
 use super::model::is_valid_model_id;
 use super::model_catalog::{parse_openrouter, CatalogError, CatalogModel};
+use super::provider_error::{classify, limit_reset_at_ms, reset_epoch_ms, ProviderErrorKind};
 
 /// OpenRouter's public list of models with prices and supported parameters.
 pub const OPENROUTER_MODELS_URL: &str = "https://openrouter.ai/api/v1/models";
@@ -244,25 +246,268 @@ pub enum KeyCheckError {
     NoKey(&'static str),
 }
 
-/// Check `key` with one request to `provider` only. The key is sent in a
-/// header and never appears in an error.
-pub async fn verify_key(
+/// Most of a key check's answer read: its error message, or the key's
+/// details. Anything past it is not needed and not read.
+pub const MAX_KEY_CHECK_BODY: usize = 16 * 1024;
+/// Longest provider message kept for the UI.
+pub const MAX_PROVIDER_MESSAGE_CHARS: usize = 300;
+
+/// What one key check found. The check is a models list or, for
+/// OpenRouter, its key endpoint: neither generates text nor counts as a
+/// request against a free model allowance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyHealth {
+    /// The provider accepted the key.
+    Works,
+    /// The provider refused the key (400/401/403), with its message when it
+    /// gave one. `status` is `None` when the key could not even be sent.
+    Rejected {
+        status: Option<u16>,
+        message: Option<String>,
+    },
+    /// The key is valid but limited: rate-limited for now (429), or out of
+    /// credit or quota (`quota`: 402, a quota message, or a key whose credit
+    /// limit is used up). `reset_at_ms` is when the provider said it resets.
+    Limited {
+        status: u16,
+        quota: bool,
+        message: Option<String>,
+        reset_at_ms: Option<u64>,
+    },
+    /// No answer about the key: the provider could not be reached, or
+    /// answered with a redirect or a status that says nothing about it.
+    Unreachable { message: String },
+}
+
+impl KeyHealth {
+    /// The provider could not be reached (a network error, a timeout).
+    pub fn unreachable(error: impl std::fmt::Display) -> Self {
+        KeyHealth::Unreachable {
+            message: error.to_string(),
+        }
+    }
+}
+
+/// Response headers that say when a limit resets.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LimitHeaders<'a> {
+    /// `Retry-After`, in seconds.
+    pub retry_after: Option<&'a str>,
+    /// `X-RateLimit-Reset`, in epoch milliseconds or seconds.
+    pub ratelimit_reset: Option<&'a str>,
+}
+
+/// When a limit resets: the `X-RateLimit-Reset` header, else `Retry-After`
+/// seconds from now, else a reset the body reports. Times already past are
+/// ignored.
+fn limit_reset(headers: LimitHeaders<'_>, body: &str, now_ms: u64) -> Option<u64> {
+    let ahead = |at: u64| (at > now_ms).then_some(at);
+    headers
+        .ratelimit_reset
+        .and_then(reset_epoch_ms)
+        .and_then(ahead)
+        .or_else(|| {
+            headers
+                .retry_after
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .map(|secs| now_ms.saturating_add(secs.saturating_mul(1_000)))
+                .and_then(ahead)
+        })
+        .or_else(|| limit_reset_at_ms(body, now_ms))
+}
+
+/// Credit left on the key, from OpenRouter's key endpoint
+/// (`{"data":{"limit_remaining": …}}`); `None` when the answer has no limit.
+fn credit_left(body: &str) -> Option<f64> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    value.get("data")?.get("limit_remaining")?.as_f64()
+}
+
+/// Whether a word of a provider message may echo part of the key (OpenAI
+/// and xAI quote a masked key in their "incorrect API key" message).
+fn echoes_key(word: &str, key: &str) -> bool {
+    let lower = word.to_ascii_lowercase();
+    let key = key.trim();
+    let tail: String = key
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    word.contains('*')
+        || word.contains('\u{2026}')
+        || ["sk-", "sk_", "xai-", "xa-", "aiza", "or-v1"]
+            .iter()
+            .any(|p| lower.contains(p))
+        || (key.chars().count() >= 8 && word.contains(tail.as_str()))
+}
+
+/// The provider's own message in an error body (`{"error":{"message":…}}`,
+/// `{"error":"…"}`, `{"message":…}`, or short plain text), made safe to
+/// show: any word that may echo the key is replaced and the text is cut to
+/// [`MAX_PROVIDER_MESSAGE_CHARS`]. The key itself never appears in it.
+pub fn provider_message(body: &str, key: &str) -> Option<String> {
+    let parsed: Option<serde_json::Value> = serde_json::from_str(body).ok();
+    let raw = match &parsed {
+        Some(value) => {
+            let error = value.get("error");
+            error
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .or_else(|| error.and_then(|e| e.as_str()))
+                .or_else(|| value.get("message").and_then(|m| m.as_str()))
+                .map(str::to_string)
+        }
+        None => {
+            let text = body.trim();
+            (!text.is_empty() && !text.starts_with('<')).then(|| text.to_string())
+        }
+    }?;
+    let key = key.trim();
+    let raw = if key.is_empty() {
+        raw
+    } else {
+        raw.replace(key, "[key]")
+    };
+    let cleaned: Vec<String> = raw
+        .split_whitespace()
+        .map(|word| {
+            if echoes_key(word, key) {
+                "[key]".to_string()
+            } else {
+                word.to_string()
+            }
+        })
+        .collect();
+    let text = cleaned.join(" ");
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().count() > MAX_PROVIDER_MESSAGE_CHARS {
+        let cut: String = text.chars().take(MAX_PROVIDER_MESSAGE_CHARS).collect();
+        return Some(format!("{}\u{2026}", cut.trim_end()));
+    }
+    Some(text)
+}
+
+/// The provider's message in a failed answer's error text (the runtime's
+/// `"401 {json body}"`), made safe to show like [`provider_message`].
+pub fn answer_error_message(text: &str, key: &str) -> Option<String> {
+    text.find('{')
+        .and_then(|at| provider_message(&text[at..], key))
+        .or_else(|| provider_message(text, key))
+}
+
+/// Classify a key check's answer from its HTTP status, limit headers and
+/// body. `key` is only used to keep it out of the message.
+pub fn classify_key_response(
+    status: u16,
+    headers: LimitHeaders<'_>,
+    body: &str,
+    key: &str,
+    now_ms: u64,
+) -> KeyHealth {
+    let message = || provider_message(body, key);
+    // Some providers send quota failures as 400/403 (read like a chat error).
+    let quota_text = || {
+        classify(&format!("{status} {body}"), None, now_ms).kind
+            == ProviderErrorKind::QuotaExhausted
+    };
+    match status {
+        200..=299 => match credit_left(body) {
+            Some(left) if left <= 0.0 => KeyHealth::Limited {
+                status,
+                quota: true,
+                message: Some("The key's credit limit is used up.".to_string()),
+                reset_at_ms: None,
+            },
+            _ => KeyHealth::Works,
+        },
+        402 => KeyHealth::Limited {
+            status,
+            quota: true,
+            message: message(),
+            reset_at_ms: limit_reset(headers, body, now_ms),
+        },
+        429 => KeyHealth::Limited {
+            status,
+            quota: quota_text(),
+            message: message(),
+            reset_at_ms: limit_reset(headers, body, now_ms),
+        },
+        400 | 403 if quota_text() => KeyHealth::Limited {
+            status,
+            quota: true,
+            message: message(),
+            reset_at_ms: limit_reset(headers, body, now_ms),
+        },
+        400 | 401 | 403 => KeyHealth::Rejected {
+            status: Some(status),
+            message: message(),
+        },
+        300..=399 => KeyHealth::Unreachable {
+            message: "the provider answered with a redirect, which is not followed with a key"
+                .to_string(),
+        },
+        other => KeyHealth::Unreachable {
+            message: format!("HTTP {other}"),
+        },
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+/// Read at most [`MAX_KEY_CHECK_BODY`] bytes of a response (the rest is
+/// dropped, not an error: only an error message or key details are needed).
+async fn bounded_text(response: reqwest::Response) -> String {
+    let mut body: Vec<u8> = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(Ok(chunk)) = stream.next().await {
+        let room = MAX_KEY_CHECK_BODY.saturating_sub(body.len());
+        body.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        if body.len() >= MAX_KEY_CHECK_BODY {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&body).into_owned()
+}
+
+/// Check `key` with one request to `provider` only (see [`key_check`]): no
+/// text is generated and no chat request is used. The key is sent in a
+/// header and never appears in the result.
+pub async fn check_key(
     provider: super::model_catalog::ProviderId,
     key: &str,
-) -> Result<(), KeyCheckError> {
+) -> Result<KeyHealth, KeyCheckError> {
     let label = provider.label();
     let check = key_check(provider).ok_or(KeyCheckError::NoKey(label))?;
-    let value = reqwest::header::HeaderValue::from_str(&format!("{}{}", check.prefix, key.trim()))
-        .map_err(|_| KeyCheckError::Rejected(label))?;
+    let Ok(value) =
+        reqwest::header::HeaderValue::from_str(&format!("{}{}", check.prefix, key.trim()))
+    else {
+        return Ok(KeyHealth::Rejected {
+            status: None,
+            message: Some("The key contains characters that cannot be sent.".to_string()),
+        });
+    };
     // No redirects: a key header (`x-api-key`, `x-goog-api-key`) must never
     // follow a redirect to another host.
-    let client = reqwest::Client::builder()
+    let client = match reqwest::Client::builder()
         .user_agent(CATALOG_USER_AGENT)
         .timeout(KEY_CHECK_TIMEOUT)
         .connect_timeout(KEY_CHECK_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(|e| KeyCheckError::Unreachable(label, e.without_url().to_string()))?;
+    {
+        Ok(client) => client,
+        Err(e) => return Ok(KeyHealth::unreachable(e.without_url())),
+    };
     let mut request = client
         .get(check.url)
         .header(reqwest::header::ACCEPT, "application/json")
@@ -270,18 +515,55 @@ pub async fn verify_key(
     for (name, v) in check.extra {
         request = request.header(*name, *v);
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|e| KeyCheckError::Unreachable(label, e.without_url().to_string()))?;
-    match response.status().as_u16() {
-        200..=299 => Ok(()),
-        400 | 401 | 403 => Err(KeyCheckError::Rejected(label)),
-        300..=399 => Err(KeyCheckError::Unreachable(
-            label,
-            "the provider answered with a redirect, which is not followed with a key".into(),
-        )),
-        status => Err(KeyCheckError::Unreachable(label, format!("HTTP {status}"))),
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(e) => return Ok(KeyHealth::unreachable(e.without_url())),
+    };
+    let status = response.status().as_u16();
+    let header = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    let retry_after = header("retry-after");
+    let ratelimit_reset = header("x-ratelimit-reset");
+    let body = bounded_text(response).await;
+    Ok(classify_key_response(
+        status,
+        LimitHeaders {
+            retry_after: retry_after.as_deref(),
+            ratelimit_reset: ratelimit_reset.as_deref(),
+        },
+        &body,
+        key,
+        now_ms(),
+    ))
+}
+
+/// Check a pasted key before it is saved: `Ok` when the provider accepted
+/// it (a valid key whose credit is used up is still the right key).
+pub async fn verify_key(
+    provider: super::model_catalog::ProviderId,
+    key: &str,
+) -> Result<(), KeyCheckError> {
+    let label = provider.label();
+    match check_key(provider, key).await? {
+        KeyHealth::Works => Ok(()),
+        KeyHealth::Limited {
+            status: 200..=299, ..
+        } => Ok(()),
+        // As before the status check existed: a 400/403 refuses the key,
+        // whatever the reason the provider gives.
+        KeyHealth::Rejected { .. }
+        | KeyHealth::Limited {
+            status: 400 | 403, ..
+        } => Err(KeyCheckError::Rejected(label)),
+        KeyHealth::Limited { status, .. } => {
+            Err(KeyCheckError::Unreachable(label, format!("HTTP {status}")))
+        }
+        KeyHealth::Unreachable { message } => Err(KeyCheckError::Unreachable(label, message)),
     }
 }
 
@@ -365,6 +647,218 @@ mod tests {
         for p in P::KEYED {
             assert!(key_check(p).unwrap().url.starts_with("https://"));
         }
+    }
+
+    const NOW: u64 = 1_759_750_000_000;
+    const KEY: &str = "sk-or-v1-0123456789abcdefa3f9";
+
+    fn health(status: u16, headers: LimitHeaders<'_>, body: &str) -> KeyHealth {
+        classify_key_response(status, headers, body, KEY, NOW)
+    }
+
+    #[test]
+    fn a_key_check_answer_is_classified_from_status_headers_and_body() {
+        let none = LimitHeaders::default();
+        // 200: the key works; OpenRouter's key details may say its credit is used up.
+        assert_eq!(
+            health(
+                200,
+                none,
+                r#"{"data":{"limit":null,"usage":0,"limit_remaining":null,"is_free_tier":true}}"#
+            ),
+            KeyHealth::Works
+        );
+        assert_eq!(
+            health(200, none, r#"{"data":[{"id":"gpt-4o"}]}"#),
+            KeyHealth::Works
+        );
+        assert!(matches!(
+            health(
+                200,
+                none,
+                r#"{"data":{"limit":5,"usage":5,"limit_remaining":0}}"#
+            ),
+            KeyHealth::Limited {
+                status: 200,
+                quota: true,
+                ..
+            }
+        ));
+
+        // 401 with the provider's message (the user's "User not found").
+        assert_eq!(
+            health(
+                401,
+                none,
+                r#"{"error":{"message":"User not found.","code":401}}"#
+            ),
+            KeyHealth::Rejected {
+                status: Some(401),
+                message: Some("User not found.".to_string())
+            }
+        );
+        // 403 and Google's 400 for a bad key are rejections too.
+        assert!(matches!(
+            health(
+                403,
+                none,
+                r#"{"error":{"type":"permission_error","message":"Forbidden"}}"#
+            ),
+            KeyHealth::Rejected {
+                status: Some(403),
+                ..
+            }
+        ));
+        assert!(matches!(
+            health(
+                400,
+                none,
+                r#"{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT"}}"#
+            ),
+            KeyHealth::Rejected {
+                status: Some(400),
+                ..
+            }
+        ));
+        // A 403 that is really a quota is not a bad key.
+        assert!(matches!(
+            health(
+                403,
+                none,
+                r#"{"error":{"message":"You exceeded your current quota","type":"insufficient_quota"}}"#
+            ),
+            KeyHealth::Limited {
+                status: 403,
+                quota: true,
+                ..
+            }
+        ));
+
+        // 402: out of credit.
+        assert_eq!(
+            health(
+                402,
+                none,
+                r#"{"error":{"message":"Insufficient credits","code":402}}"#
+            ),
+            KeyHealth::Limited {
+                status: 402,
+                quota: true,
+                message: Some("Insufficient credits".to_string()),
+                reset_at_ms: None
+            }
+        );
+
+        // 429 with reset headers: epoch milliseconds, epoch seconds, or Retry-After seconds.
+        let reset = NOW + 90_000;
+        let ms = reset.to_string();
+        assert_eq!(
+            health(
+                429,
+                LimitHeaders {
+                    retry_after: None,
+                    ratelimit_reset: Some(&ms)
+                },
+                r#"{"error":{"message":"Rate limit exceeded: free-models-per-min.","code":429}}"#
+            ),
+            KeyHealth::Limited {
+                status: 429,
+                quota: false,
+                message: Some("Rate limit exceeded: free-models-per-min.".to_string()),
+                reset_at_ms: Some(reset)
+            }
+        );
+        let secs = (reset / 1_000).to_string();
+        assert!(matches!(
+            health(429, LimitHeaders { retry_after: None, ratelimit_reset: Some(&secs) }, "{}"),
+            KeyHealth::Limited { reset_at_ms: Some(at), .. } if at == reset
+        ));
+        assert!(matches!(
+            health(429, LimitHeaders { retry_after: Some("30"), ratelimit_reset: None }, "{}"),
+            KeyHealth::Limited { quota: false, reset_at_ms: Some(at), .. } if at == NOW + 30_000
+        ));
+        // A daily free-model limit is a quota, with its reset from the body.
+        let tomorrow = NOW + 20 * 3_600_000;
+        let daily = format!(
+            r#"{{"error":{{"message":"Rate limit exceeded: free-models-per-day.","code":429,"metadata":{{"headers":{{"X-RateLimit-Reset":"{tomorrow}"}}}}}}}}"#
+        );
+        assert!(matches!(
+            health(429, none, &daily),
+            KeyHealth::Limited { quota: true, reset_at_ms: Some(at), .. } if at == tomorrow
+        ));
+        // A reset already past is not reported.
+        let past = (NOW - 1_000).to_string();
+        assert!(matches!(
+            health(
+                429,
+                LimitHeaders {
+                    retry_after: None,
+                    ratelimit_reset: Some(&past)
+                },
+                "{}"
+            ),
+            KeyHealth::Limited {
+                reset_at_ms: None,
+                ..
+            }
+        ));
+
+        // A network error, a redirect, a server error: nothing known about the key.
+        assert_eq!(
+            KeyHealth::unreachable("connection refused"),
+            KeyHealth::Unreachable {
+                message: "connection refused".to_string()
+            }
+        );
+        assert!(matches!(
+            health(302, none, ""),
+            KeyHealth::Unreachable { .. }
+        ));
+        assert_eq!(
+            health(503, none, "<html>busy</html>"),
+            KeyHealth::Unreachable {
+                message: "HTTP 503".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn provider_messages_never_carry_the_key() {
+        let echo = r#"{"error":{"message":"Incorrect API key provided: sk-proj-********a3f9. You can find your API key at https://platform.openai.com/account/api-keys.","code":"invalid_api_key"}}"#;
+        let message = provider_message(echo, KEY).unwrap();
+        assert!(!message.contains("a3f9"), "{message}");
+        assert!(!message.contains("sk-"), "{message}");
+        assert!(
+            message.starts_with("Incorrect API key provided: [key]"),
+            "{message}"
+        );
+        let full = format!(r#"{{"error":"bad key {KEY}"}}"#);
+        let message = provider_message(&full, KEY).unwrap();
+        assert!(
+            !message.contains(KEY) && !message.contains("0123"),
+            "{message}"
+        );
+        let xai = r#"{"code":"Client specified an invalid argument","error":"Incorrect API key provided: xa***f9. You can obtain an API key from https://console.x.ai."}"#;
+        assert!(!provider_message(xai, KEY).unwrap().contains("xa***"));
+        // Long messages are cut; HTML pages are not messages.
+        let long = format!(r#"{{"message":"{}"}}"#, "word ".repeat(200));
+        assert!(
+            provider_message(&long, KEY).unwrap().chars().count() <= MAX_PROVIDER_MESSAGE_CHARS + 1
+        );
+        assert_eq!(
+            answer_error_message(
+                r#"401 {"error":{"message":"User not found.","code":401}}"#,
+                KEY
+            )
+            .as_deref(),
+            Some("User not found.")
+        );
+        assert_eq!(
+            answer_error_message("connection reset by peer", KEY).as_deref(),
+            Some("connection reset by peer")
+        );
+        assert_eq!(provider_message("<html>502</html>", KEY), None);
+        assert_eq!(provider_message("", KEY), None);
     }
 
     #[test]

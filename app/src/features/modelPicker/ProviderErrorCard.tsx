@@ -4,6 +4,7 @@ import { cn } from '../../lib/utils';
 import { OPEN_MODEL_PICKER_EVENT, modelApi } from './modelApi';
 import type { FallbackOffer, ModelOverride, ProviderError } from './modelTypes';
 import { modelRefFromRun } from './modelTypes';
+import { requestFixKey } from './navigation';
 import {
   AutoRetryLedger,
   autoRetrySeconds,
@@ -137,9 +138,13 @@ export function ProviderErrorCard({ error, runModel, message, fellBack, actions,
       </p>
       <div className="flex flex-wrap items-center gap-2">
         {error.kind === 'auth' ? (
-          <button type="button" onClick={onOpenSettings} className={BUTTON}>
+          <button
+            type="button"
+            onClick={() => (failed ? requestFixKey(failed.provider) : onOpenSettings())}
+            className={BUTTON}
+          >
             <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />
-            Update the key
+            Fix key
           </button>
         ) : (
           actions && (

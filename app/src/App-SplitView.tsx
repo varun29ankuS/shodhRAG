@@ -101,6 +101,7 @@ import { notify } from './lib/notify';
 import { removeWithUndo, restoreAt } from './lib/undoToast';
 import { migrateLegacyApiKeys } from './lib/apiKeyMigration';
 import { InboxButton, OPEN_INBOX_EVENT } from './features/inbox/InboxButton';
+import { ConnectionPill } from './features/connection/ConnectionPill';
 import { useNavigationTarget } from './features/agent/useNavigationTarget';
 import { countOf } from './lib/plural';
 
@@ -1250,14 +1251,7 @@ function AppSplitView() {
                 </button>
               );
             })()}
-            {llmStatus.connected && (
-              <span
-                className="text-[10px] px-2 py-0.5 rounded-full font-medium"
-                style={{ backgroundColor: `${colors.success}18`, color: colors.success }}
-              >
-                {llmStatus.model}
-              </span>
-            )}
+            <ConnectionPill />
           </div>
           <div className="flex items-center gap-2">
             <InboxButton

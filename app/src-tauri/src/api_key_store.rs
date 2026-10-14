@@ -150,6 +150,24 @@ pub fn process_env_key(provider: &str) -> Option<String> {
     env_key(provider, &|var| std::env::var(var).ok())
 }
 
+/// The name of the first environment variable that holds a non-empty key
+/// for `provider` (the one [`env_key`] reads), e.g. `OPENROUTER_API_KEY`.
+pub fn env_key_var(provider: &str, env: &impl Fn(&str) -> Option<String>) -> Option<&'static str> {
+    ENV_KEY_VARS
+        .iter()
+        .find(|(id, _)| *id == provider)
+        .and_then(|(_, vars)| {
+            vars.iter()
+                .copied()
+                .find(|var| env(var).is_some_and(|v| !v.trim().is_empty()))
+        })
+}
+
+/// [`env_key_var`] in this process.
+pub fn process_env_key_var(provider: &str) -> Option<&'static str> {
+    env_key_var(provider, &|var| std::env::var(var).ok())
+}
+
 /// Where the key in use comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyOrigin {
@@ -294,6 +312,17 @@ mod tests {
             migrate_env_keys(&vault, env(&[("OPENROUTER_API_KEY", "sk-or-env")]))
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_environment_variable_in_use_is_named() {
+        let google = env(&[("GEMINI_API_KEY", " "), ("GOOGLE_API_KEY", "AIza-env")]);
+        assert_eq!(env_key_var("google", &google), Some("GOOGLE_API_KEY"));
+        assert_eq!(env_key_var("openrouter", &google), None);
+        assert_eq!(
+            env_key_var("openrouter", &env(&[("OPENROUTER_API_KEY", "sk-or-env")])),
+            Some("OPENROUTER_API_KEY")
         );
     }
 

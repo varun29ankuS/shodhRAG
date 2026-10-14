@@ -155,6 +155,8 @@
     "connect_sign_out": { "excluded": "Removes a connected account; user-only." },
     "connect_save_key": { "excluded": "API keys are secrets; the assistant never sees, sets or deletes them." },
     "connect_remove_key": { "excluded": "API keys are secrets; the assistant never sees, sets or deletes them." },
+    "connection_status": { "excluded": "The top bar's status of the user's provider connections (key source, key hint, health); about the user's credentials, and the assistant already learns a failed answer from its own run." },
+    "connection_check": { "excluded": "Checks the user's provider keys with the providers; about the user's credentials, user-only." },
     "set_api_key": { "excluded": "API keys are secrets; the assistant never sees, sets or deletes them." },
 
     "agent_start": { "excluded": "Starts the assistant's own session; the assistant cannot start, steer or stop runs." },

@@ -74,6 +74,31 @@ export function regionToCssRect(region: PdfRegion, transform: readonly number[])
   return { left, top, width: Math.abs(bx - ax), height: Math.abs(by - ay) };
 }
 
+/** Backing-store and display size of a rendered page canvas. */
+export interface PageCanvasSize {
+  /** Backing-store pixels: the viewport scaled by `ratio`, at least 1. */
+  width: number;
+  height: number;
+  /** Display size: always the viewport's CSS size, independent of `ratio`. */
+  cssWidth: string;
+  cssHeight: string;
+}
+
+/**
+ * A page is rasterized at `ratio` device pixels per CSS pixel for sharpness,
+ * but must be displayed at the viewport's CSS size: highlights are placed in
+ * CSS pixels from the viewport transform, so a canvas shown at its backing
+ * size drifts away from them on any display scaled above 100%.
+ */
+export function pageCanvasSize(viewportWidth: number, viewportHeight: number, ratio: number): PageCanvasSize {
+  return {
+    width: Math.max(1, Math.floor(viewportWidth * ratio)),
+    height: Math.max(1, Math.floor(viewportHeight * ratio)),
+    cssWidth: `${viewportWidth}px`,
+    cssHeight: `${viewportHeight}px`,
+  };
+}
+
 /** The vertical span of a highlighted passage on its page, in CSS pixels from the page's top. */
 export interface VerticalExtent {
   top: number;

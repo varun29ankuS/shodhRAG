@@ -402,11 +402,12 @@
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 
-.pdf-page > canvas {
+/* The canvas sits in a host div; its display size is also set inline from
+   the viewport, since its backing store is scaled by devicePixelRatio. */
+.pdf-page canvas {
   position: absolute;
   inset: 0;
-  width: 100%;
-  height: 100%;
+  display: block;
 }
 
 /* Text-line placeholders on a page whose document is still loading. */

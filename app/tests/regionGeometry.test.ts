@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   firstRegionPage,
+  pageCanvasSize,
   parseRegions,
   passageScrollTop,
   PASSAGE_SCROLL_MARGIN,
@@ -116,4 +117,22 @@ test('the outlined passage is scrolled into view, centred when it fits', () => {
   // Near the top of the document: never a negative scroll.
   assert.equal(passageScrollTop(0, { top: 10, bottom: 40 }, viewport), 0);
   assert.equal(verticalExtent([]), null);
+});
+
+test('a page canvas is shown at the page size whatever the display scale, so outlines stay on their text', () => {
+  // 612 x 792 pt page at 110% zoom: the viewport is 673.2 x 871.2 CSS px.
+  for (const ratio of [0.375, 1, 1.25, 1.5, 2]) {
+    const size = pageCanvasSize(673.2, 871.2, ratio);
+    assert.equal(size.cssWidth, '673.2px', `display width at ratio ${ratio}`);
+    assert.equal(size.cssHeight, '871.2px', `display height at ratio ${ratio}`);
+    assert.equal(size.width, Math.floor(673.2 * ratio), `backing width at ratio ${ratio}`);
+    assert.equal(size.height, Math.floor(871.2 * ratio), `backing height at ratio ${ratio}`);
+  }
+});
+
+test('a page canvas never gets an empty backing store', () => {
+  const size = pageCanvasSize(0.4, 0.4, 0.5);
+  assert.equal(size.width, 1);
+  assert.equal(size.height, 1);
+  assert.equal(size.cssWidth, '0.4px');
 });

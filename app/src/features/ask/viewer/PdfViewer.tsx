@@ -8,7 +8,7 @@ import type { PageSpan, PdfRegion } from '../types';
 import { findPassage, matchScore, prepareHaystack, type PassageMatch, type PreparedHaystack, type TextRange } from './passageMatch';
 import { acquirePdf, holdForeground, readPdfMeta, type PdfDocLease } from './pdfDocCache';
 import { isRenderCancelled, loadPdfJs } from './pdfjs';
-import { firstRegionPage, passageScrollTop, regionToCssRect, regionsOnPages, verticalExtent } from './regionGeometry';
+import { firstRegionPage, pageCanvasSize, passageScrollTop, regionToCssRect, regionsOnPages, verticalExtent } from './regionGeometry';
 import type { VerticalExtent } from './regionGeometry';
 import { scrollBehavior } from './sourceAccess';
 import { findInText, viewerCommand } from './viewerKeys';
@@ -215,8 +215,11 @@ function PdfPageView({
       // canvas, and swapping on completion avoids a blank flash while zooming.
       const draw = async (ratio: number): Promise<HTMLCanvasElement> => {
         const canvas = document.createElement('canvas');
-        canvas.width = Math.max(1, Math.floor(viewport.width * ratio));
-        canvas.height = Math.max(1, Math.floor(viewport.height * ratio));
+        const size = pageCanvasSize(viewport.width, viewport.height, ratio);
+        canvas.width = size.width;
+        canvas.height = size.height;
+        canvas.style.width = size.cssWidth;
+        canvas.style.height = size.cssHeight;
         canvas.setAttribute('aria-hidden', 'true');
         const context = canvas.getContext('2d');
         if (!context) throw new Error('Canvas 2D context unavailable');

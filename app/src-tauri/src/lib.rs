@@ -176,7 +176,9 @@ pub fn run() {
         .on_window_event(background::on_window_event)
         .setup(|app| {
             // The main window is created here rather than from the config, so
-            // its WebView storage follows the profile.
+            // its WebView storage follows the profile. Logged on both sides so
+            // a startup that never shows a window says which side it stopped on.
+            tracing::info!("Creating the main window");
             for config in app.config().app.windows.iter() {
                 profile::webview_defaults(tauri::WebviewWindowBuilder::from_config(
                     app.handle(),
@@ -184,6 +186,7 @@ pub fn run() {
                 )?)
                 .build()?;
             }
+            tracing::info!("Main window created");
 
             // Get app data directory for persistent storage. Without it
             // nothing can be stored, so this is the one fatal setup error.

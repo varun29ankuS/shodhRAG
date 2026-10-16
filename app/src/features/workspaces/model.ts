@@ -100,19 +100,16 @@ export interface ScopeChip {
 
 /**
  * The chip for a question: the workspace's sources (the default in a workspace), the
- * whole library ("search all my library" turned on for this question), or every source
- * outside a workspace.
+ * whole library ("search all my library" turned on for this question), or the Library's
+ * chip outside a workspace.
  */
 export function scopeChip(
   workspace: Pick<Workspace, 'name' | 'sourceCounts'> | null,
   searchAll: boolean,
-  librarySources: number,
+  /** The Library's chip, shown outside a workspace (`librarySourcesChip`, as in the top bar). */
+  library: ScopeChip,
 ): ScopeChip {
-  if (!workspace) {
-    return librarySources === 0
-      ? { label: 'No sources yet', title: 'Add a folder in Library' }
-      : { label: `All sources · ${librarySources}`, title: 'Answers search everything you have indexed. Manage sources in Library.' };
-  }
+  if (!workspace) return library;
   if (searchAll) {
     return {
       label: `All my library · ${workspace.name}`,

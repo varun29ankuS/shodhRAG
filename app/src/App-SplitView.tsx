@@ -2,6 +2,7 @@ import React, { Suspense, lazy, useState, useEffect, useRef, useCallback, useMem
 import { invoke } from "@tauri-apps/api/core";
 import { ask, open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
+import { homeDir } from "@tauri-apps/api/path";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 
 // UI Components
@@ -15,6 +16,7 @@ import {
 } from 'lucide-react';
 
 const IS_MAC = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
+const IS_WINDOWS = typeof navigator !== 'undefined' && /Win/i.test(navigator.platform);
 
 // Views opened less often load on first use, keeping them out of the startup bundle.
 const TasksView = lazy(() => import('./features/tasks/TasksView'));
@@ -61,7 +63,7 @@ function writeDurable(key: DurableKey, value: unknown): Promise<void> {
 import { applyFolderSync, parseStoredSources, readIndexingResult, scannedPagesStep, serializeSources, SOURCES_STORAGE_KEY, syncedFolders } from './features/library/sources';
 import { explainFailure } from './features/library/indexingAdvice';
 import type { FolderSyncOutcome, LibrarySource } from './features/library/sources';
-import { addableFolders, reconcileSources, safeRemovals, searchedSourceCount } from './features/library/reconcile';
+import { addableFolders, librarySourcesChip, nativePath, reconcileSources } from './features/library/reconcile';
 import type { FileNode } from './features/library/fileTree';
 import { errorMessage as searchErrorMessage } from './features/setup/searchModels';
 import Sidebar from './components/shell/Sidebar';
@@ -268,13 +270,30 @@ function AppSplitView() {
   // Folders removed from the list whose files leave the index when the undo
   // window ends: until then they still cover those files.
   const [removingPaths, setRemovingPaths] = useState<string[]>([]);
+  // Keyed on the folder paths, not the sources: indexing progress changes
+  // the sources many times a second and leaves the paths alone.
+  const coveringKey = [...sources.map(s => s.path), ...removingPaths].join('\u0000');
   const reconciliation = useMemo(
-    () => reconcileSources([...sources, ...removingPaths.map(path => ({ path }))], indexedFiles),
-    [sources, removingPaths, indexedFiles],
+    () => reconcileSources(coveringKey ? coveringKey.split('\u0000').map(path => ({ path })) : [], indexedFiles),
+    [coveringKey, indexedFiles],
   );
   const unlistedCount = reconciliation.unlisted.length;
-  const addableUnlisted = useMemo(() => addableFolders(reconciliation.groups, sources), [reconciliation.groups, sources]);
-  const removableUnlisted = useMemo(() => safeRemovals(reconciliation.unlisted, indexedFiles), [reconciliation.unlisted, indexedFiles]);
+  // The home folder: it and the folders holding it are never added for the user.
+  const [homePath, setHomePath] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    homeDir()
+      .then(path => { if (!cancelled) setHomePath(path); })
+      .catch(error => console.error('The home folder could not be read:', error));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const listedKey = sources.map(s => s.path).join('\u0000');
+  const addableUnlisted = useMemo(
+    () => addableFolders(reconciliation.groups, listedKey ? listedKey.split('\u0000').map(path => ({ path })) : [], homePath ? [homePath] : []),
+    [reconciliation.groups, listedKey, homePath],
+  );
   const [unlistedBusy, setUnlistedBusy] = useState(false);
 
   const [isDraggingImage, setIsDraggingImage] = useState(false);
@@ -1174,48 +1193,35 @@ function AppSplitView() {
     await indexSource(newSource, 'folder');
   };
 
-  /** "Add these folders": each folder of the unlisted files becomes a folder source, indexed in turn. */
+  /**
+   * "Add these folders": each folder of the unlisted files becomes a folder
+   * source, indexed in turn with all its subfolders, once the user agrees.
+   */
   const handleAddUnlistedFolders = async () => {
     if (unlistedBusy || addableUnlisted.length === 0 || indexingBusy()) return;
+    // The home folder is normally read at startup; if not yet, read it now so
+    // it is never added unasked.
+    const home = homePath ?? (await homeDir().catch(() => null));
+    const folders = addableFolders(reconciliation.groups, sources, home ? [home] : [])
+      .map(folder => nativePath(folder, IS_WINDOWS));
+    if (folders.length === 0) return;
+    let confirmed: boolean;
+    try {
+      confirmed = await ask(
+        `${folders.map(f => `• ${f}`).join('\n')}\n\nEach folder is indexed with all its subfolders and kept in sync.`,
+        { title: `Add ${countOf(folders.length, 'folder')} to the Library?`, kind: 'info', okLabel: 'Add and index', cancelLabel: 'Cancel' },
+      );
+    } catch (error) {
+      notify.error('Could not ask to add the folders', { description: String(error) });
+      return;
+    }
+    if (!confirmed || indexingBusy()) return;
     setUnlistedBusy(true);
     try {
-      for (const folder of addableUnlisted) await addFolderPath(folder);
+      for (const folder of folders) await addFolderPath(folder);
     } finally {
       setUnlistedBusy(false);
     }
-  };
-
-  /** "Remove them from the search": the unlisted files leave the index (they stay on disk). */
-  const handleRemoveUnlisted = async () => {
-    const files = removableUnlisted;
-    if (unlistedBusy || files.length === 0) return;
-    const confirmed = await ask(
-      `${countOf(files.length, 'file')} in no folder of the Library will no longer be searched or cited. The files stay on disk; add their folder later to search them again.`,
-      { title: 'Remove them from the search?', kind: 'warning', okLabel: 'Remove from search', cancelLabel: 'Keep' },
-    );
-    if (!confirmed) return;
-    setUnlistedBusy(true);
-    let failed = 0;
-    let lastError = '';
-    try {
-      // One file at a time: the command removes by path prefix, so removing
-      // their folder could take files a listed folder holds.
-      for (const file of files) {
-        try {
-          await invoke<string>('delete_folder_source', { folderPath: file });
-        } catch (error) {
-          failed += 1;
-          lastError = String(error);
-        }
-      }
-    } finally {
-      await refreshIndexedFiles();
-      await updateStats();
-      setUnlistedBusy(false);
-    }
-    const removed = files.length - failed;
-    if (failed === 0) notify.success(`Removed ${countOf(removed, 'file')} from the search`);
-    else notify.error(`${countOf(failed, 'file')} could not be removed from the search`, { description: lastError });
   };
 
   /** Save the conversation as Markdown where the user picks. */
@@ -1549,17 +1555,20 @@ function AppSplitView() {
                 )}
               </div>
             )}
-            <Badge
-              variant="outline"
-              className="text-[10px] px-2 py-0.5 h-auto"
-              style={{ borderColor: colors.border, color: colors.textMuted }}
-              title={unlistedCount > 0
-                ? `${countOf(sources.length, 'folder')} and ${countOf(unlistedCount, 'indexed file')} in no folder`
-                : undefined}
-            >
-              <Database className="w-3 h-3 mr-1" />
-              {countOf(searchedSourceCount(sources, unlistedCount), 'source')}
-            </Badge>
+            {(() => {
+              const chip = librarySourcesChip(sources, unlistedCount);
+              return (
+                <Badge
+                  variant="outline"
+                  className="text-[10px] px-2 py-0.5 h-auto"
+                  style={{ borderColor: colors.border, color: colors.textMuted }}
+                  title={chip.title}
+                >
+                  <Database className="w-3 h-3 mr-1" />
+                  {chip.label}
+                </Badge>
+              );
+            })()}
           </div>
         </div>
 
@@ -1654,9 +1663,7 @@ function AppSplitView() {
               focusedSourceId={focusedSourceId}
               unlisted={reconciliation}
               addableFolders={addableUnlisted.length}
-              removableFiles={removableUnlisted.length}
               onAddUnlisted={() => void handleAddUnlistedFolders()}
-              onRemoveUnlisted={() => void handleRemoveUnlisted()}
               unlistedBusy={unlistedBusy}
             />
           )}

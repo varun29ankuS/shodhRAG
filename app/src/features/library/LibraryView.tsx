@@ -8,7 +8,6 @@ import {
   FolderPlus,
   FolderSearch,
   Network,
-  SearchX,
   RotateCcw,
   Trash2,
 } from 'lucide-react';
@@ -69,13 +68,10 @@ interface LibraryViewProps {
   focusedSourceId?: string | null;
   /** Indexed files inside no listed folder, and their folders (see `reconcile`). */
   unlisted: Reconciliation;
-  /** How many of the group folders "Add these folders" adds (drive roots and folders holding a listed one are not). */
+  /** How many of the group folders "Add these folders" adds (see `addableFolders`). */
   addableFolders: number;
-  /** How many unlisted files "Remove them from the search" removes. */
-  removableFiles: number;
   onAddUnlisted: () => void;
-  onRemoveUnlisted: () => void;
-  /** Adding or removing the unlisted files is under way. */
+  /** Adding the unlisted files' folders is under way. */
   unlistedBusy: boolean;
 }
 
@@ -98,9 +94,7 @@ export function LibraryView({
   focusedSourceId = null,
   unlisted,
   addableFolders,
-  removableFiles,
   onAddUnlisted,
-  onRemoveUnlisted,
   unlistedBusy,
 }: LibraryViewProps) {
   const [browsingId, setBrowsingId] = useState<string | null>(null);
@@ -179,10 +173,8 @@ export function LibraryView({
     <UnlistedFilesCard
       unlisted={unlisted}
       addableFolders={addableFolders}
-      removableFiles={removableFiles}
       busy={unlistedBusy}
       onAdd={onAddUnlisted}
-      onRemove={onRemoveUnlisted}
     />
   );
 
@@ -307,23 +299,18 @@ const UNLISTED_LINES = 5;
 
 /**
  * Indexed files that no folder here covers: answers can cite them, so the
- * Library says so and offers to add their folders or remove them from the
- * search.
+ * Library says so and offers to add their folders.
  */
 function UnlistedFilesCard({
   unlisted,
   addableFolders,
-  removableFiles,
   busy,
   onAdd,
-  onRemove,
 }: {
   unlisted: Reconciliation;
   addableFolders: number;
-  removableFiles: number;
   busy: boolean;
   onAdd: () => void;
-  onRemove: () => void;
 }) {
   const count = unlisted.unlisted.length;
   const { groups } = unlisted;
@@ -338,7 +325,7 @@ function UnlistedFilesCard({
           {`${countOf(count, 'indexed file')} ${count === 1 ? "isn't" : "aren't"} in any folder here`}
         </h2>
         <p className="m-0 text-[12.5px] text-shodh-text-muted">
-          Answers in Ask can cite them. Add their folders to keep them in sync, or remove them from the search.
+          Answers in Ask can cite them. Add their folders to see them here and keep them in sync.
         </p>
       </div>
       <ul className="m-0 p-0 list-none flex flex-col gap-1" aria-label="Folders of these files">
@@ -357,8 +344,8 @@ function UnlistedFilesCard({
       {skipped > 0 && (
         <p className="m-0 text-[12px] text-shodh-text-muted">
           {addableFolders === 0
-            ? 'Their folders are not added for you: one is a whole drive or holds a folder already here. Add the folders you want with Add folder.'
-            : `${countOf(skipped, 'folder')} ${skipped === 1 ? 'is' : 'are'} not added for you: a whole drive, or holding a folder already here.`}
+            ? 'Their folders are not added for you: each is a whole drive, your home folder or a folder holding it, or holds a folder already here. Add the folders you want with Add folder.'
+            : `${countOf(skipped, 'folder')} ${skipped === 1 ? 'is' : 'are'} not added for you: a whole drive, your home folder or a folder holding it, or holding a folder already here.`}
         </p>
       )}
       <div className="flex flex-wrap items-center gap-2">
@@ -366,17 +353,6 @@ function UnlistedFilesCard({
           <button type="button" onClick={onAdd} disabled={busy} className={cn(PRIMARY_BUTTON, 'disabled:opacity-60')}>
             <FolderPlus className="w-4 h-4" aria-hidden="true" />
             Add these folders
-          </button>
-        )}
-        {removableFiles > 0 && (
-          <button
-            type="button"
-            onClick={onRemove}
-            disabled={busy}
-            className={cn(QUIET_BUTTON, 'border border-shodh-border text-shodh-error hover:text-shodh-error disabled:opacity-60')}
-          >
-            <SearchX className="w-3.5 h-3.5" aria-hidden="true" />
-            Remove them from the search
           </button>
         )}
       </div>

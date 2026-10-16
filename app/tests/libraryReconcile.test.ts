@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { addableFolders, isDriveRoot, reconcileSources, safeRemovals, searchedSourceCount } from '../src/features/library/reconcile.ts';
+import { addableFolders, isDriveRoot, librarySourcesChip, nativePath, reconcileSources, searchedSourceCount } from '../src/features/library/reconcile.ts';
 
 const folders = (...paths: string[]) => paths.map(path => ({ path }));
 
@@ -127,10 +127,34 @@ test('folders offered for adding leave out drive roots and folders holding a lis
   assert.deepEqual(addableFolders([], folders('D:\\Work')), []);
 });
 
-test('files are removed one by one, never one whose path starts another kept file', () => {
-  const indexed = ['c:/x/a.pdf', 'c:/x/a.pdf.md', 'c:/y/b.pdf', 'c:/y/b.pdf.bak'];
-  // a.pdf.md is listed (kept): removing a.pdf by prefix would take it too.
-  assert.deepEqual(safeRemovals(['c:/x/a.pdf', 'c:/y/b.pdf', 'c:/y/b.pdf.bak'], indexed), ['c:/y/b.pdf', 'c:/y/b.pdf.bak']);
-  assert.deepEqual(safeRemovals(['C:/X/A.pdf'], ['c:/x/a.pdf']), ['C:/X/A.pdf']);
-  assert.deepEqual(safeRemovals([], indexed), []);
+test('the home folder and every folder holding it are never added for you', () => {
+  const groups = [
+    { folder: 'c:/users/me', files: 4 },
+    { folder: 'c:/users', files: 1 },
+    { folder: 'c:/users/me/papers', files: 2 },
+    { folder: 'c:/users/mel/docs', files: 1 },
+  ];
+  assert.deepEqual(addableFolders(groups, [], ['C:\\Users\\Me']), ['c:/users/me/papers', 'c:/users/mel/docs']);
+  // An unknown home folder protects nothing beyond drive roots.
+  assert.deepEqual(addableFolders(groups, [], []), groups.map(g => g.folder));
+});
+
+test('a group folder is handed to the folder indexer in the platform form', () => {
+  assert.equal(nativePath('c:/users/me/papers', true), 'c:\\users\\me\\papers');
+  assert.equal(nativePath('//server/share/docs', true), '\\\\server\\share\\docs');
+  assert.equal(nativePath('/Users/me/Papers', false), '/Users/me/Papers');
+});
+
+test('the sources chip: one label for the top bar and the composer', () => {
+  assert.equal(librarySourcesChip([], 0).label, 'No sources yet');
+  assert.equal(librarySourcesChip([], 4).label, 'All sources · 4');
+  assert.match(librarySourcesChip([], 4).title, /4 indexed files in no folder/);
+  const all = librarySourcesChip([{ selected: true }, { selected: true }], 3);
+  assert.equal(all.label, 'All sources · 5');
+  assert.match(all.title, /2 folders and 3 indexed files in no folder/);
+  assert.equal(librarySourcesChip([{ selected: true }], 0).title, 'Answers search everything you have indexed. Manage sources in Library.');
+  // Only some folders included in Ask: answers search just those.
+  const limited = librarySourcesChip([{ selected: true }, { selected: false }, { selected: true }], 3);
+  assert.equal(limited.label, '2 of 3 folders');
+  assert.match(limited.title, /only the 2 folders included in Ask/);
 });

@@ -41,6 +41,7 @@ import { scrollBehavior } from './viewer/sourceAccess';
 import type { ChatMessage, SearchHit, SendOptions } from './types';
 import { useWorkspaces } from '../workspaces/WorkspaceContext';
 import { scopeChip } from '../workspaces/model';
+import { librarySourcesChip } from '../library/reconcile';
 import { SnippetDropZone } from '../research/SnippetDropZone';
 import { exportPdf } from '../print/exportPdf';
 import { answerTitle, buildPrintDocument } from '../print/printModel';
@@ -671,7 +672,7 @@ export function AskView({ sources, unlistedFiles = 0, llmStatus, onNavigate, onP
   const { byId: workspaceById, openWorkspace } = useWorkspaces();
   const workspace = workspaceById(session.activeConversation?.workspaceId);
   const [searchAll, setSearchAll] = useState(false);
-  const chip = scopeChip(workspace, searchAll, indexedCount);
+  const chip = scopeChip(workspace, searchAll, librarySourcesChip(sources, unlistedFiles));
 
   // Reset per-conversation UI when the conversation changes.
   const conversationId = session.activeConversationId;

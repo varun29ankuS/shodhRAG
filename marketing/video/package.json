@@ -2,14 +2,13 @@
   "name": "shodh-launch-video",
   "private": true,
   "version": "1.0.0",
-  "description": "Shodh launch video (Remotion). Captions only; music generated in code.",
+  "description": "Shodh launch video (Remotion): real app footage on Shodh orange, cut to the music's beats.",
   "type": "module",
   "scripts": {
-    "music": "node scripts/make-music.mjs",
-    "studio": "npm run music && remotion studio src/index.ts",
-    "render": "npm run music && remotion render src/index.ts ShodhLaunch out/shodh-launch.mp4 --codec=h264 --crf=18",
-    "render:vertical": "npm run music && remotion render src/index.ts ShodhLaunchVertical out/shodh-launch-vertical.mp4 --codec=h264 --crf=18",
-    "render:gif": "remotion render src/index.ts ShodhLoop out/shodh-loop.gif --codec=gif --every-nth-frame=2 --scale=0.5 --number-of-gif-loops=0",
+    "studio": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts ShodhLaunch out/shodh-launch.mp4 --codec=h264 --crf=18 --concurrency=2",
+    "render:gif": "remotion render src/index.ts ShodhLoop out/shodh-loop.gif --codec=gif --every-nth-frame=2 --scale=0.5 --number-of-gif-loops=0 --concurrency=2",
+    "beats": "python scripts/beats.py",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

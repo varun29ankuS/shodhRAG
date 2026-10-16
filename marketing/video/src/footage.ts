@@ -1,8 +1,8 @@
-// Reads public/footage.json: which files each footage scene shows and how
-// the camera moves over them. Swapping footage needs no code change.
+// Reads public/footage.json: which files each shot shows and how the camera
+// moves over them. Swapping footage needs no code change.
 import { interpolate } from "remotion";
 import manifest from "../public/footage.json";
-import { calm } from "./theme";
+import { snappy } from "./theme";
 
 export type FocusRect = { x: number; y: number; w: number; h: number };
 export type Keyframe = { at: number; scale: number; focus: FocusRect };
@@ -13,8 +13,6 @@ export type FootageEntry = {
   files: string[];
   sequence?: Sequence;
   aspect?: number;
-  /** Fade the window in at the scene's start / out at its end (default both). */
-  fade?: { in?: boolean; out?: boolean };
   keyframes: Keyframe[];
 };
 
@@ -26,14 +24,14 @@ export type Media =
 const VIDEO = /\.(mp4|webm|mov|mkv)$/i;
 const DEFAULT_ASPECT = 16 / 9;
 
-export function footageFor(scene: number): FootageEntry {
-  const scenes = manifest.scenes as Record<string, FootageEntry>;
-  const entry = scenes[String(scene)];
+export function footageFor(shot: string): FootageEntry {
+  const shots = manifest.shots as Record<string, FootageEntry>;
+  const entry = shots[shot];
   if (!entry) {
-    throw new Error(`public/footage.json has no entry for scene ${scene}`);
+    throw new Error(`public/footage.json has no entry for shot "${shot}"`);
   }
   if (entry.keyframes.length === 0) {
-    throw new Error(`public/footage.json scene ${scene} needs at least one keyframe`);
+    throw new Error(`public/footage.json shot "${shot}" needs at least one keyframe`);
   }
   return entry;
 }
@@ -53,8 +51,8 @@ export function expandSequence(seq: Sequence): string[] {
   );
 }
 
-export function mediaOf(scene: number, entry: FootageEntry): Media {
-  const path = (file: string) => `footage/${scene}/${file}`;
+export function mediaOf(shot: string, entry: FootageEntry): Media {
+  const path = (file: string) => `footage/${shot}/${file}`;
   if (entry.sequence && entry.sequence.count > 0) {
     return {
       kind: "frames",
@@ -63,14 +61,14 @@ export function mediaOf(scene: number, entry: FootageEntry): Media {
     };
   }
   if (entry.files.length === 0) {
-    throw new Error(`public/footage.json scene ${scene} has no footage: list its files or a sequence`);
+    throw new Error(`public/footage.json shot "${shot}" has no footage: list its files or a sequence`);
   }
   const video = entry.files.find((f) => VIDEO.test(f));
   if (video) return { kind: "video", src: path(video) };
   return { kind: "stills", srcs: entry.files.map(path) };
 }
 
-/** Camera at `progress` (0..1 of the scene): eased between keyframes. */
+/** Camera at `progress` (0..1 of the shot): eased between keyframes. */
 export function cameraAt(keyframes: Keyframe[], progress: number): { scale: number; cx: number; cy: number } {
   const sorted = [...keyframes].sort((a, b) => a.at - b.at);
   const centre = (k: Keyframe) => ({ cx: k.focus.x + k.focus.w / 2, cy: k.focus.y + k.focus.h / 2 });
@@ -82,7 +80,7 @@ export function cameraAt(keyframes: Keyframe[], progress: number): { scale: numb
   const a = sorted[i - 1];
   const b = sorted[i];
   const mix = (from: number, to: number) =>
-    interpolate(progress, [a.at, b.at], [from, to], { easing: calm });
+    interpolate(progress, [a.at, b.at], [from, to], { easing: snappy });
   const ca = centre(a);
   const cb = centre(b);
   return { scale: mix(a.scale, b.scale), cx: mix(ca.cx, cb.cx), cy: mix(ca.cy, cb.cy) };

@@ -5,8 +5,8 @@ import { cancelRender, continueRender, delayRender } from "remotion";
 
 const handle = delayRender("Loading fonts");
 Promise.all([
-  document.fonts.load('450 36px "Geist Variable"'),
-  document.fonts.load('550 64px "Geist Variable"'),
+  document.fonts.load('560 36px "Geist Variable"'),
+  document.fonts.load('720 72px "Geist Variable"'),
 ])
   .then(() => continueRender(handle))
   .catch((err: unknown) => cancelRender(err));

@@ -158,6 +158,31 @@ pub fn webview_browser_args(env_value: Option<&OsStr>, lang_flag: Option<&str>) 
     args
 }
 
+/// This process's WebView2 flags, worked out once.
+static BROWSER_ARGS: OnceLock<String> = OnceLock::new();
+
+/// The value in `cell`, computed by `compute` the first time only.
+fn once_args(cell: &OnceLock<String>, compute: impl FnOnce() -> String) -> &str {
+    cell.get_or_init(compute)
+}
+
+/// The flags of every window of this process: [`webview_browser_args`] with
+/// the regional-format flag and [`WEBVIEW_ARGS_ENV`], read on the first
+/// call. wry creates a WebView2 environment per window on the shared data
+/// folder, and WebView2 refuses one whose options differ from the running
+/// browser's, so a regional format or variable changed while Shodh runs
+/// must not reach a later window (a PDF export's).
+fn process_browser_args() -> &'static str {
+    once_args(&BROWSER_ARGS, || {
+        let lang_flag =
+            os_languages().and_then(|(ui, regional)| regional_lang_flag(&ui, &regional));
+        webview_browser_args(
+            std::env::var_os(WEBVIEW_ARGS_ENV).as_deref(),
+            lang_flag.as_deref(),
+        )
+    })
+}
+
 /// Whether `tag` is a plain locale name (`en`, `en-IN`, `zh-Hant-TW`): ASCII
 /// letters, digits and hyphens, starting with a letter and not ending with a
 /// hyphen. Anything else (an empty name, a Windows sort suffix such as
@@ -238,12 +263,7 @@ fn os_languages() -> Option<(String, String)> {
 pub fn webview_defaults<'a, R: Runtime, M: Manager<R>>(
     builder: WebviewWindowBuilder<'a, R, M>,
 ) -> WebviewWindowBuilder<'a, R, M> {
-    let lang_flag = os_languages().and_then(|(ui, regional)| regional_lang_flag(&ui, &regional));
-    let args = webview_browser_args(
-        std::env::var_os(WEBVIEW_ARGS_ENV).as_deref(),
-        lang_flag.as_deref(),
-    );
-    let builder = builder.additional_browser_args(&args);
+    let builder = builder.additional_browser_args(process_browser_args());
     let profile = active();
     match profile.webview_data_dir() {
         Some(dir) => builder
@@ -326,6 +346,16 @@ mod tests {
             args,
             format!("{WEBVIEW_BROWSER_ARGS} --remote-debugging-port=9339")
         );
+    }
+
+    #[test]
+    fn every_window_gets_the_flags_worked_out_first() {
+        let cell = OnceLock::new();
+        let first = once_args(&cell, || format!("{WEBVIEW_BROWSER_ARGS} --lang=en-IN")).to_string();
+        // The regional format changed while the app ran: a later window keeps the first flags.
+        let later = once_args(&cell, || format!("{WEBVIEW_BROWSER_ARGS} --lang=en-GB"));
+        assert_eq!(later, first);
+        assert_eq!(later, format!("{WEBVIEW_BROWSER_ARGS} --lang=en-IN"));
     }
 
     #[test]

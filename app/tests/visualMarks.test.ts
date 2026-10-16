@@ -116,3 +116,20 @@ test('an answer without marks has an empty budget', () => {
   assert.equal(budget.text, 0);
   assert.equal(budget.blocks.get('{"type":"bar"}') ?? 0, 0);
 });
+
+test('repeated identical blocks get no marks, so the 4-per-answer cap holds', () => {
+  const diagram = { layout: 'flow', nodes: [
+    { id: 'a', label: 'A', deeper: 'qa?' }, { id: 'b', label: 'B', deeper: 'qb?' }, { id: 'c', label: 'C', deeper: 'qc?' },
+  ] };
+  const diagramBody = JSON.stringify(diagram);
+  const content = `First [[x|qx?]].\n\n${fence('diagram', diagram)}\n\nMiddle.\n\n${fence('diagram', diagram)}`;
+  const budget = markBudget(content);
+  assert.equal(budget.text, 1, 'prose mark gets the first allowance');
+  assert.equal(budget.blocks.get(diagramBody), 0, 'repeated identical blocks get 0');
+  // Total marks across all blocks plus text should never exceed MAX_MARKS.
+  let total = budget.text;
+  for (const allow of budget.blocks.values()) {
+    total += allow;
+  }
+  assert(total <= MAX_MARKS, `total marks ${total} must not exceed MAX_MARKS ${MAX_MARKS}`);
+});

@@ -166,12 +166,19 @@ export function blockMarks(lang: string, source: string): Mark[] {
 export interface MarkBudget {
   /** How many prose marks (in order, outside code) render as buttons. */
   text: number;
-  /** Fence body (trimmed) to how many of its marks render. */
+  /** Fence body (trimmed) to how many of its marks render; repeated identical blocks get 0. */
   blocks: Map<string, number>;
 }
 
 /** Which marks of an answer render: the first MAX_MARKS in document order. */
 export function markBudget(content: string): MarkBudget {
+  // First pass: count occurrences of each trimmed fence body.
+  const bodyOccurrences = new Map<string, number>();
+  for (const m of content.matchAll(FENCE)) {
+    const body = m[2].replace(/\n$/, '').trim();
+    bodyOccurrences.set(body, (bodyOccurrences.get(body) ?? 0) + 1);
+  }
+
   const blocks = new Map<string, number>();
   let left = MAX_MARKS;
   let text = 0;
@@ -190,9 +197,14 @@ export function markBudget(content: string): MarkBudget {
     const body = m[2].replace(/\n$/, '').trim();
     const count = blockMarks(m[1].toLowerCase(), body).length;
     if (count > 0 && !blocks.has(body)) {
-      const allowed = Math.min(count, left);
-      blocks.set(body, allowed);
-      left -= allowed;
+      // Repeated identical blocks get no marks so the 4-per-answer cap holds.
+      if ((bodyOccurrences.get(body) ?? 0) > 1) {
+        blocks.set(body, 0);
+      } else {
+        const allowed = Math.min(count, left);
+        blocks.set(body, allowed);
+        left -= allowed;
+      }
     }
   }
   prose(content.slice(last));

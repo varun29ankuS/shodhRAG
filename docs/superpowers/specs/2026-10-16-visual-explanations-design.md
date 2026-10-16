@@ -78,13 +78,15 @@ says to use one main visual per answer, and at most two.
 
 - **The field.** Any visual element may carry `deeper`: one prepared question, at most 160
   characters, that would explain this element on its own.
-- **Where marks go:**
-  - diagram nodes and edges;
-  - chart series and single data points;
-  - plot curves and parameters;
-  - simulation parameters;
+- **Where marks go (v1):**
+  - diagram nodes;
+  - chart series;
+  - plot and simulation parameters;
   - derivation steps;
-  - equation terms (`symbols` entries).
+  - symbol entries (equation terms).
+
+  Diagram edges, single chart points and plot curves have no selectable element yet and
+  come later.
 - **In text,** a mark is written `[[shown text|prepared question]]`.
 - **Validation (pure modules, Node unit tests):**
   - at most 4 marks per answer;
@@ -92,7 +94,9 @@ says to use one main visual per answer, and at most two.
   - the mark must sit on an element that exists;
   - extra marks are dropped, keeping the first 4 in document order, and the drop is logged.
 - **Rendering.**
-  - A marked element gets a small glow; marked text gets a dotted underline.
+  - A marked diagram node gets a small glow, and its node panel offers "Go deeper".
+  - Other visuals list their marks as a row of "Go deeper" chips under the visual.
+  - Marked text gets a dotted underline.
   - Hovering shows the prepared question.
   - Marks are keyboard reachable: Tab moves through them, Enter opens.
 - **Opening.** A click pushes a level on the focus stack. The side thread starts with the

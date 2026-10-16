@@ -50,6 +50,13 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # llama.cpp (llama-cpp-sys-2) builds its HTTP client with HTTPS when CMake
+  # finds OpenSSL. Shodh only loads local GGUF files and never uses llama.cpp's
+  # downloader, so it is built without it: the result no longer depends on
+  # which OpenSSL a runner has (OpenSSL 4 on macos-26 images from 20261012 does
+  # not compile with the vendored cpp-httplib). llama-cpp-sys-2 passes CMAKE_*
+  # variables to CMake, and llama.cpp's find_package(OpenSSL) is optional.
+  CMAKE_DISABLE_FIND_PACKAGE_OpenSSL: "TRUE"
 
 jobs:
   create-release:

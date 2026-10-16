@@ -129,6 +129,30 @@ static LIST_ITEM: OnceLock<Option<Regex>> = OnceLock::new();
 static TABLE_SEPARATOR: OnceLock<Option<Regex>> = OnceLock::new();
 static HEADING: OnceLock<Option<Regex>> = OnceLock::new();
 static RULE: OnceLock<Option<Regex>> = OnceLock::new();
+static TEXT_MARK: OnceLock<Option<Regex>> = OnceLock::new();
+
+/// `[[shown|question]]`: a "go deeper" mark the app renders as `shown`
+/// (app/src/features/ask/visual/marks.ts uses the same pattern).
+fn text_mark() -> Option<&'static Regex> {
+    cached(&TEXT_MARK, r"\[\[([^\[\]|\n]{1,80})\|([^\[\]\n]{0,400})\]\]")
+}
+
+/// Byte spans of complete marks.
+fn mark_spans(text: &str) -> Vec<(usize, usize)> {
+    text_mark()
+        .map(|re| re.find_iter(text).map(|m| (m.start(), m.end())).collect())
+        .unwrap_or_default()
+}
+
+/// Each complete mark replaced by its shown text.
+fn reduce_marks(text: &str) -> String {
+    match text_mark() {
+        Some(re) => re
+            .replace_all(text, |c: &regex::Captures| c[1].trim().to_string())
+            .into_owned(),
+        None => text.to_string(),
+    }
+}
 
 fn list_marker_len(line: &str) -> Option<usize> {
     cached(&LIST_ITEM, r"^\s*(?:[-*+]|\d{1,3}[.)])\s+")?
@@ -186,7 +210,7 @@ fn joined(message: &str, block: &Block) -> (String, Vec<usize>) {
 
 /// Collapse whitespace, drop emphasis markers and code ticks.
 fn plain(text: &str) -> String {
-    let stripped = strip_markers(text);
+    let stripped = strip_markers(&reduce_marks(text));
     let cleaned: String = stripped
         .replace("**", "")
         .replace("__", "")
@@ -302,10 +326,11 @@ fn is_abbreviation(word: &str) -> bool {
 }
 
 /// Byte spans of `text` a sentence never ends inside: inline code, inline
-/// math and citation markers.
+/// math, citation markers and go-deeper marks.
 fn protected_spans(text: &str, markers: &[CitationMarker]) -> Vec<(usize, usize)> {
     let mut spans = code_spans(text);
     spans.extend(markers.iter().map(|m| (m.start, m.end)));
+    spans.extend(mark_spans(text));
     // Inline math `$…$` (a lone `$` before a digit is currency, which
     // `$…$` would rarely close on the same line).
     let bytes = text.as_bytes();
@@ -1017,5 +1042,22 @@ mod tests {
         assert_eq!(claims[0].text, "The model was trained on 15B tokens.");
         assert!(answer.contains(&claims[0].source));
         assert!(claims[0].source.contains('\n'));
+    }
+
+    #[test]
+    fn a_go_deeper_mark_does_not_split_a_sentence() {
+        let answer = "The model uses [[self-attention|Why does its cost grow with the square of the length?]] over all tokens [2].";
+        let claims = split_claims(answer);
+        assert_eq!(claims.len(), 1, "{claims:?}");
+        assert_eq!(claims[0].text, "The model uses self-attention over all tokens.");
+        assert_eq!(claims[0].citations, vec![2]);
+    }
+
+    #[test]
+    fn an_unfinished_mark_is_left_as_text() {
+        let answer = "The model uses [[self-attention|Why does";
+        let claims = split_claims(answer);
+        assert_eq!(claims.len(), 1, "{claims:?}");
+        assert!(claims[0].text.contains("[[self-attention|Why does"));
     }
 }

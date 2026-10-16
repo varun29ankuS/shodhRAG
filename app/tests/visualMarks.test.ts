@@ -14,6 +14,9 @@ import {
   readDeeper,
   stripTextMarks,
 } from '../src/features/ask/visual/marks.ts';
+import { parseDiagram } from '../src/features/ask/visual/diagramSpec.ts';
+import { layoutDiagram } from '../src/features/ask/visual/diagramLayout.ts';
+import { diagramSvg } from '../src/features/ask/visual/diagramSvg.ts';
 
 const fence = (lang: string, body: unknown) => `\`\`\`${lang}\n${JSON.stringify(body)}\n\`\`\``;
 
@@ -132,4 +135,31 @@ test('repeated identical blocks get no marks, so the 4-per-answer cap holds', ()
     total += allow;
   }
   assert(total <= MAX_MARKS, `total marks ${total} must not exceed MAX_MARKS ${MAX_MARKS}`);
+});
+
+test('diagram nodes keep a usable prepared question and drop an unusable one', () => {
+  const r = parseDiagram(JSON.stringify({ layout: 'flow', nodes: [
+    { id: 'a', label: 'Attention', deeper: ' Why is it quadratic? ' },
+    { id: 'b', label: 'FFN', deeper: 'x'.repeat(161) },
+    { id: 'c', label: 'Norm' },
+  ] }), { citations: null, codeMode: false });
+  assert.ok(r.ok);
+  if (!r.ok) return;
+  assert.equal(r.spec.nodes[0].deeper, 'Why is it quadratic?');
+  assert.equal(r.spec.nodes[1].deeper, null);
+  assert.equal(r.spec.nodes[2].deeper, null);
+});
+
+test('marked nodes are drawn with the glow and say so to screen readers', () => {
+  const r = parseDiagram(JSON.stringify({ layout: 'flow', nodes: [
+    { id: 'a', label: 'Attention', deeper: 'Why quadratic?' }, { id: 'b', label: 'FFN' },
+  ], edges: [{ from: 'a', to: 'b' }] }), { citations: null, codeMode: false });
+  assert.ok(r.ok);
+  if (!r.ok) return;
+  const svg = diagramSvg(r.spec, layoutDiagram(r.spec), { interactive: true, idPrefix: 't', marked: new Set([0]) });
+  assert.match(svg, /data-node="0"[^>]*data-deeper="true"/);
+  assert.match(svg, /aria-label="Attention, go deeper available"/);
+  assert.doesNotMatch(svg, /data-node="1"[^>]*data-deeper/);
+  const plain = diagramSvg(r.spec, layoutDiagram(r.spec), { interactive: true, idPrefix: 't' });
+  assert.doesNotMatch(plain, /data-deeper/);
 });

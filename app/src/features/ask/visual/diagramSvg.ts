@@ -19,6 +19,8 @@ import type { DiagramSpec } from './diagramSpec.ts';
 
 export interface SvgOptions {
   interactive: boolean;
+  /** Indices of nodes with a "go deeper" mark the answer's budget allows (glow and name). */
+  marked?: ReadonlySet<number>;
   /** Prefix of element ids (markers), unique per rendering. */
   idPrefix: string;
 }
@@ -76,6 +78,9 @@ const NODE_CLASS = [
   '[&[aria-pressed=true]>:is(rect,circle):first-of-type]:[stroke-width:2.5]',
 ].join(' ');
 
+/** A soft accent halo on a node with a "go deeper" mark (`--c-accent` is the theme's accent, index.css). */
+const DEEPER_CLASS = '[&>:is(rect,circle):first-of-type]:[filter:drop-shadow(0_0_4px_var(--c-accent))]';
+
 const BADGES = { added: '+', removed: '−', changed: 'Δ' } as const;
 
 /** The SVG markup of `drawing`. */
@@ -131,9 +136,12 @@ export function diagramSvg(spec: DiagramSpec, drawing: DiagramDrawing, o: SvgOpt
           : node.change === 'changed'
             ? PAINT.nodeChanged
             : PAINT.node;
-    const name = [node.label, node.kind, node.change, node.path, node.cite !== null ? `source ${node.cite}` : null].filter(Boolean).join(', ');
+    const deeper = o.interactive && o.marked?.has(b.node) === true;
+    const name = [node.label, node.kind, node.change, node.path, node.cite !== null ? `source ${node.cite}` : null, deeper ? 'go deeper available' : null]
+      .filter(Boolean)
+      .join(', ');
     const group = o.interactive
-      ? `<g data-node="${b.node}" role="button" tabindex="0" aria-label="${escapeXml(name)}" class="${NODE_CLASS}">`
+      ? `<g data-node="${b.node}"${deeper ? ' data-deeper="true"' : ''} role="button" tabindex="0" aria-label="${escapeXml(name)}" class="${NODE_CLASS}${deeper ? ` ${DEEPER_CLASS}` : ''}">`
       : '<g>';
     out.push(group);
     out.push(`<title>${escapeXml(node.detail ? `${node.label}: ${node.detail}` : node.label)}</title>`);

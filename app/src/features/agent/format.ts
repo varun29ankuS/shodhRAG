@@ -30,6 +30,44 @@ export function shortModel(model: string): string {
   return slash >= 0 ? model.slice(slash + 1) : model;
 }
 
+/**
+ * A model as the answer's status line names it: the last segment of its id,
+ * without a ":free" tier suffix ("meta-llama/llama-3.3-70b-instruct:free" →
+ * "llama-3.3-70b-instruct").
+ */
+export function friendlyModel(model: string): string {
+  const id = model.trim();
+  const tail = id.slice(id.lastIndexOf('/') + 1) || id;
+  return tail.replace(/:free$/i, '');
+}
+
+export interface StatusSummary {
+  /** "llama-3.3-70b-instruct · $0.0042 · 12s" (the cost only when there is one). */
+  line: string;
+  /** The full model id and the token counts, for the tooltip. */
+  title: string | undefined;
+}
+
+/** The text after the state in an answer's status line, and its tooltip. */
+export function statusSummary({
+  model,
+  usage,
+  elapsedMs,
+}: {
+  model: string | null;
+  usage: { inputTokens: number; outputTokens: number; costUsd: number } | null;
+  elapsedMs: number;
+}): StatusSummary {
+  const name = model ? friendlyModel(model) : '';
+  const cost = usage ? formatCost(usage.costUsd) : null;
+  const line = [name, cost, formatMs(elapsedMs)].filter(Boolean).join(' · ');
+  const tip = [
+    model ? model.trim() : '',
+    usage ? `↑ ${formatTokens(usage.inputTokens)} in · ↓ ${formatTokens(usage.outputTokens)} out` : '',
+  ].filter(Boolean);
+  return { line, title: tip.length > 0 ? tip.join(' · ') : undefined };
+}
+
 /** Pretty JSON for the monospace detail view, capped for very large values. */
 export function prettyJson(value: unknown, maxChars = 4000): string {
   let text: string;

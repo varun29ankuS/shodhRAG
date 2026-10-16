@@ -10,7 +10,7 @@ import { Badge } from "./components/ui/badge";
 import { Input } from "./components/ui/input";
 import { Progress } from "./components/ui/progress";
 import {
-  MessageSquare, Settings, Bot, FolderOpen, FileText, Code, Terminal, Plus, Check, X, Loader2, Pencil, Download, ChevronDown, ChevronUp, Database, FileCode, BookOpen, FileSpreadsheet, Presentation, Trash2, Braces, Coffee,
+  MessageSquare, Settings, Bot, FolderOpen, FileText, Code, Terminal, Plus, Check, X, Loader2, Pencil, ChevronDown, ChevronUp, Database, FileCode, BookOpen, FileSpreadsheet, Presentation, Trash2, Braces, Coffee,
   FolderPlus, PanelLeftOpen, PanelLeftClose, Sun, Moon, Bug, Search, Sparkles, AlertTriangle, RotateCcw, Layers, MessageCircle, Bell
 } from 'lucide-react';
 
@@ -77,12 +77,12 @@ import { WorkspaceProvider, useWorkspaces } from './features/workspaces/Workspac
 import { sourceSummary, workspaceForNewChat } from './features/workspaces/model';
 import { WorkspaceIcon } from './features/workspaces/WorkspaceIcon';
 import { FocusProvider } from './features/focus/FocusContext';
-import { VisualsButton } from './features/visuals/GalleryDialog';
 import { VisualNavigator } from './features/visuals/VisualNavigator';
 import { SnippetHost } from './features/research/SnippetHost';
 import { ReminderAlerts } from './features/tasks/ReminderAlerts';
 import { TableModelPrompt } from './features/setup/TableModelPrompt';
 import { AskView } from './features/ask/AskView';
+import { ChatActionsMenu } from './features/ask/ChatActionsMenu';
 import { useCommandPalette } from './hooks/useCommandPalette';
 import CommandPalette from './components/CommandPalette';
 import type { PaletteAction } from './components/CommandPalette';
@@ -1219,6 +1219,28 @@ function AppSplitView() {
     else notify.error(`${countOf(failed, 'file')} could not be removed from the search`, { description: lastError });
   };
 
+  /** Save the conversation as Markdown where the user picks. */
+  const exportChat = async () => {
+    try {
+      const md = messages.map(m =>
+        `**${m.role === 'user' ? 'You' : 'Shodh'}** (${new Date(m.timestamp || Date.now()).toLocaleString()}):\n\n${m.content}`
+      ).join('\n\n---\n\n');
+      const filePath = await save({
+        defaultPath: `chat-export-${new Date().toISOString().slice(0, 10)}.md`,
+        filters: [
+          { name: 'Markdown', extensions: ['md'] },
+          { name: 'Text', extensions: ['txt'] },
+        ],
+      });
+      if (filePath) {
+        await writeTextFile(filePath, md);
+        notify.success('Chat exported', { description: filePath });
+      }
+    } catch {
+      notify.error('Failed to export chat');
+    }
+  };
+
   /** The file browser counted a source's indexed files: correct a stale card count. */
   const handleFileCount = useCallback((id: string, count: number) => {
     setSources(prev => prev.map(s => (s.id === id && s.status === 'ready' && s.fileCount !== count ? { ...s, fileCount: count } : s)));
@@ -1360,53 +1382,13 @@ function AppSplitView() {
               onNavigate={setActiveTab}
               onOpenConversation={id => { switchConversation(id); setActiveTab('ask'); }}
             />
-            {activeTab === 'ask' && messages.length > 0 && (
-              <>
-                <span
-                  className="text-[10px] px-2 py-0.5 rounded-full font-medium"
-                  style={{ backgroundColor: `${colors.secondary}14`, color: colors.secondary }}
-                >
-                  {countOf(messages.length, 'msg')}
-                </span>
-                <span
-                  className="text-[10px] px-2 py-0.5 rounded-full font-medium"
-                  style={{ backgroundColor: colors.bgTertiary, color: colors.textMuted }}
-                  title="Estimated token usage for this conversation"
-                >
-                  ~{Math.round(messages.reduce((sum, m) => sum + m.content.length, 0) / 4).toLocaleString()} tokens
-                </span>
-                <button
-                  onClick={async () => {
-                    try {
-                      const md = messages.map(m =>
-                        `**${m.role === 'user' ? 'You' : 'Shodh'}** (${new Date(m.timestamp || Date.now()).toLocaleString()}):\n\n${m.content}`
-                      ).join('\n\n---\n\n');
-                      const filePath = await save({
-                        defaultPath: `chat-export-${new Date().toISOString().slice(0, 10)}.md`,
-                        filters: [
-                          { name: 'Markdown', extensions: ['md'] },
-                          { name: 'Text', extensions: ['txt'] },
-                        ],
-                      });
-                      if (filePath) {
-                        await writeTextFile(filePath, md);
-                        notify.success('Chat exported', { description: filePath });
-                      }
-                    } catch {
-                      notify.error('Failed to export chat');
-                    }
-                  }}
-                  className="text-[10px] px-2 py-0.5 rounded-full font-medium transition-colors"
-                  style={{ backgroundColor: colors.bgTertiary, color: colors.textMuted }}
-                  title="Export chat as Markdown"
-                >
-                  <Download className="w-3 h-3 inline mr-0.5" />
-                  Export
-                </button>
-              </>
-            )}
             {activeTab === 'ask' && activeConversationId && (
-              <VisualsButton conversationId={activeConversationId} conversationTitle={activeConversation?.title ?? ''} />
+              <ChatActionsMenu
+                conversationId={activeConversationId}
+                conversationTitle={activeConversation?.title ?? ''}
+                messages={messages}
+                onExport={messages.length > 0 ? () => void exportChat() : null}
+              />
             )}
             {activeTab === 'ask' && activeConversationId && (
               <div className="relative">
@@ -1424,7 +1406,7 @@ function AppSplitView() {
                   title={instructionsList.length > 0 ? `${instructionsList.length} instruction(s) active` : 'Set custom instructions for this chat'}
                 >
                   <Settings className="w-3 h-3 inline mr-0.5" />
-                  {instructionsList.length > 0 ? `Instructions (${instructionsList.length})` : 'Add Instructions'}
+                  {instructionsList.length > 0 ? `Instructions (${instructionsList.length})` : 'Instructions'}
                 </button>
                 {showSystemPromptEditor && (
                   <>

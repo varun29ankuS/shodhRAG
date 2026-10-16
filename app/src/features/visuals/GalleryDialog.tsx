@@ -49,35 +49,33 @@ export function useVisualCount(conversationId: string | null): number | null {
   return count;
 }
 
+interface VisualsDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  conversationId: string;
+  conversationTitle: string;
+  /** Where focus goes when the gallery closes (the control that opened it). */
+  onCloseAutoFocus?: (event: Event) => void;
+}
+
 /**
- * "Visuals (N)" in the conversation header: opens the gallery of this
- * conversation as a centred dialog. A card opens the focus pop-out above it;
- * closing the pop-out returns to the gallery.
+ * The gallery of one conversation as a centred dialog, opened from the
+ * Ask view's "More chat actions" menu. A card opens the focus pop-out above
+ * it; closing the pop-out returns to the gallery.
  */
-export function VisualsButton({ conversationId, conversationTitle }: { conversationId: string; conversationTitle: string }) {
-  const [open, setOpen] = useState(false);
-  const count = useVisualCount(conversationId);
+export function VisualsDialog({ open, onOpenChange, conversationId, conversationTitle, onCloseAutoFocus }: VisualsDialogProps) {
   const descriptionId = useId();
 
   // "Go to message" leaves the gallery for the answer.
-  useEffect(() => subscribeReveal(() => setOpen(false)), []);
+  useEffect(() => subscribeReveal(() => onOpenChange(false)), [onOpenChange]);
 
   return (
-    <Dialog.Root open={open} onOpenChange={setOpen}>
-      <Dialog.Trigger
-        className={cn(
-          'text-[10px] px-2 py-0.5 rounded-full font-medium inline-flex items-center gap-1 bg-shodh-raised text-shodh-text-muted hover:text-shodh-text transition-colors duration-micro',
-          FOCUS_RING,
-        )}
-        title="Diagrams, charts, sketches, plots, simulations, equations and tables from this conversation"
-      >
-        <Images className="w-3 h-3" aria-hidden="true" />
-        {count === null ? 'Visuals' : `Visuals (${count})`}
-      </Dialog.Trigger>
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="ask-fade-in fixed inset-0 z-[55] bg-black/40" />
         <Dialog.Content
           aria-describedby={descriptionId}
+          onCloseAutoFocus={onCloseAutoFocus}
           // The focus pop-out opens above the gallery; using it must not close the gallery.
           onInteractOutside={e => { if (isInFocusOverlay(e.target) || isInToast(e.target)) e.preventDefault(); }}
           // Menus inside the gallery close themselves on Esc.

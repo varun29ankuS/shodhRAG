@@ -124,7 +124,10 @@ export function FocusOverlay({ session, onClose }: FocusOverlayProps) {
 
   const [box, setBox] = useState<Box>(defaultBox);
   const [maximized, setMaximized] = useState(false);
-  const [threadOpen, setThreadOpen] = useState(() => box.width >= NARROW_WIDTH || (thread?.turns.length ?? 0) > 0);
+  // A level opened from a "go deeper" mark asks its question in the side
+  // thread, which only runs while the pane is open: such a level opens it.
+  const hasQuestion = Boolean(level.question?.trim());
+  const [threadOpen, setThreadOpen] = useState(() => box.width >= NARROW_WIDTH || (thread?.turns.length ?? 0) > 0 || hasQuestion);
   const [threadWidth, setThreadWidth] = useState(THREAD_DEFAULT);
   const [peek, setPeek] = useState<SearchHit | null>(null);
   const [page, setPage] = useState<number | null>(null);
@@ -191,6 +194,13 @@ export function FocusOverlay({ session, onClose }: FocusOverlayProps) {
     });
     return () => cancelAnimationFrame(frame);
     // Runs per level only; the label and counts are read for that level.
+  }, [level.seq]);
+
+  // Covers levels pushed onto an open pop-out (a mark inside a side answer)
+  // after the pane was closed in a narrow window.
+  useEffect(() => {
+    if (hasQuestion) setThreadOpen(true);
+    // Runs per level only; whether it has a question is read for that level.
   }, [level.seq]);
 
   const goBack = useCallback(() => focus?.navigate({ type: 'back' }), [focus]);

@@ -158,3 +158,11 @@ test('the sources chip: one label for the top bar and the composer', () => {
   assert.equal(limited.label, '2 of 3 folders');
   assert.match(limited.title, /only the 2 folders included in Ask/);
 });
+
+test('the empty state and the sources chip use one count', () => {
+  // A folder whose indexing failed still counts: the chip says so, and Ask is not shown as empty.
+  const cases: [{ selected: boolean }[], number][] = [[[], 0], [[], 2], [[{ selected: true }], 0], [[{ selected: false }], 0], [[{ selected: true }, { selected: false }], 5]];
+  for (const [folders, unlisted] of cases) {
+    assert.equal(librarySourcesChip(folders, unlisted).label === 'No sources yet', searchedSourceCount(folders, unlisted) === 0);
+  }
+});

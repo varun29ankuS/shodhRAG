@@ -8,7 +8,6 @@ import { cn } from '../../lib/utils';
 import { MODEL_CHANGED_EVENT } from '../modelPicker/modelApi';
 import { requestFixKey, requestModelPicker } from '../modelPicker/navigation';
 import { requestSettingsSection } from '../memory/navigation';
-import { friendlyModel } from '../agent/format';
 import type { ProviderId } from '../modelPicker/modelTypes';
 import type { ConnectionSnapshot, ProviderStatus } from './connectionStatus';
 import {
@@ -257,7 +256,7 @@ export function ConnectionStatusChip({ collapsed }: { collapsed: boolean }) {
         />
         {!collapsed && (
           <span className="text-[12px] font-medium text-shodh-text-secondary truncate">
-            {snapshot?.active ? friendlyModel(snapshot.active.model.model) : pill.model}
+            {pill.model}
           </span>
         )}
       </button>

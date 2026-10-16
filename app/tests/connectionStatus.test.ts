@@ -15,7 +15,6 @@ import {
   keyOriginNote,
   pillView,
   readSnapshot,
-  shortModel,
   sourceText,
 } from '../src/features/connection/connectionStatus.ts';
 import type { ConnectionSnapshot, ProviderStatus } from '../src/features/connection/connectionStatus.ts';
@@ -64,7 +63,8 @@ test('each health has its dot colour', () => {
 
 test('the pill names the model, the provider and how it is connected', () => {
   const pill = pillView(snapshot([status()]), at);
-  assert.equal(pill.model, 'nemotron-3-super-120b-a12b:free');
+  // The friendly name the answer's status line uses: no provider prefix, no ":free".
+  assert.equal(pill.model, 'nemotron-3-super-120b-a12b');
   assert.equal(pill.via, 'OpenRouter · saved key');
   assert.equal(pill.dot, 'green');
   assert.match(pill.description, /^nvidia\/nemotron-3-super-120b-a12b:free through OpenRouter \(Key saved in the app\)\. Working\.$/);
@@ -152,6 +152,4 @@ test('the snapshot reader rejects malformed data and never shows more of a key t
   assert.equal(read.providers[1].health, 'unchecked');
   assert.equal(read.providers[1].keyHint, null, 'a hint must be masked');
   assert.equal(activeStatus(read)?.provider, 'openrouter');
-  assert.equal(shortModel('openai/gpt-4o'), 'gpt-4o');
-  assert.equal(shortModel('qwen3-8b'), 'qwen3-8b');
 });

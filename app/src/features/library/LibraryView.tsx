@@ -32,6 +32,7 @@ import type { IndexingAction, IndexingAdvice } from './indexingAdvice';
 import { useSearchModels } from '../setup/SearchModelsContext';
 import { groupSourcesByKind, progressPercent } from './sources';
 import type { LibrarySource } from './sources';
+import { NOT_ADDED_REASON } from './reconcile';
 import type { Reconciliation } from './reconcile';
 import { countOf } from '../../lib/plural';
 
@@ -344,7 +345,7 @@ function UnlistedFilesCard({
       {skipped > 0 && (
         <p className="m-0 text-[12px] text-shodh-text-muted">
           {addableFolders === 0
-            ? 'Their folders are not added for you: each is a whole drive, your home folder or a folder holding it, or holds a folder already here. Add the folders you want with Add folder.'
+            ? NOT_ADDED_REASON
             : `${countOf(skipped, 'folder')} ${skipped === 1 ? 'is' : 'are'} not added for you: a whole drive, your home folder or a folder holding it, or holding a folder already here.`}
         </p>
       )}

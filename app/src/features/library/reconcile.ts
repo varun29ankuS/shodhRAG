@@ -119,6 +119,10 @@ export function addableFolders(
     });
 }
 
+/** Why `addableFolders` leaves a group folder out, as the Library and its notices say it. */
+export const NOT_ADDED_REASON =
+  'Their folders are not added for you: each is a whole drive, your home folder or a folder holding it, or holds a folder already here. Add the folders you want with Add folder.';
+
 /** A group folder (forward slashes) in the form the folder indexer is given: backslashes on Windows. */
 export function nativePath(folder: string, windows: boolean): string {
   return windows ? folder.replace(/\//g, '\\') : folder;

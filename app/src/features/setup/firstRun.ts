@@ -103,16 +103,20 @@ export function folderStepDone(folders: number, unlistedFiles: number): boolean 
  * setup is recorded as skipped, not finished: it stays closed and can be
  * resumed from the command palette. A saved state decides on its own, and
  * an index that cannot be listed opens setup as on a fresh install.
+ * `diskReadFailed`: the copy on disk could not be read, so it may hold a
+ * state; the recorded one is then kept for this session only (`persist`
+ * false), never saved over it.
  */
 export function firstRunStart(
   saved: FirstRunState | null,
   indexedDocuments: number | null,
-): { open: boolean; record: FirstRunState | null } {
-  if (saved) return { open: saved.status === 'pending', record: null };
+  diskReadFailed = false,
+): { open: boolean; record: FirstRunState | null; persist: boolean } {
+  if (saved) return { open: saved.status === 'pending', record: null, persist: false };
   if (indexedDocuments !== null && indexedDocuments > 0) {
-    return { open: false, record: { status: 'skipped', step: 'welcome' } };
+    return { open: false, record: { status: 'skipped', step: 'welcome' }, persist: !diskReadFailed };
   }
-  return { open: true, record: null };
+  return { open: true, record: null, persist: false };
 }
 
 /** Where resuming should start: the saved step, but never the final summary. */

@@ -41,7 +41,7 @@ import { scrollBehavior } from './viewer/sourceAccess';
 import type { ChatMessage, SearchHit, SendOptions } from './types';
 import { useWorkspaces } from '../workspaces/WorkspaceContext';
 import { scopeChip } from '../workspaces/model';
-import { librarySourcesChip } from '../library/reconcile';
+import { librarySourcesChip, searchedSourceCount } from '../library/reconcile';
 import { SnippetDropZone } from '../research/SnippetDropZone';
 import { exportPdf } from '../print/exportPdf';
 import { answerTitle, buildPrintDocument } from '../print/printModel';
@@ -645,8 +645,9 @@ export function AskView({ sources, unlistedFiles = 0, llmStatus, onNavigate, onP
         ? `${codeProblem} Or switch this conversation to Research.`
         : null;
 
-  // Folders that indexed, and indexed files outside every folder (searched all the same).
-  const indexedCount = sources.filter(s => s.status !== 'error').length + unlistedFiles;
+  // What answers search, counted as the sources chip counts it (`librarySourcesChip`),
+  // so the empty state never shows beside "All sources · N".
+  const indexedCount = searchedSourceCount(sources, unlistedFiles);
   // Starter questions fit the library: papers get methods, results and
   // comparisons. Read again when the sources change (a folder added or
   // finished indexing); the general questions show until it is known.

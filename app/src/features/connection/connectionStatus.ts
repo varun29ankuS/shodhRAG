@@ -6,6 +6,7 @@
  */
 import type { ActiveModel, ProviderId } from '../modelPicker/modelTypes.ts';
 import { PROVIDER_LABELS, isProviderId, readModelRef } from '../modelPicker/modelTypes.ts';
+import { friendlyModel } from '../agent/format.ts';
 
 /** Emitted by the backend with a snapshot whenever a status changes. */
 export const CONNECTION_STATUS_EVENT = 'connection-status-changed';
@@ -221,14 +222,8 @@ export function activeStatus(snapshot: ConnectionSnapshot): ProviderStatus | nul
   return provider ? snapshot.providers.find(p => p.provider === provider) ?? null : null;
 }
 
-/** A model id as the pill shows it: its last path segment. */
-export function shortModel(model: string): string {
-  const tail = model.slice(model.lastIndexOf('/') + 1);
-  return tail || model;
-}
-
 export interface PillView {
-  /** The model, or "No model chosen". */
+  /** The model's friendly name (`friendlyModel`, as the answer's status line shows it), or "No model chosen". */
   model: string;
   /** "OpenRouter · saved key", or null without a model. */
   via: string | null;
@@ -250,7 +245,7 @@ export function pillView(snapshot: ConnectionSnapshot | null, formatTime: TimeFo
   }
   const status = activeStatus(snapshot);
   const label = status?.label ?? PROVIDER_LABELS[active.model.provider];
-  const model = shortModel(active.model.model);
+  const model = friendlyModel(active.model.model);
   const via = `${label} · ${sourceShort(status?.source ?? null)}`;
   const health = status ? healthText(status, formatTime) : 'Not connected';
   return {

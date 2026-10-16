@@ -63,7 +63,7 @@ function writeDurable(key: DurableKey, value: unknown): Promise<void> {
 import { applyFolderSync, parseStoredSources, readIndexingResult, scannedPagesStep, serializeSources, SOURCES_STORAGE_KEY, syncedFolders } from './features/library/sources';
 import { explainFailure } from './features/library/indexingAdvice';
 import type { FolderSyncOutcome, LibrarySource } from './features/library/sources';
-import { addableFolders, librarySourcesChip, nativePath, reconcileSources } from './features/library/reconcile';
+import { addableFolders, librarySourcesChip, nativePath, NOT_ADDED_REASON, reconcileSources } from './features/library/reconcile';
 import type { FileNode } from './features/library/fileTree';
 import { errorMessage as searchErrorMessage } from './features/setup/searchModels';
 import Sidebar from './components/shell/Sidebar';
@@ -299,6 +299,7 @@ function AppSplitView() {
     [reconciliation.groups, listedKey, homePath],
   );
   const [unlistedBusy, setUnlistedBusy] = useState(false);
+  const unlistedBusyRef = useRef(false);
 
   const [isDraggingImage, setIsDraggingImage] = useState(false);
   const lastProcessedImageTimeRef = useRef(0);
@@ -316,7 +317,7 @@ function AppSplitView() {
   firstRunRef.current = firstRun;
   const firstRunChangedRef = useRef(false);
   /** The setup state found at start, waiting for the open-or-not decision. */
-  const [firstRunStartFrom, setFirstRunStartFrom] = useState<{ saved: FirstRunState | null } | null>(null);
+  const [firstRunStartFrom, setFirstRunStartFrom] = useState<{ saved: FirstRunState | null; diskReadFailed: boolean } | null>(null);
   useEffect(() => {
     let cancelled = false;
     void readDurable('first_run').then(stored => {
@@ -325,7 +326,7 @@ function AppSplitView() {
       setFirstRun(state);
       // Whether setup opens is decided once the index's documents are known
       // (see firstRunStart); until then it stays closed, so it never flashes.
-      setFirstRunStartFrom({ saved: saved ? state : null });
+      setFirstRunStartFrom({ saved: saved ? state : null, diskReadFailed: stored.kind === 'failed' });
       // A fresh install's default is not written: written, it would count as
       // a saved state next start, before this start's decision was made.
       if (saved) writeFirstRun(safeStorage(), state);
@@ -473,9 +474,17 @@ function AppSplitView() {
       return;
     }
     if (!firstRunStartFrom.saved && indexedLoad === 'loading') return;
-    const { open, record } = firstRunStart(firstRunStartFrom.saved, indexedLoad === 'loaded' ? indexedFiles.length : null);
+    const { open, record, persist } = firstRunStart(
+      firstRunStartFrom.saved,
+      indexedLoad === 'loaded' ? indexedFiles.length : null,
+      firstRunStartFrom.diskReadFailed,
+    );
     setFirstRunStartFrom(null);
-    if (record) saveFirstRun(record);
+    // Not saved over a disk copy that could not be read: this session only.
+    if (record) {
+      if (persist) saveFirstRun(record);
+      else setFirstRun(record);
+    }
     setFirstRunOpen(open);
   }, [firstRunStartFrom, indexedLoad, indexedFiles.length, saveFirstRun]);
 
@@ -1227,28 +1236,38 @@ function AppSplitView() {
    * source, indexed in turn with all its subfolders, once the user agrees.
    */
   const handleAddUnlistedFolders = async () => {
-    if (unlistedBusy || addableUnlisted.length === 0 || indexingBusy()) return;
-    // The home folder is normally read at startup; if not yet, read it now so
-    // it is never added unasked.
-    const home = homePath ?? (await homeDir().catch(() => null));
-    const folders = addableFolders(reconciliation.groups, sources, home ? [home] : [])
-      .map(folder => nativePath(folder, IS_WINDOWS));
-    if (folders.length === 0) return;
-    let confirmed: boolean;
-    try {
-      confirmed = await ask(
-        `${folders.map(f => `• ${f}`).join('\n')}\n\nEach folder is indexed with all its subfolders and kept in sync.`,
-        { title: `Add ${countOf(folders.length, 'folder')} to the Library?`, kind: 'info', okLabel: 'Add and index', cancelLabel: 'Cancel' },
-      );
-    } catch (error) {
-      notify.error('Could not ask to add the folders', { description: String(error) });
-      return;
-    }
-    if (!confirmed || indexingBusy()) return;
+    // A ref, not only the state: a second click can arrive before the re-render.
+    if (unlistedBusyRef.current || addableUnlisted.length === 0 || indexingBusy()) return;
+    unlistedBusyRef.current = true;
     setUnlistedBusy(true);
     try {
+      // The home folder is normally read at startup; if not yet, read it now.
+      // Unknown, it could be added unasked, so nothing is added.
+      const home = homePath ?? (await homeDir().catch(() => null));
+      if (!home) {
+        notify.error('Could not check your home folder, so no folders were added.');
+        return;
+      }
+      const folders = addableFolders(reconciliation.groups, sources, [home])
+        .map(folder => nativePath(folder, IS_WINDOWS));
+      if (folders.length === 0) {
+        notify.info('No folders were added', { description: NOT_ADDED_REASON });
+        return;
+      }
+      let confirmed: boolean;
+      try {
+        confirmed = await ask(
+          `${folders.map(f => `• ${f}`).join('\n')}\n\nEach folder is indexed with all its subfolders and kept in sync.`,
+          { title: `Add ${countOf(folders.length, 'folder')} to the Library?`, kind: 'info', okLabel: 'Add and index', cancelLabel: 'Cancel' },
+        );
+      } catch (error) {
+        notify.error('Could not ask to add the folders', { description: String(error) });
+        return;
+      }
+      if (!confirmed || indexingBusy()) return;
       for (const folder of folders) await addFolderPath(folder);
     } finally {
+      unlistedBusyRef.current = false;
       setUnlistedBusy(false);
     }
   };

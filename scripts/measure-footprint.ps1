@@ -298,9 +298,44 @@ function Get-Sample([int]$RootId, [datetime]$RootStart, [long]$LaunchMs) {
 
 # --- DevTools protocol (WebView2 remote debugging) ---------------------------
 
-function Get-PageSocketUrl {
+# Addresses listening on the DevTools port. Read from the system's listener
+# table (a few ms, no connection attempt): this runs during the timed startup.
+function Get-CdpListenAddresses {
+    @([System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() |
+            Where-Object { $_.Port -eq $CdpPort } | ForEach-Object { $_.Address.ToString() })
+}
+
+# A process for a log line: id, name, start time and command line.
+function Format-Owner([int]$ProcessId) {
+    $p = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    if ($null -eq $p) { return "pid $ProcessId (no longer running)" }
+    $started = if ($p.CreationDate) { $p.CreationDate.ToString('HH:mm:ss.fff') } else { 'unknown' }
+    return "pid $ProcessId ($($p.Name), started $started): $($p.CommandLine)"
+}
+
+# This launch's DevTools base URL, or $null while its browser is not listening
+# yet. The browser binds 127.0.0.1, or ::1 when the IPv4 loopback port cannot
+# be bound (Chromium's fallback), so the address is read from the listener
+# rather than assumed. A listener owned by any process outside the launched
+# tree is an error: connecting to it would measure some other app.
+function Get-CdpBase($App) {
+    if (@(Get-CdpListenAddresses).Count -eq 0) { return $null }
+    $treeIds = @(Get-ProcessTree $App.Process.Id $App.Start | ForEach-Object { [int]$_.ProcessId })
+    $owned = $null
+    foreach ($c in @(Get-NetTCPConnection -State Listen -LocalPort $CdpPort -ErrorAction SilentlyContinue)) {
+        if ($treeIds -notcontains [int]$c.OwningProcess) {
+            throw "DevTools port $CdpPort on $($c.LocalAddress) belongs to $(Format-Owner $c.OwningProcess), not to this launch"
+        }
+        if ($null -eq $owned) { $owned = $c }
+    }
+    if ($null -eq $owned) { return $null }
+    $address = if ($owned.LocalAddress -match ':') { "[$($owned.LocalAddress)]" } else { $owned.LocalAddress }
+    return "http://${address}:$CdpPort"
+}
+
+function Get-PageSocketUrl([string]$Base) {
     try {
-        $targets = Invoke-RestMethod -Uri "http://127.0.0.1:$CdpPort/json/list" -TimeoutSec 2 -UseBasicParsing
+        $targets = Invoke-RestMethod -Uri "$Base/json/list" -TimeoutSec 2 -UseBasicParsing
     } catch {
         return $null
     }
@@ -435,6 +470,12 @@ function New-Fixtures([string]$Folder) {
 # --- Launch and measure ----------------------------------------------------------
 
 function Start-Shodh([string]$ProfileDir, [string]$Program = $ExePath) {
+    # A port already taken would move this launch's DevTools endpoint (or
+    # leave it unreachable): fail now, naming whoever holds it.
+    $held = @(Get-NetTCPConnection -State Listen -LocalPort $CdpPort -ErrorAction SilentlyContinue) | Select-Object -First 1
+    if ($null -ne $held) {
+        throw "DevTools port $CdpPort on $($held.LocalAddress) is already in use before launch by $(Format-Owner $held.OwningProcess)"
+    }
     # The app inherits this process's environment: set the measured
     # environment here for the launch and put everything back after.
     $saved = @{}
@@ -471,7 +512,14 @@ function Stop-Shodh($App) {
             Start-Sleep -Milliseconds 200
         }
         $left = Get-Process -Id ([int]$p.ProcessId) -ErrorAction SilentlyContinue
-        if ($left -and $left.StartTime -ge $App.Start.AddSeconds(-1)) { Stop-Process -Id $left.Id -Force -ErrorAction SilentlyContinue }
+        if ($left -and $left.StartTime -ge $App.Start.AddSeconds(-1)) {
+            Write-Host "Still running 20 s after the stop, killing: $(Format-Owner $left.Id)"
+            Stop-Process -Id $left.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+    # The next launch needs the DevTools port free (Start-Shodh checks).
+    while ((Get-Date) -lt $deadline.AddSeconds(10) -and @(Get-CdpListenAddresses).Count -gt 0) {
+        Start-Sleep -Milliseconds 200
     }
 }
 
@@ -480,11 +528,13 @@ function Stop-Shodh($App) {
 function Wait-Window($App, [System.Collections.ArrayList]$Samples) {
     $deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
     $cdp = $null
+    $base = $null
     while ((Get-Date) -lt $deadline) {
         if ($App.Process.HasExited) { throw "Shodh exited during startup (code $($App.Process.ExitCode))" }
         if ($null -ne $Samples) { [void]$Samples.Add((Get-Sample $App.Process.Id $App.Start $App.LaunchMs)) }
-        if ($null -eq $cdp) {
-            $url = Get-PageSocketUrl
+        if ($null -eq $base) { $base = Get-CdpBase $App }
+        if ($null -ne $base -and $null -eq $cdp) {
+            $url = Get-PageSocketUrl $base
             if ($url) { $cdp = Connect-Cdp $url }
         }
         if ($null -ne $cdp) {
@@ -509,12 +559,31 @@ function Wait-Window($App, [System.Collections.ArrayList]$Samples) {
 # the page's state and the app's own output.
 function Write-StartupDiagnostics($App, $Cdp) {
     Write-Host '--- Startup diagnostics ---'
-    try {
-        $targets = @(Invoke-RestMethod -Uri "http://127.0.0.1:$CdpPort/json/list" -TimeoutSec 2 -UseBasicParsing)
-        if ($targets.Count -eq 0) { Write-Host 'DevTools answered with no targets' }
-        foreach ($t in $targets) { Write-Host ("DevTools target: {0} {1}" -f $t.type, $t.url) }
-    } catch {
-        Write-Host "DevTools port $CdpPort did not answer: $($_.Exception.Message)"
+    foreach ($address in '127.0.0.1', '[::1]') {
+        try {
+            $targets = @(Invoke-RestMethod -Uri "http://${address}:$CdpPort/json/list" -TimeoutSec 2 -UseBasicParsing)
+            if ($targets.Count -eq 0) { Write-Host "DevTools on $address answered with no targets" }
+            foreach ($t in $targets) { Write-Host ("DevTools target on {0}: {1} {2}" -f $address, $t.type, $t.url) }
+        } catch {
+            Write-Host "DevTools on ${address}:$CdpPort did not answer: $($_.Exception.Message)"
+        }
+    }
+    # Who holds the port (any state, either address family): what kept the
+    # browser off the IPv4 loopback when it listens on ::1 only.
+    $treeIds = @(Get-ProcessTree $App.Process.Id $App.Start | ForEach-Object { [int]$_.ProcessId })
+    $sockets = @(Get-NetTCPConnection -LocalPort $CdpPort -ErrorAction SilentlyContinue)
+    if ($sockets.Count -eq 0) { Write-Host "Sockets on port ${CdpPort}: none" }
+    foreach ($s in $sockets) {
+        $whose = if ([int]$s.OwningProcess -eq 0) { 'no process' } elseif ($treeIds -contains [int]$s.OwningProcess) { 'this launch' } else { 'NOT this launch' }
+        Write-Host ("Socket on port {0}: {1} {2} -> {3}:{4}, {5}: {6}" -f $CdpPort, $s.State, $s.LocalAddress, $s.RemoteAddress, $s.RemotePort, $whose, (Format-Owner $s.OwningProcess))
+    }
+    # Whether the port can be handed out as an outgoing connection's local
+    # port, or is reserved, on this machine.
+    foreach ($family in 'ipv4', 'ipv6') {
+        $dynamic = (& netsh.exe int $family show dynamicport tcp | Where-Object { $_ -match '\d' }) -join '; '
+        Write-Host "Dynamic ports ($family): $dynamic"
+        $excluded = @(& netsh.exe int $family show excludedportrange protocol=tcp | Where-Object { $_ -match '^\s*\d+\s+\d+' } | ForEach-Object { ($_.Trim() -split '\s+')[0..1] -join '-' })
+        Write-Host ("Excluded ports ({0}): {1}" -f $family, $(if ($excluded.Count) { $excluded -join ', ' } else { 'none' }))
     }
     if ($null -ne $Cdp) {
         try {

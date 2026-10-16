@@ -24,12 +24,6 @@ export function formatCost(usd: number): string | null {
   return `$${usd.toFixed(2)}`;
 }
 
-/** The model id without its provider prefix: "anthropic/claude-x" → "claude-x". */
-export function shortModel(model: string): string {
-  const slash = model.indexOf('/');
-  return slash >= 0 ? model.slice(slash + 1) : model;
-}
-
 /**
  * A model as the answer's status line names it: the last segment of its id,
  * without a ":free" tier suffix ("meta-llama/llama-3.3-70b-instruct:free" →

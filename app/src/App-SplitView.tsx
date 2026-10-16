@@ -12,7 +12,7 @@ import { Input } from "./components/ui/input";
 import { Progress } from "./components/ui/progress";
 import {
   MessageSquare, Settings, Bot, FolderOpen, FileText, Code, Terminal, Plus, Check, X, Loader2, Pencil, ChevronDown, ChevronUp, Database, FileCode, BookOpen, FileSpreadsheet, Presentation, Trash2, Braces, Coffee,
-  FolderPlus, PanelLeftOpen, PanelLeftClose, Sun, Moon, Bug, Search, Sparkles, AlertTriangle, RotateCcw, Layers, MessageCircle, Bell
+  FolderPlus, PanelLeftOpen, PanelLeftClose, Sun, Moon, Bug, Search, Sparkles, AlertTriangle, RotateCcw, Layers, MessageCircle, Bell, ListTodo, CalendarDays
 } from 'lucide-react';
 
 const IS_MAC = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
@@ -24,6 +24,8 @@ const ActivityView = lazy(() => import('./features/activity/ActivityView'));
 const SettingsView = lazy(() => import('./components/shell/SettingsView'));
 const WorkspacesView = lazy(() => import('./features/workspaces/WorkspacesView'));
 const LibraryView = lazy(() => import('./features/library/LibraryView').then(m => ({ default: m.LibraryView })));
+// The New task / New event dialog brings the Tasks store with it: loaded when first opened.
+const QuickCreateDialog = lazy(() => import('./features/tasks/QuickCreateDialog').then(m => ({ default: m.QuickCreateDialog })));
 
 function safeStorage(): Storage | null {
   try {
@@ -82,6 +84,8 @@ import { FocusProvider } from './features/focus/FocusContext';
 import { VisualNavigator } from './features/visuals/VisualNavigator';
 import { SnippetHost } from './features/research/SnippetHost';
 import { ReminderAlerts } from './features/tasks/ReminderAlerts';
+import type { QuickCreateKind } from './features/tasks/QuickCreateDialog';
+import { quickCreateWorkspace } from './features/tasks/quickCreate';
 import { TableModelPrompt } from './features/setup/TableModelPrompt';
 import { AskView } from './features/ask/AskView';
 import { ChatActionsMenu } from './features/ask/ChatActionsMenu';
@@ -340,6 +344,8 @@ function AppSplitView() {
   }, []);
   const { status: searchModelsStatus } = useSearchModels();
   const [showFeedback, setShowFeedback] = useState(false);
+  // "New task…" / "New event…" over the current view (New menu, palette).
+  const [quickCreate, setQuickCreate] = useState<QuickCreateKind | null>(null);
 
   // Ref to prevent double initialization (React Strict Mode protection)
   const initializationRef = useRef(false);
@@ -528,6 +534,8 @@ function AppSplitView() {
     { id: 'new-chat-plain', label: 'New chat outside workspaces', description: 'Searches your whole library', icon: MessageCircle, keywords: 'new chat no workspace library all', run: () => startChat(null) },
     { id: 'new-workspace', label: 'New workspace', description: 'Sources, instructions and chats for one piece of work', icon: Layers, keywords: 'new create workspace project template', run: requestNewWorkspace },
     { id: 'add-folder', label: 'Add folder to Library', description: 'Index a folder of documents', icon: FolderPlus, keywords: 'add source folder documents index import', run: () => { setActiveTab('library'); void handleAddSource(); } },
+    { id: 'new-task', label: 'New task', description: 'Add a task without leaving this view', icon: ListTodo, keywords: 'new create task todo reminder due', run: () => setQuickCreate('task') },
+    { id: 'new-event', label: 'New event', description: 'Add an event without leaving this view', icon: CalendarDays, keywords: 'new create event calendar meeting schedule', run: () => setQuickCreate('event') },
     { id: 'choose-model', label: 'Choose model', description: 'Provider and model that answer', icon: Bot, keywords: 'model llm provider ai settings api key', run: () => setActiveTab('settings') },
     { id: 'toggle-sidebar', label: collapsed ? 'Expand sidebar' : 'Collapse sidebar', icon: collapsed ? PanelLeftOpen : PanelLeftClose, keywords: 'sidebar toggle hide show collapse expand', shortcut: IS_MAC ? '⌘B' : 'Ctrl+B', run: toggleSidebar },
     { id: 'toggle-theme', label: theme === 'dark' ? 'Use light theme' : 'Use dark theme', icon: theme === 'dark' ? Sun : Moon, keywords: 'theme dark light mode appearance', run: toggleTheme },
@@ -1752,6 +1760,18 @@ function AppSplitView() {
         unlistedFiles={unlistedCount}
         onAddFolder={() => void handleAddSource()}
       />
+
+      {/* New task / New event */}
+      {quickCreate && (
+        <Suspense fallback={null}>
+          <QuickCreateDialog
+            kind={quickCreate}
+            onClose={() => setQuickCreate(null)}
+            workspaces={workspaces.map(w => ({ id: w.id, name: w.name }))}
+            defaultWorkspaceId={quickCreateWorkspace(activeConversation?.workspaceId, workspaces)}
+          />
+        </Suspense>
+      )}
 
       {/* Feedback Dialog */}
       <FeedbackDialog

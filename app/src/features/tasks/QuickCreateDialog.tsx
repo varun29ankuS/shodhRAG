@@ -1,0 +1,326 @@
+import React, { useId, useState } from 'react';
+import * as Dialog from '@radix-ui/react-dialog';
+import { Loader2, X } from 'lucide-react';
+import { cn } from '../../lib/utils';
+import { notify } from '../../lib/notify';
+import { FOCUS_RING, INPUT, PRIMARY_BUTTON, QUIET_BUTTON } from '../workspaces/ui';
+import { DATE_INPUT, FIELD_LABEL, Segmented } from './fields';
+import { TasksStoreProvider, useTasksStore } from './TasksStore';
+import { dueLabel, fullLabel } from './dueDate';
+import { openInTasks } from './openInTasks';
+import {
+  defaultEventDraft,
+  defaultTaskDraft,
+  eventDraftProblem,
+  eventInput,
+  taskDraftProblem,
+  taskInput,
+  withStart,
+} from './quickCreate';
+import type { EventDraft, TaskDraft } from './quickCreate';
+
+export type QuickCreateKind = 'task' | 'event';
+
+interface QuickCreateDialogProps {
+  /** Which dialog is open; null when none is. */
+  kind: QuickCreateKind | null;
+  onClose: () => void;
+  workspaces: readonly { id: string; name: string }[];
+  /** The workspace a new task starts in (the active chat's), or null. */
+  defaultWorkspaceId: string | null;
+}
+
+/**
+ * "New task…" and "New event…" over the current view: no navigation to
+ * Tasks. The dialog mounts its own Tasks store (not following the agent,
+ * like a workspace's board) while open; the Tasks view, if shown, reloads
+ * on the backend's `calendar-changed` event.
+ */
+export function QuickCreateDialog({ kind, onClose, workspaces, defaultWorkspaceId }: QuickCreateDialogProps) {
+  if (!kind) return null;
+  return (
+    <TasksStoreProvider followAgent={false}>
+      {kind === 'task' ? (
+        <QuickTaskDialog onClose={onClose} workspaces={workspaces} defaultWorkspaceId={defaultWorkspaceId} />
+      ) : (
+        <QuickEventDialog onClose={onClose} />
+      )}
+    </TasksStoreProvider>
+  );
+}
+
+/** The dialog chrome shared by both forms (the CreateWorkspaceDialog pattern). */
+function QuickDialogFrame({
+  title,
+  description,
+  onClose,
+  onSubmit,
+  problem,
+  saving,
+  submitLabel,
+  children,
+}: {
+  title: string;
+  description: string;
+  onClose: () => void;
+  onSubmit: () => void;
+  /** Why Create is disabled, shown next to it; null when it is enabled. */
+  problem: string | null;
+  saving: boolean;
+  submitLabel: string;
+  children: React.ReactNode;
+}) {
+  const descId = useId();
+  const problemId = useId();
+  return (
+    <Dialog.Root open onOpenChange={open => { if (!open) onClose(); }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="ask-fade-in fixed inset-0 z-[55] bg-black/40" />
+        <Dialog.Content
+          aria-describedby={descId}
+          className="ask-fade-in fixed z-[55] inset-0 m-auto flex flex-col w-[min(460px,calc(100vw-48px))] max-h-[min(640px,calc(100vh-48px))] h-fit rounded-[18px] border border-shodh-border-strong bg-shodh-surface text-shodh-text shadow-[0_24px_80px_rgba(0,0,0,0.45)] focus:outline-none"
+        >
+          <header className="shrink-0 flex items-start gap-3 px-5 py-4 border-b border-shodh-border-subtle">
+            <div className="flex-1 min-w-0">
+              <Dialog.Title className="text-[15px] font-semibold">{title}</Dialog.Title>
+              <Dialog.Description id={descId} className="text-[12.5px] text-shodh-text-muted">
+                {description}
+              </Dialog.Description>
+            </div>
+            <Dialog.Close
+              aria-label="Close"
+              className={cn('w-8 h-8 inline-flex items-center justify-center rounded-lg text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text', FOCUS_RING)}
+            >
+              <X className="w-4 h-4" aria-hidden="true" />
+            </Dialog.Close>
+          </header>
+          <form
+            className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-5 py-4 flex flex-col gap-4"
+            onSubmit={e => {
+              e.preventDefault();
+              onSubmit();
+            }}
+          >
+            {children}
+            <div className="flex items-center justify-end gap-2 pt-1">
+              {problem && (
+                <p id={problemId} className="m-0 mr-auto text-[12px] text-shodh-text-muted">{problem}</p>
+              )}
+              <Dialog.Close className={QUIET_BUTTON} type="button">Cancel</Dialog.Close>
+              <button
+                type="submit"
+                className={PRIMARY_BUTTON}
+                disabled={problem !== null || saving}
+                aria-describedby={problem ? problemId : undefined}
+              >
+                {saving && <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
+                {submitLabel}
+              </button>
+            </div>
+          </form>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+/** A labelled native date input with an optional time input (enabled once a date is picked). */
+function DateTimeInputs({
+  label,
+  date,
+  time,
+  showTime = true,
+  onChange,
+}: {
+  label: string;
+  date: string;
+  time: string;
+  showTime?: boolean;
+  onChange: (next: { date: string; time: string }) => void;
+}) {
+  const labelId = useId();
+  return (
+    <div className="flex flex-col gap-1">
+      <span id={labelId} className={FIELD_LABEL}>{label}</span>
+      <div role="group" aria-labelledby={labelId} className="flex items-center gap-2 flex-wrap">
+        <input
+          type="date"
+          aria-label={`${label} date`}
+          value={date}
+          onChange={e => onChange({ date: e.target.value, time: e.target.value ? time : '' })}
+          className={DATE_INPUT}
+        />
+        {showTime && (
+          <input
+            type="time"
+            aria-label={`${label} time`}
+            value={time}
+            disabled={!date}
+            onChange={e => onChange({ date, time: e.target.value })}
+            className={DATE_INPUT}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TitleInput({ value, onChange, placeholder }: { value: string; onChange: (next: string) => void; placeholder: string }) {
+  const id = useId();
+  return (
+    <div className="flex flex-col gap-1">
+      <label htmlFor={id} className={FIELD_LABEL}>Title</label>
+      <input
+        id={id}
+        className={INPUT}
+        value={value}
+        maxLength={200}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder}
+        autoFocus
+        required
+      />
+    </div>
+  );
+}
+
+function QuickTaskDialog({
+  onClose,
+  workspaces,
+  defaultWorkspaceId,
+}: {
+  onClose: () => void;
+  workspaces: readonly { id: string; name: string }[];
+  defaultWorkspaceId: string | null;
+}) {
+  const { createTask } = useTasksStore();
+  const [draft, setDraft] = useState<TaskDraft>(() => defaultTaskDraft(defaultWorkspaceId));
+  const [saving, setSaving] = useState(false);
+  const workspaceSelectId = useId();
+  const problem = taskDraftProblem(draft);
+  const update = (patch: Partial<TaskDraft>) => setDraft(d => ({ ...d, ...patch }));
+
+  const create = async () => {
+    const input = taskInput(draft);
+    if (!input || saving) return;
+    setSaving(true);
+    // On failure the store shows the error notice; the dialog stays open.
+    const task = await createTask(input);
+    if (!task) {
+      setSaving(false);
+      return;
+    }
+    notify.success(`Task added: ${task.title}`, {
+      description: task.dueDate ? `Due ${dueLabel(task.dueDate)}` : undefined,
+      action: { label: 'Open in Tasks', onClick: () => openInTasks({ taskId: task.id }) },
+    });
+    onClose();
+  };
+
+  return (
+    <QuickDialogFrame
+      title="New task"
+      description="Added to Tasks. You can add notes, tags and subtasks there."
+      onClose={onClose}
+      onSubmit={() => void create()}
+      problem={problem}
+      saving={saving}
+      submitLabel="Create task"
+    >
+      <TitleInput value={draft.title} onChange={title => update({ title })} placeholder="e.g. Read the survey paper" />
+      <DateTimeInputs
+        label="Due (optional)"
+        date={draft.dueDate}
+        time={draft.dueTime}
+        onChange={({ date, time }) => update({ dueDate: date, dueTime: time })}
+      />
+      <DateTimeInputs
+        label="Reminder (optional)"
+        date={draft.reminderDate}
+        time={draft.reminderTime}
+        onChange={({ date, time }) => update({ reminderDate: date, reminderTime: time })}
+      />
+      {workspaces.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <label htmlFor={workspaceSelectId} className={FIELD_LABEL}>Workspace (optional)</label>
+          <select
+            id={workspaceSelectId}
+            value={draft.workspaceId ?? ''}
+            onChange={e => update({ workspaceId: e.target.value || null })}
+            className={cn(
+              'h-8 w-full max-w-[20rem] rounded-lg border border-shodh-border bg-shodh-surface px-2 text-[13px] text-shodh-text hover:border-shodh-border-strong',
+              FOCUS_RING,
+            )}
+          >
+            <option value="">No workspace</option>
+            {workspaces.map(w => (
+              <option key={w.id} value={w.id}>{w.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
+    </QuickDialogFrame>
+  );
+}
+
+function QuickEventDialog({ onClose }: { onClose: () => void }) {
+  const { createEvent } = useTasksStore();
+  const [draft, setDraft] = useState<EventDraft>(() => defaultEventDraft());
+  // Until the user edits the end, it follows the start.
+  const [endEdited, setEndEdited] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const problem = eventDraftProblem(draft);
+
+  const create = async () => {
+    const input = eventInput(draft);
+    if (!input || saving) return;
+    setSaving(true);
+    const event = await createEvent(input);
+    if (!event) {
+      setSaving(false);
+      return;
+    }
+    notify.success(`Event added: ${event.title}`, {
+      description: fullLabel(event.startTime),
+      action: { label: 'Open in Tasks', onClick: () => openInTasks({ eventId: event.id }) },
+    });
+    onClose();
+  };
+
+  return (
+    <QuickDialogFrame
+      title="New event"
+      description="Added to the Tasks calendar."
+      onClose={onClose}
+      onSubmit={() => void create()}
+      problem={problem}
+      saving={saving}
+      submitLabel="Create event"
+    >
+      <TitleInput value={draft.title} onChange={title => setDraft(d => ({ ...d, title }))} placeholder="e.g. Reading group" />
+      <Segmented
+        label="Timing"
+        value={draft.allDay ? 'allday' : 'timed'}
+        options={[{ value: 'timed', label: 'At a time' }, { value: 'allday', label: 'All day' }]}
+        onChange={v => setDraft(d => withStart({ ...d, allDay: v === 'allday' }, {}, endEdited))}
+      />
+      <DateTimeInputs
+        label="Starts"
+        date={draft.startDate}
+        time={draft.startTime}
+        showTime={!draft.allDay}
+        onChange={({ date, time }) => setDraft(d => withStart(d, { startDate: date, startTime: time }, endEdited))}
+      />
+      <DateTimeInputs
+        label="Ends (optional)"
+        date={draft.endDate}
+        time={draft.endTime}
+        showTime={!draft.allDay}
+        onChange={({ date, time }) => {
+          setEndEdited(true);
+          setDraft(d => ({ ...d, endDate: date, endTime: time }));
+        }}
+      />
+    </QuickDialogFrame>
+  );
+}

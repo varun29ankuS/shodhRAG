@@ -91,7 +91,7 @@ import type { PaletteAction } from './components/CommandPalette';
 import { ViewSkeleton } from './components/shell/ViewSkeleton';
 import { useSearchConfig } from './components/SearchSettings';
 import { FirstRunFlow } from './features/setup/FirstRunFlow';
-import { hasSavedFirstRun, readFirstRun, resumeStep, writeFirstRun } from './features/setup/firstRun';
+import { firstRunStart, hasSavedFirstRun, readFirstRun, resumeStep, writeFirstRun } from './features/setup/firstRun';
 import { reconcileFirstRun, reconcileSources as reconcileStoredSources } from './lib/durableState';
 import type { DurableKey, StoredRead } from './lib/durableState';
 import type { FirstRunState, FirstRunStep } from './features/setup/firstRun';
@@ -254,6 +254,8 @@ function AppSplitView() {
   // folders above so the Library never contradicts what answers cite. Read
   // once the index is open and again after each indexing run or removal.
   const [indexedFiles, setIndexedFiles] = useState<string[]>([]);
+  /** Whether the list has been read (first-run waits for it). */
+  const [indexedLoad, setIndexedLoad] = useState<'loading' | 'loaded' | 'failed'>('loading');
   const indexedReadRef = useRef(0);
   const refreshIndexedFiles = useCallback(async () => {
     const read = ++indexedReadRef.current;
@@ -261,10 +263,12 @@ function AppSplitView() {
       const docs = await invoke<{ source?: unknown }[]>('list_indexed_sources');
       if (read !== indexedReadRef.current) return;
       setIndexedFiles(Array.isArray(docs) ? docs.map(d => d?.source).filter((p): p is string => typeof p === 'string') : []);
+      setIndexedLoad('loaded');
     } catch (error) {
       if (read !== indexedReadRef.current) return;
       console.error('The indexed files could not be listed:', error);
       setIndexedFiles([]);
+      setIndexedLoad('failed');
     }
   }, []);
   // Folders removed from the list whose files leave the index when the undo
@@ -311,14 +315,20 @@ function AppSplitView() {
   const firstRunRef = useRef(firstRun);
   firstRunRef.current = firstRun;
   const firstRunChangedRef = useRef(false);
+  /** The setup state found at start, waiting for the open-or-not decision. */
+  const [firstRunStartFrom, setFirstRunStartFrom] = useState<{ saved: FirstRunState | null } | null>(null);
   useEffect(() => {
     let cancelled = false;
     void readDurable('first_run').then(stored => {
       if (cancelled || firstRunChangedRef.current) return;
-      const { state, save } = reconcileFirstRun(stored, firstRunRef.current, firstRunSavedLocallyRef.current === true);
+      const { state, save, saved } = reconcileFirstRun(stored, firstRunRef.current, firstRunSavedLocallyRef.current === true);
       setFirstRun(state);
-      setFirstRunOpen(state.status === 'pending');
-      writeFirstRun(safeStorage(), state);
+      // Whether setup opens is decided once the index's documents are known
+      // (see firstRunStart); until then it stays closed, so it never flashes.
+      setFirstRunStartFrom({ saved: saved ? state : null });
+      // A fresh install's default is not written: written, it would count as
+      // a saved state next start, before this start's decision was made.
+      if (saved) writeFirstRun(safeStorage(), state);
       if (save) {
         writeDurable('first_run', state).catch(error => console.error('The setup progress could not be saved:', error));
       }
@@ -451,6 +461,23 @@ function AppSplitView() {
     setFirstRun(next);
     persistFirstRun(next);
   }, [persistFirstRun]);
+
+  // Open setup on start, or not: a saved state decides at once; without one,
+  // once the index's documents are listed (an index with documents was set
+  // up before, so setup is recorded as skipped and stays closed).
+  useEffect(() => {
+    if (!firstRunStartFrom) return;
+    if (firstRunChangedRef.current) {
+      // Setup was opened or changed meanwhile: that wins.
+      setFirstRunStartFrom(null);
+      return;
+    }
+    if (!firstRunStartFrom.saved && indexedLoad === 'loading') return;
+    const { open, record } = firstRunStart(firstRunStartFrom.saved, indexedLoad === 'loaded' ? indexedFiles.length : null);
+    setFirstRunStartFrom(null);
+    if (record) saveFirstRun(record);
+    setFirstRunOpen(open);
+  }, [firstRunStartFrom, indexedLoad, indexedFiles.length, saveFirstRun]);
 
   // Reopening a finished setup and closing it again must not mark it skipped.
   const statusBeforeOpenRef = useRef(firstRun.status);
@@ -1034,6 +1061,8 @@ function AppSplitView() {
       } catch (error) {
         console.error("Initialization failed:", error);
         setInitError(searchErrorMessage(error));
+        // The index did not open: first-run decides without its documents.
+        setIndexedLoad(prev => (prev === 'loading' ? 'failed' : prev));
         // Reset flag on error so the user can retry
         initializationRef.current = false;
       }

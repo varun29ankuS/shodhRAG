@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import {
   FIRST_RUN_KEYS,
   FIRST_RUN_STEPS,
+  firstRunStart,
   folderStepDone,
   nextStep,
   previousStep,
@@ -68,4 +69,21 @@ test('the folder step is done once a folder is listed or the index already has f
   assert.equal(folderStepDone(0, 0), false);
   assert.equal(folderStepDone(1, 0), true);
   assert.equal(folderStepDone(0, 12), true);
+});
+
+test('with no saved setup, an index that has documents means setup is past', () => {
+  // Opened by an earlier build, or its setup state was lost: not a fresh install.
+  assert.deepEqual(firstRunStart(null, 12), { open: false, record: { status: 'skipped', step: 'welcome' } });
+  // A fresh install: an empty index opens setup.
+  assert.deepEqual(firstRunStart(null, 0), { open: true, record: null });
+  // The index could not be listed: open as before, so a broken index never hides setup.
+  assert.deepEqual(firstRunStart(null, null), { open: true, record: null });
+});
+
+test('a saved setup state decides on its own, whatever the index holds', () => {
+  assert.deepEqual(firstRunStart({ status: 'completed', step: 'done' }, 0), { open: false, record: null });
+  assert.deepEqual(firstRunStart({ status: 'skipped', step: 'model' }, 0), { open: false, record: null });
+  // In progress: resumes, as it always has.
+  assert.deepEqual(firstRunStart({ status: 'pending', step: 'model' }, 30), { open: true, record: null });
+  assert.deepEqual(firstRunStart({ status: 'pending', step: 'search' }, null), { open: true, record: null });
 });

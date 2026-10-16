@@ -65,18 +65,21 @@ test('a finished setup saved on disk is not started again when localStorage was 
   assert.equal(hasSavedFirstRun(lost), false);
   const local = readFirstRun(lost);
   assert.equal(local.status, 'pending', 'what a fresh install would show');
-  const { state, save } = reconcileFirstRun({ kind: 'value', value: { status: 'completed', step: 'done' } }, local, false);
+  const { state, save, saved } = reconcileFirstRun({ kind: 'value', value: { status: 'completed', step: 'done' } }, local, false);
   assert.deepEqual(state, { status: 'completed', step: 'done' });
   assert.equal(save, false);
+  assert.equal(saved, true, 'the disk copy is a saved state');
 });
 
 test('setup progress only localStorage holds is moved to disk; a fresh install saves nothing yet', () => {
   const store = memoryStore({ [FIRST_RUN_KEYS.status]: 'pending', [FIRST_RUN_KEYS.step]: 'model' });
   assert.equal(hasSavedFirstRun(store), true);
   const local = readFirstRun(store);
-  assert.deepEqual(reconcileFirstRun({ kind: 'none' }, local, true), { state: { status: 'pending', step: 'model' }, save: true });
+  assert.deepEqual(reconcileFirstRun({ kind: 'none' }, local, true), { state: { status: 'pending', step: 'model' }, save: true, saved: true });
   const fresh = readFirstRun(memoryStore());
-  assert.deepEqual(reconcileFirstRun({ kind: 'none' }, fresh, false), { state: fresh, save: false });
+  // Nothing saved anywhere: whether setup opens waits for the index (see firstRunStart).
+  assert.deepEqual(reconcileFirstRun({ kind: 'none' }, fresh, false), { state: fresh, save: false, saved: false });
+  assert.equal(reconcileFirstRun({ kind: 'failed' }, fresh, false).saved, false);
   // A malformed copy on disk is ignored.
   assert.deepEqual(reconcileFirstRun({ kind: 'value', value: { status: 'bogus' } }, local, true).state, local);
   // The previous onboarding's key counts as saved.

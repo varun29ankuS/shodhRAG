@@ -163,3 +163,58 @@ test('marked nodes are drawn with the glow and say so to screen readers', () => 
   const plain = diagramSvg(r.spec, layoutDiagram(r.spec), { interactive: true, idPrefix: 't' });
   assert.doesNotMatch(plain, /data-deeper/);
 });
+
+const BASH = '```bash\nif [[ -f a || -d b ]]; then echo ok; fi\n```';
+
+test('a fenced bash block is never read as marks', () => {
+  const content = `Run this:\n\n${BASH}\n\nDone.`;
+  assert.equal(stripTextMarks(content), content);
+  const placed = placeTextMarks(content, MAX_MARKS, i => `<${i}>`);
+  assert.equal(placed.text, content);
+  assert.deepEqual(placed.marks, []);
+});
+
+test('marks inside a closed fence are left as written', () => {
+  const content = 'See [[a|qa?]].\n\n```text\n[[b|qb?]]\n```\n';
+  assert.equal(stripTextMarks(content), 'See a.\n\n```text\n[[b|qb?]]\n```\n');
+  const placed = placeTextMarks(content, MAX_MARKS, i => `<${i}>`);
+  assert.equal(placed.text, 'See <0>.\n\n```text\n[[b|qb?]]\n```\n');
+  assert.deepEqual(placed.marks, [{ shown: 'a', question: 'qa?' }]);
+});
+
+test('bash test brackets in prose are not marks', () => {
+  assert.deepEqual(findTextMarks('if [[ -f a || -d b ]]'), []);
+  assert.deepEqual(findTextMarks('if [[-f a || -d b]]'), []);
+  assert.equal(stripTextMarks('if [[ -f a || -d b ]]; then echo ok; fi'), 'if [[ -f a || -d b ]]; then echo ok; fi');
+});
+
+test('a valid mark still works under the tightened pattern', () => {
+  const marks = findTextMarks('Uses [[RoPE|What is rotary position embedding?]].');
+  assert.equal(marks.length, 1);
+  assert.equal(marks[0].shown, 'RoPE');
+  assert.equal(marks[0].question, 'What is rotary position embedding?');
+  assert.equal(findTextMarks('[[term|]]')[0]?.question, null, 'an empty question is still a mark, with no question');
+});
+
+test('shown text longer than 80 characters is not a mark', () => {
+  assert.equal(findTextMarks(`[[${'s'.repeat(80)}|q?]]`).length, 1);
+  assert.deepEqual(findTextMarks(`[[${'s'.repeat(81)}|q?]]`), []);
+});
+
+test('an unclosed fence (still streaming) is read as prose by the budget', () => {
+  // FENCE only matches closed fences, so until the closing ``` arrives the
+  // fence body is prose: a mark-shaped line in it counts toward the budget.
+  const content = 'Intro [[a|qa?]].\n\n```text\n[[b|qb?]]\n';
+  assert.equal(markBudget(content).text, 2);
+  // Bash test brackets never match the pattern, open fence or not.
+  assert.equal(markBudget(`Intro [[a|qa?]].\n\n\`\`\`bash\nif [[ -f a || -d b ]]; then\n`).text, 1);
+});
+
+test('double-backtick inline code holds marks as code', () => {
+  const text = 'See ``[[a|b?]]`` here.';
+  assert.equal(stripTextMarks(text), text);
+  const placed = placeTextMarks(text, MAX_MARKS, i => `<${i}>`);
+  assert.equal(placed.text, text);
+  assert.deepEqual(placed.marks, []);
+  assert.equal(markBudget(text).text, 0);
+});

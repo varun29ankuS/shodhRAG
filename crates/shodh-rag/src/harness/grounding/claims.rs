@@ -132,9 +132,16 @@ static RULE: OnceLock<Option<Regex>> = OnceLock::new();
 static TEXT_MARK: OnceLock<Option<Regex>> = OnceLock::new();
 
 /// `[[shown|question]]`: a "go deeper" mark the app renders as `shown`
-/// (app/src/features/ask/visual/marks.ts uses the same pattern).
+/// (app/src/features/ask/visual/marks.ts uses the same pattern). Shown is
+/// 1-80 characters, no brackets, pipes or line breaks, and does not start
+/// with whitespace; the question is 0-400 characters, no brackets or line
+/// breaks, and does not start with `|`, so bash tests such as
+/// `[[ -f a || -d b ]]` are not marks.
 fn text_mark() -> Option<&'static Regex> {
-    cached(&TEXT_MARK, r"\[\[([^\[\]|\n]{1,80})\|([^\[\]\n]{0,400})\]\]")
+    cached(
+        &TEXT_MARK,
+        r"\[\[([^\s\[\]|][^\[\]|\n]{0,79})\|((?:[^|\[\]\n][^\[\]\n]{0,399})?)\]\]",
+    )
 }
 
 /// Byte spans of complete marks.
@@ -1051,6 +1058,13 @@ mod tests {
         assert_eq!(claims.len(), 1, "{claims:?}");
         assert_eq!(claims[0].text, "The model uses self-attention over all tokens.");
         assert_eq!(claims[0].citations, vec![2]);
+    }
+
+    #[test]
+    fn bash_test_brackets_are_not_go_deeper_marks() {
+        let text = "Check it with if [[ -f a || -d b ]] first.";
+        assert!(mark_spans(text).is_empty());
+        assert_eq!(reduce_marks(text), text);
     }
 
     #[test]

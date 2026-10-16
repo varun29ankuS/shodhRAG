@@ -35,13 +35,18 @@ export interface TextMark {
 }
 
 /**
- * `[[shown|question]]`: shown 1–80 characters, no brackets or line breaks. The
- * question part matches up to 400 characters so an overlong one is still a
- * mark (shown as plain text, never as syntax); readDeeper drops it past 160.
+ * `[[shown|question]]`: shown 1–80 characters, no brackets, pipes or line
+ * breaks, and not starting with whitespace; question 0–400 characters, no
+ * brackets or line breaks, and not starting with `|`. Those two rules keep
+ * bash tests (`[[ -f a || -d b ]]`) from reading as marks. The question part
+ * matches up to 400 characters so an overlong one is still a mark (shown as
+ * plain text, never as syntax); readDeeper drops it past 160. The same pattern
+ * is `text_mark()` in crates/shodh-rag/src/harness/grounding/claims.rs.
  */
-const TEXT_MARK = /\[\[([^[\]|\n]{1,80})\|([^[\]\n]{0,400})\]\]/g;
+const TEXT_MARK = /\[\[([^\s[\]|][^[\]|\n]{0,79})\|((?:[^|[\]\n][^[\]\n]{0,399})?)\]\]/g;
 const FENCE = /^```([\w-]*)[^\n]*\n([\s\S]*?)^```[ \t]*$/gm;
-const INLINE_CODE = /`[^`\n]*`/g;
+/** Inline code: a run of backticks closed by the same run (`a`, ``a`b``). */
+const INLINE_CODE = /(`+)[^\n]*?\1/g;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -75,12 +80,16 @@ export function findTextMarks(text: string): TextMark[] {
   return out;
 }
 
-/** Ranges of inline code spans in `text`. */
-function codeRanges(text: string): [number, number][] {
-  return Array.from(text.matchAll(INLINE_CODE), m => [m.index ?? 0, (m.index ?? 0) + m[0].length] as [number, number]);
+function ranges(text: string, pattern: RegExp): [number, number][] {
+  return Array.from(text.matchAll(pattern), m => [m.index ?? 0, (m.index ?? 0) + m[0].length] as [number, number]);
 }
 
-/** `text` with every complete prose mark (outside inline code) replaced by its shown text. */
+/** Ranges of closed fenced blocks and of inline code spans in `text`. */
+function codeRanges(text: string): [number, number][] {
+  return [...ranges(text, FENCE), ...ranges(text, INLINE_CODE)];
+}
+
+/** `text` with every complete prose mark (outside fenced and inline code) replaced by its shown text. */
 export function stripTextMarks(text: string): string {
   const code = codeRanges(text);
   let out = '';
@@ -94,9 +103,9 @@ export function stripTextMarks(text: string): string {
 }
 
 /**
- * `text` with its first `allowed` usable prose marks (outside inline code)
- * replaced by `placeholder(i)` and the other marks by their shown text;
- * marks inside inline code stay as written.
+ * `text` with its first `allowed` usable prose marks (outside fenced and
+ * inline code) replaced by `placeholder(i)` and the other marks by their
+ * shown text; marks inside code stay as written.
  */
 export function placeTextMarks(
   text: string,

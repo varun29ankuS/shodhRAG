@@ -92,6 +92,8 @@ windows = { version = "0.58", features = [
     "Graphics_Imaging",
     "Storage_Streams",
     "Globalization",
+    # The user's regional format for WebView2's date fields (profile.rs).
+    "Win32_Globalization",
 ] }
 
 [dev-dependencies]

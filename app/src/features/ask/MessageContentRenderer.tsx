@@ -33,7 +33,7 @@ import type { ClaimCheck } from '../agent/events';
 import { FLAG_CLOSE, FLAG_OPEN, insertFlagMarkers, parseCitationMarkers } from '../agent/grounding';
 import { ClaimFlag, InvalidCitation } from '../agent/GroundingFlags';
 import { sourceAnchor } from '../print/printModel';
-import { markBudget, placeTextMarks } from './visual/marks';
+import { markBudget, placeTextMarks, stripTextMarks } from './visual/marks';
 import { DeeperChips, MarkText } from './visual/DeeperMarks';
 
 /** Citation placeholders: ASCII markers that survive markdown parsing. */
@@ -230,16 +230,18 @@ function MessageContent({
       return `\x01CODE${codeBlocks.length - 1}\x01`;
     });
 
-    text = escapeCurrency(normalizeMathDelimiters(text));
-    const math = protectMath(text);
-    text = math.text;
-
-    // Prose marks within the budget become placeholders; the rest (and every
-    // mark in text the reader wrote or in a printout) become their shown text.
-    // Fenced code was protected above; placeTextMarks skips inline code.
+    // Prose marks are placed before math and currency handling, so a mark's
+    // shown text and question are still the author's words. The placeholders
+    // are plain ASCII and pass through the steps below. Over-budget marks (and
+    // every mark in text the reader wrote or in a printout) become their shown
+    // text here. Fenced code was protected above; placeTextMarks skips inline code.
     const placed = placeTextMarks(text, citations && !print ? budget.text : 0, i => `${MARK_OPEN}${i}${MARK_CLOSE}`);
     text = placed.text;
     const textMarks = placed.marks;
+
+    text = escapeCurrency(normalizeMathDelimiters(text));
+    const math = protectMath(text);
+    text = math.text;
 
     if (citations) {
       const lines = text.split('\n');
@@ -423,6 +425,8 @@ function MessageContent({
       h2: ({ children }) => <h3 className="text-[17px] font-semibold leading-snug text-shodh-text mt-5 mb-1.5 first:mt-0">{processChildren(children)}</h3>,
       h3: ({ children }) => <h4 className="text-[16px] font-semibold text-shodh-text mt-4 mb-1 first:mt-0">{processChildren(children)}</h4>,
       h4: ({ children }) => <h5 className="text-[15px] font-semibold text-shodh-text-secondary mt-3 mb-1 first:mt-0">{processChildren(children)}</h5>,
+      h5: ({ children }) => <h6 className="text-[14px] font-semibold text-shodh-text-secondary mt-3 mb-1 first:mt-0">{processChildren(children)}</h6>,
+      h6: ({ children }) => <h6 className="text-[13.5px] font-semibold text-shodh-text-muted mt-3 mb-1 first:mt-0">{processChildren(children)}</h6>,
       p: ({ children }) => <p className="my-3 first:mt-0 last:mb-0">{processChildren(children)}</p>,
       ul: ({ children }) => <ul className="my-3 pl-6 list-disc space-y-1 marker:text-shodh-text-faint">{children}</ul>,
       ol: ({ children }) => <ol className="my-3 pl-6 list-decimal space-y-1 marker:text-shodh-text-faint">{children}</ol>,
@@ -488,7 +492,7 @@ function MessageContent({
   const answerBlocks = useMemo<AnswerBlocks>(
     () => ({
       symbols,
-      renderInline: text => renderWithCitations(citations ? citationPlaceholders(text) : text),
+      renderInline: text => renderWithCitations(citations ? citationPlaceholders(stripTextMarks(text)) : stripTextMarks(text)),
       // Text the reader wrote and summary cards turn citations off; printouts are not interactive.
       modelAnswer: citations && !print,
       citations: citationNumbers,

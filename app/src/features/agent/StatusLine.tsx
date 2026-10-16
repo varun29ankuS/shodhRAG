@@ -87,7 +87,10 @@ export function StatusLine({ transcript, fallbackModel, compact = false }: Statu
           {state}
         </span>
         <span className="shrink-0 text-shodh-text-faint" aria-hidden="true">·</span>
-        <span className="min-w-0 truncate tabular-nums">{summary.line}</span>
+        <span className="min-w-0 truncate tabular-nums">
+          {summary.line}
+          {summary.tokens && <span className="sr-only">{`, ${summary.tokens}`}</span>}
+        </span>
         {hint && <span className="ml-auto pl-2 shrink-0 text-shodh-text-faint">{hint}</span>}
       </div>
     </div>

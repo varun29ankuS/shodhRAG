@@ -244,11 +244,11 @@ export default function Sidebar({
           <NavButton view="settings" active={activeView === 'settings'} collapsed={collapsed} onNavigate={onNavigate} />
         </div>
 
-        {indexingSource ? (
+        {indexingSource && (
           <IndexingStatus source={indexingSource} collapsed={collapsed} onOpen={() => onNavigate('library')} />
-        ) : (
-          <ConnectionStatusChip collapsed={collapsed} />
         )}
+        {/* The model status stays visible while a folder indexes. */}
+        <ConnectionStatusChip collapsed={collapsed} />
 
         <div className={cn('flex gap-1', collapsed ? 'flex-col items-center' : 'items-center')}>
           <ActivityTray jobs={sources.filter(s => s.status === 'indexing')} onOpenConversation={onOpenConversation} />

@@ -62,6 +62,9 @@ export function ChatActionsMenu({ conversationId, conversationTitle, messages, o
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       buttons[(index - 1 + buttons.length) % buttons.length]?.focus();
+    } else if (e.key === 'Home' || e.key === 'End') {
+      e.preventDefault();
+      buttons[e.key === 'Home' ? 0 : buttons.length - 1]?.focus();
     } else if (e.key === 'Tab') {
       close(false);
     }
@@ -81,7 +84,7 @@ export function ChatActionsMenu({ conversationId, conversationTitle, messages, o
         aria-controls={open ? menuId : undefined}
         title="More chat actions"
         className={cn(
-          'h-[18px] px-1.5 rounded-full inline-flex items-center bg-shodh-raised text-shodh-text-muted hover:text-shodh-text transition-colors duration-micro',
+          'h-6 min-w-[24px] px-1.5 rounded-full inline-flex items-center justify-center bg-shodh-raised text-shodh-text-muted hover:text-shodh-text transition-colors duration-micro',
           FOCUS_RING,
         )}
       >
@@ -91,7 +94,7 @@ export function ChatActionsMenu({ conversationId, conversationTitle, messages, o
         <div className="shell-pop absolute right-0 top-7 z-50 min-w-[220px] rounded-lg border border-shodh-border-strong bg-shodh-raised shadow-lg overflow-hidden">
           <div id={menuId} ref={menuRef} role="menu" aria-label="More chat actions" onKeyDown={onMenuKeyDown} className="py-1">
             {onExport && (
-              <button type="button" role="menuitem" onClick={() => { close(false); onExport(); }} className={ITEM}>
+              <button type="button" role="menuitem" onClick={() => { close(true); onExport(); }} className={ITEM}>
                 <Download className="w-3.5 h-3.5" aria-hidden="true" />
                 Export as Markdown
               </button>

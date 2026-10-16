@@ -23,6 +23,8 @@ test('the line shows the model, a cost and the time; tokens go to the tooltip', 
   });
   assert.equal(summary.line, 'llama-3.3-70b-instruct · 12s');
   assert.equal(summary.title, 'meta-llama/llama-3.3-70b-instruct:free · ↑ 14k in · ↓ 820 out');
+  // Screen readers get the counts as words (the tooltip is not read).
+  assert.equal(summary.tokens, '14k tokens in, 820 tokens out');
 
   const paid = statusSummary({ model: 'anthropic/claude-x', usage: { inputTokens: 900, outputTokens: 40, costUsd: 0.0042 }, elapsedMs: 3_000 });
   assert.equal(paid.line, 'claude-x · $0.0042 · 3.0s');
@@ -32,4 +34,5 @@ test('without a model or usage the line is the time alone', () => {
   const summary = statusSummary({ model: null, usage: null, elapsedMs: 800 });
   assert.equal(summary.line, '800ms');
   assert.equal(summary.title, undefined);
+  assert.equal(summary.tokens, undefined);
 });

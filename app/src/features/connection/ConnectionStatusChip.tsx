@@ -7,6 +7,8 @@ import { KeyRound, Loader2, RefreshCw, SlidersHorizontal } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { MODEL_CHANGED_EVENT } from '../modelPicker/modelApi';
 import { requestFixKey, requestModelPicker } from '../modelPicker/navigation';
+import { requestSettingsSection } from '../memory/navigation';
+import { friendlyModel } from '../agent/format';
 import type { ProviderId } from '../modelPicker/modelTypes';
 import type { ConnectionSnapshot, ProviderStatus } from './connectionStatus';
 import {
@@ -253,7 +255,11 @@ export function ConnectionStatusChip({ collapsed }: { collapsed: boolean }) {
           aria-hidden="true"
           className={cn('inline-block w-2 h-2 rounded-full shrink-0', DOT_CLASS[pill.dot], anyChecking && 'animate-pulse motion-reduce:animate-none')}
         />
-        {!collapsed && <span className="text-[12px] font-medium text-shodh-text-secondary truncate">{pill.model}</span>}
+        {!collapsed && (
+          <span className="text-[12px] font-medium text-shodh-text-secondary truncate">
+            {snapshot?.active ? friendlyModel(snapshot.active.model.model) : pill.model}
+          </span>
+        )}
       </button>
 
       {open && position && createPortal(
@@ -312,10 +318,24 @@ export function ConnectionStatusChip({ collapsed }: { collapsed: boolean }) {
                 />
               ))}
             </ul>
+          ) : snapshot ? (
+            <div className="px-3.5 py-4 flex flex-col items-start gap-2">
+              <p className="m-0 text-[12.5px] text-shodh-text-muted">No provider is connected. Connect one in Settings → Model.</p>
+              <button
+                type="button"
+                className={SMALL_BUTTON}
+                onClick={() => {
+                  close(false);
+                  requestSettingsSection('models');
+                  window.dispatchEvent(new CustomEvent('switchTab', { detail: 'settings' }));
+                }}
+              >
+                <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />
+                Open Settings → Model
+              </button>
+            </div>
           ) : (
-            <p className="m-0 px-3.5 py-5 text-[12.5px] text-shodh-text-muted">
-              {snapshot ? 'No provider is connected. Connect one in Settings → Model.' : 'Loading the connection status…'}
-            </p>
+            <p className="m-0 px-3.5 py-5 text-[12.5px] text-shodh-text-muted">Loading the connection status…</p>
           )}
           {snapshot?.localOnly && (
             <p className="m-0 px-3.5 py-2 border-t border-shodh-border-subtle text-[12px] text-shodh-text-muted">

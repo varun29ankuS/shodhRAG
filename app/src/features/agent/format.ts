@@ -46,6 +46,8 @@ export interface StatusSummary {
   line: string;
   /** The full model id and the token counts, for the tooltip. */
   title: string | undefined;
+  /** The token counts in words, for screen readers (a tooltip is not read). */
+  tokens: string | undefined;
 }
 
 /** The text after the state in an answer's status line, and its tooltip. */
@@ -65,7 +67,11 @@ export function statusSummary({
     model ? model.trim() : '',
     usage ? `↑ ${formatTokens(usage.inputTokens)} in · ↓ ${formatTokens(usage.outputTokens)} out` : '',
   ].filter(Boolean);
-  return { line, title: tip.length > 0 ? tip.join(' · ') : undefined };
+  return {
+    line,
+    title: tip.length > 0 ? tip.join(' · ') : undefined,
+    tokens: usage ? `${formatTokens(usage.inputTokens)} tokens in, ${formatTokens(usage.outputTokens)} tokens out` : undefined,
+  };
 }
 
 /** Pretty JSON for the monospace detail view, capped for very large values. */

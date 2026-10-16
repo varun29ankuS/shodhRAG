@@ -100,6 +100,8 @@ export interface AskSource {
 
 export interface AskViewProps {
   sources: readonly AskSource[];
+  /** Indexed files inside no listed folder; answers search them too. */
+  unlistedFiles?: number;
   llmStatus: { connected: boolean; model: string; provider: string };
   onNavigate: (tab: ViewTab) => void;
   /** Pick an image whose text is extracted (OCR) and indexed. */
@@ -570,7 +572,7 @@ function SystemNotice({ message }: { message: ChatMessage }) {
  * (centered 700px column) with a floating composer and a source preview
  * slide-over.
  */
-export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggingFile = false, dropHandlers, draftRequest = null, onDraftApplied }: AskViewProps) {
+export function AskView({ sources, unlistedFiles = 0, llmStatus, onNavigate, onPickImage, isDraggingFile = false, dropHandlers, draftRequest = null, onDraftApplied }: AskViewProps) {
   const { theme } = useTheme();
   const session = useChatSession();
   const { messages, isStreaming, streamingConversationId, sideRun, send, retry, cancel, steer, approve, runtimeInstalled, setRuntimeInstalled, updateMessage } = session;
@@ -642,7 +644,8 @@ export function AskView({ sources, llmStatus, onNavigate, onPickImage, isDraggin
         ? `${codeProblem} Or switch this conversation to Research.`
         : null;
 
-  const indexedCount = sources.filter(s => s.status !== 'error').length;
+  // Folders that indexed, and indexed files outside every folder (searched all the same).
+  const indexedCount = sources.filter(s => s.status !== 'error').length + unlistedFiles;
   // Starter questions fit the library: papers get methods, results and
   // comparisons. Read again when the sources change (a folder added or
   // finished indexing); the general questions show until it is known.

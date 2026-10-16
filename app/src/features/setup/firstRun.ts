@@ -85,6 +85,15 @@ export function previousStep(step: FirstRunStep): FirstRunStep {
   return FIRST_RUN_STEPS[Math.max(0, stepIndex(step) - 1)];
 }
 
+/**
+ * Whether the "First folder" step is done: a folder is in the Library, or
+ * the index already holds files outside any listed folder (indexed by an
+ * earlier build or a dropped file), so setup does not ask for a first folder.
+ */
+export function folderStepDone(folders: number, unlistedFiles: number): boolean {
+  return folders > 0 || unlistedFiles > 0;
+}
+
 /** Where resuming should start: the saved step, but never the final summary. */
 export function resumeStep(state: FirstRunState): FirstRunStep {
   return state.step === 'done' ? 'welcome' : state.step;

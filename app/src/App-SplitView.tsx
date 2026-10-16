@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { ask, open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 
@@ -61,6 +61,7 @@ function writeDurable(key: DurableKey, value: unknown): Promise<void> {
 import { applyFolderSync, parseStoredSources, readIndexingResult, scannedPagesStep, serializeSources, SOURCES_STORAGE_KEY, syncedFolders } from './features/library/sources';
 import { explainFailure } from './features/library/indexingAdvice';
 import type { FolderSyncOutcome, LibrarySource } from './features/library/sources';
+import { addableFolders, reconcileSources, safeRemovals, searchedSourceCount } from './features/library/reconcile';
 import type { FileNode } from './features/library/fileTree';
 import { errorMessage as searchErrorMessage } from './features/setup/searchModels';
 import Sidebar from './components/shell/Sidebar';
@@ -89,7 +90,7 @@ import { ViewSkeleton } from './components/shell/ViewSkeleton';
 import { useSearchConfig } from './components/SearchSettings';
 import { FirstRunFlow } from './features/setup/FirstRunFlow';
 import { hasSavedFirstRun, readFirstRun, resumeStep, writeFirstRun } from './features/setup/firstRun';
-import { reconcileFirstRun, reconcileSources } from './lib/durableState';
+import { reconcileFirstRun, reconcileSources as reconcileStoredSources } from './lib/durableState';
 import type { DurableKey, StoredRead } from './lib/durableState';
 import type { FirstRunState, FirstRunStep } from './features/setup/firstRun';
 import { useSearchModels } from './features/setup/SearchModelsContext';
@@ -205,7 +206,7 @@ function AppSplitView() {
       if (cancelled) return;
       const local = sourcesRef.current;
       const changed = serializeSources(local) !== startSourcesRef.current;
-      const { sources: restored, save } = reconcileSources(stored, local, changed);
+      const { sources: restored, save } = reconcileStoredSources(stored, local, changed);
       sourcesRestoredRef.current = true;
       if (save) saveSourcesDurably(restored);
       else savedSourcesRef.current = serializeSources(restored);
@@ -247,6 +248,36 @@ function AppSplitView() {
       unlisten?.();
     };
   }, []);
+
+  // The files the index holds (`list_indexed_sources`), compared with the
+  // folders above so the Library never contradicts what answers cite. Read
+  // once the index is open and again after each indexing run or removal.
+  const [indexedFiles, setIndexedFiles] = useState<string[]>([]);
+  const indexedReadRef = useRef(0);
+  const refreshIndexedFiles = useCallback(async () => {
+    const read = ++indexedReadRef.current;
+    try {
+      const docs = await invoke<{ source?: unknown }[]>('list_indexed_sources');
+      if (read !== indexedReadRef.current) return;
+      setIndexedFiles(Array.isArray(docs) ? docs.map(d => d?.source).filter((p): p is string => typeof p === 'string') : []);
+    } catch (error) {
+      if (read !== indexedReadRef.current) return;
+      console.error('The indexed files could not be listed:', error);
+      setIndexedFiles([]);
+    }
+  }, []);
+  // Folders removed from the list whose files leave the index when the undo
+  // window ends: until then they still cover those files.
+  const [removingPaths, setRemovingPaths] = useState<string[]>([]);
+  const reconciliation = useMemo(
+    () => reconcileSources([...sources, ...removingPaths.map(path => ({ path }))], indexedFiles),
+    [sources, removingPaths, indexedFiles],
+  );
+  const unlistedCount = reconciliation.unlisted.length;
+  const addableUnlisted = useMemo(() => addableFolders(reconciliation.groups, sources), [reconciliation.groups, sources]);
+  const removableUnlisted = useMemo(() => safeRemovals(reconciliation.unlisted, indexedFiles), [reconciliation.unlisted, indexedFiles]);
+  const [unlistedBusy, setUnlistedBusy] = useState(false);
+
   const [isDraggingImage, setIsDraggingImage] = useState(false);
   const lastProcessedImageTimeRef = useRef(0);
 
@@ -941,6 +972,7 @@ function AppSplitView() {
         markStartup('index-ready');
         // The shell is already on screen; this only unlocks index-backed views.
         setIsLoading(false);
+        void refreshIndexedFiles();
 
         const checkLLMStatus = async () => {
           try {
@@ -1081,6 +1113,7 @@ function AppSplitView() {
       notify.error('Indexing failed', { description: `${source.name}: ${explainFailure(message, source.path).reason}` });
     } finally {
       setCurrentlyIndexing(null);
+      void refreshIndexedFiles();
     }
   };
 
@@ -1113,8 +1146,16 @@ function AppSplitView() {
       return;
     }
     if (typeof selected !== 'string' || !selected) return;
-    const picked = selected;
-    const existing = sources.find(s => s.path.toLowerCase() === picked.toLowerCase());
+    await addFolderPath(selected);
+  };
+
+  /**
+   * Add `picked` as a folder source and index it (index it again when it is
+   * already listed). The caller checks that no index is running.
+   */
+  const addFolderPath = async (picked: string) => {
+    const pathKey = (path: string) => path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const existing = sourcesRef.current.find(s => pathKey(s.path) === pathKey(picked));
     if (existing) {
       notify.info(`${existing.name} is already in the Library`, { description: 'Indexing it again to pick up changes.' });
       await indexSource(existing, await sourceKind(existing));
@@ -1132,6 +1173,50 @@ function AppSplitView() {
     };
     setSources(prev => [...prev, newSource]);
     await indexSource(newSource, 'folder');
+  };
+
+  /** "Add these folders": each folder of the unlisted files becomes a folder source, indexed in turn. */
+  const handleAddUnlistedFolders = async () => {
+    if (unlistedBusy || addableUnlisted.length === 0 || indexingBusy()) return;
+    setUnlistedBusy(true);
+    try {
+      for (const folder of addableUnlisted) await addFolderPath(folder);
+    } finally {
+      setUnlistedBusy(false);
+    }
+  };
+
+  /** "Remove them from the search": the unlisted files leave the index (they stay on disk). */
+  const handleRemoveUnlisted = async () => {
+    const files = removableUnlisted;
+    if (unlistedBusy || files.length === 0) return;
+    const confirmed = await ask(
+      `${countOf(files.length, 'file')} in no folder of the Library will no longer be searched or cited. The files stay on disk; add their folder later to search them again.`,
+      { title: 'Remove them from the search?', kind: 'warning', okLabel: 'Remove from search', cancelLabel: 'Keep' },
+    );
+    if (!confirmed) return;
+    setUnlistedBusy(true);
+    let failed = 0;
+    let lastError = '';
+    try {
+      // One file at a time: the command removes by path prefix, so removing
+      // their folder could take files a listed folder holds.
+      for (const file of files) {
+        try {
+          await invoke<string>('delete_folder_source', { folderPath: file });
+        } catch (error) {
+          failed += 1;
+          lastError = String(error);
+        }
+      }
+    } finally {
+      await refreshIndexedFiles();
+      await updateStats();
+      setUnlistedBusy(false);
+    }
+    const removed = files.length - failed;
+    if (failed === 0) notify.success(`Removed ${countOf(removed, 'file')} from the search`);
+    else notify.error(`${countOf(failed, 'file')} could not be removed from the search`, { description: lastError });
   };
 
   /** The file browser counted a source's indexed files: correct a stale card count. */
@@ -1174,12 +1259,29 @@ function AppSplitView() {
 
     // Removed from the list now and from the index when the undo window ends.
     const index = sources.findIndex(s => s.id === id);
+    const dropPending = () => setRemovingPaths(prev => {
+      const at = prev.indexOf(source.path);
+      return at < 0 ? prev : [...prev.slice(0, at), ...prev.slice(at + 1)];
+    });
     removeWithUndo({
       message: 'Source removed',
       description: source.name,
-      hide: () => setSources(prev => prev.filter(s => s.id !== id)),
-      restore: () => setSources(prev => restoreAt(prev, source, index)),
-      commit: () => invoke<string>('delete_folder_source', { folderPath: source.path }),
+      hide: () => {
+        setSources(prev => prev.filter(s => s.id !== id));
+        setRemovingPaths(prev => [...prev, source.path]);
+      },
+      restore: () => {
+        setSources(prev => restoreAt(prev, source, index));
+        dropPending();
+      },
+      commit: async () => {
+        try {
+          return await invoke<string>('delete_folder_source', { folderPath: source.path });
+        } finally {
+          await refreshIndexedFiles();
+          dropPending();
+        }
+      },
       onError: err => notify.error('The source was not removed', { description: String(err) }),
     });
   };
@@ -1468,9 +1570,16 @@ function AppSplitView() {
                 )}
               </div>
             )}
-            <Badge variant="outline" className="text-[10px] px-2 py-0.5 h-auto" style={{ borderColor: colors.border, color: colors.textMuted }}>
+            <Badge
+              variant="outline"
+              className="text-[10px] px-2 py-0.5 h-auto"
+              style={{ borderColor: colors.border, color: colors.textMuted }}
+              title={unlistedCount > 0
+                ? `${countOf(sources.length, 'folder')} and ${countOf(unlistedCount, 'indexed file')} in no folder`
+                : undefined}
+            >
               <Database className="w-3 h-3 mr-1" />
-              {countOf(sources.filter(s => s.selected).length, 'source')}
+              {countOf(searchedSourceCount(sources, unlistedCount), 'source')}
             </Badge>
           </div>
         </div>
@@ -1503,6 +1612,7 @@ function AppSplitView() {
           {activeTab === 'ask' && (
             <AskView
               sources={sources}
+              unlistedFiles={unlistedCount}
               llmStatus={llmStatus}
               onNavigate={setActiveTab}
               onPickImage={handlePickImage}
@@ -1543,6 +1653,7 @@ function AppSplitView() {
               onRemoveSource={removeSource}
               onSourcesCleared={() => {
                 setSources([]);
+                void refreshIndexedFiles();
               }}
               conversations={conversations}
               onOpenConversation={(id: string) => { switchConversation(id); setActiveTab('ask'); }}
@@ -1562,6 +1673,12 @@ function AppSplitView() {
               onAskAboutFile={handleAskAboutFile}
               onFileCount={handleFileCount}
               focusedSourceId={focusedSourceId}
+              unlisted={reconciliation}
+              addableFolders={addableUnlisted.length}
+              removableFiles={removableUnlisted.length}
+              onAddUnlisted={() => void handleAddUnlistedFolders()}
+              onRemoveUnlisted={() => void handleRemoveUnlisted()}
+              unlistedBusy={unlistedBusy}
             />
           )}
 
@@ -1598,6 +1715,7 @@ function AppSplitView() {
         onSkip={skipFirstRun}
         llmStatus={llmStatus}
         sources={sources}
+        unlistedFiles={unlistedCount}
         onAddFolder={() => void handleAddSource()}
       />
 

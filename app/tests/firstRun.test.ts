@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import {
   FIRST_RUN_KEYS,
   FIRST_RUN_STEPS,
+  folderStepDone,
   nextStep,
   previousStep,
   readFirstRun,
@@ -61,4 +62,10 @@ test('steps move forward and back within bounds', () => {
 test('resuming returns to the saved step, but not to the final summary', () => {
   assert.equal(resumeStep({ status: 'skipped', step: 'folder' }), 'folder');
   assert.equal(resumeStep({ status: 'completed', step: 'done' }), 'welcome');
+});
+
+test('the folder step is done once a folder is listed or the index already has files', () => {
+  assert.equal(folderStepDone(0, 0), false);
+  assert.equal(folderStepDone(1, 0), true);
+  assert.equal(folderStepDone(0, 12), true);
 });

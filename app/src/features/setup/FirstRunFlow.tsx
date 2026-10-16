@@ -9,7 +9,7 @@ import { ENTER_TRANSITION, EXIT_TRANSITION } from '../../lib/motion';
 import { SearchSetupCard } from './SearchSetupCard';
 import { useSearchModels } from './SearchModelsContext';
 import { AnswerCheckModelRow } from '../../components/AnswerCheckSettings';
-import { FIRST_RUN_STEPS, FIRST_RUN_STEP_LABELS, nextStep, previousStep, stepIndex } from './firstRun';
+import { FIRST_RUN_STEPS, FIRST_RUN_STEP_LABELS, folderStepDone, nextStep, previousStep, stepIndex } from './firstRun';
 import type { FirstRunStep } from './firstRun';
 import { countOf } from '../../lib/plural';
 
@@ -48,6 +48,8 @@ interface FirstRunFlowProps {
   onSkip: () => void;
   llmStatus: { connected: boolean; model: string; provider: string };
   sources: FirstRunSource[];
+  /** Indexed files inside no listed folder (see features/library/reconcile). */
+  unlistedFiles: number;
   onAddFolder: () => void;
 }
 
@@ -64,12 +66,13 @@ export function FirstRunFlow(props: FirstRunFlowProps) {
   );
 }
 
-function FlowDialog({ step, onStepChange, onFinish, onSkip, llmStatus, sources, onAddFolder }: FirstRunFlowProps) {
+function FlowDialog({ step, onStepChange, onFinish, onSkip, llmStatus, sources, unlistedFiles, onAddFolder }: FirstRunFlowProps) {
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const index = stepIndex(step);
   const wide = step === 'model';
+  const hasFolder = folderStepDone(sources.length, unlistedFiles);
 
   // Each step announces itself: focus its heading.
   useEffect(() => {
@@ -156,8 +159,8 @@ function FlowDialog({ step, onStepChange, onFinish, onSkip, llmStatus, sources, 
           {step === 'model' && (
             <ModelStep titleId={titleId} headingRef={headingRef} llmStatus={llmStatus} />
           )}
-          {step === 'folder' && <FolderStep titleId={titleId} headingRef={headingRef} sources={sources} onAddFolder={onAddFolder} />}
-          {step === 'done' && <DoneStep titleId={titleId} headingRef={headingRef} llmReady={llmStatus.connected} folders={sources.length} />}
+          {step === 'folder' && <FolderStep titleId={titleId} headingRef={headingRef} sources={sources} unlistedFiles={unlistedFiles} onAddFolder={onAddFolder} />}
+          {step === 'done' && <DoneStep titleId={titleId} headingRef={headingRef} llmReady={llmStatus.connected} hasFolder={hasFolder} />}
         </div>
 
         {/* Footer */}
@@ -175,7 +178,7 @@ function FlowDialog({ step, onStepChange, onFinish, onSkip, llmStatus, sources, 
           )}
           {step === 'done' && <span className="mr-auto" />}
           <button type="button" onClick={advance} className={PRIMARY}>
-            {primaryLabel(step, llmStatus.connected, sources.length > 0)}
+            {primaryLabel(step, llmStatus.connected, hasFolder)}
           </button>
         </div>
       </motion.div>
@@ -312,7 +315,7 @@ function ModelStep({ llmStatus, ...props }: StepProps & { llmStatus: FirstRunFlo
   );
 }
 
-function FolderStep({ sources, onAddFolder, ...props }: StepProps & { sources: FirstRunSource[]; onAddFolder: () => void }) {
+function FolderStep({ sources, unlistedFiles, onAddFolder, ...props }: StepProps & { sources: FirstRunSource[]; unlistedFiles: number; onAddFolder: () => void }) {
   const indexing = sources.find(s => s.status === 'indexing') ?? null;
   return (
     <div className="flex flex-col gap-4">
@@ -323,6 +326,14 @@ function FolderStep({ sources, onAddFolder, ...props }: StepProps & { sources: F
           this computer.
         </p>
       </div>
+      {unlistedFiles > 0 && (
+        <p className="m-0 flex items-start gap-2 px-3 py-2 rounded-lg bg-shodh-raised text-[13px] text-shodh-text-secondary">
+          <Check className="w-4 h-4 mt-px text-shodh-success shrink-0" aria-hidden="true" />
+          <span>
+            {`${countOf(unlistedFiles, 'file')} ${unlistedFiles === 1 ? 'is' : 'are'} already indexed outside the folders listed here. The Library can add their folders.`}
+          </span>
+        </p>
+      )}
       {sources.length > 0 && (
         <ul className="flex flex-col gap-1.5" aria-label="Folders in your Library">
           {sources.map(s => (
@@ -357,10 +368,10 @@ function FolderStep({ sources, onAddFolder, ...props }: StepProps & { sources: F
   );
 }
 
-function DoneStep({ llmReady, folders, ...props }: StepProps & { llmReady: boolean; folders: number }) {
+function DoneStep({ llmReady, hasFolder, ...props }: StepProps & { llmReady: boolean; hasFolder: boolean }) {
   const missing = [
     !llmReady ? 'choose a model in Settings' : null,
-    folders === 0 ? 'add a folder in the Library' : null,
+    !hasFolder ? 'add a folder in the Library' : null,
   ].filter(Boolean);
   return (
     <div className="flex flex-col gap-4">

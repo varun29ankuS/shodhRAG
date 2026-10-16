@@ -1061,6 +1061,15 @@ mod tests {
     }
 
     #[test]
+    fn a_question_mark_inside_a_go_deeper_mark_does_not_end_the_sentence() {
+        let answer = "It uses [[self-attention|Why? How does cost grow?]] over all tokens [2].";
+        let claims = split_claims(answer);
+        assert_eq!(claims.len(), 1, "{claims:?}");
+        assert_eq!(claims[0].text, "It uses self-attention over all tokens.");
+        assert_eq!(claims[0].citations, vec![2]);
+    }
+
+    #[test]
     fn bash_test_brackets_are_not_go_deeper_marks() {
         let text = "Check it with if [[ -f a || -d b ]] first.";
         assert!(mark_spans(text).is_empty());

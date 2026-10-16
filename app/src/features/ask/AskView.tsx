@@ -54,6 +54,7 @@ import { CONVERSATION_TOP_PX, MESSAGE_INDEX_ATTR } from './windowLayout';
 import { ToolsChip } from '../tools/ToolsChip';
 import type { ConversationMode } from '../../hooks/useConversations';
 import { readLibraryKind, starterPrompts } from './starterPrompts';
+import { stripTextMarks } from './visual/marks';
 import type { LibraryKind } from './starterPrompts';
 
 // The artifact side panel (editors, previews) loads when an artifact is first opened.
@@ -473,7 +474,7 @@ function AssistantMessageView({
 
       {!running && (
         <div className="flex items-center gap-0.5 opacity-60 group-hover/msg:opacity-100 focus-within:opacity-100 transition-opacity duration-micro">
-          {message.content.length > 0 && <CopyAnswerButton text={message.content} />}
+          {message.content.length > 0 && <CopyAnswerButton text={stripTextMarks(message.content)} />}
           {message.content.trim().length > 0 && <ExportPdfButton message={message} question={question} hits={hits} />}
           {(message.run || transcript) && (
           <button

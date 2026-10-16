@@ -17,11 +17,15 @@ import {
   eventDraftProblem,
   eventInput,
   quickCreateWorkspace,
+  shownProblem,
   taskDraftProblem,
   taskInput,
   withStart,
 } from '../src/features/tasks/quickCreate.ts';
 import type { EventDraft, TaskDraft } from '../src/features/tasks/quickCreate.ts';
+
+/** A fixed "now" (16 Oct 2026, 12:00 local) so reminder checks do not depend on the clock. */
+const NOW = new Date(2026, 9, 16, 12, 0);
 
 const task = (patch: Partial<TaskDraft> = {}): TaskDraft => ({ ...defaultTaskDraft(null), title: 'Read paper', ...patch });
 const event = (patch: Partial<EventDraft> = {}): EventDraft => ({
@@ -40,8 +44,22 @@ test('a task needs a title', () => {
 });
 
 test('a reminder needs a time as well as a date', () => {
-  assert.equal(taskDraftProblem(task({ reminderDate: '2026-10-17' })), 'Pick a time for the reminder.');
-  assert.equal(taskDraftProblem(task({ reminderDate: '2026-10-17', reminderTime: '09:30' })), null);
+  assert.equal(taskDraftProblem(task({ reminderDate: '2026-10-17' }), NOW), 'Pick a time for the reminder.');
+  assert.equal(taskDraftProblem(task({ reminderDate: '2026-10-17', reminderTime: '09:30' }), NOW), null);
+});
+
+test('a reminder in the past is rejected', () => {
+  assert.equal(taskDraftProblem(task({ reminderDate: '2026-10-16', reminderTime: '11:59' }), NOW), 'The reminder is in the past.');
+  assert.equal(taskDraftProblem(task({ reminderDate: '2026-10-15', reminderTime: '18:00' }), NOW), 'The reminder is in the past.');
+  assert.equal(taskDraftProblem(task({ reminderDate: '2026-10-16', reminderTime: '12:01' }), NOW), null);
+  assert.equal(taskInput(task({ reminderDate: '2026-10-16', reminderTime: '08:00' }), NOW), null);
+});
+
+test('the missing-title reason waits until the title was touched or Create tried', () => {
+  assert.equal(shownProblem('Add a title.', false), null);
+  assert.equal(shownProblem('Add a title.', true), 'Add a title.');
+  assert.equal(shownProblem('The reminder is in the past.', false), 'The reminder is in the past.');
+  assert.equal(shownProblem(null, true), null);
 });
 
 test('a malformed due date is reported', () => {
@@ -51,7 +69,7 @@ test('a malformed due date is reported', () => {
 test('task input carries only the fields given, in the stored shapes', () => {
   assert.deepEqual(taskInput(task({ title: '  Read paper ' })), { title: 'Read paper', dueDate: null, reminder: null, workspaceId: null });
   assert.deepEqual(
-    taskInput(task({ dueDate: '2026-10-20', reminderDate: '2026-10-19', reminderTime: '18:05', workspaceId: 'ws-1' })),
+    taskInput(task({ dueDate: '2026-10-20', reminderDate: '2026-10-19', reminderTime: '18:05', workspaceId: 'ws-1' }), NOW),
     { title: 'Read paper', dueDate: '2026-10-20', reminder: '2026-10-19T18:05', workspaceId: 'ws-1' },
   );
   assert.deepEqual(

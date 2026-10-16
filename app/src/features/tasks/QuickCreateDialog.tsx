@@ -13,6 +13,7 @@ import {
   defaultTaskDraft,
   eventDraftProblem,
   eventInput,
+  shownProblem,
   taskDraftProblem,
   taskInput,
   withStart,
@@ -56,6 +57,8 @@ function QuickDialogFrame({
   onClose,
   onSubmit,
   problem,
+  titleTouched,
+  onAttempt,
   saving,
   submitLabel,
   children,
@@ -64,20 +67,32 @@ function QuickDialogFrame({
   description: string;
   onClose: () => void;
   onSubmit: () => void;
-  /** Why Create is disabled, shown next to it; null when it is enabled. */
+  /** Why Create is disabled; null when it is enabled. */
   problem: string | null;
+  /** The title was typed in or left, or Create was tried: a missing title is reported. */
+  titleTouched: boolean;
+  /** Enter was pressed in a field: Create was tried, even while it is disabled. */
+  onAttempt: () => void;
   saving: boolean;
   submitLabel: string;
   children: React.ReactNode;
 }) {
   const descId = useId();
   const problemId = useId();
+  const shown = shownProblem(problem, titleTouched);
+  // Radix returns focus to a Dialog.Trigger, and there is none here (the New
+  // menu or the palette opened the dialog): focus goes back to what had it.
+  const [returnFocus] = useState(() => (document.activeElement instanceof HTMLElement ? document.activeElement : null));
   return (
     <Dialog.Root open onOpenChange={open => { if (!open) onClose(); }}>
       <Dialog.Portal>
         <Dialog.Overlay className="ask-fade-in fixed inset-0 z-[55] bg-black/40" />
         <Dialog.Content
           aria-describedby={descId}
+          onCloseAutoFocus={e => {
+            e.preventDefault();
+            if (returnFocus?.isConnected) returnFocus.focus();
+          }}
           className="ask-fade-in fixed z-[55] inset-0 m-auto flex flex-col w-[min(460px,calc(100vw-48px))] max-h-[min(640px,calc(100vh-48px))] h-fit rounded-[18px] border border-shodh-border-strong bg-shodh-surface text-shodh-text shadow-[0_24px_80px_rgba(0,0,0,0.45)] focus:outline-none"
         >
           <header className="shrink-0 flex items-start gap-3 px-5 py-4 border-b border-shodh-border-subtle">
@@ -100,18 +115,21 @@ function QuickDialogFrame({
               e.preventDefault();
               onSubmit();
             }}
+            onKeyDown={e => {
+              // A disabled Create blocks the submit, so Enter is caught here.
+              if (e.key === 'Enter' && e.target instanceof HTMLInputElement) onAttempt();
+            }}
           >
             {children}
             <div className="flex items-center justify-end gap-2 pt-1">
-              {problem && (
-                <p id={problemId} className="m-0 mr-auto text-[12px] text-shodh-text-muted">{problem}</p>
-              )}
+              {/* Always in the DOM so the live region announces each new reason. */}
+              <p id={problemId} aria-live="polite" className="m-0 mr-auto text-[12px] text-shodh-text-muted">{shown ?? ''}</p>
               <Dialog.Close className={QUIET_BUTTON} type="button">Cancel</Dialog.Close>
               <button
                 type="submit"
                 className={PRIMARY_BUTTON}
                 disabled={problem !== null || saving}
-                aria-describedby={problem ? problemId : undefined}
+                aria-describedby={shown ? problemId : undefined}
               >
                 {saving && <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
                 {submitLabel}
@@ -165,7 +183,18 @@ function DateTimeInputs({
   );
 }
 
-function TitleInput({ value, onChange, placeholder }: { value: string; onChange: (next: string) => void; placeholder: string }) {
+function TitleInput({
+  value,
+  onChange,
+  onTouched,
+  placeholder,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  /** Typed in or left: from then on a missing title is reported. */
+  onTouched: () => void;
+  placeholder: string;
+}) {
   const id = useId();
   return (
     <div className="flex flex-col gap-1">
@@ -175,7 +204,11 @@ function TitleInput({ value, onChange, placeholder }: { value: string; onChange:
         className={INPUT}
         value={value}
         maxLength={200}
-        onChange={e => onChange(e.target.value)}
+        onChange={e => {
+          onTouched();
+          onChange(e.target.value);
+        }}
+        onBlur={onTouched}
         placeholder={placeholder}
         autoFocus
         required
@@ -195,6 +228,7 @@ function QuickTaskDialog({
 }) {
   const { createTask } = useTasksStore();
   const [draft, setDraft] = useState<TaskDraft>(() => defaultTaskDraft(defaultWorkspaceId));
+  const [titleTouched, setTitleTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const workspaceSelectId = useId();
   const problem = taskDraftProblem(draft);
@@ -224,10 +258,12 @@ function QuickTaskDialog({
       onClose={onClose}
       onSubmit={() => void create()}
       problem={problem}
+      titleTouched={titleTouched}
+      onAttempt={() => setTitleTouched(true)}
       saving={saving}
       submitLabel="Create task"
     >
-      <TitleInput value={draft.title} onChange={title => update({ title })} placeholder="e.g. Read the survey paper" />
+      <TitleInput value={draft.title} onChange={title => update({ title })} onTouched={() => setTitleTouched(true)} placeholder="e.g. Read the survey paper" />
       <DateTimeInputs
         label="Due (optional)"
         date={draft.dueDate}
@@ -268,6 +304,7 @@ function QuickEventDialog({ onClose }: { onClose: () => void }) {
   const [draft, setDraft] = useState<EventDraft>(() => defaultEventDraft());
   // Until the user edits the end, it follows the start.
   const [endEdited, setEndEdited] = useState(false);
+  const [titleTouched, setTitleTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const problem = eventDraftProblem(draft);
 
@@ -294,10 +331,12 @@ function QuickEventDialog({ onClose }: { onClose: () => void }) {
       onClose={onClose}
       onSubmit={() => void create()}
       problem={problem}
+      titleTouched={titleTouched}
+      onAttempt={() => setTitleTouched(true)}
       saving={saving}
       submitLabel="Create event"
     >
-      <TitleInput value={draft.title} onChange={title => setDraft(d => ({ ...d, title }))} placeholder="e.g. Reading group" />
+      <TitleInput value={draft.title} onChange={title => setDraft(d => ({ ...d, title }))} onTouched={() => setTitleTouched(true)} placeholder="e.g. Reading group" />
       <Segmented
         label="Timing"
         value={draft.allDay ? 'allday' : 'timed'}

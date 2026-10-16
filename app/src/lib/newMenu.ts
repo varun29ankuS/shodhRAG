@@ -1,8 +1,8 @@
 /**
  * The sidebar's New menu: one place to start a chat, workspace, task, event
  * or Library folder. The ▾ beside "New chat" opens it, and so does
- * Ctrl+Shift+N (⌘⇧N on a Mac) from anywhere but a text field or a modal
- * dialog. Each item runs the same handler as its command-palette entry.
+ * Ctrl+Shift+N (⌘⇧N on a Mac) from anywhere but a modal dialog, text fields
+ * included. Each item runs the same handler as its command-palette entry.
  *
  * Pure module (no runtime imports) so it is unit-tested directly with Node
  * (`app/tests/newMenu.test.ts`).
@@ -43,6 +43,8 @@ export function newMenuKeyShortcuts(isMac: boolean): string {
 
 export interface ShortcutKey {
   key: string;
+  /** The physical key: `KeyN` on every layout, whatever it types. */
+  code: string;
   ctrlKey: boolean;
   metaKey: boolean;
   shiftKey: boolean;
@@ -50,15 +52,24 @@ export interface ShortcutKey {
   repeat: boolean;
 }
 
-/** Whether Ctrl/⌘+Shift+N is pressed, whatever the context. */
+/**
+ * Ctrl/⌘+N: New chat. Matched on the physical key, so it also works on
+ * layouts where that key types another letter (Cyrillic, Greek, …).
+ */
+export function isNewChatChord(e: ShortcutKey): boolean {
+  return (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.code === 'KeyN';
+}
+
+/** Whether Ctrl/⌘+Shift+N is pressed, whatever the context (physical N key). */
 export function isNewMenuChord(e: ShortcutKey): boolean {
-  return (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'n';
+  return (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.code === 'KeyN';
 }
 
 /**
  * Whether a key press opens the menu: the chord, not repeated, and not
- * while typing in a field or behind a modal dialog.
+ * behind a modal dialog. It also works from a text field: the chord types
+ * nothing there.
  */
-export function opensNewMenu(e: ShortcutKey, context: { editable: boolean; modalOpen: boolean }): boolean {
-  return isNewMenuChord(e) && !e.repeat && !context.editable && !context.modalOpen;
+export function opensNewMenu(e: ShortcutKey, context: { modalOpen: boolean }): boolean {
+  return isNewMenuChord(e) && !e.repeat && !context.modalOpen;
 }

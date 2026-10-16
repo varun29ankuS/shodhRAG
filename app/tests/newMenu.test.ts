@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   NEW_MENU_LABEL,
+  isNewChatChord,
   newMenuItems,
   newMenuKeyShortcuts,
   newMenuShortcutHint,
@@ -15,6 +16,7 @@ import {
 
 const key = (patch: Partial<Parameters<typeof opensNewMenu>[0]> = {}) => ({
   key: 'N',
+  code: 'KeyN',
   ctrlKey: true,
   metaKey: false,
   shiftKey: true,
@@ -22,7 +24,7 @@ const key = (patch: Partial<Parameters<typeof opensNewMenu>[0]> = {}) => ({
   repeat: false,
   ...patch,
 });
-const free = { editable: false, modalOpen: false };
+const free = { modalOpen: false };
 
 test('the menu lists the five ways to start something, in order', () => {
   assert.deepEqual(newMenuItems(false).map(i => [i.id, i.label]), [
@@ -58,15 +60,33 @@ test('Ctrl+Shift+N and Cmd+Shift+N open the menu', () => {
   assert.equal(opensNewMenu(key({ ctrlKey: false, metaKey: true }), free), true);
 });
 
+test('the N key is matched by position, so other keyboard layouts work', () => {
+  // Russian layout: the N key types "т".
+  assert.equal(opensNewMenu(key({ key: 'Т' }), free), true);
+  assert.equal(isNewChatChord(key({ key: 'т', shiftKey: false })), true);
+  // Another key that types an N on its layout does not count.
+  assert.equal(opensNewMenu(key({ code: 'KeyB' }), free), false);
+  assert.equal(isNewChatChord(key({ code: 'KeyB', key: 'n', shiftKey: false })), false);
+});
+
+test('Ctrl+N and Cmd+N, without Shift or Alt, are New chat', () => {
+  assert.equal(isNewChatChord(key({ shiftKey: false })), true);
+  assert.equal(isNewChatChord(key({ shiftKey: false, ctrlKey: false, metaKey: true })), true);
+  assert.equal(isNewChatChord(key()), false, 'Ctrl+Shift+N opens the menu');
+  assert.equal(isNewChatChord(key({ shiftKey: false, altKey: true })), false);
+  assert.equal(isNewChatChord(key({ shiftKey: false, ctrlKey: false })), false);
+});
+
 test('other chords do not', () => {
   assert.equal(opensNewMenu(key({ shiftKey: false }), free), false, 'Ctrl+N is New chat');
   assert.equal(opensNewMenu(key({ altKey: true }), free), false);
   assert.equal(opensNewMenu(key({ ctrlKey: false }), free), false);
-  assert.equal(opensNewMenu(key({ key: 'M' }), free), false);
+  assert.equal(opensNewMenu(key({ code: 'KeyM', key: 'M' }), free), false);
 });
 
-test('not while typing, behind a modal dialog, or on key repeat', () => {
-  assert.equal(opensNewMenu(key(), { editable: true, modalOpen: false }), false);
-  assert.equal(opensNewMenu(key(), { editable: false, modalOpen: true }), false);
+test('not behind a modal dialog or on key repeat; a text field does not block it', () => {
+  assert.equal(opensNewMenu(key(), { modalOpen: true }), false);
   assert.equal(opensNewMenu(key({ repeat: true }), free), false);
+  // The context carries no text-field flag: the chord types nothing.
+  assert.equal(opensNewMenu(key(), free), true);
 });

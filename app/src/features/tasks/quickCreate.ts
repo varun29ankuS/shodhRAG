@@ -50,6 +50,19 @@ export interface QuickEventInput {
 /** The message shown when an end precedes the start (as in the event sheet). */
 export const END_BEFORE_START = 'The end cannot be before the start.';
 
+/** The reason while the title is empty (shown once the title was touched). */
+export const TITLE_MISSING = 'Add a title.';
+
+export const REMINDER_IN_PAST = 'The reminder is in the past.';
+
+/**
+ * The reason to show under the form: the missing title only once the user
+ * typed in or left the title, or tried to create; every other reason at once.
+ */
+export function shownProblem(problem: string | null, titleTouched: boolean): string | null {
+  return problem === TITLE_MISSING && !titleTouched ? null : problem;
+}
+
 const pad = (n: number) => String(n).padStart(2, '0');
 
 /** The workspace a new task starts in: the active chat's, when it is still listed. */
@@ -65,20 +78,22 @@ export function defaultTaskDraft(workspaceId: string | null): TaskDraft {
   return { title: '', dueDate: '', dueTime: '', reminderDate: '', reminderTime: '', workspaceId };
 }
 
-/** Why the task cannot be created yet, or null when it can. */
-export function taskDraftProblem(draft: TaskDraft): string | null {
-  if (!draft.title.trim()) return 'Add a title.';
+/** Why the task cannot be created yet, or null when it can. A reminder must be after `now`. */
+export function taskDraftProblem(draft: TaskDraft, now: Date = new Date()): string | null {
+  if (!draft.title.trim()) return TITLE_MISSING;
   if (draft.dueDate && !fromInputs(draft.dueDate, draft.dueTime)) return 'The due date is not a valid date.';
   if (draft.reminderDate) {
     if (!draft.reminderTime) return 'Pick a time for the reminder.';
-    if (!fromInputs(draft.reminderDate, draft.reminderTime)) return 'The reminder is not a valid date and time.';
+    const reminder = storedTime(fromInputs(draft.reminderDate, draft.reminderTime));
+    if (reminder === null) return 'The reminder is not a valid date and time.';
+    if (reminder <= now.getTime()) return REMINDER_IN_PAST;
   }
   return null;
 }
 
 /** The store input for a valid draft; null while `taskDraftProblem` reports one. */
-export function taskInput(draft: TaskDraft): QuickTaskInput | null {
-  if (taskDraftProblem(draft)) return null;
+export function taskInput(draft: TaskDraft, now: Date = new Date()): QuickTaskInput | null {
+  if (taskDraftProblem(draft, now)) return null;
   return {
     title: draft.title.trim(),
     dueDate: draft.dueDate ? fromInputs(draft.dueDate, draft.dueTime) : null,
@@ -123,7 +138,7 @@ export function withStart(
 
 /** Why the event cannot be created yet, or null when it can. */
 export function eventDraftProblem(draft: EventDraft): string | null {
-  if (!draft.title.trim()) return 'Add a title.';
+  if (!draft.title.trim()) return TITLE_MISSING;
   if (!draft.startDate) return 'Pick a start date.';
   if (!draft.allDay && !draft.startTime) return 'Pick a start time, or choose All day.';
   const start = fromInputs(draft.startDate, draft.allDay ? '' : draft.startTime);

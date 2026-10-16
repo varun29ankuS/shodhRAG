@@ -33,6 +33,7 @@ import { countOf } from '../../lib/plural';
 import { MENU_ITEM, POPOVER, usePopover } from '../../hooks/usePopover';
 import {
   NEW_MENU_LABEL,
+  isNewChatChord,
   isNewMenuChord,
   newMenuItems,
   newMenuKeyShortcuts,
@@ -107,11 +108,15 @@ const NEW_MENU_ICONS: Record<NewMenuItemId, React.ElementType> = {
   'add-folder': FolderPlus,
 };
 
-/** A modal dialog is open (setup, palette, a sheet or a create dialog). */
-const MODAL_SELECTOR = '[aria-modal="true"], [role="dialog"][data-state="open"]';
-
-function isEditableTarget(target: EventTarget | null): boolean {
-  return target instanceof Element && target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]') !== null;
+/**
+ * Whether a modal dialog is open: the app's own (setup, palette, source
+ * preview) set `aria-modal`; a Radix modal dialog (sheets, create dialogs,
+ * the focus pop-out) sets none, but while it is open Radix turns off pointer
+ * events on <body> (DismissableLayer's `disableOutsidePointerEvents`, which
+ * only modal content enables).
+ */
+function modalDialogOpen(): boolean {
+  return document.querySelector('[aria-modal="true"]') !== null || document.body.style.pointerEvents === 'none';
 }
 
 /** Arrow-key movement between the buttons of a vertical list. */
@@ -157,7 +162,7 @@ export default function Sidebar({
   newConversationRef.current = onNewConversation;
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'n') {
+      if (isNewChatChord(e)) {
         e.preventDefault();
         // Not behind a modal dialog (setup, palette).
         if (document.querySelector('[aria-modal="true"]')) return;
@@ -169,24 +174,38 @@ export default function Sidebar({
   }, []);
 
   // The New menu: the ▾ beside New chat, or Ctrl/Cmd+Shift+N from anywhere
-  // but a text field or a modal dialog. preventDefault keeps the WebView
-  // from opening a window for the chord.
+  // but a modal dialog (text fields included: the chord types nothing).
+  // preventDefault keeps the WebView from opening a window for the chord.
   const newMenu = usePopover();
   const newMenuId = useId();
   const { open: newMenuOpen, setOpen: setNewMenuOpen, close: closeNewMenu, popRef: newMenuRef } = newMenu;
+  // Which item takes focus when the menu opens: ArrowUp on ▾ opens on the last.
+  const newMenuFocusRef = useRef<'first' | 'last'>('first');
+  const focusNewMenuItem = (which: 'first' | 'last') => {
+    const items = newMenuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]');
+    if (items && items.length > 0) items[which === 'last' ? items.length - 1 : 0].focus();
+  };
+  const openNewMenu = (focus: 'first' | 'last') => {
+    newMenuFocusRef.current = focus;
+    if (newMenuOpen) focusNewMenuItem(focus);
+    else setNewMenuOpen(true);
+  };
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!isNewMenuChord(e)) return;
       e.preventDefault();
-      const context = { editable: isEditableTarget(e.target), modalOpen: document.querySelector(MODAL_SELECTOR) !== null };
-      if (opensNewMenu(e, context)) setNewMenuOpen(true);
+      if (opensNewMenu(e, { modalOpen: modalDialogOpen() })) {
+        newMenuFocusRef.current = 'first';
+        setNewMenuOpen(true);
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [setNewMenuOpen]);
   useEffect(() => {
-    if (newMenuOpen) newMenuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
-  }, [newMenuOpen, newMenuRef]);
+    if (newMenuOpen) focusNewMenuItem(newMenuFocusRef.current);
+    // Only on opening: the ref says which item, the menu is in the DOM by now.
+  }, [newMenuOpen]);
 
   const onNewMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const items = Array.from(newMenuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
@@ -219,7 +238,17 @@ export default function Sidebar({
     <button
       ref={newMenu.triggerRef}
       type="button"
-      onClick={() => setNewMenuOpen(!newMenuOpen)}
+      onClick={() => {
+        if (newMenuOpen) closeNewMenu(false);
+        else openNewMenu('first');
+      }}
+      onKeyDown={e => {
+        // The menu-button pattern: ArrowDown opens on the first item, ArrowUp on the last.
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          openNewMenu(e.key === 'ArrowDown' ? 'first' : 'last');
+        }
+      }}
       aria-label={NEW_MENU_LABEL}
       title={NEW_MENU_TITLE}
       aria-haspopup="menu"

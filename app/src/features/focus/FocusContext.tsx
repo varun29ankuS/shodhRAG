@@ -107,7 +107,7 @@ export interface OpenFocus {
   seq: number;
   /** The gallery visual this level shows, when it was opened from the gallery. */
   visual: VisualRef | null;
-  /** A prepared question this level sends once when its thread has no turns yet. */
+  /** A prepared question this level sends once, unless its thread already asked it. */
   question: string | null;
 }
 

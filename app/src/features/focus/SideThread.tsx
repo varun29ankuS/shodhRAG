@@ -283,13 +283,19 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
 
   // A level opened from a "go deeper" mark asks its prepared question once.
   // While another answer runs, askSuggested puts it in the composer instead.
+  // A thread that already asked it (reopened, or shared with "Ask about this"
+  // on the same node) is not asked again; other earlier questions do not stop it.
   const askedLevels = useRef<Set<number>>(new Set());
+  const askedQuestions = useMemo(
+    () => turns.filter(t => t.role === 'user' && !t.summaryOf).map(t => t.content),
+    [turns],
+  );
   useEffect(() => {
-    const question = autoAskQuestion(open, turns.length, askedLevels.current);
+    const question = autoAskQuestion(open, askedQuestions, askedLevels.current);
     if (question === null) return;
     askedLevels.current.add(open.seq);
     void askSuggested(question);
-  }, [open, turns.length, askSuggested]);
+  }, [open, askedQuestions, askSuggested]);
 
   // Each summary request has a number; Cancel retires it, so a result that arrives later is dropped.
   const summaryRun = useRef(0);

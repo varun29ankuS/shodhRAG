@@ -23,6 +23,7 @@ import type { Conversation } from '../../hooks/useConversations';
 import type { GroupableWorkspace } from '../../features/workspaces/model';
 import { ActivityTray } from './ActivityTray';
 import { ConversationHistory } from './ConversationHistory';
+import { ConnectionStatusChip } from '../../features/connection/ConnectionStatusChip';
 import { countOf } from '../../lib/plural';
 
 export interface SidebarSource {
@@ -36,12 +37,6 @@ export interface SidebarSource {
   currentStep?: string;
 }
 
-export interface SidebarLLMStatus {
-  connected: boolean;
-  model: string;
-  provider: string;
-}
-
 interface SidebarProps {
   activeView: ViewTab;
   onNavigate: (view: ViewTab) => void;
@@ -53,7 +48,6 @@ interface SidebarProps {
   onPinConversation: (id: string) => void;
   onDeleteConversation: (id: string) => void;
   sources: SidebarSource[];
-  llmStatus: SidebarLLMStatus;
   onOpenCommandPalette: () => void;
   onShowFeedback: () => void;
   workspaces: GroupableWorkspace[];
@@ -113,7 +107,6 @@ export default function Sidebar({
   onPinConversation,
   onDeleteConversation,
   sources,
-  llmStatus,
   onOpenCommandPalette,
   onShowFeedback,
   workspaces,
@@ -254,7 +247,7 @@ export default function Sidebar({
         {indexingSource ? (
           <IndexingStatus source={indexingSource} collapsed={collapsed} onOpen={() => onNavigate('library')} />
         ) : (
-          <ModelStatusChip status={llmStatus} collapsed={collapsed} onOpen={() => onNavigate('settings')} />
+          <ConnectionStatusChip collapsed={collapsed} />
         )}
 
         <div className={cn('flex gap-1', collapsed ? 'flex-col items-center' : 'items-center')}>
@@ -403,54 +396,5 @@ function IndexingStatus({
         />
       </div>
     </div>
-  );
-}
-
-function ModelStatusChip({
-  status,
-  collapsed,
-  onOpen,
-}: {
-  status: SidebarLLMStatus;
-  collapsed: boolean;
-  onOpen: () => void;
-}) {
-  const name = status.connected ? status.model : 'No model configured';
-  const label = status.connected
-    ? `Model: ${status.model}${status.provider && status.provider !== 'none' ? ` via ${status.provider}` : ''}. Open model settings`
-    : 'No model configured. Open model settings';
-  const dotClass = status.connected ? 'bg-shodh-success' : 'bg-shodh-warning';
-
-  if (collapsed) {
-    return (
-      <button
-        type="button"
-        onClick={onOpen}
-        aria-label={label}
-        title={label}
-        className={cn(
-          'w-10 h-10 rounded-[10px] inline-flex items-center justify-center hover:bg-shodh-raised transition-colors duration-micro',
-          FOCUS_RING
-        )}
-      >
-        <span className={cn('w-2 h-2 rounded-full', dotClass)} aria-hidden="true" />
-      </button>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      aria-label={label}
-      title={label}
-      className={cn(
-        'flex items-center gap-2 h-8 px-3 rounded-full border border-shodh-border text-left hover:bg-shodh-raised transition-colors duration-micro min-w-0',
-        FOCUS_RING
-      )}
-    >
-      <span className={cn('w-2 h-2 rounded-full shrink-0', dotClass)} aria-hidden="true" />
-      <span className="text-[12px] font-medium text-shodh-text-secondary truncate">{name}</span>
-    </button>
   );
 }

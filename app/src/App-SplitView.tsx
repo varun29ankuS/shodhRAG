@@ -102,7 +102,6 @@ import { notify } from './lib/notify';
 import { removeWithUndo, restoreAt } from './lib/undoToast';
 import { migrateLegacyApiKeys } from './lib/apiKeyMigration';
 import { InboxButton, OPEN_INBOX_EVENT } from './features/inbox/InboxButton';
-import { ConnectionPill } from './features/connection/ConnectionPill';
 import { useNavigationTarget } from './features/agent/useNavigationTarget';
 import { countOf } from './lib/plural';
 
@@ -1333,7 +1332,6 @@ function AppSplitView() {
         onPinConversation={pinConversation}
         onDeleteConversation={deleteConversation}
         sources={sources}
-        llmStatus={llmStatus}
         onOpenCommandPalette={openPalette}
         onShowFeedback={() => setShowFeedback(true)}
         workspaces={allWorkspaces}
@@ -1375,7 +1373,6 @@ function AppSplitView() {
                 </button>
               );
             })()}
-            <ConnectionPill />
           </div>
           <div className="flex items-center gap-2">
             <InboxButton

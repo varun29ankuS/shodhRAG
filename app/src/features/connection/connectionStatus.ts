@@ -1,5 +1,5 @@
 /**
- * The connection status in the top bar (`connection_health.rs`): which model
+ * The model status in the sidebar (`connection_health.rs`): which model
  * answers, through which provider, how it is connected, and whether it works.
  * Readers check the backend's data before use; the text and colour mapping
  * is pure so it is unit-tested with Node (`app/tests/connectionStatus.test.ts`).
@@ -241,7 +241,7 @@ function sentence(line: string): string {
   return /[.!?…]$/.test(line) ? line : `${line}.`;
 }
 
-/** What the top-bar pill shows. */
+/** What the sidebar's model status shows (one wording wherever the status appears). */
 export function pillView(snapshot: ConnectionSnapshot | null, formatTime: TimeFormat = localTime): PillView {
   if (!snapshot) return { model: 'Model', via: null, dot: 'grey', description: 'Connection status loading' };
   const active = snapshot.active;

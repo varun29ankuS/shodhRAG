@@ -86,6 +86,7 @@ import { SnippetHost } from './features/research/SnippetHost';
 import { ReminderAlerts } from './features/tasks/ReminderAlerts';
 import type { QuickCreateKind } from './features/tasks/QuickCreateDialog';
 import { quickCreateWorkspace } from './features/tasks/quickCreate';
+import type { NewMenuItemId } from './lib/newMenu';
 import { TableModelPrompt } from './features/setup/TableModelPrompt';
 import { AskView } from './features/ask/AskView';
 import { ChatActionsMenu } from './features/ask/ChatActionsMenu';
@@ -528,14 +529,23 @@ function AppSplitView() {
 
   const searchNeedsSetup = !!searchModelsStatus && !searchModelsStatus.ready;
 
+  // What the New menu's items and their palette entries run: one handler each.
+  const newItemActions: Record<NewMenuItemId, () => void> = {
+    'new-chat': handleNewConversation,
+    'new-workspace': requestNewWorkspace,
+    'new-task': () => setQuickCreate('task'),
+    'new-event': () => setQuickCreate('event'),
+    'add-folder': () => { setActiveTab('library'); void handleAddSource(); },
+  };
+
   // Primary actions offered by the command palette.
   const paletteActions: PaletteAction[] = [
-    { id: 'new-chat', label: 'New chat', icon: Plus, keywords: 'new chat conversation ask create', shortcut: IS_MAC ? '⌘N' : 'Ctrl+N', run: handleNewConversation },
+    { id: 'new-chat', label: 'New chat', icon: Plus, keywords: 'new chat conversation ask create', shortcut: IS_MAC ? '⌘N' : 'Ctrl+N', run: newItemActions['new-chat'] },
     { id: 'new-chat-plain', label: 'New chat outside workspaces', description: 'Searches your whole library', icon: MessageCircle, keywords: 'new chat no workspace library all', run: () => startChat(null) },
-    { id: 'new-workspace', label: 'New workspace', description: 'Sources, instructions and chats for one piece of work', icon: Layers, keywords: 'new create workspace project template', run: requestNewWorkspace },
-    { id: 'add-folder', label: 'Add folder to Library', description: 'Index a folder of documents', icon: FolderPlus, keywords: 'add source folder documents index import', run: () => { setActiveTab('library'); void handleAddSource(); } },
-    { id: 'new-task', label: 'New task', description: 'Add a task without leaving this view', icon: ListTodo, keywords: 'new create task todo reminder due', run: () => setQuickCreate('task') },
-    { id: 'new-event', label: 'New event', description: 'Add an event without leaving this view', icon: CalendarDays, keywords: 'new create event calendar meeting schedule', run: () => setQuickCreate('event') },
+    { id: 'new-workspace', label: 'New workspace', description: 'Sources, instructions and chats for one piece of work', icon: Layers, keywords: 'new create workspace project template', run: newItemActions['new-workspace'] },
+    { id: 'add-folder', label: 'Add folder to Library', description: 'Index a folder of documents', icon: FolderPlus, keywords: 'add source folder documents index import', run: newItemActions['add-folder'] },
+    { id: 'new-task', label: 'New task', description: 'Add a task without leaving this view', icon: ListTodo, keywords: 'new create task todo reminder due', run: newItemActions['new-task'] },
+    { id: 'new-event', label: 'New event', description: 'Add an event without leaving this view', icon: CalendarDays, keywords: 'new create event calendar meeting schedule', run: newItemActions['new-event'] },
     { id: 'choose-model', label: 'Choose model', description: 'Provider and model that answer', icon: Bot, keywords: 'model llm provider ai settings api key', run: () => setActiveTab('settings') },
     { id: 'toggle-sidebar', label: collapsed ? 'Expand sidebar' : 'Collapse sidebar', icon: collapsed ? PanelLeftOpen : PanelLeftClose, keywords: 'sidebar toggle hide show collapse expand', shortcut: IS_MAC ? '⌘B' : 'Ctrl+B', run: toggleSidebar },
     { id: 'toggle-theme', label: theme === 'dark' ? 'Use light theme' : 'Use dark theme', icon: theme === 'dark' ? Sun : Moon, keywords: 'theme dark light mode appearance', run: toggleTheme },
@@ -1390,6 +1400,7 @@ function AppSplitView() {
         activeConversationId={activeConversationId}
         onOpenConversation={(id: string) => { switchConversation(id); setActiveTab('ask'); }}
         onNewConversation={handleNewConversation}
+        onNewItem={id => newItemActions[id]()}
         onRenameConversation={renameConversation}
         onPinConversation={pinConversation}
         onDeleteConversation={deleteConversation}

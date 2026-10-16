@@ -1,10 +1,15 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useId, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Activity,
   Bug,
+  CalendarDays,
+  ChevronDown,
   Folder,
+  FolderPlus,
   Layers,
   ListChecks,
+  ListTodo,
   MessageCircle,
   Moon,
   PanelLeftClose,
@@ -25,6 +30,16 @@ import { ActivityTray } from './ActivityTray';
 import { ConversationHistory } from './ConversationHistory';
 import { ConnectionStatusChip } from '../../features/connection/ConnectionStatusChip';
 import { countOf } from '../../lib/plural';
+import { MENU_ITEM, POPOVER, usePopover } from '../../hooks/usePopover';
+import {
+  NEW_MENU_LABEL,
+  isNewMenuChord,
+  newMenuItems,
+  newMenuKeyShortcuts,
+  newMenuShortcutHint,
+  opensNewMenu,
+} from '../../lib/newMenu';
+import type { NewMenuItemId } from '../../lib/newMenu';
 
 export interface SidebarSource {
   id: string;
@@ -44,6 +59,8 @@ interface SidebarProps {
   activeConversationId: string | null;
   onOpenConversation: (id: string) => void;
   onNewConversation: () => void;
+  /** Run a New menu item (the same handlers as the command palette's entries). */
+  onNewItem: (id: NewMenuItemId) => void;
   onRenameConversation: (id: string, title: string) => void;
   onPinConversation: (id: string) => void;
   onDeleteConversation: (id: string) => void;
@@ -80,6 +97,22 @@ const NEW_CHAT_HINT = IS_MAC ? '⌘N' : 'Ctrl N';
 const NEW_CHAT_LABEL = `New chat (${IS_MAC ? '⌘N' : 'Ctrl+N'})`;
 const SEARCH_LABEL = `Search and commands (${IS_MAC ? '⌘K' : 'Ctrl+K'})`;
 const TOGGLE_HINT = IS_MAC ? '⌘B' : 'Ctrl+B';
+const NEW_MENU_ITEMS = newMenuItems(IS_MAC);
+const NEW_MENU_TITLE = `${NEW_MENU_LABEL} (${newMenuShortcutHint(IS_MAC)})`;
+const NEW_MENU_ICONS: Record<NewMenuItemId, React.ElementType> = {
+  'new-chat': Plus,
+  'new-workspace': Layers,
+  'new-task': ListTodo,
+  'new-event': CalendarDays,
+  'add-folder': FolderPlus,
+};
+
+/** A modal dialog is open (setup, palette, a sheet or a create dialog). */
+const MODAL_SELECTOR = '[aria-modal="true"], [role="dialog"][data-state="open"]';
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]') !== null;
+}
 
 /** Arrow-key movement between the buttons of a vertical list. */
 function moveFocusInList(e: React.KeyboardEvent<HTMLElement>, selector: string) {
@@ -103,6 +136,7 @@ export default function Sidebar({
   activeConversationId,
   onOpenConversation,
   onNewConversation,
+  onNewItem,
   onRenameConversation,
   onPinConversation,
   onDeleteConversation,
@@ -133,6 +167,76 @@ export default function Sidebar({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
+
+  // The New menu: the ▾ beside New chat, or Ctrl/Cmd+Shift+N from anywhere
+  // but a text field or a modal dialog. preventDefault keeps the WebView
+  // from opening a window for the chord.
+  const newMenu = usePopover();
+  const newMenuId = useId();
+  const { open: newMenuOpen, setOpen: setNewMenuOpen, close: closeNewMenu, popRef: newMenuRef } = newMenu;
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!isNewMenuChord(e)) return;
+      e.preventDefault();
+      const context = { editable: isEditableTarget(e.target), modalOpen: document.querySelector(MODAL_SELECTOR) !== null };
+      if (opensNewMenu(e, context)) setNewMenuOpen(true);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [setNewMenuOpen]);
+  useEffect(() => {
+    if (newMenuOpen) newMenuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+  }, [newMenuOpen, newMenuRef]);
+
+  const onNewMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const items = Array.from(newMenuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
+    const index = items.indexOf(document.activeElement as HTMLElement);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const step = e.key === 'ArrowDown' ? 1 : -1;
+      items[(index + step + items.length) % items.length]?.focus();
+    } else if (e.key === 'Home' || e.key === 'End') {
+      e.preventDefault();
+      items[e.key === 'Home' ? 0 : items.length - 1]?.focus();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closeNewMenu(true);
+    } else if (e.key === 'Tab') {
+      // The menu lives in a body-level portal; Tab would leave the page order.
+      e.preventDefault();
+      closeNewMenu(true);
+    }
+  };
+
+  // Focus goes back to ▾ first, so a dialog the item opens returns focus there.
+  const chooseNewItem = (id: NewMenuItemId) => {
+    closeNewMenu(true);
+    onNewItem(id);
+  };
+
+  const newMenuTrigger = (
+    <button
+      ref={newMenu.triggerRef}
+      type="button"
+      onClick={() => setNewMenuOpen(!newMenuOpen)}
+      aria-label={NEW_MENU_LABEL}
+      title={NEW_MENU_TITLE}
+      aria-haspopup="menu"
+      aria-expanded={newMenuOpen}
+      aria-controls={newMenuOpen ? newMenuId : undefined}
+      aria-keyshortcuts={newMenuKeyShortcuts(IS_MAC)}
+      className={cn(
+        'shrink-0 inline-flex items-center justify-center transition-colors duration-micro',
+        collapsed
+          ? 'w-10 h-6 rounded-md text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text'
+          : 'w-8 h-9 rounded-r-[9px] border-l border-shodh-accent-hover hover:bg-shodh-accent-hover',
+        FOCUS_RING
+      )}
+    >
+      <ChevronDown className="w-[15px] h-[15px]" strokeWidth={2.2} aria-hidden="true" />
+    </button>
+  );
 
   const indexingSource = sources.find(s => s.status === 'indexing') ?? null;
   const themeLabel = theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
@@ -178,28 +282,63 @@ export default function Sidebar({
         </button>
       </div>
 
-      {/* New chat */}
-      <div className={cn('shrink-0', collapsed ? 'px-3 pb-2.5 flex justify-center' : 'px-3 pb-2.5')}>
-        <button
-          type="button"
-          onClick={onNewConversation}
-          aria-label={collapsed ? NEW_CHAT_LABEL : undefined}
-          title={collapsed ? NEW_CHAT_LABEL : undefined}
-          aria-keyshortcuts={IS_MAC ? 'Meta+N' : 'Control+N'}
-          className={cn(
-            'flex items-center gap-2 h-9 rounded-[9px] bg-shodh-accent text-shodh-on-accent text-[13px] font-semibold hover:bg-shodh-accent-hover transition-colors duration-micro',
-            collapsed ? 'w-10 justify-center' : 'w-full px-3',
-            FOCUS_RING
-          )}
-        >
-          <Plus className="w-[15px] h-[15px] shrink-0" strokeWidth={2.2} aria-hidden="true" />
-          {!collapsed && (
-            <>
-              <span>New chat</span>
-              <kbd className="ml-auto font-mono text-[11px] font-normal">{NEW_CHAT_HINT}</kbd>
-            </>
-          )}
-        </button>
+      {/* New chat, and the New menu (▾) */}
+      <div className="shrink-0 px-3 pb-2.5">
+        <div className={cn('flex', collapsed ? 'flex-col items-center gap-1' : 'w-full rounded-[9px] bg-shodh-accent text-shodh-on-accent')}>
+          <button
+            type="button"
+            onClick={onNewConversation}
+            aria-label={collapsed ? NEW_CHAT_LABEL : undefined}
+            title={collapsed ? NEW_CHAT_LABEL : undefined}
+            aria-keyshortcuts={IS_MAC ? 'Meta+N' : 'Control+N'}
+            className={cn(
+              'flex items-center gap-2 h-9 text-[13px] font-semibold transition-colors duration-micro',
+              collapsed
+                ? 'w-10 justify-center rounded-[9px] bg-shodh-accent text-shodh-on-accent hover:bg-shodh-accent-hover'
+                : 'flex-1 min-w-0 px-3 rounded-l-[9px] hover:bg-shodh-accent-hover',
+              FOCUS_RING
+            )}
+          >
+            <Plus className="w-[15px] h-[15px] shrink-0" strokeWidth={2.2} aria-hidden="true" />
+            {!collapsed && (
+              <>
+                <span>New chat</span>
+                <kbd className="ml-auto font-mono text-[11px] font-normal">{NEW_CHAT_HINT}</kbd>
+              </>
+            )}
+          </button>
+          {newMenuTrigger}
+        </div>
+        {newMenuOpen && createPortal(
+          <div
+            ref={newMenuRef}
+            id={newMenuId}
+            role="menu"
+            aria-label="New"
+            onKeyDown={onNewMenuKeyDown}
+            className={cn(POPOVER, 'min-w-[220px]')}
+            style={newMenu.pos ? { left: newMenu.pos.left, top: newMenu.pos.top } : { opacity: 0, left: 0, top: 0 }}
+          >
+            {NEW_MENU_ITEMS.map(item => {
+              const Icon = NEW_MENU_ICONS[item.id];
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="menuitem"
+                  tabIndex={-1}
+                  onClick={() => chooseNewItem(item.id)}
+                  className={MENU_ITEM}
+                >
+                  <Icon className="w-3.5 h-3.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />
+                  <span className="flex-1 truncate">{item.label}</span>
+                  {item.hint && <kbd className="font-mono text-[11px] text-shodh-text-faint">{item.hint}</kbd>}
+                </button>
+              );
+            })}
+          </div>,
+          document.body,
+        )}
       </div>
 
       {/* Views */}

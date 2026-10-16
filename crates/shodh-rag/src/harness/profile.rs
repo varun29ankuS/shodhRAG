@@ -389,11 +389,23 @@ mod tests {
     fn answers_are_asked_to_lead_with_a_visual_and_mark_what_goes_deeper() {
         let p = AgentProfile::assistant();
         let text = &p.instructions;
-        assert!(text.contains("Lead with the visual that fits the question"), "visual-first section");
-        assert!(text.contains("\"deeper\""), "the deeper field is documented");
-        assert!(text.contains("[[shown text|question]]"), "prose marks are documented");
+        assert!(
+            text.contains("Lead with the visual that fits the question"),
+            "visual-first section"
+        );
+        assert!(
+            text.contains("\"deeper\""),
+            "the deeper field is documented"
+        );
+        assert!(
+            text.contains("[[shown text|question]]"),
+            "prose marks are documented"
+        );
         assert!(text.contains("at most four"), "the mark budget is stated");
-        assert!(DIAGRAM_GUIDE.contains("\"deeper\""), "diagram nodes may carry deeper");
+        assert!(
+            DIAGRAM_GUIDE.contains("\"deeper\""),
+            "diagram nodes may carry deeper"
+        );
     }
 
     #[test]

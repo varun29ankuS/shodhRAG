@@ -1056,7 +1056,10 @@ mod tests {
         let answer = "The model uses [[self-attention|Why does its cost grow with the square of the length?]] over all tokens [2].";
         let claims = split_claims(answer);
         assert_eq!(claims.len(), 1, "{claims:?}");
-        assert_eq!(claims[0].text, "The model uses self-attention over all tokens.");
+        assert_eq!(
+            claims[0].text,
+            "The model uses self-attention over all tokens."
+        );
         assert_eq!(claims[0].citations, vec![2]);
     }
 

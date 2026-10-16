@@ -138,22 +138,13 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
-      # LanceDB's protobuf definitions are compiled at build time.
-      # Chocolatey's feed can time out (504) while choco still exits 0, which
-      # left the build to fail much later on a missing protoc. Retry, and fail
-      # here unless protoc actually runs.
+      # LanceDB's protobuf definitions are compiled at build time: a pinned,
+      # checksum-verified protoc from the official release (the Chocolatey
+      # feed answers 503/504 at times while choco exits 0).
       - name: Install Protobuf compiler (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          for ($attempt = 1; $attempt -le 4; $attempt++) {
-            choco install protoc -y
-            $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + $env:Path
-            if (Get-Command protoc -ErrorAction SilentlyContinue) { protoc --version; exit 0 }
-            Write-Host "protoc is not installed after attempt $attempt; retrying in 30 s"
-            Start-Sleep -Seconds 30
-          }
-          throw 'protoc could not be installed from Chocolatey'
+        run: ./scripts/ci/install-protoc.ps1
 
       - name: Install Protobuf compiler (macOS)
         if: runner.os == 'macOS'

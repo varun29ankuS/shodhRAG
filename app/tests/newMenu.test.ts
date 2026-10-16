@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   NEW_MENU_LABEL,
+  isNKey,
   isNewChatChord,
   newMenuItems,
   newMenuKeyShortcuts,
@@ -60,13 +61,24 @@ test('Ctrl+Shift+N and Cmd+Shift+N open the menu', () => {
   assert.equal(opensNewMenu(key({ ctrlKey: false, metaKey: true }), free), true);
 });
 
-test('the N key is matched by position, so other keyboard layouts work', () => {
-  // Russian layout: the N key types "т".
+test('N is the letter on Latin layouts and the physical key otherwise', () => {
+  assert.equal(isNKey({ key: 'n', code: 'KeyN' }), true, 'QWERTY');
+  assert.equal(isNKey({ key: 'N', code: 'KeyN' }), true, 'Shift gives an uppercase N');
+  assert.equal(isNKey({ key: 'n', code: 'KeyL' }), true, 'Dvorak: N sits where QWERTY has L');
+  assert.equal(isNKey({ key: 'b', code: 'KeyN' }), false, 'Dvorak: the QWERTY N position types b');
+  assert.equal(isNKey({ key: 'т', code: 'KeyN' }), true, 'Russian layout');
+  assert.equal(isNKey({ key: 'Т', code: 'KeyN' }), true, 'Russian layout with Shift');
+  assert.equal(isNKey({ key: 'ल', code: 'KeyN' }), true, 'Devanagari layout');
+  assert.equal(isNKey({ key: 'т', code: 'KeyB' }), false, 'another key on a Russian layout');
+});
+
+test('both shortcuts use the N rule', () => {
   assert.equal(opensNewMenu(key({ key: 'Т' }), free), true);
   assert.equal(isNewChatChord(key({ key: 'т', shiftKey: false })), true);
-  // Another key that types an N on its layout does not count.
-  assert.equal(opensNewMenu(key({ code: 'KeyB' }), free), false);
-  assert.equal(isNewChatChord(key({ code: 'KeyB', key: 'n', shiftKey: false })), false);
+  assert.equal(opensNewMenu(key({ key: 'N', code: 'KeyL' }), free), true, 'Dvorak');
+  assert.equal(isNewChatChord(key({ key: 'n', code: 'KeyL', shiftKey: false })), true, 'Dvorak');
+  assert.equal(opensNewMenu(key({ key: 'B', code: 'KeyN' }), free), false);
+  assert.equal(isNewChatChord(key({ key: 'b', code: 'KeyN', shiftKey: false })), false);
 });
 
 test('Ctrl+N and Cmd+N, without Shift or Alt, are New chat', () => {

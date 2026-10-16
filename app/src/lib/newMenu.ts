@@ -43,7 +43,7 @@ export function newMenuKeyShortcuts(isMac: boolean): string {
 
 export interface ShortcutKey {
   key: string;
-  /** The physical key: `KeyN` on every layout, whatever it types. */
+  /** The physical key (`KeyN` is where QWERTY has N), whatever it types. */
   code: string;
   ctrlKey: boolean;
   metaKey: boolean;
@@ -53,16 +53,23 @@ export interface ShortcutKey {
 }
 
 /**
- * Ctrl/⌘+N: New chat. Matched on the physical key, so it also works on
- * layouts where that key types another letter (Cyrillic, Greek, …).
+ * Whether the key is N. On a layout that types Latin letters the letter
+ * decides, wherever it sits (Dvorak and Colemak move N); on any other
+ * layout (Cyrillic, Devanagari, …) the key in QWERTY's N position does.
  */
-export function isNewChatChord(e: ShortcutKey): boolean {
-  return (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.code === 'KeyN';
+export function isNKey(e: Pick<ShortcutKey, 'key' | 'code'>): boolean {
+  if (e.key.toLowerCase() === 'n') return true;
+  return !/^[a-z]$/i.test(e.key) && e.code === 'KeyN';
 }
 
-/** Whether Ctrl/⌘+Shift+N is pressed, whatever the context (physical N key). */
+/** Ctrl/⌘+N, without Shift or Alt: New chat. */
+export function isNewChatChord(e: ShortcutKey): boolean {
+  return (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && isNKey(e);
+}
+
+/** Whether Ctrl/⌘+Shift+N is pressed, whatever the context. */
 export function isNewMenuChord(e: ShortcutKey): boolean {
-  return (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.code === 'KeyN';
+  return (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && isNKey(e);
 }
 
 /**

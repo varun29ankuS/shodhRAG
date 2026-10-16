@@ -55,6 +55,16 @@ test('a reminder in the past is rejected', () => {
   assert.equal(taskInput(task({ reminderDate: '2026-10-16', reminderTime: '08:00' }), NOW), null);
 });
 
+test('a reminder valid when typed is rejected once its time has passed', () => {
+  const draft = task({ reminderDate: '2026-10-16', reminderTime: '12:30' });
+  assert.equal(taskDraftProblem(draft, NOW), null);
+  assert.ok(taskInput(draft, NOW));
+  // Create pressed at 12:31 with the dialog still open.
+  const later = new Date(2026, 9, 16, 12, 31);
+  assert.equal(taskDraftProblem(draft, later), 'The reminder is in the past.');
+  assert.equal(taskInput(draft, later), null);
+});
+
 test('the missing-title reason waits until the title was touched or Create tried', () => {
   assert.equal(shownProblem('Add a title.', false), null);
   assert.equal(shownProblem('Add a title.', true), 'Add a title.');

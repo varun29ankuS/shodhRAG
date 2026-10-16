@@ -1,4 +1,4 @@
-import React, { useId, useState } from 'react';
+import React, { useId, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Loader2, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
@@ -13,6 +13,7 @@ import {
   defaultTaskDraft,
   eventDraftProblem,
   eventInput,
+  REMINDER_IN_PAST,
   shownProblem,
   taskDraftProblem,
   taskInput,
@@ -148,12 +149,14 @@ function DateTimeInputs({
   date,
   time,
   showTime = true,
+  timeRef,
   onChange,
 }: {
   label: string;
   date: string;
   time: string;
   showTime?: boolean;
+  timeRef?: React.Ref<HTMLInputElement>;
   onChange: (next: { date: string; time: string }) => void;
 }) {
   const labelId = useId();
@@ -170,6 +173,7 @@ function DateTimeInputs({
         />
         {showTime && (
           <input
+            ref={timeRef}
             type="time"
             aria-label={`${label} time`}
             value={time}
@@ -231,12 +235,29 @@ function QuickTaskDialog({
   const [titleTouched, setTitleTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const workspaceSelectId = useId();
-  const problem = taskDraftProblem(draft);
-  const update = (patch: Partial<TaskDraft>) => setDraft(d => ({ ...d, ...patch }));
+  const reminderTimeRef = useRef<HTMLInputElement>(null);
+  // A reason found only when Create was pressed (a reminder that has passed
+  // since it was typed); cleared by the next edit.
+  const [submitProblem, setSubmitProblem] = useState<string | null>(null);
+  const problem = submitProblem ?? taskDraftProblem(draft);
+  const update = (patch: Partial<TaskDraft>) => {
+    setSubmitProblem(null);
+    setDraft(d => ({ ...d, ...patch }));
+  };
 
   const create = async () => {
-    const input = taskInput(draft);
-    if (!input || saving) return;
+    if (saving) return;
+    // Checked again now: the time may have passed the reminder since the last edit.
+    const now = new Date();
+    const found = taskDraftProblem(draft, now);
+    const input = found ? null : taskInput(draft, now);
+    if (!input) {
+      setTitleTouched(true);
+      setSubmitProblem(found);
+      // Create is disabled now; focus stays in the dialog, on the field to fix.
+      if (found === REMINDER_IN_PAST) reminderTimeRef.current?.focus();
+      return;
+    }
     setSaving(true);
     // On failure the store shows the error notice; the dialog stays open.
     const task = await createTask(input);
@@ -274,6 +295,7 @@ function QuickTaskDialog({
         label="Reminder (optional)"
         date={draft.reminderDate}
         time={draft.reminderTime}
+        timeRef={reminderTimeRef}
         onChange={({ date, time }) => update({ reminderDate: date, reminderTime: time })}
       />
       {workspaces.length > 0 && (

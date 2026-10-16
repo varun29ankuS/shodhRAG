@@ -92,7 +92,8 @@ says to use one main visual per answer, and at most two.
   - at most 4 marks per answer;
   - the question is non-empty and within the length cap;
   - the mark must sit on an element that exists;
-  - extra marks are dropped, keeping the first 4 in document order, and the drop is logged.
+  - the first 4 marks in document order render; extra marks render as plain text (prose) or
+    without a button (visuals).
 - **Rendering.**
   - A marked diagram node gets a small glow, and its node panel offers "Go deeper".
   - Other visuals list their marks as a row of "Go deeper" chips under the visual.
@@ -100,13 +101,11 @@ says to use one main visual per answer, and at most two.
   - Hovering shows the prepared question.
   - Marks are keyboard reachable: Tab moves through them, Enter opens.
 - **Opening.** A click pushes a level on the focus stack. The side thread starts with the
-  prepared question already asked. It carries:
-  - the element;
-  - its parent visual's spec;
-  - the parent answer's cited passages, through `carriedPassages`.
+  prepared question already asked. Chips carry the element's label and the prepared
+  question; the window also receives the anchored answer, as side threads do.
 - **Inside the window.** The answer follows the same visual-first rules and may hold marks.
-  Depth is limited by `MAX_DEPTH`; at the limit, marks render without the glow and do
-  not open.
+  Depth is limited by `MAX_DEPTH`; at the limit, clicking a mark shows the depth notice and
+  opens nothing.
 - **Cost.** One call per window opened. No call is made until the click.
 
 ### 3.3 Saving

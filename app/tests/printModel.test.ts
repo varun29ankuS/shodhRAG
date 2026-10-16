@@ -22,6 +22,7 @@ import {
   unresolvedCitations,
   visualPrintMarkdown,
 } from '../src/features/print/printModel.ts';
+import { stripTextMarks } from '../src/features/ask/visual/marks.ts';
 import { writesPdfFiles } from '../src/features/print/printPlatform.ts';
 import type { SearchHit } from '../src/features/ask/types.ts';
 
@@ -84,6 +85,13 @@ test('titles come from the question or the answer, and a repeated heading is not
   const doc = buildPrintDocument({ title: 'Notice periods', markdown: '# Notice periods\nBody [1]', hits });
   assert.equal(doc.markdown, 'Body [1]');
   assert.equal(doc.sources.length, 1);
+});
+
+test('an answer heading with a go-deeper mark is not printed twice', () => {
+  const content = '# How [[RoPE|What is rotary position embedding?]] works\nBody';
+  const title = answerTitle(stripTextMarks(content));
+  assert.equal(title, 'How RoPE works');
+  assert.equal(stripLeadingTitle(content, title), 'Body');
 });
 
 test('file names are safe and end in .pdf', () => {

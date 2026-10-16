@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { FileCode2, Loader2, MessageSquareText, Quote } from 'lucide-react';
+import { FileCode2, Loader2, MessageSquareText, Quote, Sparkles } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { FocusFrame, useOpenFocus } from '../../focus/FocusFrame';
 import { selectionTarget, svgTarget } from '../../focus/targets';
@@ -33,7 +33,7 @@ type Files =
  * a source opens the passage, and any can be asked about.
  */
 export function DiagramBlock({ source }: { source: string }) {
-  const { citations, openCitation } = useAnswerBlocks();
+  const { citations, openCitation, markAllowance } = useAnswerBlocks();
   const { codeWorkspaceId } = useDiagramHost();
   const parsed = useMemo(
     () => parseDiagram(source.trim(), { citations, codeMode: codeWorkspaceId !== null }),
@@ -95,6 +95,7 @@ export function DiagramBlock({ source }: { source: string }) {
       spec={spec}
       files={files.status === 'ready' ? files.found : null}
       openCitation={openCitation}
+      allowance={markAllowance(source)}
     />
   );
 }
@@ -104,13 +105,22 @@ interface DiagramViewProps {
   /** Absolute paths of the files the diagram names (Code mode). */
   files: Map<string, string> | null;
   openCitation: ((n: number, trigger: HTMLElement) => void) | null;
+  /** How many of its marked nodes the answer's budget allows. */
+  allowance: number;
 }
 
-function DiagramView({ spec, files, openCitation }: DiagramViewProps) {
+function DiagramView({ spec, files, openCitation, allowance }: DiagramViewProps) {
   const reactId = useId();
   const prefix = `dg${reactId.replace(/[^a-zA-Z0-9]/g, '')}`;
   const drawing = useMemo(() => layoutDiagram(spec), [spec]);
-  const markup = useMemo(() => diagramSvg(spec, drawing, { interactive: true, idPrefix: prefix }), [spec, drawing, prefix]);
+  const marked = useMemo(() => {
+    const out = new Set<number>();
+    spec.nodes.forEach((n, i) => {
+      if (n.deeper && out.size < allowance) out.add(i);
+    });
+    return out;
+  }, [spec, allowance]);
+  const markup = useMemo(() => diagramSvg(spec, drawing, { interactive: true, idPrefix: prefix, marked }), [spec, drawing, prefix, marked]);
   const description = useMemo(() => describeDiagram(spec), [spec]);
   const exported = useMemo(() => {
     const svg = diagramSvg(spec, drawing, { interactive: false, idPrefix: 'x' });
@@ -152,6 +162,12 @@ function DiagramView({ spec, files, openCitation }: DiagramViewProps) {
     if (!openFocus || !node) return;
     const target = selectionTarget({ text: describeNode(spec, node.id), context: description, origin: 'answer' });
     if (target) openFocus(target, trigger);
+  };
+
+  const goDeeper = (trigger: HTMLElement) => {
+    if (!openFocus || !node || !node.deeper) return;
+    const target = selectionTarget({ text: describeNode(spec, node.id), context: description, origin: 'answer' });
+    if (target) openFocus(target, trigger, { question: node.deeper });
   };
 
   return (
@@ -211,6 +227,12 @@ function DiagramView({ spec, files, openCitation }: DiagramViewProps) {
                     Show source {node.cite}
                   </button>
                 )}
+                {openFocus && selected !== null && marked.has(selected) && node.deeper && (
+                  <button type="button" className={cn(ACTION, FOCUS_RING, 'border-shodh-accent text-shodh-text')} title={node.deeper} onClick={e => goDeeper(e.currentTarget)}>
+                    <Sparkles className="w-3.5 h-3.5 text-shodh-accent" aria-hidden="true" />
+                    Go deeper
+                  </button>
+                )}
                 {openFocus && (
                   <button type="button" className={cn(ACTION, FOCUS_RING)} onClick={e => askAboutNode(e.currentTarget)}>
                     <MessageSquareText className="w-3.5 h-3.5" aria-hidden="true" />
@@ -220,12 +242,14 @@ function DiagramView({ spec, files, openCitation }: DiagramViewProps) {
               </div>
             </>
           )}
-          {!node && (hasDelta || actionable || drawing.loops.length > 0) && (
+          {!node && (hasDelta || actionable || drawing.loops.length > 0 || marked.size > 0) && (
             <p className="m-0 text-[11.5px] text-shodh-text-muted">
               {[
                 hasDelta ? '+ added · − removed (dashed) · Δ changed' : null,
                 drawing.loops.length > 0 ? 'R reinforcing loop (even number of − links) · B balancing loop (odd)' : null,
-                'Select a part to open its file or source, or to ask about it.',
+                marked.size > 0
+                  ? 'Glowing parts have more to explain: select one and choose Go deeper.'
+                  : 'Select a part to open its file or source, or to ask about it.',
               ].filter(Boolean).join('  ·  ')}
             </p>
           )}

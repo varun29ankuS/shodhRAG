@@ -26,20 +26,21 @@ export interface FocusFrameProps {
  * where nothing can be opened (no answer around, e.g. a side answer still
  * being written).
  */
-export function useOpenFocus(): ((target: FocusTarget, trigger: HTMLElement | null) => void) | null {
+export function useOpenFocus(): ((target: FocusTarget, trigger: HTMLElement | null, options?: { question?: string | null }) => void) | null {
   const focus = useFocus();
   const drill = useFocusDrill();
   const answerAnchor = useFocusAnchor();
   const anchor = drill ? null : answerAnchor;
-  const open = useCallback((target: FocusTarget, trigger: HTMLElement | null) => {
+  const open = useCallback((target: FocusTarget, trigger: HTMLElement | null, options?: { question?: string | null }) => {
     if (!focus) return;
+    const question = options?.question ?? null;
     if (drill) {
-      const result = focus.drillDown({ target, parentThreadId: drill.parentThreadId, parentTurnId: drill.parentTurnId });
+      const result = focus.drillDown({ target, parentThreadId: drill.parentThreadId, parentTurnId: drill.parentTurnId, question });
       if (result === 'depth') notifyDepthLimit();
       return;
     }
     if (!anchor) return;
-    focus.openFocus({ target, conversationId: anchor.conversationId, parentMessageId: anchor.messageId, trigger });
+    focus.openFocus({ target, conversationId: anchor.conversationId, parentMessageId: anchor.messageId, trigger, question });
   }, [focus, anchor, drill]);
   return focus && (anchor || drill) ? open : null;
 }

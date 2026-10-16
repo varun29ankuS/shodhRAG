@@ -162,7 +162,9 @@ the participants, edges the messages in order), layers (a stack, top first, no e
 (nodes in order, each with \"at\", no edges), quadrant (nodes with \"x\" and \"y\" from 0 to 1, and \
 \"axes\": {\"x\": [\"low\", \"high\"], \"y\": [\"low\", \"high\"]}), loop (feedback: every edge has \
 \"sign\": \"+\" or \"-\"; Shodh labels each cycle reinforcing or balancing). Every edge joins declared \
-ids; \"cite\" only a source [n] of this answer. Delete before you add: at most 9 nodes, only parts the \
+ids; \"cite\" only a source [n] of this answer. A node may carry \"deeper\": one short question \
+(under 160 characters) that would explain that part on its own; the reader can open it in a window \
+of its own. Delete before you add: at most 9 nodes, only parts the \
 reader needs, no edge the layout already shows, \"emphasis\" on the one or two nodes that matter most. \
 \"change\": \"added\", \"removed\" or \"changed\" on nodes and edges shows a before and after in one \
 diagram. Class, state and entity relationship diagrams and mind maps stay in ```mermaid blocks."
@@ -243,7 +245,7 @@ How answers are displayed (the chat renders all of these inline):
     "
 4. Charts in ```chart code blocks holding JSON: {\"type\": \"line\" | \"bar\" | \"area\" | \"scatter\" \
 | \"pie\", \"title\": \"...\", \"xKey\": \"year\", \"series\": [{\"key\": \"score\", \"label\": \
-\"Score\"}], \"data\": [{\"year\": 2023, \"score\": 71.2}]}.
+\"Score\", \"deeper\": \"What drove the jump in 2024?\"}], \"data\": [{\"year\": 2023, \"score\": 71.2}]}.
 5. Sketches in ```svg code blocks: one <svg> with a viewBox; shapes, text and markers in \
 currentColor; no scripts, styles or links. A first line <!-- sketch --> makes it hand-drawn.
 6. Interactive plots in ```plot code blocks holding JSON: {\"title\": \"...\", \"x\": {\"min\": 0, \
@@ -265,12 +267,22 @@ the equation's LaTeX; readers hover a symbol to see its meaning.
 10. Derivations and proofs in a ```derivation block: {\"title\": \"...\", \"steps\": [{\"latex\": \
 \"...\", \"justification\": \"...\", \"cites\": [2]}]}, one transformation per step; each \
 justification cites the passage it relies on or says \"algebra\".
+11. \"Go deeper\" marks: a \"deeper\" question may also go on a chart series, a plot or simulation \
+parameter, a derivation step or a symbol entry, and in text as [[shown text|question]] (for example \
+\"It uses [[self-attention|Why does self-attention cost grow with the square of the length?]]\"). \
+Mark only what a newcomer would not know and the answer does not already explain, at most four \
+marks in an answer; each question must make sense on its own.
 Formulas use + - * / ^ ( ), sin cos tan asin acos atan atan2 sqrt abs exp min max floor ceil, \
 ln (natural), log (base 10), pi, e and g = 9.81.
 For physics, kinematics, mechanics and geometry: free-body diagrams and figures as ```svg, \
 relations and trajectories as ```plot with sliders for the parameters, motion as ```simulation. \
 Always give the governing equations in LaTeX alongside, keep visuals physically correct (units, \
 signs, directions, scale), and cite any number taken from the documents.
+Lead with the visual that fits the question, and let the text caption and connect it: how \
+something works or flows as a ```diagram; how quantities relate as a ```plot or ```chart; change \
+over time as a ```simulation or a timeline diagram; a formula as a ```derivation with \
+```symbols; a comparison as a table or a quadrant diagram. One main visual per answer, two at \
+most. Facts, definitions and writing stay plain text.
 Use them when they make an explanation clearer, especially for papers, methods, architectures, \
 algorithms and comparisons: a flowchart of a method or pipeline, the key equations typeset and \
 explained term by term, a table comparing options, a chart of reported results. Build charts and \
@@ -371,6 +383,17 @@ mod tests {
         }
         assert!(!p.instructions.contains("C4"));
         assert!(!p.instructions.contains("```mermaid code blocks: flowchart"));
+    }
+
+    #[test]
+    fn answers_are_asked_to_lead_with_a_visual_and_mark_what_goes_deeper() {
+        let p = AgentProfile::assistant();
+        let text = &p.instructions;
+        assert!(text.contains("Lead with the visual that fits the question"), "visual-first section");
+        assert!(text.contains("\"deeper\""), "the deeper field is documented");
+        assert!(text.contains("[[shown text|question]]"), "prose marks are documented");
+        assert!(text.contains("at most four"), "the mark budget is stated");
+        assert!(DIAGRAM_GUIDE.contains("\"deeper\""), "diagram nodes may carry deeper");
     }
 
     #[test]

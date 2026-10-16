@@ -263,7 +263,7 @@ function ExportPdfButton({ message, question, hits }: { message: ChatMessage; qu
     try {
       const fromQuestion = question ? answerTitle(question, '') : '';
       await exportPdf(buildPrintDocument({
-        title: fromQuestion || answerTitle(message.content),
+        title: fromQuestion || answerTitle(stripTextMarks(message.content)),
         subtitle: fromQuestion ? null : 'Answer from Shodh',
         createdAt: message.timestamp,
         markdown: message.content,

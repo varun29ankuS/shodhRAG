@@ -6,6 +6,7 @@
  */
 
 import { citedNumbersIn } from '../agent/grounding.ts';
+import { stripTextMarks } from '../ask/visual/marks.ts';
 import { formatLocation, sourceLabel } from '../ask/searchResults.ts';
 import type { SearchHit } from '../ask/types.ts';
 import { KIND_FENCE } from '../visuals/extract.ts';
@@ -100,10 +101,14 @@ export function answerTitle(markdown: string, fallback = 'Shodh answer'): string
   return short || fallback;
 }
 
-/** The markdown without a first-line `# heading` that repeats the title (the page prints the title). */
+/**
+ * The markdown without a first-line `# heading` that repeats the title (the
+ * page prints the title). The heading is compared as shown, with its
+ * go-deeper marks read as their shown text.
+ */
 export function stripLeadingTitle(markdown: string, title: string): string {
   const match = /^\s*#\s+(.+?)\s*\n/.exec(markdown);
-  if (match && match[1].trim().toLowerCase() === title.trim().toLowerCase()) return markdown.slice(match[0].length);
+  if (match && stripTextMarks(match[1]).trim().toLowerCase() === title.trim().toLowerCase()) return markdown.slice(match[0].length);
   return markdown;
 }
 

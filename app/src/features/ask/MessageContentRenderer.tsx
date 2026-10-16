@@ -33,13 +33,24 @@ import type { ClaimCheck } from '../agent/events';
 import { FLAG_CLOSE, FLAG_OPEN, insertFlagMarkers, parseCitationMarkers } from '../agent/grounding';
 import { ClaimFlag, InvalidCitation } from '../agent/GroundingFlags';
 import { sourceAnchor } from '../print/printModel';
+import { markBudget, placeTextMarks, stripTextMarks } from './visual/marks';
+import { DeeperChips, MarkText } from './visual/DeeperMarks';
 
 /** Citation placeholders: ASCII markers that survive markdown parsing. */
 const CITE_OPEN = 'XCSHODH';
 const CITE_CLOSE = 'XESHODH';
 const CITE_PATTERN = new RegExp(`${CITE_OPEN}(\\d+)${CITE_CLOSE}`, 'g');
-/** Citation and claim-flag placeholders, in one pass. */
-const TOKEN_PATTERN = new RegExp(`${CITE_OPEN}(\\d+)${CITE_CLOSE}|${FLAG_OPEN}(\\d+)${FLAG_CLOSE}`, 'g');
+/** "Go deeper" prose marks: placeholders that survive markdown parsing. */
+const MARK_OPEN = 'XMSHODH';
+const MARK_CLOSE = 'XNSHODH';
+const MARK_TEST = new RegExp(`${MARK_OPEN}\\d+${MARK_CLOSE}`);
+/** Citation, claim-flag and mark placeholders, in one pass. */
+const TOKEN_PATTERN = new RegExp(`${CITE_OPEN}(\\d+)${CITE_CLOSE}|${FLAG_OPEN}(\\d+)${FLAG_CLOSE}|${MARK_OPEN}(\\d+)${MARK_CLOSE}`, 'g');
+
+/** A text node's words for a mark's context: placeholders removed. */
+function stripForContext(text: string): string {
+  return text.replace(TOKEN_PATTERN, '').replace(/\s+/g, ' ').trim();
+}
 
 /** Replace every citation marker of `text` with placeholders, one per number. */
 function citationPlaceholders(text: string): string {
@@ -201,7 +212,10 @@ function MessageContent({
     return map;
   }, [hits]);
 
-  const preprocessed = useMemo(() => {
+  // Which "go deeper" marks render: the first four of the answer, in order.
+  const budget = useMemo(() => markBudget(content), [content]);
+
+  const prepared = useMemo(() => {
     // Flags first: their anchors are exact text of the message as written.
     let text = citations && claims && claims.length > 0 ? insertFlagMarkers(content, claims).text : content;
 
@@ -215,6 +229,15 @@ function MessageContent({
       codeBlocks.push(match);
       return `\x01CODE${codeBlocks.length - 1}\x01`;
     });
+
+    // Prose marks are placed before math and currency handling, so a mark's
+    // shown text and question are still the author's words. The placeholders
+    // are plain ASCII and pass through the steps below. Over-budget marks (and
+    // every mark in text the reader wrote or in a printout) become their shown
+    // text here. Fenced code was protected above; placeTextMarks skips inline code.
+    const placed = placeTextMarks(text, citations && !print ? budget.text : 0, i => `${MARK_OPEN}${i}${MARK_CLOSE}`);
+    text = placed.text;
+    const textMarks = placed.marks;
 
     text = escapeCurrency(normalizeMathDelimiters(text));
     const math = protectMath(text);
@@ -236,8 +259,10 @@ function MessageContent({
 
     text = math.restore(text);
     text = text.replace(/\x01CODE(\d+)\x01/g, (_, idx: string) => codeBlocks[Number(idx)] ?? '');
-    return text.replace(/\n{3,}/g, '\n\n');
-  }, [content, hasArtifacts, citations, claims]);
+    return { text: text.replace(/\n{3,}/g, '\n\n'), textMarks };
+  }, [content, hasArtifacts, citations, claims, budget, print]);
+  const preprocessed = prepared.text;
+  const textMarks = prepared.textMarks;
 
   // KaTeX loads with the first math of the session (`$` is what remark-math
   // reads as math; currency is escaped above). Until then math renders as code.
@@ -255,7 +280,7 @@ function MessageContent({
   );
 
   const renderWithCitations = useCallback((text: string): React.ReactNode => {
-    if (hitsByNumber.size === 0 && !flagUnknownCitations && !(claims && claims.length > 0)) {
+    if (hitsByNumber.size === 0 && !flagUnknownCitations && !(claims && claims.length > 0) && !MARK_TEST.test(text)) {
       return text.replace(CITE_PATTERN, '');
     }
     const parts: React.ReactNode[] = [];
@@ -264,6 +289,11 @@ function MessageContent({
       const index = match.index ?? 0;
       if (index > lastIndex) parts.push(text.slice(lastIndex, index));
       lastIndex = index + match[0].length;
+      if (match[3] !== undefined) {
+        const mark = textMarks[Number(match[3])];
+        if (mark) parts.push(<MarkText key={`mark-${index}`} shown={mark.shown} question={mark.question} context={stripForContext(text)} />);
+        continue;
+      }
       if (match[2] !== undefined) {
         const check = claims?.[Number(match[2])];
         if (check) {
@@ -318,7 +348,7 @@ function MessageContent({
     }
     if (lastIndex < text.length) parts.push(text.slice(lastIndex));
     return parts.length > 0 ? <>{parts}</> : text;
-  }, [hitsByNumber, activeCitation, onOpenCitation, claims, flagUnknownCitations, print]);
+  }, [hitsByNumber, activeCitation, onOpenCitation, claims, flagUnknownCitations, print, textMarks]);
 
   const processChildren = useCallback((children: React.ReactNode): React.ReactNode =>
     React.Children.map(children, child => {
@@ -347,13 +377,13 @@ function MessageContent({
       if (match) {
         const codeString = String(children).replace(/\n$/, '');
         if (isMermaidLanguage(match[1])) return <MermaidBlock source={mermaidSource(match[1], codeString)} dark={isDark} />;
-        if (match[1] === 'chart') return <ChartBlock source={codeString} theme={theme} />;
+        if (match[1] === 'chart') return <><ChartBlock source={codeString} theme={theme} /><DeeperChips lang="chart" source={codeString} /></>;
         if (match[1] === 'svg') return <SvgBlock source={codeString} />;
-        if (match[1] === 'plot') return <PlotBlock source={codeString} />;
-        if (match[1] === 'simulation') return <SimulationBlock source={codeString} />;
+        if (match[1] === 'plot') return <><PlotBlock source={codeString} /><DeeperChips lang="plot" source={codeString} /></>;
+        if (match[1] === 'simulation') return <><SimulationBlock source={codeString} /><DeeperChips lang="simulation" source={codeString} /></>;
         if (match[1] === 'figure') return <FigureBlock source={codeString} />;
-        if (match[1] === 'derivation') return <DerivationBlock source={codeString} />;
-        if (match[1] === 'symbols') return <SymbolsBlock source={codeString} />;
+        if (match[1] === 'derivation') return <><DerivationBlock source={codeString} /><DeeperChips lang="derivation" source={codeString} /></>;
+        if (match[1] === 'symbols') return <><SymbolsBlock source={codeString} /><DeeperChips lang="symbols" source={codeString} /></>;
         if (match[1] === 'diagram') return <DiagramBlock source={codeString} />;
         return (
           <div>
@@ -395,6 +425,8 @@ function MessageContent({
       h2: ({ children }) => <h3 className="text-[17px] font-semibold leading-snug text-shodh-text mt-5 mb-1.5 first:mt-0">{processChildren(children)}</h3>,
       h3: ({ children }) => <h4 className="text-[16px] font-semibold text-shodh-text mt-4 mb-1 first:mt-0">{processChildren(children)}</h4>,
       h4: ({ children }) => <h5 className="text-[15px] font-semibold text-shodh-text-secondary mt-3 mb-1 first:mt-0">{processChildren(children)}</h5>,
+      h5: ({ children }) => <h6 className="text-[14px] font-semibold text-shodh-text-secondary mt-3 mb-1 first:mt-0">{processChildren(children)}</h6>,
+      h6: ({ children }) => <h6 className="text-[13.5px] font-semibold text-shodh-text-muted mt-3 mb-1 first:mt-0">{processChildren(children)}</h6>,
       p: ({ children }) => <p className="my-3 first:mt-0 last:mb-0">{processChildren(children)}</p>,
       ul: ({ children }) => <ul className="my-3 pl-6 list-disc space-y-1 marker:text-shodh-text-faint">{children}</ul>,
       ol: ({ children }) => <ol className="my-3 pl-6 list-decimal space-y-1 marker:text-shodh-text-faint">{children}</ol>,
@@ -460,13 +492,14 @@ function MessageContent({
   const answerBlocks = useMemo<AnswerBlocks>(
     () => ({
       symbols,
-      renderInline: text => renderWithCitations(citations ? citationPlaceholders(text) : text),
+      renderInline: text => renderWithCitations(citations ? citationPlaceholders(stripTextMarks(text)) : stripTextMarks(text)),
       // Text the reader wrote and summary cards turn citations off; printouts are not interactive.
       modelAnswer: citations && !print,
       citations: citationNumbers,
       openCitation: citations && !print ? openCitationNumber : null,
+      markAllowance: citations && !print ? (source: string) => budget.blocks.get(source.trim()) ?? 0 : () => 0,
     }),
-    [symbols, renderWithCitations, citations, print, citationNumbers, openCitationNumber],
+    [symbols, renderWithCitations, citations, print, citationNumbers, openCitationNumber, budget],
   );
 
   const { charts, tables, others } = useMemo(() => {

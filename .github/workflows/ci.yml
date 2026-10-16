@@ -9,6 +9,13 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-C target-feature=-crt-static"
+  # llama.cpp (llama-cpp-sys-2) builds its HTTP client with HTTPS when CMake
+  # finds OpenSSL. Shodh only loads local GGUF files and never uses llama.cpp's
+  # downloader, so it is built without it: the result no longer depends on
+  # which OpenSSL a runner has (OpenSSL 4 on macos-26 images from 20261012 does
+  # not compile with the vendored cpp-httplib). llama-cpp-sys-2 passes CMAKE_*
+  # variables to CMake, and llama.cpp's find_package(OpenSSL) is optional.
+  CMAKE_DISABLE_FIND_PACKAGE_OpenSSL: "TRUE"
 
 jobs:
   fmt:
@@ -35,8 +42,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # Pinned, checksum-verified protoc from the official release (the
+      # Chocolatey feed answers 503 at times while choco exits 0).
       - name: Install Protobuf compiler
-        run: choco install protoc -y
+        shell: pwsh
+        run: ./scripts/ci/install-protoc.ps1
 
       - name: Cargo check
         run: cargo check --workspace
@@ -59,8 +69,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # Pinned, checksum-verified protoc from the official release (the
+      # Chocolatey feed answers 503 at times while choco exits 0).
       - name: Install Protobuf compiler
-        run: choco install protoc -y
+        shell: pwsh
+        run: ./scripts/ci/install-protoc.ps1
 
       # Model-backed tests stay ignored here: SHODH_TEST_MODELS is not set in CI.
       - name: Tests (shodh-ontology)
@@ -120,8 +133,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # Pinned, checksum-verified protoc from the official release (the
+      # Chocolatey feed answers 503 at times while choco exits 0).
       - name: Install Protobuf compiler
-        run: choco install protoc -y
+        shell: pwsh
+        run: ./scripts/ci/install-protoc.ps1
 
       # Same cache as the footprint job: the pinned search and OCR models,
       # keyed by the file that pins them.
@@ -267,8 +283,11 @@ jobs:
         with:
           key: release
 
+      # Pinned, checksum-verified protoc from the official release (the
+      # Chocolatey feed answers 503 at times while choco exits 0).
       - name: Install Protobuf compiler
-        run: choco install protoc -y
+        shell: pwsh
+        run: ./scripts/ci/install-protoc.ps1
 
       - uses: actions/setup-node@v4
         with:

@@ -1,6 +1,7 @@
 //! Tauri commands for LLM integration
 
 use serde::Serialize;
+use shodh_rag::harness::model_catalog::ProviderId;
 use shodh_rag::llm::{LLMConfig, LLMManager, LLMMode};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -180,6 +181,59 @@ pub(crate) async fn activate_mode(state: &LLMState, llm_mode: LLMMode) -> Result
     result
 }
 
+/// Replace the key in `mode` with `key` (empty: no key) when `mode` answers
+/// through `provider`. Returns whether it does.
+pub(crate) fn replace_provider_key(mode: &mut LLMMode, provider: ProviderId, key: &str) -> bool {
+    match mode {
+        LLMMode::External {
+            provider: configured,
+            api_key,
+            ..
+        } if ProviderId::from_api(configured) == Some(provider) => {
+            *api_key = key.to_string();
+            true
+        }
+        _ => false,
+    }
+}
+
+/// `provider`'s saved key was removed: drop every copy of it. The configured
+/// mode keeps its model (the picker still shows it) but carries the
+/// environment's key, or none; the in-process manager is rebuilt with the
+/// environment's key, or dropped when there is none, so nothing in this
+/// process can still send the removed key.
+pub(crate) async fn forget_provider_key(
+    state: &LLMState,
+    provider: ProviderId,
+    env_key: Option<String>,
+) {
+    let key = env_key.map(|k| k.trim().to_string()).unwrap_or_default();
+    {
+        let mut config = state.config.lock().unwrap_or_else(|e| e.into_inner());
+        replace_provider_key(&mut config.mode, provider, &key);
+    }
+    let mut manager = state.manager.write().await;
+    let Some(mut mode) = manager.as_ref().map(|m| m.config().mode.clone()) else {
+        return;
+    };
+    if !replace_provider_key(&mut mode, provider, &key) {
+        return;
+    }
+    if key.is_empty() {
+        *manager = None;
+        return;
+    }
+    if let Some(current) = manager.as_mut() {
+        if let Err(e) = current.switch_mode(mode).await {
+            tracing::warn!(
+                provider = provider.as_str(),
+                "the LLM was not rebuilt with the environment key: {e}"
+            );
+            *manager = None;
+        }
+    }
+}
+
 /// Get LLM info
 #[tauri::command]
 pub async fn get_llm_info(state: State<'_, LLMState>) -> Result<LLMInfo, String> {
@@ -274,7 +328,92 @@ pub struct MemoryInfo {
 
 #[cfg(test)]
 mod tests {
-    use super::ApiKeys;
+    use super::*;
+    use shodh_rag::llm::ApiProvider;
+
+    fn mode(provider: ApiProvider, key: &str) -> LLMMode {
+        LLMMode::External {
+            provider,
+            api_key: key.into(),
+            model: "some/model".into(),
+        }
+    }
+
+    fn key_of(mode: &LLMMode) -> Option<&str> {
+        match mode {
+            LLMMode::External { api_key, .. } => Some(api_key),
+            _ => None,
+        }
+    }
+
+    async fn state_with(mode: LLMMode) -> LLMState {
+        let config = LLMConfig {
+            mode,
+            ..LLMConfig::default()
+        };
+        let mut manager = LLMManager::new(config.clone());
+        manager.initialize().await.unwrap();
+        LLMState {
+            manager: Arc::new(AsyncRwLock::new(Some(manager))),
+            config: Arc::new(Mutex::new(config)),
+            api_keys: Arc::new(Mutex::new(ApiKeys::default())),
+            custom_model_path: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_removed_key_leaves_no_copy_in_the_mode_or_the_manager() {
+        let state = state_with(mode(ApiProvider::OpenRouter, "sk-or-removed-key")).await;
+        forget_provider_key(&state, ProviderId::OpenRouter, None).await;
+        assert_eq!(key_of(&state.config.lock().unwrap().mode), Some(""));
+        assert!(state.manager.read().await.is_none(), "no key: no manager");
+
+        // With an environment key, both carry that key.
+        let state = state_with(mode(ApiProvider::OpenRouter, "sk-or-removed-key")).await;
+        forget_provider_key(
+            &state,
+            ProviderId::OpenRouter,
+            Some(" sk-or-env-key ".into()),
+        )
+        .await;
+        assert_eq!(
+            key_of(&state.config.lock().unwrap().mode),
+            Some("sk-or-env-key")
+        );
+        let manager = state.manager.read().await;
+        let manager_mode = &manager.as_ref().unwrap().config().mode;
+        assert_eq!(key_of(manager_mode), Some("sk-or-env-key"));
+        drop(manager);
+
+        // Another provider's key stays.
+        let state = state_with(mode(ApiProvider::Anthropic, "sk-ant-kept-key")).await;
+        forget_provider_key(&state, ProviderId::OpenRouter, None).await;
+        assert_eq!(
+            key_of(&state.config.lock().unwrap().mode),
+            Some("sk-ant-kept-key")
+        );
+        assert!(state.manager.read().await.is_some());
+    }
+
+    #[test]
+    fn only_the_providers_key_is_replaced() {
+        let mut m = mode(ApiProvider::OpenRouter, "sk-or-old");
+        assert!(replace_provider_key(&mut m, ProviderId::OpenRouter, ""));
+        assert_eq!(key_of(&m), Some(""));
+        let mut other = mode(ApiProvider::Google, "g-key");
+        assert!(!replace_provider_key(
+            &mut other,
+            ProviderId::OpenRouter,
+            ""
+        ));
+        assert_eq!(key_of(&other), Some("g-key"));
+        let mut disabled = LLMMode::Disabled;
+        assert!(!replace_provider_key(
+            &mut disabled,
+            ProviderId::OpenRouter,
+            ""
+        ));
+    }
 
     #[test]
     fn merge_missing_keeps_session_keys_and_fills_gaps() {

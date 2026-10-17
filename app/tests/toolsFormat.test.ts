@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chipLabel, formToConfig, splitCommand } from '../src/features/tools/format.ts';
+import { chipLabel, formToConfig, showsToolsChip, splitCommand } from '../src/features/tools/format.ts';
 
 test('the chip counts working servers, skills and every tool', () => {
   assert.equal(
@@ -48,4 +48,14 @@ test('the form becomes an mcp.json server entry', () => {
   assert.ok('error' in formToConfig({ name: 'a', kind: 'http', target: 'ftp://x', secrets: '' }));
   assert.ok('error' in formToConfig({ name: 'a', kind: 'stdio', target: '  ', secrets: '' }));
   assert.ok('error' in formToConfig({ name: 'a', kind: 'stdio', target: 'x', secrets: 'novalue' }));
+});
+
+test('the chip shows only once servers or skills were added, or the tools could not be read', () => {
+  assert.equal(showsToolsChip({ servers: [], skills: [] }, false), false);
+  assert.equal(showsToolsChip({ servers: [{ error: null }], skills: [] }, false), true);
+  // A server that failed still says something the user should see.
+  assert.equal(showsToolsChip({ servers: [{ error: 'down' }], skills: [] }, false), true);
+  assert.equal(showsToolsChip({ servers: [], skills: [{}] }, false), true);
+  assert.equal(showsToolsChip(null, true), true);
+  assert.equal(showsToolsChip(null, false), false);
 });

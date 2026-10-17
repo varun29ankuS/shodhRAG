@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { formatCost, formatMs, formatTokens, shortModel } from './format';
+import { statusSummary } from './format';
 import { currentStep, isLive, pendingApproval } from './reducer';
 import type { TranscriptState } from './reducer';
 
@@ -25,16 +25,16 @@ interface StatusLineProps {
 }
 
 /**
- * Sticky run status: model · tokens in/out · cost · elapsed, and the key
- * hint for whatever the run is waiting on.
+ * Sticky run status: state · model · cost (when there is one) · elapsed,
+ * with the token counts in its tooltip, and the key hint for whatever the
+ * run is waiting on.
  */
 export function StatusLine({ transcript, fallbackModel, compact = false }: StatusLineProps) {
   const live = isLive(transcript);
   const now = useNow(live);
   const elapsed = live ? now - transcript.startedAtMs : transcript.durationMs ?? 0;
   const model = transcript.model ?? fallbackModel;
-  const usage = transcript.usage;
-  const cost = usage ? formatCost(usage.costUsd) : null;
+  const summary = statusSummary({ model, usage: transcript.usage, elapsedMs: elapsed });
   const approval = pendingApproval(transcript);
   const step = currentStep(transcript);
 
@@ -61,12 +61,6 @@ export function StatusLine({ transcript, fallbackModel, compact = false }: Statu
       state = 'Failed';
   }
 
-  const parts: string[] = [];
-  if (model) parts.push(shortModel(model));
-  if (usage) parts.push(`↑ ${formatTokens(usage.inputTokens)} ↓ ${formatTokens(usage.outputTokens)}`);
-  if (cost) parts.push(cost);
-  parts.push(formatMs(elapsed));
-
   return (
     <div className="flex flex-col gap-1">
       {transcript.warning && (
@@ -76,6 +70,7 @@ export function StatusLine({ transcript, fallbackModel, compact = false }: Statu
         </p>
       )}
       <div
+        title={summary.title}
         className={cn(
           'flex items-center gap-2 min-w-0 font-mono text-shodh-text-muted',
           compact ? 'text-[10.5px]' : 'text-[11.5px]',
@@ -92,7 +87,10 @@ export function StatusLine({ transcript, fallbackModel, compact = false }: Statu
           {state}
         </span>
         <span className="shrink-0 text-shodh-text-faint" aria-hidden="true">·</span>
-        <span className="min-w-0 truncate tabular-nums">{parts.join(' · ')}</span>
+        <span className="min-w-0 truncate tabular-nums">
+          {summary.line}
+          {summary.tokens && <span className="sr-only">{`, ${summary.tokens}`}</span>}
+        </span>
         {hint && <span className="ml-auto pl-2 shrink-0 text-shodh-text-faint">{hint}</span>}
       </div>
     </div>

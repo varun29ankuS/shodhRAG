@@ -1,5 +1,5 @@
 /**
- * Opening the model UI from elsewhere (the top bar's connection status, an
+ * Opening the model UI from elsewhere (the sidebar's model status, an
  * answer's error card): the connect UI of one provider ("Fix key"), or the
  * Ask composer's model picker ("Switch model"). Each request is kept until
  * the UI takes it, so it works whether that UI is mounted already (event)

@@ -32,6 +32,8 @@ import type { IndexingAction, IndexingAdvice } from './indexingAdvice';
 import { useSearchModels } from '../setup/SearchModelsContext';
 import { groupSourcesByKind, progressPercent } from './sources';
 import type { LibrarySource } from './sources';
+import { NOT_ADDED_REASON } from './reconcile';
+import type { Reconciliation } from './reconcile';
 import { countOf } from '../../lib/plural';
 
 const FOCUS_RING =
@@ -65,6 +67,13 @@ interface LibraryViewProps {
   onFileCount: (id: string, count: number) => void;
   /** Source the agent pointed at (`show_source`): its card is scrolled to and highlighted. */
   focusedSourceId?: string | null;
+  /** Indexed files inside no listed folder, and their folders (see `reconcile`). */
+  unlisted: Reconciliation;
+  /** How many of the group folders "Add these folders" adds (see `addableFolders`). */
+  addableFolders: number;
+  onAddUnlisted: () => void;
+  /** Adding the unlisted files' folders is under way. */
+  unlistedBusy: boolean;
 }
 
 /**
@@ -84,6 +93,10 @@ export function LibraryView({
   onAskAboutFile,
   onFileCount,
   focusedSourceId = null,
+  unlisted,
+  addableFolders,
+  onAddUnlisted,
+  unlistedBusy,
 }: LibraryViewProps) {
   const [browsingId, setBrowsingId] = useState<string | null>(null);
   const browsing = sources.find(s => s.id === browsingId) ?? null;
@@ -154,6 +167,17 @@ export function LibraryView({
   const groups = groupSourcesByKind(sources);
   const indexing = sources.filter(s => s.status === 'indexing').length;
   const fileTotal = sources.reduce((sum, s) => sum + (s.fileCount || 0), 0);
+  const unlistedCount = unlisted.unlisted.length;
+  // Indexed files outside every folder still make a library: never show it as empty.
+  const hasLibrary = sources.length > 0 || unlistedCount > 0;
+  const unlistedCard = unlistedCount > 0 && (
+    <UnlistedFilesCard
+      unlisted={unlisted}
+      addableFolders={addableFolders}
+      busy={unlistedBusy}
+      onAdd={onAddUnlisted}
+    />
+  );
 
   return (
     <div className="h-full overflow-y-auto scrollbar-thin">
@@ -162,12 +186,14 @@ export function LibraryView({
           <div className="flex flex-col gap-1">
             <h1 className="m-0 text-2xl font-bold text-shodh-text">Library</h1>
             <p className="text-sm text-shodh-text-muted">
-              {sources.length === 0
+              {!hasLibrary
                 ? 'Everything Shodh can search. Nothing has been added yet.'
-                : `${countOf(Math.max(totalDocs, fileTotal), 'file')} in ${countOf(sources.length, 'source')}${indexing > 0 ? ` · indexing ${indexing}` : ''}`}
+                : sources.length === 0
+                  ? `${countOf(unlistedCount, 'file')} in the index, in no folder listed here`
+                  : `${countOf(Math.max(totalDocs, fileTotal), 'file')} in ${countOf(sources.length, 'source')}${indexing > 0 ? ` · indexing ${indexing}` : ''}`}
             </p>
           </div>
-          {sources.length > 0 && (
+          {hasLibrary && (
             <button type="button" onClick={onAddFolder} className={PRIMARY_BUTTON}>
               <FolderPlus className="w-4 h-4" aria-hidden="true" />
               Add folder
@@ -177,7 +203,9 @@ export function LibraryView({
 
         <SearchSetupCard />
 
-        {sources.length === 0 ? (
+        {unlistedCard}
+
+        {!hasLibrary ? (
           <EmptyLibrary onAddFolder={onAddFolder} />
         ) : (
           groups.map(group => (
@@ -204,7 +232,7 @@ export function LibraryView({
           ))
         )}
 
-        {sources.length > 0 && (
+        {hasLibrary && (
           <section aria-labelledby="library-snippets" className="flex flex-col gap-3">
             <div className="flex flex-col gap-0.5">
               <h2 id="library-snippets" className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
@@ -218,7 +246,7 @@ export function LibraryView({
           </section>
         )}
 
-        {sources.length > 0 && (
+        {hasLibrary && (
           <section aria-labelledby="library-graph" className="flex flex-col gap-3">
             <div className="flex items-end justify-between gap-3">
               <div className="flex flex-col gap-0.5">
@@ -237,7 +265,7 @@ export function LibraryView({
           </section>
         )}
 
-        {sources.length > 0 && (
+        {hasLibrary && (
           <section aria-labelledby="library-compare" className="flex flex-col gap-3">
             <div className="flex flex-col gap-0.5">
               <h2 id="library-compare" className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
@@ -264,6 +292,72 @@ export function LibraryView({
         </section>
       </div>
     </div>
+  );
+}
+
+/** Group folders listed by name; the rest are summed in the last line. */
+const UNLISTED_LINES = 5;
+
+/**
+ * Indexed files that no folder here covers: answers can cite them, so the
+ * Library says so and offers to add their folders.
+ */
+function UnlistedFilesCard({
+  unlisted,
+  addableFolders,
+  busy,
+  onAdd,
+}: {
+  unlisted: Reconciliation;
+  addableFolders: number;
+  busy: boolean;
+  onAdd: () => void;
+}) {
+  const count = unlisted.unlisted.length;
+  const { groups } = unlisted;
+  const shown = groups.length > UNLISTED_LINES ? groups.slice(0, UNLISTED_LINES - 1) : groups;
+  const rest = groups.slice(shown.length);
+  const restFiles = rest.reduce((sum, g) => sum + g.files, 0);
+  const skipped = groups.length - addableFolders;
+  return (
+    <section aria-labelledby="library-unlisted" className="rounded-xl border border-shodh-border bg-shodh-surface p-4 flex flex-col gap-3">
+      <div className="flex flex-col gap-1">
+        <h2 id="library-unlisted" className="m-0 text-[14px] font-semibold text-shodh-text">
+          {`${countOf(count, 'indexed file')} ${count === 1 ? "isn't" : "aren't"} in any folder here`}
+        </h2>
+        <p className="m-0 text-[12.5px] text-shodh-text-muted">
+          Answers in Ask can cite them. Add their folders to see them here and keep them in sync.
+        </p>
+      </div>
+      <ul className="m-0 p-0 list-none flex flex-col gap-1" aria-label="Folders of these files">
+        {shown.map(group => (
+          <li key={group.folder} className="flex items-center gap-2 text-[12.5px] text-shodh-text-secondary min-w-0">
+            <Folder className="w-3.5 h-3.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />
+            <span className="truncate" title={group.folder}>{`${baseName(group.folder) || group.folder} (${group.files.toLocaleString()})`}</span>
+          </li>
+        ))}
+        {rest.length > 0 && (
+          <li className="text-[12.5px] text-shodh-text-muted pl-[22px]">
+            {`and ${countOf(rest.length, 'more folder')} (${restFiles.toLocaleString()})`}
+          </li>
+        )}
+      </ul>
+      {skipped > 0 && (
+        <p className="m-0 text-[12px] text-shodh-text-muted">
+          {addableFolders === 0
+            ? NOT_ADDED_REASON
+            : `${countOf(skipped, 'folder')} ${skipped === 1 ? 'is' : 'are'} not added for you: a whole drive, your home folder or a folder holding it, or holding a folder already here.`}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        {addableFolders > 0 && (
+          <button type="button" onClick={onAdd} disabled={busy} className={cn(PRIMARY_BUTTON, 'disabled:opacity-60')}>
+            <FolderPlus className="w-4 h-4" aria-hidden="true" />
+            Add these folders
+          </button>
+        )}
+      </div>
+    </section>
   );
 }
 

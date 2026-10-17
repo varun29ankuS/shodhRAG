@@ -3,7 +3,7 @@ import { AlertTriangle, Wrench } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { errorText, toolsApi } from './api';
 import type { ChatToolsView, ToolMode } from './api';
-import { chipLabel } from './format';
+import { chipLabel, showsToolsChip } from './format';
 import { nounFor } from '../../lib/plural';
 
 const FOCUS_RING =
@@ -21,6 +21,7 @@ interface ToolsChipProps {
 /**
  * "2 MCP · 1 skill · 31 tools" next to the mode switch: what this chat can
  * use, computed exactly as the agent session computes it. Click for the list.
+ * Hidden until an MCP server or skill is added (see `showsToolsChip`).
  */
 export function ToolsChip({ workspaceId, mode, answerRunning, onOpenSettings }: ToolsChipProps) {
   const [view, setView] = useState<ChatToolsView | null>(null);
@@ -74,7 +75,7 @@ export function ToolsChip({ workspaceId, mode, answerRunning, onOpenSettings }: 
     };
   }, [open, close]);
 
-  if (!view && !error) return null;
+  if (!showsToolsChip(view, error !== null)) return null;
   const label = view ? chipLabel(view) : 'Tools unavailable';
   const failing = view?.servers.filter(s => s.error !== null) ?? [];
 

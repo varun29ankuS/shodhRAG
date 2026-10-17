@@ -55,13 +55,14 @@ function readFirstRunValue(value: unknown): FirstRunState | null {
  * The first-run state once the backend's copy is read. `localSaved` is
  * whether localStorage held one (else `local` is the default for a fresh
  * install, which must not overwrite a finished setup saved on disk).
+ * `saved` is whether either copy held one.
  */
 export function reconcileFirstRun(
   stored: StoredRead,
   local: FirstRunState,
   localSaved: boolean,
-): { state: FirstRunState; save: boolean } {
+): { state: FirstRunState; save: boolean; saved: boolean } {
   const fromDisk = stored.kind === 'value' ? readFirstRunValue(stored.value) : null;
-  if (fromDisk) return { state: fromDisk, save: false };
-  return { state: local, save: localSaved };
+  if (fromDisk) return { state: fromDisk, save: false, saved: true };
+  return { state: local, save: localSaved, saved: localSaved };
 }

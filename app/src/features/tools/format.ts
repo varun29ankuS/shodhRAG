@@ -23,6 +23,19 @@ export function chipLabel(view: ChatToolsCounts): string {
   return parts.join(' · ');
 }
 
+/**
+ * Whether the composer shows the chip: once the user added an MCP server or a
+ * skill this chat can use (the built-in tools alone are not news), or when
+ * the tools could not be read.
+ */
+export function showsToolsChip(
+  view: { servers: readonly unknown[]; skills: readonly unknown[] } | null,
+  failed: boolean,
+): boolean {
+  if (failed) return true;
+  return view !== null && (view.servers.length > 0 || view.skills.length > 0);
+}
+
 export interface ServerForm {
   name: string;
   kind: 'stdio' | 'http';

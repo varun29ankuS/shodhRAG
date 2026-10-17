@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import type React from 'react';
+import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { ChevronDown, KeyRound, Loader2, RefreshCw, SlidersHorizontal } from 'lucide-react';
+import { KeyRound, Loader2, RefreshCw, SlidersHorizontal } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { MODEL_CHANGED_EVENT } from '../modelPicker/modelApi';
 import { requestFixKey, requestModelPicker } from '../modelPicker/navigation';
+import { requestSettingsSection } from '../memory/navigation';
 import type { ProviderId } from '../modelPicker/modelTypes';
 import type { ConnectionSnapshot, ProviderStatus } from './connectionStatus';
 import {
@@ -23,6 +26,9 @@ import {
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
 
+const CHIP_FOCUS_RING =
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-sidebar';
+
 const SMALL_BUTTON = cn(
   'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-shodh-border bg-shodh-raised text-[12px] text-shodh-text hover:bg-shodh-raised-2 transition-colors duration-micro disabled:opacity-50 disabled:pointer-events-none',
   FOCUS_RING,
@@ -30,6 +36,20 @@ const SMALL_BUTTON = cn(
 
 /** How often relative times ("4 min ago") are refreshed while the panel is open. */
 const CLOCK_TICK_MS = 30_000;
+
+/** Space between the chip and its panel. */
+const PANEL_GAP = 8;
+
+/**
+ * Where the panel sits (fixed, as the sidebar clips what overflows it):
+ * above the chip, or beside it when the sidebar is collapsed.
+ */
+function panelPosition(button: HTMLElement, collapsed: boolean): React.CSSProperties {
+  const rect = button.getBoundingClientRect();
+  return collapsed
+    ? { left: rect.right + PANEL_GAP, bottom: Math.max(PANEL_GAP, window.innerHeight - rect.bottom) }
+    : { left: rect.left, bottom: window.innerHeight - rect.top + PANEL_GAP };
+}
 
 function Dot({ status, className }: { status: ProviderStatus | null; className?: string }) {
   const dot = status ? healthDot(status.health) : 'grey';
@@ -102,20 +122,23 @@ function ProviderRow({
 }
 
 /**
- * The top bar's connection status: the model that answers, its provider and
- * how it is connected, with a dot for whether it works (green), the key was
- * rejected (red), it is rate-limited or out of quota (amber), or it is not
- * checked or unreachable (grey). It opens a panel with every connected
- * provider: status, source, the key's last characters, when it was checked,
- * and Check now / Switch model / Fix key. Checks never spend a chat request.
+ * The sidebar's model status, the one place the app states it: the model
+ * that answers ("No model chosen" without one), with a dot for whether it
+ * works (green), the key was rejected (red), it is rate-limited or out of
+ * quota (amber), or it is not checked or unreachable (grey). It opens a panel
+ * with every connected provider: status, source, the key's last characters,
+ * when it was checked, and Check now / Switch model / Fix key. Checks never
+ * spend a chat request.
  */
-export function ConnectionPill() {
+export function ConnectionStatusChip({ collapsed }: { collapsed: boolean }) {
   const [snapshot, setSnapshot] = useState<ConnectionSnapshot | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [position, setPosition] = useState<React.CSSProperties | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
   const panelId = useId();
   const headingId = useId();
 
@@ -160,15 +183,37 @@ export function ConnectionPill() {
     return () => window.clearInterval(timer);
   }, [open, snapshot]);
 
-  // Close on a click outside.
+  // Close on a click outside (the panel is portaled, so it is checked too).
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (rootRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [open]);
+
+  // Placed against the chip when opened, and again when the window resizes.
+  useEffect(() => {
+    if (!open) {
+      setPosition(null);
+      return;
+    }
+    const place = () => {
+      if (buttonRef.current) setPosition(panelPosition(buttonRef.current, collapsed));
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [open, collapsed]);
+
+  // The panel is portaled away from the chip: move focus into it once shown.
+  const shown = open && position !== null;
+  useEffect(() => {
+    if (shown) panelRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
+  }, [shown]);
 
   const check = useCallback(async (provider: ProviderId | null) => {
     try {
@@ -189,31 +234,36 @@ export function ConnectionPill() {
   const anyChecking = snapshot?.providers.some(p => p.checking) ?? false;
 
   return (
-    <div className="relative" ref={rootRef}>
+    <div className={cn('relative', !collapsed && 'min-w-0')} ref={rootRef}>
       <button
         ref={buttonRef}
         type="button"
         onClick={() => setOpen(o => !o)}
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
-        aria-label={`Connection: ${pill.description}`}
+        aria-label={`Model: ${pill.description}`}
         title={pill.description}
         className={cn(
-          'h-6 max-w-[320px] pl-2 pr-1.5 rounded-full inline-flex items-center gap-1.5 bg-shodh-raised text-[11px] text-shodh-text-secondary hover:text-shodh-text hover:bg-shodh-raised-2 transition-colors duration-micro',
-          FOCUS_RING,
+          collapsed
+            ? 'w-10 h-10 rounded-[10px] inline-flex items-center justify-center hover:bg-shodh-raised transition-colors duration-micro'
+            : 'flex items-center gap-2 h-8 max-w-full px-3 rounded-full border border-shodh-border text-left hover:bg-shodh-raised transition-colors duration-micro min-w-0',
+          CHIP_FOCUS_RING,
         )}
       >
         <span
           aria-hidden="true"
           className={cn('inline-block w-2 h-2 rounded-full shrink-0', DOT_CLASS[pill.dot], anyChecking && 'animate-pulse motion-reduce:animate-none')}
         />
-        <span className="truncate font-medium text-shodh-text">{pill.model}</span>
-        {pill.via && <span className="truncate text-shodh-text-muted">{pill.via}</span>}
-        <ChevronDown className="w-3 h-3 shrink-0 text-shodh-text-muted" aria-hidden="true" />
+        {!collapsed && (
+          <span className="text-[12px] font-medium text-shodh-text-secondary truncate">
+            {pill.model}
+          </span>
+        )}
       </button>
 
-      {open && (
+      {open && position && createPortal(
         <section
+          ref={panelRef}
           id={panelId}
           aria-labelledby={headingId}
           onKeyDown={e => {
@@ -222,7 +272,8 @@ export function ConnectionPill() {
               close(true);
             }
           }}
-          className="absolute left-0 top-8 z-50 w-[360px] max-w-[calc(100vw-24px)] rounded-xl border border-shodh-border bg-shodh-surface shadow-lg overflow-hidden"
+          style={position}
+          className="fixed z-50 w-[360px] max-w-[calc(100vw-24px)] rounded-xl border border-shodh-border bg-shodh-surface shadow-lg overflow-hidden"
         >
           <header className="flex items-center justify-between gap-2 px-3.5 py-2.5 border-b border-shodh-border-subtle">
             <h2 id={headingId} className="m-0 text-[13px] font-semibold text-shodh-text">Connections</h2>
@@ -266,10 +317,24 @@ export function ConnectionPill() {
                 />
               ))}
             </ul>
+          ) : snapshot ? (
+            <div className="px-3.5 py-4 flex flex-col items-start gap-2">
+              <p className="m-0 text-[12.5px] text-shodh-text-muted">No provider is connected. Connect one in Settings → Model.</p>
+              <button
+                type="button"
+                className={SMALL_BUTTON}
+                onClick={() => {
+                  close(false);
+                  requestSettingsSection('models');
+                  window.dispatchEvent(new CustomEvent('switchTab', { detail: 'settings' }));
+                }}
+              >
+                <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />
+                Open Settings → Model
+              </button>
+            </div>
           ) : (
-            <p className="m-0 px-3.5 py-5 text-[12.5px] text-shodh-text-muted">
-              {snapshot ? 'No provider is connected. Connect one in Settings → Model.' : 'Loading the connection status…'}
-            </p>
+            <p className="m-0 px-3.5 py-5 text-[12.5px] text-shodh-text-muted">Loading the connection status…</p>
           )}
           {snapshot?.localOnly && (
             <p className="m-0 px-3.5 py-2 border-t border-shodh-border-subtle text-[12px] text-shodh-text-muted">
@@ -279,10 +344,11 @@ export function ConnectionPill() {
           <p className="m-0 px-3.5 py-2 border-t border-shodh-border-subtle text-[11.5px] text-shodh-text-faint">
             Checks never send a chat request.
           </p>
-        </section>
+        </section>,
+        document.body,
       )}
     </div>
   );
 }
 
-export default ConnectionPill;
+export default ConnectionStatusChip;

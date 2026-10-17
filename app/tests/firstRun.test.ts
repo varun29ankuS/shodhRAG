@@ -7,6 +7,8 @@ import assert from 'node:assert/strict';
 import {
   FIRST_RUN_KEYS,
   FIRST_RUN_STEPS,
+  firstRunStart,
+  folderStepDone,
   nextStep,
   previousStep,
   readFirstRun,
@@ -61,4 +63,34 @@ test('steps move forward and back within bounds', () => {
 test('resuming returns to the saved step, but not to the final summary', () => {
   assert.equal(resumeStep({ status: 'skipped', step: 'folder' }), 'folder');
   assert.equal(resumeStep({ status: 'completed', step: 'done' }), 'welcome');
+});
+
+test('the folder step is done once a folder is listed or the index already has files', () => {
+  assert.equal(folderStepDone(0, 0), false);
+  assert.equal(folderStepDone(1, 0), true);
+  assert.equal(folderStepDone(0, 12), true);
+});
+
+test('with no saved setup, an index that has documents means setup is past', () => {
+  // Opened by an earlier build, or its setup state was lost: not a fresh install.
+  assert.deepEqual(firstRunStart(null, 12), { open: false, record: { status: 'skipped', step: 'welcome' }, persist: true });
+  // A fresh install: an empty index opens setup.
+  assert.deepEqual(firstRunStart(null, 0), { open: true, record: null, persist: false });
+  // The index could not be listed: open as before, so a broken index never hides setup.
+  assert.deepEqual(firstRunStart(null, null), { open: true, record: null, persist: false });
+});
+
+test('a saved setup state decides on its own, whatever the index holds', () => {
+  assert.deepEqual(firstRunStart({ status: 'completed', step: 'done' }, 0), { open: false, record: null, persist: false });
+  assert.deepEqual(firstRunStart({ status: 'skipped', step: 'model' }, 0), { open: false, record: null, persist: false });
+  // In progress: resumes, as it always has.
+  assert.deepEqual(firstRunStart({ status: 'pending', step: 'model' }, 30), { open: true, record: null, persist: false });
+  assert.deepEqual(firstRunStart({ status: 'pending', step: 'search' }, null), { open: true, record: null, persist: false });
+});
+
+test('when the saved setup could not be read from disk, setup is kept closed but nothing is saved over it', () => {
+  // The disk copy may hold a finished setup: a skipped state must not replace it.
+  assert.deepEqual(firstRunStart(null, 12, true), { open: false, record: { status: 'skipped', step: 'welcome' }, persist: false });
+  // An empty index opens setup, as before.
+  assert.deepEqual(firstRunStart(null, 0, true), { open: true, record: null, persist: false });
 });

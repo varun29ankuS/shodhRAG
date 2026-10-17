@@ -1,7 +1,8 @@
 import React, { Suspense, lazy, useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { ask, open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
+import { homeDir } from "@tauri-apps/api/path";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 
 // UI Components
@@ -10,11 +11,12 @@ import { Badge } from "./components/ui/badge";
 import { Input } from "./components/ui/input";
 import { Progress } from "./components/ui/progress";
 import {
-  MessageSquare, Settings, Bot, FolderOpen, FileText, Code, Terminal, Plus, Check, X, Loader2, Pencil, Download, ChevronDown, ChevronUp, Database, FileCode, BookOpen, FileSpreadsheet, Presentation, Trash2, Braces, Coffee,
+  MessageSquare, Settings, Bot, FolderOpen, FileText, Code, Terminal, Plus, Check, X, Loader2, Pencil, ChevronDown, ChevronUp, Database, FileCode, BookOpen, FileSpreadsheet, Presentation, Trash2, Braces, Coffee,
   FolderPlus, PanelLeftOpen, PanelLeftClose, Sun, Moon, Bug, Search, Sparkles, AlertTriangle, RotateCcw, Layers, MessageCircle, Bell
 } from 'lucide-react';
 
 const IS_MAC = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
+const IS_WINDOWS = typeof navigator !== 'undefined' && /Win/i.test(navigator.platform);
 
 // Views opened less often load on first use, keeping them out of the startup bundle.
 const TasksView = lazy(() => import('./features/tasks/TasksView'));
@@ -61,6 +63,7 @@ function writeDurable(key: DurableKey, value: unknown): Promise<void> {
 import { applyFolderSync, parseStoredSources, readIndexingResult, scannedPagesStep, serializeSources, SOURCES_STORAGE_KEY, syncedFolders } from './features/library/sources';
 import { explainFailure } from './features/library/indexingAdvice';
 import type { FolderSyncOutcome, LibrarySource } from './features/library/sources';
+import { addableFolders, librarySourcesChip, nativePath, NOT_ADDED_REASON, reconcileSources } from './features/library/reconcile';
 import type { FileNode } from './features/library/fileTree';
 import { errorMessage as searchErrorMessage } from './features/setup/searchModels';
 import Sidebar from './components/shell/Sidebar';
@@ -76,20 +79,20 @@ import { WorkspaceProvider, useWorkspaces } from './features/workspaces/Workspac
 import { sourceSummary, workspaceForNewChat } from './features/workspaces/model';
 import { WorkspaceIcon } from './features/workspaces/WorkspaceIcon';
 import { FocusProvider } from './features/focus/FocusContext';
-import { VisualsButton } from './features/visuals/GalleryDialog';
 import { VisualNavigator } from './features/visuals/VisualNavigator';
 import { SnippetHost } from './features/research/SnippetHost';
 import { ReminderAlerts } from './features/tasks/ReminderAlerts';
 import { TableModelPrompt } from './features/setup/TableModelPrompt';
 import { AskView } from './features/ask/AskView';
+import { ChatActionsMenu } from './features/ask/ChatActionsMenu';
 import { useCommandPalette } from './hooks/useCommandPalette';
 import CommandPalette from './components/CommandPalette';
 import type { PaletteAction } from './components/CommandPalette';
 import { ViewSkeleton } from './components/shell/ViewSkeleton';
 import { useSearchConfig } from './components/SearchSettings';
 import { FirstRunFlow } from './features/setup/FirstRunFlow';
-import { hasSavedFirstRun, readFirstRun, resumeStep, writeFirstRun } from './features/setup/firstRun';
-import { reconcileFirstRun, reconcileSources } from './lib/durableState';
+import { firstRunStart, hasSavedFirstRun, readFirstRun, resumeStep, writeFirstRun } from './features/setup/firstRun';
+import { reconcileFirstRun, reconcileSources as reconcileStoredSources } from './lib/durableState';
 import type { DurableKey, StoredRead } from './lib/durableState';
 import type { FirstRunState, FirstRunStep } from './features/setup/firstRun';
 import { useSearchModels } from './features/setup/SearchModelsContext';
@@ -101,7 +104,6 @@ import { notify } from './lib/notify';
 import { removeWithUndo, restoreAt } from './lib/undoToast';
 import { migrateLegacyApiKeys } from './lib/apiKeyMigration';
 import { InboxButton, OPEN_INBOX_EVENT } from './features/inbox/InboxButton';
-import { ConnectionPill } from './features/connection/ConnectionPill';
 import { useNavigationTarget } from './features/agent/useNavigationTarget';
 import { countOf } from './lib/plural';
 
@@ -205,7 +207,7 @@ function AppSplitView() {
       if (cancelled) return;
       const local = sourcesRef.current;
       const changed = serializeSources(local) !== startSourcesRef.current;
-      const { sources: restored, save } = reconcileSources(stored, local, changed);
+      const { sources: restored, save } = reconcileStoredSources(stored, local, changed);
       sourcesRestoredRef.current = true;
       if (save) saveSourcesDurably(restored);
       else savedSourcesRef.current = serializeSources(restored);
@@ -247,6 +249,58 @@ function AppSplitView() {
       unlisten?.();
     };
   }, []);
+
+  // The files the index holds (`list_indexed_sources`), compared with the
+  // folders above so the Library never contradicts what answers cite. Read
+  // once the index is open and again after each indexing run or removal.
+  const [indexedFiles, setIndexedFiles] = useState<string[]>([]);
+  /** Whether the list has been read (first-run waits for it). */
+  const [indexedLoad, setIndexedLoad] = useState<'loading' | 'loaded' | 'failed'>('loading');
+  const indexedReadRef = useRef(0);
+  const refreshIndexedFiles = useCallback(async () => {
+    const read = ++indexedReadRef.current;
+    try {
+      const docs = await invoke<{ source?: unknown }[]>('list_indexed_sources');
+      if (read !== indexedReadRef.current) return;
+      setIndexedFiles(Array.isArray(docs) ? docs.map(d => d?.source).filter((p): p is string => typeof p === 'string') : []);
+      setIndexedLoad('loaded');
+    } catch (error) {
+      if (read !== indexedReadRef.current) return;
+      console.error('The indexed files could not be listed:', error);
+      setIndexedFiles([]);
+      setIndexedLoad('failed');
+    }
+  }, []);
+  // Folders removed from the list whose files leave the index when the undo
+  // window ends: until then they still cover those files.
+  const [removingPaths, setRemovingPaths] = useState<string[]>([]);
+  // Keyed on the folder paths, not the sources: indexing progress changes
+  // the sources many times a second and leaves the paths alone.
+  const coveringKey = [...sources.map(s => s.path), ...removingPaths].join('\u0000');
+  const reconciliation = useMemo(
+    () => reconcileSources(coveringKey ? coveringKey.split('\u0000').map(path => ({ path })) : [], indexedFiles),
+    [coveringKey, indexedFiles],
+  );
+  const unlistedCount = reconciliation.unlisted.length;
+  // The home folder: it and the folders holding it are never added for the user.
+  const [homePath, setHomePath] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    homeDir()
+      .then(path => { if (!cancelled) setHomePath(path); })
+      .catch(error => console.error('The home folder could not be read:', error));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const listedKey = sources.map(s => s.path).join('\u0000');
+  const addableUnlisted = useMemo(
+    () => addableFolders(reconciliation.groups, listedKey ? listedKey.split('\u0000').map(path => ({ path })) : [], homePath ? [homePath] : []),
+    [reconciliation.groups, listedKey, homePath],
+  );
+  const [unlistedBusy, setUnlistedBusy] = useState(false);
+  const unlistedBusyRef = useRef(false);
+
   const [isDraggingImage, setIsDraggingImage] = useState(false);
   const lastProcessedImageTimeRef = useRef(0);
 
@@ -262,14 +316,20 @@ function AppSplitView() {
   const firstRunRef = useRef(firstRun);
   firstRunRef.current = firstRun;
   const firstRunChangedRef = useRef(false);
+  /** The setup state found at start, waiting for the open-or-not decision. */
+  const [firstRunStartFrom, setFirstRunStartFrom] = useState<{ saved: FirstRunState | null; diskReadFailed: boolean } | null>(null);
   useEffect(() => {
     let cancelled = false;
     void readDurable('first_run').then(stored => {
       if (cancelled || firstRunChangedRef.current) return;
-      const { state, save } = reconcileFirstRun(stored, firstRunRef.current, firstRunSavedLocallyRef.current === true);
+      const { state, save, saved } = reconcileFirstRun(stored, firstRunRef.current, firstRunSavedLocallyRef.current === true);
       setFirstRun(state);
-      setFirstRunOpen(state.status === 'pending');
-      writeFirstRun(safeStorage(), state);
+      // Whether setup opens is decided once the index's documents are known
+      // (see firstRunStart); until then it stays closed, so it never flashes.
+      setFirstRunStartFrom({ saved: saved ? state : null, diskReadFailed: stored.kind === 'failed' });
+      // A fresh install's default is not written: written, it would count as
+      // a saved state next start, before this start's decision was made.
+      if (saved) writeFirstRun(safeStorage(), state);
       if (save) {
         writeDurable('first_run', state).catch(error => console.error('The setup progress could not be saved:', error));
       }
@@ -402,6 +462,31 @@ function AppSplitView() {
     setFirstRun(next);
     persistFirstRun(next);
   }, [persistFirstRun]);
+
+  // Open setup on start, or not: a saved state decides at once; without one,
+  // once the index's documents are listed (an index with documents was set
+  // up before, so setup is recorded as skipped and stays closed).
+  useEffect(() => {
+    if (!firstRunStartFrom) return;
+    if (firstRunChangedRef.current) {
+      // Setup was opened or changed meanwhile: that wins.
+      setFirstRunStartFrom(null);
+      return;
+    }
+    if (!firstRunStartFrom.saved && indexedLoad === 'loading') return;
+    const { open, record, persist } = firstRunStart(
+      firstRunStartFrom.saved,
+      indexedLoad === 'loaded' ? indexedFiles.length : null,
+      firstRunStartFrom.diskReadFailed,
+    );
+    setFirstRunStartFrom(null);
+    // Not saved over a disk copy that could not be read: this session only.
+    if (record) {
+      if (persist) saveFirstRun(record);
+      else setFirstRun(record);
+    }
+    setFirstRunOpen(open);
+  }, [firstRunStartFrom, indexedLoad, indexedFiles.length, saveFirstRun]);
 
   // Reopening a finished setup and closing it again must not mark it skipped.
   const statusBeforeOpenRef = useRef(firstRun.status);
@@ -941,6 +1026,7 @@ function AppSplitView() {
         markStartup('index-ready');
         // The shell is already on screen; this only unlocks index-backed views.
         setIsLoading(false);
+        void refreshIndexedFiles();
 
         const checkLLMStatus = async () => {
           try {
@@ -984,6 +1070,8 @@ function AppSplitView() {
       } catch (error) {
         console.error("Initialization failed:", error);
         setInitError(searchErrorMessage(error));
+        // The index did not open: first-run decides without its documents.
+        setIndexedLoad(prev => (prev === 'loading' ? 'failed' : prev));
         // Reset flag on error so the user can retry
         initializationRef.current = false;
       }
@@ -1081,6 +1169,7 @@ function AppSplitView() {
       notify.error('Indexing failed', { description: `${source.name}: ${explainFailure(message, source.path).reason}` });
     } finally {
       setCurrentlyIndexing(null);
+      void refreshIndexedFiles();
     }
   };
 
@@ -1113,8 +1202,16 @@ function AppSplitView() {
       return;
     }
     if (typeof selected !== 'string' || !selected) return;
-    const picked = selected;
-    const existing = sources.find(s => s.path.toLowerCase() === picked.toLowerCase());
+    await addFolderPath(selected);
+  };
+
+  /**
+   * Add `picked` as a folder source and index it (index it again when it is
+   * already listed). The caller checks that no index is running.
+   */
+  const addFolderPath = async (picked: string) => {
+    const pathKey = (path: string) => path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const existing = sourcesRef.current.find(s => pathKey(s.path) === pathKey(picked));
     if (existing) {
       notify.info(`${existing.name} is already in the Library`, { description: 'Indexing it again to pick up changes.' });
       await indexSource(existing, await sourceKind(existing));
@@ -1132,6 +1229,69 @@ function AppSplitView() {
     };
     setSources(prev => [...prev, newSource]);
     await indexSource(newSource, 'folder');
+  };
+
+  /**
+   * "Add these folders": each folder of the unlisted files becomes a folder
+   * source, indexed in turn with all its subfolders, once the user agrees.
+   */
+  const handleAddUnlistedFolders = async () => {
+    // A ref, not only the state: a second click can arrive before the re-render.
+    if (unlistedBusyRef.current || addableUnlisted.length === 0 || indexingBusy()) return;
+    unlistedBusyRef.current = true;
+    setUnlistedBusy(true);
+    try {
+      // The home folder is normally read at startup; if not yet, read it now.
+      // Unknown, it could be added unasked, so nothing is added.
+      const home = homePath ?? (await homeDir().catch(() => null));
+      if (!home) {
+        notify.error('Could not check your home folder, so no folders were added.');
+        return;
+      }
+      const folders = addableFolders(reconciliation.groups, sources, [home])
+        .map(folder => nativePath(folder, IS_WINDOWS));
+      if (folders.length === 0) {
+        notify.info('No folders were added', { description: NOT_ADDED_REASON });
+        return;
+      }
+      let confirmed: boolean;
+      try {
+        confirmed = await ask(
+          `${folders.map(f => `• ${f}`).join('\n')}\n\nEach folder is indexed with all its subfolders and kept in sync.`,
+          { title: `Add ${countOf(folders.length, 'folder')} to the Library?`, kind: 'info', okLabel: 'Add and index', cancelLabel: 'Cancel' },
+        );
+      } catch (error) {
+        notify.error('Could not ask to add the folders', { description: String(error) });
+        return;
+      }
+      if (!confirmed || indexingBusy()) return;
+      for (const folder of folders) await addFolderPath(folder);
+    } finally {
+      unlistedBusyRef.current = false;
+      setUnlistedBusy(false);
+    }
+  };
+
+  /** Save the conversation as Markdown where the user picks. */
+  const exportChat = async () => {
+    try {
+      const md = messages.map(m =>
+        `**${m.role === 'user' ? 'You' : 'Shodh'}** (${new Date(m.timestamp || Date.now()).toLocaleString()}):\n\n${m.content}`
+      ).join('\n\n---\n\n');
+      const filePath = await save({
+        defaultPath: `chat-export-${new Date().toISOString().slice(0, 10)}.md`,
+        filters: [
+          { name: 'Markdown', extensions: ['md'] },
+          { name: 'Text', extensions: ['txt'] },
+        ],
+      });
+      if (filePath) {
+        await writeTextFile(filePath, md);
+        notify.success('Chat exported', { description: filePath });
+      }
+    } catch {
+      notify.error('Failed to export chat');
+    }
   };
 
   /** The file browser counted a source's indexed files: correct a stale card count. */
@@ -1174,12 +1334,29 @@ function AppSplitView() {
 
     // Removed from the list now and from the index when the undo window ends.
     const index = sources.findIndex(s => s.id === id);
+    const dropPending = () => setRemovingPaths(prev => {
+      const at = prev.indexOf(source.path);
+      return at < 0 ? prev : [...prev.slice(0, at), ...prev.slice(at + 1)];
+    });
     removeWithUndo({
       message: 'Source removed',
       description: source.name,
-      hide: () => setSources(prev => prev.filter(s => s.id !== id)),
-      restore: () => setSources(prev => restoreAt(prev, source, index)),
-      commit: () => invoke<string>('delete_folder_source', { folderPath: source.path }),
+      hide: () => {
+        setSources(prev => prev.filter(s => s.id !== id));
+        setRemovingPaths(prev => [...prev, source.path]);
+      },
+      restore: () => {
+        setSources(prev => restoreAt(prev, source, index));
+        dropPending();
+      },
+      commit: async () => {
+        try {
+          return await invoke<string>('delete_folder_source', { folderPath: source.path });
+        } finally {
+          await refreshIndexedFiles();
+          dropPending();
+        }
+      },
       onError: err => notify.error('The source was not removed', { description: String(err) }),
     });
   };
@@ -1209,7 +1386,6 @@ function AppSplitView() {
         onPinConversation={pinConversation}
         onDeleteConversation={deleteConversation}
         sources={sources}
-        llmStatus={llmStatus}
         onOpenCommandPalette={openPalette}
         onShowFeedback={() => setShowFeedback(true)}
         workspaces={allWorkspaces}
@@ -1251,60 +1427,19 @@ function AppSplitView() {
                 </button>
               );
             })()}
-            <ConnectionPill />
           </div>
           <div className="flex items-center gap-2">
             <InboxButton
               onNavigate={setActiveTab}
               onOpenConversation={id => { switchConversation(id); setActiveTab('ask'); }}
             />
-            {activeTab === 'ask' && messages.length > 0 && (
-              <>
-                <span
-                  className="text-[10px] px-2 py-0.5 rounded-full font-medium"
-                  style={{ backgroundColor: `${colors.secondary}14`, color: colors.secondary }}
-                >
-                  {countOf(messages.length, 'msg')}
-                </span>
-                <span
-                  className="text-[10px] px-2 py-0.5 rounded-full font-medium"
-                  style={{ backgroundColor: colors.bgTertiary, color: colors.textMuted }}
-                  title="Estimated token usage for this conversation"
-                >
-                  ~{Math.round(messages.reduce((sum, m) => sum + m.content.length, 0) / 4).toLocaleString()} tokens
-                </span>
-                <button
-                  onClick={async () => {
-                    try {
-                      const md = messages.map(m =>
-                        `**${m.role === 'user' ? 'You' : 'Shodh'}** (${new Date(m.timestamp || Date.now()).toLocaleString()}):\n\n${m.content}`
-                      ).join('\n\n---\n\n');
-                      const filePath = await save({
-                        defaultPath: `chat-export-${new Date().toISOString().slice(0, 10)}.md`,
-                        filters: [
-                          { name: 'Markdown', extensions: ['md'] },
-                          { name: 'Text', extensions: ['txt'] },
-                        ],
-                      });
-                      if (filePath) {
-                        await writeTextFile(filePath, md);
-                        notify.success('Chat exported', { description: filePath });
-                      }
-                    } catch {
-                      notify.error('Failed to export chat');
-                    }
-                  }}
-                  className="text-[10px] px-2 py-0.5 rounded-full font-medium transition-colors"
-                  style={{ backgroundColor: colors.bgTertiary, color: colors.textMuted }}
-                  title="Export chat as Markdown"
-                >
-                  <Download className="w-3 h-3 inline mr-0.5" />
-                  Export
-                </button>
-              </>
-            )}
             {activeTab === 'ask' && activeConversationId && (
-              <VisualsButton conversationId={activeConversationId} conversationTitle={activeConversation?.title ?? ''} />
+              <ChatActionsMenu
+                conversationId={activeConversationId}
+                conversationTitle={activeConversation?.title ?? ''}
+                messages={messages}
+                onExport={messages.length > 0 ? () => void exportChat() : null}
+              />
             )}
             {activeTab === 'ask' && activeConversationId && (
               <div className="relative">
@@ -1322,7 +1457,7 @@ function AppSplitView() {
                   title={instructionsList.length > 0 ? `${instructionsList.length} instruction(s) active` : 'Set custom instructions for this chat'}
                 >
                   <Settings className="w-3 h-3 inline mr-0.5" />
-                  {instructionsList.length > 0 ? `Instructions (${instructionsList.length})` : 'Add Instructions'}
+                  {instructionsList.length > 0 ? `Instructions (${instructionsList.length})` : 'Instructions'}
                 </button>
                 {showSystemPromptEditor && (
                   <>
@@ -1468,10 +1603,20 @@ function AppSplitView() {
                 )}
               </div>
             )}
-            <Badge variant="outline" className="text-[10px] px-2 py-0.5 h-auto" style={{ borderColor: colors.border, color: colors.textMuted }}>
-              <Database className="w-3 h-3 mr-1" />
-              {countOf(sources.filter(s => s.selected).length, 'source')}
-            </Badge>
+            {(() => {
+              const chip = librarySourcesChip(sources, unlistedCount);
+              return (
+                <Badge
+                  variant="outline"
+                  className="text-[10px] px-2 py-0.5 h-auto"
+                  style={{ borderColor: colors.border, color: colors.textMuted }}
+                  title={chip.title}
+                >
+                  <Database className="w-3 h-3 mr-1" />
+                  {chip.label}
+                </Badge>
+              );
+            })()}
           </div>
         </div>
 
@@ -1503,6 +1648,7 @@ function AppSplitView() {
           {activeTab === 'ask' && (
             <AskView
               sources={sources}
+              unlistedFiles={unlistedCount}
               llmStatus={llmStatus}
               onNavigate={setActiveTab}
               onPickImage={handlePickImage}
@@ -1543,6 +1689,7 @@ function AppSplitView() {
               onRemoveSource={removeSource}
               onSourcesCleared={() => {
                 setSources([]);
+                void refreshIndexedFiles();
               }}
               conversations={conversations}
               onOpenConversation={(id: string) => { switchConversation(id); setActiveTab('ask'); }}
@@ -1562,6 +1709,10 @@ function AppSplitView() {
               onAskAboutFile={handleAskAboutFile}
               onFileCount={handleFileCount}
               focusedSourceId={focusedSourceId}
+              unlisted={reconciliation}
+              addableFolders={addableUnlisted.length}
+              onAddUnlisted={() => void handleAddUnlistedFolders()}
+              unlistedBusy={unlistedBusy}
             />
           )}
 
@@ -1598,6 +1749,7 @@ function AppSplitView() {
         onSkip={skipFirstRun}
         llmStatus={llmStatus}
         sources={sources}
+        unlistedFiles={unlistedCount}
         onAddFolder={() => void handleAddSource()}
       />
 

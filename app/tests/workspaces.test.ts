@@ -70,17 +70,18 @@ test('chats group by workspace: pinned and recent workspaces first, No workspace
 });
 
 test('the scope chip says what a question searches', () => {
+  const library = { label: 'All sources · 9', title: 'Answers search everything you have indexed.' };
   const thesis = workspace('thesis', { name: 'Thesis', sourceCounts: counts(1, 2) });
-  assert.equal(scopeChip(thesis, false, 9).label, 'Thesis · 3 sources');
-  assert.match(scopeChip(thesis, false, 9).title, /only the sources of “Thesis” \(1 folder · 2 files\)/);
-  const all = scopeChip(thesis, true, 9);
+  assert.equal(scopeChip(thesis, false, library).label, 'Thesis · 3 sources');
+  assert.match(scopeChip(thesis, false, library).title, /only the sources of “Thesis” \(1 folder · 2 files\)/);
+  const all = scopeChip(thesis, true, library);
   assert.equal(all.label, 'All my library · Thesis');
   assert.match(all.title, /instructions and memories of “Thesis” still apply/);
-  const empty = scopeChip(workspace('e', { name: 'Empty' }), false, 9);
+  const empty = scopeChip(workspace('e', { name: 'Empty' }), false, library);
   assert.equal(empty.label, 'Empty · no sources');
   assert.match(empty.title, /find nothing/);
-  assert.equal(scopeChip(null, false, 4).label, 'All sources · 4');
-  assert.equal(scopeChip(null, false, 0).label, 'No sources yet');
+  // Outside a workspace: the Library's own chip, the one the top bar shows too.
+  assert.deepEqual(scopeChip(null, false, library), library);
 });
 
 test('a workspace question carries the workspace, never the Library selection', () => {

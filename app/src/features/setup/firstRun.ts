@@ -85,6 +85,40 @@ export function previousStep(step: FirstRunStep): FirstRunStep {
   return FIRST_RUN_STEPS[Math.max(0, stepIndex(step) - 1)];
 }
 
+/**
+ * Whether the "First folder" step is done: a folder is in the Library, or
+ * the index already holds files outside any listed folder (indexed by an
+ * earlier build or a dropped file), so setup does not ask for a first folder.
+ */
+export function folderStepDone(folders: number, unlistedFiles: number): boolean {
+  return folders > 0 || unlistedFiles > 0;
+}
+
+/**
+ * Whether setup opens on start, and a state to record. `saved` is the setup
+ * state saved by this or an earlier build (null: none anywhere);
+ * `indexedDocuments` is how many documents the index holds (null: it could
+ * not be listed). Without a saved state, an index that has documents means
+ * the app was set up before (an earlier build, or a lost setup state), so
+ * setup is recorded as skipped, not finished: it stays closed and can be
+ * resumed from the command palette. A saved state decides on its own, and
+ * an index that cannot be listed opens setup as on a fresh install.
+ * `diskReadFailed`: the copy on disk could not be read, so it may hold a
+ * state; the recorded one is then kept for this session only (`persist`
+ * false), never saved over it.
+ */
+export function firstRunStart(
+  saved: FirstRunState | null,
+  indexedDocuments: number | null,
+  diskReadFailed = false,
+): { open: boolean; record: FirstRunState | null; persist: boolean } {
+  if (saved) return { open: saved.status === 'pending', record: null, persist: false };
+  if (indexedDocuments !== null && indexedDocuments > 0) {
+    return { open: false, record: { status: 'skipped', step: 'welcome' }, persist: !diskReadFailed };
+  }
+  return { open: true, record: null, persist: false };
+}
+
 /** Where resuming should start: the saved step, but never the final summary. */
 export function resumeStep(state: FirstRunState): FirstRunStep {
   return state.step === 'done' ? 'welcome' : state.step;

@@ -14,7 +14,11 @@
 //!
 //! Absence of something in the documents ("the documents do not mention
 //! X") is a statement about what was searched, not about the user's data,
-//! and is not matched here.
+//! and is not matched here. A model's refusal in its own words is: "I don't
+//! have any documents indexed that contain X", "I couldn't find any X in
+//! your documents" say what the user's documents hold, and stand only on a
+//! search of them in the same answer (a model that skipped the search said
+//! exactly that while both papers were indexed).
 
 use std::collections::HashSet;
 use std::sync::OnceLock;
@@ -37,6 +41,9 @@ pub struct Domain {
     pub tools: &'static [&'static str],
 }
 
+/// The name of the user's indexed documents among the [`DOMAINS`].
+pub const INDEXED_DOCUMENTS: &str = "indexed documents";
+
 /// The user's kinds of data and the tools that read them. Tool names are
 /// those of the assistant profile (a test keeps them registered names).
 pub const DOMAINS: &[Domain] = &[
@@ -58,7 +65,7 @@ pub const DOMAINS: &[Domain] = &[
         tools: &["list_events", "show_calendar"],
     },
     Domain {
-        name: "indexed documents",
+        name: INDEXED_DOCUMENTS,
         nouns: &[
             "document",
             "documents",
@@ -162,6 +169,30 @@ fn absence_patterns() -> &'static [AbsencePattern] {
                 ),
                 true,
             ),
+            // The refusal a model gives about the documents in its own
+            // words, without having searched them: "I don't have any
+            // documents indexed that contain information about SPANN."
+            (
+                format!(
+                    r"\bI\s+(?:currently\s+)?(?:do\s+not|don['’]t|dont)\s+(?:currently\s+)?(?:have|see)\s+any\s+{GAP}(?P<noun>documents?|files?)\b"
+                ),
+                false,
+            ),
+            // "I couldn't find any information about SPANN in your documents."
+            (
+                format!(
+                    r"\bI\s+(?:could\s+not|couldn['’]t|cannot|can\s+not|can['’]t|did\s+not|didn['’]t|was\s+unable\s+to|am\s+unable\s+to)\s+find\s+any(?:thing)?\b[^.;!?]{{0,160}}?\b(?:in|among|across|within)\s+your\s+{GAP}(?P<noun>documents|files|papers|sources|library)\b"
+                ),
+                false,
+            ),
+            // "There are no documents indexed that contain information
+            // about SPANN."
+            (
+                format!(
+                    r"\bno\s+{GAP}(?P<noun>documents|files)\s+(?:(?:are|were|have\s+been)\s+)?(?:indexed|found)\s+that\s+(?:contains?|mentions?|covers?|discuss(?:es)?|include)\b"
+                ),
+                false,
+            ),
         ]
         .into_iter()
         .filter_map(|(pattern, needs_you)| {
@@ -186,7 +217,7 @@ fn domain_of_noun(noun: &str) -> Option<&'static Domain> {
     let noun = noun.to_lowercase();
     let by_name = |name: &str| DOMAINS.iter().find(|d| d.name == name);
     match noun.as_str() {
-        "indexed" => by_name("indexed documents"),
+        "indexed" | "library" => by_name(INDEXED_DOCUMENTS),
         "calendar" | "scheduled" | "planned" => by_name("events"),
         "due" => by_name("tasks"),
         _ => DOMAINS.iter().find(|d| d.nouns.contains(&noun.as_str())),
@@ -290,14 +321,49 @@ mod tests {
             ("There are no saved snippets in your library.", "snippets"),
             ("You have no memories stored about that.", "memories"),
             ("You have no workspaces.", "workspaces"),
+            // First-person refusals about the documents.
+            (
+                "I don't have any documents indexed that contain information about FreshDiskANN or SPANN.",
+                "indexed documents",
+            ),
+            ("I do not have any indexed documents on that.", "indexed documents"),
+            (
+                "I couldn't find any information about SPANN in your documents.",
+                "indexed documents",
+            ),
+            (
+                "I could not find anything on graph pruning in your indexed papers.",
+                "indexed documents",
+            ),
+            (
+                "I was unable to find any mention of it in your library.",
+                "indexed documents",
+            ),
+            (
+                "There are no documents indexed that contain information about SPANN.",
+                "indexed documents",
+            ),
+            ("No files were found that mention the renewal fee.", "indexed documents"),
         ] {
             assert_eq!(domain(claim), Some(expected), "{claim}");
         }
     }
 
     #[test]
+    fn the_reported_refusal_is_flagged_when_nothing_was_searched() {
+        let refusal =
+            "I don't have any documents indexed that contain information about FreshDiskANN.";
+        let flagged = flag_unverified_absence(&answer(refusal), &HashSet::new(), Vec::new());
+        assert_eq!(flagged.len(), 1);
+        assert_eq!(flagged[0].outcome, ClaimOutcome::UnverifiedAbsence);
+        // After a search of the documents it is a statement about the result.
+        let searched: HashSet<String> = ["search_documents".to_string()].into();
+        assert!(flag_unverified_absence(&answer(refusal), &searched, Vec::new()).is_empty());
+    }
+
+    #[test]
     fn every_pattern_compiles() {
-        assert_eq!(absence_patterns().len(), 8);
+        assert_eq!(absence_patterns().len(), 11);
     }
 
     #[test]
@@ -317,6 +383,10 @@ mod tests {
             "No events were recorded after the outage.",
             "You have to give sixty days of notice [1].",
             "The task of the encoder is to map queries to vectors [3].",
+            // First person, but not about the user's documents.
+            "I don't have any tasks for that paper's authors.",
+            "I couldn't find any benchmark that reports recall below 0.9.",
+            "I don't have any opinion on which index is better.",
         ] {
             assert_eq!(domain(claim), None, "{claim}");
         }

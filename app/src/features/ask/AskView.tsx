@@ -41,7 +41,8 @@ import { scrollBehavior } from './viewer/sourceAccess';
 import type { ChatMessage, SearchHit, SendOptions } from './types';
 import { useWorkspaces } from '../workspaces/WorkspaceContext';
 import { scopeChip } from '../workspaces/model';
-import { librarySourcesChip, searchedSourceCount } from '../library/reconcile';
+import { librarySourcesChip } from '../library/reconcile';
+import type { SearchedSources } from '../library/reconcile';
 import { SnippetDropZone } from '../research/SnippetDropZone';
 import { exportPdf } from '../print/exportPdf';
 import { answerTitle, buildPrintDocument } from '../print/printModel';
@@ -102,8 +103,8 @@ export interface AskSource {
 
 export interface AskViewProps {
   sources: readonly AskSource[];
-  /** Indexed files inside no listed folder; answers search them too. */
-  unlistedFiles?: number;
+  /** What answers search, in indexed files (`searchedSources`, shared with the top bar). */
+  searched: SearchedSources;
   llmStatus: { connected: boolean; model: string; provider: string };
   onNavigate: (tab: ViewTab) => void;
   /** Pick an image whose text is extracted (OCR) and indexed. */
@@ -574,7 +575,7 @@ function SystemNotice({ message }: { message: ChatMessage }) {
  * (centered 700px column) with a floating composer and a source preview
  * slide-over.
  */
-export function AskView({ sources, unlistedFiles = 0, llmStatus, onNavigate, onPickImage, isDraggingFile = false, dropHandlers, draftRequest = null, onDraftApplied }: AskViewProps) {
+export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage, isDraggingFile = false, dropHandlers, draftRequest = null, onDraftApplied }: AskViewProps) {
   const { theme } = useTheme();
   const session = useChatSession();
   const { messages, isStreaming, streamingConversationId, sideRun, send, retry, cancel, steer, approve, runtimeInstalled, setRuntimeInstalled, updateMessage } = session;
@@ -646,15 +647,15 @@ export function AskView({ sources, unlistedFiles = 0, llmStatus, onNavigate, onP
         ? `${codeProblem} Or switch this conversation to Research.`
         : null;
 
-  // What answers search, counted as the sources chip counts it (`librarySourcesChip`),
-  // so the empty state never shows beside "All sources · N".
-  const indexedCount = searchedSourceCount(sources, unlistedFiles);
+  // Whether there is anything to search, as the sources chip reads it
+  // (`librarySourcesChip`), so the empty state never shows beside "All sources · N".
+  const hasSources = searched.hasSources;
   // Starter questions fit the library: papers get methods, results and
   // comparisons. Read again when the sources change (a folder added or
   // finished indexing); the general questions show until it is known.
   const [libraryKind, setLibraryKind] = useState<LibraryKind | null>(null);
   const readySourcesKey = sources.filter(s => s.status === 'ready').map(s => s.id).join('|');
-  const showStarters = messages.length === 0 && indexedCount > 0;
+  const showStarters = messages.length === 0 && hasSources;
   useEffect(() => {
     if (!showStarters) return;
     let cancelled = false;
@@ -674,7 +675,7 @@ export function AskView({ sources, unlistedFiles = 0, llmStatus, onNavigate, onP
   const { byId: workspaceById, openWorkspace } = useWorkspaces();
   const workspace = workspaceById(session.activeConversation?.workspaceId);
   const [searchAll, setSearchAll] = useState(false);
-  const chip = scopeChip(workspace, searchAll, librarySourcesChip(sources, unlistedFiles));
+  const chip = scopeChip(workspace, searchAll, librarySourcesChip(searched));
 
   // Reset per-conversation UI when the conversation changes.
   const conversationId = session.activeConversationId;
@@ -1106,7 +1107,7 @@ export function AskView({ sources, unlistedFiles = 0, llmStatus, onNavigate, onP
             <SearchSetupCard />
             {runtimeCard}
             {composer(true)}
-            {indexedCount === 0 ? (
+            {!hasSources ? (
               <div className="flex flex-col items-center gap-3 text-center">
                 <p className="text-[13.5px] text-shodh-text-muted">
                   Shodh answers from the files you add. Add a folder to start asking about it.

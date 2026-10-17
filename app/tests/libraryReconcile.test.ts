@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { addableFolders, isDriveRoot, librarySourcesChip, nativePath, reconcileSources, searchedSourceCount } from '../src/features/library/reconcile.ts';
+import { addableFolders, isDriveRoot, librarySourcesChip, nativePath, reconcileSources, searchedSources } from '../src/features/library/reconcile.ts';
 
 const folders = (...paths: string[]) => paths.map(path => ({ path }));
 
@@ -107,13 +107,41 @@ test('groups sort by file count, then by path', () => {
   assert.deepEqual(result.groups.map(g => g.folder), ['c:/c', 'c:/a', 'c:/b']);
 });
 
-test('the sources count includes unlisted files unless answers are limited to some folders', () => {
-  assert.equal(searchedSourceCount([], 4), 4);
-  assert.equal(searchedSourceCount([{ selected: true }, { selected: true }], 3), 5);
-  // Only some folders included: answers search just those, not the unlisted files.
-  assert.equal(searchedSourceCount([{ selected: true }, { selected: false }], 3), 1);
-  // None included: answers search everything.
-  assert.equal(searchedSourceCount([{ selected: false }], 2), 3);
+/** Twelve indexed papers in one folder, as `list_indexed_sources` lists them (lowercased on Windows). */
+const twelve = Array.from({ length: 12 }, (_, i) => `c:/research/papers/paper-${i + 1}.pdf`);
+
+test('the sources count is indexed files searched, whether or not their folder is listed', () => {
+  // Before the folder is listed: 12 files in no folder.
+  assert.equal(searchedSources([], twelve).files, 12);
+  assert.equal(searchedSources([], twelve).unlisted, 12);
+  // After listing the folder that holds them: still 12 files, none unlisted.
+  const listed = searchedSources([{ path: 'C:\\Research\\papers', selected: true }], twelve);
+  assert.equal(listed.files, 12);
+  assert.equal(listed.unlisted, 0);
+  // Scheme records (notes, tasks) and repeats are not files searched twice.
+  assert.equal(searchedSources([], [...twelve, 'note://a', 'calendar://task/1', 'C:\\Research\\papers\\paper-1.pdf']).files, 12);
+  // None included in Ask: answers search everything.
+  assert.equal(searchedSources([{ path: 'C:\\Research\\papers', selected: false }], [...twelve, 'd:/notes/a.md']).files, 13);
+});
+
+test('with only some folders included, the count is the files inside those folders', () => {
+  const folders = [
+    { path: 'C:\\Research\\papers', selected: true },
+    { path: 'D:\\Contracts', selected: false },
+  ];
+  const searched = searchedSources(folders, [...twelve, 'd:/contracts/a.pdf', 'd:/contracts/b.pdf', 'e:/loose.txt']);
+  assert.equal(searched.limited, true);
+  assert.equal(searched.files, 12);
+  assert.equal(searched.unlisted, 0);
+  // The other folder alone.
+  assert.equal(searchedSources(folders.map(f => ({ ...f, selected: !f.selected })), [...twelve, 'd:/contracts/a.pdf']).files, 1);
+});
+
+test('the sources count is unknown until the index has been listed', () => {
+  const searched = searchedSources([{ path: 'C:\\Research\\papers', selected: true }], null);
+  assert.equal(searched.files, null);
+  assert.equal(searched.hasSources, true);
+  assert.equal(searchedSources([], null).hasSources, false);
 });
 
 test('folders offered for adding leave out drive roots and folders holding a listed folder', () => {
@@ -146,23 +174,43 @@ test('a group folder is handed to the folder indexer in the platform form', () =
 });
 
 test('the sources chip: one label for the top bar and the composer', () => {
-  assert.equal(librarySourcesChip([], 0).label, 'No sources yet');
-  assert.equal(librarySourcesChip([], 4).label, 'All sources · 4');
-  assert.match(librarySourcesChip([], 4).title, /4 indexed files in no folder/);
-  const all = librarySourcesChip([{ selected: true }, { selected: true }], 3);
-  assert.equal(all.label, 'All sources · 5');
-  assert.match(all.title, /2 folders and 3 indexed files in no folder/);
-  assert.equal(librarySourcesChip([{ selected: true }], 0).title, 'Answers search everything you have indexed. Manage sources in Library.');
+  assert.equal(librarySourcesChip(searchedSources([], [])).label, 'No sources yet');
+  // 12 files in no folder, then the same 12 once their folder is listed: the same count.
+  const unlisted = librarySourcesChip(searchedSources([], twelve));
+  assert.equal(unlisted.label, 'All sources · 12 files');
+  assert.match(unlisted.title, /the 12 files you have indexed\. 12 files are in no folder listed in Library/);
+  const listed = librarySourcesChip(searchedSources([{ path: 'C:\\Research\\papers', selected: true }], twelve));
+  assert.equal(listed.label, 'All sources · 12 files');
+  assert.equal(listed.title, 'Answers search the 12 files you have indexed. Manage sources in Library.');
+  assert.equal(librarySourcesChip(searchedSources([], ['c:/a.pdf'])).label, 'All sources · 1 file');
+  // A listed folder with nothing indexed yet says so; before the index is listed, no number.
+  assert.equal(librarySourcesChip(searchedSources([{ path: 'C:\\Empty', selected: true }], [])).label, 'All sources · 0 files');
+  assert.equal(librarySourcesChip(searchedSources([{ path: 'C:\\Research\\papers', selected: true }], null)).label, 'All sources');
   // Only some folders included in Ask: answers search just those.
-  const limited = librarySourcesChip([{ selected: true }, { selected: false }, { selected: true }], 3);
+  const limited = librarySourcesChip(searchedSources([
+    { path: 'C:\\Research\\papers', selected: true },
+    { path: 'D:\\Contracts', selected: false },
+    { path: 'E:\\Notes', selected: true },
+  ], [...twelve, 'd:/contracts/a.pdf', 'e:/notes/n.md']));
   assert.equal(limited.label, '2 of 3 folders');
-  assert.match(limited.title, /only the 2 folders included in Ask/);
+  assert.match(limited.title, /only the 2 folders included in Ask \(13 indexed files\)/);
 });
 
-test('the empty state and the sources chip use one count', () => {
+test('the empty state and the sources chip use one check', () => {
   // A folder whose indexing failed still counts: the chip says so, and Ask is not shown as empty.
-  const cases: [{ selected: boolean }[], number][] = [[[], 0], [[], 2], [[{ selected: true }], 0], [[{ selected: false }], 0], [[{ selected: true }, { selected: false }], 5]];
-  for (const [folders, unlisted] of cases) {
-    assert.equal(librarySourcesChip(folders, unlisted).label === 'No sources yet', searchedSourceCount(folders, unlisted) === 0);
+  const cases: [{ path: string; selected: boolean }[], string[] | null][] = [
+    [[], []],
+    [[], ['c:/a.pdf', 'c:/b.pdf']],
+    [[], ['note://only-a-note']],
+    [[{ path: 'C:\\Failed', selected: true }], []],
+    [[{ path: 'C:\\Failed', selected: false }], []],
+    [[{ path: 'C:\\A', selected: true }, { path: 'C:\\B', selected: false }], ['c:/b/x.pdf']],
+    [[], null],
+  ];
+  for (const [folders, files] of cases) {
+    const searched = searchedSources(folders, files);
+    assert.equal(librarySourcesChip(searched).label === 'No sources yet', !searched.hasSources, JSON.stringify([folders, files]));
   }
+  assert.equal(searchedSources([{ path: 'C:\\Failed', selected: true }], []).hasSources, true);
+  assert.equal(searchedSources([], []).hasSources, false);
 });

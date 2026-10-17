@@ -31,6 +31,8 @@ import { UserText } from './UserText';
 import { useChatSession } from './ChatSessionContext';
 import { useDraft } from './useDraft';
 import { useSendOptions } from './useSendOptions';
+import { AttachmentChips, useImageAttachments } from './AttachmentChips';
+import { composeQuestion, composerAttachments } from './imageAttachments';
 import type { FallbackRun } from './ChatSessionContext';
 import type { ProviderErrorActions } from '../modelPicker/ProviderErrorCard';
 import { MessageContentRenderer } from './MessageContentRenderer';
@@ -113,9 +115,9 @@ export interface AskViewProps {
   searched: SearchedSources;
   llmStatus: { connected: boolean; model: string; provider: string };
   onNavigate: (tab: ViewTab) => void;
-  /** Pick an image whose text is extracted (OCR) and indexed. */
+  /** Pick an image whose text is read (OCR) and attached to the next question. */
   onPickImage?: () => void;
-  /** An image was pasted into the composer: its text is read and shown as a notice. */
+  /** An image was pasted into the composer: its text is read and attached to the next question. */
   onPasteImage?: (image: PastedImage) => void;
   /** A file is being dragged over the window. */
   isDraggingFile?: boolean;
@@ -608,6 +610,8 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
 
   // Kept per conversation outside this view, which unmounts on every view switch.
   const [draft, setDraft] = useDraft(session.activeConversationId);
+  // Text read from images, sent with the next question as the user's own context.
+  const attachments = useImageAttachments(session.activeConversationId);
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
   const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
   const previewTriggerRef = useRef<HTMLElement | null>(null);
@@ -848,10 +852,11 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     const text = draft.trim();
     if (!text || isStreaming || busyElsewhere) return;
     setDraft('');
-    void send(text, { ...sendOptions, searchAll: workspace !== null && searchAll });
+    const question = composeQuestion(text, composerAttachments.take(session.activeConversationId));
+    void send(question, { ...sendOptions, searchAll: workspace !== null && searchAll });
     setSearchAll(false);
     composerRef.current?.focus();
-  }, [draft, setDraft, isStreaming, busyElsewhere, send, sendOptions, workspace, searchAll]);
+  }, [draft, setDraft, isStreaming, busyElsewhere, send, sendOptions, workspace, searchAll, session.activeConversationId]);
 
   const submitSteer = useCallback(() => {
     const text = draft.trim();
@@ -1097,6 +1102,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         )}
         onPickImage={onPickImage}
         onPasteImage={onPasteImage}
+        attachments={<AttachmentChips conversationId={session.activeConversationId} attachments={attachments} />}
         autoFocus={autoFocus}
       />
     </SnippetDropZone>

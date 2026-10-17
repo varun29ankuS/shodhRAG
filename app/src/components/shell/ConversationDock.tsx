@@ -27,6 +27,8 @@ import { Transcript } from '../../features/agent/Transcript';
 import { useChatSession } from '../../features/ask/ChatSessionContext';
 import { useDraft } from '../../features/ask/useDraft';
 import { useSendOptions } from '../../features/ask/useSendOptions';
+import { AttachmentChips, useImageAttachments } from '../../features/ask/AttachmentChips';
+import { composeQuestion, composerAttachments } from '../../features/ask/imageAttachments';
 import type { OptionSource } from '../../features/ask/sendOptions';
 import type { ChatMessage } from '../../features/ask/types';
 
@@ -118,6 +120,8 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
   // The same draft as the Ask composer: "Open in Ask" keeps what was typed here.
   const [draft, setDraft] = useDraft(session.activeConversationId);
   const sendOptions = useSendOptions(sources);
+  // Image text attached in Ask goes out with a reply sent from here too.
+  const attachments = useImageAttachments(session.activeConversationId);
   const [unreadBase, setUnreadBase] = useState<number | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
   const pillRef = useRef<HTMLButtonElement>(null);
@@ -310,7 +314,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
     const text = draft.trim();
     if (!text || isStreaming || busyElsewhere) return;
     setDraft('');
-    void send(text, sendOptions);
+    void send(composeQuestion(text, composerAttachments.take(session.activeConversationId)), sendOptions);
   };
   const submitSteer = () => {
     const text = draft.trim();
@@ -437,6 +441,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
             approvalPending={waiting !== null}
             blockedReason={sideRun ? `Answering your side question about “${sideRun.label}”.` : busyElsewhere ? 'An answer is running in another conversation.' : null}
             placeholder="Reply…"
+            attachments={<AttachmentChips conversationId={session.activeConversationId} attachments={attachments} compact />}
             compact
           />
         </SnippetDropZone>

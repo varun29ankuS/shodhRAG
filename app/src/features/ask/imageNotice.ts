@@ -62,8 +62,9 @@ const HEADING: Record<ImageOrigin, string> = {
 /** The notice of an image and the text read from it. */
 export function imageNotice(id: string, timestamp: string, origin: ImageOrigin, result: ImageText): ChatMessage {
   const found = result.text.trim().length > 0 && result.wordCount > 0;
+  // The text itself goes out with the next question (`imageAttachments`), as the user's words.
   const content = found
-    ? `**${HEADING[origin]}.** Text read from it (${result.wordCount} ${result.wordCount === 1 ? 'word' : 'words'}, ${Math.round(result.confidence * 100)}% confidence):\n\n${result.text}`
+    ? `**${HEADING[origin]}.** Its text (${result.wordCount} ${result.wordCount === 1 ? 'word' : 'words'}, ${Math.round(result.confidence * 100)}% confidence) is attached to your next question.`
     : `**${HEADING[origin]}.** No text was found in it.`;
   return {
     id,

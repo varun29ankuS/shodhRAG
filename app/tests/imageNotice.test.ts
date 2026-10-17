@@ -34,7 +34,9 @@ test('image and failure notices are system notices, with the image when there is
   assert.equal(found.role, 'system');
   assert.equal(found.image, 'data:x');
   assert.match(found.content, /Image pasted.*2 words, 90% confidence/s);
-  assert.match(found.content, /Total 42$/);
+  // The text goes with the next question as the user's words, not in the notice.
+  assert.match(found.content, /is attached to your next question\.$/);
+  assert.doesNotMatch(found.content, /Total 42/);
   const empty = imageNotice('n2', 't', 'dropped', { text: '', wordCount: 0, confidence: 0, imageData: '' });
   assert.equal(empty.role, 'system');
   assert.equal('image' in empty, false);

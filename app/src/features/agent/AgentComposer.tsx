@@ -57,6 +57,8 @@ interface AgentComposerProps {
   onPickImage?: () => void;
   /** An image (with no text) was pasted; the paste itself is cancelled. Text pastes are untouched. */
   onPasteImage?: (image: PastedImage) => void;
+  /** Shown above the input: what goes out with the next question (image text chips). */
+  attachments?: React.ReactNode;
   autoFocus?: boolean;
   /** Dense variant for the conversation dock: no chips, smaller type. */
   compact?: boolean;
@@ -90,6 +92,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     scopeAction,
     onPickImage,
     onPasteImage,
+    attachments,
     autoFocus = false,
     compact = false,
     runningPlaceholder,
@@ -176,6 +179,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
         compact ? 'rounded-[14px]' : 'rounded-[22px] shadow-[0_12px_40px_rgba(0,0,0,0.35)]',
       )}
     >
+      {attachments}
       <label htmlFor={inputId} className="sr-only">
         {running ? 'Steer the running answer' : 'Message Shodh'}
       </label>
@@ -201,8 +205,8 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
           <button
             type="button"
             onClick={onPickImage}
-            aria-label="Add an image: extract its text and index it"
-            title="Add an image (text is extracted and indexed)"
+            aria-label="Add an image: its text is attached to your next question"
+            title="Add an image (its text is attached to your next question)"
             className={iconButton}
           >
             <ImagePlus className="w-[17px] h-[17px]" aria-hidden="true" />

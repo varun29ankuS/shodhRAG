@@ -101,6 +101,8 @@ import type { NewMenuItemId } from './lib/newMenu';
 import { TableModelPrompt } from './features/setup/TableModelPrompt';
 import { AskView } from './features/ask/AskView';
 import { failureNotice, imageNotice, readImageText } from './features/ask/imageNotice';
+import type { ImageOrigin } from './features/ask/imageNotice';
+import { composerAttachments } from './features/ask/imageAttachments';
 import { endsRun, withIndexingProgress } from './features/library/indexingProgress';
 import type { IndexingProgressPayload } from './features/library/indexingProgress';
 import { isIndexableDocument, isIndexableFile, legacyOfficeNotice, legacyOfficeTarget, sortDroppedPaths, unsupportedFilesNotice } from './features/library/dropFiles';
@@ -792,6 +794,19 @@ function AppSplitView() {
     // Actual handling is done by Tauri event listener
   };
 
+  // Text read from an image: a notice in the chat, and an attachment of the
+  // next question (features/ask/imageAttachments), sent as the user's own
+  // context. The drop listener outlives its render, so the conversation is
+  // read through a ref.
+  const activeConversationIdRef = useRef(activeConversationId);
+  activeConversationIdRef.current = activeConversationId;
+  const showImageText = (origin: ImageOrigin, raw: unknown) => {
+    const result = readImageText(raw);
+    appendMessage(imageNotice(newNoticeId(), new Date().toISOString(), origin, result));
+    // Only text the notice reports as found (OCR words) is attached.
+    if (result.wordCount > 0) composerAttachments.add(activeConversationIdRef.current, { id: newNoticeId(), origin, text: result.text });
+  };
+
   // File picker for images
   const handlePickImage = async () => {
     debugLog('[FILE PICKER] Button clicked');
@@ -814,7 +829,7 @@ function AppSplitView() {
             filePath: selected
           });
           debugLog('[FILE PICKER] Got result:', result);
-          appendMessage(imageNotice(newNoticeId(), new Date().toISOString(), 'added', readImageText(result)));
+          showImageText('added', result);
         } catch (error) {
           console.error('Failed to process selected image:', error);
           notify.error('Image processing failed', { description: String(error) });
@@ -866,7 +881,7 @@ function AppSplitView() {
                 const result = await invoke<unknown>('process_image_from_file', {
                   filePath: imageFile
                 });
-                appendMessage(imageNotice(newNoticeId(), new Date().toISOString(), 'dropped', readImageText(result)));
+                showImageText('dropped', result);
               }
 
               if (dropped.legacy.length > 0) {
@@ -946,7 +961,7 @@ function AppSplitView() {
       // No image on the system clipboard either: nothing was pasted.
       if (!imageData) return;
       const result = await invoke<unknown>('process_image_from_base64', { imageData });
-      appendMessage(imageNotice(newNoticeId(), new Date().toISOString(), 'pasted', readImageText(result)));
+      showImageText('pasted', result);
     } catch (error) {
       console.error('Failed to process pasted image:', error);
       notify.error('The pasted image could not be read', { description: String(error) });

@@ -601,7 +601,8 @@ pub async fn connect_save_key(
     // The check above is the provider's answer for this key: the status
     // shows it works without a second request.
     crate::connection_health::record_verified_key(&app, provider, &key);
-    lock(&llm.api_keys).set(id, Some(key));
+    lock(&llm.api_keys).set(id, Some(key.clone()));
+    crate::llm_commands::use_provider_key(&llm, provider, &key).await;
     crate::connection_health::notify(&app);
     audit.record(AuditRecord::new(
         AuditEventType::SettingsChange,

@@ -234,6 +234,26 @@ pub(crate) async fn forget_provider_key(
     }
 }
 
+/// A key for `provider` was saved: when the configured model answers
+/// through `provider`, it (and the in-process manager, which removing a key
+/// may have dropped) uses the new key from now on.
+pub(crate) async fn use_provider_key(state: &LLMState, provider: ProviderId, key: &str) {
+    let mode = {
+        let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
+        let mut mode = config.mode.clone();
+        if !replace_provider_key(&mut mode, provider, key.trim()) {
+            return;
+        }
+        mode
+    };
+    if let Err(e) = activate_mode(state, mode).await {
+        tracing::warn!(
+            provider = provider.as_str(),
+            "the LLM was not rebuilt with the saved key: {e}"
+        );
+    }
+}
+
 /// Get LLM info
 #[tauri::command]
 pub async fn get_llm_info(state: State<'_, LLMState>) -> Result<LLMInfo, String> {
@@ -393,6 +413,28 @@ mod tests {
             Some("sk-ant-kept-key")
         );
         assert!(state.manager.read().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_key_saved_after_a_removal_is_used_again() {
+        let state = state_with(mode(ApiProvider::OpenRouter, "sk-or-removed-key")).await;
+        forget_provider_key(&state, ProviderId::OpenRouter, None).await;
+        use_provider_key(&state, ProviderId::OpenRouter, "sk-or-new-key").await;
+        assert_eq!(
+            key_of(&state.config.lock().unwrap().mode),
+            Some("sk-or-new-key")
+        );
+        let manager = state.manager.read().await;
+        let manager_mode = &manager.as_ref().expect("rebuilt").config().mode;
+        assert_eq!(key_of(manager_mode), Some("sk-or-new-key"));
+        drop(manager);
+
+        // A key for another provider leaves the configured model alone.
+        use_provider_key(&state, ProviderId::Anthropic, "sk-ant-other").await;
+        assert_eq!(
+            key_of(&state.config.lock().unwrap().mode),
+            Some("sk-or-new-key")
+        );
     }
 
     #[test]

@@ -46,3 +46,9 @@ test('web sources are labelled by host', () => {
   const p = conversationPreview([{ role: 'assistant', content: 'x', searchResults: [{ sourceFile: 'https://www.arxiv.org/abs/2404.19756' }] }]);
   assert.deepEqual(p.sources, ['arxiv.org']);
 });
+
+test('plain text drops follow-up blocks the side thread accepts', () => {
+  assert.equal(plainText('Answer.\n```followups\n["Why?"]\n```'), 'Answer.');
+  assert.equal(plainText('Answer.\n\nFollow-ups:\n```json\n["What is SPANN?", "Why?"]\n```'), 'Answer.');
+  assert.equal(plainText('Config:\n```json\n["a?"]\n```\nThen restart.'), 'Config: [code] Then restart.');
+});

@@ -221,16 +221,8 @@ impl TextSearch {
         Ok(())
     }
 
+    /// Delete every document whose source is `source`.
     pub fn delete_by_source(&self, source: &str) -> Result<()> {
-        self.delete_matching_source(source, false)
-    }
-
-    /// Delete all documents whose source starts with the given prefix.
-    pub fn delete_by_source_prefix(&self, prefix: &str) -> Result<()> {
-        self.delete_matching_source(prefix, true)
-    }
-
-    fn delete_matching_source(&self, source: &str, prefix_match: bool) -> Result<()> {
         // Reload reader first to get the latest committed state
         self.reader.reload().ok();
         let searcher = self.reader.searcher();
@@ -247,12 +239,7 @@ impl TextSearch {
                 if let Ok(doc) = store_reader.get::<TantivyDocument>(doc_id) {
                     if let Some(source_val) = doc.get_first(self.source_field) {
                         if let Some(source_text) = source_val.as_str() {
-                            let matches = if prefix_match {
-                                source_text.starts_with(source)
-                            } else {
-                                source_text == source
-                            };
-                            if matches {
+                            if source_text == source {
                                 if let Some(id_val) = doc.get_first(self.id_field) {
                                     if let Some(id_text) = id_val.as_str() {
                                         let term =
@@ -277,7 +264,6 @@ impl TextSearch {
             self.reader.reload()?;
             tracing::info!(
                 source = %source,
-                prefix_match = prefix_match,
                 deleted = deleted_count,
                 "Tantivy: deleted and committed documents"
             );

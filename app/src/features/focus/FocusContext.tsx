@@ -6,7 +6,7 @@ import type { CorrectionOutcome } from '../agent/grounding';
 import { recordCitationCorrection } from '../audit/api';
 import { answerText, fromPersisted, initialTranscript, isLive, reduceAll, toPersisted } from '../agent/reducer';
 import type { Passage, TranscriptAction, TranscriptState } from '../agent/reducer';
-import { carriedPassages, toWire } from './carriedPassages';
+import { carriedPassages, keptCarriedPassages, toWire } from './carriedPassages';
 import type { ContinuedAnswer } from './carriedPassages';
 import { toAgentError, useAgentSession } from '../agent/useAgentSession';
 import { useChatSession } from '../ask/ChatSessionContext';
@@ -625,7 +625,9 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       if (restored) continued.push({ text: answerText(restored), passages: restored.passages });
     }
     const carried = carriedPassages(continued, `${extras.selection ?? ''}\n${question}`);
-    const live = beginRun(level, 'answer', level.target.label, null, null, null, carried);
+    // All of them are sent (the numbers of those the backend leaves out stay taken); the
+    // transcript starts with the ones the backend keeps.
+    const live = beginRun(level, 'answer', level.target.label, null, null, null, keptCarriedPassages(carried));
     if (!live) return false;
 
     const selection = extras.selection?.trim() || undefined;

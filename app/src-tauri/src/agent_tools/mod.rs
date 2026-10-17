@@ -124,6 +124,7 @@ pub struct IndexJob {
 }
 
 /// What the tools need from the running app.
+#[async_trait::async_trait]
 pub trait HostEffects: Send + Sync {
     /// A calendar record changed: re-index it and refresh open views.
     fn calendar_changed(&self, change: CalendarChange);
@@ -146,6 +147,18 @@ pub trait HostEffects: Send + Sync {
     fn index_file(&self, ctx: &ToolContext, job: FileIndexJob);
     /// Files or folders of a source changed on disk: refresh the Library.
     fn library_changed(&self, source_id: &str);
+    /// Remove the source `source_id` as the Library removes one
+    /// ([`crate::file_watcher::FolderSyncState::remove_source`]: its sync and
+    /// index runs stopped, its chunks and manifest deleted) and tell the
+    /// Library, which drops its card. Chunks without a source are removed
+    /// only under the folder the Library lists for it
+    /// ([`crate::file_watcher::FolderSyncState::library_path`]), never under
+    /// a folder inferred from its files. Returns the chunks deleted.
+    async fn remove_source(
+        &self,
+        rag: &RwLock<RAGEngine>,
+        source_id: &str,
+    ) -> Result<usize, String>;
     /// A gallery visual of `conversation_id` was revised or organised: refresh the gallery.
     fn visuals_changed(&self, conversation_id: &str);
     /// Snippets, results or the citation graph (`kind` `snippet`, `result` or `graph`) of
@@ -262,8 +275,14 @@ pub(crate) mod testing {
         pub visuals: Mutex<Vec<String>>,
         pub research: Mutex<Vec<(String, String)>>,
         pub workspaces: Mutex<Vec<String>>,
+        /// The Library's folder sync state, which `remove_source` acts on.
+        pub folder_sync: crate::file_watcher::FolderSyncState,
+        pub indexing_state: shodh_rag::indexing::IndexingState,
+        /// Sources removed through `remove_source`, as the Library is told.
+        pub removed_sources: Mutex<Vec<String>>,
     }
 
+    #[async_trait::async_trait]
     impl HostEffects for Recorder {
         fn calendar_changed(&self, change: CalendarChange) {
             self.calendar
@@ -328,6 +347,22 @@ pub(crate) mod testing {
                 .unwrap_or_else(|e| e.into_inner())
                 .push(workspace_id.to_string());
         }
+        async fn remove_source(
+            &self,
+            rag: &RwLock<RAGEngine>,
+            source_id: &str,
+        ) -> Result<usize, String> {
+            let path = self.folder_sync.library_path(source_id);
+            let deleted = self
+                .folder_sync
+                .remove_source(rag, &self.indexing_state, source_id, path.as_deref())
+                .await?;
+            self.removed_sources
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(source_id.to_string());
+            Ok(deleted)
+        }
     }
 
     pub struct TestHost {
@@ -361,6 +396,9 @@ pub(crate) mod testing {
             visuals: Mutex::default(),
             research: Mutex::default(),
             workspaces: Mutex::default(),
+            folder_sync: crate::file_watcher::FolderSyncState::new(dir.path().join("folder_sync")),
+            indexing_state: shodh_rag::indexing::IndexingState::default(),
+            removed_sources: Mutex::default(),
         });
         std::fs::create_dir_all(&effects.documents).unwrap();
         let roots = Arc::new(FixedRoots::default());
@@ -416,6 +454,45 @@ pub(crate) mod testing {
                 .unwrap_or_else(|_| folder.to_path_buf()),
         });
         source_id
+    }
+
+    /// An engine over `dir` that can index: the deterministic [`WordEmbedder`]
+    /// stands in for the search models.
+    pub async fn engine_with_search_models(dir: &std::path::Path) -> RAGEngine {
+        let mut config = shodh_rag::config::RAGConfig {
+            data_dir: dir.join("index"),
+            ..shodh_rag::config::RAGConfig::default()
+        };
+        config.embedding.model_dir = dir.join("no-models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = WORD_DIM;
+        config.search.min_score_threshold = 0.0;
+        let mut rag = RAGEngine::new(config).await.unwrap();
+        rag.attach_search_models(shodh_rag::SearchModels::from_embedder(Arc::new(
+            WordEmbedder::default(),
+        )))
+        .unwrap();
+        rag
+    }
+
+    /// The test host over an engine that can index ([`engine_with_search_models`]).
+    pub async fn host_with_search_models() -> TestHost {
+        let t = host().await;
+        let rag = engine_with_search_models(&t.dir.path().join("searchable")).await;
+        let host = Arc::new(AgentHost {
+            data_dir: t.host.data_dir.clone(),
+            rag: Arc::new(RwLock::new(rag)),
+            audit: t.host.audit.clone(),
+            effects: t.host.effects.clone(),
+            web: t.host.web.clone(),
+            roots: t.host.roots.clone(),
+            memory: t.host.memory.clone(),
+            visuals: t.host.visuals.clone(),
+            research: t.host.research.clone(),
+            pdf: t.host.pdf.clone(),
+            workspaces: t.host.workspaces.clone(),
+        });
+        TestHost { host, ..t }
     }
 
     /// The test host with another web client (in-process DNS and HTTP).

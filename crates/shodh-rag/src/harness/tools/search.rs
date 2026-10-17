@@ -17,8 +17,12 @@ use super::{
 use crate::harness::events::RiskTier;
 use crate::harness::protocol::ToolLoadMode;
 use crate::harness::truncate_chars;
+use crate::harness::web::relevance::{is_stopword, words};
 use crate::path_case::PathSpellings;
-use crate::rag_engine::{normalize_source_path, page_numbers_from_metadata, DISPLAY_PATH_KEY};
+use crate::rag_engine::{
+    normalize_source_path, page_numbers_from_metadata, page_range_from_metadata, NeighborPart,
+    SnippetParts, DISPLAY_PATH_KEY,
+};
 use crate::types::{ComprehensiveResult, MetadataFilter, SourceSet};
 use crate::RAGEngine;
 
@@ -43,17 +47,7 @@ const MAX_PAGE_FETCH: usize = 48;
 /// The pages a result covers, from the metadata written at indexing time
 /// (`page_start`/`page_end`, else `page`). `None` for unpaged chunks.
 fn result_pages(result: &ComprehensiveResult) -> Option<(u32, u32)> {
-    let read = |key: &str| {
-        result
-            .metadata
-            .get(key)
-            .and_then(|v| v.trim().parse::<u32>().ok())
-    };
-    match (read("page_start"), read("page_end")) {
-        (Some(start), Some(end)) => Some((start.min(end), start.max(end))),
-        (Some(one), None) | (None, Some(one)) => Some((one, one)),
-        (None, None) => read("page").map(|p| (p, p)),
-    }
+    page_range_from_metadata(&result.metadata)
 }
 
 /// Whether `result` lies on one of `pages`. Unpaged chunks never do.
@@ -280,7 +274,264 @@ async fn resolve_display_paths(passages: &mut [Passage]) {
     }
 }
 
-fn passage(n: u32, result: &ComprehensiveResult, max_chars: usize) -> Passage {
+/// Whether a neighbouring chunk on `pages` may join a passage limited to
+/// `allowed` pages: always without a limit; else only when every page it
+/// covers is allowed (an unpaged chunk never is).
+fn neighbor_allowed(pages: Option<(u32, u32)>, allowed: &[u32]) -> bool {
+    if allowed.is_empty() {
+        return true;
+    }
+    pages.is_some_and(|(start, end)| {
+        end.checked_sub(start)
+            .and_then(|span| usize::try_from(span).ok())
+            .is_some_and(|span| span < allowed.len())
+            && (start..=end).all(|p| allowed.contains(&p))
+    })
+}
+
+/// The last characters of `text` within `max_chars`, a `…` in front marking
+/// the cut; all of it when it fits. `None` when nothing fits.
+fn tail_within(text: &str, max_chars: usize) -> Option<String> {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return (!text.is_empty()).then(|| text.to_string());
+    }
+    let keep = max_chars.checked_sub(1).filter(|&k| k > 0)?;
+    let at = text
+        .char_indices()
+        .nth(count - keep)
+        .map_or(text.len(), |(i, _)| i);
+    let tail = text[at..].trim_start();
+    (!tail.is_empty()).then(|| format!("\u{2026}{tail}"))
+}
+
+/// The first characters of `text` within `max_chars`, a `…` after them
+/// marking the cut; all of it when it fits. `None` when nothing fits.
+fn head_within(text: &str, max_chars: usize) -> Option<String> {
+    if text.chars().count() <= max_chars {
+        return (!text.is_empty()).then(|| text.to_string());
+    }
+    if max_chars < 2 {
+        return None;
+    }
+    let head: String = text.chars().take(max_chars - 1).collect();
+    let head = head.trim_end();
+    (!head.is_empty()).then(|| format!("{head}\u{2026}"))
+}
+
+/// The words of `query` a passage window looks for: its lower-cased
+/// alphanumeric words, stopwords and single characters left out.
+fn window_terms(query: &str) -> HashSet<String> {
+    words(query)
+        .into_iter()
+        .filter(|w| w.chars().count() > 1 && !is_stopword(w))
+        .collect()
+}
+
+/// Whether a window may start at char `at` of `chars` (`Some(true)` at a
+/// sentence start, `Some(false)` at a word start, `None` inside a word).
+fn start_boundary(chars: &[char], at: usize) -> Option<bool> {
+    if at == 0 {
+        return Some(true);
+    }
+    let prev = chars[at - 1];
+    if !prev.is_whitespace() {
+        return None;
+    }
+    let before_space = chars[..at]
+        .iter()
+        .rev()
+        .find(|c| !c.is_whitespace())
+        .copied();
+    Some(
+        prev == '\n'
+            || before_space.is_none_or(|c| matches!(c, '.' | '!' | '?' | '。' | '！' | '？')),
+    )
+}
+
+/// Whether a window may end at char `at` of `chars` (`Some(true)` after a
+/// sentence end, `Some(false)` at a word end, `None` inside a word).
+fn end_boundary(chars: &[char], at: usize) -> Option<bool> {
+    if at == chars.len() {
+        return Some(true);
+    }
+    let prev = chars[at - 1];
+    if matches!(prev, '.' | '!' | '?' | '。' | '！' | '？') && chars[at].is_whitespace() {
+        return Some(true);
+    }
+    (chars[at].is_whitespace() || prev.is_whitespace()).then_some(false)
+}
+
+/// `text`, longer than `max_chars` characters, cut to the window of that
+/// size holding the most occurrences of `terms` (whole words, any case; the
+/// earliest such window on a tie), widened to sentence or word boundaries
+/// inside it when there are any, a `…` marking each cut. The start of `text`
+/// when none of `terms` occurs in it.
+fn query_window(text: &str, max_chars: usize, terms: &HashSet<String>) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let total = chars.len();
+    // Room for a `…` at both ends and some text between them.
+    let room = max_chars.saturating_sub(2);
+    if total <= max_chars || terms.is_empty() || room == 0 {
+        return truncate_chars(text, max_chars);
+    }
+    // Where the terms occur, as char ranges.
+    let mut hits: Vec<(usize, usize)> = Vec::new();
+    let mut at = 0;
+    while at < total {
+        if !chars[at].is_alphanumeric() {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        while at < total && chars[at].is_alphanumeric() {
+            at += 1;
+        }
+        let word: String = chars[start..at].iter().collect::<String>().to_lowercase();
+        if terms.contains(&word) {
+            hits.push((start, at));
+        }
+    }
+    // The run of hits that fits in `room` with the most of them; the earliest wins a tie.
+    // Hits are in order and do not overlap, so the run's last hit only moves forward.
+    let mut best: Option<(usize, usize, usize)> = None;
+    let mut last = 0;
+    for (first, &(start, end)) in hits.iter().enumerate() {
+        if end - start > room {
+            continue;
+        }
+        last = last.max(first);
+        while last + 1 < hits.len() && hits[last + 1].1 - start <= room {
+            last += 1;
+        }
+        let count = last - first + 1;
+        if best.is_none_or(|(_, _, c)| count > c) {
+            best = Some((first, last, count));
+        }
+    }
+    let Some((first, last, _)) = best else {
+        return truncate_chars(text, max_chars);
+    };
+    let (hits_start, hits_end) = (hits[first].0, hits[last].1);
+    // Centre the hits in the window, inside the text.
+    let slack = room - (hits_end - hits_start);
+    let mut start = hits_start.saturating_sub(slack / 2).min(total - room);
+    let mut end = start + room;
+    // Snap inward to a sentence boundary, else a word boundary, never past the hits.
+    let snap_start = (start..=hits_start)
+        .find(|&i| start_boundary(&chars, i) == Some(true))
+        .or_else(|| (start..=hits_start).find(|&i| start_boundary(&chars, i).is_some()));
+    if let Some(i) = snap_start {
+        start = i;
+    }
+    let snap_end = (hits_end..=end)
+        .rev()
+        .find(|&i| end_boundary(&chars, i) == Some(true))
+        .or_else(|| {
+            (hits_end..=end)
+                .rev()
+                .find(|&i| end_boundary(&chars, i).is_some())
+        });
+    if let Some(i) = snap_end {
+        end = i;
+    }
+    let body: String = chars[start..end].iter().collect();
+    let body = body.trim();
+    let mut out = String::new();
+    if start > 0 {
+        out.push('\u{2026}');
+    }
+    out.push_str(body);
+    if end < total {
+        out.push('\u{2026}');
+    }
+    out
+}
+
+/// `matched` with as much of `before` (cut from its start) and `after` (cut
+/// from its end) as fits in `max_chars` characters, one line break apart.
+/// The room is shared evenly, a side that needs less leaving the rest to the
+/// other. A `matched` that does not fit alone is cut to the window around
+/// the query's `terms` ([`query_window`]).
+fn fit_around(
+    matched: &str,
+    before: &str,
+    after: &str,
+    max_chars: usize,
+    terms: &HashSet<String>,
+) -> String {
+    let matched_chars = matched.chars().count();
+    if matched_chars >= max_chars {
+        return query_window(matched, max_chars, terms);
+    }
+    let room = max_chars - matched_chars;
+    // A side costs its text and the line break that joins it.
+    let need = |side: &str| {
+        if side.is_empty() {
+            0
+        } else {
+            side.chars().count() + 1
+        }
+    };
+    let (before_need, after_need) = (need(before), need(after));
+    let before_room = before_need.min((room / 2).max(room.saturating_sub(after_need)));
+    let after_room = after_need.min(room - before_room);
+    let mut out = String::new();
+    if let Some(text) = tail_within(before, before_room.saturating_sub(1)) {
+        out.push_str(&text);
+        out.push('\n');
+    }
+    out.push_str(matched);
+    if let Some(text) = head_within(after, after_room.saturating_sub(1)) {
+        out.push('\n');
+        out.push_str(&text);
+    }
+    out
+}
+
+/// The text of `result` within `max_chars` characters. A result widened with
+/// its neighbours ([`SnippetParts`]) keeps the chunk that matched (whole when
+/// it fits) and spends the rest on the neighbours allowed on `neighbor_pages`
+/// ([`neighbor_allowed`]). A chunk that does not fit is cut to the window
+/// around the query's `terms` ([`query_window`]).
+fn passage_text(
+    result: &ComprehensiveResult,
+    max_chars: usize,
+    neighbor_pages: &[u32],
+    terms: &HashSet<String>,
+) -> String {
+    let snippet = result.snippet.as_str();
+    let Some(parts) = SnippetParts::of(snippet, &result.metadata) else {
+        return query_window(snippet.trim(), max_chars, terms);
+    };
+    let side = |list: &[NeighborPart]| -> String {
+        list.iter()
+            .filter(|p| neighbor_allowed(p.pages, neighbor_pages))
+            .map(|p| snippet[p.start..p.end].trim())
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let (start, end) = parts.matched;
+    fit_around(
+        snippet[start..end].trim(),
+        &side(&parts.before),
+        &side(&parts.after),
+        max_chars,
+        terms,
+    )
+}
+
+/// Passage `n` from `result`: its text within `max_chars` characters, with
+/// neighbouring chunks only from `neighbor_pages` (empty: any page), and cut
+/// around the query's `terms` ([`window_terms`]) when the chunk does not fit.
+fn passage(
+    n: u32,
+    result: &ComprehensiveResult,
+    max_chars: usize,
+    neighbor_pages: &[u32],
+    terms: &HashSet<String>,
+) -> Passage {
     let path = if result.citation.source.is_empty() {
         result
             .metadata
@@ -309,7 +560,7 @@ fn passage(n: u32, result: &ComprehensiveResult, max_chars: usize) -> Passage {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()),
         score: result.score,
-        text: truncate_chars(result.snippet.trim(), max_chars),
+        text: passage_text(result, max_chars, neighbor_pages, terms),
         regions: passage_regions(result),
         display_path,
     }
@@ -448,6 +699,31 @@ fn plan_search(scope: &RunScope, model: &SourceResolution) -> SearchPlan {
     plan
 }
 
+/// Whether `set` holds none of the scope's own sources: nothing, or only the
+/// owners of the files added in chats, which every limited scope searches.
+fn has_no_sources(set: &SourceSet) -> bool {
+    set.source_paths.is_empty()
+        && set
+            .space_ids
+            .iter()
+            .all(|id| crate::rag_engine::is_chat_uploads(id))
+}
+
+/// Source ids as the model is told them: the owners of files added in chats
+/// are named for what they hold, not by their internal ids.
+fn describe_sources(ids: &[String]) -> String {
+    let uploads = |id: &String| crate::rag_engine::is_chat_uploads(id);
+    let mut named: Vec<&str> = ids
+        .iter()
+        .filter(|id| !uploads(id))
+        .map(String::as_str)
+        .collect();
+    if ids.iter().any(uploads) {
+        named.push("files added in chats");
+    }
+    named.join(", ")
+}
+
 /// What the model is told about the limit the results were searched under.
 fn limit_note(
     scope: &RunScope,
@@ -464,7 +740,7 @@ fn limit_note(
             scoped_files.join(", ")
         ));
     } else if scope.restricted && plan.model_sources.is_empty() && plan.model_files.is_empty() {
-        if set.is_empty() && scope.snippets.is_empty() {
+        if has_no_sources(set) && scope.snippets.is_empty() {
             notes.push(match &scope.workspace_name {
                 Some(name) => format!(
                     "The workspace \"{name}\" has no searchable sources yet (none added, or none \
@@ -491,7 +767,7 @@ fn limit_note(
     } else if plan.use_scope_files && !scope.source_ids.is_empty() {
         notes.push(format!(
             "The user limited this answer to sources {}.",
-            scope.source_ids.join(", ")
+            describe_sources(&scope.source_ids)
         ));
     } else if plan.use_scope_files && !scope.files.is_empty() {
         notes.push(format!(
@@ -714,10 +990,21 @@ impl HostTool for SearchDocumentsTool {
         let count = u32::try_from(results.len()).unwrap_or(u32::MAX);
         let first = ctx.reserve_passages(count);
         let budget = passage_budget(results.len());
+        let terms = window_terms(query);
         let mut passages: Vec<Passage> = results
             .iter()
             .zip(first..)
-            .map(|(r, n)| passage(n, r, budget))
+            .map(|(r, n)| {
+                // The page limit holds for the neighbours joined to a passage of
+                // the user's files too, not only for the chunk that matched.
+                let file = r.metadata.get("source_file").map_or("", String::as_str);
+                let neighbor_pages: &[u32] = if scoped_files.iter().any(|f| f == file) {
+                    pages
+                } else {
+                    &[]
+                };
+                passage(n, r, budget, neighbor_pages, &terms)
+            })
             .collect();
         resolve_display_paths(&mut passages).await;
         for p in &passages {
@@ -831,7 +1118,7 @@ mod tests {
             snippet: "  Notice period is sixty days. ".into(),
             source_index: "hybrid".into(),
         };
-        let p = passage(3, &result, MAX_PASSAGE_CHARS);
+        let p = passage(3, &result, MAX_PASSAGE_CHARS, &[], &HashSet::new());
         assert_eq!(p.n, 3);
         assert_eq!(p.file, "acme_msa.pdf");
         assert_eq!(p.page.as_deref(), Some("4"));
@@ -864,7 +1151,7 @@ mod tests {
             snippet: "The chunkwise form computes...".into(),
             source_index: "hybrid".into(),
         };
-        let p = passage(1, &result, MAX_PASSAGE_CHARS);
+        let p = passage(1, &result, MAX_PASSAGE_CHARS, &[], &HashSet::new());
         assert_eq!(p.page.as_deref(), Some("5-6"));
         assert_eq!(p.section.as_deref(), Some("3 Method > 3.2 Chunkwise form"));
         let for_model = serde_json::to_value(&p).expect("json");
@@ -908,7 +1195,7 @@ mod tests {
             "",
         );
         assert_eq!(
-            passage(1, &by_filename, MAX_PASSAGE_CHARS).file,
+            passage(1, &by_filename, MAX_PASSAGE_CHARS, &[], &HashSet::new()).file,
             "SPANN - Billion-scale ANN Search.pdf"
         );
 
@@ -918,13 +1205,13 @@ mod tests {
             "",
         );
         assert_eq!(
-            passage(1, &by_title, MAX_PASSAGE_CHARS).file,
+            passage(1, &by_title, MAX_PASSAGE_CHARS, &[], &HashSet::new()).file,
             "SPANN - Billion-scale ANN Search.pdf"
         );
 
         let by_citation = file_result(source, &[], "SPANN - Billion-scale ANN Search");
         assert_eq!(
-            passage(1, &by_citation, MAX_PASSAGE_CHARS).file,
+            passage(1, &by_citation, MAX_PASSAGE_CHARS, &[], &HashSet::new()).file,
             "SPANN - Billion-scale ANN Search.pdf"
         );
 
@@ -938,7 +1225,7 @@ mod tests {
             "Microsoft Word - draft3",
         );
         assert_eq!(
-            passage(1, &other, MAX_PASSAGE_CHARS).file,
+            passage(1, &other, MAX_PASSAGE_CHARS, &[], &HashSet::new()).file,
             "spann - billion-scale ann search.pdf"
         );
     }
@@ -952,7 +1239,7 @@ mod tests {
             &[("display_path", "D:\\Elsewhere\\Other.pdf")],
             "",
         );
-        let p = passage(1, &result, MAX_PASSAGE_CHARS);
+        let p = passage(1, &result, MAX_PASSAGE_CHARS, &[], &HashSet::new());
         assert!(p.display_path.is_none());
         assert!(p.detail_value().get("display_path").is_none());
         assert!(serde_json::to_value(&p)
@@ -971,7 +1258,7 @@ mod tests {
             &[("display_path", "C:\\Research\\papers\\SPANN.pdf")],
             "",
         );
-        let p = passage(1, &result, MAX_PASSAGE_CHARS);
+        let p = passage(1, &result, MAX_PASSAGE_CHARS, &[], &HashSet::new());
         assert_eq!(p.path, "c:/research/papers/spann.pdf");
         assert_eq!(
             p.detail_value()["display_path"],
@@ -998,7 +1285,7 @@ mod tests {
             snippet: "Task: File GST return.".into(),
             source_index: "hybrid".into(),
         };
-        let p = passage(1, &result, MAX_PASSAGE_CHARS);
+        let p = passage(1, &result, MAX_PASSAGE_CHARS, &[], &HashSet::new());
         assert_eq!(p.file, "Task: File GST return");
         assert_eq!(
             p.path,
@@ -1009,7 +1296,7 @@ mod tests {
         untitled.metadata.clear();
         untitled.citation.source = "calendar://event/1".into();
         assert_eq!(
-            passage(2, &untitled, MAX_PASSAGE_CHARS).file,
+            passage(2, &untitled, MAX_PASSAGE_CHARS, &[], &HashSet::new()).file,
             "Event (untitled)"
         );
     }
@@ -1085,6 +1372,37 @@ mod tests {
             folders: vec!["C:/docs/thesis".into()],
             ..RunScope::default()
         }
+    }
+
+    #[test]
+    fn files_added_in_chats_are_named_and_are_not_a_workspace_source() {
+        let only_uploads = SourceSet {
+            space_ids: vec!["chat-uploads:ws-1".into()],
+            source_paths: Vec::new(),
+        };
+        assert!(has_no_sources(&only_uploads));
+        assert!(!has_no_sources(&SourceSet {
+            space_ids: vec!["space-a".into(), "chat-uploads:ws-1".into()],
+            source_paths: Vec::new(),
+        }));
+        // A workspace with no sources of its own is told so, uploads or not.
+        let scope = workspace_scope(&["chat-uploads:ws-1"], &[]);
+        let plan = plan_search(&scope, &ids(&[]));
+        let note = limit_note(&scope, &plan, &only_uploads, &[], &[]).unwrap();
+        assert!(note.contains("has no searchable sources yet"), "{note}");
+        // Internal ids never reach the model.
+        let limited = RunScope {
+            source_ids: vec!["space-a".into(), "chat-uploads:main".into()],
+            ..RunScope::default()
+        };
+        let plan = plan_search(&limited, &ids(&[]));
+        let set = SourceSet {
+            space_ids: plan.space_ids.clone(),
+            source_paths: Vec::new(),
+        };
+        let note = limit_note(&limited, &plan, &set, &[], &[]).unwrap();
+        assert!(note.contains("space-a, files added in chats"), "{note}");
+        assert!(!note.contains("chat-uploads"), "{note}");
     }
 
     #[test]
@@ -1357,5 +1675,368 @@ mod tests {
         .await;
         assert!(paths.is_empty(), "{paths:?}");
         assert!(text.contains("outside the workspace"), "{text}");
+    }
+
+    /// A result as search returns it after widening it with neighbours: the
+    /// snippet joined in reading order and where each part lies in it.
+    fn widened(
+        before: &[(&str, Option<(u32, u32)>)],
+        matched: &str,
+        after: &[(&str, Option<(u32, u32)>)],
+    ) -> ComprehensiveResult {
+        fn push(snippet: &mut String, piece: &str) -> (usize, usize) {
+            if !snippet.is_empty() {
+                snippet.push('\n');
+            }
+            let start = snippet.len();
+            snippet.push_str(piece);
+            (start, snippet.len())
+        }
+        let mut snippet = String::new();
+        let mut parts = SnippetParts::default();
+        for (text, pages) in before {
+            let (start, end) = push(&mut snippet, text);
+            parts.before.push(NeighborPart {
+                start,
+                end,
+                pages: *pages,
+            });
+        }
+        parts.matched = push(&mut snippet, matched);
+        for (text, pages) in after {
+            let (start, end) = push(&mut snippet, text);
+            parts.after.push(NeighborPart {
+                start,
+                end,
+                pages: *pages,
+            });
+        }
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            crate::rag_engine::SNIPPET_PARTS_KEY.to_string(),
+            serde_json::to_string(&parts).unwrap(),
+        );
+        metadata.insert("page_start".to_string(), "4".to_string());
+        metadata.insert("page_end".to_string(), "4".to_string());
+        ComprehensiveResult {
+            id: Uuid::nil(),
+            score: 0.5,
+            metadata,
+            citation: Citation {
+                title: "notes".into(),
+                source: "c:/docs/notes.txt".into(),
+                ..Citation::default()
+            },
+            snippet,
+            source_index: "hybrid".into(),
+        }
+    }
+
+    #[test]
+    fn a_widened_passage_keeps_the_chunk_that_matched() {
+        let before = format!("Spring ledger. {}", "b".repeat(985));
+        let matched = format!("Summer ledger. {} The saffron comet.", "m".repeat(560));
+        let after = format!("{} Autumn ledger.", "a".repeat(985));
+        let result = widened(&[(&before, None)], &matched, &[(&after, None)]);
+        let matched_chars = matched.chars().count();
+        // Cut from its start, the snippet would be mostly the chunk before.
+        assert!(!truncate_chars(result.snippet.trim(), 785).contains("saffron comet"));
+
+        for budget in [MAX_PASSAGE_CHARS, passage_budget(MAX_K), MIN_PASSAGE_CHARS] {
+            let text = passage(1, &result, budget, &[], &HashSet::new()).text;
+            assert!(text.chars().count() <= budget, "{budget}: {text}");
+            assert!(
+                !text.contains("Spring ledger"),
+                "the start of the chunk before goes first"
+            );
+            if matched_chars < budget {
+                assert!(
+                    text.contains(&matched),
+                    "{budget}: the matched chunk is whole"
+                );
+                // The room left is shared by the two neighbours.
+                assert!(text.starts_with('\u{2026}'), "{budget}: {text}");
+                assert!(text.ends_with('\u{2026}'), "{budget}: {text}");
+                assert!(
+                    !text.contains("Autumn ledger"),
+                    "the end of the chunk after goes first"
+                );
+            } else {
+                // Alone too long for the budget: the matched chunk from its start.
+                assert_eq!(text, truncate_chars(&matched, budget));
+            }
+        }
+
+        // A short neighbour leaves its share to the other.
+        let short = widened(&[(&before, None)], &matched, &[("Autumn ledger.", None)]);
+        let text = passage(1, &short, MAX_PASSAGE_CHARS, &[], &HashSet::new()).text;
+        assert!(
+            text.ends_with(&format!("{matched}\nAutumn ledger.")),
+            "{text}"
+        );
+        assert_eq!(text.chars().count(), MAX_PASSAGE_CHARS);
+
+        // A result that was not widened is cut from its end, as before.
+        let plain = ComprehensiveResult {
+            metadata: HashMap::new(),
+            ..widened(&[], &"p".repeat(900), &[])
+        };
+        assert_eq!(
+            passage(1, &plain, MIN_PASSAGE_CHARS, &[], &HashSet::new()).text,
+            truncate_chars(&"p".repeat(900), MIN_PASSAGE_CHARS)
+        );
+    }
+
+    #[test]
+    fn widened_passages_are_cut_on_character_boundaries() {
+        let before = "東京の港は朝に開き、漁船が沖へ向かう。".repeat(30);
+        let matched = "灯台守は北の崖の上に彗星を見た。".repeat(12);
+        let after = "秋の帳簿には潮の満ち引きが記されている。".repeat(30);
+        let result = widened(&[(&before, None)], &matched, &[(&after, None)]);
+        for budget in [1, 2, 3, 7, 100, 191, 192, 193, 194, 300, 785, 1_500] {
+            let text = passage(1, &result, budget, &[], &HashSet::new()).text;
+            assert!(text.chars().count() <= budget, "{budget}: {text}");
+            if matched.chars().count() < budget {
+                assert!(text.contains(&matched), "{budget}");
+            } else {
+                assert!(
+                    matched.starts_with(text.trim_end_matches('\u{2026}')),
+                    "{budget}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_page_limited_passage_takes_neighbours_from_its_pages_only() {
+        let matched = "Page four holds the lighthouse keeper's log of the saffron comet.";
+        let result = widened(
+            &[
+                ("Page two: the spring tide tables.", Some((2, 2))),
+                ("Page three: the ferry timetable.", Some((3, 3))),
+            ],
+            matched,
+            &[
+                ("Pages four and five: the weather.", Some((4, 5))),
+                ("A note without a page.", None),
+            ],
+        );
+        let text =
+            |pages: &[u32]| passage(1, &result, MAX_PASSAGE_CHARS, pages, &HashSet::new()).text;
+        // Page 4 only: nothing from pages 2, 3 or 5, nor from no page.
+        assert_eq!(text(&[4]), matched);
+        assert_eq!(
+            text(&[3, 4]),
+            format!("Page three: the ferry timetable.\n{matched}")
+        );
+        assert_eq!(
+            text(&[2, 3, 4, 5]),
+            format!(
+                "Page two: the spring tide tables.\nPage three: the ferry timetable.\n\
+                 {matched}\nPages four and five: the weather."
+            )
+        );
+        // Without a page limit every neighbour joins.
+        assert!(text(&[]).ends_with("A note without a page."));
+        assert!(!neighbor_allowed(Some((1, u32::MAX)), &[1, 2]));
+        assert!(!neighbor_allowed(None, &[1]));
+        assert!(neighbor_allowed(None, &[]));
+    }
+
+    /// A plain-text document long enough for several window chunks, indexed
+    /// with windows that end at its paragraphs.
+    async fn engine_with_long_notes(dir: &std::path::Path) -> RAGEngine {
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.join("data");
+        config.embedding.model_dir = dir.join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        config.search.min_score_threshold = 0.0;
+        config.chunking.chunk_size = 600;
+        config.chunking.chunk_overlap = 0;
+        let mut engine = RAGEngine::new(config).await.unwrap();
+        engine
+            .attach_search_models(crate::rag_engine::SearchModels::from_embedder(Arc::new(
+                crate::statements::testing::WordEmbedder::default(),
+            )))
+            .unwrap();
+        let filler = "The harbour archive lists the tide tables, the ferry times and the \
+                      weather for each week of the season. ";
+        let text = [
+            format!("Spring ledger. {}", filler.repeat(5)),
+            format!(
+                "Summer ledger. {}The lighthouse keeper recorded a saffron comet above the \
+                 northern cliffs.",
+                filler.repeat(4)
+            ),
+            format!("Autumn ledger. {}", filler.repeat(5)),
+            format!("Winter ledger. {}", filler.repeat(5)),
+        ]
+        .map(|p| p.trim().to_string())
+        .join("\n\n");
+        let path = stored("C:/docs/notes/harbour.txt");
+        let mut metadata = HashMap::new();
+        metadata.insert("space_id".to_string(), "notes".to_string());
+        metadata.insert("file_path".to_string(), path.clone());
+        metadata.insert("title".to_string(), "harbour".to_string());
+        let ids = engine
+            .add_document(
+                &text,
+                crate::types::DocumentFormat::TXT,
+                metadata,
+                Citation {
+                    title: "harbour".into(),
+                    source: path,
+                    ..Citation::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(ids.len() >= 3, "{} chunks", ids.len());
+        engine
+    }
+
+    #[tokio::test]
+    async fn a_txt_passage_shows_the_chunk_that_matched_not_the_one_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Box::pin(engine_with_long_notes(dir.path())).await;
+        let results =
+            Box::pin(engine.search_comprehensive("saffron comet lighthouse keeper", 3, None))
+                .await
+                .unwrap();
+        let top = &results[0];
+        assert_eq!(
+            top.metadata.get("chunk_index").map(String::as_str),
+            Some("1"),
+            "{}",
+            top.snippet
+        );
+        let parts = SnippetParts::of(&top.snippet, &top.metadata).expect("widened");
+        let matched = top.snippet[parts.matched.0..parts.matched.1].trim();
+        assert!(matched.starts_with("Summer ledger."), "{matched}");
+        assert!(matched.ends_with("northern cliffs."), "{matched}");
+        assert!(
+            top.snippet.starts_with("Spring ledger."),
+            "the chunk before comes first"
+        );
+
+        let terms = window_terms("saffron comet lighthouse keeper");
+        for budget in [MAX_PASSAGE_CHARS, passage_budget(MAX_K), MIN_PASSAGE_CHARS] {
+            let text = passage(1, top, budget, &[], &terms).text;
+            assert!(text.chars().count() <= budget, "{budget}: {text}");
+            if matched.chars().count() < budget {
+                assert!(text.contains(matched), "{budget}: {text}");
+            } else {
+                // Too long for the budget: the part of it the query matched.
+                assert!(text.contains("saffron comet"), "{budget}: {text}");
+            }
+            assert!(!text.contains("Spring ledger"), "{budget}: {text}");
+        }
+    }
+
+    /// A 1,750-character chunk whose only match is in its last 250 characters.
+    fn late_match_chunk() -> String {
+        let filler = "The harbour archive lists the tide tables and the ferry times. ";
+        let mut text = filler.repeat(1_500 / filler.len() + 1);
+        text.truncate(1_500);
+        let text = text.trim_end().to_string();
+        let tail = format!(
+            " The lighthouse keeper recorded a saffron comet above the northern cliffs. {}",
+            filler.repeat(4)
+        );
+        let mut chunk = format!("{text}{tail}");
+        chunk.truncate(1_750);
+        assert_eq!(chunk.chars().count(), 1_750);
+        assert!(chunk.find("saffron").unwrap() > 1_500);
+        chunk
+    }
+
+    #[test]
+    fn an_oversized_chunk_is_cut_around_the_query() {
+        let chunk = late_match_chunk();
+        let terms = window_terms("Which saffron comet did the keeper see?");
+        assert!(terms.contains("saffron") && terms.contains("keeper"));
+        assert!(
+            !terms.contains("which") && !terms.contains("the"),
+            "stopwords: {terms:?}"
+        );
+
+        // Unexpanded and widened alike.
+        let plain = ComprehensiveResult {
+            metadata: HashMap::new(),
+            ..widened(&[], &chunk, &[])
+        };
+        let in_context = widened(
+            &[("Spring ledger.", None)],
+            &chunk,
+            &[("Autumn ledger.", None)],
+        );
+        for result in [&plain, &in_context] {
+            for budget in [MAX_PASSAGE_CHARS, passage_budget(MAX_K), MIN_PASSAGE_CHARS] {
+                let text = passage(1, result, budget, &[], &terms).text;
+                assert!(text.chars().count() <= budget, "{budget}: {text}");
+                assert!(text.contains("saffron comet"), "{budget}: {text}");
+                assert!(text.starts_with('\u{2026}'), "{budget}: {text}");
+                assert!(!text.contains("ledger"), "no room for neighbours: {text}");
+            }
+        }
+        // Snapped to the sentence the match is in when the window starts mid-text.
+        let text = passage(1, &plain, MIN_PASSAGE_CHARS, &[], &terms).text;
+        let body = text.trim_start_matches('\u{2026}');
+        assert!(body.starts_with("The "), "{text}");
+
+        // None of the query's words in the chunk: its start, as before.
+        let other = window_terms("monsoon rainfall");
+        assert_eq!(
+            passage(1, &plain, MIN_PASSAGE_CHARS, &[], &other).text,
+            truncate_chars(&chunk, MIN_PASSAGE_CHARS)
+        );
+        assert_eq!(
+            passage(1, &plain, MIN_PASSAGE_CHARS, &[], &HashSet::new()).text,
+            truncate_chars(&chunk, MIN_PASSAGE_CHARS)
+        );
+    }
+
+    #[test]
+    fn the_window_holds_the_most_query_words_and_the_earliest_on_a_tie() {
+        let gap = "plain words of the archive ".repeat(20);
+        let text = format!("Alpha opens it. {gap}Beta sits here. {gap}Beta again, beta.");
+        let terms = window_terms("alpha beta");
+        let window = query_window(&text, 60, &terms);
+        assert!(window.chars().count() <= 60, "{window}");
+        assert!(window.contains("Beta again, beta."), "{window}");
+        // One occurrence each: the first one.
+        let tie = format!("Alpha opens it. {gap}Beta sits here. {gap}");
+        let window = query_window(&tie, 60, &terms);
+        assert!(window.contains("Alpha"), "{window}");
+        assert!(!window.contains("Beta"), "{window}");
+        // Whole words only, in any case.
+        let partial = format!("{gap}Alphabetical order. {gap}ALPHA at last.");
+        let window = query_window(&partial, 40, &window_terms("alpha"));
+        assert!(window.contains("ALPHA at last."), "{window}");
+    }
+
+    #[test]
+    fn query_windows_are_cut_on_character_boundaries() {
+        let cjk = "灯台守は北の崖の上に彗星を見た。".repeat(40);
+        let text = format!("{cjk} saffron comet {cjk}");
+        let terms = window_terms("saffron comet");
+        for budget in 1..=40 {
+            let window = query_window(&text, budget, &terms);
+            assert!(window.chars().count() <= budget, "{budget}: {window}");
+        }
+        for budget in [20, 33, 191, 300, 785] {
+            let window = query_window(&text, budget, &terms);
+            assert!(window.chars().count() <= budget, "{budget}: {window}");
+            assert!(window.contains("saffron comet"), "{budget}: {window}");
+        }
+        // A CJK term is a word run of its own and matched whole.
+        let runs = format!(
+            "{} 彗星 {}",
+            "東京の港。".repeat(100),
+            "東京の港。".repeat(100)
+        );
+        let window = query_window(&runs, 30, &window_terms("彗星"));
+        assert!(window.contains("彗星"), "{window}");
     }
 }

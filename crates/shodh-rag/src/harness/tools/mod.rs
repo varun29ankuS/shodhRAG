@@ -172,11 +172,14 @@ impl RunPassages {
     }
 
     /// Start the run with `passages` under their own numbers (see
-    /// [`RunScope::carried`]); numbers issued later follow the highest.
-    pub fn seed(&self, passages: &[CitedPassage]) {
-        let Some(highest) = passages.iter().map(|p| p.n).max() else {
+    /// [`RunScope::carried`]); numbers issued later follow the highest of
+    /// them and `through` ([`RunScope::carried_through`]), so a number the
+    /// context still uses for a passage left out is never handed out again.
+    pub fn seed(&self, passages: &[CitedPassage], through: u32) {
+        let highest = passages.iter().map(|p| p.n).max().unwrap_or(0).max(through);
+        if highest == 0 {
             return;
-        };
+        }
         let mut cited = self.lock();
         for passage in passages {
             cited.insert(passage.n, passage.clone());
@@ -246,6 +249,11 @@ pub struct RunScope {
     /// cite them as the answer does, its claims citing them are checked
     /// against them, and its own searches number on after them.
     pub carried: Vec<CitedPassage>,
+    /// The highest citation number among the passages the question carried,
+    /// those left out of `carried` by its limits included (0 for none). The
+    /// conversation the side question continues still cites a left-out
+    /// passage by its number, so the run's own numbers start after this one.
+    pub carried_through: u32,
     /// The user's question as they asked it, without the blocks the sent
     /// message adds in front of it (workspace instructions, memories, the
     /// conversation replayed into a new session). The answer check searches
@@ -1423,10 +1431,13 @@ mod tests {
     #[test]
     fn carried_passages_keep_their_numbers_and_new_ones_follow() {
         let run = RunPassages::new();
-        run.seed(&[
-            carried(28, "Fig. 2 caption"),
-            carried(21, "MRNG definition"),
-        ]);
+        run.seed(
+            &[
+                carried(28, "Fig. 2 caption"),
+                carried(21, "MRNG definition"),
+            ],
+            0,
+        );
         assert_eq!(run.get(28).unwrap().text, "Fig. 2 caption");
         assert_eq!(run.get(21).unwrap().text, "MRNG definition");
         assert_eq!(run.issued(), 28);
@@ -1436,8 +1447,26 @@ mod tests {
         assert_eq!(run.cite(carried(0, "Fig. 2 caption")), 28);
         // Nothing carried: numbering starts at 1.
         let fresh = RunPassages::new();
-        fresh.seed(&[]);
+        fresh.seed(&[], 0);
         assert_eq!(fresh.reserve(1), 1);
+    }
+
+    #[test]
+    fn a_left_out_carried_number_is_never_issued_again() {
+        // [28] was carried but left out by the limits; [21] was kept.
+        let run = RunPassages::new();
+        run.seed(&[carried(21, "MRNG definition")], 28);
+        assert_eq!(run.issued(), 28);
+        assert!(run.get(28).is_none(), "a left-out passage is not the run's");
+        assert_eq!(
+            run.reserve(2),
+            29,
+            "the run's own search numbers after [28]"
+        );
+        // Every carried passage left out: numbering still starts after them.
+        let none_kept = RunPassages::new();
+        none_kept.seed(&[], 9);
+        assert_eq!(none_kept.reserve(1), 10);
     }
 
     #[test]

@@ -1055,9 +1055,13 @@ mod tests {
         ];
         for (prefs, silenced) in cases {
             for category in CATEGORIES {
+                // Memory suggestions are part of "needs you": switching that
+                // off silences them too.
+                let nested =
+                    silenced == Category::NeedsYou && category == Category::MemorySuggestions;
                 assert_eq!(
                     allows(&prefs, category),
-                    category != silenced,
+                    category != silenced && !nested,
                     "{} with {} off",
                     category.as_str(),
                     silenced.as_str()

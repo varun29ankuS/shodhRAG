@@ -352,12 +352,12 @@ mod tests {
         std::fs::create_dir_all(&later).unwrap();
         std::fs::write(
             papers.join("lease.txt"),
-            "The lease notice period is sixty days for either party.",
+            "The lease notice period is sixty days for either party. Rent is reviewed every spring, and the landlord repairs the roof and the heating when they fail.",
         )
         .unwrap();
         std::fs::write(
             later.join("parking.txt"),
-            "Visitors park on the street next to the courtyard.",
+            "Visitors park on the street; residents use the garage below the courtyard, and bicycles are kept in the shed next to the main entrance of the building.",
         )
         .unwrap();
         for (file, source_id) in [

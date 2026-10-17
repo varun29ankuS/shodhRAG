@@ -861,13 +861,13 @@ mod tests {
         for (name, text) in [
             (
                 "a.txt",
-                "The lease notice period is sixty days for either party.",
+                "The lease notice period is sixty days for either party. Rent is reviewed every spring, and the landlord repairs the roof and the heating when they fail.",
             ),
             (
                 "b.txt",
-                "Visitors park on the street next to the courtyard.",
+                "Visitors park on the street; residents use the garage below the courtyard, and bicycles are kept in the shed next to the main entrance of the building.",
             ),
-            ("c.txt", "Quiet hours begin at ten in the evening."),
+            ("c.txt", "Quiet hours begin at ten in the evening and end at seven in the morning; parties need a week of notice to the neighbours and the building manager."),
         ] {
             std::fs::write(folder.join(name), text).unwrap();
         }
@@ -972,11 +972,11 @@ mod tests {
         for (name, text) in [
             (
                 "a.txt",
-                "The lease notice period is sixty days for either party.",
+                "The lease notice period is sixty days for either party. Rent is reviewed every spring, and the landlord repairs the roof and the heating when they fail.",
             ),
             (
                 "b.txt",
-                "Visitors park on the street next to the courtyard.",
+                "Visitors park on the street; residents use the garage below the courtyard, and bicycles are kept in the shed next to the main entrance of the building.",
             ),
         ] {
             std::fs::write(folder.join(name), text).unwrap();

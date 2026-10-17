@@ -748,10 +748,27 @@ pub fn send_test(sink: &dyn Deliver) -> Result<(), String> {
     .map_err(|e| format!("The system did not accept the notification: {e}"))
 }
 
-/// Settings → Notifications → "Send a test notification".
+/// How long after the click the test notification is sent: time for the user
+/// to switch to another window. macOS shows no banner for the app in front,
+/// so a test sent at once would land silently in Notification Centre; the
+/// delay is the same on every platform.
+pub const TEST_DELAY: Duration = Duration::from_secs(5);
+
+/// Waits for `wait`, then sends the test through `sink`. Resolves once the
+/// notification was handed to the system (or refused).
+pub async fn send_test_after<D: Deliver>(
+    wait: impl std::future::Future<Output = ()>,
+    sink: &D,
+) -> Result<(), String> {
+    wait.await;
+    send_test(sink)
+}
+
+/// Settings → Notifications → "Send a test notification": sent
+/// [`TEST_DELAY`] after the click; returns once it was handed to the system.
 #[tauri::command]
 pub async fn send_test_notification(app: AppHandle) -> Result<(), String> {
-    send_test(&Desktop(&app))
+    send_test_after(tokio::time::sleep(TEST_DELAY), &Desktop(&app)).await
 }
 
 /// The system's notification settings page.
@@ -1165,6 +1182,32 @@ mod tests {
                 .push((title.to_string(), body.to_string()));
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn the_test_notification_is_sent_only_after_the_wait() {
+        assert_eq!(TEST_DELAY, Duration::from_secs(5));
+        let recorder = Recorder::default();
+        let waited = std::cell::Cell::new(false);
+        let wait = async {
+            assert!(
+                recorder.shown.borrow().is_empty(),
+                "nothing is sent before the wait ends"
+            );
+            waited.set(true);
+        };
+        send_test_after(wait, &recorder).await.unwrap();
+        assert!(waited.get());
+        assert_eq!(
+            recorder.shown.borrow().as_slice(),
+            &[(TEST_TITLE.to_string(), TEST_BODY.to_string())]
+        );
+        let refusing = Recorder {
+            fail: Some("no executable path".into()),
+            ..Recorder::default()
+        };
+        let error = send_test_after(async {}, &refusing).await.unwrap_err();
+        assert!(error.contains("did not accept"), "{error}");
     }
 
     #[test]

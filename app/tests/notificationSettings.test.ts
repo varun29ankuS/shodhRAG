@@ -8,7 +8,9 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_NOTIFICATION_PREFS,
   NOTIFICATION_KEYS,
+  TEST_DELAY_SECONDS,
   TEST_HELP,
+  TEST_PENDING,
   notificationRows,
   openSystemNotificationSettings,
   parseNotificationPrefs,
@@ -114,4 +116,25 @@ test('the system settings button asks the backend, which picks the page', async 
   const { calls, call } = recorder(undefined);
   await openSystemNotificationSettings(call);
   assert.deepEqual(calls, [{ command: 'open_notification_settings' }]);
+});
+
+test('the test waits five seconds so the user can switch away, and says so first', async () => {
+  assert.equal(TEST_DELAY_SECONDS, 5);
+  assert.equal(TEST_PENDING, 'Switch to another window — the test arrives in 5 seconds.');
+  // "Sent" only once the backend's call resolved (after its wait).
+  let release: () => void = () => {};
+  const call: Invoke = <T>(command: string): Promise<T> =>
+    new Promise<T>(resolve => {
+      assert.equal(command, 'send_test_notification');
+      release = () => resolve(undefined as T);
+    });
+  let settled = false;
+  const pending = sendTestNotification(call).then(r => {
+    settled = true;
+    return r;
+  });
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(settled, false, 'not reported as sent while the backend waits');
+  release();
+  assert.match(testMessage(await pending), /^Sent\./);
 });

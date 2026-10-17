@@ -135,9 +135,10 @@ export function saveNotificationPrefs(call: Invoke, prefs: NotificationPrefs): P
 }
 
 /**
- * Sends the test notification. It is shown even while Shodh is in front and
- * whatever the switches say; `sent` means the system took it, not that it
- * was displayed (the system can still block it, see `TEST_HELP`).
+ * Sends the test notification, which the backend hands to the system
+ * `TEST_DELAY_SECONDS` after the call (whatever the switches say); resolves
+ * after that. `sent` means the system took it, not that it was displayed
+ * (the system can still block it, see `TEST_HELP`).
  */
 export async function sendTestNotification(call: Invoke): Promise<TestResult> {
   try {
@@ -147,6 +148,12 @@ export async function sendTestNotification(call: Invoke): Promise<TestResult> {
     return { sent: false, error: errorText(err) };
   }
 }
+
+/** Seconds between the click and the test notification (`notifications.rs::TEST_DELAY`). */
+export const TEST_DELAY_SECONDS = 5;
+
+/** What the panel says while the test waits (macOS shows no banner for the app in front). */
+export const TEST_PENDING = `Switch to another window — the test arrives in ${TEST_DELAY_SECONDS} seconds.`;
 
 /** What the panel says after a test. */
 export function testMessage(result: TestResult): string {

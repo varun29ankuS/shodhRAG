@@ -6,6 +6,7 @@ import { getAppSettings, onAppSettingsChanged, setNotificationPreferences } from
 import { SwitchRow } from './PrivacySettings';
 import {
   TEST_HELP,
+  TEST_PENDING,
   notificationRows,
   openSystemNotificationSettings,
   sendTestNotification,
@@ -64,7 +65,7 @@ export default function NotificationSettings() {
 
   const test = async () => {
     setTesting(true);
-    setResult(null);
+    setResult(TEST_PENDING);
     try {
       setResult(testMessage(await sendTestNotification(invoke)));
     } finally {

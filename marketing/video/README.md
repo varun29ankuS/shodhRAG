@@ -1,10 +1,10 @@
 # Shodh launch video
 
-Remotion project for the launch video: real app footage on Shodh orange, cut to the music's beats. Captions only, no voice.
+Remotion project for the launch video: on Shodh orange, an animated chapter title on the left (number, headline, one line of detail and a drawn-on illustration) and the real app on the right, cut to the music's bars. The brand mark stays in the top left throughout. No voice.
 
 | Composition | Size | Length | Output |
 |---|---|---|---|
-| `ShodhLaunch` | 1920×1080 @ 30 fps | 40 s, 8 shots | `npm run render` → `out/shodh-launch.mp4` (H.264, CRF 18) |
+| `ShodhLaunch` | 1920×1080 @ 30 fps | 1:47, 15 chapters and a close | `npm run render` → `out/shodh-launch.mp4` (H.264, CRF 18) |
 | `ShodhLoop` | 960 px wide GIF, 15 fps | about 12 s: answer, citation, grounding | `npm run render:gif` → `out/shodh-loop.gif` |
 
 ## Setup
@@ -18,9 +18,13 @@ The first render downloads Remotion's headless browser. After that, rendering ma
 
 ## Music
 
-The track is "Future Tech Corporate Commercial" by PaulYudin ([Pixabay 322264](https://pixabay.com/music/upbeat-future-tech-corporate-commercial-322264/), Pixabay Content License). The licence allows its use in the video but not redistributing the file, so it is not committed. Download it and save it as `public/music/track.mp3`.
+The track is "Study Music" by The_Mountain ([Pixabay 602501](https://pixabay.com/music/)), under the Pixabay Content License, which allows its use in the video but not redistributing the file, so neither the source nor the edit is committed. Download it, then run:
 
-The edit follows the track's beats, not a fixed grid: `src/beats.json` holds the beat times, written by `npm run beats` (`scripts/beats.py`, needs `pip install librosa`). `src/beats.ts` treats beats 3, 7, 11, … as bar starts, where the kick is strongest and the chords change. `src/cut.ts` lists the shots by the beat each starts on; every cut falls on a bar start. The video ends at 40 s, a bar after the close's last hit, where the track's first section ends. If the track changes, run `npm run beats`, check the bar phase, and adjust the shots.
+```sh
+npm run beats -- path/to/the_mountain-study-music-602501.mp3
+```
+
+`scripts/beats.py` (needs `pip install librosa` and ffmpeg) fits a constant tempo grid to the track, cuts it from two sections joined on matching bars (0:00–1:11.9, then 1:56.3 to a two-bar fade), and writes `public/music/track.mp3` and `src/beats.json`. Every cut, reveal and pulse sits on that grid: `src/cut.ts` lists the shots by the bar each starts on.
 
 ## Footage
 
@@ -28,7 +32,7 @@ Every shot except the close shows real footage of the app. A shot with no footag
 
 The footage is not committed (it is large and re-recorded for each release). Record it from the release build in a separate demo profile (`SHODH_DATA_DIR`) with a library of public papers, then:
 
-1. Put one clip per shot in `public/footage/<shot>/clip.mp4`. The shot ids are in `src/cut.ts`. Each clip must be at least as long as its shot; speed it up when cutting rather than trimming the action. Capture at 16:9, at least 1920×1080, so the punch-ins stay sharp. PNG/JPG stills or a numbered PNG sequence also work (see `public/footage.json`).
+1. Put one clip per shot in `public/footage/<shot>/clip.mp4`. The shot ids are in `src/cut.ts` (every shot but `close`). Each clip must be at least as long as its shot; speed it up when cutting rather than trimming the action. Capture at 16:9, at least 1920×1080, so the punch-ins stay sharp. PNG/JPG stills or a numbered PNG sequence also work (see `public/footage.json`).
 2. Set the camera in `public/footage.json` under `"keyframes"`:
    - `at` is the point in the shot, from 0 to 1;
    - `focus` is the area in footage coordinates (0–1) that the zoom centres on;

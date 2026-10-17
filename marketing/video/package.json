@@ -2,7 +2,7 @@
   "name": "shodh-launch-video",
   "private": true,
   "version": "1.0.0",
-  "description": "Shodh launch video (Remotion): real app footage on Shodh orange, cut to the music's beats.",
+  "description": "Shodh launch video (Remotion): real app footage beside animated chapter titles on Shodh orange, cut to the music's bars.",
   "type": "module",
   "scripts": {
     "studio": "remotion studio src/index.ts",

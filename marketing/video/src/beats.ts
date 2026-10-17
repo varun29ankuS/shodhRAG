@@ -1,13 +1,16 @@
-// The music's beat map (src/beats.json, from scripts/beats.py). Every cut,
-// caption and pulse is placed on a detected beat, not on a fixed grid: the
-// tracker's beats wander a few milliseconds and a grid drifts off them.
+// The music's beat map (src/beats.json, from scripts/beats.py): a constant
+// tempo grid fitted to the track's onsets. Every cut, reveal and pulse is
+// placed on one of these beats.
 import map from "./beats.json";
 import { FPS } from "./theme";
 
 export const BEATS: readonly number[] = map.beats;
 
-/** Beats 3, 7, 11, … start a bar: they carry the strongest kick and the chord changes. */
-export const BAR_PHASE = 3;
+/** Beats `BAR_PHASE`, `BAR_PHASE + 4`, … start a bar (where the track's sections change). */
+export const BAR_PHASE: number = map.barPhase;
+
+/** The beat index that starts bar `bar` (bar 0 is the first full bar). */
+export const barBeat = (bar: number): number => BAR_PHASE + 4 * bar;
 
 /** The frame a beat falls on. */
 export function beatFrame(index: number): number {

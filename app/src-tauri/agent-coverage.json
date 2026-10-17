@@ -173,6 +173,7 @@
     "agent_code_discard": { "excluded": "Undoes the assistant's own Code changes; only the user may decide to throw away what the assistant did." },
     "agent_code_paths": { "excluded": "Checks which files a diagram in an answer names exist in the code folder, so the reader can open them; the assistant reads the folder with its own Code tools." },
     "library_profile": { "excluded": "Picks the starter questions Ask suggests for the kind of documents in the library; the assistant reads the documents themselves with search_documents." },
+    "store_notices": { "excluded": "Lists notices about the app's own damaged data files (a backup used, settings reset) for the window to show the user; the stores report them, and there is nothing for the assistant to do with them." },
     "ui_state_get": { "excluded": "Reads the Library source list and setup progress the UI keeps on disk so they survive a forced quit; the assistant lists sources with list_sources." },
     "ui_state_set": { "excluded": "Saves the Library source list and setup progress the UI shows; the assistant adds and removes sources with its own tools." },
     "code_settings_get": { "excluded": "Shows the workspace's Code approval level; the assistant must not inspect or manage its own permissions." },

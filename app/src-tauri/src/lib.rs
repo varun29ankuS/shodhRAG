@@ -7,6 +7,7 @@ mod connect_commands;
 mod connection_health;
 mod database_commands;
 mod document_upload_commands;
+mod durable_file;
 mod enhanced_rag_commands;
 mod file_watcher;
 mod graph_commands;
@@ -31,6 +32,7 @@ mod shutdown;
 mod source_viewer_commands;
 mod space_manager;
 mod storage_commands;
+mod store_notices;
 mod table_model_commands;
 mod ui_state_commands;
 mod updater;
@@ -189,6 +191,9 @@ pub fn run() {
                 .build()?;
             }
             tracing::info!("Main window created");
+            // Notices about damaged data files reach the window from here on;
+            // earlier ones are listed by `store_notices`.
+            store_notices::attach(app.handle());
 
             // Get app data directory for persistent storage. Without it
             // nothing can be stored, so this is the one fatal setup error.
@@ -744,6 +749,8 @@ pub fn run() {
             background::set_agent_idle_minutes,
             background::set_start_with_windows,
             shutdown::quit_ready,
+            // Damaged data files (backup used, settings reset)
+            store_notices::store_notices,
         ])
         .build(tauri::generate_context!());
 

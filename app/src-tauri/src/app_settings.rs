@@ -12,7 +12,6 @@
 //! [`APP_SETTINGS_CHANGED_EVENT`]; on first run it seeds them once from the
 //! values it kept in local storage before this store existed.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -27,6 +26,8 @@ use shodh_rag::user_memory::learn::{
 use tauri::{AppHandle, Emitter, State};
 
 use crate::audit_commands::AuditState;
+use crate::durable_file::{self, Loaded, Origin, ReadFailure};
+use crate::store_notices::{self, NoticeKind, StoreNotice};
 
 pub const SETTINGS_FILE: &str = "app_settings.json";
 
@@ -54,6 +55,8 @@ pub enum SettingsError {
         path: PathBuf,
         source: serde_json::Error,
     },
+    #[error("Settings file {path} could not be read: {message}")]
+    Unreadable { path: PathBuf, message: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -359,6 +362,18 @@ pub fn denied_reason(key: &str) -> Option<&'static str> {
         .map(|(_, why)| *why)
 }
 
+/// Settings read back from a backup, or defaults after the file was
+/// damaged. The latest change may be missing, and it may have been turning
+/// Local-only mode on, so Local-only mode is on until the user sees it in
+/// Settings (failing closed, like every reader of an unreadable policy).
+/// Keys found in the environment are not copied into the credential store
+/// again: a key the user removed stays removed.
+fn recovered(mut settings: AppSettings) -> AppSettings {
+    settings.policy.local_only = true;
+    settings.models.env_keys_migrated = true;
+    settings
+}
+
 /// The settings file of one app data directory.
 #[derive(Debug, Clone)]
 pub struct SettingsStore {
@@ -372,49 +387,96 @@ impl SettingsStore {
         }
     }
 
-    fn read_unlocked(&self) -> Result<AppSettings, SettingsError> {
-        match fs::read_to_string(&self.path) {
-            Ok(text) => serde_json::from_str(&text).map_err(|source| SettingsError::Parse {
-                path: self.path.clone(),
-                source,
-            }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(AppSettings::default()),
-            Err(source) => Err(SettingsError::Io {
-                path: self.path.clone(),
-                source,
-            }),
+    /// The settings and the file they came from. A damaged file never stops
+    /// the app: its backup is used, else the defaults ([`recovered`]), each
+    /// with a notice, and the damaged file is moved aside (never
+    /// overwritten) at the next save. Fails only when the file cannot be
+    /// opened at all (nothing says it is damaged).
+    fn read_unlocked(&self) -> Result<Loaded<AppSettings>, SettingsError> {
+        let read = durable_file::read_with_backup(
+            &self.path,
+            |text| serde_json::from_str::<AppSettings>(text).map_err(|e| e.to_string()),
+            AppSettings::default,
+        );
+        match read {
+            Ok(Loaded {
+                value,
+                origin: Origin::Backup { problem },
+            }) => {
+                store_notices::report(StoreNotice::new(
+                    "settings",
+                    NoticeKind::Restored,
+                    &self.path,
+                    "Settings restored from the backup",
+                    format!(
+                        "The settings file could not be read ({problem}), so the copy kept before \
+                         the last change is used. Local-only mode is on until you check Settings → \
+                         Privacy, because the latest change may be missing."
+                    ),
+                ));
+                Ok(Loaded {
+                    value: recovered(value),
+                    origin: Origin::Backup { problem },
+                })
+            }
+            Ok(loaded) => Ok(loaded),
+            Err(ReadFailure::Io { path, message }) => {
+                Err(SettingsError::Unreadable { path, message })
+            }
+            Err(ReadFailure::Damaged {
+                problem,
+                backup_problem,
+                ..
+            }) => {
+                store_notices::report(StoreNotice::new(
+                    "settings",
+                    NoticeKind::Reset,
+                    &self.path,
+                    "Settings were reset",
+                    format!(
+                        "The settings file could not be read ({problem}) and its backup could not \
+                         be used ({backup_problem}), so the default settings are used. Local-only \
+                         mode is on until you check Settings → Privacy. The damaged file is kept \
+                         next to it ({SETTINGS_FILE}.damaged-…) when settings are next saved."
+                    ),
+                ));
+                Ok(Loaded {
+                    value: recovered(AppSettings::default()),
+                    origin: Origin::Backup { problem },
+                })
+            }
         }
     }
 
     pub fn load(&self) -> Result<AppSettings, SettingsError> {
         let _guard = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        self.read_unlocked()
+        self.read_unlocked().map(|loaded| loaded.value)
     }
 
-    /// Apply `change`, validate the result and save it.
+    /// Apply `change`, validate the result and save it (durably, keeping the
+    /// previous file as its backup).
     pub fn update<R>(
         &self,
         change: impl FnOnce(&mut AppSettings) -> Result<R, SettingsError>,
     ) -> Result<(AppSettings, R), SettingsError> {
         let _guard = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut settings = self.read_unlocked()?;
+        let Loaded {
+            value: mut settings,
+            origin,
+        } = self.read_unlocked()?;
         let result = change(&mut settings)?;
         validate(&settings.preferences)?;
-        let io = |source| SettingsError::Io {
-            path: self.path.clone(),
-            source,
-        };
-        if let Some(dir) = self.path.parent() {
-            fs::create_dir_all(dir).map_err(io)?;
-        }
         let text =
             serde_json::to_string_pretty(&settings).map_err(|source| SettingsError::Parse {
                 path: self.path.clone(),
                 source,
             })?;
-        let tmp = self.path.with_extension("json.tmp");
-        fs::write(&tmp, text).map_err(io)?;
-        fs::rename(&tmp, &self.path).map_err(io)?;
+        durable_file::write_with_backup(&self.path, text.as_bytes(), &origin).map_err(
+            |source| SettingsError::Io {
+                path: self.path.clone(),
+                source,
+            },
+        )?;
         Ok((settings, result))
     }
 }
@@ -851,5 +913,114 @@ mod tests {
         for key in AGENT_WRITABLE {
             assert!(denied_reason(key.as_str()).is_none());
         }
+    }
+
+    fn notice_for(path: &Path, kind: NoticeKind) -> bool {
+        let path = path.display().to_string();
+        store_notices::store_notices()
+            .iter()
+            .any(|n| n.store == "settings" && n.path == path && n.kind == kind)
+    }
+
+    fn damaged_copies(dir: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().contains(".damaged-"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_truncated_settings_file_uses_the_backup_and_turns_local_only_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::in_dir(dir.path());
+        let path = dir.path().join(SETTINGS_FILE);
+        store
+            .update(|s| {
+                s.preferences.theme = Theme::Light;
+                Ok(())
+            })
+            .unwrap();
+        store
+            .update(|s| {
+                s.preferences.search_max_results = 12;
+                Ok(())
+            })
+            .unwrap();
+        let full = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, &full[..full.len() / 2]).unwrap();
+
+        // The backup (one change older) answers; nothing stops.
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.preferences.theme, Theme::Light);
+        assert_eq!(
+            loaded.preferences.search_max_results,
+            DEFAULT_SEARCH_RESULTS
+        );
+        assert!(
+            loaded.policy.local_only,
+            "fails closed until the user checks"
+        );
+        assert!(notice_for(&path, NoticeKind::Restored));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            &full[..full.len() / 2],
+            "reading never rewrites the damaged file"
+        );
+
+        // The user turns Local-only off again: saved; the damaged file is kept.
+        let (saved, ()) = store
+            .update(|s| {
+                s.policy.local_only = false;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.load().unwrap(), saved);
+        assert!(!saved.policy.local_only);
+        let damaged = damaged_copies(dir.path());
+        assert_eq!(damaged.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&damaged[0]).unwrap(),
+            &full[..full.len() / 2]
+        );
+    }
+
+    #[test]
+    fn a_damaged_settings_file_without_a_backup_falls_back_to_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::in_dir(dir.path());
+        let path = dir.path().join(SETTINGS_FILE);
+        std::fs::write(&path, "{not json").unwrap();
+
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.preferences, Preferences::default());
+        assert!(
+            loaded.policy.local_only,
+            "fails closed until the user checks"
+        );
+        assert!(
+            loaded.models.env_keys_migrated,
+            "a removed key is not copied back"
+        );
+        assert!(notice_for(&path, NoticeKind::Reset));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not json");
+
+        store
+            .update(|s| {
+                s.preferences.theme = Theme::Light;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.load().unwrap().preferences.theme, Theme::Light);
+        let damaged = damaged_copies(dir.path());
+        assert_eq!(
+            damaged.len(),
+            1,
+            "the damaged file is kept, not overwritten"
+        );
+        assert_eq!(std::fs::read_to_string(&damaged[0]).unwrap(), "{not json");
     }
 }

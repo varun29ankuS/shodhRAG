@@ -1338,16 +1338,27 @@ fn html_tag_at(html: &str, start: usize) -> Option<HtmlTag<'_>> {
 }
 
 /// Byte offset just past the `>` that closes a tag whose attributes start at
-/// `from`; a `>` inside a quoted attribute value does not close it.
+/// `from`; a `>` inside a quoted attribute value does not close it. A quote
+/// opens a value only right after `=` (spaces between allowed): elsewhere,
+/// as in the stray tag of `x<y and it's`, it is an ordinary character.
 fn html_tag_end(bytes: &[u8], from: usize) -> usize {
     let mut quote: Option<u8> = None;
+    // The last byte outside quotes that is not whitespace.
+    let mut last = 0u8;
     for (offset, &b) in bytes[from..].iter().enumerate() {
         match quote {
-            Some(q) if b == q => quote = None,
-            Some(_) => {}
-            None if b == b'"' || b == b'\'' => quote = Some(b),
-            None if b == b'>' => return from + offset + 1,
-            None => {}
+            Some(q) => {
+                if b == q {
+                    quote = None;
+                    last = b;
+                }
+            }
+            None => match b {
+                b'>' => return from + offset + 1,
+                b'"' | b'\'' if last == b'=' => quote = Some(b),
+                _ if b.is_ascii_whitespace() => {}
+                _ => last = b,
+            },
         }
     }
     bytes.len()
@@ -2087,6 +2098,15 @@ pub(crate) mod tests {
         assert_eq!(strip_html_tags("<p>日本<script>never closed"), "日本");
         assert_eq!(strip_html_tags("text then <"), "text then <");
         assert_eq!(strip_html_tags("<!-- never closed"), "");
+        // A quote outside an attribute value opens nothing: the page goes on.
+        assert_eq!(
+            strip_html_tags("<p>it's x<y and it's here</p><p>Next</p>"),
+            "it's x\nNext"
+        );
+        assert_eq!(
+            strip_html_tags("<a title = 'a > b' href=x>Link</a> after"),
+            "Link after"
+        );
     }
 
     #[test]

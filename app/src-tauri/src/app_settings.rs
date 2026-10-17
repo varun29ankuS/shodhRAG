@@ -184,7 +184,26 @@ impl Default for MemoryPrefs {
     }
 }
 
+/// The learning caps every build wrote into the settings file while the daily default
+/// was 60 model calls. Learning now sends every turn about the user to the model, so
+/// the default is 10 calls (free tiers allow about 50 requests a day for everything);
+/// settings that still hold exactly the old default are read as the new one.
+const PREVIOUS_DEFAULT_CAPS: LearnCaps = LearnCaps {
+    max_calls_per_day: 60,
+    max_input_chars_per_day: 400_000,
+    max_proposals_per_day: 40,
+};
+
 impl MemoryPrefs {
+    /// The old default caps ([`PREVIOUS_DEFAULT_CAPS`]) become the current default; caps
+    /// the user changed are kept.
+    fn with_current_default_caps(mut self) -> Self {
+        if self.learn_caps == PREVIOUS_DEFAULT_CAPS {
+            self.learn_caps = LearnCaps::default();
+        }
+        self
+    }
+
     /// Checks the learning settings' bounds.
     pub fn validate(&self) -> Result<(), SettingsError> {
         let invalid = |key: &str, reason: &str| SettingsError::InvalidValue {
@@ -374,10 +393,15 @@ impl SettingsStore {
 
     fn read_unlocked(&self) -> Result<AppSettings, SettingsError> {
         match fs::read_to_string(&self.path) {
-            Ok(text) => serde_json::from_str(&text).map_err(|source| SettingsError::Parse {
-                path: self.path.clone(),
-                source,
-            }),
+            Ok(text) => serde_json::from_str::<AppSettings>(&text)
+                .map(|mut settings| {
+                    settings.memory = settings.memory.with_current_default_caps();
+                    settings
+                })
+                .map_err(|source| SettingsError::Parse {
+                    path: self.path.clone(),
+                    source,
+                }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(AppSettings::default()),
             Err(source) => Err(SettingsError::Io {
                 path: self.path.clone(),
@@ -692,6 +716,38 @@ mod tests {
         assert_eq!(json["thinkBeforeAnswering"], true);
         assert!(denied_reason("think_before_answering").is_some());
         assert!(SettingKey::parse("think_before_answering").is_none());
+    }
+
+    #[test]
+    fn the_old_default_learning_caps_are_read_as_the_new_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE);
+        let write = |caps: serde_json::Value| {
+            fs::write(&path, json!({"memory": {"learnCaps": caps}}).to_string()).unwrap();
+        };
+        let store = SettingsStore::in_dir(dir.path());
+        // Written by a build whose default was 60 calls a day.
+        write(
+            json!({"maxCallsPerDay": 60, "maxInputCharsPerDay": 400000, "maxProposalsPerDay": 40}),
+        );
+        let caps = store.load().unwrap().memory.learn_caps;
+        assert_eq!(caps, LearnCaps::default());
+        assert_eq!(caps.max_calls_per_day, 10);
+        // Caps the user chose are kept, even with 60 calls.
+        write(
+            json!({"maxCallsPerDay": 60, "maxInputCharsPerDay": 500000, "maxProposalsPerDay": 40}),
+        );
+        assert_eq!(
+            store.load().unwrap().memory.learn_caps.max_calls_per_day,
+            60
+        );
+        write(
+            json!({"maxCallsPerDay": 25, "maxInputCharsPerDay": 400000, "maxProposalsPerDay": 40}),
+        );
+        assert_eq!(
+            store.load().unwrap().memory.learn_caps.max_calls_per_day,
+            25
+        );
     }
 
     #[test]

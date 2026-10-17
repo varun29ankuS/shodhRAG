@@ -20,7 +20,7 @@ const FOCUS_RING =
 
 const BUTTON = cn(
   'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-[12.5px] text-shodh-text',
-  'hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro',
+  'hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:cursor-not-allowed transition-colors duration-micro',
   FOCUS_RING,
 );
 
@@ -64,6 +64,8 @@ export default function NotificationSettings() {
   };
 
   const test = async () => {
+    // aria-disabled keeps the button focusable while the test waits; clicks then do nothing.
+    if (testing) return;
     setTesting(true);
     setResult(TEST_PENDING);
     try {
@@ -107,7 +109,7 @@ export default function NotificationSettings() {
             type="button"
             className={BUTTON}
             onClick={() => void test()}
-            disabled={testing}
+            aria-disabled={testing}
             aria-describedby={helpId}
           >
             Send a test notification
@@ -117,11 +119,10 @@ export default function NotificationSettings() {
           </button>
         </div>
         <p id={helpId} className="m-0 text-[12.5px] text-shodh-text-muted">{TEST_HELP}</p>
-        {result && (
-          <p className="m-0 text-[12.5px] text-shodh-text-secondary" role="status" aria-live="polite">
-            {result}
-          </p>
-        )}
+        {/* Always present, so screen readers hear each new message. */}
+        <p className="m-0 text-[12.5px] text-shodh-text-secondary" role="status" aria-live="polite">
+          {result ?? ''}
+        </p>
       </div>
     </div>
   );

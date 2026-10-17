@@ -6,12 +6,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   applyFolderSync,
+  applyLibraryChange,
   groupSourcesByKind,
   indexedFileCount,
   indexedNotice,
   parseStoredSources,
   progressPercent,
   readIndexingResult,
+  removedSourceIds,
   scannedPagesStep,
   serializeSources,
   syncedFolders,
@@ -170,6 +172,36 @@ test('a failed sync is shown and cleared by the next one, never stored', () => {
   assert.ok(!serializeSources([failed]).includes('syncError'));
   const recovered = applyFolderSync(failed, { sourceId: 'folder-1', at, indexed: 0, removed: 0, files: 12, failures: [] });
   assert.equal(recovered.syncError, undefined);
+});
+
+test('a sync that could not read part of the folder counts what it found and says what it could not read', () => {
+  const [source] = parseStoredSources(JSON.stringify([stored()]));
+  const at = '2026-10-07T10:00:00.000Z';
+  const partial = applyFolderSync(source, {
+    sourceId: 'folder-1', at, indexed: 1, removed: 0, files: 13, failures: [],
+    error: 'C:\\Contracts\\private (Access is denied.) could not be read; what the index holds of it was left as it was',
+  });
+  assert.equal(partial.fileCount, 13);
+  assert.equal(partial.indexedAt, at);
+  assert.match(partial.syncError ?? '', /private \(Access is denied\.\) could not be read/);
+  const readable = applyFolderSync(partial, { sourceId: 'folder-1', at, indexed: 0, removed: 0, files: 13, failures: [], error: null });
+  assert.equal(readable.syncError, undefined);
+});
+
+test('a library-changed event drops the sources it removed and keeps the rest', () => {
+  const sources = parseStoredSources(JSON.stringify([
+    stored(),
+    stored({ id: 'folder-2', path: 'C:\\Contracts 2024' }),
+  ]));
+  assert.deepEqual(removedSourceIds({ sourceId: 'folder-1', removed: ['folder-1'] }), ['folder-1']);
+  const after = applyLibraryChange(sources, { sourceId: 'folder-1', removed: ['folder-1'] });
+  assert.deepEqual(after.map(s => s.id), ['folder-2']);
+  // A change, or a removal of a source the Library does not list, keeps the list as it is.
+  assert.equal(applyLibraryChange(sources, { sourceId: 'folder-1' }), sources);
+  assert.equal(applyLibraryChange(sources, { sourceId: 'agent-1', removed: ['agent-1'] }), sources);
+  assert.deepEqual(removedSourceIds({ removed: 'folder-1' }), []);
+  assert.deepEqual(removedSourceIds(null), []);
+  assert.deepEqual(removedSourceIds({ removed: ['', 3, 'folder-2'] }), ['folder-2']);
 });
 
 test('a path saved lowercased gets its case on disk back, keeping its identity', () => {

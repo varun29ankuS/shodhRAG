@@ -7,7 +7,7 @@
 use chrono::Utc;
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -96,10 +96,20 @@ impl IndexingResult {
 }
 
 /// Shared state for pause/cancel signalling across async boundaries.
+///
+/// Pause and cancel apply to every run. A Library source that is removed
+/// stops only its own runs ([`Self::stop_source`]): each run of a folder
+/// registers under its source while it lasts ([`Self::begin_run`]).
 #[derive(Debug)]
 pub struct IndexingState {
     pub is_paused: Arc<Mutex<bool>>,
     pub should_cancel: Arc<Mutex<bool>>,
+    /// Sources removed from the Library: their runs stop before their next
+    /// file and none of theirs starts again. Never cleared by [`Self::reset`].
+    removed: Mutex<HashSet<String>>,
+    /// The runs in progress by source, each with the folder or file it
+    /// indexes when it said so ([`Self::begin_run_at`]).
+    runs: tokio::sync::watch::Sender<HashMap<String, Vec<Option<String>>>>,
 }
 
 impl Default for IndexingState {
@@ -107,7 +117,33 @@ impl Default for IndexingState {
         Self {
             is_paused: Arc::new(Mutex::new(false)),
             should_cancel: Arc::new(Mutex::new(false)),
+            removed: Mutex::new(HashSet::new()),
+            runs: tokio::sync::watch::Sender::new(HashMap::new()),
         }
+    }
+}
+
+/// A run of [`IndexingState::begin_run`]: registered under its source until
+/// it is dropped.
+#[derive(Debug)]
+pub struct IndexingRun<'a> {
+    state: &'a IndexingState,
+    source_id: String,
+    path: Option<String>,
+}
+
+impl Drop for IndexingRun<'_> {
+    fn drop(&mut self) {
+        self.state.runs.send_modify(|runs| {
+            if let Some(paths) = runs.get_mut(&self.source_id) {
+                if let Some(at) = paths.iter().position(|p| *p == self.path) {
+                    paths.remove(at);
+                }
+                if paths.is_empty() {
+                    runs.remove(&self.source_id);
+                }
+            }
+        });
     }
 }
 
@@ -135,6 +171,100 @@ impl IndexingState {
 
     pub fn is_paused(&self) -> bool {
         *self.is_paused.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Registers a run of `source_id` until the returned guard is dropped;
+    /// `None` when the source was removed (the run must not start).
+    pub fn begin_run(&self, source_id: &str) -> Option<IndexingRun<'_>> {
+        self.register(source_id, None)
+    }
+
+    /// [`Self::begin_run`] for a run that indexes the folder (or file)
+    /// `path`, which [`Self::running_paths`] reports while it lasts.
+    pub fn begin_run_at(&self, source_id: &str, path: &str) -> Option<IndexingRun<'_>> {
+        self.register(source_id, Some(path.to_string()))
+    }
+
+    fn register(&self, source_id: &str, path: Option<String>) -> Option<IndexingRun<'_>> {
+        // Checked and registered under the same lock as `stop_source`
+        // records a removal, so a removal waits for every run it can miss.
+        let removed = self.removed.lock().unwrap_or_else(|e| e.into_inner());
+        if removed.contains(source_id) {
+            return None;
+        }
+        self.runs.send_modify(|runs| {
+            runs.entry(source_id.to_string())
+                .or_default()
+                .push(path.clone());
+        });
+        drop(removed);
+        Some(IndexingRun {
+            state: self,
+            source_id: source_id.to_string(),
+            path,
+        })
+    }
+
+    /// The folders (or files) being indexed now, with their sources, for the
+    /// runs that said which ([`Self::begin_run_at`]).
+    pub fn running_paths(&self) -> Vec<(String, String)> {
+        self.runs
+            .borrow()
+            .iter()
+            .flat_map(|(source_id, paths)| {
+                paths
+                    .iter()
+                    .flatten()
+                    .map(move |path| (source_id.clone(), path.clone()))
+            })
+            .collect()
+    }
+
+    /// Whether `source_id` was removed from the Library.
+    pub fn is_removed(&self, source_id: &str) -> bool {
+        self.removed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(source_id)
+    }
+
+    /// Whether a run of `source_id` stops: every run was cancelled, or its
+    /// source was removed.
+    pub fn should_stop(&self, source_id: &str) -> bool {
+        self.is_cancelled() || self.is_removed(source_id)
+    }
+
+    /// Stops the runs of `source_id`, a source removed from the Library, and
+    /// waits until they have ended: each ends before its next file, a paused
+    /// one at once. Runs of other sources go on. No run of `source_id`
+    /// starts afterwards.
+    pub async fn stop_source(&self, source_id: &str) {
+        self.removed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(source_id.to_string());
+        let mut runs = self.runs.subscribe();
+        // The sender lives in `self`, so the wait ends only when the runs do.
+        let _ = runs.wait_for(|runs| !runs.contains_key(source_id)).await;
+    }
+
+    /// Records `source_id` as removed from the Library (in an earlier run):
+    /// none of its runs starts. Unlike [`Self::stop_source`] it waits for
+    /// nothing; it is for sources removed before any run could start.
+    pub fn mark_removed(&self, source_id: &str) {
+        self.removed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(source_id.to_string());
+    }
+
+    /// Lets `source_id` be indexed again after a removal that failed
+    /// ([`Self::stop_source`]).
+    pub fn restore_source(&self, source_id: &str) {
+        self.removed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(source_id);
     }
 }
 
@@ -288,6 +418,13 @@ pub async fn index_folder_adopting(
         return Err(format!("Path is not a directory: {}", folder_path));
     }
 
+    // Registered while it runs, so removing its source stops it and waits
+    // for it (see `IndexingState::stop_source`).
+    let Some(_run) = indexing_state.begin_run_at(space_id, &path.display().to_string()) else {
+        return Err(format!(
+            "{folder_path} was removed from the Library and is not indexed"
+        ));
+    };
     indexing_state.reset();
 
     emit_progress(
@@ -322,7 +459,7 @@ pub async fn index_folder_adopting(
             files_to_process.push(file_path.to_path_buf());
         }
 
-        if indexing_state.is_cancelled() {
+        if indexing_state.should_stop(space_id) {
             return Ok(IndexingResult::empty(
                 start_time.elapsed().as_millis() as u64
             ));
@@ -383,12 +520,12 @@ pub async fn index_folder_adopting(
         // Pause loop
         while indexing_state.is_paused() {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            if indexing_state.is_cancelled() {
+            if indexing_state.should_stop(space_id) {
                 break;
             }
         }
 
-        if indexing_state.is_cancelled() {
+        if indexing_state.should_stop(space_id) {
             break;
         }
 
@@ -522,7 +659,7 @@ pub async fn index_folder_adopting(
 /// index. Shared with the app so allow-lists are never duplicated.
 pub const SUPPORTED_FILE_EXTENSIONS: &[&str] = &[
     // Documents
-    "txt", "md", "pdf", "html", "json", "docx", "pptx", "rst", "tex", // Tabular
+    "txt", "md", "pdf", "html", "htm", "json", "docx", "pptx", "rst", "tex", // Tabular
     "csv", "tsv", "xlsx", "xls", "xlsm", "xlsb", "ods", // Code
     "rs", "py", "js", "ts", "jsx", "tsx", "java", "cpp", "c", "h", "hpp", "cs", "go", "rb", "php",
     "swift", "kt", "scala", "r", "sh", "bash", "zsh", "ps1", "bat", "cmd", // Web
@@ -764,6 +901,13 @@ mod tests {
         assert!(!is_supported_file_type("exe"));
     }
 
+    /// The parser reads `.htm` as HTML; indexing takes it too.
+    #[test]
+    fn both_html_extensions_are_supported() {
+        assert!(is_supported_file_type("html"));
+        assert!(is_supported_file_type("htm"));
+    }
+
     fn options(file_types: &[&str]) -> IndexingOptions {
         IndexingOptions {
             skip_indexed: false,
@@ -960,5 +1104,111 @@ mod tests {
             .await
             .expect("search");
         assert!(after.iter().any(|r| r.text.contains("HOLD")));
+    }
+
+    #[tokio::test]
+    async fn stopping_a_source_waits_for_its_runs_and_spares_the_others() {
+        let state = IndexingState::default();
+        let run = state.begin_run_at("papers", "C:/papers").expect("a run");
+        let other = state.begin_run("notes").expect("another source's run");
+        assert_eq!(
+            state.running_paths(),
+            [("papers".to_string(), "C:/papers".to_string())]
+        );
+        let stop = state.stop_source("papers");
+        tokio::pin!(stop);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut stop)
+                .await
+                .is_err(),
+            "the stop waits for the run"
+        );
+        assert!(state.should_stop("papers"));
+        assert!(!state.should_stop("notes"), "other sources go on");
+        assert!(!state.is_cancelled(), "nothing else is cancelled");
+        drop(run);
+        stop.await;
+        assert!(state.running_paths().is_empty());
+        assert!(state.begin_run("papers").is_none(), "no run starts again");
+        drop(other);
+        state.restore_source("papers");
+        assert!(state.begin_run("papers").is_some());
+    }
+
+    /// A folder whose source is removed while it is indexed stops before its
+    /// next file, and the removal waits until it has.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_run_of_a_removed_source_stops_before_its_next_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.path().join("data");
+        config.embedding.model_dir = dir.path().join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        config.search.min_score_threshold = 0.0;
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let mut engine = RAGEngine::new(config).await.expect("engine");
+        engine
+            .attach_search_models(crate::rag_engine::SearchModels::from_embedder(Arc::new(
+                GatedEmbedder {
+                    words: Default::default(),
+                    entered: std::sync::Mutex::new(entered_tx),
+                    release: std::sync::Mutex::new(release_rx),
+                },
+            )))
+            .expect("models");
+        let rag = Arc::new(RwLock::new(engine));
+        let folder = dir.path().join("folder");
+        std::fs::create_dir_all(&folder).expect("folder");
+        // Either file is first; each is held in embedding until released.
+        for name in ["one.txt", "two.txt"] {
+            std::fs::write(
+                folder.join(name),
+                format!("HOLD {name} in embedding. It describes the parking rules of the building: visitors park on the street, residents in the garage below the courtyard."),
+            )
+            .expect("file");
+        }
+        let state = Arc::new(IndexingState::default());
+        let job = {
+            let (rag, state) = (rag.clone(), state.clone());
+            let folder = folder.to_string_lossy().to_string();
+            tokio::spawn(async move {
+                index_folder(&folder, "space-1", &options(&[]), &rag, &state, None).await
+            })
+        };
+        let entered = tokio::task::spawn_blocking(move || {
+            entered_rx
+                .recv_timeout(Duration::from_secs(60))
+                .map(|()| entered_rx)
+        })
+        .await
+        .expect("join")
+        .expect("the index job reached embedding");
+
+        let removal = {
+            let state = state.clone();
+            tokio::spawn(async move { state.stop_source("space-1").await })
+        };
+        // Removed while the first file is embedded: that file finishes, the
+        // next one is not started.
+        while !state.is_removed("space-1") {
+            tokio::task::yield_now().await;
+        }
+        release_tx.send(()).expect("release");
+        tokio::time::timeout(Duration::from_secs(60), removal)
+            .await
+            .expect("the removal ended with the run")
+            .expect("join");
+        let result = tokio::time::timeout(Duration::from_secs(60), job)
+            .await
+            .expect("the run stopped")
+            .expect("join")
+            .expect("indexed");
+        assert_eq!(result.files_processed, 1, "{:?}", result.failures);
+        assert!(
+            entered.try_recv().is_err(),
+            "the second file was never embedded"
+        );
     }
 }

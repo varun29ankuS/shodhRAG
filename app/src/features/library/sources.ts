@@ -168,11 +168,14 @@ export interface FolderSyncOutcome {
 /**
  * A source after a sync: its file count and failures as the folder has them
  * now, `indexedAt` moved when files were indexed or removed, or the reason it
- * could not be synced.
+ * could not be synced. A sync that ran but could not read part of the folder
+ * reports both: its counts, and the error naming what was unreadable.
  */
 export function applyFolderSync(source: LibrarySource, outcome: FolderSyncOutcome): LibrarySource {
   if (source.id !== outcome.sourceId || source.status !== 'ready') return source;
-  if (outcome.error) return { ...source, syncError: outcome.error };
+  const error = typeof outcome.error === 'string' && outcome.error ? outcome.error : undefined;
+  // No report: the sync did not run.
+  if (error && typeof outcome.files !== 'number') return { ...source, syncError: error };
   const failures = toFailures(outcome.failures);
   const changed = (outcome.indexed ?? 0) + (outcome.removed ?? 0) > 0;
   const { syncError: _s, failures: _f, ...rest } = source;
@@ -181,7 +184,31 @@ export function applyFolderSync(source: LibrarySource, outcome: FolderSyncOutcom
     fileCount: Math.max(0, (outcome.files ?? source.fileCount) - failures.length),
     ...(changed ? { indexedAt: outcome.at } : {}),
     ...(failures.length > 0 ? { failures } : {}),
+    ...(error ? { syncError: error } : {}),
   };
+}
+
+/**
+ * The `library-changed` event: the files of `sourceId` changed (the agent
+ * indexed or downloaded a file, indexed a folder), or the sources in
+ * `removed` were removed from the index (the agent's remove_source).
+ */
+export interface LibraryChange {
+  sourceId?: string;
+  removed?: unknown;
+}
+
+/** The ids a `library-changed` event says were removed; none for a change. */
+export function removedSourceIds(change: unknown): string[] {
+  if (!isRecord(change) || !Array.isArray(change.removed)) return [];
+  return change.removed.filter((id): id is string => typeof id === 'string' && id.length > 0);
+}
+
+/** `sources` without those a `library-changed` event removed (the same list when it removed none). */
+export function applyLibraryChange<S extends Pick<LibrarySource, 'id'>>(sources: S[], change: unknown): S[] {
+  const removed = new Set(removedSourceIds(change));
+  if (removed.size === 0 || !sources.some(s => removed.has(s.id))) return sources;
+  return sources.filter(s => !removed.has(s.id));
 }
 
 export interface IndexingOutcome {

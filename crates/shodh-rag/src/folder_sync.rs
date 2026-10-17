@@ -53,11 +53,15 @@ pub struct SyncReport {
     pub indexed: usize,
     /// Files removed from the index.
     pub removed: usize,
-    /// Indexable files in the folder now.
+    /// Indexable files in the folder now (with those kept in folders that
+    /// could not be read).
     pub files: usize,
     /// Files of the folder that could not be indexed (this sync or before,
     /// and unchanged since).
     pub failures: Vec<FileFailure>,
+    /// Folders and files the sync could not read ([`FolderScan::unreadable`]):
+    /// what the index holds of them was left as it was.
+    pub unreadable: Vec<FileFailure>,
 }
 
 /// Office lock files (`~$report.docx`) and partial downloads or saves.
@@ -87,29 +91,97 @@ pub fn is_indexable(path: &Path) -> bool {
             .is_some_and(|e| is_supported_file_type(&e.to_lowercase()))
 }
 
+/// What a scan of a folder found: its indexable files and what could not be
+/// read.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct FolderScan {
+    /// The indexable files, keyed by index identity ([`normalize_source_path`]).
+    pub files: BTreeMap<String, (PathBuf, FileStamp)>,
+    /// Folders and files that could not be read (permissions, a network
+    /// share or a drive that went away), by index identity, with why. Files
+    /// in an unreadable folder may still exist: nothing under it is taken as
+    /// gone.
+    pub unreadable: BTreeMap<String, FileFailure>,
+}
+
+impl FolderScan {
+    /// Whether the file `key` lies in something the scan could not read:
+    /// the file itself, or a folder above it.
+    pub fn is_unreadable(&self, key: &str) -> bool {
+        self.unreadable.keys().any(|path| is_within(key, path))
+    }
+}
+
+/// Whether the index identity `key` is `path` or lies under the folder `path`.
+fn is_within(key: &str, path: &str) -> bool {
+    match key.strip_prefix(path) {
+        Some("") => true,
+        Some(rest) => rest.starts_with('/') || path.ends_with('/'),
+        None => false,
+    }
+}
+
 /// The indexable files under `folder`, keyed by index identity
-/// ([`normalize_source_path`]).
-pub fn scan_folder(folder: &Path) -> BTreeMap<String, (PathBuf, FileStamp)> {
-    WalkDir::new(folder)
+/// ([`normalize_source_path`]), and the folders and files that could not be
+/// read.
+pub fn scan_folder_checked(folder: &Path) -> FolderScan {
+    let mut scan = FolderScan::default();
+    for entry in WalkDir::new(folder)
         .into_iter()
         .filter_entry(|e| !is_hidden(e))
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file() && is_indexable(e.path()))
-        .filter_map(|entry| {
-            let meta = entry.metadata().ok()?;
-            let modified_ms = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map_or(0, |d| d.as_millis() as u64);
-            let path = canonical_path(entry.path());
-            let stamp = FileStamp {
-                modified_ms,
-                size: meta.len(),
-            };
-            Some((normalize_source_path(&path), (path, stamp)))
-        })
-        .collect()
+    {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                // An error names the folder or file it could not read; one
+                // that names nothing leaves the whole folder unknown.
+                let path = canonical_path(error.path().unwrap_or(folder));
+                scan.unreadable.insert(
+                    normalize_source_path(&path),
+                    FileFailure {
+                        file: path.display().to_string(),
+                        reason: error.to_string(),
+                    },
+                );
+                continue;
+            }
+        };
+        if !(entry.file_type().is_file() && is_indexable(entry.path())) {
+            continue;
+        }
+        let path = canonical_path(entry.path());
+        let key = normalize_source_path(&path);
+        match entry.metadata() {
+            Ok(meta) => {
+                let modified_ms = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_millis() as u64);
+                let stamp = FileStamp {
+                    modified_ms,
+                    size: meta.len(),
+                };
+                scan.files.insert(key, (path, stamp));
+            }
+            Err(error) => {
+                scan.unreadable.insert(
+                    key,
+                    FileFailure {
+                        file: path.display().to_string(),
+                        reason: error.to_string(),
+                    },
+                );
+            }
+        }
+    }
+    scan
+}
+
+/// The indexable files under `folder` that could be read, keyed by index
+/// identity ([`normalize_source_path`]); see [`scan_folder_checked`].
+pub fn scan_folder(folder: &Path) -> BTreeMap<String, (PathBuf, FileStamp)> {
+    scan_folder_checked(folder).files
 }
 
 /// The files of `folder` that `selected` names, as [`scan_folder`] finds
@@ -150,6 +222,18 @@ pub fn plan(
             .cloned()
             .collect(),
     }
+}
+
+/// [`plan`] for a folder as `scan` found it: a file in a folder or file the
+/// scan could not read is not removed, since it may still be there.
+pub fn plan_for_scan(
+    known: &BTreeMap<String, FileStamp>,
+    scan: &FolderScan,
+    stale: &BTreeSet<String>,
+) -> SyncPlan {
+    let mut planned = plan(known, &scan.files, stale);
+    planned.remove.retain(|key| !scan.is_unreadable(key));
+    planned
 }
 
 /// A manifest as saved, borrowing the sync's working state.
@@ -251,6 +335,29 @@ impl ManifestStore {
             },
         )?;
         Ok(true)
+    }
+
+    /// The folders of the sources that have a manifest, except `except`'s:
+    /// folders the Library lists, whether kept in sync now or not.
+    pub fn listed_folders(&self, except: &str) -> Vec<String> {
+        let skip = Self::file_id(except);
+        match self.load_all() {
+            Ok(manifests) => manifests
+                .into_iter()
+                .filter(|(id, _)| *id != skip)
+                .map(|(_, manifest)| manifest.folder)
+                .filter(|folder| !folder.is_empty())
+                .collect(),
+            Err(error) => {
+                tracing::warn!(%error, "folder manifests unreadable");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Whether `source_id` has a manifest.
+    pub fn has_manifest(&self, source_id: &str) -> bool {
+        self.path(source_id).is_file()
     }
 
     /// Forget a source (it was removed from the Library).
@@ -744,6 +851,8 @@ pub async fn legacy_ocr_scans(rag: &RwLock<RAGEngine>) -> Result<Vec<LegacyScan>
 
 /// Bring the index of `source_id` in step with `folder`. The folder must
 /// exist: a folder that is missing (an unplugged drive) changes nothing.
+/// What the scan could not read is reported and left as it is: its files are
+/// neither removed from the index nor forgotten by the manifest.
 /// `stop` is asked before each file; when it says so the sync ends early with
 /// its progress saved, and the next sync continues from there.
 pub async fn sync_folder(
@@ -753,6 +862,21 @@ pub async fn sync_folder(
     rag: &RwLock<RAGEngine>,
     stop: impl Fn() -> bool,
 ) -> Result<SyncReport, String> {
+    sync_folder_scanned(folder, source_id, store, rag, stop, |root| {
+        scan_folder_checked(&root)
+    })
+    .await
+}
+
+/// [`sync_folder`] with the folder scanned by `scan` (on a blocking thread).
+async fn sync_folder_scanned(
+    folder: &str,
+    source_id: &str,
+    store: &ManifestStore,
+    rag: &RwLock<RAGEngine>,
+    stop: impl Fn() -> bool,
+    scan: impl FnOnce(PathBuf) -> FolderScan + Send + 'static,
+) -> Result<SyncReport, String> {
     if !rag.read().await.has_search_models() {
         return Err(SearchModelsMissing.to_string());
     }
@@ -760,29 +884,38 @@ pub async fn sync_folder(
     if !root.is_dir() {
         return Err(format!("{folder} is not available"));
     }
-    let scan_root = root.clone();
-    let on_disk = tokio::task::spawn_blocking(move || scan_folder(&scan_root))
-        .await
-        .map_err(|e| format!("Scanning {folder} failed: {e}"))?;
+    let scanned = tokio::task::spawn_blocking({
+        let root = root.clone();
+        move || scan(root)
+    })
+    .await
+    .map_err(|e| format!("Scanning {folder} failed: {e}"))?;
+    let on_disk = &scanned.files;
     let (known, mut failures) = match store.load(source_id) {
         Some(manifest) => (manifest.files, manifest.failures),
         None => (
-            known_from_index(rag, source_id, &on_disk).await?,
+            known_from_index(rag, source_id, on_disk).await?,
             BTreeMap::new(),
         ),
     };
     let stale = stale_files(rag, source_id).await?;
-    let plan = plan(&known, &on_disk, &stale);
+    let plan = plan_for_scan(&known, &scanned, &stale);
+    // Kept: files on disk, and files in what could not be read.
+    let kept = |key: &String| on_disk.contains_key(key) || scanned.is_unreadable(key);
+    let mut files: BTreeMap<String, FileStamp> =
+        known.into_iter().filter(|(key, _)| kept(key)).collect();
+    failures.retain(|key, _| kept(key));
+    let unread: BTreeSet<&String> = files
+        .keys()
+        .chain(failures.keys())
+        .filter(|key| !on_disk.contains_key(*key))
+        .collect();
     let mut report = SyncReport {
-        files: on_disk.len(),
+        files: on_disk.len() + unread.len(),
+        unreadable: scanned.unreadable.values().cloned().collect(),
         ..SyncReport::default()
     };
-    let mut files: BTreeMap<String, FileStamp> = known
-        .into_iter()
-        .filter(|(key, _)| on_disk.contains_key(key))
-        .collect();
 
-    failures.retain(|key, _| on_disk.contains_key(key));
     let folder_name = root.display().to_string();
     // Progress is saved after every file, so a sync that is interrupted (the
     // app closed, a crash) resumes where it stopped instead of starting over.
@@ -796,7 +929,12 @@ pub async fn sync_folder(
             },
         )
     };
+    let mut stopped = false;
     for key in &plan.remove {
+        if stop() {
+            stopped = true;
+            break;
+        }
         let deleted = rag
             .write()
             .await
@@ -810,7 +948,7 @@ pub async fn sync_folder(
         save(&files, &failures)?;
     }
     for path in &plan.index {
-        if stop() {
+        if stopped || stop() {
             break;
         }
         let key = normalize_source_path(path);
@@ -848,12 +986,13 @@ pub async fn sync_folder(
     }
     report.failures = failures.values().cloned().collect();
     save(&files, &failures)?;
-    if report.indexed + report.removed > 0 {
+    if report.indexed + report.removed > 0 || !report.unreadable.is_empty() {
         tracing::info!(
             source_id,
             indexed = report.indexed,
             removed = report.removed,
             failed = report.failures.len(),
+            unreadable = report.unreadable.len(),
             "folder synced"
         );
     }
@@ -921,6 +1060,143 @@ mod tests {
                 index: vec![PathBuf::from("A"), PathBuf::from("B"), PathBuf::from("D")],
                 remove: vec!["c".to_string()],
             }
+        );
+    }
+
+    fn unreadable(path: &str) -> FileFailure {
+        FileFailure {
+            file: path.to_string(),
+            reason: "Access is denied.".to_string(),
+        }
+    }
+
+    #[test]
+    fn nothing_in_what_could_not_be_read_is_removed() {
+        let known = BTreeMap::from([
+            ("c:/papers/a.pdf".to_string(), stamp(1, 10)),
+            ("c:/papers/private/b.pdf".to_string(), stamp(1, 10)),
+            ("c:/papers/private/deep/c.pdf".to_string(), stamp(1, 10)),
+            ("c:/papers/private 2/d.pdf".to_string(), stamp(1, 10)),
+            ("c:/papers/locked.pdf".to_string(), stamp(1, 10)),
+            ("c:/papers/gone.pdf".to_string(), stamp(1, 10)),
+        ]);
+        let scan = FolderScan {
+            files: BTreeMap::from([(
+                "c:/papers/a.pdf".to_string(),
+                (PathBuf::from("A"), stamp(1, 10)),
+            )]),
+            unreadable: BTreeMap::from([
+                (
+                    "c:/papers/private".to_string(),
+                    unreadable("C:/papers/private"),
+                ),
+                (
+                    "c:/papers/locked.pdf".to_string(),
+                    unreadable("C:/papers/locked.pdf"),
+                ),
+            ]),
+        };
+        // Only what is known to be gone goes: "private 2" is another folder.
+        assert_eq!(
+            plan_for_scan(&known, &scan, &BTreeSet::new()),
+            SyncPlan {
+                index: Vec::new(),
+                remove: vec![
+                    "c:/papers/gone.pdf".to_string(),
+                    "c:/papers/private 2/d.pdf".to_string(),
+                ],
+            }
+        );
+        assert!(scan.is_unreadable("c:/papers/private/deep/c.pdf"));
+        assert!(!scan.is_unreadable("c:/papers/private 2/d.pdf"));
+        assert!(!scan.is_unreadable("c:/papers/privatex.pdf"));
+        // A folder at a drive's root covers what is below it.
+        let root = FolderScan {
+            unreadable: BTreeMap::from([("d:/".to_string(), unreadable("D:/"))]),
+            ..FolderScan::default()
+        };
+        assert!(root.is_unreadable("d:/papers/a.pdf"));
+        assert!(!root.is_unreadable("e:/papers/a.pdf"));
+    }
+
+    /// A subfolder that cannot be read (permissions, a share that dropped)
+    /// is not taken as deleted: its files keep their chunks and their
+    /// manifest entries, and the sync reports it. The walk's error is
+    /// simulated: the scan finds the folder as a walk that could not open
+    /// it does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unreadable_subfolder_is_not_taken_as_deleted() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rag = engine(dir.path()).await;
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let folder = dir.path().join("papers");
+        std::fs::create_dir_all(folder.join("private")).expect("folder");
+        std::fs::write(
+            folder.join("lease.txt"),
+            "The lease notice period is sixty days for either party. Rent is reviewed every spring, and the landlord repairs the roof and the heating when they fail.",
+        )
+        .expect("file");
+        std::fs::write(
+            folder.join("private").join("parking.md"),
+            "Visitors park on the street; residents use the garage below the courtyard, and bicycles are kept in the shed next to the main entrance of the building.",
+        )
+        .expect("file");
+        let folder_text = folder.display().to_string();
+        let first = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!((first.indexed, first.files), (2, 2), "{first:?}");
+
+        let private = canonical_path(&folder.join("private"));
+        let private_key = normalize_source_path(&private);
+        let unreadable_scan = move |root: PathBuf| {
+            let mut scan = scan_folder_checked(&root);
+            scan.files.retain(|key, _| !is_within(key, &private_key));
+            scan.unreadable.insert(
+                private_key.clone(),
+                FileFailure {
+                    file: private.display().to_string(),
+                    reason: "Access is denied. (os error 5)".to_string(),
+                },
+            );
+            scan
+        };
+        let blocked = sync_folder_scanned(
+            &folder_text,
+            "s1",
+            &store,
+            &rag,
+            || false,
+            unreadable_scan.clone(),
+        )
+        .await
+        .expect("sync");
+        assert_eq!((blocked.indexed, blocked.removed), (0, 0), "{blocked:?}");
+        assert_eq!(blocked.files, 2, "the unread file still counts");
+        assert_eq!(blocked.unreadable.len(), 1);
+        assert!(blocked.unreadable[0].file.ends_with("private"));
+        assert_eq!(
+            indexed(&rag, "s1").await.keys().collect::<Vec<_>>(),
+            ["lease.txt", "parking.md"]
+        );
+
+        // Kept in the manifest too: readable again and unchanged, nothing to do.
+        let again =
+            sync_folder_scanned(&folder_text, "s1", &store, &rag, || false, unreadable_scan)
+                .await
+                .expect("sync");
+        assert_eq!((again.indexed, again.removed), (0, 0));
+        let readable = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!(
+            (
+                readable.indexed,
+                readable.removed,
+                readable.unreadable.len()
+            ),
+            (0, 0, 0),
+            "{readable:?}"
         );
     }
 

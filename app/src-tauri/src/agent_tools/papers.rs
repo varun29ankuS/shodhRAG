@@ -1071,22 +1071,10 @@ mod tests {
     /// workspace holds its paper, and not in one whose workspace does not.
     #[tokio::test]
     async fn library_results_are_compared_from_workspaces_holding_their_paper() {
-        use crate::agent_tools::testing::{WordEmbedder, WORD_DIM};
         use shodh_rag::harness::tools::RunScope;
-        let t = testing::host().await;
         // An index that can index: the deterministic embedder.
-        let mut config = shodh_rag::config::RAGConfig {
-            data_dir: t.dir.path().join("searchable"),
-            ..shodh_rag::config::RAGConfig::default()
-        };
-        config.embedding.model_dir = t.dir.path().join("no-models");
-        config.embedding.use_e5 = false;
-        config.embedding.dimension = WORD_DIM;
-        let mut rag = shodh_rag::RAGEngine::new(config).await.unwrap();
-        rag.attach_search_models(shodh_rag::SearchModels::from_embedder(Arc::new(
-            WordEmbedder::default(),
-        )))
-        .unwrap();
+        let t = testing::host_with_search_models().await;
+        let host = t.host.clone();
         let pdf = t.dir.path().join("ann.pdf");
         std::fs::copy(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
@@ -1095,22 +1083,12 @@ mod tests {
             &pdf,
         )
         .unwrap();
-        rag.add_document_from_file(&pdf, std::collections::HashMap::new())
+        host.rag
+            .write()
+            .await
+            .add_document_from_file(&pdf, std::collections::HashMap::new())
             .await
             .unwrap();
-        let host = Arc::new(AgentHost {
-            data_dir: t.host.data_dir.clone(),
-            rag: Arc::new(tokio::sync::RwLock::new(rag)),
-            audit: t.host.audit.clone(),
-            effects: t.host.effects.clone(),
-            web: t.host.web.clone(),
-            roots: t.host.roots.clone(),
-            memory: t.host.memory.clone(),
-            visuals: t.host.visuals.clone(),
-            research: t.host.research.clone(),
-            pdf: t.host.pdf.clone(),
-            workspaces: t.host.workspaces.clone(),
-        });
         let pdf = pdf.display().to_string();
         let library_scope = crate::research_commands::owned_scope(&host.workspaces, None)
             .await

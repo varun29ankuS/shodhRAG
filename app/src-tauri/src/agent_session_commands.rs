@@ -65,7 +65,7 @@ use shodh_rag::audit::LOCAL_OWNER;
 use shodh_rag::harness::grounding::{GroundingConfig, ScorerSet, SharedEntailment};
 use shodh_rag::harness::web::relevance::SharedScorer;
 use shodh_rag::harness::web::SafeClient;
-use shodh_rag::rag_engine::{RAGEngine, SharedReranker};
+use shodh_rag::rag_engine::{chat_uploads_source, RAGEngine, SharedReranker, CHAT_UPLOADS_MAIN};
 use shodh_rag::user_memory::Actor;
 use shodh_rag::workspaces::instructions_block;
 
@@ -708,47 +708,80 @@ const MAX_CITATION_NUMBER: u32 = 100_000;
 
 /// Carried passages as the run holds them, in the order given (the frontend puts the ones
 /// the question is about first): numbers in range and not repeated, text present and
-/// capped, within [`MAX_CARRIED_PASSAGES`] and [`MAX_CARRIED_CHARS`]. Web passages are
+/// capped, within [`MAX_CARRIED_PASSAGES`] and [`MAX_CARRIED_CHARS`]; and the highest
+/// number among all of them, the ones left out included (`RunScope::carried_through`).
+/// The frontend shows the same passages (`keptCarriedPassages` in
+/// `app/src/features/focus/carriedPassages.ts` applies these limits). Web passages are
 /// checked for numbers only, as a search provider's text is (the frontend does not know
 /// which web text was a provider's).
-fn carried_passages(passages: Vec<CarriedPassage>) -> CommandResult<Vec<CitedPassage>> {
+fn carried_passages(passages: Vec<CarriedPassage>) -> CommandResult<(Vec<CitedPassage>, u32)> {
     let mut out: Vec<CitedPassage> = Vec::new();
     let mut used = 0usize;
+    let mut through = 0u32;
+    let mut full = false;
     for p in passages {
-        if p.n == 0 || p.n > MAX_CITATION_NUMBER {
-            return Err(AgentCommandError::invalid(format!(
-                "Citation number {} is out of range",
-                p.n
-            )));
+        let in_range = p.n != 0 && p.n <= MAX_CITATION_NUMBER;
+        // The text this passage would be kept with: none once the limits are reached, for
+        // a blank text, or for a number already kept.
+        let text = (!full)
+            .then(|| truncate(p.text.trim(), MAX_CARRIED_PASSAGE_CHARS))
+            .filter(|text| !text.is_empty() && !out.iter().any(|c| c.n == p.n));
+        if let Some(text) = text {
+            let size = text.chars().count();
+            if out.len() == MAX_CARRIED_PASSAGES || used + size > MAX_CARRIED_CHARS {
+                full = true;
+            } else {
+                // Only a passage the run will hold is refused for what it carries.
+                if !in_range {
+                    return Err(AgentCommandError::invalid(format!(
+                        "Citation number {} is out of range",
+                        p.n
+                    )));
+                }
+                if p.file.len() > 2048 || p.path.len() > 2048 {
+                    return Err(AgentCommandError::invalid(
+                        "A carried passage's source is too long",
+                    ));
+                }
+                through = through.max(p.n);
+                used += size;
+                out.push(CitedPassage {
+                    n: p.n,
+                    file: p.file.trim().to_string(),
+                    path: p.path.trim().to_string(),
+                    page: p
+                        .page
+                        .map(|pg| pg.trim().to_string())
+                        .filter(|pg| !pg.is_empty()),
+                    web: p.web,
+                    text,
+                    checkable: !p.web,
+                });
+                continue;
+            }
         }
-        if p.file.len() > 2048 || p.path.len() > 2048 {
-            return Err(AgentCommandError::invalid(
-                "A carried passage's source is too long",
-            ));
+        // Left out, the passage only keeps its number taken: the conversation still cites
+        // it. One with a number no run issues is dropped, not refused.
+        if in_range {
+            through = through.max(p.n);
+        } else {
+            tracing::warn!(target: "shodh::harness", n = p.n, "carried passage left out has an out-of-range citation number; dropped");
         }
-        let text = truncate(p.text.trim(), MAX_CARRIED_PASSAGE_CHARS);
-        if text.is_empty() || out.iter().any(|c| c.n == p.n) {
-            continue;
-        }
-        let size = text.chars().count();
-        if out.len() == MAX_CARRIED_PASSAGES || used + size > MAX_CARRIED_CHARS {
-            break;
-        }
-        used += size;
-        out.push(CitedPassage {
-            n: p.n,
-            file: p.file.trim().to_string(),
-            path: p.path.trim().to_string(),
-            page: p
-                .page
-                .map(|pg| pg.trim().to_string())
-                .filter(|pg| !pg.is_empty()),
-            web: p.web,
-            text,
-            checkable: !p.web,
-        });
     }
-    Ok(out)
+    Ok((out, through))
+}
+
+/// `source_ids` (a limit to sources) with `uploads`, the owner of the files
+/// added in the chats the answer is asked in
+/// ([`shodh_rag::rag_engine::chat_uploads_source`]): a file dropped into a
+/// chat is searched there whatever its sources are limited to, as it was
+/// when it was filed under the Library source selected at the time. No limit
+/// stays no limit.
+fn with_chat_uploads(mut source_ids: Vec<String>, uploads: &str) -> Vec<String> {
+    if !source_ids.is_empty() && !source_ids.iter().any(|id| id == uploads) {
+        source_ids.push(uploads.to_string());
+    }
+    source_ids
 }
 
 impl SendScope {
@@ -795,12 +828,14 @@ impl SendScope {
         if workspace.as_ref().is_some_and(|w| w.len() > MAX_ID_LEN) {
             return Err(AgentCommandError::invalid("The workspace id is too long"));
         }
+        let (carried, carried_through) = carried_passages(self.passages.unwrap_or_default())?;
         Ok(RunScope {
             source_ids: clean(self.source_ids, "sources")?,
             files,
             pages,
             workspace,
-            carried: carried_passages(self.passages.unwrap_or_default())?,
+            carried,
+            carried_through,
             ..RunScope::default()
         })
     }
@@ -810,24 +845,38 @@ impl SendScope {
 /// sources become the limit and it is restricted, so the model cannot widen it; a narrower
 /// limit the user chose for this question (a file, a page) is kept and restricted too.
 /// "Search all my library" (`search_all`) lifts the limit for this question only.
+///
+/// Files added in chats are searched where they were added: a workspace's
+/// chats search the workspace's uploads with its sources (never another
+/// workspace's, nor the main Ask's), and a main-Ask answer limited to sources
+/// searches the main Ask's uploads with them. An unlimited answer searches
+/// everything, as before.
 pub(crate) fn scope_for_workspace(
     mut scope: RunScope,
     workspace: Option<&AnswerWorkspace>,
     search_all: bool,
 ) -> RunScope {
     let Some(workspace) = workspace else {
+        scope.source_ids = with_chat_uploads(scope.source_ids, CHAT_UPLOADS_MAIN);
         return scope;
     };
+    let uploads = chat_uploads_source(Some(&workspace.id));
     scope.workspace = Some(workspace.id.clone());
     scope.workspace_name = Some(workspace.name.clone());
     if search_all {
+        if let Some(uploads) = &uploads {
+            scope.source_ids = with_chat_uploads(scope.source_ids, uploads);
+        }
         return scope;
     }
     if scope.source_ids.is_empty() && scope.files.is_empty() {
         scope.source_ids = workspace.source_ids.clone();
+        scope.source_ids.extend(uploads);
         scope.files = workspace.files.clone();
         scope.folders = workspace.folders.clone();
         scope.snippets = workspace.snippets.clone();
+    } else if let Some(uploads) = &uploads {
+        scope.source_ids = with_chat_uploads(scope.source_ids, uploads);
     }
     scope.restricted = true;
     scope
@@ -2868,8 +2917,116 @@ mod tests {
             ),
             ..SendScope::default()
         };
-        let kept = many.validated().unwrap().carried;
-        assert_eq!(kept.len(), MAX_CARRIED_CHARS / MAX_CARRIED_PASSAGE_CHARS);
+        let scope = many.validated().unwrap();
+        assert_eq!(
+            scope.carried.len(),
+            MAX_CARRIED_CHARS / MAX_CARRIED_PASSAGE_CHARS
+        );
+        // The numbers of the passages left out are still taken: the side run's own
+        // search numbers after [20], never reusing one the context cites.
+        assert_eq!(scope.carried_through, 20);
+        let last_kept = scope.carried.iter().map(|p| p.n).max().unwrap();
+        assert!(last_kept < 20, "[{last_kept}] kept");
+        let run = shodh_rag::harness::tools::RunPassages::new();
+        run.seed(&scope.carried, scope.carried_through);
+        assert_eq!(run.reserve(1), 21);
+
+        // Passages past the count limit keep their numbers too.
+        let numerous = SendScope {
+            passages: Some(
+                (1..=50)
+                    .map(|n| CarriedPassage {
+                        n,
+                        file: "a.pdf".into(),
+                        path: "c:/a.pdf".into(),
+                        page: None,
+                        text: format!("passage {n}"),
+                        web: false,
+                    })
+                    .collect(),
+            ),
+            ..SendScope::default()
+        };
+        let scope = numerous.validated().unwrap();
+        assert_eq!(scope.carried.len(), MAX_CARRIED_PASSAGES);
+        assert_eq!(scope.carried_through, 50);
+        // One past the limits with a number no run issues is dropped, never refused,
+        // and the numbers around it stay taken.
+        let with_invalid = |bad: u32| SendScope {
+            passages: Some(
+                (1..=50)
+                    .map(|n| CarriedPassage {
+                        n: if n == 45 { bad } else { n },
+                        file: "a.pdf".into(),
+                        path: "c:/a.pdf".into(),
+                        page: None,
+                        text: format!("passage {n}"),
+                        web: false,
+                    })
+                    .collect(),
+            ),
+            ..SendScope::default()
+        };
+        for bad in [0, MAX_CITATION_NUMBER + 1, u32::MAX] {
+            let scope = with_invalid(bad).validated().unwrap();
+            assert_eq!(scope.carried.len(), MAX_CARRIED_PASSAGES);
+            assert_eq!(scope.carried_through, 50, "{bad}");
+        }
+        // Also the passage that first goes over a limit: it is left out, so neither its
+        // number nor its source refuses the question.
+        let over = |n: u32, path: String, count: usize, chars: usize| SendScope {
+            passages: Some(
+                (1..=count as u32)
+                    .map(|i| CarriedPassage {
+                        n: if i as usize == count { n } else { i },
+                        file: "a.pdf".into(),
+                        path: if i as usize == count {
+                            path.clone()
+                        } else {
+                            "c:/a.pdf".into()
+                        },
+                        page: None,
+                        text: "y".repeat(chars),
+                        web: false,
+                    })
+                    .collect(),
+            ),
+            ..SendScope::default()
+        };
+        let long_path = "p".repeat(3_000);
+        // At position 41, over the count limit.
+        for (n, path) in [(0, "c:/a.pdf".to_string()), (41, long_path.clone())] {
+            let scope = over(n, path, MAX_CARRIED_PASSAGES + 1, 10)
+                .validated()
+                .unwrap();
+            assert_eq!(scope.carried.len(), MAX_CARRIED_PASSAGES);
+            assert_eq!(scope.carried_through, if n == 0 { 40 } else { 41 });
+        }
+        // At the passage that first goes over the text limit.
+        let first_over = MAX_CARRIED_CHARS / MAX_CARRIED_PASSAGE_CHARS + 1;
+        for (n, path) in [(u32::MAX, "c:/a.pdf".to_string()), (7, long_path)] {
+            let scope = over(n, path, first_over, MAX_CARRIED_PASSAGE_CHARS)
+                .validated()
+                .unwrap();
+            assert_eq!(scope.carried.len(), first_over - 1);
+            assert_eq!(
+                scope.carried_through,
+                if n == 7 { 7 } else { first_over as u32 - 1 }
+            );
+        }
+        // Within the limits it is still refused.
+        let kept_invalid = SendScope {
+            passages: Some(vec![CarriedPassage {
+                n: MAX_CITATION_NUMBER + 1,
+                file: "a.pdf".into(),
+                path: "c:/a.pdf".into(),
+                page: None,
+                text: "passage".into(),
+                web: false,
+            }]),
+            ..SendScope::default()
+        };
+        assert!(kept_invalid.validated().is_err());
     }
 
     #[test]
@@ -2899,13 +3056,62 @@ mod tests {
         }
     }
 
+    fn workspace(id: &str, source: &str) -> AnswerWorkspace {
+        AnswerWorkspace {
+            id: id.into(),
+            name: id.into(),
+            source_ids: vec![source.into()],
+            ..thesis()
+        }
+    }
+
+    /// Files added in chats are found where they were added: an upload in
+    /// workspace A in A's chats and not in B's, a main-Ask upload in the main
+    /// Ask (limited or not) and in no workspace chat.
+    #[test]
+    fn chat_uploads_are_searched_where_they_were_added() {
+        let in_a = chat_uploads_source(Some("ws-a")).unwrap();
+        let in_b = chat_uploads_source(Some("ws-b")).unwrap();
+        let ask = |json: &str, ws: Option<&AnswerWorkspace>, all: bool| {
+            let scope: SendScope = serde_json::from_str(json).unwrap();
+            scope_for_workspace(scope.validated().unwrap(), ws, all)
+        };
+        let (a, b) = (workspace("ws-a", "src-a"), workspace("ws-b", "src-b"));
+
+        let chat_a = ask("{}", Some(&a), false);
+        assert!(chat_a.allows_source(&in_a), "A's chats find A's uploads");
+        assert!(!chat_a.allows_source(&in_b), "not B's");
+        assert!(
+            !chat_a.allows_source(CHAT_UPLOADS_MAIN),
+            "nor the main Ask's"
+        );
+        let chat_b = ask("{}", Some(&b), false);
+        assert!(chat_b.allows_source(&in_b) && !chat_b.allows_source(&in_a));
+        assert!(!chat_b.allows_source(CHAT_UPLOADS_MAIN));
+        // A narrower limit chosen in A's chat keeps A's uploads, not others'.
+        let narrowed = ask(r#"{"sourceIds": ["src-a"]}"#, Some(&a), false);
+        assert_eq!(narrowed.source_ids, vec!["src-a".to_string(), in_a.clone()]);
+
+        // The main Ask: limited to sources, its own uploads come along;
+        // unlimited, everything is searched as before.
+        let limited = ask(r#"{"sourceIds": ["folder-1"]}"#, None, false);
+        assert_eq!(limited.source_ids, vec!["folder-1", CHAT_UPLOADS_MAIN]);
+        assert!(!limited.source_ids.contains(&in_a));
+        let unlimited = ask("{}", None, false);
+        assert!(unlimited.is_empty());
+        assert_eq!(
+            with_chat_uploads(vec![CHAT_UPLOADS_MAIN.to_string()], CHAT_UPLOADS_MAIN),
+            vec![CHAT_UPLOADS_MAIN]
+        );
+    }
+
     #[test]
     fn a_workspace_limits_the_answer_unless_the_user_searches_everything() {
         let asked: SendScope =
             serde_json::from_str(r#"{"workspaceId": "ws-1", "searchAll": false}"#).unwrap();
         let scope = scope_for_workspace(asked.validated().unwrap(), Some(&thesis()), false);
         assert!(scope.restricted);
-        assert_eq!(scope.source_ids, vec!["src-1"]);
+        assert_eq!(scope.source_ids, vec!["src-1", "chat-uploads:ws-1"]);
         assert_eq!(scope.files, vec!["C:/papers/a.pdf"]);
         assert_eq!(scope.workspace.as_deref(), Some("ws-1"));
         assert_eq!(scope.workspace_name.as_deref(), Some("Thesis"));

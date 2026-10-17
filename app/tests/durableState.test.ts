@@ -31,6 +31,18 @@ test('after a force-quit lost localStorage, the sources come back from disk', ()
   assert.equal(save, false);
 });
 
+test('a source removed by the backend is not brought back by a list saved before the removal', () => {
+  const onDisk = JSON.parse(serializeSources([source('papers'), source('later')]));
+  const stale = reconcileSources({ kind: 'value', value: onDisk }, [], false, ['papers']);
+  assert.deepEqual(stale.sources.map(s => s.id), ['later']);
+  assert.equal(stale.save, true, 'the list is saved without it');
+  // The first frame's local copy is stale too.
+  const local = parseStoredSources(serializeSources([source('papers')]));
+  assert.deepEqual(reconcileSources({ kind: 'none' }, local, false, ['papers']), { sources: [], save: true });
+  // Nothing removed: as before.
+  assert.deepEqual(reconcileSources({ kind: 'value', value: onDisk }, [], false, ['gone']).save, false);
+});
+
 test('a source being indexed when the app was killed comes back interrupted', () => {
   const onDisk = JSON.parse(serializeSources([source('papers', 'indexing')]));
   const { sources } = reconcileSources({ kind: 'value', value: onDisk }, [], false);

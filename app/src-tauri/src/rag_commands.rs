@@ -356,54 +356,13 @@ pub async fn get_statistics(state: State<'_, RagState>) -> Result<HashMap<String
     Ok(result)
 }
 
-/// Delete all documents from a specific folder path
-async fn delete_folder_source_inner(
-    folder_path: String,
-    state: State<'_, RagState>,
-) -> Result<String, String> {
-    tracing::info!("\n=== Deleting source folder: {} ===", folder_path);
-
-    let mut rag_guard = state.rag.write().await;
-    let rag = &mut *rag_guard;
-
-    // Use prefix-based deletion — folder path matches all files stored under it.
-    // The RAG engine normalizes paths internally (lowercase, forward slashes on Windows)
-    // so this will match regardless of how the original path was formatted.
-    let deleted_count = rag
-        .delete_by_source_prefix(&folder_path)
-        .await
-        .map_err(|e| format!("Failed to delete documents from folder: {}", e))?;
-
-    // If nothing matched with the normalized path, also try the original raw path
-    // to clean up documents indexed before the normalization fix.
-    let deleted_count = if deleted_count == 0 {
-        let raw = folder_path.clone();
-        let fallback = rag
-            .delete_by_source(&raw)
-            .await
-            .map_err(|e| format!("Failed to delete: {}", e))?;
-        if fallback == 0 {
-            // Also try with backslashes replaced but preserving case
-            let with_fwd_slashes = raw.replace('\\', "/");
-            rag.delete_by_source(&with_fwd_slashes).await.unwrap_or(0)
-        } else {
-            fallback
-        }
+/// What removing the source at `path` deleted, for the Library.
+fn removal_message(deleted: usize, path: &str) -> String {
+    if deleted == 0 {
+        format!("No documents found for folder: {path}")
     } else {
-        deleted_count
-    };
-
-    tracing::info!("Deletion complete: {} documents deleted", deleted_count);
-
-    if deleted_count == 0 {
-        tracing::info!("No documents found for folder: {}", folder_path);
-        return Ok(format!("No documents found for folder: {}", folder_path));
+        format!("Successfully deleted {deleted} documents from folder: {path}")
     }
-
-    Ok(format!(
-        "Successfully deleted {} documents from folder: {}",
-        deleted_count, folder_path
-    ))
 }
 
 // Notes persistence file path
@@ -708,27 +667,34 @@ fn source_change_record(
     )
 }
 
-/// Delete all documents from a folder (audited). `source_id`, the Library
-/// source being removed, also loses its folder manifest: a source removed
-/// before its index finished was never kept in sync, so nothing else would
-/// forget it.
+/// Removes the Library source `source_id`, the folder (or file)
+/// `folder_path`, from the index (audited): its chunks, by source id, and its
+/// folder manifest, after its sync and any index run of it have stopped
+/// ([`crate::file_watcher::FolderSyncState::remove_source`]). Other sources'
+/// chunks stay, whatever their paths.
 #[tauri::command]
 pub async fn delete_folder_source(
     folder_path: String,
-    source_id: Option<String>,
+    source_id: String,
     state: State<'_, RagState>,
     folder_sync: State<'_, crate::file_watcher::FolderSyncState>,
+    indexing: State<'_, shodh_rag::indexing::IndexingState>,
     audit: State<'_, AuditState>,
 ) -> Result<String, String> {
-    let path = folder_path.clone();
-    let result = delete_folder_source_inner(folder_path, state).await;
-    if let (Ok(_), Some(id)) = (&result, &source_id) {
-        folder_sync.forget_source(id).await;
-    }
+    tracing::info!(source_id = %source_id, folder = %folder_path, "Removing a Library source");
+    let result = folder_sync
+        .remove_source(
+            &state.rag,
+            &indexing,
+            &source_id,
+            Some(folder_path.as_str()),
+        )
+        .await
+        .map(|deleted| removal_message(deleted, &folder_path));
     audit.record(source_change_record(
         "remove",
-        source_id.as_deref(),
-        Some(&path),
+        Some(source_id.as_str()),
+        Some(folder_path.as_str()),
         &result,
     ));
     result

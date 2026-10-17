@@ -386,12 +386,14 @@ pub async fn workspaces_remove_source(
 }
 
 /// Deletes a workspace (its instructions history and source list; never the sources).
-/// Its chats and tasks are kept and move to "No workspace"; its memories, snippets and
-/// results are kept and become global ([`release_workspace_statements`]).
+/// Its chats and tasks are kept and move to "No workspace", and so do the files added in
+/// its chats ([`keep_workspace_uploads`]); its memories, snippets and results are kept and
+/// become global ([`release_workspace_statements`]).
 #[tauri::command]
 pub async fn workspaces_delete(
     app: AppHandle,
     state: State<'_, WorkspaceState>,
+    rag: State<'_, crate::rag_commands::RagState>,
     memory: State<'_, MemoryState>,
     id: String,
 ) -> WorkspaceCommandResult<bool> {
@@ -422,7 +424,14 @@ pub async fn workspaces_delete(
             }
         });
     }
-    let detached = detach_conversations(&dir, &workspace_id)?;
+    let detached = detach_conversations(&dir, &workspace_id);
+    // Whatever happened to the chats: not fatal, the workspace is gone either
+    // way, and uploads left behind go to the main Ask at the next start (see
+    // `RAGEngine::hand_over_chat_uploads`).
+    if let Err(message) = keep_workspace_uploads(&rag.rag, &workspace_id).await {
+        tracing::warn!(workspace_id = %workspace_id, %message, "files added in the workspace's chats not moved");
+    }
+    let detached = detached?;
     if removed || detached > 0 {
         broadcast_change(&app, Some(&workspace_id));
     }
@@ -558,6 +567,23 @@ pub fn settle_statement_scopes_in_background(state: WorkspaceState, memory: Memo
             tracing::warn!(target: "shodh::workspaces", %message, "statement scopes not settled yet");
         }
     });
+}
+
+/// The files added in the chats of `workspace_id`, a workspace being deleted, go to the main
+/// Ask's chats ([`shodh_rag::rag_engine::CHAT_UPLOADS_MAIN`]), where its chats go: deleting a
+/// workspace keeps its chats, so it keeps what was added in them. Returns the chunks moved.
+pub(crate) async fn keep_workspace_uploads(
+    rag: &RwLock<RAGEngine>,
+    workspace_id: &str,
+) -> Result<u64, String> {
+    let Some(uploads) = shodh_rag::rag_engine::chat_uploads_source(Some(workspace_id)) else {
+        return Ok(0);
+    };
+    rag.write()
+        .await
+        .move_space(&uploads, shodh_rag::rag_engine::CHAT_UPLOADS_MAIN)
+        .await
+        .map_err(|e| format!("{e:#}"))
 }
 
 /// Clears `workspace_id` from the conversations that name it. Returns how many changed.
@@ -1018,6 +1044,55 @@ pub async fn apply_legacy_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Deleting a workspace keeps its chats, and so the files added in them:
+    /// they become the main Ask's. Other workspaces' uploads stay theirs.
+    #[tokio::test]
+    async fn a_deleted_workspace_leaves_its_uploads_to_the_main_ask() {
+        use shodh_rag::rag_engine::CHAT_UPLOADS_MAIN;
+        let dir = tempfile::tempdir().unwrap();
+        let rag =
+            RwLock::new(crate::agent_tools::testing::engine_with_search_models(dir.path()).await);
+        for (name, owner) in [("a.md", "chat-uploads:ws-a"), ("b.md", "chat-uploads:ws-b")] {
+            let path = dir.path().join(name);
+            std::fs::write(
+                &path,
+                format!(
+                    "# {name}
+
+The {name} notes describe the river, the bridge and the mill at dawn.
+"
+                ),
+            )
+            .unwrap();
+            rag.write()
+                .await
+                .add_document_from_file(
+                    &path,
+                    HashMap::from([
+                        ("space_id".to_string(), owner.to_string()),
+                        (
+                            "uploaded_at".to_string(),
+                            "2026-10-01T09:00:00Z".to_string(),
+                        ),
+                    ]),
+                )
+                .await
+                .unwrap();
+        }
+        assert!(keep_workspace_uploads(&rag, "ws-a").await.unwrap() > 0);
+        let mut owners: Vec<String> = rag
+            .read()
+            .await
+            .document_sources()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.space_id)
+            .collect();
+        owners.sort();
+        assert_eq!(owners, [CHAT_UPLOADS_MAIN, "chat-uploads:ws-b"]);
+    }
 
     fn conversation(
         id: &str,

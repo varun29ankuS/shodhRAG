@@ -490,6 +490,25 @@ pub fn normalize_source_path(path: &Path) -> String {
 /// `file_path` stay the identity ([`normalize_source_path`]).
 pub const DISPLAY_PATH_KEY: &str = "display_path";
 
+/// The names of a document's file a chunk's metadata keeps
+/// ([`RAGEngine::document_names`]); blank values read as absent.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct DocumentNames {
+    /// [`DISPLAY_PATH_KEY`]: the path as the file system spelled it at indexing.
+    #[serde(default, deserialize_with = "non_blank")]
+    pub display_path: Option<String>,
+    /// The file name in its original case.
+    #[serde(default, deserialize_with = "non_blank")]
+    pub filename: Option<String>,
+}
+
+fn non_blank<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    let value: Option<String> = serde::Deserialize::deserialize(deserializer)?;
+    Ok(value.filter(|v| !v.trim().is_empty()))
+}
+
 /// The path of the file at `path` as the file system spells it, in its
 /// [`canonical_path`] form: on Windows the case each folder and the file
 /// have on disk, however `path` was cased; elsewhere `path` itself, whose
@@ -1997,20 +2016,20 @@ impl RAGEngine {
         self.store.get_document_info().await
     }
 
-    /// The stored [`DISPLAY_PATH_KEY`] of each document that has one, by
-    /// `doc_id`. Documents indexed before it was stored have none; their
-    /// spelling is resolved from the file ([`on_disk_spelling`]) where it is
-    /// shown.
-    pub async fn document_display_paths(&self) -> Result<HashMap<String, String>> {
+    /// How each document's file is named in the index, by `doc_id`: its
+    /// stored [`DISPLAY_PATH_KEY`] and its `filename`, read from its first
+    /// chunk (other metadata is skipped, not decoded). Documents indexed
+    /// before the display path was stored have none; their spelling is
+    /// resolved where it is shown ([`crate::path_case::PathSpellings`]).
+    pub async fn document_names(&self) -> Result<HashMap<String, DocumentNames>> {
         Ok(self
             .store
             .first_chunk_metadata()
             .await?
             .into_iter()
             .filter_map(|(doc_id, json)| {
-                let mut metadata: HashMap<String, String> = serde_json::from_str(&json).ok()?;
-                let display = metadata.remove(DISPLAY_PATH_KEY)?;
-                (!display.trim().is_empty()).then_some((doc_id, display))
+                let names: DocumentNames = serde_json::from_str(&json).ok()?;
+                Some((doc_id, names))
             })
             .collect())
     }
@@ -3220,9 +3239,25 @@ Language models trained on long documents reach lower perplexity.
             assert_eq!(metadata[DISPLAY_PATH_KEY], spelled);
         }
         engine.commit_file(prepared).await.unwrap();
-        let shown = engine.document_display_paths().await.unwrap();
+        let shown = engine.document_names().await.unwrap();
         assert_eq!(shown.len(), 1);
-        assert_eq!(shown.values().next(), Some(&spelled));
+        assert_eq!(
+            shown.values().next().and_then(|n| n.display_path.as_ref()),
+            Some(&spelled)
+        );
+    }
+
+    /// Only the names are read from a chunk's metadata; blank ones are absent.
+    #[test]
+    fn document_names_skip_other_metadata() {
+        let names: DocumentNames = serde_json::from_str(
+            r#"{"display_path":"C:\\Papers\\A.pdf","filename":"  ","bboxes":"[{\"page\":1}]","title":"A"}"#,
+        )
+        .unwrap();
+        assert_eq!(names.display_path.as_deref(), Some("C:\\Papers\\A.pdf"));
+        assert_eq!(names.filename, None);
+        let none: DocumentNames = serde_json::from_str(r#"{"title":"A"}"#).unwrap();
+        assert_eq!(none, DocumentNames::default());
     }
 
     /// A file that cannot be resolved gives no spelling on Windows (its

@@ -1,6 +1,6 @@
 //! `search_documents`: hybrid search over the indexed documents.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -17,9 +17,8 @@ use super::{
 use crate::harness::events::RiskTier;
 use crate::harness::protocol::ToolLoadMode;
 use crate::harness::truncate_chars;
-use crate::rag_engine::{
-    normalize_source_path, on_disk_spelling, page_numbers_from_metadata, DISPLAY_PATH_KEY,
-};
+use crate::path_case::PathSpellings;
+use crate::rag_engine::{normalize_source_path, page_numbers_from_metadata, DISPLAY_PATH_KEY};
 use crate::types::{ComprehensiveResult, MetadataFilter, SourceSet};
 use crate::RAGEngine;
 
@@ -245,22 +244,25 @@ fn stored_display_path(path: &str, result: &ComprehensiveResult) -> Option<Strin
 }
 
 /// Fills the `display_path` of passages from files indexed before it was
-/// stored with their chunks, resolving each file once from disk. A file that
-/// cannot be resolved keeps none; the UI then shows `path`.
+/// stored with their chunks: each folder is resolved from disk once per
+/// process and the file is named by the passage's original-case `file`
+/// ([`PathSpellings`]). A file that cannot be resolved keeps none; the UI
+/// then shows `path`.
 async fn resolve_display_paths(passages: &mut [Passage]) {
-    let missing: BTreeSet<String> = passages
+    let missing: BTreeMap<String, String> = passages
         .iter()
         .filter(|p| p.display_path.is_none() && !p.path.is_empty() && !p.path.contains("://"))
-        .map(|p| p.path.clone())
+        .map(|p| (p.path.clone(), p.file.clone()))
         .collect();
     if missing.is_empty() {
         return;
     }
     let resolved = tokio::task::spawn_blocking(move || {
+        let spellings = PathSpellings::shared();
         missing
             .into_iter()
-            .filter_map(|path| {
-                let display = on_disk_spelling(Path::new(&path))?;
+            .filter_map(|(path, file)| {
+                let display = spellings.spelling(&path, &[file.as_str()])?;
                 Some((path, display))
             })
             .collect::<HashMap<String, String>>()

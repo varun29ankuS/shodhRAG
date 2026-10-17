@@ -12,6 +12,7 @@ pub mod harness;
 pub mod inbox;
 pub mod indexing;
 pub mod lazy_model;
+pub mod path_case;
 pub mod processing;
 pub mod rag_engine;
 pub mod reranking;

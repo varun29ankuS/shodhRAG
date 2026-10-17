@@ -337,6 +337,11 @@ impl ManifestStore {
         Ok(true)
     }
 
+    /// Whether `source_id` has a manifest.
+    pub fn has_manifest(&self, source_id: &str) -> bool {
+        self.path(source_id).is_file()
+    }
+
     /// Forget a source (it was removed from the Library).
     pub fn forget(&self, source_id: &str) {
         // Missing is fine: the source never finished a sync.

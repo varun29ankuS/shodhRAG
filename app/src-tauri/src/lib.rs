@@ -452,6 +452,18 @@ pub fn run() {
             // Sources removed from the Library in an earlier run are never
             // indexed or watched again.
             let folder_sync = file_watcher::FolderSyncState::new(app_data_dir.join("folder_sync"));
+            // Removals nothing can bring back any more are forgotten: the
+            // saved Library list no longer names them.
+            if let Ok(Some(saved)) =
+                ui_state_commands::read_value(&app_data_dir, "library_sources")
+            {
+                if let Some(listed) = file_watcher::listed_source_ids(&saved) {
+                    let pruned = folder_sync.prune_removed(&listed);
+                    if !pruned.is_empty() {
+                        tracing::info!(count = pruned.len(), "removed sources forgotten");
+                    }
+                }
+            }
             let indexing_state = IndexingState::default();
             for source_id in folder_sync.removed_ids() {
                 indexing_state.mark_removed(&source_id);

@@ -13,6 +13,7 @@ import type { SessionCounts } from './sessionCounts';
 import type { ModelOverride } from '../modelPicker/modelTypes';
 import type { ConversationMode } from '../../hooks/useConversations';
 import type { CarriedPassageWire } from '../focus/carriedPassages';
+import type { AttachedContext } from '../ask/imageAttachments';
 
 export const AGENT_EVENT = 'agent_event';
 export const RUNTIME_PROGRESS_EVENT = 'agent_runtime_progress';
@@ -176,6 +177,8 @@ export const agentApi = {
    * `scope` limits what the answer may search (selected sources, or files for "Ask about this file").
    * `textOrigin` is `typed` only when `text` is exactly what the user typed in the main
    * conversation: only such turns may be learned from (Settings → Memory).
+   * `attachedContext`: text the user attached (read from images); the backend appends it to
+   * the message to the model only, never to what is learned or recorded as the question.
    */
   send: (
     sessionId: string,
@@ -184,7 +187,8 @@ export const agentApi = {
     history: HistoryTurn[],
     scope: AnswerScope | null = null,
     textOrigin: 'typed' | 'composed' = 'composed',
-  ) => call<string>('agent_send', { sessionId, text, requestId, history, scope, textOrigin }),
+    attachedContext: AttachedContext[] | null = null,
+  ) => call<string>('agent_send', { sessionId, text, requestId, history, scope, textOrigin, attachedContext }),
   steer: (sessionId: string, text: string) => call<string>('agent_steer', { sessionId, text }),
   abort: (sessionId: string) => call<void>('agent_abort', { sessionId }),
   approve: (sessionId: string, stepId: string, approved: boolean) =>

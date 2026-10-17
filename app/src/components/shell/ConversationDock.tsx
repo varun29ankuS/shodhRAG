@@ -28,7 +28,7 @@ import { useChatSession } from '../../features/ask/ChatSessionContext';
 import { useDraft } from '../../features/ask/useDraft';
 import { useSendOptions } from '../../features/ask/useSendOptions';
 import { AttachmentChips, useImageAttachments } from '../../features/ask/AttachmentChips';
-import { composeQuestion, composerAttachments } from '../../features/ask/imageAttachments';
+import { attachedContextOf, composerAttachments } from '../../features/ask/imageAttachments';
 import type { OptionSource } from '../../features/ask/sendOptions';
 import type { ChatMessage } from '../../features/ask/types';
 
@@ -313,8 +313,13 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
   const submit = () => {
     const text = draft.trim();
     if (!text || isStreaming || busyElsewhere) return;
+    // As in Ask: the attached image text goes beside the typed words, and both are
+    // cleared only once the question is accepted.
+    const conversationId = session.activeConversationId;
+    const attached = composerAttachments.get(conversationId);
+    if (!send(text, sendOptions, { attachedContext: attachedContextOf(attached) })) return;
     setDraft('');
-    void send(composeQuestion(text, composerAttachments.take(session.activeConversationId)), sendOptions);
+    composerAttachments.consume(conversationId, attached);
   };
   const submitSteer = () => {
     const text = draft.trim();

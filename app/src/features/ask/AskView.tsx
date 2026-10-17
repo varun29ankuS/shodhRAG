@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUpRight, Check, Copy, CornerLeftUp, FileDown, FolderPlus, Globe, MessagesSquare, RotateCcw } from 'lucide-react';
+import { ArrowUpRight, Check, Copy, CornerLeftUp, FileDown, FileText, FolderPlus, Globe, MessagesSquare, RotateCcw } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { invoke } from '@tauri-apps/api/core';
 import { cn } from '../../lib/utils';
@@ -32,7 +32,7 @@ import { useChatSession } from './ChatSessionContext';
 import { useDraft } from './useDraft';
 import { useSendOptions } from './useSendOptions';
 import { AttachmentChips, useImageAttachments } from './AttachmentChips';
-import { composeQuestion, composerAttachments } from './imageAttachments';
+import { attachedContextOf, attachmentLabel, composerAttachments } from './imageAttachments';
 import type { FallbackRun } from './ChatSessionContext';
 import type { ProviderErrorActions } from '../modelPicker/ProviderErrorCard';
 import { MessageContentRenderer } from './MessageContentRenderer';
@@ -851,9 +851,18 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   const submit = useCallback(() => {
     const text = draft.trim();
     if (!text || isStreaming || busyElsewhere) return;
+    // The typed words and the attached image text go out separately; both are kept
+    // until the question is accepted.
+    const conversationId = session.activeConversationId;
+    const attached = composerAttachments.get(conversationId);
+    const accepted = send(
+      text,
+      { ...sendOptions, searchAll: workspace !== null && searchAll },
+      { attachedContext: attachedContextOf(attached) },
+    );
+    if (!accepted) return;
     setDraft('');
-    const question = composeQuestion(text, composerAttachments.take(session.activeConversationId));
-    void send(question, { ...sendOptions, searchAll: workspace !== null && searchAll });
+    composerAttachments.consume(conversationId, attached);
     setSearchAll(false);
     composerRef.current?.focus();
   }, [draft, setDraft, isStreaming, busyElsewhere, send, sendOptions, workspace, searchAll, session.activeConversationId]);
@@ -1138,6 +1147,20 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         <div className="flex justify-end">
           <div className="max-w-[520px] min-w-0 px-4 py-[11px] rounded-[18px] bg-shodh-raised-2 text-[15px] leading-[1.55] text-shodh-text">
             <UserText text={message.content} />
+            {message.attachedContext && message.attachedContext.length > 0 && (
+              <ul aria-label="Sent with this question" className="m-0 mt-2 p-0 list-none flex flex-wrap gap-1.5">
+                {message.attachedContext.map((item, i) => (
+                  <li
+                    key={i}
+                    title={item.text.slice(0, 400)}
+                    className="inline-flex items-center gap-1.5 h-6 max-w-full px-2 rounded-full bg-shodh-surface text-[11.5px] text-shodh-text-secondary"
+                  >
+                    <FileText className="w-3 h-3 shrink-0 text-shodh-accent-text" aria-hidden="true" />
+                    <span className="truncate">{attachmentLabel(item)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
       );

@@ -177,6 +177,7 @@ function AppSplitView() {
     updateConversationMeta,
     messages,
     appendMessage,
+    appendMessageTo,
     updateMessage,
   } = useChatSession();
 
@@ -796,19 +797,22 @@ function AppSplitView() {
 
   // Text read from an image: a notice in the chat, and an attachment of the
   // next question (features/ask/imageAttachments), sent as the user's own
-  // context. The drop listener outlives its render, so the conversation is
-  // read through a ref.
+  // context. Both go to the conversation that was open when the paste, drop or
+  // pick started, even if another one is open by the time OCR finishes. The
+  // drop listener outlives its render, so the conversation is read through a ref.
   const activeConversationIdRef = useRef(activeConversationId);
   activeConversationIdRef.current = activeConversationId;
-  const showImageText = (origin: ImageOrigin, raw: unknown) => {
+  const showImageText = (conversationId: string | null, origin: ImageOrigin, raw: unknown) => {
+    if (!conversationId) return;
     const result = readImageText(raw);
-    appendMessage(imageNotice(newNoticeId(), new Date().toISOString(), origin, result));
+    appendMessageTo(conversationId, imageNotice(newNoticeId(), new Date().toISOString(), origin, result));
     // Only text the notice reports as found (OCR words) is attached.
-    if (result.wordCount > 0) composerAttachments.add(activeConversationIdRef.current, { id: newNoticeId(), origin, text: result.text });
+    if (result.wordCount > 0) composerAttachments.add(conversationId, { id: newNoticeId(), origin, text: result.text });
   };
 
   // File picker for images
   const handlePickImage = async () => {
+    const conversationId = activeConversationIdRef.current;
     debugLog('[FILE PICKER] Button clicked');
     try {
       const selected = await open({
@@ -829,7 +833,7 @@ function AppSplitView() {
             filePath: selected
           });
           debugLog('[FILE PICKER] Got result:', result);
-          showImageText('added', result);
+          showImageText(conversationId, 'added', result);
         } catch (error) {
           console.error('Failed to process selected image:', error);
           notify.error('Image processing failed', { description: String(error) });
@@ -870,6 +874,7 @@ function AppSplitView() {
               return;
             }
             lastProcessedImageTimeRef.current = now;
+            const conversationId = activeConversationIdRef.current;
 
             try {
               // Images are read (OCR); old .doc/.ppt files are named with what
@@ -881,7 +886,7 @@ function AppSplitView() {
                 const result = await invoke<unknown>('process_image_from_file', {
                   filePath: imageFile
                 });
-                showImageText('dropped', result);
+                showImageText(conversationId, 'dropped', result);
               }
 
               if (dropped.legacy.length > 0) {
@@ -953,6 +958,7 @@ function AppSplitView() {
   const pasteInFlightRef = useRef(false);
   const handlePasteImage = async (image: PastedImage) => {
     if (pasteInFlightRef.current) return;
+    const conversationId = activeConversationIdRef.current;
     pasteInFlightRef.current = true;
     try {
       const imageData = image.kind === 'file'
@@ -961,7 +967,7 @@ function AppSplitView() {
       // No image on the system clipboard either: nothing was pasted.
       if (!imageData) return;
       const result = await invoke<unknown>('process_image_from_base64', { imageData });
-      showImageText('pasted', result);
+      showImageText(conversationId, 'pasted', result);
     } catch (error) {
       console.error('Failed to process pasted image:', error);
       notify.error('The pasted image could not be read', { description: String(error) });

@@ -8,10 +8,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::mpsc;
 
+use crate::harness::provider_error::ProviderErrorKind;
+
+use super::failure::{pump, AnthropicSse, CallContext, OpenAiSse, ProviderFailure, StreamItem};
 use super::{
-    streaming::StreamingResponse, ApiProvider, ChatMessage, ChatResponse, ChatRole,
-    ChatStreamEvent, GenerationConfig, LLMProvider, MemoryUsage, ProviderInfo, SubscriptionService,
-    TokenStream, ToolCall, ToolSchema, LM_STUDIO_DEFAULT_BASE_URL,
+    ApiProvider, ChatMessage, ChatResponse, ChatRole, ChatStreamEvent, GenerationConfig,
+    LLMProvider, MemoryUsage, ProviderInfo, SubscriptionService, TokenStream, ToolCall, ToolSchema,
+    LM_STUDIO_DEFAULT_BASE_URL,
 };
 
 /// Why a subscription model cannot answer outside the agent.
@@ -111,6 +114,109 @@ impl SimpleExternalProvider {
             ApiProvider::Custom { endpoint } => endpoint.clone(),
         }
     }
+
+    fn provider_name(&self) -> &'static str {
+        match &self.provider {
+            ApiProvider::OpenAI => "OpenAI",
+            ApiProvider::Anthropic => "Anthropic",
+            ApiProvider::OpenRouter => "OpenRouter",
+            ApiProvider::Together => "Together",
+            ApiProvider::Grok => "Grok",
+            ApiProvider::Perplexity => "Perplexity",
+            ApiProvider::Google => "Google",
+            ApiProvider::Replicate => "Replicate",
+            ApiProvider::Baseten => "Baseten",
+            ApiProvider::Ollama => "Ollama",
+            ApiProvider::LmStudio => "LM Studio",
+            ApiProvider::Subscription(service) => service.label(),
+            ApiProvider::HuggingFace { .. } => "HuggingFace",
+            ApiProvider::Custom { .. } => "Custom",
+        }
+    }
+
+    /// Who this call goes to, for its failures (which never carry the key).
+    fn call(&self) -> CallContext {
+        CallContext::new(
+            self.provider_name(),
+            self.model.clone(),
+            self.api_key.clone(),
+        )
+    }
+
+    /// Send `request`: a provider failure when it got no answer or an
+    /// error status (classified from the status and body).
+    async fn send_checked(&self, request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+        let call = self.call();
+        let response = request
+            .send()
+            .await
+            .map_err(|e| failed(call.transport(&e)))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(failed(call.http(status.as_u16(), &body)));
+        }
+        Ok(response)
+    }
+
+    /// [`Self::send_checked`] for a stream: also a failure when the server
+    /// answered with a web page instead of an event stream.
+    async fn send_stream(&self, request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+        let response = self.send_checked(request).await?;
+        let html = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|t| t.contains("text/html"));
+        if html {
+            let status = response.status().as_u16();
+            return Err(failed(self.call().failure(
+                ProviderErrorKind::ModelUnavailable,
+                Some(status),
+                "The provider answered with a web page instead of a stream",
+            )));
+        }
+        Ok(response)
+    }
+
+    /// A `200 OK` JSON body, or the error it carries.
+    async fn checked_body(
+        &self,
+        response: reqwest::Response,
+        endpoint: &str,
+    ) -> Result<serde_json::Value> {
+        let body: serde_json::Value = Self::parse_json_response(response, endpoint).await?;
+        match self.call().body_error(&body) {
+            Some(failure) => Err(failed(failure)),
+            None => Ok(body),
+        }
+    }
+}
+
+/// Log a provider failure and make it the call's error (callers can
+/// `downcast_ref::<ProviderFailure>()`).
+fn failed(failure: ProviderFailure) -> anyhow::Error {
+    failure.log();
+    anyhow::Error::new(failure)
+}
+
+/// Token stream items: text, or the failure that ends the stream.
+fn token_item(item: StreamItem) -> Option<std::result::Result<String, ProviderFailure>> {
+    match item {
+        StreamItem::Content(text) => Some(Ok(text)),
+        StreamItem::Failed(failure) => Some(Err(failure)),
+        StreamItem::ToolCall(_) | StreamItem::Done => None,
+    }
+}
+
+/// Chat stream events.
+fn chat_event(item: StreamItem) -> Option<ChatStreamEvent> {
+    Some(match item {
+        StreamItem::Content(text) => ChatStreamEvent::ContentDelta(text),
+        StreamItem::ToolCall(call) => ChatStreamEvent::ToolCallComplete(call),
+        StreamItem::Done => ChatStreamEvent::Done,
+        StreamItem::Failed(failure) => ChatStreamEvent::Error(failure),
+    })
 }
 
 #[async_trait]
@@ -168,14 +274,14 @@ impl LLMProvider for SimpleExternalProvider {
                         // Flush at word boundaries (~30 chars per chunk)
                         if chunk.len() >= 30
                             && (c == ' ' || c == '\n')
-                            && sender.send(std::mem::take(&mut chunk)).await.is_err()
+                            && sender.send(Ok(std::mem::take(&mut chunk))).await.is_err()
                         {
                             break;
                         }
                     }
                     // Flush remainder
                     if !chunk.is_empty() {
-                        let _ = sender.send(chunk).await;
+                        let _ = sender.send(Ok(chunk)).await;
                     }
                 });
                 Ok(TokenStream::new(receiver))
@@ -184,22 +290,7 @@ impl LLMProvider for SimpleExternalProvider {
     }
 
     fn info(&self) -> ProviderInfo {
-        let provider_name = match &self.provider {
-            ApiProvider::OpenAI => "OpenAI",
-            ApiProvider::Anthropic => "Anthropic",
-            ApiProvider::OpenRouter => "OpenRouter",
-            ApiProvider::Together => "Together",
-            ApiProvider::Grok => "Grok",
-            ApiProvider::Perplexity => "Perplexity",
-            ApiProvider::Google => "Google",
-            ApiProvider::Replicate => "Replicate",
-            ApiProvider::Baseten => "Baseten",
-            ApiProvider::Ollama => "Ollama",
-            ApiProvider::LmStudio => "LM Studio",
-            ApiProvider::Subscription(service) => service.label(),
-            ApiProvider::HuggingFace { .. } => "HuggingFace",
-            ApiProvider::Custom { .. } => "Custom",
-        };
+        let provider_name = self.provider_name();
 
         ProviderInfo {
             name: provider_name.to_string(),
@@ -278,8 +369,6 @@ impl LLMProvider for SimpleExternalProvider {
 impl SimpleExternalProvider {
     /// Real SSE streaming for OpenAI-compatible APIs
     async fn openai_stream(&self, prompt: &str, config: &GenerationConfig) -> Result<TokenStream> {
-        use futures::StreamExt;
-
         let request = json!({
             "model": self.model,
             "messages": [
@@ -292,87 +381,22 @@ impl SimpleExternalProvider {
             "stream": true
         });
 
-        let endpoint = self.get_endpoint();
         let response = self
-            .client
-            .post(&endpoint)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    anyhow!(
-                        "Streaming request to {} timed out — check network connectivity",
-                        endpoint
-                    )
-                } else if e.is_connect() {
-                    anyhow!("Failed to connect to {} for streaming: {}", endpoint, e)
-                } else {
-                    anyhow!("Streaming request to {} failed: {}", endpoint, e)
-                }
-            })?;
+            .send_stream(
+                self.client
+                    .post(self.get_endpoint())
+                    .header("Authorization", format!("Bearer {}", self.api_key))
+                    .json(&request),
+            )
+            .await?;
 
-        let status = response.status();
-        // Check content-type: if the server returned HTML instead of SSE, bail early
-        let content_type = response
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        if !status.is_success() || content_type.contains("text/html") {
-            let error = response.text().await?;
-            let preview: String = error.chars().take(300).collect();
-            return Err(anyhow!(
-                "API streaming error (HTTP {}, content-type: {}): {}",
-                status,
-                content_type,
-                preview
-            ));
-        }
-
-        let (sender, receiver) = tokio::sync::mpsc::channel::<String>(256);
-        let mut byte_stream = response.bytes_stream();
-
-        tokio::spawn(async move {
-            let mut buffer = String::new();
-
-            while let Some(chunk_result) = byte_stream.next().await {
-                let chunk = match chunk_result {
-                    Ok(c) => c,
-                    Err(_) => break,
-                };
-
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
-
-                // Process complete SSE lines
-                while let Some(line_end) = buffer.find('\n') {
-                    let line = buffer[..line_end].trim().to_string();
-                    buffer = buffer[line_end + 1..].to_string();
-
-                    if line.is_empty() || !line.starts_with("data: ") {
-                        continue;
-                    }
-
-                    let data = &line[6..];
-                    if data == "[DONE]" {
-                        return;
-                    }
-
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
-                        if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
-                            if !content.is_empty()
-                                && sender.send(content.to_string()).await.is_err()
-                            {
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
+        let (sender, receiver) = tokio::sync::mpsc::channel(256);
+        tokio::spawn(pump(
+            response,
+            OpenAiSse::new(self.call()),
+            sender,
+            token_item,
+        ));
         Ok(TokenStream::new(receiver))
     }
 
@@ -403,43 +427,23 @@ impl SimpleExternalProvider {
             "stream": false
         });
 
-        let response = self.client
-            .post(&endpoint)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    tracing::error!(endpoint = %endpoint, "Request timed out (connect or response timeout)");
-                    anyhow!("Request to {} timed out — check network connectivity and whether the endpoint is reachable", endpoint)
-                } else if e.is_connect() {
-                    tracing::error!(endpoint = %endpoint, error = %e, "Connection failed");
-                    anyhow!("Failed to connect to {} — check network/firewall/proxy settings: {}", endpoint, e)
-                } else {
-                    tracing::error!(endpoint = %endpoint, error = %e, "Request failed");
-                    anyhow!("Request to {} failed: {}", endpoint, e)
-                }
-            })?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error = response.text().await?;
-            tracing::error!(endpoint = %endpoint, status = %status, error = %error, "API returned error");
-            return Err(anyhow!("API error ({}): {}", status, error));
+        let response = self
+            .send_checked(
+                self.client
+                    .post(&endpoint)
+                    .header("Authorization", format!("Bearer {}", self.api_key))
+                    .json(&request),
+            )
+            .await?;
+        let body = self.checked_body(response, &endpoint).await?;
+        let content = body["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("");
+        if content.trim().is_empty() {
+            return Err(failed(self.call().empty()));
         }
-
-        let result: OpenAIResponse = Self::parse_json_response(response, &endpoint).await?;
-
-        if result.choices.is_empty() {
-            return Err(anyhow!("No choices returned from API"));
-        }
-
-        tracing::debug!(
-            "API response received, {} chars",
-            result.choices[0].message.content.len()
-        );
-        Ok(result.choices[0].message.content.clone())
+        tracing::debug!("API response received, {} chars", content.len());
+        Ok(content.to_string())
     }
 
     /// Anthropic generation
@@ -455,28 +459,22 @@ impl SimpleExternalProvider {
         });
 
         let response = self
-            .client
-            .post(self.get_endpoint())
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .json(&request)
-            .send()
+            .send_checked(
+                self.client
+                    .post(self.get_endpoint())
+                    .header("x-api-key", &self.api_key)
+                    .header("anthropic-version", "2023-06-01")
+                    .json(&request),
+            )
             .await?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error = response.text().await?;
-            return Err(anyhow!("Anthropic API error ({}): {}", status, error));
-        }
 
         let endpoint = self.get_endpoint();
         let result: AnthropicResponse = Self::parse_json_response(response, &endpoint).await?;
 
-        if result.content.is_empty() {
-            return Err(anyhow!("No content returned from Anthropic API"));
+        match result.content.first() {
+            Some(block) if !block.text.trim().is_empty() => Ok(block.text.clone()),
+            _ => Err(failed(self.call().empty())),
         }
-
-        Ok(result.content[0].text.clone())
     }
 
     /// Google Gemini generation
@@ -494,29 +492,25 @@ impl SimpleExternalProvider {
         });
 
         let response = self
-            .client
-            .post(self.get_endpoint())
-            .header("Content-Type", "application/json")
-            .header("x-goog-api-key", &self.api_key)
-            .json(&request)
-            .send()
+            .send_checked(
+                self.client
+                    .post(self.get_endpoint())
+                    .header("Content-Type", "application/json")
+                    .header("x-goog-api-key", &self.api_key)
+                    .json(&request),
+            )
             .await?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error = response.text().await?;
-            return Err(anyhow!("Google API error ({}): {}", status, error));
-        }
 
         let endpoint = self.get_endpoint();
         let result: GoogleResponse = Self::parse_json_response(response, &endpoint).await?;
-        if let Some(candidate) = result.candidates.first() {
-            if let Some(part) = candidate.content.parts.first() {
-                return Ok(part.text.clone());
-            }
+        match result
+            .candidates
+            .first()
+            .and_then(|c| c.content.parts.first())
+        {
+            Some(part) if !part.text.trim().is_empty() => Ok(part.text.clone()),
+            _ => Err(failed(self.call().empty())),
         }
-
-        Err(anyhow!("No response from Google Gemini"))
     }
 
     /// HuggingFace generation
@@ -539,28 +533,22 @@ impl SimpleExternalProvider {
         });
 
         let response = self
-            .client
-            .post(self.get_endpoint())
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&request)
-            .send()
+            .send_checked(
+                self.client
+                    .post(self.get_endpoint())
+                    .header("Authorization", format!("Bearer {}", self.api_key))
+                    .json(&request),
+            )
             .await?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error = response.text().await?;
-            return Err(anyhow!("HuggingFace API error ({}): {}", status, error));
-        }
 
         let endpoint = self.get_endpoint();
         let result: Vec<HuggingFaceResponse> =
             Self::parse_json_response(response, &endpoint).await?;
 
-        if result.is_empty() {
-            return Err(anyhow!("No response returned from HuggingFace API"));
+        match result.first() {
+            Some(r) if !r.generated_text.trim().is_empty() => Ok(r.generated_text.clone()),
+            _ => Err(failed(self.call().empty())),
         }
-
-        Ok(result[0].generated_text.clone())
     }
 
     // ==================== Tool-calling: OpenAI-compatible ====================
@@ -643,36 +631,15 @@ impl SimpleExternalProvider {
 
         let endpoint = self.get_endpoint();
         let response = self
-            .client
-            .post(&endpoint)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    anyhow!(
-                        "Chat request to {} timed out — check network connectivity",
-                        endpoint
-                    )
-                } else if e.is_connect() {
-                    anyhow!(
-                        "Failed to connect to {} — check network/firewall/proxy: {}",
-                        endpoint,
-                        e
-                    )
-                } else {
-                    anyhow!("Chat request to {} failed: {}", endpoint, e)
-                }
-            })?;
+            .send_checked(
+                self.client
+                    .post(&endpoint)
+                    .header("Authorization", format!("Bearer {}", self.api_key))
+                    .json(&request),
+            )
+            .await?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error = response.text().await?;
-            return Err(anyhow!("Chat API error ({}): {}", status, error));
-        }
-
-        let body: serde_json::Value = Self::parse_json_response(response, &endpoint).await?;
+        let body = self.checked_body(response, &endpoint).await?;
         let choice = &body["choices"][0]["message"];
 
         // Check for tool calls
@@ -693,8 +660,11 @@ impl SimpleExternalProvider {
         }
 
         // Regular content
-        let content = choice["content"].as_str().unwrap_or("").to_string();
-        Ok(ChatResponse::Content(content))
+        let content = choice["content"].as_str().unwrap_or("");
+        if content.trim().is_empty() {
+            return Err(failed(self.call().empty()));
+        }
+        Ok(ChatResponse::Content(content.to_string()))
     }
 
     /// Streaming chat completion with tool calling (OpenAI-compatible SSE).
@@ -704,8 +674,6 @@ impl SimpleExternalProvider {
         tools: &[ToolSchema],
         config: &GenerationConfig,
     ) -> Result<tokio::sync::mpsc::Receiver<ChatStreamEvent>> {
-        use futures::StreamExt;
-
         let mut request = json!({
             "model": self.model,
             "messages": Self::format_openai_messages(messages),
@@ -721,162 +689,17 @@ impl SimpleExternalProvider {
             request["tool_choice"] = json!("auto");
         }
 
-        let endpoint = self.get_endpoint();
         let response = self
-            .client
-            .post(&endpoint)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    anyhow!(
-                        "Chat stream to {} timed out — check network connectivity",
-                        endpoint
-                    )
-                } else if e.is_connect() {
-                    anyhow!("Failed to connect to {} for chat stream: {}", endpoint, e)
-                } else {
-                    anyhow!("Chat stream request to {} failed: {}", endpoint, e)
-                }
-            })?;
-
-        let status = response.status();
-        let content_type = response
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        if !status.is_success() || content_type.contains("text/html") {
-            let error = response.text().await?;
-            let preview: String = error.chars().take(300).collect();
-            return Err(anyhow!(
-                "Chat streaming error (HTTP {}, content-type: {}): {}",
-                status,
-                content_type,
-                preview
-            ));
-        }
+            .send_stream(
+                self.client
+                    .post(self.get_endpoint())
+                    .header("Authorization", format!("Bearer {}", self.api_key))
+                    .json(&request),
+            )
+            .await?;
 
         let (tx, rx) = tokio::sync::mpsc::channel::<ChatStreamEvent>(256);
-        let mut byte_stream = response.bytes_stream();
-
-        tokio::spawn(async move {
-            let mut buffer = String::new();
-            // Accumulate streamed tool calls: index -> (id, name, arguments_buffer)
-            let mut tool_call_acc: std::collections::HashMap<u64, (String, String, String)> =
-                std::collections::HashMap::new();
-
-            while let Some(chunk_result) = byte_stream.next().await {
-                let chunk = match chunk_result {
-                    Ok(c) => c,
-                    Err(_) => break,
-                };
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
-
-                while let Some(line_end) = buffer.find('\n') {
-                    let line = buffer[..line_end].trim().to_string();
-                    buffer = buffer[line_end + 1..].to_string();
-
-                    if line.is_empty() || !line.starts_with("data: ") {
-                        continue;
-                    }
-                    let data = &line[6..];
-                    if data == "[DONE]" {
-                        // Flush any accumulated tool calls
-                        let mut calls: Vec<(u64, ToolCall)> = tool_call_acc
-                            .drain()
-                            .map(|(idx, (id, name, args))| {
-                                (
-                                    idx,
-                                    ToolCall {
-                                        id,
-                                        name,
-                                        arguments: args,
-                                    },
-                                )
-                            })
-                            .collect();
-                        calls.sort_by_key(|(idx, _)| *idx);
-                        for (_, tc) in calls {
-                            let _ = tx.send(ChatStreamEvent::ToolCallComplete(tc)).await;
-                        }
-                        let _ = tx.send(ChatStreamEvent::Done).await;
-                        return;
-                    }
-
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
-                        let delta = &parsed["choices"][0]["delta"];
-
-                        // Content delta
-                        if let Some(content) = delta["content"].as_str() {
-                            if !content.is_empty()
-                                && tx
-                                    .send(ChatStreamEvent::ContentDelta(content.to_string()))
-                                    .await
-                                    .is_err()
-                            {
-                                return;
-                            }
-                        }
-
-                        // Tool call deltas
-                        if let Some(tcs) = delta["tool_calls"].as_array() {
-                            for tc_delta in tcs {
-                                let idx = tc_delta["index"].as_u64().unwrap_or(0);
-                                let entry = tool_call_acc.entry(idx).or_insert_with(|| {
-                                    let id = tc_delta["id"].as_str().unwrap_or("").to_string();
-                                    let name = tc_delta["function"]["name"]
-                                        .as_str()
-                                        .unwrap_or("")
-                                        .to_string();
-                                    (id, name, String::new())
-                                });
-                                // Accumulate id/name if provided in later deltas
-                                if let Some(id) = tc_delta["id"].as_str() {
-                                    if !id.is_empty() {
-                                        entry.0 = id.to_string();
-                                    }
-                                }
-                                if let Some(name) = tc_delta["function"]["name"].as_str() {
-                                    if !name.is_empty() {
-                                        entry.1 = name.to_string();
-                                    }
-                                }
-                                if let Some(args) = tc_delta["function"]["arguments"].as_str() {
-                                    entry.2.push_str(args);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Stream ended without [DONE] — flush accumulated tool calls
-            if !tool_call_acc.is_empty() {
-                let mut calls: Vec<(u64, ToolCall)> = tool_call_acc
-                    .drain()
-                    .map(|(idx, (id, name, args))| {
-                        (
-                            idx,
-                            ToolCall {
-                                id,
-                                name,
-                                arguments: args,
-                            },
-                        )
-                    })
-                    .collect();
-                calls.sort_by_key(|(idx, _)| *idx);
-                for (_, tc) in calls {
-                    let _ = tx.send(ChatStreamEvent::ToolCallComplete(tc)).await;
-                }
-            }
-            let _ = tx.send(ChatStreamEvent::Done).await;
-        });
-
+        tokio::spawn(pump(response, OpenAiSse::new(self.call()), tx, chat_event));
         Ok(rx)
     }
 
@@ -983,19 +806,14 @@ impl SimpleExternalProvider {
         }
 
         let response = self
-            .client
-            .post(self.get_endpoint())
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .json(&request)
-            .send()
+            .send_checked(
+                self.client
+                    .post(self.get_endpoint())
+                    .header("x-api-key", &self.api_key)
+                    .header("anthropic-version", "2023-06-01")
+                    .json(&request),
+            )
             .await?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error = response.text().await?;
-            return Err(anyhow!("Anthropic chat error ({}): {}", status, error));
-        }
 
         let endpoint = self.get_endpoint();
         let body: serde_json::Value = Self::parse_json_response(response, &endpoint).await?;
@@ -1030,10 +848,13 @@ impl SimpleExternalProvider {
             }
         }
 
+        let text = text_parts.join("");
         if !tool_calls.is_empty() {
             Ok(ChatResponse::ToolCalls(tool_calls))
+        } else if text.trim().is_empty() {
+            Err(failed(self.call().empty()))
         } else {
-            Ok(ChatResponse::Content(text_parts.join("")))
+            Ok(ChatResponse::Content(text))
         }
     }
 
@@ -1043,8 +864,6 @@ impl SimpleExternalProvider {
         tools: &[ToolSchema],
         config: &GenerationConfig,
     ) -> Result<tokio::sync::mpsc::Receiver<ChatStreamEvent>> {
-        use futures::StreamExt;
-
         let (system_prompt, api_messages) = Self::format_anthropic_messages(messages);
 
         let mut request = json!({
@@ -1064,120 +883,22 @@ impl SimpleExternalProvider {
         }
 
         let response = self
-            .client
-            .post(self.get_endpoint())
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .json(&request)
-            .send()
+            .send_stream(
+                self.client
+                    .post(self.get_endpoint())
+                    .header("x-api-key", &self.api_key)
+                    .header("anthropic-version", "2023-06-01")
+                    .json(&request),
+            )
             .await?;
 
-        let status = response.status();
-        let content_type = response
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        if !status.is_success() || content_type.contains("text/html") {
-            let error = response.text().await?;
-            let preview: String = error.chars().take(300).collect();
-            return Err(anyhow!(
-                "Anthropic streaming error (HTTP {}, content-type: {}): {}",
-                status,
-                content_type,
-                preview
-            ));
-        }
-
         let (tx, rx) = tokio::sync::mpsc::channel::<ChatStreamEvent>(256);
-        let mut byte_stream = response.bytes_stream();
-
-        tokio::spawn(async move {
-            let mut buffer = String::new();
-            // Track current tool use block being streamed
-            let mut current_tool_id = String::new();
-            let mut current_tool_name = String::new();
-            let mut current_tool_args = String::new();
-            let mut in_tool_use = false;
-
-            while let Some(chunk_result) = byte_stream.next().await {
-                let chunk = match chunk_result {
-                    Ok(c) => c,
-                    Err(_) => break,
-                };
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
-
-                while let Some(line_end) = buffer.find('\n') {
-                    let line = buffer[..line_end].trim().to_string();
-                    buffer = buffer[line_end + 1..].to_string();
-
-                    if line.is_empty() || !line.starts_with("data: ") {
-                        continue;
-                    }
-                    let data = &line[6..];
-
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
-                        match parsed["type"].as_str() {
-                            Some("content_block_start") => {
-                                let block = &parsed["content_block"];
-                                if block["type"].as_str() == Some("tool_use") {
-                                    in_tool_use = true;
-                                    current_tool_id =
-                                        block["id"].as_str().unwrap_or("").to_string();
-                                    current_tool_name =
-                                        block["name"].as_str().unwrap_or("").to_string();
-                                    current_tool_args.clear();
-                                }
-                            }
-                            Some("content_block_delta") => {
-                                let delta = &parsed["delta"];
-                                match delta["type"].as_str() {
-                                    Some("text_delta") => {
-                                        if let Some(text) = delta["text"].as_str() {
-                                            if !text.is_empty()
-                                                && tx
-                                                    .send(ChatStreamEvent::ContentDelta(
-                                                        text.to_string(),
-                                                    ))
-                                                    .await
-                                                    .is_err()
-                                            {
-                                                return;
-                                            }
-                                        }
-                                    }
-                                    Some("input_json_delta") => {
-                                        if let Some(partial) = delta["partial_json"].as_str() {
-                                            current_tool_args.push_str(partial);
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            Some("content_block_stop") => {
-                                if in_tool_use {
-                                    let tc = ToolCall {
-                                        id: std::mem::take(&mut current_tool_id),
-                                        name: std::mem::take(&mut current_tool_name),
-                                        arguments: std::mem::take(&mut current_tool_args),
-                                    };
-                                    let _ = tx.send(ChatStreamEvent::ToolCallComplete(tc)).await;
-                                    in_tool_use = false;
-                                }
-                            }
-                            Some("message_stop") => {
-                                let _ = tx.send(ChatStreamEvent::Done).await;
-                                return;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            let _ = tx.send(ChatStreamEvent::Done).await;
-        });
-
+        tokio::spawn(pump(
+            response,
+            AnthropicSse::new(self.call()),
+            tx,
+            chat_event,
+        ));
         Ok(rx)
     }
 
@@ -1275,19 +996,14 @@ impl SimpleExternalProvider {
         }
 
         let response = self
-            .client
-            .post(self.get_endpoint())
-            .header("Content-Type", "application/json")
-            .header("x-goog-api-key", &self.api_key)
-            .json(&request)
-            .send()
+            .send_checked(
+                self.client
+                    .post(self.get_endpoint())
+                    .header("Content-Type", "application/json")
+                    .header("x-goog-api-key", &self.api_key)
+                    .json(&request),
+            )
             .await?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error = response.text().await?;
-            return Err(anyhow!("Google chat error ({}): {}", status, error));
-        }
 
         let endpoint = self.get_endpoint();
         let body: serde_json::Value = Self::parse_json_response(response, &endpoint).await?;
@@ -1321,30 +1037,18 @@ impl SimpleExternalProvider {
             }
         }
 
+        let text = text_parts.join("");
         if !tool_calls.is_empty() {
             Ok(ChatResponse::ToolCalls(tool_calls))
+        } else if text.trim().is_empty() {
+            Err(failed(self.call().empty()))
         } else {
-            Ok(ChatResponse::Content(text_parts.join("")))
+            Ok(ChatResponse::Content(text))
         }
     }
 }
 
 /// Response structures
-#[derive(Deserialize)]
-struct OpenAIResponse {
-    choices: Vec<OpenAIChoice>,
-}
-
-#[derive(Deserialize)]
-struct OpenAIChoice {
-    message: OpenAIMessage,
-}
-
-#[derive(Deserialize)]
-struct OpenAIMessage {
-    content: String,
-}
-
 #[derive(Deserialize)]
 struct AnthropicResponse {
     content: Vec<AnthropicContent>,

@@ -216,6 +216,7 @@ const UNAVAILABLE_MARKERS: &[&str] = &[
     "internal server error",
     "provider returned error",
     "upstream error",
+    "provider_unavailable",
 ];
 
 fn contains_any(text: &str, markers: &[&str]) -> bool {
@@ -230,6 +231,7 @@ const FILTER_MARKERS: &[&str] = &[
     "content_policy",
     "content_filter",
     "content filter",
+    "guardrail",
 ];
 
 /// A prompt longer than the model accepts.

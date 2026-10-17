@@ -844,7 +844,11 @@ impl StatementStore {
             *moved.entry(class).or_default() += 1;
             ids.push(id);
         }
-        self.dynamics.set_scope(&ids, &to.as_key())?;
+        // The rows have moved: a failure to record their dynamics' scope (read by
+        // nothing) must not hide the move from the caller that audits it.
+        if let Err(e) = self.dynamics.set_scope(&ids, &to.as_key()) {
+            tracing::error!(error = %e, rows = ids.len(), "moved statements keep their old scope in the dynamics table");
+        }
         Ok(moved)
     }
 

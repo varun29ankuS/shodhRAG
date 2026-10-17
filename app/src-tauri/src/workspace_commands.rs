@@ -446,15 +446,15 @@ pub(crate) async fn release_workspace_statements(
     let moved = move_to_global(service.store(), &scope)
         .await
         .map_err(|e| e.to_string())?;
-    let total = moved.moved.total();
-    if total > 0 {
-        tracing::info!(target: "shodh::workspaces", workspace_id, moved = total, "a deleted workspace's statements moved to global");
-    }
     record_scope_moves(
         service.audit_log(),
         moved.audit_record(MoveReason::WorkspaceDeleted),
     )
     .await;
+    let total = moved.moved.total();
+    if total > 0 {
+        tracing::info!(target: "shodh::workspaces", workspace_id, moved = total, "a deleted workspace's statements moved to global");
+    }
     Ok(total)
 }
 
@@ -519,10 +519,13 @@ pub async fn settle_statement_scopes(
         .await
         .map_err(|e| e.message)?
         .is_none();
-    let settled = settle_scopes(store, &scopes, &workspaces, library)
-        .await
-        .map_err(|e| e.to_string())?;
+    let (settled, outcome) = settle_scopes(store, &scopes, &workspaces, library).await;
+    // What moved before a failure is recorded too: it is global now either way.
     record_scope_moves(service.audit_log(), settled.audit_records()).await;
+    outcome.map_err(|e| e.to_string())?;
+    if settled.sweep_skipped {
+        return Ok(settled);
+    }
     if library {
         let note = format!("{} statements", settled.library.moved.total());
         state

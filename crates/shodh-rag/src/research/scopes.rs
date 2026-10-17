@@ -128,6 +128,8 @@ pub struct SettledScopes {
     pub library: ScopeMove,
     /// Statements of scopes that name no workspace.
     pub orphaned: ScopeMove,
+    /// Nothing was moved: no workspace is listed, yet statements name workspaces.
+    pub sweep_skipped: bool,
 }
 
 impl SettledScopes {
@@ -156,6 +158,9 @@ pub async fn move_to_global(store: &StatementStore, scope: &Scope) -> StatementR
     Ok(out)
 }
 
+/// The prefix of the ids [`crate::workspaces::WorkspaceStore::create`] gives workspaces.
+const CREATED_WORKSPACE_PREFIX: &str = "ws-";
+
 /// Moves statements whose scope no run can see to [`Scope::Global`]:
 /// - with `library`, every result and every snippet the user saved that is filed under a
 ///   workspace scope. Only the Library makes them (results are extracted there; the user
@@ -168,15 +173,43 @@ pub async fn move_to_global(store: &StatementStore, scope: &Scope) -> StatementR
 ///
 /// `scopes` must be read ([`StatementStore::scopes`]) before `workspaces`: a workspace
 /// created after the scopes were read is then never mistaken for a missing one. Every
-/// step is idempotent; a failure leaves what was moved moved, and a later call completes
-/// the rest.
+/// step is idempotent. A failure stops the run and is returned next to what was moved
+/// before it, so every completed move can still be recorded; a later call completes the
+/// rest.
+///
+/// No workspace listed while statements name ids only the workspace store makes
+/// (`ws-…`) means the list is not what it seems (an emptied or replaced database): the
+/// sweep is then skipped ([`SettledScopes::sweep_skipped`]) rather than making every
+/// workspace's memories global.
 pub async fn settle_scopes(
     store: &StatementStore,
     scopes: &BTreeSet<Scope>,
     workspaces: &HashSet<String>,
     library: bool,
-) -> StatementResult<SettledScopes> {
+) -> (SettledScopes, StatementResult<()>) {
     let mut settled = SettledScopes::default();
+    let created = scopes
+        .iter()
+        .any(|s| matches!(s, Scope::Workspace(id) if id.starts_with(CREATED_WORKSPACE_PREFIX)));
+    if workspaces.is_empty() && created {
+        tracing::warn!(
+            target: "shodh::workspaces",
+            "no workspace is listed but statements belong to workspaces: scopes left as they are"
+        );
+        settled.sweep_skipped = true;
+        return (settled, Ok(()));
+    }
+    let outcome = settle_into(store, scopes, workspaces, library, &mut settled).await;
+    (settled, outcome)
+}
+
+async fn settle_into(
+    store: &StatementStore,
+    scopes: &BTreeSet<Scope>,
+    workspaces: &HashSet<String>,
+    library: bool,
+    settled: &mut SettledScopes,
+) -> StatementResult<()> {
     for scope in scopes {
         let Scope::Workspace(id) = scope else {
             continue;
@@ -202,7 +235,7 @@ pub async fn settle_scopes(
             settled.library.add(store, scope, &snippets);
         }
     }
-    Ok(settled)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -266,6 +299,18 @@ mod tests {
             scope,
             author,
         }
+    }
+
+    /// [`settle_scopes`] that must succeed.
+    async fn settle(
+        store: &StatementStore,
+        scopes: &BTreeSet<Scope>,
+        workspaces: &HashSet<String>,
+        library: bool,
+    ) -> SettledScopes {
+        let (settled, outcome) = settle_scopes(store, scopes, workspaces, library).await;
+        outcome.unwrap();
+        settled
     }
 
     async fn scope_of(store: &StatementStore, id: &str) -> Scope {
@@ -349,9 +394,16 @@ mod tests {
             BTreeSet::from([source.clone(), live.clone(), gone.clone()])
         );
         let workspaces = HashSet::from(["ws-thesis".to_string()]);
-        let settled = settle_scopes(&s.store, &scopes, &workspaces, true)
-            .await
-            .unwrap();
+        // No workspace listed, yet statements name created workspaces: nothing moves.
+        let skipped = settle(&s.store, &scopes, &HashSet::new(), true).await;
+        assert!(skipped.sweep_skipped);
+        assert_eq!(skipped.moved(), 0);
+        assert!(skipped.audit_records().is_empty());
+        assert_eq!(scope_of(&s.store, "m2").await, live);
+        assert_eq!(s.store.scopes().await.unwrap(), scopes);
+
+        let settled = settle(&s.store, &scopes, &workspaces, true).await;
+        assert!(!settled.sweep_skipped);
         // Both versions of the source-filed snippet, and the memory: orphaned; the
         // user's snippet in the live workspace: Library-made.
         assert_eq!(
@@ -447,14 +499,13 @@ mod tests {
 
         // Settled: nothing moves again, and without `library` a live workspace's
         // statements stay whatever they are.
-        let again = settle_scopes(
+        let again = settle(
             &s.store,
             &s.store.scopes().await.unwrap(),
             &workspaces,
             true,
         )
-        .await
-        .unwrap();
+        .await;
         assert_eq!(again.moved(), 0);
         assert!(again.audit_records().is_empty());
         let kept = s
@@ -467,14 +518,13 @@ mod tests {
             ))
             .await
             .unwrap();
-        settle_scopes(
+        settle(
             &s.store,
             &s.store.scopes().await.unwrap(),
             &workspaces,
             false,
         )
-        .await
-        .unwrap();
+        .await;
         assert_eq!(scope_of(&s.store, &kept.statement_id).await, live);
     }
 }

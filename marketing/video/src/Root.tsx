@@ -21,8 +21,8 @@ const loop: Slot[] = LOOP_SHOTS.map((id) => {
 
 const total = (list: Slot[]) => list[list.length - 1].start + list[list.length - 1].frames;
 
-/** Act 1 runs eight bars, plus a hold on the page. */
-const ACT1_FRAMES = beatFrame(barBeat(8)) + 45;
+/** Act 1 runs twenty-three bars, plus a hold on the passage. */
+const ACT1_FRAMES = beatFrame(barBeat(23)) + 60;
 
 export const Root: React.FC = () => (
   <>

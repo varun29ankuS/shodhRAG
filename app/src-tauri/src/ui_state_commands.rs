@@ -13,7 +13,6 @@
 //! it reads them back.
 
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -70,7 +69,8 @@ pub(crate) fn read_value(dir: &Path, key: &str) -> Result<Option<Value>, UiState
 }
 
 /// Store `value` under `key` durably: a temporary file is written, flushed
-/// to disk and renamed over the previous value.
+/// to disk and renamed over the previous value
+/// ([`crate::durable_file::write_atomic`]).
 pub(crate) fn write_value(dir: &Path, key: &str, value: &Value) -> Result<(), UiStateError> {
     let path = key_path(dir, key)?;
     let text = serde_json::to_string(value)
@@ -82,25 +82,8 @@ pub(crate) fn write_value(dir: &Path, key: &str, value: &Value) -> Result<(), Ui
         )));
     }
     let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let io = |e: std::io::Error| {
-        UiStateError::new(format!("{} could not be saved: {e}", path.display()))
-    };
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(io)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    let written = (|| {
-        let mut file = fs::File::create(&tmp)?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&tmp, &path)
-    })();
-    if let Err(e) = written {
-        let _ = fs::remove_file(&tmp);
-        return Err(io(e));
-    }
-    Ok(())
+    crate::durable_file::write_atomic(&path, text.as_bytes())
+        .map_err(|e| UiStateError::new(format!("{} could not be saved: {e}", path.display())))
 }
 
 fn data_dir(app: &AppHandle) -> Result<PathBuf, UiStateError> {

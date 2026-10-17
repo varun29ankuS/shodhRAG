@@ -129,13 +129,16 @@ pub async fn configure_from_environment(
     {
         let mut keys = state.api_keys.lock().unwrap_or_else(|e| e.into_inner());
         let key = Some(selection.api_key.clone());
-        match selection.spec.provider {
-            ApiProvider::OpenRouter => keys.openrouter = key,
-            ApiProvider::Anthropic => keys.anthropic = key,
-            ApiProvider::OpenAI => keys.openai = key,
-            ApiProvider::Google => keys.google = key,
-            ApiProvider::Grok => keys.grok = key,
-            _ => {}
+        let id = match selection.spec.provider {
+            ApiProvider::OpenRouter => Some("openrouter"),
+            ApiProvider::Anthropic => Some("anthropic"),
+            ApiProvider::OpenAI => Some("openai"),
+            ApiProvider::Google => Some("google"),
+            ApiProvider::Grok => Some("grok"),
+            _ => None,
+        };
+        if let Some(id) = id {
+            keys.set(id, key);
         }
     }
 

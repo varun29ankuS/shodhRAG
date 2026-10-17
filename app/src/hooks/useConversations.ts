@@ -4,7 +4,8 @@ import { listen } from '@tauri-apps/api/event';
 import { notify } from '../lib/notify';
 import { removeWithUndo, restoreAt } from '../lib/undoToast';
 import { markStartup } from '../lib/startupTiming';
-import { APP_QUITTING_EVENT, ConversationSaves, quitRequestId, updateRecord } from './conversationSaves';
+import { APP_QUITTING_EVENT, ConversationSaves, FailureLatch, loadFailureNotice, quitRequestId, updateRecord } from './conversationSaves';
+import type { LoadFailureNotice } from './conversationSaves';
 
 export interface ConversationMessage {
   id: string;
@@ -68,6 +69,13 @@ function generateId(): string {
   return `conv-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
 }
 
+/** Told when a change is not saved because saving is paused. */
+function notifyNotSaved(what: string): void {
+  notify.warning(`${what} was not saved`, {
+    description: 'Saving is paused because your saved conversations could not be loaded.',
+  });
+}
+
 function autoTitle(firstMessage: string): string {
   const words = firstMessage.trim().split(/\s+/).slice(0, 6);
   let title = words.join(' ');
@@ -78,6 +86,12 @@ function autoTitle(firstMessage: string): string {
 export function useConversations() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  // The saved conversations could not be loaded: saving is paused and the
+  // window shows why until the user acknowledges it.
+  const [loadFailure, setLoadFailure] = useState<LoadFailureNotice | null>(null);
+  const [loadFailureSeen, setLoadFailureSeen] = useState(false);
+  // A store that keeps refusing saves is reported once, not on every save.
+  const [saveFailures] = useState(() => new FailureLatch());
   // One debounce timer per conversation (a save for conversation A must not
   // be cancelled by a save for conversation B scheduled within the window),
   // and writes of one conversation in the order they were made.
@@ -87,7 +101,15 @@ export function useConversations() {
       const timer = setTimeout(run, ms);
       return () => clearTimeout(timer);
     },
-    onError: (conversation, err) => console.error(`Failed to save conversation ${conversation.id}:`, err),
+    onError: (conversation, err) => {
+      console.error(`Failed to save conversation ${conversation.id}:`, err);
+      if (saveFailures.fail()) {
+        notify.error('Your conversation was not saved', {
+          description: `${String(err)} It is saved again with your next change.`,
+        });
+      }
+    },
+    onWritten: () => saveFailures.succeed(),
     delayMs: 500,
   }));
   const loadedRef = useRef(false);
@@ -149,12 +171,16 @@ export function useConversations() {
           };
           setList([fresh]);
           setActiveConversationId(id);
-          invoke('save_conversation', { conversation: fresh }).catch(console.error);
+          void saves.write(fresh);
         }
       })
       .catch((err) => {
         markStartup('conversations-loaded');
         console.error('Failed to load conversations:', err);
+        // Nothing may overwrite the file the history is still in: saving
+        // stays paused for this session, and the window says so.
+        saves.pause();
+        setLoadFailure(loadFailureNotice(err));
         const id = generateId();
         const now = new Date().toISOString();
         const fresh: Conversation = {
@@ -168,7 +194,7 @@ export function useConversations() {
         setList([fresh]);
         setActiveConversationId(id);
       });
-  }, [setList]);
+  }, [saves, setList]);
 
   const activeConversation = conversations.find(c => c.id === activeConversationId) || null;
 
@@ -297,12 +323,21 @@ export function useConversations() {
 
   const renameConversation = useCallback((id: string, title: string) => {
     setList(listRef.current.map(c => (c.id === id ? { ...c, title, updatedAt: new Date().toISOString() } : c)));
-    invoke('rename_conversation', { conversationId: id, newTitle: title }).catch(console.error);
-    notify.success('Conversation renamed');
-  }, [setList]);
+    if (saves.paused) {
+      notifyNotSaved('The new name');
+      return;
+    }
+    invoke('rename_conversation', { conversationId: id, newTitle: title })
+      .then(() => notify.success('Conversation renamed'))
+      .catch(err => notify.error('The conversation was not renamed', { description: String(err) }));
+  }, [saves, setList]);
 
   const deleteConversation = useCallback(
     (id: string) => {
+      if (saves.paused) {
+        notifyNotSaved('Deleting the conversation');
+        return;
+      }
       const index = listRef.current.findIndex(c => c.id === id);
       if (index < 0) return;
       const conversation = listRef.current[index];
@@ -390,9 +425,14 @@ export function useConversations() {
     if (!conv) return;
     const newPinned = !conv.pinned;
     setList(listRef.current.map(c => (c.id === id ? { ...c, pinned: newPinned, updatedAt: new Date().toISOString() } : c)));
-    invoke('pin_conversation', { conversationId: id, pinned: newPinned }).catch(console.error);
-    notify.success(newPinned ? 'Conversation pinned' : 'Conversation unpinned');
-  }, [setList]);
+    if (saves.paused) {
+      notifyNotSaved(newPinned ? 'Pinning' : 'Unpinning');
+      return;
+    }
+    invoke('pin_conversation', { conversationId: id, pinned: newPinned })
+      .then(() => notify.success(newPinned ? 'Conversation pinned' : 'Conversation unpinned'))
+      .catch(err => notify.error('The pin was not saved', { description: String(err) }));
+  }, [saves, setList]);
 
   const reorderConversations = useCallback((reordered: Conversation[]) => {
     setList(reordered);
@@ -402,8 +442,15 @@ export function useConversations() {
     }
   }, [saves, setList]);
 
+  const acknowledgeLoadFailure = useCallback(() => setLoadFailureSeen(true), []);
+
   return {
     conversations,
+    /** Why the saved conversations could not be loaded (saving is paused); null when they loaded. */
+    loadFailure,
+    /** The user saw the load failure notice; saving stays paused. */
+    loadFailureSeen,
+    acknowledgeLoadFailure,
     activeConversationId,
     activeConversation,
     createConversation,

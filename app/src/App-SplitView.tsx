@@ -672,12 +672,20 @@ function AppSplitView() {
       timestamp: new Date().toISOString()
     });
 
+    // The saved copy of the dropped file; removed again when it was not indexed.
+    let savedPath: string | null = null;
+    const discardSaved = () => {
+      if (!savedPath) return;
+      invoke<boolean>('discard_upload', { filePath: savedPath })
+        .catch(err => console.error('The failed upload could not be removed:', err));
+    };
     try {
       // Get file path from Tauri
       const filePath = await invoke<string>('save_temp_file', {
         fileName: file.name,
         fileData: Array.from(new Uint8Array(await file.arrayBuffer()))
       });
+      savedPath = filePath;
 
       // Upload to backend
       const result = await invoke<{
@@ -700,10 +708,12 @@ function AppSplitView() {
                    `💾 Size: ${result.fileSizeMb.toFixed(2)} MB\n\n` +
                    `*Ask me anything about this document!*` });
       } else {
+        discardSaved();
         updateMessage(messageId, { content: indexFailureNotice(result.fileName, result.error ?? '') });
       }
     } catch (error) {
       console.error('Upload error:', error);
+      discardSaved();
       updateMessage(messageId, { content: indexFailureNotice(file.name, String(error)) });
     }
   };

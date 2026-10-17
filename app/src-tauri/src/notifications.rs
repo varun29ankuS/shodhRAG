@@ -659,9 +659,10 @@ impl Drop for FirstSync {
     }
 }
 
-/// What indexing the assistant started announces: only a failure. Its tools
-/// run inside an answer, and the answer's own notification covers the files
-/// it indexed (agent tools are never called outside a run).
+/// What a file the assistant indexed during an answer announces: only a
+/// failure. The answer's own notification covers the file; a folder index the
+/// assistant starts runs on after the answer and uses
+/// [`indexing_result_outcome`] instead.
 pub fn agent_indexing_outcome(
     source: String,
     path: &str,

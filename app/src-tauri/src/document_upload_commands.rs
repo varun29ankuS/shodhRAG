@@ -136,27 +136,157 @@ pub async fn upload_document_file(
     }
 }
 
-/// Save dropped file bytes to a temp directory and return the file path
+/// Folder under the app data folder that keeps the files dropped into a chat.
+/// The index records a file's path as its source, so the file stays where it
+/// was saved for as long as it is indexed: citations open it there.
+const CHAT_UPLOADS_DIR: &str = "chat_uploads";
+
+/// Longest file name kept (most file systems allow 255 bytes).
+const MAX_UPLOAD_NAME_LEN: usize = 255;
+
+/// Names Windows reserves for devices, with or without an extension.
+const RESERVED_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// The name a dropped file is kept under: exactly one plain path component.
+/// A name with a separator, `..`, a drive or stream colon, a control
+/// character or a device name is refused, so the file is always written
+/// inside its own upload folder.
+fn upload_file_name(file_name: &str) -> Result<&str, String> {
+    let refused = || {
+        Err(format!(
+            "The file name \"{}\" cannot be used. Rename the file and drop it again.",
+            file_name.escape_debug()
+        ))
+    };
+    let name = file_name.trim();
+    if name.is_empty() || name.len() > MAX_UPLOAD_NAME_LEN {
+        return refused();
+    }
+    if name
+        .chars()
+        .any(|c| matches!(c, '/' | '\\' | ':') || c.is_control())
+    {
+        return refused();
+    }
+    if name.trim_matches(|c| c == '.' || c == ' ').is_empty() {
+        return refused();
+    }
+    if Path::new(name).file_name().and_then(|n| n.to_str()) != Some(name) {
+        return refused();
+    }
+    let stem = name.split('.').next().unwrap_or(name).trim_end();
+    if RESERVED_NAMES
+        .iter()
+        .any(|reserved| stem.eq_ignore_ascii_case(reserved))
+    {
+        return refused();
+    }
+    Ok(name)
+}
+
+/// Write `bytes` as `<data_dir>/chat_uploads/<unique id>/<name>`, flushed to
+/// disk. The file keeps its own name (the name citations show); the unique
+/// folder keeps two drops of one name apart. Nothing is left behind when the
+/// write fails.
+fn store_upload(data_dir: &Path, name: &str, bytes: &[u8]) -> Result<std::path::PathBuf, String> {
+    let folder = data_dir
+        .join(CHAT_UPLOADS_DIR)
+        .join(uuid::Uuid::new_v4().to_string());
+    fs::create_dir_all(&folder)
+        .map_err(|e| format!("The upload folder could not be created: {e}"))?;
+    let path = folder.join(name);
+    let written = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        file.write_all(bytes)?;
+        file.sync_all()
+    })();
+    if let Err(e) = written {
+        // Not indexed yet: nothing refers to the folder.
+        let _ = fs::remove_dir_all(&folder);
+        return Err(format!("The dropped file could not be saved: {e}"));
+    }
+    Ok(path)
+}
+
+/// Keep a file dropped into a chat in the app data folder and return its
+/// path, which the index then records as the file's source.
 #[tauri::command]
-pub fn save_temp_file(file_name: String, file_data: Vec<u8>) -> Result<String, String> {
-    // Create temp directory for uploaded files
-    let temp_dir = std::env::temp_dir().join("kalki_uploads");
-    fs::create_dir_all(&temp_dir).map_err(|e| format!("Failed to create temp directory: {}", e))?;
+pub async fn save_temp_file(
+    app: tauri::AppHandle,
+    file_name: String,
+    file_data: Vec<u8>,
+) -> Result<String, String> {
+    let name = upload_file_name(&file_name)?.to_string();
+    let data_dir = crate::profile::app_data_dir(&app)
+        .map_err(|e| format!("The app data folder is unavailable: {e}"))?;
+    let path = tokio::task::spawn_blocking(move || store_upload(&data_dir, &name, &file_data))
+        .await
+        .map_err(|e| format!("Saving the dropped file failed: {e}"))??;
+    path.to_str()
+        .map(str::to_string)
+        .ok_or_else(|| "The saved file's path is not valid text".to_string())
+}
 
-    // Create unique file path
-    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S_%3f");
-    let file_path = temp_dir.join(format!("{}_{}", timestamp, file_name));
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    // Write file data
-    let mut file =
-        fs::File::create(&file_path).map_err(|e| format!("Failed to create temp file: {}", e))?;
+    #[test]
+    fn a_dropped_file_name_is_one_plain_component() {
+        for ok in [
+            "paper.pdf",
+            "My notes (v2).docx",
+            "résumé.pdf",
+            "a..b.pdf",
+            ".hidden.md",
+            "console.txt",
+        ] {
+            assert_eq!(upload_file_name(ok), Ok(ok), "{ok}");
+        }
+        assert_eq!(upload_file_name("  paper.pdf "), Ok("paper.pdf"));
+        for refused in [
+            "",
+            "   ",
+            ".",
+            "..",
+            "...",
+            "../evil.pdf",
+            "..\\evil.pdf",
+            "a/b.pdf",
+            "a\\b.pdf",
+            "/etc/passwd",
+            "C:\\Windows\\win.ini",
+            "C:evil.pdf",
+            "paper.pdf:stream",
+            "line\nbreak.pdf",
+            "nul\0.pdf",
+            "CON",
+            "con.pdf",
+            "Lpt1.txt",
+            "NUL .pdf",
+        ] {
+            assert!(upload_file_name(refused).is_err(), "{refused:?}");
+        }
+        assert!(upload_file_name(&"a".repeat(MAX_UPLOAD_NAME_LEN + 1)).is_err());
+    }
 
-    file.write_all(&file_data)
-        .map_err(|e| format!("Failed to write file data: {}", e))?;
-
-    // Return absolute path as string
-    file_path
-        .to_str()
-        .ok_or_else(|| "Failed to convert path to string".to_string())
-        .map(|s| s.to_string())
+    #[test]
+    fn uploads_stay_in_their_own_folder_under_the_app_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let uploads = dir.path().join(CHAT_UPLOADS_DIR);
+        let first = store_upload(dir.path(), "paper.pdf", b"one").unwrap();
+        let second = store_upload(dir.path(), "paper.pdf", b"two").unwrap();
+        assert_ne!(first, second, "two drops of one name are both kept");
+        for (path, bytes) in [(&first, b"one"), (&second, b"two")] {
+            assert_eq!(path.file_name().unwrap(), "paper.pdf");
+            assert_eq!(path.parent().unwrap().parent().unwrap(), uploads);
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+    }
 }

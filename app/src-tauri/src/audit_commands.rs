@@ -7,17 +7,22 @@
 //! `audit_stats` reports `encrypted: false`.
 //!
 //! Recording never blocks the caller: events are queued to the log's writer
-//! thread. Reads, verification and export run on the blocking pool.
+//! thread. Reads, verification and export run on the blocking pool. The one
+//! exception is `audit_record_citation_correction`, which waits on the
+//! blocking pool until its event is written: the app changes the answer only
+//! once the correction is recorded.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::{Datelike, Local, TimeZone, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use shodh_rag::audit::{
-    encryption_compiled, AuditKey, AuditLog, AuditQuery, AuditRecord, AuditRow, AuditScope,
-    AuditStats, VerifyReport, LOCAL_OWNER,
+    encryption_compiled, AuditEventType, AuditKey, AuditLog, AuditQuery, AuditRecord, AuditRow,
+    AuditScope, AuditStats, VerifyReport, LOCAL_OWNER,
 };
+use shodh_rag::harness::events::GroundingSummary;
 use shodh_rag::harness::tools::ToolAudit;
 use tauri::State;
 
@@ -174,6 +179,108 @@ pub async fn audit_query(
     .await
 }
 
+/// Longest id accepted in a citation correction (conversation, run, message).
+const MAX_CORRECTION_ID_LEN: usize = 200;
+/// Most citation numbers a corrected claim can have cited.
+const MAX_CORRECTION_NUMBERS: usize = 64;
+
+/// The user moved one miscited claim's citation to the passage the grounding
+/// check found supporting it ("Cite N instead"). Ids, numbers and counts
+/// only: unknown fields are refused, so no answer or claim text can reach
+/// the log through it (the rule `audit::tap` follows for grounding).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CitationCorrection {
+    pub conversation_id: String,
+    /// The run that wrote the answer, when the stored transcript has it.
+    #[serde(default)]
+    pub run_id: Option<String>,
+    /// The text block of the answer the claim is in.
+    pub message_id: String,
+    /// The claim's position among the checked claims of the answer's final report.
+    pub claim_index: u32,
+    /// The passage numbers the claim cited.
+    pub from: Vec<u32>,
+    /// The passage it cites now.
+    pub to: u32,
+    /// The support score the check gave the claim against `to`.
+    #[serde(default)]
+    pub suggested_score: Option<f32>,
+    /// The answer's grounding counts and score after the correction.
+    pub summary: GroundingSummary,
+}
+
+fn valid_id(kind: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() || value.len() > MAX_CORRECTION_ID_LEN {
+        Err(format!("Invalid {kind}"))
+    } else {
+        Ok(())
+    }
+}
+
+fn valid_unit(kind: &str, value: Option<f32>) -> Result<(), String> {
+    match value {
+        Some(v) if !(0.0..=1.0).contains(&v) => Err(format!("Invalid {kind}")),
+        _ => Ok(()),
+    }
+}
+
+/// The audit record of a citation correction, after checking it.
+fn citation_correction_record(c: &CitationCorrection) -> Result<AuditRecord, String> {
+    valid_id("conversation id", &c.conversation_id)?;
+    valid_id("message id", &c.message_id)?;
+    if let Some(run) = &c.run_id {
+        valid_id("run id", run)?;
+    }
+    if c.from.is_empty() || c.from.len() > MAX_CORRECTION_NUMBERS || c.from.contains(&0) {
+        return Err("Invalid corrected citation".to_string());
+    }
+    if c.to == 0 || c.from.contains(&c.to) {
+        return Err("Invalid new citation".to_string());
+    }
+    valid_unit("support score", c.suggested_score)?;
+    valid_unit("grounding score", c.summary.score)?;
+    let s = &c.summary;
+    let record = AuditRecord::new(
+        AuditEventType::CitationCorrected,
+        json!({
+            "message_id": c.message_id,
+            "claim_index": c.claim_index,
+            "from": c.from,
+            "to": c.to,
+            "suggested_score": c.suggested_score,
+            "checked": s.checked,
+            "supported": s.supported,
+            "weak": s.weak,
+            "unsupported": s.unsupported,
+            "uncited": s.uncited,
+            "invalid": s.invalid,
+            "unchecked": s.unchecked,
+            "score": s.score,
+        }),
+    )
+    .conversation(c.conversation_id.clone());
+    Ok(match &c.run_id {
+        Some(run) => record.run(run.clone()),
+        None => record,
+    })
+}
+
+/// Record a citation the user corrected in an answer (`CitationCorrection`).
+/// Waits until the event is written: the app changes the answer only after
+/// this succeeds, so a correction never goes unrecorded.
+#[tauri::command]
+pub async fn audit_record_citation_correction(
+    correction: CitationCorrection,
+    audit: State<'_, AuditState>,
+) -> Result<(), String> {
+    let record = citation_correction_record(&correction)?;
+    let log = audit.require()?;
+    let id = blocking(move || log.append(record).map_err(|e| e.to_string())).await?;
+    tracing::info!(target: "shodh::audit", event = "citation_corrected", id, from = ?correction.from, to = correction.to, "citation corrected by the user");
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn audit_verify(audit: State<'_, AuditState>) -> Result<VerifyReport, String> {
     let log = audit.require()?;
@@ -287,6 +394,80 @@ mod tests {
         let now = Utc::now();
         assert!(start <= now && now < end);
         assert!((end - start).num_days() >= 28);
+    }
+
+    fn correction() -> serde_json::Value {
+        serde_json::json!({
+            "conversationId": "conv-1",
+            "runId": "run-1",
+            "messageId": "m1",
+            "claimIndex": 1,
+            "from": [3],
+            "to": 2,
+            "suggestedScore": 0.91,
+            "summary": {
+                "checked": 2, "supported": 2, "weak": 0, "unsupported": 0,
+                "uncited": 0, "invalid": 0, "unchecked": 0, "score": 1.0
+            }
+        })
+    }
+
+    #[test]
+    fn a_citation_correction_records_numbers_and_counts_never_text() {
+        let c: CitationCorrection = serde_json::from_value(correction()).unwrap();
+        let record = citation_correction_record(&c).unwrap();
+        assert_eq!(record.event_type, AuditEventType::CitationCorrected);
+        assert_eq!(record.conversation_id.as_deref(), Some("conv-1"));
+        assert_eq!(record.run_id.as_deref(), Some("run-1"));
+        let payload = record.payload.as_object().unwrap();
+        let keys: Vec<&str> = payload.keys().map(String::as_str).collect();
+        let mut expected = vec![
+            "checked",
+            "claim_index",
+            "from",
+            "invalid",
+            "message_id",
+            "score",
+            "suggested_score",
+            "supported",
+            "to",
+            "unchecked",
+            "uncited",
+            "unsupported",
+            "weak",
+        ];
+        expected.sort_unstable();
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, expected);
+        // The only string is the message id.
+        let strings: Vec<&str> = payload.values().filter_map(|v| v.as_str()).collect();
+        assert_eq!(strings, vec!["m1"]);
+        assert_eq!(payload["from"], serde_json::json!([3]));
+        assert_eq!(payload["to"], 2);
+    }
+
+    #[test]
+    fn a_citation_correction_refuses_text_and_bad_numbers() {
+        let mut with_text = correction();
+        with_text["claimText"] = "SPANN expands posting lists.".into();
+        assert!(serde_json::from_value::<CitationCorrection>(with_text).is_err());
+        let mut no_run = correction();
+        no_run.as_object_mut().unwrap().remove("runId");
+        let c: CitationCorrection = serde_json::from_value(no_run).unwrap();
+        assert_eq!(citation_correction_record(&c).unwrap().run_id, None);
+        for (key, value) in [
+            ("to", serde_json::json!(3)),
+            ("to", serde_json::json!(0)),
+            ("from", serde_json::json!([])),
+            ("suggestedScore", serde_json::json!(1.5)),
+            ("conversationId", serde_json::json!(" ")),
+        ] {
+            let mut bad = correction();
+            bad[key] = value;
+            let c: CitationCorrection = serde_json::from_value(bad).unwrap();
+            assert!(citation_correction_record(&c).is_err(), "{key}");
+        }
     }
 
     #[test]

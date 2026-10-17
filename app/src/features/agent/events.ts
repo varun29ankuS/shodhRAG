@@ -65,6 +65,23 @@ export interface ClaimCheck {
   /** For a flagged claim: the passage that comes closest to supporting it. */
   closest: number | null;
   closestScore: number | null;
+  /**
+   * For an unsupported claim: a passage of the answer that supports it although the cited ones do
+   * not (the answer cited the wrong passage). Absent in reports saved before it existed.
+   */
+  suggested?: number | null;
+  /**
+   * The support score the check gave the claim against `suggested` (same method as `support`):
+   * its support once the answer cites that passage. Absent in reports saved before it existed.
+   */
+  suggestedScore?: number | null;
+  /** With the entailment model: the highest contradiction probability of the `suggested` passage. */
+  suggestedContradiction?: number | null;
+  /**
+   * Set by the app, never by the check: the passage numbers this claim cited before the user
+   * moved its citation to the suggested passage ("Cite N instead").
+   */
+  correctedFrom?: number[];
 }
 
 export interface GroundingSummary {

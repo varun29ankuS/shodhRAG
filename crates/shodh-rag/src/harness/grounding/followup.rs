@@ -7,8 +7,12 @@
 //!   the closest passage, to be re-grounded or removed ([`needs_repair`]): a
 //!   citation number no source has, or a number the cited text does not
 //!   contain, or a claim that the user has none of their own data that no
-//!   tool of the answer read ([`super::absence`]). Claims the models did not
-//!   find support for, and uncited
+//!   tool of the answer read ([`super::absence`]). A miscitation is sent
+//!   back too: a claim its cited passages do not support that another
+//!   passage of the answer supports by the same check (`suggested`, see
+//!   [`super::verify`]); the verdict there is not the model's alone but a
+//!   passage that passes it, so the request is concrete ("cite [2], not
+//!   [3]"). Other claims the models did not find support for, and uncited
 //!   statements, are flagged in the answer but not sent back. On the user's
 //!   11 stored sourced answers every answer had some of those, and reading
 //!   them showed the models' verdicts unreliable on that text (notation,
@@ -116,12 +120,13 @@ pub enum Next {
 }
 
 /// Whether a checked claim is sent back for repair: a citation number no
-/// source has, a number the cited text does not contain, or a claim that the
-/// user has none of some data no tool of the answer read.
+/// source has, a number the cited text does not contain, a claim that cites
+/// the wrong passage while another one supports it, or a claim that the user
+/// has none of some data no tool of the answer read.
 pub fn needs_repair(check: &ClaimCheck) -> bool {
     match check.outcome {
         ClaimOutcome::InvalidCitation | ClaimOutcome::UnverifiedAbsence => true,
-        ClaimOutcome::Unsupported => !check.missing_numbers.is_empty(),
+        ClaimOutcome::Unsupported => !check.missing_numbers.is_empty() || check.suggested.is_some(),
         ClaimOutcome::Supported
         | ClaimOutcome::Weak
         | ClaimOutcome::UncitedFactual
@@ -154,7 +159,13 @@ fn reason_text(check: &ClaimCheck) -> String {
             "the cited source does not contain {}",
             check.missing_numbers.join(", ")
         ),
-        _ => "the cited source does not support it".to_string(),
+        _ => match check.suggested {
+            Some(n) => {
+                let cited: String = check.cited.iter().map(|c| format!("[{c}]")).collect();
+                format!("{cited} does not state it but passage [{n}] does: cite [{n}], not {cited}")
+            }
+            None => "the cited source does not support it".to_string(),
+        },
     }
 }
 
@@ -261,8 +272,10 @@ pub fn decide(
                 break;
             }
             let check = &checks[i];
+            // A suggested passage is already named in the reason.
             let closest = check
                 .closest
+                .filter(|_| check.suggested.is_none())
                 .map(|n| format!(" Passage [{n}] comes closest."))
                 .unwrap_or_default();
             prompt.push_str(&format!(
@@ -457,6 +470,9 @@ mod tests {
             },
             closest: Some(4),
             closest_score: Some(0.7),
+            suggested: None,
+            suggested_score: None,
+            suggested_contradiction: None,
         }
     }
 
@@ -526,6 +542,48 @@ mod tests {
             .collect();
         assert_eq!(
             decide(&all_uncited, &[], Rounds::default(), true, 10, NO_SEARCH),
+            Next::Finish
+        );
+    }
+
+    #[test]
+    fn a_miscitation_is_repaired_with_the_passage_that_supports_it() {
+        let mut miscited = check(ClaimOutcome::Unsupported);
+        miscited.missing_numbers.clear();
+        miscited.cited = vec![3];
+        miscited.anchor = "The fee is 900 EUR [3].".into();
+        miscited.closest = Some(2);
+        miscited.suggested = Some(2);
+        assert!(needs_repair(&miscited));
+        match decide(
+            std::slice::from_ref(&miscited),
+            &[],
+            Rounds::default(),
+            true,
+            10,
+            SEARCHED,
+        ) {
+            Next::FollowUp {
+                reason,
+                repair,
+                prompt,
+                ..
+            } => {
+                assert_eq!(reason, RevisionReason::Repair);
+                assert_eq!(repair, vec![0]);
+                assert!(
+                    prompt
+                        .contains("[3] does not state it but passage [2] does: cite [2], not [3]"),
+                    "{prompt}"
+                );
+                assert!(!prompt.contains("comes closest"), "{prompt}");
+            }
+            other => panic!("expected a repair turn, got {other:?}"),
+        }
+        // A side thread's session has follow-ups off, so the check passes
+        // auto-repair off and no budget: the miscitation is flagged only.
+        assert_eq!(
+            decide(&[miscited], &[], Rounds::default(), false, 0, SEARCHED),
             Next::Finish
         );
     }

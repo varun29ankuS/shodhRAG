@@ -28,6 +28,7 @@ import type {
   ThreadTurn,
 } from './focusTypes.ts';
 import type { AnswerScope } from '../agent/useAgentSession.ts';
+import { answerAsContext } from '../agent/grounding.ts';
 import { readFollowups, stripFollowups } from './followups.ts';
 import { safeTruncate } from './markdownSafe.ts';
 import { SVG_MAX_CHARS } from '../ask/visual/svgSanitize.ts';
@@ -480,21 +481,31 @@ export function createLocalThreadStore(storage: KeyValueStorage | null): LocalTh
 export interface HistoryTurnLike {
   role: 'user' | 'assistant';
   content: string;
+  /** An answer's stored agent transcript: its grounding report decides which citations travel. */
+  transcript?: unknown;
+}
+
+/** A replayed turn as the agent gets it: an answer without the citations its check flagged. */
+function replayed(turn: HistoryTurnLike, followups: boolean): HistoryTurnLike {
+  if (turn.role !== 'assistant') return { role: turn.role, content: turn.content };
+  const content = answerAsContext(turn.content, turn.transcript);
+  return { role: turn.role, content: followups ? stripFollowups(content) : content };
 }
 
 /**
  * Turns replayed into a side thread's fresh agent session: the main
  * conversation up to the parent message, then the thread's own earlier
- * turns. Thread turns win when the limit is reached.
+ * turns. Thread turns win when the limit is reached. Answers go without the
+ * citation markers their grounding check flagged (`answerAsContext`).
  */
 export function threadHistory(main: readonly HistoryTurnLike[], thread: readonly HistoryTurnLike[], limit = 10): HistoryTurnLike[] {
   const usable = (t: HistoryTurnLike) => t.content.trim().length > 0;
   const own = thread
-    .map(t => (t.role === 'assistant' ? { role: t.role, content: stripFollowups(t.content) } : t))
+    .map(t => replayed(t, true))
     .filter(usable)
     .slice(-limit);
   const room = Math.max(0, limit - own.length);
-  const lead = room > 0 ? main.filter(usable).slice(-room) : [];
+  const lead = room > 0 ? main.map(t => replayed(t, false)).filter(usable).slice(-room) : [];
   return [...lead, ...own];
 }
 
@@ -576,7 +587,8 @@ export function threadSummary(thread: Pick<FocusThread, 'turns'>): string {
       break;
     }
   }
-  const answer = stripFollowups(thread.turns[lastAnswerIndex].content).trim();
+  const last = thread.turns[lastAnswerIndex];
+  const answer = stripFollowups(answerAsContext(last.content, last.transcript)).trim();
   // Never cut inside an equation or a fenced block: they would render as raw source.
   const excerpt = safeTruncate(answer, SUMMARY_ANSWER_CHARS);
   return [question ? `**Asked:** ${question}` : '', excerpt].filter(Boolean).join('\n\n');

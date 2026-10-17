@@ -9,6 +9,7 @@
  */
 
 import type { ClaimCheck, ClaimOutcome, GroundingReport, GroundingSummary, NeedCheck } from './events';
+import type { TranscriptBlock, TranscriptState } from './reducer';
 
 /** Widest range expanded into citations (`[1-10]`); wider ones are prose. */
 export const MAX_RANGE_SPAN = 10;
@@ -123,8 +124,25 @@ export function isFlagged(outcome: ClaimOutcome): boolean {
   );
 }
 
+/**
+ * The passage the check found supporting an unsupported claim that cites another one (a
+ * miscitation), or null. Reports saved before the check named it have none.
+ */
+export function suggestedPassage(check: ClaimCheck): number | null {
+  const n = check.suggested;
+  if (check.outcome !== 'unsupported' || typeof n !== 'number' || !Number.isInteger(n) || n <= 0) return null;
+  return check.cited.includes(n) ? null : n;
+}
+
+/** "3" or "3, 7": the numbers a claim cites, as the flag says them. */
+function citedList(check: ClaimCheck): string {
+  return check.cited.join(', ');
+}
+
 /** Short visible text of a claim's flag. */
 export function flagLabel(check: ClaimCheck): string {
+  const suggested = suggestedPassage(check);
+  if (suggested !== null) return `Supported by passage ${suggested} (answer cited ${citedList(check)})`;
   switch (check.outcome) {
     case 'invalid_citation':
       return check.invalid.length === 1
@@ -147,7 +165,11 @@ export function flagLabel(check: ClaimCheck): string {
 
 /** Full sentence for tooltips and screen readers. */
 export function flagDescription(check: ClaimCheck, closestLabel: string | null): string {
+  const suggested = suggestedPassage(check);
   const what = (() => {
+    if (suggested !== null) {
+      return `Passage ${suggested} supports this statement; the answer cited ${check.cited.map(n => `[${n}]`).join('')}, which does not.`;
+    }
     switch (check.outcome) {
       case 'invalid_citation':
         return `This statement cites ${check.invalid.map(n => `[${n}]`).join('')}, which is not one of this answer's sources.`;
@@ -173,16 +195,28 @@ export const FLAG_OPEN = 'XFSHODH';
 export const FLAG_CLOSE = 'XGSHODH';
 export const FLAG_PATTERN = new RegExp(`${FLAG_OPEN}(\\d+)${FLAG_CLOSE}`, 'g');
 
+/** A claim whose citation the user moved to the suggested passage ("Cite N instead"). */
+export function isCorrected(check: ClaimCheck): boolean {
+  return Array.isArray(check.correctedFrom) && check.correctedFrom.length > 0;
+}
+
+/** What a corrected claim's note says: the change is the user's, not the model's. */
+export function correctionLabel(check: ClaimCheck): string {
+  const from = (check.correctedFrom ?? []).map(n => `[${n}]`).join('');
+  const to = check.cited.map(n => `[${n}]`).join('');
+  return `citation corrected by you (${from} → ${to})`;
+}
+
 /**
- * Insert a flag placeholder after each flagged claim of `content`. Claims are
- * found by their anchor text, in order (never by offset). Returns the text and
- * the indexes (into `checks`) of the flags placed.
+ * Insert a flag placeholder after each flagged claim of `content`, and after each claim whose
+ * citation the user corrected (its note). Claims are found by their anchor text, in order
+ * (never by offset). Returns the text and the indexes (into `checks`) of the flags placed.
  */
 export function insertFlagMarkers(content: string, checks: readonly ClaimCheck[]): { text: string; placed: number[] } {
   const inserts: Array<{ at: number; index: number }> = [];
   let cursor = 0;
   checks.forEach((check, index) => {
-    if (!isFlagged(check.outcome) || check.anchor.length === 0) return;
+    if (!(isFlagged(check.outcome) || isCorrected(check)) || check.anchor.length === 0) return;
     let at = content.indexOf(check.anchor, cursor);
     if (at < 0) at = content.indexOf(check.anchor);
     if (at < 0) return;
@@ -256,5 +290,383 @@ export function methodLabel(method: GroundingReport['method']): string {
       return 'checked for topic and numbers with the local reranker (install the answer checking model for full checks)';
     default:
       return 'checked by word overlap and numbers only (search models not installed)';
+  }
+}
+
+/**
+ * Where each claim's anchor is in `content`, in reading order (never by offset: Rust byte
+ * offsets and JavaScript indexes differ); null for a claim whose anchor is not in it.
+ */
+function anchorOffsets(content: string, checks: readonly ClaimCheck[]): Array<number | null> {
+  let cursor = 0;
+  return checks.map(check => {
+    if (check.anchor.length === 0) return null;
+    let at = content.indexOf(check.anchor, cursor);
+    if (at < 0) at = content.indexOf(check.anchor);
+    if (at < 0) return null;
+    cursor = at + check.anchor.length;
+    return at;
+  });
+}
+
+/** A marker's span widened over the spaces before it, so "latency [3]." reads "latency.". */
+function withLeadingSpace(text: string, start: number, end: number): [number, number] {
+  let from = start;
+  while (from > 0 && (text[from - 1] === ' ' || text[from - 1] === '\t')) from--;
+  return [from, end];
+}
+
+/** `text` without the character ranges `cuts` (any order; a range inside an earlier one is skipped). */
+function cutRanges(text: string, cuts: ReadonlyArray<[number, number]>): string {
+  const sorted = [...cuts].sort((a, b) => a[0] - b[0]);
+  let out = '';
+  let last = 0;
+  for (const [from, to] of sorted) {
+    if (from < last) continue;
+    out += text.slice(last, from);
+    last = to;
+  }
+  return out + text.slice(last);
+}
+
+/** Outcomes whose citation markers are not passed on as context. */
+function citesWrongly(outcome: ClaimOutcome): boolean {
+  return outcome === 'unsupported' || outcome === 'invalid_citation';
+}
+
+/**
+ * The claims that inherited citations from the markers of `claims[index]`: claims of the same
+ * text block with no marker of their own that cite a number those markers cite. The verifier
+ * gives an uncited sentence the citations of the next cited one in its paragraph, and list
+ * items and table rows those of their list (`claims.rs` `inherit_citations`), so one marker
+ * can stand for several claims.
+ */
+function inheritorsOf(claims: readonly ClaimCheck[], index: number, numbers: ReadonlySet<number>): number[] {
+  const owner = claims[index];
+  const out: number[] = [];
+  claims.forEach((c, i) => {
+    if (i === index || c.messageId !== owner.messageId) return;
+    if (parseCitationMarkers(c.anchor).length > 0) return;
+    if (c.cited.some(n => numbers.has(n))) out.push(i);
+  });
+  return out;
+}
+
+/**
+ * An answer as context for a later question (wherever an answer travels on, `answerAsContext`):
+ * the citation markers of claims the check found unsupported by what they cite, or citing a
+ * passage that does not exist, are removed, so a wrong citation is not handed on as if it
+ * were right; the model then picks the passage from the ones it is given. Supported, partly
+ * supported and unchecked claims keep their markers. Only markers inside a flagged claim's
+ * own text are removed, and a marker another claim inherited and was not flagged for stays:
+ * it is that claim's citation too.
+ */
+export function withoutFlaggedCitations(content: string, report: GroundingReport | null): string {
+  if (!report || report.claims.length === 0) return content;
+  const claims = report.claims;
+  const offsets = anchorOffsets(content, claims);
+  const cuts: Array<[number, number]> = [];
+  claims.forEach((check, i) => {
+    const at = offsets[i];
+    if (at === null || !citesWrongly(check.outcome)) return;
+    for (const m of parseCitationMarkers(check.anchor)) {
+      const numbers = new Set(m.numbers);
+      const shared = inheritorsOf(claims, i, numbers).some(j => !citesWrongly(claims[j].outcome));
+      if (!shared) cuts.push(withLeadingSpace(content, at + m.start, at + m.end));
+    }
+  });
+  return cuts.length > 0 ? cutRanges(content, cuts) : content;
+}
+
+/** The report that describes a stored answer (a side answer's persisted transcript), or null. */
+export function storedAnswerReport(transcript: unknown): GroundingReport | null {
+  if (typeof transcript !== 'object' || transcript === null) return null;
+  const groundings = (transcript as { groundings?: unknown }).groundings;
+  if (!Array.isArray(groundings)) return null;
+  const reports = groundings.filter(
+    (r): r is GroundingReport => typeof r === 'object' && r !== null && Array.isArray((r as GroundingReport).claims),
+  );
+  return answerReport(reports);
+}
+
+/**
+ * A stored answer as context for a later question, wherever an answer travels on (the outer
+ * levels of a nested question, a side thread's replayed history, the main conversation replayed
+ * into a side session, a discussion summarised to be brought back): `withoutFlaggedCitations`
+ * with the final report of its stored transcript. An answer without one is passed on as written.
+ */
+export function answerAsContext(content: string, transcript: unknown): string {
+  return withoutFlaggedCitations(content, storedAnswerReport(transcript));
+}
+
+/** Trailing sentence punctuation of an anchor, with closing quotes and emphasis. */
+const ANCHOR_END = /[.!?。;:]+["'”’)*_]*\s*$/;
+
+/**
+ * `anchor` citing passage `n` instead of what it cites: its first citation marker becomes
+ * `[n]` and its other markers go (with the separators between them); an anchor without a
+ * marker (its citation was inherited from the paragraph) gets `[n]` before its full stop.
+ */
+export function citeInAnchor(anchor: string, n: number): string {
+  const markers = parseCitationMarkers(anchor);
+  if (markers.length === 0) return withMarkerAtEnd(anchor, [n]);
+  let out = `${anchor.slice(0, markers[0].start)}[${n}]`;
+  let last = markers[0].end;
+  for (let i = 1; i < markers.length; i++) {
+    const gap = anchor.slice(last, markers[i].start);
+    // "[3], [7]" or "[3][7]": a run of markers becomes the one marker.
+    if (!/^[\s,;]*$/.test(gap)) out += gap.replace(/[ \t]+$/, '');
+    last = markers[i].end;
+  }
+  return out + anchor.slice(last);
+}
+
+/** `anchor` with a marker citing `numbers` (increasing) put before its full stop. */
+function withMarkerAtEnd(anchor: string, numbers: readonly number[]): string {
+  const end = ANCHOR_END.exec(anchor);
+  const at = end ? end.index : anchor.trimEnd().length;
+  return `${anchor.slice(0, at).trimEnd()} [${numbers.join(', ')}]${anchor.slice(at)}`;
+}
+
+/**
+ * The passage "Cite N instead" puts in a claim's place, or null: a miscitation whose citations
+ * can be rewritten where the claim is written. A table row's anchor is its last cell, so a row
+ * whose citations sit in other cells is not rewritten (it would then cite both).
+ */
+export function citeInsteadOffer(check: ClaimCheck): number | null {
+  const n = suggestedPassage(check);
+  if (n === null) return null;
+  if (check.kind === 'table_row') {
+    const inAnchor = citedNumbersIn(check.anchor);
+    if (!check.cited.every(c => inAnchor.has(c))) return null;
+  }
+  return n;
+}
+
+/** Counts and score of a set of checked claims (mirrors `verify::summarise`). */
+export function summariseClaims(claims: readonly ClaimCheck[]): GroundingSummary {
+  const s: GroundingSummary = { checked: claims.length, supported: 0, weak: 0, unsupported: 0, uncited: 0, invalid: 0, unchecked: 0, score: null };
+  for (const c of claims) {
+    switch (c.outcome) {
+      case 'supported':
+        s.supported += 1;
+        break;
+      case 'weak':
+        s.weak += 1;
+        break;
+      case 'unsupported':
+      case 'unverified_absence':
+        s.unsupported += 1;
+        break;
+      case 'uncited_factual':
+        s.uncited += 1;
+        break;
+      case 'invalid_citation':
+        s.invalid += 1;
+        break;
+      default:
+        s.unchecked += 1;
+    }
+  }
+  const scored = s.checked - s.unchecked;
+  s.score = scored > 0 ? (s.supported + 0.5 * s.weak) / scored : null;
+  return s;
+}
+
+/** What "Cite N instead" changed, for the transcript and the audit log. */
+export interface CitationRewrite {
+  transcript: TranscriptState;
+  /** The claim's position among the claims of the answer's final report. */
+  claimIndex: number;
+  /** The text block the claim is in. */
+  messageId: string;
+  from: number[];
+  to: number;
+  suggestedScore: number | null;
+  summary: GroundingSummary;
+}
+
+/**
+ * A finished answer with one miscited claim citing the passage the check found supporting it
+ * (`citeInsteadOffer`), as the user asked with "Cite N instead":
+ * - the claim's markers become `[N]`, and it is recorded as supported by that passage with the
+ *   support and contradiction the check measured there (none in reports saved before they
+ *   were kept), and `correctedFrom` says the change is the user's;
+ * - claims that inherited the old marker and were not flagged for it (`inheritorsOf`) get it
+ *   written into their own text, so they keep the citation the check supported them with;
+ * - the final report's summary is recomputed.
+ * Null while the answer is running, and when the claim, its text block or its anchor is no
+ * longer there.
+ */
+export function citeSuggested(state: TranscriptState, check: ClaimCheck): CitationRewrite | null {
+  if (state.status === 'starting' || state.status === 'running') return null;
+  const n = citeInsteadOffer(check);
+  const report = answerReport(state.groundings);
+  if (n === null || !report) return null;
+  const reportIndex = state.groundings.indexOf(report);
+  // The check the flag was drawn from; a copy is matched by its fields.
+  const same = report.claims.indexOf(check);
+  const claimIndex = same >= 0
+    ? same
+    : report.claims.findIndex(
+        c => c.messageId === check.messageId && c.anchor === check.anchor && c.text === check.text && c.outcome === check.outcome,
+      );
+  const blockIndex = state.blocks.findIndex(b => b.kind === 'text' && b.id === check.messageId);
+  const block = blockIndex >= 0 ? state.blocks[blockIndex] : null;
+  if (claimIndex < 0 || !block || block.kind !== 'text') return null;
+  // The places of the block's claims, found the way their flags are.
+  const own = report.claims.map((c, i) => ({ c, i })).filter(({ c }) => c.messageId === check.messageId);
+  const offsets = anchorOffsets(block.text, own.map(({ c }) => c));
+  const offsetOf = (i: number): number | null => offsets[own.findIndex(o => o.i === i)] ?? null;
+  const at = offsetOf(claimIndex);
+  if (at === null) return null;
+
+  const oldNumbers = citedNumbersIn(check.anchor);
+  const anchors = new Map<number, string>([[claimIndex, citeInAnchor(check.anchor, n)]]);
+  for (const j of inheritorsOf(report.claims, claimIndex, oldNumbers)) {
+    const c = report.claims[j];
+    if (citesWrongly(c.outcome) || offsetOf(j) === null) continue;
+    const kept = c.cited.filter(x => oldNumbers.has(x)).sort((a, b) => a - b);
+    anchors.set(j, withMarkerAtEnd(c.anchor, kept));
+  }
+  // Rewrite from the end of the block so earlier offsets stay valid.
+  let text = block.text;
+  const edits = [...anchors.entries()]
+    .map(([i, anchor]) => ({ at: offsetOf(i) as number, from: report.claims[i].anchor, to: anchor }))
+    .sort((a, b) => b.at - a.at);
+  for (const e of edits) text = text.slice(0, e.at) + e.to + text.slice(e.at + e.from.length);
+
+  const claims: ClaimCheck[] = report.claims.map((c, i) => {
+    const anchor = anchors.get(i);
+    if (anchor === undefined) return c;
+    if (i !== claimIndex) return { ...c, anchor };
+    return {
+      ...c,
+      anchor,
+      cited: [n],
+      outcome: 'supported' as const,
+      support: typeof c.suggestedScore === 'number' ? c.suggestedScore : null,
+      contradiction: typeof c.suggestedContradiction === 'number' ? c.suggestedContradiction : null,
+      missingNumbers: [],
+      closest: null,
+      closestScore: null,
+      suggested: null,
+      suggestedScore: null,
+      suggestedContradiction: null,
+      correctedFrom: [...c.cited],
+    };
+  });
+  const summary = summariseClaims(claims);
+  const groundings = state.groundings.map((r, i) => (i === reportIndex ? { ...r, claims, summary } : r));
+  const rewritten: TranscriptBlock = { kind: 'text', id: block.id, text };
+  const blocks: TranscriptBlock[] = state.blocks.map((b, i) => (i === blockIndex ? rewritten : b));
+  return {
+    transcript: { ...state, blocks, groundings },
+    claimIndex,
+    messageId: check.messageId,
+    from: [...check.cited],
+    to: n,
+    suggestedScore: typeof check.suggestedScore === 'number' ? check.suggestedScore : null,
+    summary,
+  };
+}
+
+/** The audit record of a correction (`audit_record_citation_correction`): ids, numbers and counts, never text. */
+export interface CitationCorrection {
+  conversationId: string;
+  runId: string | null;
+  messageId: string;
+  claimIndex: number;
+  from: number[];
+  to: number;
+  suggestedScore: number | null;
+  summary: GroundingSummary;
+}
+
+/** What the audit log keeps of a rewrite. */
+export function citationCorrection(rewrite: CitationRewrite, conversationId: string): CitationCorrection {
+  const s = rewrite.summary;
+  return {
+    conversationId,
+    runId: rewrite.transcript.runId || null,
+    messageId: rewrite.messageId,
+    claimIndex: rewrite.claimIndex,
+    from: [...rewrite.from],
+    to: rewrite.to,
+    suggestedScore: rewrite.suggestedScore,
+    summary: {
+      checked: s.checked,
+      supported: s.supported,
+      weak: s.weak,
+      unsupported: s.unsupported,
+      uncited: s.uncited,
+      invalid: s.invalid,
+      unchecked: s.unchecked,
+      score: s.score,
+    },
+  };
+}
+
+/** How a "Cite N instead" ended. */
+export type CorrectionOutcome =
+  /** Recorded in the audit log, then applied and saved. */
+  | 'applied'
+  /** The claim is no longer in the answer as it was checked: nothing to change. */
+  | 'stale'
+  /** The audit log refused or could not take the record: nothing was changed. */
+  | 'not_recorded'
+  /** Another correction of the same answer is being recorded: nothing was changed. */
+  | 'busy';
+
+/** The notice for a correction that could not be recorded. */
+export const CORRECTION_NOT_RECORDED = 'Could not record this correction in Activity, so nothing was changed.';
+
+/** The notice for a correction asked while another one of the same answer is recorded. */
+export const CORRECTION_BUSY = 'Another citation of this answer is being changed. Try again when it is done.';
+
+/**
+ * Audit first: the correction is applied (and saved) only once the audit log has taken its
+ * record, so the answer never changes without a record of who changed it. A failed record
+ * applies nothing. `apply` runs after the record, on the latest state, and returns false
+ * when the claim is no longer as it was recorded (then nothing is changed: `stale`).
+ */
+export async function applyAuditedCorrection(record: () => Promise<unknown>, apply: () => boolean): Promise<CorrectionOutcome> {
+  try {
+    await record();
+  } catch {
+    return 'not_recorded';
+  }
+  return apply() ? 'applied' : 'stale';
+}
+
+/**
+ * Whether a rewrite built from the latest state is the one that was recorded: same claim, same
+ * text block, same numbers. A correction applied in between (or an edited answer) makes it
+ * differ, and the recorded one is not applied over it.
+ */
+export function sameCorrection(recorded: CitationRewrite, latest: CitationRewrite | null): boolean {
+  return (
+    latest !== null &&
+    latest.claimIndex === recorded.claimIndex &&
+    latest.messageId === recorded.messageId &&
+    latest.to === recorded.to &&
+    latest.from.length === recorded.from.length &&
+    latest.from.every((n, i) => n === recorded.from[i])
+  );
+}
+
+/** Correction keys in flight, one per answer: a second correction waits for the first. */
+export class CorrectionGuard {
+  private readonly busy = new Set<string>();
+
+  /** Claim `key` for one correction; false while another holds it. */
+  claim(key: string): boolean {
+    if (this.busy.has(key)) return false;
+    this.busy.add(key);
+    return true;
+  }
+
+  release(key: string): void {
+    this.busy.delete(key);
   }
 }

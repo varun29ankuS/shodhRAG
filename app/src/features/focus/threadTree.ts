@@ -10,6 +10,7 @@
 
 import type { FocusTarget, FocusThread } from './focusTypes.ts';
 import { repliesLabel, sameTarget } from './threadStore.ts';
+import { answerAsContext } from '../agent/grounding.ts';
 
 /** Nested levels allowed below the thread opened from the conversation. */
 export const MAX_DEPTH = 6;
@@ -133,7 +134,9 @@ export interface ThreadAncestor {
  * The outer levels of a thread opened from `parentThreadId` (at its answer
  * `parentTurnId`), outermost first: for each, the object, the answer the
  * next level was opened from (the latest answer when unknown) and the
- * question before it.
+ * question before it. The answer goes without the citation markers its
+ * grounding check flagged (`answerAsContext`): a nested question
+ * must not take a wrong citation from it as given.
  */
 export function ancestorsFor(
   threads: readonly FocusThread[],
@@ -155,7 +158,8 @@ export function ancestorsFor(
     }
     const info: ThreadAncestor = { target: thread.anchor.target };
     if (at >= 0) {
-      info.answer = thread.turns[at].content;
+      const answer = thread.turns[at];
+      info.answer = answerAsContext(answer.content, answer.transcript);
       for (let k = at - 1; k >= 0; k--) {
         if (thread.turns[k].role === 'user') {
           info.question = thread.turns[k].content;

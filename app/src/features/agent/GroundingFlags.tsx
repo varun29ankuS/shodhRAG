@@ -57,6 +57,7 @@ export function ClaimFlag({ check, closest, onOpenCitation }: ClaimFlagProps) {
     return (
       <button
         type="button"
+        data-answer-ui=""
         onClick={e => onOpenCitation(closest, e.currentTarget)}
         title={`${description} Click to open it.`}
         className={cn(className, 'hover:bg-shodh-raised-2 transition-colors duration-micro', FOCUS_RING)}
@@ -66,7 +67,7 @@ export function ClaimFlag({ check, closest, onOpenCitation }: ClaimFlagProps) {
     );
   }
   return (
-    <span role="note" title={description} className={className}>
+    <span role="note" title={description} className={className} data-answer-ui="">
       {body}
     </span>
   );
@@ -79,6 +80,7 @@ export function InvalidCitation({ number }: { number: number }) {
     <span
       role="note"
       title={description}
+      data-answer-ui=""
       className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 ml-[3px] rounded-[5px] align-[3px] text-[10.5px] font-bold leading-none tabular-nums border border-dashed border-shodh-error/60 text-shodh-error line-through decoration-shodh-error/70"
     >
       <span aria-hidden="true">{number}</span>

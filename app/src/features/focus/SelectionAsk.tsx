@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { MessageSquareText } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { FOCUS_OVERLAY_SELECTOR } from './focusDom';
+import { FOCUS_OVERLAY_SELECTOR, readableText } from './focusDom';
 import { notifyDepthLimit, useFocus } from './FocusContext';
 import type { DrillResult } from './FocusContext';
 import { MAX_SELECTED_CHARS, selectionTarget } from './targets';
@@ -31,10 +31,11 @@ const CONTEXT_WINDOW = 4_000;
 
 /**
  * The block's text near the selection, bounded so a huge block (a whole
- * text file) is never processed on every selection change.
+ * text file) is never processed on every selection change. Citation pills,
+ * grounding flags and screen-reader text are not part of it.
  */
 function nearText(block: Element, selected: string): string {
-  const full = block.textContent ?? '';
+  const full = readableText(block);
   if (full.length <= CONTEXT_WINDOW * 2) return full;
   const probe = selected.trim().slice(0, 120);
   const at = probe ? full.indexOf(probe) : -1;
@@ -79,9 +80,13 @@ function readSelection(focus: NonNullable<ReturnType<typeof useFocus>>): Omit<Pe
   };
 
   if (kind === 'answer' || kind === 'thread') {
+    // The selection as the reader sees it: pills and flags it crosses are not
+    // quoted, and it still matches the paragraph's text below.
+    const text = readableText(range.cloneContents()).slice(0, MAX_SELECTED_CHARS * 2);
+    if (text.replace(/\s+/g, ' ').trim().length < 2) return null;
     const block = common?.closest<HTMLElement>(BLOCK_SELECTOR);
-    const context = nearText(block && scope.contains(block) ? block : scope, raw);
-    const target = selectionTarget({ text: raw, context, origin: 'answer' });
+    const context = nearText(block && scope.contains(block) ? block : scope, text);
+    const target = selectionTarget({ text, context, origin: 'answer' });
     if (!target) return null;
     if (kind === 'answer') {
       const conversationId = scope.dataset.conversationId;

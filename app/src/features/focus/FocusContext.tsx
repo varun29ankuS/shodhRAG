@@ -1,7 +1,8 @@
 import React, { Suspense, createContext, lazy, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { notify } from '../../lib/notify';
 import type { AgentEventEnvelope, ClaimCheck } from '../agent/events';
-import { citeSuggested } from '../agent/grounding';
+import { citationCorrection, citeSuggested } from '../agent/grounding';
+import { recordCitationCorrection } from '../audit/api';
 import { answerText, fromPersisted, initialTranscript, isLive, reduceAll, toPersisted } from '../agent/reducer';
 import type { Passage, TranscriptAction, TranscriptState } from '../agent/reducer';
 import { carriedPassages, toWire } from './carriedPassages';
@@ -1014,8 +1015,9 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     const turn = thread?.turns.find(t => t.id === turnId && t.role === 'assistant');
     const stored = turn?.transcript ? fromPersisted(turn.transcript) : null;
     if (!thread || !turn || !stored || isLive(stored)) return false;
-    const next = citeSuggested(stored, check);
-    if (!next) return false;
+    const rewrite = citeSuggested(stored, check);
+    if (!rewrite) return false;
+    const next = rewrite.transcript;
     // Stored as a finished answer is: the followups block stays out of the text.
     const changed: ThreadTurn = {
       ...turn,
@@ -1023,6 +1025,9 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       transcript: toPersisted(next) as unknown as Record<string, unknown>,
     };
     mutateThread(thread.anchor, thread.id, t => ({ ...t, turns: t.turns.map(x => (x.id === turnId ? changed : x)) }));
+    recordCitationCorrection(citationCorrection(rewrite, thread.anchor.conversationId)).catch(error => {
+      console.error('Citation correction not audited:', error);
+    });
     return true;
   }, [findThread, mutateThread]);
 

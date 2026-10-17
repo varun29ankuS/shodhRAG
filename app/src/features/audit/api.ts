@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import type { CitationCorrection } from '../agent/grounding';
 import type { AuditPage, AuditQuery, AuditStats, VerifyReport } from './types';
 
 export function queryAudit(query: AuditQuery): Promise<AuditPage> {
@@ -26,4 +27,9 @@ export function errorText(err: unknown): string {
   if (typeof err === 'string') return err;
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+/** Record a citation the user corrected ("Cite N instead"): ids, numbers and counts only. */
+export function recordCitationCorrection(correction: CitationCorrection): Promise<void> {
+  return invoke<void>('audit_record_citation_correction', { correction });
 }

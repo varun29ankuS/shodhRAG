@@ -30,8 +30,8 @@ import rehypeFocusEquations, { FOCUS_EQUATION_TAG } from '../focus/rehypeFocusEq
 import { chartTarget, equationTarget, imageTarget, tableTarget } from '../focus/targets';
 import { escapeCurrency, isMermaidLanguage, mermaidSource, normalizeMathDelimiters, protectMath } from './visual/mathText';
 import type { ClaimCheck } from '../agent/events';
-import { FLAG_CLOSE, FLAG_OPEN, insertFlagMarkers, parseCitationMarkers } from '../agent/grounding';
-import { ClaimFlag, InvalidCitation } from '../agent/GroundingFlags';
+import { FLAG_CLOSE, FLAG_OPEN, insertFlagMarkers, isCorrected, parseCitationMarkers } from '../agent/grounding';
+import { ClaimFlag, CorrectionNote, InvalidCitation } from '../agent/GroundingFlags';
 import type { CiteInstead } from '../agent/GroundingFlags';
 import { sourceAnchor } from '../print/printModel';
 import { markBudget, placeTextMarks, stripTextMarks } from './visual/marks';
@@ -305,7 +305,9 @@ function MessageContent({
       }
       if (match[2] !== undefined) {
         const check = claims?.[Number(match[2])];
-        if (check) {
+        if (check && isCorrected(check)) {
+          parts.push(<CorrectionNote key={`corrected-${index}`} check={check} />);
+        } else if (check) {
           const closest = check.closest !== null ? hitsByNumber.get(check.closest) ?? null : null;
           parts.push(
             <ClaimFlag key={`flag-${index}`} check={check} closest={closest} onOpenCitation={onOpenCitation} onCiteInstead={print ? undefined : onCiteInstead} />,

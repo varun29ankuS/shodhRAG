@@ -11,7 +11,8 @@ import { passageHits } from '../agent/citations';
 import { PlanPanel } from '../agent/PlanPanel';
 import { answerText, pendingApproval, isLive } from '../agent/reducer';
 import type { ClaimCheck } from '../agent/events';
-import { citeSuggested } from '../agent/grounding';
+import { citationCorrection, citeSuggested } from '../agent/grounding';
+import { recordCitationCorrection } from '../audit/api';
 import type { TranscriptState } from '../agent/reducer';
 import { RuntimeCard } from '../agent/RuntimeCard';
 import { SearchSetupCard } from '../setup/SearchSetupCard';
@@ -878,16 +879,20 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   messagesRef.current = messages;
   const citeInstead = useCallback((messageId: string, check: ClaimCheck): boolean => {
     const owner = messagesRef.current.find(m => m.id === messageId);
-    const next = owner?.transcript && !isLive(owner.transcript) ? citeSuggested(owner.transcript, check) : null;
-    if (!owner || !next) {
+    const rewrite = owner?.transcript && !isLive(owner.transcript) ? citeSuggested(owner.transcript, check) : null;
+    const conversationId = session.activeConversationId;
+    if (!owner || !rewrite || !conversationId) {
       notify.error('This citation could not be changed', { description: 'The statement is no longer in the answer as it was checked.' });
       return false;
     }
-    updateMessage(owner.id, { content: answerText(next), transcript: next });
+    updateMessage(owner.id, { content: answerText(rewrite.transcript), transcript: rewrite.transcript });
+    recordCitationCorrection(citationCorrection(rewrite, conversationId)).catch(error => {
+      console.error('Citation correction not audited:', error);
+    });
     // The flag and its button are gone; say what changed (toasts are a live region).
     notify.success(`Now cites passage ${check.suggested}`);
     return true;
-  }, [updateMessage]);
+  }, [updateMessage, session.activeConversationId]);
 
   const markRuntimeInstalled = useCallback(() => setRuntimeInstalled(true), [setRuntimeInstalled]);
   const openSettings = useCallback(() => onNavigate('settings'), [onNavigate]);

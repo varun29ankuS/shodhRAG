@@ -292,6 +292,7 @@ fn passage(n: u32, result: &ComprehensiveResult, max_chars: usize) -> Passage {
         result.citation.source.clone()
     };
     let file = display_name(&path, result);
+    let display_path = stored_display_path(&path, result);
     Passage {
         n,
         file,
@@ -310,7 +311,7 @@ fn passage(n: u32, result: &ComprehensiveResult, max_chars: usize) -> Passage {
         score: result.score,
         text: truncate_chars(result.snippet.trim(), max_chars),
         regions: passage_regions(result),
-        display_path: stored_display_path(&path, result),
+        display_path,
     }
 }
 

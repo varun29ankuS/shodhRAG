@@ -3,6 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { ExternalLink, Loader2, Maximize2, MessageSquareText, Minimize2, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
+import { escapeStaysLocal } from '../../lib/escapeScope';
+import { openExternal } from '../agent/WebSources';
 import { FOCUS_OVERLAY_SELECTOR } from '../focus/focusDom';
 import { appRecordKind, formatLocation, isWebUrl, jumpToSourceArgs, shownPath, sourceLabel } from './searchResults';
 import type { ViewTab } from '../../lib/viewTabs';
@@ -56,11 +58,15 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose, onOpenView,
   // Esc closes the viewer. Capture phase + preventDefault so the Ask view's
   // Esc-to-stop handler (which checks defaultPrevented) leaves a streaming
   // answer alone; propagation continues for other listeners.
-  // Esc inside a focus pop-out opened from here belongs to the pop-out.
+  // Esc inside a focus pop-out opened from here belongs to the pop-out, and
+  // Esc in the viewer's find field or snippet mode closes only that (the
+  // viewer marks the key handled, so a streaming answer is left alone too).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return;
-      if (e.target instanceof Element && e.target.closest(FOCUS_OVERLAY_SELECTOR)) return;
+      const target = e.target instanceof Element ? e.target : null;
+      if (target?.closest(FOCUS_OVERLAY_SELECTOR)) return;
+      if (escapeStaysLocal<Element>(target, panelRef.current)) return;
       e.preventDefault();
       onClose();
     };
@@ -77,7 +83,7 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose, onOpenView,
       return;
     }
     if (isUrl) {
-      window.open(hit.sourceFile, '_blank', 'noopener,noreferrer');
+      await openExternal(hit.sourceFile);
       return;
     }
     setOpening(true);

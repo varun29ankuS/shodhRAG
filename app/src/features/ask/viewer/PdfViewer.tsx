@@ -1291,19 +1291,22 @@ export function PdfViewer({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    // Esc leaves snippet mode only; the surrounding view's Esc must not also
+    // fire. Checked before `isDefaultPrevented`: a focus pop-out marks Esc
+    // handled first for its data-esc-local content (this viewer while
+    // snipping). The find field closes itself.
+    if (e.key === 'Escape' && (snipping || marquee) && !(e.target instanceof Element && e.target.closest('[role="search"]'))) {
+      e.preventDefault();
+      e.stopPropagation();
+      setMarquee(null);
+      setSnipping(false);
+      return;
+    }
     if (e.isDefaultPrevented()) return;
     const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
     if (plain && (e.key === 's' || e.key === 'S') && !isEditableTarget(e.target) && doc) {
       e.preventDefault();
       toggleSnipping();
-      return;
-    }
-    if (e.key === 'Escape' && (snipping || marquee)) {
-      // Leaves snippet mode only; the surrounding view's Esc must not also fire.
-      e.preventDefault();
-      e.stopPropagation();
-      setMarquee(null);
-      setSnipping(false);
       return;
     }
     const command = viewerCommand({
@@ -1343,7 +1346,14 @@ export function PdfViewer({
   }
 
   return (
-    <div ref={rootRef} data-pdf-viewer="" className="flex-1 min-h-0 flex flex-col" onKeyDown={handleKeyDown}>
+    <div
+      ref={rootRef}
+      data-pdf-viewer=""
+      // Snippet mode cancels itself on Esc (see `escapeScope`).
+      data-esc-local={snipping || marquee ? '' : undefined}
+      className="flex-1 min-h-0 flex flex-col"
+      onKeyDown={handleKeyDown}
+    >
       <div role="toolbar" aria-label="PDF controls" className="flex items-center gap-1 px-3 py-1.5 border-b border-shodh-border-subtle text-[12.5px] text-shodh-text-secondary">
         <button type="button" className={toolButton} onClick={() => goToPage(currentPage - 1)} disabled={!doc || currentPage <= 1} aria-label="Previous page" title="Previous page (PageUp)">
           <ChevronUp className="w-4 h-4" aria-hidden="true" />

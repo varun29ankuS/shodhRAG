@@ -438,7 +438,7 @@ interface PdfViewerProps {
    * `regions` is empty.
    */
   rects?: { page: number; rect: SnippetRect }[] | null;
-  /** Workspace (source id) new snippets belong to, when the viewer knows it. */
+  /** Workspace id new snippets belong to; none keeps them global. */
   workspace?: string | null;
 }
 

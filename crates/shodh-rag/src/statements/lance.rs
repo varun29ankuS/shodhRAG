@@ -292,6 +292,57 @@ impl StatementTable {
         Ok(rows(&batches)?.into_iter().map(|(row, _)| row).collect())
     }
 
+    /// The ids of the rows matching `predicate`, every one of them.
+    pub(crate) async fn ids(&self, predicate: &str) -> StatementResult<Vec<String>> {
+        self.column_values("id", predicate).await
+    }
+
+    /// The distinct scopes stored, of every row (forgotten and superseded ones too).
+    pub(crate) async fn scope_keys(&self) -> StatementResult<Vec<String>> {
+        let mut keys = self.column_values("scope", "scope IS NOT NULL").await?;
+        keys.sort();
+        keys.dedup();
+        Ok(keys)
+    }
+
+    async fn column_values(&self, column: &str, predicate: &str) -> StatementResult<Vec<String>> {
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .select(Select::columns(&[column]))
+            .only_if(predicate)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+        let mut out = Vec::new();
+        for batch in &batches {
+            let values = batch
+                .column_by_name(column)
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .ok_or_else(|| StatementError::Lance(format!("column `{column}` is missing")))?;
+            out.extend(
+                (0..values.len())
+                    .filter(|&i| !values.is_null(i))
+                    .map(|i| values.value(i).to_string()),
+            );
+        }
+        Ok(out)
+    }
+
+    /// Gives every row matching `predicate` the scope `scope` (its stored form). Returns
+    /// the rows changed. Only the scope column is written, never the content.
+    pub(crate) async fn set_scope(&self, predicate: &str, scope: &str) -> StatementResult<u64> {
+        let result = self
+            .table
+            .update()
+            .only_if(predicate)
+            .column("scope", quote(scope))
+            .execute()
+            .await?;
+        Ok(result.rows_updated)
+    }
+
     /// Nearest rows by cosine distance, prefiltered. Returns `(row, similarity)`.
     pub(crate) async fn vector_search(
         &self,

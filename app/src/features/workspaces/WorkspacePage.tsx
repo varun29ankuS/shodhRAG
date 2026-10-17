@@ -100,7 +100,7 @@ function ResultsTab({ workspace }: { workspace: WorkspaceDetail }) {
     <div className="flex flex-col gap-6">
       <section aria-labelledby="ws-results" className="flex flex-col gap-2">
         <h3 id="ws-results" className={SECTION_TITLE}>Results across this workspace’s papers</h3>
-        <CompareResults paperFilter={allows} />
+        <CompareResults workspace={workspace.id} paperFilter={allows} />
       </section>
       <section aria-labelledby="ws-graph" className="flex flex-col gap-2">
         <h3 id="ws-graph" className={SECTION_TITLE}>Citation graph of this workspace’s papers</h3>

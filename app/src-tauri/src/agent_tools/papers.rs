@@ -872,6 +872,130 @@ mod tests {
         assert_eq!(list.tier(), RiskTier::Read);
     }
 
+    /// A snippet saved in the Library (no workspace: global) is listed in a workspace chat
+    /// whose workspace holds its file, and not in one whose workspace does not; a snippet
+    /// another workspace's chat made stays that workspace's.
+    #[tokio::test]
+    async fn library_snippets_are_seen_from_every_workspace_holding_their_file() {
+        use shodh_rag::harness::tools::RunScope;
+        use shodh_rag::workspaces::{NewWorkspace, WorkspaceAuthor, WorkspaceStore};
+        let t = testing::host().await;
+        let services = t.host.research.services().await.unwrap();
+        let pdf = t.dir.path().join("ann.pdf");
+        std::fs::write(&pdf, b"%PDF-1.4").unwrap();
+        let pdf = pdf.display().to_string();
+        let create_workspace = |name: &str| {
+            let new = NewWorkspace {
+                name: name.to_string(),
+                ..NewWorkspace::default()
+            };
+            move |s: &WorkspaceStore| s.create(&new, WorkspaceAuthor::User)
+        };
+        let thesis = t
+            .host
+            .workspaces
+            .run(create_workspace("Thesis"))
+            .await
+            .unwrap();
+        let other = t
+            .host
+            .workspaces
+            .run(create_workspace("Other"))
+            .await
+            .unwrap();
+        // What the Library's viewer stores: it names no workspace.
+        let library_scope = crate::research_commands::owned_scope(&t.host.workspaces, None)
+            .await
+            .unwrap();
+        assert_eq!(library_scope, Scope::Global);
+        // An id that names no workspace (a Library source id) is refused, a workspace's kept.
+        let refused = crate::research_commands::owned_scope(&t.host.workspaces, Some("src-1"))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, "invalid");
+        assert_eq!(
+            crate::research_commands::owned_scope(&t.host.workspaces, Some(other.id.as_str()))
+                .await
+                .unwrap(),
+            Scope::Workspace(other.id.clone())
+        );
+        let snippet = |scope: Scope, author: SnippetAuthor, text: &str| NewSnippet {
+            file_path: pdf.clone(),
+            page: 2,
+            rect: PageRect {
+                x: 10.0,
+                y: 20.0,
+                width: 100.0,
+                height: 30.0,
+            },
+            text: text.into(),
+            image_png: None,
+            title: None,
+            note: None,
+            tags: vec![],
+            kind: SnippetKind::Passage,
+            scope,
+            author,
+        };
+        services
+            .snippets
+            .create(snippet(
+                library_scope,
+                SnippetAuthor::User,
+                "Graph indexes reach a recall of 95 percent on SIFT1M at ten neighbours.",
+            ))
+            .await
+            .unwrap();
+        services
+            .snippets
+            .create(snippet(
+                Scope::Workspace(other.id.clone()),
+                SnippetAuthor::Agent {
+                    model: "assistant".into(),
+                },
+                "Quantisation keeps 71 percent recall at ten neighbours with IVF-PQ.",
+            ))
+            .await
+            .unwrap();
+        let in_workspace = |id: &str, name: &str, files: Vec<String>| {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let ctx = ToolContext::new("run-1", "step-1", tx).with_scope(Arc::new(RunScope {
+                workspace: Some(id.to_string()),
+                workspace_name: Some(name.to_string()),
+                restricted: true,
+                files,
+                ..RunScope::default()
+            }));
+            (ctx, rx)
+        };
+        let list = ListSnippetsTool {
+            host: t.host.clone(),
+        };
+        let (ctx, _rx) = in_workspace(&thesis.id, &thesis.name, vec![pdf.clone()]);
+        let out = list.execute(json!({}), &ctx).await.unwrap();
+        assert!(
+            out.text_for_model.contains("recall of 95 percent"),
+            "{}",
+            out.text_for_model
+        );
+        assert!(
+            !out.text_for_model.contains("IVF-PQ"),
+            "{}",
+            out.text_for_model
+        );
+        assert_eq!(ctx.passages_issued(), 1);
+
+        // A workspace that does not hold the file sees none of it.
+        let elsewhere = t.dir.path().join("lm.pdf").display().to_string();
+        let (ctx, _rx) = in_workspace(&other.id, &other.name, vec![elsewhere]);
+        let out = list.execute(json!({}), &ctx).await.unwrap();
+        assert!(
+            out.text_for_model.starts_with("No saved snippets match"),
+            "{}",
+            out.text_for_model
+        );
+    }
+
     fn saved_snippet(text: &str) -> Snippet {
         let now = chrono::Utc::now();
         Snippet {

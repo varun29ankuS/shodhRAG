@@ -785,6 +785,63 @@ impl StatementStore {
         Ok(out)
     }
 
+    /// The scopes statements are stored in: every scope a row has, current or not.
+    /// Scopes this version cannot read are left out (and logged).
+    pub async fn scopes(&self) -> StatementResult<BTreeSet<Scope>> {
+        let mut out = BTreeSet::new();
+        for key in self.table.scope_keys().await? {
+            match key.parse::<Scope>() {
+                Ok(scope) => {
+                    out.insert(scope);
+                }
+                Err(e) => tracing::warn!(scope = %key, error = %e, "unknown statement scope"),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Moves the statements of scope `from` to scope `to`: every row, with its history
+    /// (superseded, archived and forgotten versions), so a fact's versions stay together,
+    /// and the scope its dynamics record. Only rows of `classes` (exactly these; empty
+    /// means every class) and, when given, written by the `extractor` kind (its label,
+    /// `user`, `llm`, ...) move. Statements are never merged with ones already in `to`:
+    /// the same fact in both is then current twice until a write supersedes one. Returns
+    /// the statements moved.
+    pub async fn rescope(
+        &self,
+        from: &Scope,
+        to: &Scope,
+        classes: &[&str],
+        extractor: Option<&str>,
+    ) -> StatementResult<u64> {
+        if from == to {
+            return Ok(0);
+        }
+        let _guard = self.write_lock.lock().await;
+        let mut parts = vec![format!("scope = {}", quote(&from.as_key()))];
+        if !classes.is_empty() {
+            parts.push(format!(
+                "class IN ({})",
+                classes
+                    .iter()
+                    .map(|c| quote(c))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if let Some(extractor) = extractor {
+            parts.push(format!("extractor = {}", quote(extractor)));
+        }
+        let predicate = parts.join(" AND ");
+        let ids = self.table.ids(&predicate).await?;
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let moved = self.table.set_scope(&predicate, &to.as_key()).await?;
+        self.dynamics.set_scope(&ids, &to.as_key())?;
+        Ok(moved)
+    }
+
     /// Hybrid search: vector (cosine) ranking over the text renderings and full-text (BM25)
     /// ranking over the values (`terms`), fused by reciprocal rank. Only statements matching
     /// `query` (current ones by default) are searched. Best first, at most `k`.

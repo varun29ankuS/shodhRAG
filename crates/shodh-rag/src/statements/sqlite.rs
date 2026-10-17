@@ -133,6 +133,27 @@ impl DynamicsStore {
         Ok(())
     }
 
+    /// Records `scope` (its stored form) as the scope of the statements `ids`, in one
+    /// transaction. Statements without dynamics are skipped.
+    pub fn set_scope(&self, ids: &[String], scope: &str) -> StatementResult<()> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for chunk in ids.chunks(LOOKUP_CHUNK) {
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let mut values: Vec<&str> = Vec::with_capacity(chunk.len() + 1);
+            values.push(scope);
+            values.extend(chunk.iter().map(String::as_str));
+            tx.execute(
+                &format!(
+                    "UPDATE statement_dynamics SET scope = ? WHERE statement_id IN ({placeholders})"
+                ),
+                params_from_iter(values),
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Links touching any of `ids`, as `(from, to, state)` with `from < to`.
     pub fn links_touching(
         &self,

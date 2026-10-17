@@ -38,6 +38,7 @@ use crate::app_settings::SettingsStore;
 use crate::audit_commands::AuditState;
 use crate::llm_commands::LLMState;
 use crate::memory_commands::{MemoryState, APP_VERSION};
+use crate::workspace_commands::WorkspaceState;
 
 /// Emitted with `{ "kind": "snippet" | "result" | "graph", "filePath": ... }` after a write.
 pub const RESEARCH_CHANGED_EVENT: &str = "research-changed";
@@ -230,6 +231,30 @@ pub fn scopes_for(workspace: Option<&str>) -> Vec<Scope> {
     }
 }
 
+/// The scope of a snippet or result the user makes: the workspace `workspace` names (one
+/// that exists, archived or not), or global without one. The Library belongs to no
+/// workspace, so what is made there is global and every workspace run over its file sees
+/// it. An id that names no workspace (older versions passed the Library source id) is
+/// refused rather than filed under a scope no run looks in.
+pub async fn owned_scope(
+    workspaces: &WorkspaceState,
+    workspace: Option<&str>,
+) -> ResearchCommandResult<Scope> {
+    let scope = Scope::for_workspace(workspace);
+    let id = match &scope {
+        Scope::Global => return Ok(scope),
+        Scope::Workspace(id) => id.clone(),
+    };
+    let wanted = id.clone();
+    match workspaces.run(move |s| s.get(&wanted)).await {
+        Ok(_) => Ok(scope),
+        Err(e) if e.code == "not_found" => Err(ResearchCommandError::invalid(format!(
+            "No workspace has id `{id}`; snippets and results made outside a workspace are kept for every workspace."
+        ))),
+        Err(e) => Err(ResearchCommandError::unavailable(e.message)),
+    }
+}
+
 fn decode_png(base64_png: &str) -> ResearchCommandResult<Vec<u8>> {
     let text = base64_png.trim();
     let text = text.strip_prefix("data:image/png;base64,").unwrap_or(text);
@@ -324,10 +349,12 @@ pub struct SnippetListQuery {
 pub async fn snippets_create(
     app: AppHandle,
     state: State<'_, ResearchState>,
+    workspaces: State<'_, WorkspaceState>,
     input: NewSnippetInput,
 ) -> ResearchCommandResult<Snippet> {
     let file_path = require_pdf(&input.file_path)?;
     let image = input.image_png.as_deref().map(decode_png).transpose()?;
+    let scope = owned_scope(&workspaces, input.workspace.as_deref()).await?;
     let services = state.services().await?;
     let snippet = services
         .snippets
@@ -341,7 +368,7 @@ pub async fn snippets_create(
             note: input.note,
             tags: input.tags,
             kind: input.kind.unwrap_or_default(),
-            scope: Scope::for_workspace(input.workspace.as_deref()),
+            scope,
             author: SnippetAuthor::User,
         })
         .await?;
@@ -577,11 +604,13 @@ pub async fn results_extract(
     app: AppHandle,
     state: State<'_, ResearchState>,
     llm: State<'_, LLMState>,
+    workspaces: State<'_, WorkspaceState>,
     file_path: String,
     workspace: Option<String>,
     use_model: Option<bool>,
 ) -> ResearchCommandResult<ExtractionReport> {
     let file_path = require_pdf(&file_path)?;
+    let scope = owned_scope(&workspaces, workspace.as_deref()).await?;
     let model = if use_model.unwrap_or(false) {
         let dir = crate::profile::app_data_dir(&app)
             .map_err(|e| ResearchCommandError::unavailable(e.to_string()))?;
@@ -593,14 +622,7 @@ pub async fn results_extract(
         None
     };
     let services = state.services().await?;
-    let report = services
-        .results
-        .extract(
-            &file_path,
-            Scope::for_workspace(workspace.as_deref()),
-            model,
-        )
-        .await?;
+    let report = services.results.extract(&file_path, scope, model).await?;
     broadcast_change(&app, "result", Some(&report.file_path));
     Ok(report)
 }

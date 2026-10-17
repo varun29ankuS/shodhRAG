@@ -18,6 +18,7 @@ use serde_json::json;
 use shodh_rag::audit::AuditKey;
 use shodh_rag::harness::tools::sources::{load_sources, SourceKind as IndexKind};
 use shodh_rag::harness::tools::ScopedSnippet;
+use shodh_rag::research::scopes::{settle_scopes, SettledScopes};
 use shodh_rag::research::ResearchError;
 use shodh_rag::workspaces::{
     AddReport, InstructionVersion, NewSource, NewWorkspace, SourceKind, Workspace, WorkspaceAuthor,
@@ -30,6 +31,7 @@ use tokio::sync::{OnceCell, RwLock};
 
 use crate::audit_commands::AuditState;
 use crate::conversation_commands::{ConversationRecord, ConversationStore};
+use crate::memory_commands::MemoryState;
 use crate::research_commands::ResearchState;
 
 /// Emitted with `{ "workspaceId": ... }` (null when several changed) after a workspace was
@@ -410,6 +412,73 @@ pub async fn workspaces_delete(
         broadcast_change(&app, Some(&workspace_id));
     }
     Ok(removed)
+}
+
+/// `workspace_state` key of the one-time move of the snippets and results the Library made
+/// (filed under a Library source id by older versions) to global.
+const LIBRARY_RESEARCH_KEY: &str = "library_research_global_v1";
+
+/// Settles where statements are visible (see [`shodh_rag::research::scopes`]): the
+/// snippets and results the Library made become global (once), and so do the statements
+/// of scopes that name no workspace (on every call: a Library source id, a workspace
+/// deleted by an older version or whose statements could not be moved when it was).
+/// Called after the legacy import, whose workspaces keep the Library source ids they were
+/// made from. Fails, changing nothing more, when the workspaces cannot be read.
+pub async fn settle_statement_scopes(
+    state: &WorkspaceState,
+    memory: &MemoryState,
+) -> Result<SettledScopes, String> {
+    let service = memory.service().await?;
+    let store = service.store();
+    // The scopes before the workspaces: a workspace created in between is then listed.
+    let scopes = store.scopes().await.map_err(|e| e.to_string())?;
+    let workspaces: HashSet<String> = state
+        .run(|s| s.list(true))
+        .await
+        .map_err(|e| e.message)?
+        .into_iter()
+        .map(|w| w.id)
+        .collect();
+    let library = state
+        .run(|s| s.state(LIBRARY_RESEARCH_KEY))
+        .await
+        .map_err(|e| e.message)?
+        .is_none();
+    let settled = settle_scopes(store, &scopes, &workspaces, library)
+        .await
+        .map_err(|e| e.to_string())?;
+    if library {
+        let note = format!("{} statements", settled.library);
+        state
+            .run(move |s| s.set_state(LIBRARY_RESEARCH_KEY, &note))
+            .await
+            .map_err(|e| e.message)?;
+    }
+    if library || settled.moved() > 0 {
+        tracing::info!(
+            target: "shodh::workspaces",
+            library = settled.library,
+            orphaned = settled.orphaned,
+            "statements no workspace run could see moved to global"
+        );
+    }
+    Ok(settled)
+}
+
+/// [`settle_statement_scopes`] once per run of the app, in the background (opening the
+/// memory store may wait for the index). A failure is logged and retried on the next call.
+pub fn settle_statement_scopes_in_background(state: WorkspaceState, memory: MemoryState) {
+    static SETTLED: OnceCell<()> = OnceCell::const_new();
+    tauri::async_runtime::spawn(async move {
+        let settled = SETTLED
+            .get_or_try_init(|| async {
+                settle_statement_scopes(&state, &memory).await.map(|_| ())
+            })
+            .await;
+        if let Err(message) = settled {
+            tracing::warn!(target: "shodh::workspaces", %message, "statement scopes not settled yet");
+        }
+    });
 }
 
 /// Clears `workspace_id` from the conversations that name it. Returns how many changed.

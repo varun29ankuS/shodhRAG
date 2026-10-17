@@ -662,6 +662,37 @@ fn corpus_cells_give_exact_values_pages_and_boxes() {
     );
 }
 
+/// One table of `rows` under `header` on `page`, without cell boxes.
+fn one_table(
+    page: u32,
+    header: &[&str],
+    rows: &[&[&str]],
+    caption: Option<&str>,
+) -> StructuredDocument {
+    let block = Block::new(
+        BlockKind::Table {
+            header: header.iter().map(|h| h.to_string()).collect(),
+            rows: rows
+                .iter()
+                .map(|r| r.iter().map(|c| c.to_string()).collect())
+                .collect(),
+            caption: caption.map(str::to_string),
+            cell_boxes: vec![],
+            cell_coverage: None,
+        },
+        "",
+    )
+    .on_page(page, None);
+    StructuredDocument {
+        pages: vec![PageInfo {
+            number: page,
+            width: 612.0,
+            height: 792.0,
+        }],
+        blocks: vec![block],
+    }
+}
+
 /// An accepted Result statement of the paper at `path`, as an extraction stores one.
 fn stored_result(service: &ResultService, path: &str, i: usize) -> Statement {
     let mut paper = document_entity(path);
@@ -758,4 +789,97 @@ async fn a_paper_s_results_are_read_whatever_else_is_stored() {
         .unwrap();
     let methods: Vec<&str> = comparison.rows.iter().map(|r| r.method.as_str()).collect();
     assert_eq!(methods, vec!["HNSW", "IVF-PQ"]);
+}
+
+/// A workspace run's comparison never says a paper reports nothing when that paper's
+/// values lie in another workspace's scope, nor when its matching values await review.
+#[tokio::test]
+async fn coverage_notes_name_only_papers_the_scopes_searched_hold() {
+    let dir = tempfile::tempdir().unwrap();
+    let (service, _clock) = service(dir.path()).await;
+    // ann.pdf's values were filed in another workspace.
+    service
+        .extract_document(
+            "C:/papers/ann.pdf",
+            &ann_paper("95.30"),
+            Scope::Workspace("ws-other".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    service
+        .extract_document(
+            "C:/papers/diskann.pdf",
+            &one_table(
+                4,
+                &["Method", "SIFT1M Recall@10"],
+                &[&["DiskANN", "96.0"]],
+                Some("Table 1: Main results."),
+            ),
+            Scope::Global,
+            None,
+        )
+        .await
+        .unwrap();
+    service
+        .extract_document(
+            "C:/papers/lm.pdf",
+            &one_table(2, &["Model", "C4 ppl"], &[&["Tiny", "21.3"]], None),
+            Scope::Global,
+            None,
+        )
+        .await
+        .unwrap();
+    let known: Vec<String> = ["ann.pdf", "diskann.pdf", "lm.pdf"]
+        .iter()
+        .map(|f| format!("C:/papers/{f}"))
+        .collect();
+    let in_thesis = service
+        .query(&ResultFilter {
+            metric: Some("recall@10".into()),
+            dataset: Some("SIFT1M".into()),
+            scopes: Scope::Workspace("ws-thesis".into()).visible(),
+            known_papers: known.clone(),
+            ..ResultFilter::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(in_thesis.notes.len(), 2, "{:?}", in_thesis.notes);
+    assert!(in_thesis.notes[0].starts_with("1 paper reports "));
+    assert_eq!(
+        in_thesis.notes[1],
+        "1 paper in scope reports no comparable recall@10 on SIFT1M: lm.pdf."
+    );
+    // From its own workspace ann.pdf's values are compared.
+    let in_other = service
+        .query(&ResultFilter {
+            metric: Some("recall@10".into()),
+            dataset: Some("SIFT1M".into()),
+            scopes: Scope::Workspace("ws-other".into()).visible(),
+            known_papers: known.clone(),
+            ..ResultFilter::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(in_other.notes[0], "2 papers report R@10 on SIFT1M.");
+    // ann.pdf's Recall@100 awaits review: the review note covers it, not "reports no".
+    let review = service
+        .query(&ResultFilter {
+            metric: Some("Recall@100".into()),
+            scopes: Scope::Workspace("ws-other".into()).visible(),
+            known_papers: known,
+            ..ResultFilter::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(review.pending_review, 1);
+    let silent = review
+        .notes
+        .iter()
+        .find(|n| n.contains("no comparable"))
+        .expect("diskann.pdf and lm.pdf report no Recall@100");
+    assert!(
+        silent.ends_with("no comparable Recall@100: diskann.pdf, lm.pdf."),
+        "{silent}"
+    );
 }

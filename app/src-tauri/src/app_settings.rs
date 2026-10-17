@@ -272,6 +272,37 @@ impl Default for UpdatePrefs {
     }
 }
 
+/// Which desktop notifications Shodh shows (see [`crate::notifications`]).
+/// User-only: whether and how the app interrupts the user is their call.
+/// A notification is shown only while the main window is not in front.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NotificationPrefs {
+    /// Task reminders.
+    pub reminders: bool,
+    /// Something waits for the user: approvals the assistant asked for.
+    pub needs_you: bool,
+    /// New memory suggestions (part of "needs you", off by default).
+    pub memory_suggestions: bool,
+    /// An answer, a folder's indexing or sync, or a result extraction finished.
+    pub work_finished: bool,
+    /// Indexing or a sync failed, a background model call failed, or a data
+    /// file had to be restored.
+    pub problems: bool,
+}
+
+impl Default for NotificationPrefs {
+    fn default() -> Self {
+        Self {
+            reminders: true,
+            needs_you: true,
+            memory_suggestions: false,
+            work_finished: true,
+            problems: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
@@ -284,6 +315,8 @@ pub struct AppSettings {
     /// The model picker: chosen model, fallback, recent and starred models.
     /// User-only (no keys; those stay in the OS keychain).
     pub models: ModelPrefs,
+    /// Desktop notifications by category. User-only.
+    pub notifications: NotificationPrefs,
     /// The UI has copied its earlier local-storage preferences here.
     pub seeded: bool,
 }
@@ -326,7 +359,7 @@ pub const AGENT_WRITABLE: [SettingKey; 2] = [SettingKey::Theme, SettingKey::Sear
 /// these by name (in addition to its schema only listing [`AGENT_WRITABLE`]),
 /// so a prompt-injected request gets a clear refusal rather than a
 /// best-effort match.
-pub const AGENT_DENIED: [(&str, &str); 24] = [
+pub const AGENT_DENIED: [(&str, &str); 25] = [
     ("api_keys", "API keys are secrets; a manipulated agent could leak or replace them."),
     ("provider", "Switching the model provider changes who receives the user's documents."),
     ("model", "Switching the model changes who receives the user's documents and what it costs."),
@@ -351,6 +384,7 @@ pub const AGENT_DENIED: [(&str, &str); 24] = [
     ("fallback_model", "The fallback model receives the user's documents when the main one fails; choosing who receives them is the user's decision."),
     ("always_fall_back", "Switching models without asking changes who receives the user's documents; only the user may allow that."),
     ("check_for_updates", "Whether Shodh contacts the update server, and which version of itself it runs, is the user's decision."),
+    ("notifications", "Whether and when Shodh interrupts the user with desktop notifications is the user's decision."),
 ];
 
 /// Why `key` is withheld from the agent, if it is.
@@ -548,6 +582,7 @@ fn store(app: &AppHandle) -> Result<SettingsStore, String> {
 
 /// Tell open windows the settings changed.
 pub fn broadcast(app: &AppHandle, settings: &AppSettings) {
+    crate::notifications::settings_changed(app, &settings.notifications);
     if let Err(e) = app.emit(APP_SETTINGS_CHANGED_EVENT, settings) {
         tracing::warn!("Failed to emit {}: {}", APP_SETTINGS_CHANGED_EVENT, e);
     }
@@ -1022,5 +1057,55 @@ mod tests {
             "the damaged file is kept, not overwritten"
         );
         assert_eq!(std::fs::read_to_string(&damaged[0]).unwrap(), "{not json");
+    }
+
+    #[test]
+    fn notification_preferences_default_round_trip_in_camel_case_and_are_user_only() {
+        let defaults = AppSettings::default().notifications;
+        assert!(defaults.reminders && defaults.needs_you && defaults.work_finished);
+        assert!(defaults.problems);
+        assert!(
+            !defaults.memory_suggestions,
+            "memory suggestions are off by default"
+        );
+        // Settings written before notifications existed get the defaults.
+        let old: AppSettings = serde_json::from_str(r#"{"seeded": true}"#).unwrap();
+        assert_eq!(old.notifications, NotificationPrefs::default());
+        let partial: AppSettings =
+            serde_json::from_str(r#"{"notifications": {"workFinished": false}}"#).unwrap();
+        assert!(!partial.notifications.work_finished);
+        assert!(partial.notifications.reminders);
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::in_dir(dir.path());
+        let chosen = NotificationPrefs {
+            reminders: false,
+            needs_you: true,
+            memory_suggestions: true,
+            work_finished: false,
+            problems: false,
+        };
+        store
+            .update(|s| {
+                s.notifications = chosen;
+                Ok(())
+            })
+            .unwrap();
+        let reloaded = SettingsStore::in_dir(dir.path()).load().unwrap();
+        assert_eq!(reloaded.notifications, chosen);
+        let json = serde_json::to_value(reloaded.notifications).unwrap();
+        assert_eq!(
+            json,
+            json!({
+                "reminders": false,
+                "needsYou": true,
+                "memorySuggestions": true,
+                "workFinished": false,
+                "problems": false,
+            })
+        );
+        assert!(denied_reason("notifications").is_some());
+        assert!(denied_reason("notifications.reminders").is_some());
+        assert!(SettingKey::parse("notifications").is_none());
     }
 }

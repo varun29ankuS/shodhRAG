@@ -9,6 +9,7 @@
 import { fenced } from './contextBlock.ts';
 import type { FocusThread } from './focusTypes.ts';
 import { stripFollowups } from './followups.ts';
+import { answerAsContext } from '../agent/grounding.ts';
 import { safeTruncate } from './markdownSafe.ts';
 
 /** Characters of the discussion placed in one summary request (latest turns kept). */
@@ -26,11 +27,15 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-/** The discussion as "Q:/A:" lines, newest kept within the cap, never cutting math or fences. */
+/**
+ * The discussion as "Q:/A:" lines, newest kept within the cap, never cutting math or fences.
+ * Answers go without the citation markers their grounding check flagged (`answerAsContext`), so a
+ * summary brought back a level does not carry a wrong citation up with it.
+ */
 export function discussionText(thread: Pick<FocusThread, 'turns'>, max = MAX_SUMMARY_SOURCE_CHARS): string {
   const lines: string[] = [];
   for (const turn of thread.turns) {
-    const body = turn.role === 'assistant' ? stripFollowups(turn.content).trim() : turn.content.trim();
+    const body = turn.role === 'assistant' ? stripFollowups(answerAsContext(turn.content, turn.transcript)).trim() : turn.content.trim();
     if (!body) continue;
     const tag = turn.role === 'user' ? (turn.summaryOf ? `Brought back from "${oneLine(turn.summaryOf.label)}"` : 'Q') : 'A';
     lines.push(`${tag}: ${safeTruncate(body, MAX_SUMMARY_TURN_CHARS)}`);

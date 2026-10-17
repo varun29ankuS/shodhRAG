@@ -353,6 +353,16 @@ export function storedAnswerReport(transcript: unknown): GroundingReport | null 
   return answerReport(reports);
 }
 
+/**
+ * A stored answer as context for a later question, wherever an answer travels on (the outer
+ * levels of a nested question, a side thread's replayed history, the main conversation replayed
+ * into a side session, a discussion summarised to be brought back): `withoutFlaggedCitations`
+ * with the final report of its stored transcript. An answer without one is passed on as written.
+ */
+export function answerAsContext(content: string, transcript: unknown): string {
+  return withoutFlaggedCitations(content, storedAnswerReport(transcript));
+}
+
 /** Trailing sentence punctuation of an anchor, with closing quotes and emphasis. */
 const ANCHOR_END = /[.!?。;:]+["'”’)*_]*\s*$/;
 

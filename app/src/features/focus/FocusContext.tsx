@@ -432,7 +432,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     const upTo = end >= 0 ? stored.slice(0, end + 1) : stored;
     return upTo
       .filter((m): m is typeof m & { role: 'user' | 'assistant' } => m.role === 'user' || m.role === 'assistant')
-      .map(m => ({ role: m.role, content: m.content }));
+      .map(m => ({ role: m.role, content: m.content, transcript: m.transcript }));
   }, []);
 
   const settle = useCallback((live: SideLive) => {
@@ -650,6 +650,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       .map(t => ({
         role: t.role,
         content: t.summaryOf ? `Brought back from the nested discussion about "${t.summaryOf.label}":\n\n${t.content}` : t.content,
+        transcript: t.transcript,
       }));
     const history = alternateTurns(threadHistory(mainTurns(conversationId, parentMessageId), replay));
     const ancestors = ancestorsFor(list, level.parentThreadId, level.parentTurnId);

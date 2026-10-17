@@ -721,50 +721,52 @@ fn carried_passages(passages: Vec<CarriedPassage>) -> CommandResult<(Vec<CitedPa
     let mut full = false;
     for p in passages {
         let in_range = p.n != 0 && p.n <= MAX_CITATION_NUMBER;
-        if full {
-            // Past the limits a passage only keeps its number taken: the conversation
-            // still cites it. One with a number no run issues is dropped, not refused.
-            if in_range {
-                through = through.max(p.n);
+        // The text this passage would be kept with: none once the limits are reached, for
+        // a blank text, or for a number already kept.
+        let text = (!full)
+            .then(|| truncate(p.text.trim(), MAX_CARRIED_PASSAGE_CHARS))
+            .filter(|text| !text.is_empty() && !out.iter().any(|c| c.n == p.n));
+        if let Some(text) = text {
+            let size = text.chars().count();
+            if out.len() == MAX_CARRIED_PASSAGES || used + size > MAX_CARRIED_CHARS {
+                full = true;
             } else {
-                tracing::warn!(target: "shodh::harness", n = p.n, "carried passage past the limits has an out-of-range citation number; dropped");
+                // Only a passage the run will hold is refused for what it carries.
+                if !in_range {
+                    return Err(AgentCommandError::invalid(format!(
+                        "Citation number {} is out of range",
+                        p.n
+                    )));
+                }
+                if p.file.len() > 2048 || p.path.len() > 2048 {
+                    return Err(AgentCommandError::invalid(
+                        "A carried passage's source is too long",
+                    ));
+                }
+                through = through.max(p.n);
+                used += size;
+                out.push(CitedPassage {
+                    n: p.n,
+                    file: p.file.trim().to_string(),
+                    path: p.path.trim().to_string(),
+                    page: p
+                        .page
+                        .map(|pg| pg.trim().to_string())
+                        .filter(|pg| !pg.is_empty()),
+                    web: p.web,
+                    text,
+                    checkable: !p.web,
+                });
+                continue;
             }
-            continue;
         }
-        if !in_range {
-            return Err(AgentCommandError::invalid(format!(
-                "Citation number {} is out of range",
-                p.n
-            )));
+        // Left out, the passage only keeps its number taken: the conversation still cites
+        // it. One with a number no run issues is dropped, not refused.
+        if in_range {
+            through = through.max(p.n);
+        } else {
+            tracing::warn!(target: "shodh::harness", n = p.n, "carried passage left out has an out-of-range citation number; dropped");
         }
-        through = through.max(p.n);
-        if p.file.len() > 2048 || p.path.len() > 2048 {
-            return Err(AgentCommandError::invalid(
-                "A carried passage's source is too long",
-            ));
-        }
-        let text = truncate(p.text.trim(), MAX_CARRIED_PASSAGE_CHARS);
-        if text.is_empty() || out.iter().any(|c| c.n == p.n) {
-            continue;
-        }
-        let size = text.chars().count();
-        if out.len() == MAX_CARRIED_PASSAGES || used + size > MAX_CARRIED_CHARS {
-            full = true;
-            continue;
-        }
-        used += size;
-        out.push(CitedPassage {
-            n: p.n,
-            file: p.file.trim().to_string(),
-            path: p.path.trim().to_string(),
-            page: p
-                .page
-                .map(|pg| pg.trim().to_string())
-                .filter(|pg| !pg.is_empty()),
-            web: p.web,
-            text,
-            checkable: !p.web,
-        });
     }
     Ok((out, through))
 }
@@ -2942,6 +2944,48 @@ mod tests {
             let scope = with_invalid(bad).validated().unwrap();
             assert_eq!(scope.carried.len(), MAX_CARRIED_PASSAGES);
             assert_eq!(scope.carried_through, 50, "{bad}");
+        }
+        // Also the passage that first goes over a limit: it is left out, so neither its
+        // number nor its source refuses the question.
+        let over = |n: u32, path: String, count: usize, chars: usize| SendScope {
+            passages: Some(
+                (1..=count as u32)
+                    .map(|i| CarriedPassage {
+                        n: if i as usize == count { n } else { i },
+                        file: "a.pdf".into(),
+                        path: if i as usize == count {
+                            path.clone()
+                        } else {
+                            "c:/a.pdf".into()
+                        },
+                        page: None,
+                        text: "y".repeat(chars),
+                        web: false,
+                    })
+                    .collect(),
+            ),
+            ..SendScope::default()
+        };
+        let long_path = "p".repeat(3_000);
+        // At position 41, over the count limit.
+        for (n, path) in [(0, "c:/a.pdf".to_string()), (41, long_path.clone())] {
+            let scope = over(n, path, MAX_CARRIED_PASSAGES + 1, 10)
+                .validated()
+                .unwrap();
+            assert_eq!(scope.carried.len(), MAX_CARRIED_PASSAGES);
+            assert_eq!(scope.carried_through, if n == 0 { 40 } else { 41 });
+        }
+        // At the passage that first goes over the text limit.
+        let first_over = MAX_CARRIED_CHARS / MAX_CARRIED_PASSAGE_CHARS + 1;
+        for (n, path) in [(u32::MAX, "c:/a.pdf".to_string()), (7, long_path)] {
+            let scope = over(n, path, first_over, MAX_CARRIED_PASSAGE_CHARS)
+                .validated()
+                .unwrap();
+            assert_eq!(scope.carried.len(), first_over - 1);
+            assert_eq!(
+                scope.carried_through,
+                if n == 7 { 7 } else { first_over as u32 - 1 }
+            );
         }
         // Within the limits it is still refused.
         let kept_invalid = SendScope {

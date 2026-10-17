@@ -65,7 +65,7 @@ use shodh_rag::audit::LOCAL_OWNER;
 use shodh_rag::harness::grounding::{GroundingConfig, ScorerSet, SharedEntailment};
 use shodh_rag::harness::web::relevance::SharedScorer;
 use shodh_rag::harness::web::SafeClient;
-use shodh_rag::rag_engine::{RAGEngine, SharedReranker};
+use shodh_rag::rag_engine::{RAGEngine, SharedReranker, CHAT_UPLOADS_SOURCE};
 use shodh_rag::user_memory::Actor;
 use shodh_rag::workspaces::instructions_block;
 
@@ -703,6 +703,17 @@ fn carried_passages(passages: Vec<CarriedPassage>) -> CommandResult<Vec<CitedPas
     Ok(out)
 }
 
+/// `source_ids` (a limit to sources) with the files added in chats
+/// ([`CHAT_UPLOADS_SOURCE`]): a file dropped into a chat is searched in that
+/// chat whatever its sources are limited to, as it was when it was filed
+/// under the Library source selected at the time. No limit stays no limit.
+fn with_chat_uploads(mut source_ids: Vec<String>) -> Vec<String> {
+    if !source_ids.is_empty() && !source_ids.iter().any(|id| id == CHAT_UPLOADS_SOURCE) {
+        source_ids.push(CHAT_UPLOADS_SOURCE.to_string());
+    }
+    source_ids
+}
+
 impl SendScope {
     fn validated(self) -> CommandResult<RunScope> {
         let clean = |items: Vec<String>, what: &str| -> CommandResult<Vec<String>> {
@@ -748,7 +759,7 @@ impl SendScope {
             return Err(AgentCommandError::invalid("The workspace id is too long"));
         }
         Ok(RunScope {
-            source_ids: clean(self.source_ids, "sources")?,
+            source_ids: with_chat_uploads(clean(self.source_ids, "sources")?),
             files,
             pages,
             workspace,
@@ -777,6 +788,8 @@ pub(crate) fn scope_for_workspace(
     }
     if scope.source_ids.is_empty() && scope.files.is_empty() {
         scope.source_ids = workspace.source_ids.clone();
+        // Files added in this workspace's chats are searched in them too.
+        scope.source_ids.push(CHAT_UPLOADS_SOURCE.to_string());
         scope.files = workspace.files.clone();
         scope.folders = workspace.folders.clone();
         scope.snippets = workspace.snippets.clone();
@@ -2515,13 +2528,31 @@ mod tests {
         }
     }
 
+    /// Files added in a chat belong to no Library folder; an answer limited
+    /// to sources still searches them, and no limit stays no limit.
+    #[test]
+    fn a_limit_to_sources_searches_the_files_added_in_chats() {
+        let limited: SendScope = serde_json::from_str(r#"{"sourceIds": ["folder-1"]}"#).unwrap();
+        assert_eq!(
+            limited.validated().unwrap().source_ids,
+            vec!["folder-1", CHAT_UPLOADS_SOURCE]
+        );
+        let none: SendScope = serde_json::from_str(r#"{"sourceIds": []}"#).unwrap();
+        let none = none.validated().unwrap();
+        assert!(none.source_ids.is_empty() && none.is_empty());
+        assert_eq!(
+            with_chat_uploads(vec![CHAT_UPLOADS_SOURCE.to_string()]),
+            vec![CHAT_UPLOADS_SOURCE]
+        );
+    }
+
     #[test]
     fn a_workspace_limits_the_answer_unless_the_user_searches_everything() {
         let asked: SendScope =
             serde_json::from_str(r#"{"workspaceId": "ws-1", "searchAll": false}"#).unwrap();
         let scope = scope_for_workspace(asked.validated().unwrap(), Some(&thesis()), false);
         assert!(scope.restricted);
-        assert_eq!(scope.source_ids, vec!["src-1"]);
+        assert_eq!(scope.source_ids, vec!["src-1", CHAT_UPLOADS_SOURCE]);
         assert_eq!(scope.files, vec!["C:/papers/a.pdf"]);
         assert_eq!(scope.workspace.as_deref(), Some("ws-1"));
         assert_eq!(scope.workspace_name.as_deref(), Some("Thesis"));

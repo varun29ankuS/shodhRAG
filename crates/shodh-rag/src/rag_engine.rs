@@ -666,36 +666,42 @@ fn legacy_source_spellings(path: &Path, canonical: &str) -> Vec<String> {
     out
 }
 
-/// The LanceDB filter for the chunks no source owns (an empty `space_id`)
-/// whose file is `path` or lies under the folder `path`, in any spelling an
-/// indexer stored it with ([`normalize_source_path`] and
-/// [`legacy_source_spellings`]). A folder matches only across a separator
-/// boundary: `c:/research/papers` selects `c:/research/papers/a.pdf`, never
-/// `c:/research/papers 2024/a.pdf`. Files added in a chat carry
-/// `uploaded_at` and are left out: they belong to no folder source.
-fn unowned_under_predicate(path: &Path) -> String {
-    use crate::storage::lance_store::like_escape;
-    let quote = |text: &str| format!("'{}'", text.replace('\'', "''"));
+/// The owner (`space_id`) of files added in a chat: they belong to no
+/// Library folder, so removing a folder never removes them.
+pub const CHAT_UPLOADS_SOURCE: &str = "chat-uploads";
+
+/// Whether chunk metadata (`metadata_json`) is that of a file added in a
+/// chat: only the chat upload records `uploaded_at`.
+fn added_in_chat(metadata_json: &str) -> bool {
+    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(metadata_json)
+        .is_ok_and(|metadata| metadata.contains_key("uploaded_at"))
+}
+
+/// The spellings under which an indexer may have stored the file or folder
+/// `path` ([`normalize_source_path`] and [`legacy_source_spellings`]),
+/// without a trailing separator.
+fn source_spellings(path: &Path) -> Vec<String> {
     let canonical = normalize_source_path(path);
     let mut spellings = vec![canonical.clone()];
     spellings.extend(legacy_source_spellings(path, &canonical));
-    let mut matches = Vec::new();
-    for spelling in &spellings {
-        let folder = spelling.trim_end_matches(['/', '\\']);
-        if folder.is_empty() {
-            continue;
-        }
-        matches.push(format!("source = {}", quote(folder)));
-        for separator in ["/", "\\"] {
-            let pattern = format!("{}%", like_escape(&format!("{folder}{separator}")));
-            matches.push(format!("source LIKE {}", quote(&pattern)));
-        }
-    }
-    let chat_added = quote(&format!("%{}%", like_escape("\"uploaded_at\":")));
-    format!(
-        "(space_id = '' OR space_id IS NULL) AND ({}) AND metadata_json NOT LIKE {chat_added}",
-        matches.join(" OR ")
-    )
+    spellings
+        .into_iter()
+        .map(|s| s.trim_end_matches(['/', '\\']).to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Whether the stored `source` is one of `spellings` (a file) or lies under
+/// one of them (a folder), across a separator: `c:/research/papers` holds
+/// `c:/research/papers/a.pdf`, never `c:/research/papers 2024/a.pdf`. Plain
+/// string comparison, so no character in a path acts as a wildcard.
+fn lies_under(source: &str, spellings: &[String]) -> bool {
+    spellings
+        .iter()
+        .any(|folder| match source.strip_prefix(folder.as_str()) {
+            Some(rest) => rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\'),
+            None => false,
+        })
 }
 
 /// Human-readable page label (`"3"` or `"3-5"`) from chunk metadata written by
@@ -1941,9 +1947,11 @@ impl RAGEngine {
     /// owns and, under `path` (the source's folder, or its file), the chunks
     /// that no source owns because they were indexed before chunks recorded
     /// their source (an empty `space_id`). Files added in a chat
-    /// (`uploaded_at` in their metadata) own themselves and stay, as do the
-    /// chunks of every other source: a folder whose path merely starts with
-    /// `path` ("Papers 2024" for "Papers") or a source listed inside it.
+    /// (`uploaded_at` in their metadata) stay: older versions gave them the
+    /// id of the Library source selected at the time, and those are handed to
+    /// [`CHAT_UPLOADS_SOURCE`] instead of deleted. The chunks of every other
+    /// source stay too: a folder whose path merely starts with `path`
+    /// ("Papers 2024" for "Papers"), or a source listed inside it.
     /// Returns the chunks deleted.
     pub async fn delete_library_source(
         &mut self,
@@ -1953,6 +1961,22 @@ impl RAGEngine {
         if space_id.trim().is_empty() {
             anyhow::bail!("a Library source is removed by its id, and none was given");
         }
+        if space_id == CHAT_UPLOADS_SOURCE {
+            anyhow::bail!("files added in chats are not a Library source");
+        }
+        let predicate = format!("space_id = '{}'", space_id.replace('\'', "''"));
+        let uploads: std::collections::BTreeSet<String> = self
+            .store
+            .list_chunks(Some(&predicate), 1_000_000)
+            .await?
+            .into_iter()
+            .filter(|chunk| added_in_chat(&chunk.metadata_json))
+            .map(|chunk| chunk.source)
+            .collect();
+        for source in &uploads {
+            self.move_source_to_space(source, space_id, CHAT_UPLOADS_SOURCE)
+                .await?;
+        }
         let mut deleted = self.delete_by_space_id(space_id).await?;
         if let Some(path) = path.map(str::trim).filter(|p| !p.is_empty()) {
             deleted += self.delete_unowned_under(Path::new(path)).await?;
@@ -1961,11 +1985,21 @@ impl RAGEngine {
     }
 
     /// Deletes the chunks no source owns of the file `path` or of the files
-    /// under the folder `path` ([`unowned_under_predicate`]), from LanceDB
-    /// and, by chunk id, from the keyword index (which records no owner).
+    /// under the folder `path` ([`lies_under`]), except files added in a
+    /// chat, from LanceDB and, by chunk id, from the keyword index (which
+    /// records no owner). The chunks are matched here by plain string
+    /// comparison and deleted by id: no `LIKE` pattern is involved.
     async fn delete_unowned_under(&mut self, path: &Path) -> Result<usize> {
-        let predicate = unowned_under_predicate(path);
-        let chunks = self.store.list_chunks(Some(&predicate), 1_000_000).await?;
+        let spellings = source_spellings(path);
+        let chunks: Vec<crate::storage::SearchHit> = self
+            .store
+            .list_chunks(Some("space_id = '' OR space_id IS NULL"), 1_000_000)
+            .await?
+            .into_iter()
+            .filter(|chunk| {
+                lies_under(&chunk.source, &spellings) && !added_in_chat(&chunk.metadata_json)
+            })
+            .collect();
         if chunks.is_empty() {
             return Ok(0);
         }
@@ -1978,7 +2012,17 @@ impl RAGEngine {
             self.text_search.delete_by_id(&chunk.id)?;
         }
         self.text_search.commit()?;
-        let deleted = self.store.delete_where(&predicate).await?;
+        let mut deleted = 0;
+        for batch in chunks.chunks(500) {
+            let ids: Vec<String> = batch
+                .iter()
+                .map(|chunk| format!("'{}'", chunk.id.replace('\'', "''")))
+                .collect();
+            deleted += self
+                .store
+                .delete_where(&format!("id IN ({})", ids.join(", ")))
+                .await?;
+        }
         tracing::info!(
             path = %path.display(),
             deleted,
@@ -2989,6 +3033,17 @@ Language models trained on long documents reach lower perplexity.
             "uploaded_at".to_string(),
             "2026-10-01T09:00:00Z".to_string(),
         )]);
+        // Added in a chat by an older version, which gave it the id of the
+        // Library source selected then.
+        let tagged_chat = HashMap::from([
+            (
+                "uploaded_at".to_string(),
+                "2026-10-01T09:00:00Z".to_string(),
+            ),
+            ("space_id".to_string(), "papers".to_string()),
+        ]);
+        let uploads = dir.path().join("uploads");
+        std::fs::create_dir_all(&uploads).unwrap();
         let files = [
             (papers.join("own.md"), "zebra", owned("papers")),
             (later.join("later.md"), "giraffe", owned("later")),
@@ -3000,6 +3055,7 @@ Language models trained on long documents reach lower perplexity.
             (papers.join("chat.md"), "walrus", chat),
             (papers.join("legacy.md"), "otter", HashMap::new()),
             (later.join("legacy.md"), "lynx", HashMap::new()),
+            (uploads.join("tagged.md"), "heron", tagged_chat),
         ];
         for (path, word, metadata) in &files {
             let text = format!(
@@ -3031,7 +3087,7 @@ Language models trained on long documents reach lower perplexity.
             names.sort();
             names
         };
-        assert_eq!(names(engine.document_sources().await.unwrap()).len(), 6);
+        assert_eq!(names(engine.document_sources().await.unwrap()).len(), 7);
 
         let papers_path = papers.display().to_string();
         let deleted = engine
@@ -3046,8 +3102,17 @@ Language models trained on long documents reach lower perplexity.
                 "papers 2024/later.md",
                 "papers 2024/legacy.md",
                 "papers/chat.md",
+                "uploads/tagged.md",
             ]
         );
+        // The upload the older version tagged with the folder is the chats' now.
+        let tagged = normalize_source_path(&uploads.join("tagged.md"));
+        assert!(engine
+            .document_sources()
+            .await
+            .unwrap()
+            .iter()
+            .any(|row| row.source == tagged && row.space_id == CHAT_UPLOADS_SOURCE));
         // The keyword index keeps exactly the same files.
         for (word, kept) in [
             ("zebra", false),
@@ -3056,6 +3121,7 @@ Language models trained on long documents reach lower perplexity.
             ("pelican", true),
             ("walrus", true),
             ("lynx", true),
+            ("heron", true),
         ] {
             let hits = engine.text_search.search(word, 5).unwrap();
             assert_eq!(!hits.is_empty(), kept, "{word}");
@@ -3070,27 +3136,29 @@ Language models trained on long documents reach lower perplexity.
 
     #[test]
     fn unowned_files_match_a_folder_only_across_a_separator() {
-        let predicate = unowned_under_predicate(Path::new("/research/papers"));
+        let papers = source_spellings(Path::new("/research/papers/"));
         assert!(
-            predicate.contains("source = '/research/papers'"),
-            "{predicate}"
+            papers.contains(&"/research/papers".to_string()),
+            "{papers:?}"
         );
-        assert!(
-            predicate.contains("source LIKE '/research/papers/%'"),
-            "{predicate}"
-        );
-        assert!(
-            !predicate.contains("source LIKE '/research/papers%'"),
-            "{predicate}"
-        );
-        assert!(predicate.starts_with("(space_id = '' OR space_id IS NULL)"));
-        assert!(predicate.contains(r#"metadata_json NOT LIKE '%"uploaded\_at":%'"#));
-        // Wildcards and quotes in a folder name match themselves.
-        let odd = unowned_under_predicate(Path::new("/data/50%_o'brien"));
-        assert!(
-            odd.contains(r"source LIKE '/data/50\%\_o''brien/%'"),
-            "{odd}"
-        );
+        assert!(lies_under("/research/papers", &papers), "the folder itself");
+        assert!(lies_under("/research/papers/a.pdf", &papers));
+        assert!(lies_under("/research/papers/deep/b.pdf", &papers));
+        assert!(!lies_under("/research/papers 2024/a.pdf", &papers));
+        assert!(!lies_under("/research/papersx.pdf", &papers));
+        // Backslash spellings of older indexers, across their separator.
+        let legacy = vec![r"C:\Research\Papers".to_string()];
+        assert!(lies_under(r"C:\Research\Papers\a.pdf", &legacy));
+        assert!(!lies_under(r"C:\Research\Papers 2024\a.pdf", &legacy));
+        // No character is a wildcard.
+        let odd = vec!["/data/50%_o'brien".to_string()];
+        assert!(lies_under("/data/50%_o'brien/a.pdf", &odd));
+        assert!(!lies_under("/data/50xyo'brien/a.pdf", &odd));
+        assert!(added_in_chat(
+            r#"{"uploaded_at":"2026-10-01T09:00:00Z","space_id":""}"#
+        ));
+        assert!(!added_in_chat(r#"{"title":"uploaded_at"}"#));
+        assert!(!added_in_chat("not json"));
     }
 
     /// Every chunk records the format and the context it was indexed with;

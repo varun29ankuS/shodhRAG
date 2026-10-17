@@ -4,6 +4,7 @@
 use crate::rag_commands::RagState;
 use serde::{Deserialize, Serialize};
 use shodh_rag::comprehensive_system::Citation;
+use shodh_rag::rag_engine::CHAT_UPLOADS_SOURCE;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
@@ -22,13 +23,15 @@ pub struct UploadResult {
     pub error: Option<String>,
 }
 
-/// Upload and index a document file (PDF, DOCX, XLSX, etc.)
+/// Upload and index a document file (PDF, DOCX, XLSX, etc.) added in a
+/// chat. It belongs to the chats ([`CHAT_UPLOADS_SOURCE`]), not to a Library
+/// folder, so removing a folder never removes it; answers limited to
+/// sources or to a workspace search it too (see
+/// `agent_session_commands::SendScope::validated`).
 #[tauri::command]
 pub async fn upload_document_file(
     state: State<'_, RagState>,
-    indexing_state: State<'_, shodh_rag::indexing::IndexingState>,
     file_path: String,
-    space_id: Option<String>,
 ) -> Result<UploadResult, String> {
     let start_time = std::time::Instant::now();
 
@@ -71,9 +74,7 @@ pub async fn upload_document_file(
     metadata.insert("file_size_mb".to_string(), format!("{:.2}", file_size));
     metadata.insert("uploaded_at".to_string(), chrono::Utc::now().to_rfc3339());
 
-    if let Some(sid) = space_id.clone() {
-        metadata.insert("space_id".to_string(), sid);
-    }
+    metadata.insert("space_id".to_string(), CHAT_UPLOADS_SOURCE.to_string());
 
     // Create citation
     let _citation = Citation {
@@ -84,20 +85,6 @@ pub async fn upload_document_file(
         url: None,
         doi: None,
         page_numbers: None,
-    };
-
-    // Registered while it is indexed: removing the source it is added to
-    // waits for it, and a removed source gets no new file.
-    let _run = match space_id.as_deref() {
-        Some(sid) => match indexing_state.begin_run(sid) {
-            Some(run) => Some(run),
-            None => {
-                return Err(format!(
-                    "{file_name} was not added: its source was removed from the Library"
-                ))
-            }
-        },
-        None => None,
     };
 
     // Process the file
@@ -113,16 +100,6 @@ pub async fn upload_document_file(
                 chunk_ids.len(),
                 processing_time
             );
-
-            // Update space activity if provided
-            if let Some(sid) = space_id {
-                if let Ok(space_manager) = state.space_manager.lock() {
-                    // Add document to space (uses first chunk ID as document ID)
-                    if let Some(first_chunk) = chunk_ids.first() {
-                        let _ = space_manager.add_document_to_space(&sid, first_chunk.to_string());
-                    }
-                }
-            }
 
             Ok(UploadResult {
                 success: true,

@@ -710,8 +710,8 @@ function AppSplitView() {
         processingTimeMs: number;
         error?: string;
       }>('upload_document_file', {
+        // A file added in a chat belongs to the chats, not to a Library folder.
         filePath,
-        spaceId: sources.find(s => s.selected)?.id || null
       });
 
       // Update message with result

@@ -67,6 +67,12 @@ async fn resolve_source(
 ) -> Result<SourceSummary, ToolError> {
     let source_id =
         str_arg(args, "source_id").ok_or_else(|| invalid(tool, "`source_id` is required"))?;
+    if source_id == shodh_rag::rag_engine::CHAT_UPLOADS_SOURCE {
+        return Err(ToolError::Forbidden(
+            "Source chat-uploads holds the files added in chats, not a Library folder; it              cannot be re-indexed or removed here"
+                .to_string(),
+        ));
+    }
     let engine = host.rag.read().await;
     find_folder_source(&engine, source_id).await
 }
@@ -422,6 +428,25 @@ mod tests {
             ["folder-papers"],
             "the Library is told"
         );
+    }
+
+    #[tokio::test]
+    async fn files_added_in_chats_are_not_a_folder_to_remove() {
+        let t = testing::host().await;
+        let remove = RemoveSourceTool {
+            host: t.host.clone(),
+        };
+        let args = json!({"source_id": shodh_rag::rag_engine::CHAT_UPLOADS_SOURCE});
+        assert!(matches!(
+            remove.preview(&args).await,
+            Err(ToolError::Forbidden(_))
+        ));
+        assert!(t
+            .effects
+            .removed_sources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty());
     }
 
     #[tokio::test]

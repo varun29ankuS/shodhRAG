@@ -36,7 +36,7 @@ use super::protocol::{
     AssistantMessageEvent, InboundFrame, MessageEndFrame, PromptResultFrame, PromptStatus,
     ResponseFrame, ToolResultPayload,
 };
-use super::provider_error::classify;
+use super::provider_error::{classify, safe_detail, MAX_DETAIL_CHARS};
 use super::truncate_chars;
 
 /// Display metadata for a registered host tool.
@@ -81,6 +81,8 @@ struct UsageTotals {
 #[derive(Debug, Clone)]
 struct ActiveRun {
     run_id: String,
+    /// `provider/model` the run answers with (for the failure log).
+    model: String,
     started_at_ms: u64,
     /// Prompt command ids whose completion is still outstanding.
     pending_prompts: HashSet<String>,
@@ -244,6 +246,7 @@ impl NormaliserState {
         pending_prompts.insert(prompt_id.to_string());
         self.run = Some(ActiveRun {
             run_id: run_id.to_string(),
+            model: model.to_string(),
             started_at_ms: now_ms,
             pending_prompts,
             usage: UsageTotals::default(),
@@ -378,6 +381,21 @@ impl NormaliserState {
             (RunStatus::Error, Some(message)) => Some(classify(message, run.retryable, now_ms)),
             _ => None,
         };
+        // Classified on the full text; shown and logged cut and without
+        // anything shaped like a credential.
+        let error = error.map(|e| safe_detail(&e, None, MAX_DETAIL_CHARS));
+        if let (Some(failure), Some(detail)) = (provider_error.as_ref(), error.as_deref()) {
+            tracing::warn!(
+                target: "shodh::harness",
+                run_id = %run.run_id,
+                kind = ?failure.kind,
+                status = ?failure.status,
+                upstream = failure.upstream.as_deref().unwrap_or("-"),
+                model = %run.model,
+                detail = %detail,
+                "the model provider failed the run"
+            );
+        }
         let interrupted_summary = match status {
             RunStatus::Aborted => "Interrupted",
             RunStatus::Error | RunStatus::Completed => "Did not complete",
@@ -499,7 +517,12 @@ impl NormaliserState {
         let Some(run) = self.run.as_mut() else {
             return events;
         };
-        if self.hold_completion && run.worst_status == RunStatus::Completed {
+        // A round whose last model turn failed has no answer to check: it
+        // finishes (as an error, see `finish_run`) instead of being held.
+        if self.hold_completion
+            && run.worst_status == RunStatus::Completed
+            && run.turn_error.is_none()
+        {
             run.held = true;
             run.settle_pending = true;
             run.generation += 1;
@@ -1520,6 +1543,79 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn a_failed_turn_is_not_held_for_the_answer_check() {
+        use crate::harness::provider_error::ProviderErrorKind;
+        // The field report: the provider's failure text arrives as answer
+        // text, then omp ends the turn with stopReason "error" (its mapping
+        // of OpenRouter's finish_reason "error") and the prompt completes.
+        let field = "[ERROR: Agent failed (Function process_single_item_agent timed out after 90.0 seconds), API failed (API request returned None after all retries)]";
+        let mut state = NormaliserState::new(catalog());
+        state.set_hold_completion(true);
+        state.begin_run("r", "s", "openrouter/vendor/model", "p1", 0);
+        normalise(&text("m1", field), &mut state, 1);
+        let failed_turn = parse_frame(&format!(
+            r#"{{"type":"message_end","messageId":"m1","message":{{"role":"assistant","content":[{{"type":"text","text":"{field}"}}],"stopReason":"error","errorMessage":"Provider returned error finish_reason"}}}}"#
+        ))
+        .unwrap();
+        normalise(&failed_turn, &mut state, 2);
+        let events = normalise(&completed("p1"), &mut state, 3);
+        assert!(
+            !state.is_held(),
+            "a failed turn is not checked as an answer"
+        );
+        assert!(state.take_settled().is_none());
+        match events.last() {
+            Some(AgentEvent::RunFinished {
+                status: RunStatus::Error,
+                error: Some(message),
+                provider_error: Some(e),
+                ..
+            }) => {
+                assert_eq!(message, "Provider returned error finish_reason");
+                assert_eq!(e.kind, ProviderErrorKind::ModelUnavailable);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        // The same failure reported in the turn's error message is a timeout.
+        state.begin_run("r2", "s", "openrouter/vendor/model", "p2", 10);
+        let timed_out = parse_frame(&format!(
+            r#"{{"type":"message_end","messageId":"m2","message":{{"role":"assistant","content":[],"stopReason":"error","errorMessage":"{field}"}}}}"#
+        ))
+        .unwrap();
+        normalise(&timed_out, &mut state, 11);
+        match normalise(&completed("p2"), &mut state, 12).last() {
+            Some(AgentEvent::RunFinished {
+                status: RunStatus::Error,
+                provider_error: Some(e),
+                ..
+            }) => assert_eq!(e.kind, ProviderErrorKind::Timeout),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_errors_are_cut_and_carry_no_credentials() {
+        let mut state = NormaliserState::new(catalog());
+        state.begin_run("r", "s", "m", "p1", 0);
+        let long = format!(
+            "500 Bearer sk-or-v1-0123456789abcdef0123456789 {}",
+            "x".repeat(5_000)
+        );
+        match state.fail_run(&long, 1).last() {
+            Some(AgentEvent::RunFinished {
+                error: Some(message),
+                ..
+            }) => {
+                assert!(message.chars().count() <= MAX_DETAIL_CHARS);
+                assert!(!message.contains("0123456789abcdef"), "{message}");
+                assert!(message.starts_with("500 Bearer [REDACTED]"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     fn completed(prompt: &str) -> InboundFrame {

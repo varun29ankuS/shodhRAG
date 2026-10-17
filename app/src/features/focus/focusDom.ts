@@ -20,8 +20,12 @@ export function isInFocusOverlay(target: EventTarget | null): boolean {
  */
 export const ANSWER_UI_ATTR = 'data-answer-ui';
 
-/** Class of text that only screen readers get. */
-const SR_ONLY_CLASS = 'sr-only';
+/**
+ * Classes of text that only screen readers get: `sr-only`, and KaTeX's
+ * MathML copy of each formula (its `<annotation>` holds the TeX source),
+ * which sits beside the visible `katex-html` rendering.
+ */
+const SCREEN_READER_CLASSES = ['sr-only', 'katex-mathml'];
 
 const ELEMENT_NODE = 1;
 const TEXT_NODE = 3;
@@ -43,13 +47,15 @@ export interface ReadableNode {
 /**
  * A node's text as a reader sees it: `textContent` without answer controls
  * (`[data-answer-ui]`, so "latency [1][2]" is not "latency12") and without
- * screen-reader-only text. Other buttons keep their text: a "go deeper" mark
- * is answer text.
+ * screen-reader-only text (including KaTeX's MathML copy, so a formula reads
+ * once). Other buttons keep their text: a "go deeper" mark is answer text.
  */
 export function readableText(node: ReadableNode): string {
   if (node.nodeType === TEXT_NODE || node.nodeType === CDATA_SECTION_NODE) return node.nodeValue ?? '';
   if (node.nodeType === ELEMENT_NODE) {
-    if (node.hasAttribute?.(ANSWER_UI_ATTR) || node.classList?.contains(SR_ONLY_CLASS)) return '';
+    if (node.hasAttribute?.(ANSWER_UI_ATTR)) return '';
+    const classes = node.classList;
+    if (classes && SCREEN_READER_CLASSES.some(name => classes.contains(name))) return '';
   }
   let out = '';
   const children = node.childNodes;

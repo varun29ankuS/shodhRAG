@@ -54,6 +54,19 @@ test('grounding flags and screen-reader text are left out', () => {
   assert.equal(readableText(el({}, [], text('A'), el({}, ['sr-only'], text(' hidden')), text('B'))), 'AB');
 });
 
+test('a KaTeX formula reads once, from its visible rendering, never its MathML or TeX source', () => {
+  // KaTeX renders <span class="katex"><span class="katex-mathml"><math>…<annotation
+  // encoding="application/x-tex">…</annotation></math></span><span class="katex-html">…</span></span>.
+  const mathml = el({}, ['katex-mathml'],
+    el({}, [],
+      el({}, [], el({}, [], text('ϕ')), el({}, [], text('q'))),
+      el({ encoding: 'application/x-tex' }, [], text('\\phi_q'))));
+  const html = el({ 'aria-hidden': 'true' }, ['katex-html'],
+    el({}, ['base'], el({}, ['mord'], text('ϕ')), el({}, ['msupsub'], text('q'))));
+  const p = el({}, [], text('Each edge has '), el({}, ['katex'], mathml, html), text(' as its activation.'));
+  assert.equal(readableText(p), 'Each edge has ϕq as its activation.');
+});
+
 test('other inline controls keep their text: a "go deeper" mark is answer text', () => {
   const deeper = el({ type: 'button' }, [], text('posting lists'));
   const cell = el({}, [], text('Stores '), deeper, text(' on SSD'), pill(3));

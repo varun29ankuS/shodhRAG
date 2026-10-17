@@ -265,10 +265,10 @@ const BrandMark: React.FC<{ closeAt: number }> = ({ closeAt }) => {
       style={{
         position: "absolute",
         left: GRID.margin,
-        top: 58,
+        top: 48,
         display: "flex",
         alignItems: "center",
-        gap: 16,
+        gap: 20,
         fontFamily: font.sans,
         color: color.onAccent,
         opacity: 1 - out,
@@ -277,9 +277,9 @@ const BrandMark: React.FC<{ closeAt: number }> = ({ closeAt }) => {
     >
       <div
         style={{
-          width: 52,
-          height: 52,
-          borderRadius: 14,
+          width: 76,
+          height: 76,
+          borderRadius: 20,
           background: color.surface,
           display: "flex",
           alignItems: "center",
@@ -287,9 +287,9 @@ const BrandMark: React.FC<{ closeAt: number }> = ({ closeAt }) => {
           boxShadow: "0 10px 24px rgba(60,14,0,0.3)",
         }}
       >
-        <Img src={staticFile("shodh-logo.svg")} style={{ width: 40, height: 40 }} />
+        <Img src={staticFile("shodh-logo.svg")} style={{ width: 58, height: 58 }} />
       </div>
-      <div style={{ fontSize: 30, fontWeight: 760, letterSpacing: "-0.03em" }}>Shodh</div>
+      <div style={{ fontSize: 44, fontWeight: 780, letterSpacing: "-0.035em" }}>Shodh</div>
     </div>
   );
 };

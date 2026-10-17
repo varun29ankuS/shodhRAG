@@ -3,10 +3,12 @@
 
 use crate::audit_commands::AuditState;
 use crate::event_emitter::TauriEventEmitter;
+use crate::file_watcher::FolderSyncState;
 use crate::inbox_commands;
 use crate::rag_commands::RagState;
 use shodh_rag::audit::payload::{indexing_outcome, source_change, ChangeOrigin};
 use shodh_rag::audit::{AuditEventType, AuditRecord};
+use shodh_rag::folder_sync::Adoption;
 use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus};
 use tauri::{AppHandle, State};
 
@@ -21,6 +23,7 @@ pub async fn link_folder_enhanced(
     options: IndexingOptions,
     state: State<'_, RagState>,
     indexing_state: State<'_, IndexingState>,
+    folder_sync: State<'_, FolderSyncState>,
     audit: State<'_, AuditState>,
 ) -> Result<IndexingResult, String> {
     let name = std::path::Path::new(&folder_path)
@@ -45,13 +48,20 @@ pub async fn link_folder_enhanced(
     )
     .await;
     let emitter = TauriEventEmitter::new(app.clone());
-    let result = shodh_rag::indexing::index_folder(
+    // With `skip_indexed`, files already indexed under a source that is not
+    // kept in sync are adopted; the folders kept in sync keep theirs.
+    let listed = folder_sync.watched_ids();
+    let result = shodh_rag::indexing::index_folder_adopting(
         &folder_path,
         &space_id,
         &options,
         &state.rag,
         &indexing_state,
         Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
+        Some(Adoption {
+            store: folder_sync.store(),
+            listed: &listed,
+        }),
     )
     .await;
     audit.record(AuditRecord::new(
@@ -68,16 +78,12 @@ pub async fn link_folder_enhanced(
         Ok(done) if done.failures.is_empty() => (
             InboxStatus::Done,
             format!("{name} is indexed"),
-            format!("{} files indexed", done.files_processed),
+            indexed_detail(done),
         ),
         Ok(done) => (
             InboxStatus::Failed,
             format!("{name} is indexed, with failures"),
-            format!(
-                "{} files indexed, {} could not be read",
-                done.files_processed,
-                done.failures.len()
-            ),
+            indexed_detail(done),
         ),
         Err(e) => (
             InboxStatus::Failed,
@@ -98,6 +104,27 @@ pub async fn link_folder_enhanced(
     )
     .await;
     result
+}
+
+/// What a folder's indexing did, for its Inbox item: "3 files indexed,
+/// 9 already indexed, 1 could not be read". Files adopted from another
+/// source count as already indexed.
+fn indexed_detail(done: &IndexingResult) -> String {
+    let mut parts = Vec::new();
+    if done.files_processed > 0 || done.files_unchanged == 0 {
+        parts.push(format!("{} files indexed", done.files_processed));
+    }
+    if done.files_unchanged > 0 {
+        parts.push(if parts.is_empty() {
+            format!("{} files already indexed", done.files_unchanged)
+        } else {
+            format!("{} already indexed", done.files_unchanged)
+        });
+    }
+    if !done.failures.is_empty() {
+        parts.push(format!("{} could not be read", done.failures.len()));
+    }
+    parts.join(", ")
 }
 
 #[tauri::command]
@@ -149,4 +176,42 @@ pub async fn index_single_file(
         ),
     ));
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shodh_rag::indexing::FileFailure;
+
+    fn done(processed: usize, unchanged: usize, failed: usize) -> IndexingResult {
+        let failures: Vec<FileFailure> = (0..failed)
+            .map(|i| FileFailure {
+                file: format!("f{i}.pdf"),
+                reason: "unreadable".to_string(),
+            })
+            .collect();
+        IndexingResult {
+            files_processed: processed,
+            total_chunks: 0,
+            failed_files: failures.iter().map(|f| f.file.clone()).collect(),
+            failures,
+            files_unchanged: unchanged,
+            duration: 0,
+        }
+    }
+
+    #[test]
+    fn the_inbox_counts_files_already_indexed() {
+        assert_eq!(indexed_detail(&done(4, 0, 0)), "4 files indexed");
+        assert_eq!(indexed_detail(&done(0, 0, 0)), "0 files indexed");
+        assert_eq!(indexed_detail(&done(0, 12, 0)), "12 files already indexed");
+        assert_eq!(
+            indexed_detail(&done(3, 9, 1)),
+            "3 files indexed, 9 already indexed, 1 could not be read"
+        );
+        assert_eq!(
+            indexed_detail(&done(0, 2, 1)),
+            "2 files already indexed, 1 could not be read"
+        );
+    }
 }

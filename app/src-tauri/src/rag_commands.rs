@@ -708,15 +708,28 @@ fn source_change_record(
     )
 }
 
-/// Delete all documents from a folder (audited).
+/// Delete all documents from a folder (audited). `source_id`, the Library
+/// source being removed, also loses its folder manifest: a source removed
+/// before its index finished was never kept in sync, so nothing else would
+/// forget it.
 #[tauri::command]
 pub async fn delete_folder_source(
     folder_path: String,
+    source_id: Option<String>,
     state: State<'_, RagState>,
+    folder_sync: State<'_, crate::file_watcher::FolderSyncState>,
     audit: State<'_, AuditState>,
 ) -> Result<String, String> {
     let path = folder_path.clone();
     let result = delete_folder_source_inner(folder_path, state).await;
-    audit.record(source_change_record("remove", None, Some(&path), &result));
+    if let (Ok(_), Some(id)) = (&result, &source_id) {
+        folder_sync.forget_source(id).await;
+    }
+    audit.record(source_change_record(
+        "remove",
+        source_id.as_deref(),
+        Some(&path),
+        &result,
+    ));
     result
 }

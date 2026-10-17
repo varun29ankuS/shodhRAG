@@ -285,6 +285,41 @@ impl LanceStore {
         Ok(count_before - count_after)
     }
 
+    /// Moves the chunks of `source` that belong to the space `from` to the
+    /// space `to`, in one update: one new table version, so every such chunk
+    /// moves or none does. Both the `space_id` column and the `space_id`
+    /// entry of each chunk's metadata change. The metadata is serialized by
+    /// serde_json, which writes keys without spaces, so the entry appears
+    /// verbatim as `"space_id":"<from>"`; inside a metadata value its quotes
+    /// would be escaped, so a value never matches. An id that serde_json
+    /// would escape (a quote, a backslash, a control character) is refused.
+    /// Returns the chunks moved.
+    pub async fn move_source_to_space(&self, source: &str, from: &str, to: &str) -> Result<u64> {
+        let plain = |id: &str| !id.chars().any(|c| c == '"' || c == '\\' || c.is_control());
+        if !plain(from) || !plain(to) {
+            anyhow::bail!("the space ids {from:?} and {to:?} cannot be matched in chunk metadata");
+        }
+        let quote = |text: &str| format!("'{}'", text.replace('\'', "''"));
+        let entry = |id: &str| quote(&format!("\"space_id\":\"{id}\""));
+        let table = self.db.open_table(&self.table_name).execute().await?;
+        let moved = table
+            .update()
+            .only_if(format!(
+                "source = {} AND space_id = {}",
+                quote(source),
+                quote(from)
+            ))
+            .column("space_id", quote(to))
+            .column(
+                "metadata_json",
+                format!("replace(metadata_json, {}, {})", entry(from), entry(to)),
+            )
+            .execute()
+            .await
+            .context("Failed to move chunks to another space")?;
+        Ok(moved.rows_updated)
+    }
+
     pub async fn clear(&self) -> Result<()> {
         let names = self.db.table_names().execute().await?;
         if names.contains(&self.table_name) {

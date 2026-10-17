@@ -1944,6 +1944,38 @@ impl RAGEngine {
         Ok(deleted)
     }
 
+    /// Gives the indexed file `source` of the space `from` to the space `to`
+    /// without indexing it again: its chunks keep their ids, text, vectors
+    /// and keyword entries, and only their owner changes, in the `space_id`
+    /// column and in their metadata (so [`Self::document_metadata`] and
+    /// [`Self::upgrade_in_place`] see the same owner). All chunks move in one
+    /// LanceDB update, or none do. The keyword index stores no space: its
+    /// hits are scoped by the LanceDB rows they are read from. Returns the
+    /// chunks moved (0 when `source` has none in `from`).
+    pub async fn move_source_to_space(
+        &mut self,
+        source: &str,
+        from: &str,
+        to: &str,
+    ) -> Result<u64> {
+        let moved = self.store.move_source_to_space(source, from, to).await?;
+        tracing::info!(
+            source,
+            from,
+            to,
+            chunks = moved,
+            "indexed file given to another source"
+        );
+        Ok(moved)
+    }
+
+    /// Compacts the chunk store: an update rewrites the rows it changes, so
+    /// after [`Self::move_source_to_space`] has moved files the old rows are
+    /// removed from disk here, once for all of them.
+    pub async fn compact_chunks(&mut self) -> Result<()> {
+        self.store.compact().await
+    }
+
     /// Clear all data
     pub async fn clear_all_data(&mut self) -> Result<()> {
         self.store.clear().await?;

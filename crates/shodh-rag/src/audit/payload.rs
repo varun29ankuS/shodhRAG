@@ -305,6 +305,7 @@ pub fn indexing_outcome<E: std::fmt::Display>(
         Ok(r) => json!({
             "ok": true,
             "files": r.files_processed,
+            "files_unchanged": r.files_unchanged,
             "chunks": r.total_chunks,
             "failed_files": r.failed_files.len(),
             "duration_ms": r.duration,

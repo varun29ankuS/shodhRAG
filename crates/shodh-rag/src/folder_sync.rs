@@ -112,6 +112,24 @@ pub fn scan_folder(folder: &Path) -> BTreeMap<String, (PathBuf, FileStamp)> {
         .collect()
 }
 
+/// The files of `folder` that `selected` names, as [`scan_folder`] finds
+/// them, scanned on a blocking thread.
+async fn scan_selected(
+    folder: &Path,
+    selected: &[PathBuf],
+) -> Result<BTreeMap<String, (PathBuf, FileStamp)>, String> {
+    let root = folder.to_path_buf();
+    let mut on_disk = tokio::task::spawn_blocking(move || scan_folder(&root))
+        .await
+        .map_err(|e| format!("Scanning {} failed: {e}", folder.display()))?;
+    let selected: BTreeSet<String> = selected
+        .iter()
+        .map(|path| normalize_source_path(path))
+        .collect();
+    on_disk.retain(|key, _| selected.contains(key));
+    Ok(on_disk)
+}
+
 /// What to index and remove so the index matches `on_disk`, given the
 /// stamps the files had when they were last indexed and the files whose
 /// chunks are of an older index format (`stale`), which are indexed again.
@@ -162,17 +180,44 @@ impl ManifestStore {
         Self { dir: dir.into() }
     }
 
-    fn path(&self, source_id: &str) -> PathBuf {
-        let safe: String = source_id
+    /// The name (without `.json`) of the manifest of `source_id`.
+    fn file_id(source_id: &str) -> String {
+        source_id
             .chars()
             .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-            .collect();
-        self.dir.join(format!("{safe}.json"))
+            .collect()
+    }
+
+    fn path(&self, source_id: &str) -> PathBuf {
+        self.dir.join(format!("{}.json", Self::file_id(source_id)))
     }
 
     fn load(&self, source_id: &str) -> Option<Manifest> {
         let text = std::fs::read_to_string(self.path(source_id)).ok()?;
         serde_json::from_str(&text).ok()
+    }
+
+    /// Every readable manifest in the store, by [`Self::file_id`]; none when
+    /// the store's directory does not exist yet. A manifest being saved
+    /// (`.json.tmp`) is not one yet.
+    fn load_all(&self) -> Result<BTreeMap<String, Manifest>, String> {
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+            Err(e) => return Err(format!("Reading {} failed: {e}", self.dir.display())),
+        };
+        Ok(entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    return None;
+                }
+                let id = path.file_stem()?.to_str()?.to_string();
+                let text = std::fs::read_to_string(&path).ok()?;
+                Some((id, serde_json::from_str(&text).ok()?))
+            })
+            .collect())
     }
 
     fn save(&self, source_id: &str, manifest: &ManifestRef<'_>) -> Result<(), String> {
@@ -260,6 +305,244 @@ async fn stale_files(rag: &RwLock<RAGEngine>, source_id: &str) -> Result<BTreeSe
         .filter(|row| row.space_id == source_id)
         .map(|row| row.source)
         .collect())
+}
+
+/// What a folder source being added needs to adopt the files of its folder
+/// that are already indexed ([`crate::indexing::index_folder_adopting`]).
+#[derive(Debug, Clone, Copy)]
+pub struct Adoption<'a> {
+    /// Where the folder manifests are kept.
+    pub store: &'a ManifestStore,
+    /// The Library's listed folder sources. They keep their files: a listed
+    /// source that gave a file away would index it again on its next sync.
+    pub listed: &'a BTreeSet<String>,
+}
+
+/// The manifest of a folder source while its folder is indexed, saved after
+/// every change so the source's syncs start from what was indexed.
+pub(crate) struct FolderManifest<'a> {
+    store: &'a ManifestStore,
+    source_id: String,
+    folder: String,
+    files: BTreeMap<String, FileStamp>,
+    failures: BTreeMap<String, FileFailure>,
+}
+
+impl FolderManifest<'_> {
+    /// The file `key` was indexed as it was at `stamp`, taken before
+    /// indexing it, or failed to index (`failure`). A failed file is
+    /// recorded without a stamp, so the source's first sync tries it again
+    /// (it may have been locked or still being written), as when the folder
+    /// had no manifest; that sync stamps it if it fails again.
+    pub(crate) fn record(&mut self, key: String, stamp: FileStamp, failure: Option<FileFailure>) {
+        match failure {
+            Some(failure) => {
+                self.files.remove(&key);
+                self.failures.insert(key, failure);
+            }
+            None => {
+                self.failures.remove(&key);
+                self.files.insert(key, stamp);
+            }
+        }
+        self.save();
+    }
+
+    /// A manifest that is not saved costs work, not correctness: files it
+    /// does not record are indexed again by the source's next sync.
+    fn save(&self) {
+        let saved = self.store.save(
+            &self.source_id,
+            &ManifestRef {
+                folder: &self.folder,
+                files: &self.files,
+                failures: &self.failures,
+            },
+        );
+        if let Err(error) = saved {
+            tracing::warn!(source_id = %self.source_id, %error, "folder manifest not saved");
+        }
+    }
+}
+
+/// The files [`adopt_indexed`] adopted, and the source's manifest.
+pub(crate) struct Adopted<'a> {
+    /// Index identities of the files adopted: not to be indexed again.
+    pub(crate) keys: BTreeSet<String>,
+    /// The folder's files that were scanned, by index identity.
+    pub(crate) on_disk: BTreeMap<String, (PathBuf, FileStamp)>,
+    pub(crate) manifest: FolderManifest<'a>,
+}
+
+/// Whether the indexed file `key` is still as it was indexed: a manifest
+/// recorded it indexed (not failed) as it is on disk (`stamp`). The chunks
+/// are from the file's latest indexing, which came at or after that one,
+/// and the file has not changed since, so they are the file's current
+/// content. Without such a record (a single-file source, a file added in a
+/// chat, a source whose manifest is gone) nothing shows the chunks are
+/// current, and the file is indexed again.
+fn indexed_as_on_disk(key: &str, stamp: FileStamp, manifests: &BTreeMap<String, Manifest>) -> bool {
+    manifests
+        .values()
+        .any(|m| m.files.get(key) == Some(&stamp) && !m.failures.contains_key(key))
+}
+
+/// Gives the folder source `source_id` (the folder `root`) the files of
+/// `selected` that are already indexed under another source, unchanged and
+/// in the current index format, instead of indexing them again (adding a
+/// folder whose files were indexed by a source the Library lost).
+///
+/// A file is adopted only when its chunks all belong to one other source,
+/// one not `adoption.listed`, and a folder manifest recorded it indexed as
+/// it is on disk ([`indexed_as_on_disk`]). Its chunks move with
+/// [`RAGEngine::move_source_to_space`], one LanceDB update per file, so a
+/// file is either wholly adopted or left as it is; a file whose move fails
+/// or finds no chunks (indexed again meanwhile) is not adopted and is
+/// indexed as usual. Then the manifest of `source_id` is saved with the
+/// adopted files' stamps, and the manifests of unlisted sources stop naming
+/// them. A manifest that cannot be saved only means its source's next sync
+/// indexes the files again.
+pub(crate) async fn adopt_indexed<'a>(
+    root: &Path,
+    source_id: &str,
+    selected: &[PathBuf],
+    adoption: Adoption<'a>,
+    rag: &RwLock<RAGEngine>,
+) -> Result<Adopted<'a>, String> {
+    let on_disk = scan_selected(root, selected).await?;
+    let (rows, stale) = {
+        let engine = rag.read().await;
+        let rows = engine
+            .document_sources()
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        let stale: BTreeSet<String> = engine
+            .stale_sources()
+            .await
+            .map_err(|e| format!("{e:#}"))?
+            .into_iter()
+            .map(|row| row.source)
+            .collect();
+        (rows, stale)
+    };
+    // The sources each indexed file's chunks belong to.
+    let mut owners: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for row in rows {
+        owners.entry(row.source).or_default().insert(row.space_id);
+    }
+    let mut manifests = adoption.store.load_all()?;
+
+    let mut adopted: BTreeMap<String, FileStamp> = BTreeMap::new();
+    for (key, (_, stamp)) in &on_disk {
+        // Chunks in more than one source: moving one source's would leave
+        // the file half owned.
+        let donor = match owners.get(key) {
+            Some(spaces) if spaces.len() == 1 => spaces.iter().next(),
+            _ => None,
+        };
+        let Some(donor) = donor else {
+            continue;
+        };
+        if donor == source_id
+            || adoption.listed.contains(donor)
+            || stale.contains(key)
+            || !indexed_as_on_disk(key, *stamp, &manifests)
+        {
+            continue;
+        }
+        let moved = rag
+            .write()
+            .await
+            .move_source_to_space(key, donor, source_id)
+            .await;
+        match moved {
+            Ok(0) => {}
+            Ok(_) => {
+                adopted.insert(key.clone(), *stamp);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    source = %key,
+                    from = %donor,
+                    to = source_id,
+                    error = %format!("{e:#}"),
+                    "indexed file not adopted; indexing it again"
+                );
+            }
+        }
+    }
+
+    // The rows the moves replaced leave the disk once, not per file.
+    if !adopted.is_empty() {
+        if let Err(e) = rag.write().await.compact_chunks().await {
+            tracing::warn!(error = %format!("{e:#}"), "chunk store not compacted after adoption");
+        }
+    }
+
+    // Where the source's own manifest left off (a source being indexed
+    // again), else what it owns in the index, now with the adopted files.
+    let (mut files, mut failures) = match manifests.remove(&ManifestStore::file_id(source_id)) {
+        Some(own) => (own.files, own.failures),
+        None => (
+            known_from_index(rag, source_id, &on_disk).await?,
+            BTreeMap::new(),
+        ),
+    };
+    for (key, stamp) in &adopted {
+        files.insert(key.clone(), *stamp);
+        failures.remove(key);
+    }
+    let manifest = FolderManifest {
+        store: adoption.store,
+        source_id: source_id.to_string(),
+        folder: root.display().to_string(),
+        files,
+        failures,
+    };
+    manifest.save();
+
+    // The sources the files came from no longer claim them; listed sources
+    // keep their manifests as they are (they gave nothing away).
+    let listed: BTreeSet<String> = adoption
+        .listed
+        .iter()
+        .map(|id| ManifestStore::file_id(id))
+        .collect();
+    for (id, mut other) in manifests {
+        if listed.contains(&id) {
+            continue;
+        }
+        let before = (other.files.len(), other.failures.len());
+        other.files.retain(|key, _| !adopted.contains_key(key));
+        other.failures.retain(|key, _| !adopted.contains_key(key));
+        if (other.files.len(), other.failures.len()) == before {
+            continue;
+        }
+        let saved = adoption.store.save(
+            &id,
+            &ManifestRef {
+                folder: &other.folder,
+                files: &other.files,
+                failures: &other.failures,
+            },
+        );
+        if let Err(error) = saved {
+            tracing::warn!(source_id = %id, %error, "folder manifest not updated");
+        }
+    }
+
+    if !adopted.is_empty() {
+        tracing::info!(
+            source_id,
+            adopted = adopted.len(),
+            "indexed files adopted instead of indexed again"
+        );
+    }
+    Ok(Adopted {
+        keys: adopted.into_keys().collect(),
+        on_disk,
+        manifest,
+    })
 }
 
 /// Brings the unchanged file of index identity `key`, of an older index
@@ -1267,5 +1550,346 @@ mod tests {
                 normalize_source_path(&canonical_path(&owned)),
             ])
         );
+    }
+
+    fn add_options(skip_indexed: bool) -> crate::indexing::IndexingOptions {
+        crate::indexing::IndexingOptions {
+            skip_indexed,
+            watch_changes: false,
+            process_subdirs: true,
+            priority: "normal".into(),
+            file_types: Vec::new(),
+        }
+    }
+
+    /// Adds `folder` to the Library as the folder source `source_id`.
+    async fn add_folder(
+        rag: &RwLock<RAGEngine>,
+        store: &ManifestStore,
+        folder: &Path,
+        source_id: &str,
+        skip_indexed: bool,
+        listed: &BTreeSet<String>,
+    ) -> crate::indexing::IndexingResult {
+        crate::indexing::index_folder_adopting(
+            &folder.display().to_string(),
+            source_id,
+            &add_options(skip_indexed),
+            rag,
+            &crate::indexing::IndexingState::default(),
+            None,
+            Some(Adoption { store, listed }),
+        )
+        .await
+        .expect("indexed")
+    }
+
+    /// Chunk ids by file name: a file indexed again gets new ones.
+    async fn chunk_ids(rag: &RwLock<RAGEngine>) -> BTreeMap<String, BTreeSet<String>> {
+        let hits = rag
+            .read()
+            .await
+            .list_documents_raw(None, 100_000)
+            .await
+            .expect("chunks");
+        let mut ids: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for hit in hits {
+            let name = hit
+                .source
+                .rsplit('/')
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            ids.entry(name).or_default().insert(hit.id);
+        }
+        ids
+    }
+
+    /// A folder of two files synced by the source `old`, which has their
+    /// manifest: a source the Library has since lost.
+    async fn folder_of_old_source(
+        dir: &Path,
+        rag: &RwLock<RAGEngine>,
+        store: &ManifestStore,
+    ) -> PathBuf {
+        let folder = dir.join("papers");
+        std::fs::create_dir_all(&folder).expect("folder");
+        for name in ["a.txt", "b.txt"] {
+            std::fs::write(folder.join(name), format!("{name}: {PASSAGE}")).expect("file");
+        }
+        let synced = sync_folder(&folder.display().to_string(), "old", store, rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!(synced.indexed, 2);
+        folder
+    }
+
+    fn in_space(space_id: &str) -> crate::types::MetadataFilter {
+        crate::types::MetadataFilter {
+            space_id: Some(space_id.to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// Adding a folder whose files a lost source indexed takes them over:
+    /// nothing is indexed again, the files and their manifest entries move
+    /// to the new source, its first sync has nothing to do, and a search
+    /// limited to it finds them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_folder_added_again_adopts_its_indexed_files() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rag = engine(dir.path()).await;
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let folder = folder_of_old_source(dir.path(), &rag, &store).await;
+        let before = chunk_ids(&rag).await;
+
+        let added = add_folder(&rag, &store, &folder, "new", true, &BTreeSet::new()).await;
+        assert_eq!(
+            (
+                added.files_processed,
+                added.files_unchanged,
+                added.failures.len()
+            ),
+            (0, 2, 0),
+            "{added:?}"
+        );
+        assert_eq!(chunk_ids(&rag).await, before, "nothing was indexed again");
+        assert_eq!(
+            indexed(&rag, "new").await.keys().collect::<Vec<_>>(),
+            ["a.txt", "b.txt"]
+        );
+        assert!(indexed(&rag, "old").await.is_empty());
+        let a_key = normalize_source_path(&canonical_path(&folder.join("a.txt")));
+        let metadata = rag
+            .read()
+            .await
+            .document_metadata(&a_key)
+            .await
+            .expect("metadata");
+        assert_eq!(
+            metadata.get("space_id").map(String::as_str),
+            Some("new"),
+            "the chunks' metadata names the new owner too"
+        );
+
+        let stamps: BTreeMap<String, FileStamp> = scan_folder(&canonical_path(&folder))
+            .into_iter()
+            .map(|(key, (_, stamp))| (key, stamp))
+            .collect();
+        assert_eq!(store.load("new").expect("manifest").files, stamps);
+        let old = store.load("old").expect("manifest");
+        assert!(old.files.is_empty() && old.failures.is_empty());
+
+        let synced = sync_folder(&folder.display().to_string(), "new", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!((synced.indexed, synced.removed, synced.files), (0, 0, 2));
+
+        let found = rag
+            .read()
+            .await
+            .search_comprehensive("quiet hours evening", 10, Some(in_space("new")))
+            .await
+            .expect("search");
+        assert!(!found.is_empty());
+        assert!(found
+            .iter()
+            .all(|r| r.metadata.get("space_id").map(String::as_str) == Some("new")));
+        let outside = rag
+            .read()
+            .await
+            .search_comprehensive("quiet hours evening", 10, Some(in_space("old")))
+            .await
+            .expect("search");
+        assert!(outside.is_empty(), "{outside:?}");
+    }
+
+    /// A file changed since it was indexed is indexed again; the others are
+    /// adopted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_changed_file_is_indexed_again_when_its_folder_is_added() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rag = engine(dir.path()).await;
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let folder = folder_of_old_source(dir.path(), &rag, &store).await;
+        let before = chunk_ids(&rag).await;
+        touch(
+            &folder.join("b.txt"),
+            &format!("b.txt: {PASSAGE} The garden gate is locked at night."),
+            60,
+        );
+
+        let added = add_folder(&rag, &store, &folder, "new", true, &BTreeSet::new()).await;
+        assert_eq!(
+            (added.files_processed, added.files_unchanged),
+            (1, 1),
+            "{added:?}"
+        );
+        let after = chunk_ids(&rag).await;
+        assert_eq!(after["a.txt"], before["a.txt"]);
+        assert_ne!(after["b.txt"], before["b.txt"]);
+        assert_eq!(indexed(&rag, "new").await.len(), 2);
+        assert!(indexed(&rag, "old").await.is_empty());
+        let synced = sync_folder(&folder.display().to_string(), "new", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!((synced.indexed, synced.removed), (0, 0));
+    }
+
+    /// Saves a manifest for `source_id` recording the files of `folder` as
+    /// they are on disk now.
+    fn record_as_on_disk(store: &ManifestStore, source_id: &str, folder: &Path) {
+        let files: BTreeMap<String, FileStamp> = scan_folder(&canonical_path(folder))
+            .into_iter()
+            .map(|(key, (_, stamp))| (key, stamp))
+            .collect();
+        store
+            .save(
+                source_id,
+                &ManifestRef {
+                    folder: &folder.display().to_string(),
+                    files: &files,
+                    failures: &BTreeMap::new(),
+                },
+            )
+            .expect("manifest");
+    }
+
+    /// A file of an older index format is indexed again, not adopted, even
+    /// when its manifest shows it unchanged; its current neighbour is adopted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_file_of_an_older_format_is_not_adopted() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rag = engine(dir.path()).await;
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let folder = dir.path().join("docs");
+        std::fs::create_dir_all(&folder).expect("folder");
+        std::fs::write(folder.join("a.txt"), format!("a.txt: {PASSAGE}")).expect("file");
+        std::fs::write(folder.join("b.txt"), format!("b.txt: {PASSAGE}")).expect("file");
+        index_as_format_one(&rag, &folder.join("a.txt"), "old").await;
+        crate::indexing::process_file_with_options(
+            &canonical_path(&folder.join("b.txt")),
+            "old",
+            &rag,
+            None,
+        )
+        .await
+        .expect("indexed");
+        record_as_on_disk(&store, "old", &folder);
+        let before = chunk_ids(&rag).await;
+
+        let added = add_folder(&rag, &store, &folder, "new", true, &BTreeSet::new()).await;
+        assert_eq!(
+            (added.files_processed, added.files_unchanged),
+            (1, 1),
+            "{added:?}"
+        );
+        let after = chunk_ids(&rag).await;
+        assert_ne!(after["a.txt"], before["a.txt"], "indexed again");
+        assert_eq!(after["b.txt"], before["b.txt"], "adopted");
+        assert_eq!(stale_count(&rag).await, 0);
+        assert_eq!(indexed(&rag, "new").await.len(), 2);
+        assert!(indexed(&rag, "old").await.is_empty());
+    }
+
+    /// Without a manifest nothing shows that indexed files are current (a
+    /// single-file source, a file added in a chat, a source whose manifest
+    /// is gone): they are indexed again, a changed one with its new content,
+    /// exactly as before adoption existed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn files_of_a_source_without_a_manifest_are_indexed_again() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rag = engine(dir.path()).await;
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let folder = dir.path().join("docs");
+        std::fs::create_dir_all(&folder).expect("folder");
+        std::fs::write(folder.join("a.txt"), format!("a.txt: {PASSAGE}")).expect("file");
+        std::fs::write(
+            folder.join("b.txt"),
+            "The lease notice period is sixty days for either party. Rent is reviewed every spring, and the landlord repairs the roof and the heating when they fail.",
+        )
+        .expect("file");
+        for (name, owner) in [("a.txt", "file-a"), ("b.txt", "")] {
+            crate::indexing::process_file_with_options(
+                &canonical_path(&folder.join(name)),
+                owner,
+                &rag,
+                None,
+            )
+            .await
+            .expect("indexed");
+        }
+        // Changed after it was indexed.
+        touch(
+            &folder.join("b.txt"),
+            "The lease notice period is ninety days for either party. Rent is reviewed every spring, and the landlord repairs the roof and the heating when they fail.",
+            60,
+        );
+        let before = chunk_ids(&rag).await;
+
+        let added = add_folder(&rag, &store, &folder, "new", true, &BTreeSet::new()).await;
+        assert_eq!(
+            (added.files_processed, added.files_unchanged),
+            (2, 0),
+            "{added:?}"
+        );
+        let after = chunk_ids(&rag).await;
+        for name in ["a.txt", "b.txt"] {
+            assert!(
+                after[name].is_disjoint(&before[name]),
+                "{name} indexed again"
+            );
+        }
+        assert_eq!(indexed(&rag, "new").await.len(), 2);
+        let lease = texts(&rag, "lease notice period").await;
+        assert!(lease.iter().any(|t| t.contains("ninety")), "{lease:?}");
+        assert!(!lease.iter().any(|t| t.contains("sixty")), "{lease:?}");
+        let synced = sync_folder(&folder.display().to_string(), "new", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!((synced.indexed, synced.removed), (0, 0));
+    }
+
+    /// A source the Library lists keeps its files, and indexing a source
+    /// again (without `skip_indexed`) indexes every file and leaves the
+    /// manifests alone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn listed_sources_and_forced_runs_adopt_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rag = engine(dir.path()).await;
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let folder = folder_of_old_source(dir.path(), &rag, &store).await;
+
+        let listed = BTreeSet::from(["old".to_string()]);
+        let kept = add_folder(&rag, &store, &folder, "new", true, &listed).await;
+        assert_eq!((kept.files_processed, kept.files_unchanged), (2, 0));
+        assert_eq!(
+            store.load("old").expect("manifest").files.len(),
+            2,
+            "a listed source's manifest is left as it is"
+        );
+        assert_eq!(
+            store.load("new").expect("manifest").files.len(),
+            2,
+            "the files indexed are recorded"
+        );
+        let synced = sync_folder(&folder.display().to_string(), "new", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!(synced.indexed, 0);
+
+        let before = chunk_ids(&rag).await;
+        let forced = add_folder(&rag, &store, &folder, "other", false, &BTreeSet::new()).await;
+        assert_eq!((forced.files_processed, forced.files_unchanged), (2, 0));
+        let after = chunk_ids(&rag).await;
+        for name in ["a.txt", "b.txt"] {
+            assert!(
+                after[name].is_disjoint(&before[name]),
+                "{name} indexed again"
+            );
+        }
+        assert!(store.load("other").is_none(), "no manifest written");
+        assert_eq!(store.load("new").expect("manifest").files.len(), 2);
+        assert_eq!(indexed(&rag, "other").await.len(), 2);
     }
 }

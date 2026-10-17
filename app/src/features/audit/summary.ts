@@ -89,7 +89,13 @@ export function summarise(row: AuditRow): string {
       const via = p.via === 'agent' ? ' (agent)' : '';
       const failed = p.ok === false ? ' · failed' : '';
       const files = num(p.files);
-      const count = files !== null ? ` · ${files} ${files === 1 ? 'file' : 'files'}` : '';
+      // Files already indexed that the folder took over instead of indexing again.
+      const unchanged = num(p.files_unchanged) ?? 0;
+      const fileWord = (n: number) => `${n} ${n === 1 ? 'file' : 'files'}`;
+      const counts: string[] = [];
+      if (files !== null && (files > 0 || unchanged === 0)) counts.push(fileWord(files));
+      if (unchanged > 0) counts.push(counts.length > 0 ? `${unchanged} already indexed` : `${fileWord(unchanged)} already indexed`);
+      const count = counts.map(c => ` · ${c}`).join('');
       return `${SOURCE_ACTIONS[action] ?? action}${target ? ` ${clip(target, 90)}` : ''}${via}${count}${failed}`;
     }
     case 'settings_change': {

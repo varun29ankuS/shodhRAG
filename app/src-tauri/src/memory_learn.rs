@@ -1,8 +1,9 @@
 //! Learning memories from conversations (Settings → Memory → "Learn from conversations"):
 //! the app side of `shodh_rag::user_memory::learn`.
 //!
-//! - **Capture.** `agent_send` hands over the user's own words of a turn the frontend
-//!   marks as typed by the user (not a side-thread question, not a composed summary
+//! - **Capture.** `agent_send` hands over the user's own words of a turn: a message the
+//!   frontend marks as typed by the user, or the question typed in a side thread (never
+//!   the content the side-thread message is composed around, nor a composed summary
 //!   request); the agent event stream supplies the answer text (context only) and whether
 //!   the run completed. Aborted and failed runs are not learned from.
 //! - **Debounce.** Completed turns of a conversation are collected for [`DEBOUNCE`]; a new
@@ -472,8 +473,8 @@ impl LearnState {
         SettingsPolicy(self.inner.data_dir.clone()).policy()
     }
 
-    /// `agent_send` registers the user's words of a run. Only text the user typed in the
-    /// main conversation is passed here (see the module docs).
+    /// `agent_send` registers the user's words of a run. Only text the user typed is
+    /// passed here (see the module docs).
     pub fn record_question(
         &self,
         conversation_id: &str,

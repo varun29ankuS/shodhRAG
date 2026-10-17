@@ -194,11 +194,15 @@ pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(run(app));
 }
 
-async fn load(store: &CalendarStore) -> Result<CalendarData, String> {
+async fn load(store: &CalendarStore) -> Result<CalendarData, CalendarError> {
+    let path = store.path().to_path_buf();
     let store = store.clone();
-    tokio::task::spawn_blocking(move || store.load().map_err(|e| e.to_string()))
+    tokio::task::spawn_blocking(move || store.load())
         .await
-        .map_err(|e| format!("reading the calendar was interrupted: {e}"))?
+        .map_err(|e| CalendarError::Unreadable {
+            path,
+            message: format!("reading the calendar was interrupted: {e}"),
+        })?
 }
 
 /// Mark `reminder` fired; true when this call did it.

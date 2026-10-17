@@ -164,8 +164,8 @@ export default function Sidebar({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (isNewChatChord(e)) {
         e.preventDefault();
-        // Not behind a modal dialog (setup, palette).
-        if (document.querySelector('[aria-modal="true"]')) return;
+        // Not behind a modal dialog (setup, palette, a Radix sheet or dialog).
+        if (modalDialogOpen()) return;
         if (!e.repeat) newConversationRef.current();
       }
     };

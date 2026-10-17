@@ -818,7 +818,19 @@ async fn bring_up_to_date_unread(
     if format_stale && upgrade_unchanged_in_place(rag, key).await? {
         return Ok(Some(Unread::InPlace));
     }
-    if !rechunk || !needs_fresh_ocr(rag, path).await? {
+    if !rechunk {
+        return Ok(None);
+    }
+    // Without chunks there is nothing to keep: the file is read, with OCR
+    // when it needs it.
+    let has_chunks = rag
+        .read()
+        .await
+        .source_owner(key)
+        .await
+        .map_err(|e| format!("{e:#}"))?
+        .is_some();
+    if !has_chunks || !needs_fresh_ocr(rag, path).await? {
         return Ok(None);
     }
     let mut engine = rag.write().await;
@@ -849,18 +861,30 @@ fn failed_as_it_is(
         .is_some_and(|f| stamp == Some(f.stamp) && f.chunker_version >= CHUNKER_VERSION)
 }
 
+/// Whether the file `key`, stamped `stamp` now, failed to be brought up to
+/// date and has changed since: it is tried again.
+fn changed_since_failure(
+    failures: &BTreeMap<String, HealFailure>,
+    key: &str,
+    stamp: Option<FileStamp>,
+) -> bool {
+    stamp.is_some_and(|now| failures.get(key).is_some_and(|f| f.stamp != now))
+}
+
 /// Records how bringing the file `key` (at `path`, stamped `stamp` before
-/// it was tried) up to date went, in `failures` and on disk. A file that
-/// cannot be stamped is not recorded: it is tried again next time. A record
-/// that cannot be saved costs a try, not correctness.
+/// it was tried) up to date went, in the record of `store`: read, changed
+/// and saved here, so records made by other runs in between are kept. The
+/// caller holds the syncs' turn. A file that cannot be stamped is not
+/// recorded: it is tried again next time. A record that cannot be saved
+/// costs a try, not correctness.
 fn record_heal_outcome(
     store: &ManifestStore,
-    failures: &mut BTreeMap<String, HealFailure>,
     key: &str,
     path: &Path,
     stamp: Option<FileStamp>,
     outcome: Result<(), &str>,
 ) {
+    let mut failures = store.load_heal_failures();
     let changed = match (outcome, stamp) {
         (Ok(()), _) => failures.remove(key).is_some(),
         (Err(reason), Some(stamp)) => {
@@ -880,19 +904,35 @@ fn record_heal_outcome(
         (Err(_), None) => false,
     };
     if changed {
-        if let Err(error) = store.save_heal_failures(failures) {
+        if let Err(error) = store.save_heal_failures(&failures) {
             tracing::warn!(%error, "heal failures not saved");
         }
     }
 }
 
+/// Records the chunks of `key` left from an older chunker as looked at under
+/// this one ([`RAGEngine::keep_chunks_of_older_chunker`]): the file could not
+/// be read again (it failed, or it is gone), so nothing lists it again and
+/// the scan for documents to re-chunk can stop. It is tried again once it
+/// changes, as its failure record (or manifest) keeps its stamp.
+async fn keep_unread(rag: &RwLock<RAGEngine>, key: &str) {
+    if let Err(e) = rag.write().await.keep_chunks_of_older_chunker(key).await {
+        tracing::warn!(
+            source = key,
+            error = %format!("{e:#}"),
+            "chunks of a file not read again not recorded as kept"
+        );
+    }
+}
+
 /// Index the Library source `source_id` that is the single file `path` again
-/// when its chunks are of an older index format or chunker version (folder
-/// sources are brought up to date by [`sync_folder`]). Returns whether it was
-/// indexed (in place included). A file that is gone is left as it is:
-/// removing a source is the Library's decision. A file that cannot be
-/// indexed again keeps its chunks and is recorded in `store`, so it is not
-/// tried again until it changes. The caller holds the syncs' turn.
+/// when its chunks are of an older index format or chunker version, or when
+/// it failed to be indexed again and has changed since (folder sources are
+/// brought up to date by [`sync_folder`]). Returns whether it was indexed
+/// (in place included). A file that is gone is left as it is: removing a
+/// source is the Library's decision. A file that cannot be indexed again
+/// keeps its chunks (recorded as kept) and is recorded in `store`, so it is
+/// not tried again until it changes. The caller holds the syncs' turn.
 pub async fn upgrade_file_source(
     path: &str,
     source_id: &str,
@@ -907,13 +947,14 @@ pub async fn upgrade_file_source(
         return Ok(false);
     }
     let key = normalize_source_path(&file);
+    let stamp = FileStamp::of_file(&file);
+    let failures = store.load_heal_failures();
+    let changed = changed_since_failure(&failures, &key, stamp);
     let format_stale = stale_files(rag, source_id).await?.contains(&key);
-    let rechunk = rechunk_files(rag, source_id).await?.contains(&key);
+    let rechunk = changed || rechunk_files(rag, source_id).await?.contains(&key);
     if !format_stale && !rechunk {
         return Ok(false);
     }
-    let mut failures = store.load_heal_failures();
-    let stamp = FileStamp::of_file(&file);
     if failed_as_it_is(&failures, &key, stamp) {
         return Ok(false);
     }
@@ -927,12 +968,14 @@ pub async fn upgrade_file_source(
     };
     record_heal_outcome(
         store,
-        &mut failures,
         &key,
         &file,
         stamp,
         outcome.as_ref().map(|_| ()).map_err(String::as_str),
     );
+    if outcome.is_err() {
+        keep_unread(rag, &key).await;
+    }
     let indexed = outcome?;
     if indexed {
         tracing::info!(
@@ -972,7 +1015,7 @@ pub struct UpgradeReport {
     /// them would read them with OCR again. They stay searchable.
     pub scans_kept: usize,
     /// Documents left as they are: their chunks cannot be remade without the
-    /// file, and the file is gone. They stay searchable.
+    /// file, and the file is gone. They stay searchable, recorded as kept.
     pub left: Vec<String>,
     /// Files that could not be indexed again, this run or before and
     /// unchanged since. They keep their chunks.
@@ -1022,18 +1065,32 @@ async fn upgrade_one_unowned(
     Ok(Upgraded::Reindexed)
 }
 
+/// One document [`upgrade_unowned_in_turns`] brings up to date.
+struct UnownedDocument {
+    source: String,
+    /// The source it belonged to when it was listed.
+    space_id: String,
+    format_stale: bool,
+    rechunk: bool,
+    /// A `scheme://` source no indexer here reads again (not a calendar
+    /// item): its chunks are recorded as kept, so it does not stay listed.
+    foreign: bool,
+}
+
 /// Brings the documents of an older index format or chunker version that no
 /// Library source owns up to date: files indexed outside the Library's
 /// sources, such as files added in a chat. `owned` are the Library's source
 /// ids (their files are upgraded by [`sync_folder`] and
-/// [`upgrade_file_source`]); calendar and other `scheme://` sources are
-/// upgraded by their own indexers. A document of an older format only is
-/// upgraded in place where its chunks allow it (no parsing, no OCR, ids
-/// kept); others are indexed again from their file with the metadata they
-/// were indexed with. One whose file is gone is left as it is and reported.
-/// One that fails is reported and recorded in `store`, and the others go on;
-/// it is not tried again until it changes. The caller holds the syncs' turn;
-/// [`upgrade_unowned_in_turns`] takes it for one document at a time.
+/// [`upgrade_file_source`]); calendar items are upgraded by their own
+/// indexer. A document of an older format only is upgraded in place where
+/// its chunks allow it (no parsing, no OCR, ids kept); others are indexed
+/// again from their file with the metadata they were indexed with. One whose
+/// file is gone is left as it is and reported; one that fails is reported
+/// and recorded in `store`, and the others go on. Both keep their chunks,
+/// recorded as kept ([`RAGEngine::keep_chunks_of_older_chunker`]), so the
+/// next run does not list them again; a failed one is tried again once it
+/// changes. The caller holds the syncs' turn; [`upgrade_unowned_in_turns`]
+/// takes it for one document at a time.
 pub async fn upgrade_unowned(
     rag: &RwLock<RAGEngine>,
     owned: &BTreeSet<String>,
@@ -1047,7 +1104,8 @@ pub async fn upgrade_unowned(
 /// next, so a removal of a Library source or a folder sync waits for one
 /// document at most, and a pause (when `turn` waits for the resume) holds the
 /// rest back. A document whose chunks went meanwhile (removed with their
-/// folder) or now belong to another source is left alone.
+/// folder) or now belong to another source is left alone. The record of
+/// failures is read and saved within each turn.
 pub async fn upgrade_unowned_in_turns<F, G>(
     rag: &RwLock<RAGEngine>,
     owned: &BTreeSet<String>,
@@ -1072,49 +1130,88 @@ where
     let format_stale: BTreeSet<String> = stale.iter().map(|row| row.source.clone()).collect();
     let to_rechunk: BTreeSet<String> = rechunk.iter().map(|row| row.source.clone()).collect();
     let mut seen = BTreeSet::new();
-    let documents: Vec<(String, String)> = stale
+    let mut documents: Vec<UnownedDocument> = stale
         .into_iter()
         .chain(rechunk)
-        .filter(|row| !owned.contains(&row.space_id) && !row.source.contains("://"))
+        .filter(|row| !owned.contains(&row.space_id) && !row.source.starts_with("calendar://"))
         .filter(|row| seen.insert(row.source.clone()))
-        .map(|row| (row.source, row.space_id))
+        .map(|row| UnownedDocument {
+            foreign: row.source.contains("://"),
+            format_stale: format_stale.contains(&row.source),
+            rechunk: to_rechunk.contains(&row.source),
+            source: row.source,
+            space_id: row.space_id,
+        })
         .collect();
-    let mut failures = store.load_heal_failures();
     let mut report = UpgradeReport::default();
-    for (source, space_id) in documents {
-        let _turn = turn().await;
+    // Files that failed before: tried again once they changed, else reported
+    // as they stand. A Library source's are its own business.
+    for (source, recorded) in store.load_heal_failures() {
+        if seen.contains(&source) {
+            continue;
+        }
+        let Some(stamp) = FileStamp::of_file(Path::new(&source)) else {
+            continue;
+        };
         let owner = rag
             .read()
             .await
             .source_owner(&source)
             .await
             .map_err(|e| format!("{e:#}"))?;
-        if owner.as_deref() != Some(space_id.as_str()) {
+        let Some(space_id) = owner.filter(|space| !owned.contains(space)) else {
+            continue;
+        };
+        if stamp == recorded.stamp {
+            report.failed.push(recorded.failure);
+            continue;
+        }
+        seen.insert(source.clone());
+        documents.push(UnownedDocument {
+            format_stale: format_stale.contains(&source),
+            rechunk: true,
+            foreign: false,
+            source,
+            space_id,
+        });
+    }
+    for document in documents {
+        let _turn = turn().await;
+        let source = document.source;
+        let owner = rag
+            .read()
+            .await
+            .source_owner(&source)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        if owner.as_deref() != Some(document.space_id.as_str()) {
+            continue;
+        }
+        if document.foreign {
+            keep_unread(rag, &source).await;
             continue;
         }
         let path = PathBuf::from(&source);
         let stamp = FileStamp::of_file(&path);
+        let failures = store.load_heal_failures();
         if failed_as_it_is(&failures, &source, stamp) {
             if let Some(recorded) = failures.get(&source) {
                 report.failed.push(recorded.failure.clone());
             }
             continue;
         }
-        let outcome = upgrade_one_unowned(
-            rag,
-            &source,
-            format_stale.contains(&source),
-            to_rechunk.contains(&source),
-        )
-        .await;
+        let outcome =
+            upgrade_one_unowned(rag, &source, document.format_stale, document.rechunk).await;
         record_heal_outcome(
             store,
-            &mut failures,
             &source,
             &path,
             stamp,
             outcome.as_ref().map(|_| ()).map_err(String::as_str),
         );
+        if matches!(outcome, Ok(Upgraded::Left) | Err(_)) {
+            keep_unread(rag, &source).await;
+        }
         match outcome {
             Ok(Upgraded::InPlace) => report.in_place += 1,
             Ok(Upgraded::Reindexed) => report.reindexed += 1,
@@ -1133,12 +1230,17 @@ where
             }
         }
     }
-    // Records of files that are gone are dropped with them.
-    let before = failures.len();
-    failures.retain(|key, _| Path::new(key).is_file());
-    if failures.len() != before {
-        if let Err(error) = store.save_heal_failures(&failures) {
-            tracing::warn!(%error, "heal failures not saved");
+    // Records of files that are gone are dropped with them, in a turn of
+    // their own: other runs record their failures in theirs.
+    {
+        let _turn = turn().await;
+        let mut failures = store.load_heal_failures();
+        let before = failures.len();
+        failures.retain(|key, _| Path::new(key).is_file());
+        if failures.len() != before {
+            if let Err(error) = store.save_heal_failures(&failures) {
+                tracing::warn!(%error, "heal failures not saved");
+            }
         }
     }
     if report.in_place
@@ -1449,6 +1551,11 @@ async fn sync_folder_scanned(
             Err(reason) => {
                 let file = path.display().to_string();
                 failures.insert(key.clone(), FileFailure { file, reason });
+                // Its chunks of an older chunker, if any, stay, recorded as
+                // kept; it is tried again once it changes (its stamp).
+                if healing {
+                    keep_unread(rag, &key).await;
+                }
             }
         }
         // Tried under this build's chunker: not tried again for it, unless it changes.
@@ -2346,14 +2453,19 @@ mod tests {
             .expect("stored");
     }
 
-    /// The chunk texts this build makes of `path`, sorted.
-    async fn fresh_texts(rag: &RwLock<RAGEngine>, path: &Path) -> Vec<String> {
+    /// The chunk texts this build makes of `path` indexed with the title
+    /// `title` (the title sets the context, which shapes the chunks), sorted.
+    async fn fresh_texts(rag: &RwLock<RAGEngine>, path: &Path, title: Option<&str>) -> Vec<String> {
+        let metadata: std::collections::HashMap<String, String> = title
+            .map(|title| ("title".to_string(), title.to_string()))
+            .into_iter()
+            .collect();
         let mut texts = rag
             .read()
             .await
             .file_preparer()
             .expect("preparer")
-            .prepare(&canonical_path(path), std::collections::HashMap::new())
+            .prepare(&canonical_path(path), metadata)
             .expect("prepared")
             .chunk_texts();
         texts.sort();
@@ -2474,7 +2586,12 @@ mod tests {
             assert!(!stored.is_empty(), "{name}");
             assert_eq!(
                 stored,
-                fresh_texts(&rag, &folder.join(name)).await,
+                fresh_texts(
+                    &rag,
+                    &folder.join(name),
+                    Path::new(name).file_stem().and_then(|s| s.to_str())
+                )
+                .await,
                 "{name} chunked again"
             );
         }
@@ -2637,7 +2754,7 @@ mod tests {
         );
         assert_eq!(
             stored_texts(&rag, "lease-scan.pdf").await,
-            fresh_texts(&rag, &cached).await,
+            fresh_texts(&rag, &cached, Some("lease-scan")).await,
             "chunked again from the OCR cache"
         );
         assert_eq!(stored_texts(&rag, "msa-scan.pdf").await, kept_before);
@@ -2749,6 +2866,95 @@ mod tests {
         );
     }
 
+    /// Each outcome is recorded on the record as it is on disk: one recorded
+    /// in between by another run is kept.
+    #[test]
+    fn heal_failures_are_recorded_on_the_record_as_it_is() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        record_heal_outcome(
+            &store,
+            "a",
+            Path::new("A"),
+            Some(stamp(1, 1)),
+            Err("broken"),
+        );
+        // Another run (a file source in its own turn) records its failure.
+        record_heal_outcome(
+            &store,
+            "b",
+            Path::new("B"),
+            Some(stamp(2, 2)),
+            Err("locked"),
+        );
+        let both = store.load_heal_failures();
+        assert_eq!(both.keys().collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(both["a"].failure.reason, "broken");
+        assert_eq!(both["a"].chunker_version, CHUNKER_VERSION);
+        // The first one is indexed now: only its record goes.
+        record_heal_outcome(&store, "a", Path::new("A"), Some(stamp(3, 3)), Ok(()));
+        assert_eq!(store.load_heal_failures().keys().collect::<Vec<_>>(), ["b"]);
+        // Without a stamp nothing is recorded: it is tried again.
+        record_heal_outcome(&store, "c", Path::new("C"), None, Err("gone"));
+        assert!(!store.load_heal_failures().contains_key("c"));
+        assert!(failed_as_it_is(
+            &store.load_heal_failures(),
+            "b",
+            Some(stamp(2, 2))
+        ));
+        assert!(!failed_as_it_is(
+            &store.load_heal_failures(),
+            "b",
+            Some(stamp(2, 3))
+        ));
+        assert!(changed_since_failure(
+            &store.load_heal_failures(),
+            "b",
+            Some(stamp(2, 3))
+        ));
+    }
+
+    /// A scan of an older chunker that has no chunks (an older chunker made
+    /// none) is not kept: there is nothing to keep, so it is read, with OCR
+    /// when it needs it. Here OCR cannot read it, so it fails.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_scan_without_chunks_is_read_not_kept() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.path().join("data");
+        config.embedding.model_dir = dir.path().join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        config.ocr.engine = crate::config::OcrEngineChoice::PpOcr;
+        let mut engine = RAGEngine::new(config).await.expect("engine");
+        engine
+            .attach_search_models(crate::rag_engine::SearchModels::from_embedder(Arc::new(
+                crate::statements::testing::WordEmbedder::default(),
+            )))
+            .expect("models");
+        let rag = Arc::new(RwLock::new(engine));
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let folder = dir.path().join("library");
+        std::fs::create_dir_all(&folder).expect("folder");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(
+                "../shodh-eval/data/scanned/corpus/contracts/lease-saffron-tidewater-scan.pdf",
+            ),
+            folder.join("msa-scan.pdf"),
+        )
+        .expect("scan");
+        // Recorded as indexed by an older build, with no chunks.
+        record_as_on_disk(&store, "s1", &folder);
+        let synced = sync_folder(&folder.display().to_string(), "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!(
+            (synced.scans_kept, synced.indexed, synced.failures.len()),
+            (0, 0, 1),
+            "{synced:?}"
+        );
+    }
+
     /// A Word document holding `text` in one paragraph.
     fn docx(text: &str) -> Vec<u8> {
         use std::io::Write;
@@ -2783,16 +2989,38 @@ mod tests {
         let good = uploads.join("rules.txt");
         std::fs::write(&good, PASSAGE).expect("file");
         index_as_chunker_one(&rag, &good, "chat-uploads:main").await;
+        let good_title = rag
+            .read()
+            .await
+            .document_metadata(&normalize_source_path(&canonical_path(&good)))
+            .await
+            .expect("metadata")
+            .get("title")
+            .cloned();
+        // An upload whose file is gone: left, its chunks kept.
+        let gone = uploads.join("gone.txt");
+        std::fs::write(&gone, format!("gone.txt: {PASSAGE}")).expect("file");
+        index_as_chunker_one(&rag, &gone, "chat-uploads:main").await;
+        std::fs::remove_file(&gone).expect("removed");
 
         let first = upgrade_unowned(&rag, &BTreeSet::new(), &store)
             .await
             .expect("upgrade");
-        assert_eq!((first.reindexed, first.failed.len()), (1, 1), "{first:?}");
+        assert_eq!(
+            (first.reindexed, first.failed.len(), first.left.len()),
+            (1, 1, 1),
+            "{first:?}"
+        );
         assert!(first.failed[0].file.ends_with("report.docx"));
         assert_eq!(
             stored_texts(&rag, "rules.txt").await,
-            fresh_texts(&rag, &good).await
+            fresh_texts(&rag, &good, good_title.as_deref()).await
         );
+        assert!(stored_texts(&rag, "gone.txt").await[0].ends_with("[cut short]"));
+        // The failed and the gone file are recorded as kept: nothing is left
+        // to list, and the scan over every chunk's metadata latches off.
+        assert_eq!(rechunk_count(&rag).await, 0);
+        assert!(rag.read().await.rechunk_latched());
         assert!(
             stored_texts(&rag, "report.docx").await[0].ends_with("[cut short]"),
             "it keeps its chunks"
@@ -2813,6 +3041,11 @@ mod tests {
         assert_eq!(again.reindexed, 0);
         assert_eq!(again.failed.len(), 1);
         assert_eq!(again.failed[0].reason, "recorded", "not tried again");
+        assert!(
+            again.left.is_empty(),
+            "the gone file is not looked at again"
+        );
+        assert!(rag.read().await.rechunk_latched(), "no scan for it either");
 
         // Changed: tried again, and indexed.
         std::fs::write(

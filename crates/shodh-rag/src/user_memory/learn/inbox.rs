@@ -766,25 +766,48 @@ impl Inbox {
         Ok(Some(proposal))
     }
 
+    /// Memories that applied suggestions with `fingerprint` (accepted or learned) stored.
+    /// They may have been forgotten since: the suggestions are not changed by a forget.
+    pub fn applied_memories(&self, fingerprint: &str) -> LearnResult<Vec<String>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT outcome_json FROM memory_proposals
+             WHERE fingerprint = ?1 AND status IN ('accepted', 'learned')",
+        )?;
+        let outcomes = stmt
+            .query_map(params![fingerprint], |r| r.get::<_, Option<String>>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(outcomes
+            .into_iter()
+            .flatten()
+            .filter_map(|json| serde_json::from_str::<AppliedOutcome>(&json).ok())
+            .filter_map(|outcome| outcome.memory_id)
+            .collect())
+    }
+
     /// Stores a suggestion the user asked for in their own words ("Remember that ..."),
     /// unless the same note is already waiting or saved, or the user rejected or undid it
     /// in the last [`REJECTION_MEMORY_DAYS`] days: the same fingerprint, or a remembered
     /// text that reads the same ([`same_note`]; a suggestion of the learner included).
     /// Today's suggestion cap (a cap on what the model suggests) does not hold it back; it
-    /// is counted in today's suggestions.
+    /// is counted in today's suggestions. `applied_kept`: whether a memory an applied
+    /// suggestion of the same note stored still exists ([`Self::applied_memories`]); when
+    /// the user forgot it, asking again files the note again.
     pub fn insert_requested(
         &self,
         new: NewProposal,
         now: DateTime<Utc>,
+        applied_kept: bool,
     ) -> LearnResult<RequestedOutcome> {
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let kept: bool = tx.query_row(
+        let waiting: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM memory_proposals WHERE fingerprint = ?1
-                AND status IN ('pending', 'accepted', 'learned', 'failed'))",
+                AND status IN ('pending', 'failed'))",
             params![new.fingerprint],
             |r| r.get(0),
         )?;
+        let kept = waiting || applied_kept;
         if kept {
             return Ok(RequestedOutcome::AlreadyKept);
         }

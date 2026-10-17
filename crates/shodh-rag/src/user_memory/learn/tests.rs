@@ -1434,15 +1434,16 @@ fn learning_makes_ten_model_calls_a_day_by_default() {
 }
 
 impl Env {
-    fn file_request(&self, text: &str) -> RequestedOutcome {
+    async fn file_request(&self, text: &str) -> RequestedOutcome {
         let request = memory_request(text).expect("a request to remember");
         self.learner
             .file_user_note(&request, "c1", "r1", self.f.store.now(), Scope::Global)
+            .await
             .unwrap()
     }
 
-    fn filed(&self, text: &str) -> ProposalView {
-        match self.file_request(text) {
+    async fn filed(&self, text: &str) -> ProposalView {
+        match self.file_request(text).await {
             RequestedOutcome::Filed(proposal) => ProposalView::from(*proposal),
             other => panic!("not filed: {other:?}"),
         }
@@ -1454,7 +1455,7 @@ async fn a_request_to_remember_becomes_a_note_suggestion_without_a_model() {
     let e = env().await;
     // Not learning: filed whatever the mode, and never applied automatically.
     e.set(|p| p.mode = LearnMode::Off);
-    let view = e.filed(THESIS_TURN);
+    let view = e.filed(THESIS_TURN).await;
     assert_eq!(e.model.calls(), 0);
     assert_eq!(view.status, ProposalStatus::Pending);
     let ProposalAction::Remember {
@@ -1477,7 +1478,10 @@ async fn a_request_to_remember_becomes_a_note_suggestion_without_a_model() {
     assert_eq!(source, "conversation://c1/turn/r1");
     assert!((view.confidence - 1.0).abs() < 1e-9);
     // Asked again while it waits: the same suggestion, not a second one.
-    assert_eq!(e.file_request(THESIS_TURN), RequestedOutcome::AlreadyKept);
+    assert_eq!(
+        e.file_request(THESIS_TURN).await,
+        RequestedOutcome::AlreadyKept
+    );
 
     // The learner's note of the same words is the same suggestion.
     e.set(|p| p.mode = LearnMode::Auto);
@@ -1516,11 +1520,12 @@ async fn a_request_to_remember_becomes_a_note_suggestion_without_a_model() {
 #[tokio::test]
 async fn a_note_the_user_rejected_is_not_offered_again() {
     let e = env().await;
-    let first = e.filed("Note: I review papers on Fridays");
+    let first = e.filed("Note: I review papers on Fridays").await;
     e.learner.reject(&first.id).unwrap();
     // Asked again in other words around the same note: not offered again.
     assert_eq!(
-        e.file_request("Remember that I review papers on Fridays."),
+        e.file_request("Remember that I review papers on Fridays.")
+            .await,
         RequestedOutcome::Declined
     );
     assert_eq!(e.pending().len(), 0);
@@ -1533,12 +1538,13 @@ async fn a_note_the_user_rejected_is_not_offered_again() {
     let report = e.learn("By the way, I grade exams on Mondays").await;
     e.learner.reject(&report.proposed[0]).unwrap();
     assert_eq!(
-        e.file_request("Keep in mind that  i grade exams on Mondays!"),
+        e.file_request("Keep in mind that  i grade exams on Mondays!")
+            .await,
         RequestedOutcome::Declined
     );
 
     // Undone counts as declined too; another note is filed.
-    let other = e.filed("Remember that I use DiskANN");
+    let other = e.filed("Remember that I use DiskANN").await;
     let accepted = e
         .learner
         .accept(&other.id, None, &Actor::ui())
@@ -1547,7 +1553,7 @@ async fn a_note_the_user_rejected_is_not_offered_again() {
     assert!(accepted.undoable);
     e.learner.undo(&other.id, &Actor::ui()).await.unwrap();
     assert_eq!(
-        e.file_request("Remember that I use DiskANN."),
+        e.file_request("Remember that I use DiskANN.").await,
         RequestedOutcome::Declined
     );
 }
@@ -1555,7 +1561,7 @@ async fn a_note_the_user_rejected_is_not_offered_again() {
 #[tokio::test]
 async fn a_requested_note_is_batch_accepted_as_the_users() {
     let e = env().await;
-    let view = e.filed("Remember that I review papers on Fridays");
+    let view = e.filed("Remember that I review papers on Fridays").await;
     let results = e
         .learner
         .accept_many(std::slice::from_ref(&view.id), &Actor::ui())
@@ -1628,7 +1634,9 @@ async fn the_legacy_import_has_its_own_one_time_allowance() {
 #[tokio::test]
 async fn a_requested_note_about_someone_else_is_marked_sensitive() {
     let e = env().await;
-    let view = e.filed("Remember that Asha's email is asha@acme.com and her number is 98200 12345");
+    let view = e
+        .filed("Remember that Asha's email is asha@acme.com and her number is 98200 12345")
+        .await;
     assert!(
         view.sensitive
             .contains(&SensitiveReason::ThirdPartyPersonal),
@@ -1636,6 +1644,28 @@ async fn a_requested_note_about_someone_else_is_marked_sensitive() {
         view.sensitive
     );
     // The user's own details are not someone else's.
-    let own = e.filed("Remember that my email is varun@example.com");
+    let own = e.filed("Remember that my email is varun@example.com").await;
     assert!(own.sensitive.is_empty(), "{:?}", own.sensitive);
+}
+
+#[tokio::test]
+async fn a_note_saved_and_then_forgotten_can_be_asked_for_again() {
+    let e = env().await;
+    let view = e.filed("Remember that I use DiskANN").await;
+    let accepted = e
+        .learner
+        .accept(&view.id, None, &Actor::ui())
+        .await
+        .unwrap();
+    assert_eq!(
+        e.file_request("Remember that I use DiskANN").await,
+        RequestedOutcome::AlreadyKept,
+        "saved and still there"
+    );
+    let memory = accepted.outcome.unwrap().memory_id.unwrap();
+    e.service.forget(&memory, None, &Actor::ui()).await.unwrap();
+    assert!(matches!(
+        e.file_request("Remember that I use DiskANN").await,
+        RequestedOutcome::Filed(_)
+    ));
 }

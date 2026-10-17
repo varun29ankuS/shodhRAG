@@ -631,13 +631,16 @@ impl LearnState {
             }
         };
         let at = learner.service().store().now();
-        match learner.file_user_note(
-            request,
-            conversation_id,
-            run_id,
-            at,
-            learned_scope(workspace),
-        ) {
+        match learner
+            .file_user_note(
+                request,
+                conversation_id,
+                run_id,
+                at,
+                learned_scope(workspace),
+            )
+            .await
+        {
             Ok(RequestedOutcome::Filed(_)) => {
                 self.notify(&learner);
                 Some(RequestHandled::Filed)

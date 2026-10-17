@@ -427,7 +427,7 @@ impl Learner {
     /// do not hold it back. A note the user already rejected (or undid) is not offered
     /// again, whether they asked for it or the learner suggested it
     /// ([`Inbox::insert_requested`]).
-    pub fn file_user_note(
+    pub async fn file_user_note(
         &self,
         request: &explicit::MemoryRequest,
         conversation_id: &str,
@@ -451,9 +451,18 @@ impl Learner {
         let mut sensitive = sensitivity::classify_text(&request.note);
         sensitive.sort();
         sensitive.dedup();
+        let fingerprint = remember_fingerprint(&scope, "Note", &text);
+        // Saved before, unless the user forgot that memory since.
+        let mut applied_kept = false;
+        for id in self.inbox.applied_memories(&fingerprint)? {
+            if self.service.get(&id).await.is_ok() {
+                applied_kept = true;
+                break;
+            }
+        }
         let new = NewProposal {
             origin: ProposalOrigin::Turn,
-            fingerprint: remember_fingerprint(&scope, "Note", &text),
+            fingerprint,
             scope,
             conversation_id: Some(conversation_id.to_string()),
             turn_id: Some(turn_id.to_string()),
@@ -472,7 +481,7 @@ impl Learner {
             confidence: 1.0,
             sensitive,
         };
-        self.inbox.insert_requested(new, self.now())
+        self.inbox.insert_requested(new, self.now(), applied_kept)
     }
 
     /// Stores a suggestion and applies it automatically when eligible.

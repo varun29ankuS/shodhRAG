@@ -1,49 +1,12 @@
 import React from "react";
 import { Composition } from "remotion";
 import "./fonts";
-import { LOOP_SHOTS, slots, type Slot } from "./cut";
-import { Act1 } from "./act1";
-import { barBeat, beatFrame } from "./beats";
-import { LaunchVideo } from "./launch";
+import { ShodhFilm } from "./film";
 import { FPS } from "./theme";
 
-const launch = slots();
-
-/** The loop's shots back to back, each at its length in the launch cut. */
-const loop: Slot[] = LOOP_SHOTS.map((id) => {
-  const slot = launch.find((s) => s.id === id);
-  if (!slot) throw new Error(`The launch cut has no shot "${id}"`);
-  return slot;
-}).reduce<Slot[]>((list, slot) => {
-  const start = list.length === 0 ? 0 : list[list.length - 1].start + list[list.length - 1].frames;
-  return [...list, { ...slot, start }];
-}, []);
-
-const total = (list: Slot[]) => list[list.length - 1].start + list[list.length - 1].frames;
-
-/** Act 1 runs thirty-three bars, plus a hold on the passage. */
-const ACT1_FRAMES = beatFrame(barBeat(33)) + 60;
+/** The film runs the whole edited track. */
+const FILM_FRAMES = Math.round(107.03 * FPS);
 
 export const Root: React.FC = () => (
-  <>
-    <Composition id="Act1" component={Act1} durationInFrames={ACT1_FRAMES} fps={FPS} width={1920} height={1080} />
-    <Composition
-      id="ShodhLaunch"
-      component={LaunchVideo}
-      durationInFrames={total(launch)}
-      fps={FPS}
-      width={1920}
-      height={1080}
-      defaultProps={{ list: launch, music: true }}
-    />
-    <Composition
-      id="ShodhLoop"
-      component={LaunchVideo}
-      durationInFrames={total(loop)}
-      fps={FPS}
-      width={1920}
-      height={1080}
-      defaultProps={{ list: loop, music: false }}
-    />
-  </>
+  <Composition id="ShodhFilm" component={ShodhFilm} durationInFrames={FILM_FRAMES} fps={FPS} width={1920} height={1080} />
 );

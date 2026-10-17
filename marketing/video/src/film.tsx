@@ -1,5 +1,7 @@
-// Act 1 — the problem, what Shodh is and who it is for, then one unhurried
-// walkthrough of the core flow on the real app. Two problem beats (too many
+// The Shodh film — the problem, what Shodh is and who it is for, then one
+// unhurried walkthrough on the real app: the core flow (ask, search, answer,
+// citations, the exact passage), trust (flagged statements, the verified
+// log), a short tour (paper graph, workspaces, models), and the close. Two problem beats (too many
 // papers to read; AI answers that cannot be traced to a source), then the
 // Shodh logo, name, line and audience, which settle into the brand mark top
 // left as the app window rises. One window, one continuous
@@ -12,6 +14,11 @@
 import React from "react";
 import { AbsoluteFill, Easing, Html5Audio, Img, OffthreadVideo, Sequence, interpolate, staticFile, useCurrentFrame } from "remotion";
 import boxes from "../public/act1/boxes.json";
+import activityBoxes from "../public/act2/activity-boxes.json";
+import graphBoxes from "../public/act2/graph-boxes.json";
+import groundBoxes from "../public/act2/ground-boxes.json";
+import modelsBoxes from "../public/act2/models-boxes.json";
+import workspaceBoxes from "../public/act2/workspace-boxes.json";
 import { barBeat, beatFrame } from "./beats";
 import { font } from "./theme";
 
@@ -39,11 +46,14 @@ const mix = (a: number, b: number, t: number) => a + (b - a) * t;
 
 type Box = { x: number; y: number; w: number; h: number };
 type BoxName = "composer" | "answer" | "badge1" | "badge2" | "badge3" | "badge4" | "grounded" | "sources" | "viewer" | "passage";
-const box = (name: BoxName): Box => {
-  const b = (boxes as Record<string, { box: Box | null }>)[name]?.box;
-  if (!b) throw new Error(`public/act1/boxes.json has no box for ${name}`);
+const box = (name: BoxName): Box => boxFrom(boxes, "act1/boxes.json", name);
+
+/** An element box logged during a take; a missing one is a broken take, so it fails the render. */
+function boxFrom(log: Record<string, { box: Box | null }>, file: string, name: string): Box {
+  const b = log[name]?.box;
+  if (!b) throw new Error(`public/${file} has no box for ${name}`);
   return b;
-};
+}
 
 /**
  * The answer's citation chips ("1 2 3 7") as drawn in the held still
@@ -80,7 +90,7 @@ function frameShot(shot: Shot): { scale: number; tx: number; ty: number } {
 }
 
 /** Scenes, in bars of the track. */
-const SCENE = { papers: 0, trust: 4, brand: 8, ask: 12, search: 16, answer: 19, cite: 23, open: 26, passage: 29, end: 33 } as const;
+const SCENE = { papers: 0, trust: 4, brand: 8, ask: 12, search: 16, answer: 19, cite: 23, open: 26, passage: 29, ground: 33, activity: 37, graph: 41, workspace: 44, models: 47, close: 51 } as const;
 type SceneName = keyof typeof SCENE;
 
 const CAPTIONS: { from: SceneName; text: string }[] = [
@@ -90,6 +100,11 @@ const CAPTIONS: { from: SceneName; text: string }[] = [
   { from: "cite", text: "Each number links a sentence to the paper it came from." },
   { from: "open", text: "Click a number to open that paper…" },
   { from: "passage", text: "…at the exact passage, outlined." },
+  { from: "ground", text: "When a sentence is not backed by its source, Shodh flags it." },
+  { from: "activity", text: "Every question, search and answer is kept in a tamper-evident log on your computer." },
+  { from: "graph", text: "See how your papers cite each other." },
+  { from: "workspace", text: "Keep each project in its own workspace." },
+  { from: "models", text: "Use the model you choose, or run entirely on your computer." },
 ];
 
 /** A box drawn on over the footage, in window pixels from footage fractions. */
@@ -201,11 +216,46 @@ const ProblemText: React.FC<{ text: string; inn: number; out: number; look: Look
   </div>
 );
 
-export const Act1: React.FC = () => {
+/** The close, under the brand back at the centre: the line, what it costs and where to get it. */
+const Close: React.FC<{ frame: number; look: Look }> = ({ frame, look }) => {
+  const line = ramp(frame, 50, 72, expo);
+  const offer = ramp(frame, 80, 102, expo);
+  const where = ramp(frame, 104, 126, expo);
+  return (
+    <>
+      <div style={{ position: "absolute", left: 0, right: 0, top: 590, textAlign: "center", fontFamily: font.sans, fontSize: 58, fontWeight: 700, letterSpacing: "-0.03em", color: look.text, opacity: line, transform: `translateY(${(1 - line) * 16}px)` }}>
+        Research you can verify.
+      </div>
+      <div style={{ position: "absolute", left: 0, right: 0, top: 690, textAlign: "center", fontFamily: font.sans, fontSize: 34, fontWeight: 500, color: look.sub, opacity: offer, transform: `translateY(${(1 - offer) * 12}px)` }}>
+        Free and open source · Windows and Mac
+      </div>
+      <div style={{ position: "absolute", left: 0, right: 0, top: 760, display: "flex", justifyContent: "center", opacity: where, transform: `translateY(${(1 - where) * 12}px)` }}>
+        <div style={{ padding: "14px 30px", borderRadius: 999, background: look.accent, color: "#fff", fontFamily: font.sans, fontSize: 30, fontWeight: 650 }}>github.com/varun29ankuS/shodhRAG</div>
+      </div>
+    </>
+  );
+};
+
+export const ShodhFilm: React.FC = () => {
   const frame = useCurrentFrame();
   const look = LOOKS.beige;
   const at = (s: SceneName) => (SCENE[s] === 0 ? 0 : bar(SCENE[s]));
-  const F = { trust: at("trust"), brand: at("brand"), ask: at("ask"), search: at("search"), answer: at("answer"), cite: at("cite"), open: at("open"), passage: at("passage"), end: at("end") };
+  const F = {
+    trust: at("trust"),
+    brand: at("brand"),
+    ask: at("ask"),
+    search: at("search"),
+    answer: at("answer"),
+    cite: at("cite"),
+    open: at("open"),
+    passage: at("passage"),
+    ground: at("ground"),
+    activity: at("activity"),
+    graph: at("graph"),
+    workspace: at("workspace"),
+    models: at("models"),
+    close: at("close"),
+  };
 
   // The problem, in two beats; then the brand, which settles top left as the window rises.
   const papersIn = ramp(frame, 4, 26, expo);
@@ -213,7 +263,9 @@ export const Act1: React.FC = () => {
   const trustIn = ramp(frame, F.trust + 6, F.trust + 28, expo);
   const trustOut = ramp(frame, F.brand - 16, F.brand + 2);
   const brandIn = ramp(frame, F.brand, F.brand + 26, expo);
-  const settle = ramp(frame, F.ask - 50, F.ask - 6);
+  // The brand settles top left for the walkthrough and returns to the centre for the close.
+  const settle = ramp(frame, F.ask - 50, F.ask - 6) * (1 - ramp(frame, F.close + 6, F.close + 50));
+  const leave = ramp(frame, F.close - 14, F.close + 24);
   const fadeCopy = 1 - ramp(frame, F.ask - 62, F.ask - 40);
   const tagline = ramp(frame, F.brand + 18, F.brand + 40, expo) * fadeCopy;
   const audience = ramp(frame, F.brand + 46, F.brand + 68, expo) * fadeCopy;
@@ -226,6 +278,17 @@ export const Act1: React.FC = () => {
   // The full width of the answer column, its last lines and the chips.
   const citeShot: Shot = { x: 0.33, y: CHIPS.y - 0.24, w: 0.5, h: 0.34 };
   const passageShot = pad(box("passage"), 0.05, 0.07);
+  // Trust and the tour, from the boxes each take logged.
+  const flagShot = pad(boxFrom(groundBoxes, "act2/ground-boxes.json", "flag"), 0.16, 0.14);
+  const chipAfter = boxFrom(groundBoxes, "act2/ground-boxes.json", "chipAfter");
+  const panelShot: Shot = { x: 0.33, y: chipAfter.y - 0.06, w: 0.5, h: 0.24 };
+  const verify = boxFrom(activityBoxes, "act2/activity-boxes.json", "verify");
+  const activityShot: Shot = { x: 0.2, y: 0.02, w: verify.x + verify.w - 0.2 + 0.06, h: 0.44 };
+  const graphShot = pad(boxFrom(graphBoxes, "act2/graph-boxes.json", "graph"), 0.02, 0.0);
+  const header = boxFrom(workspaceBoxes, "act2/workspace-boxes.json", "header");
+  const workspaceShot: Shot = { x: 0.23, y: header.y - 0.06, w: 0.7, h: 0.42 };
+  const tiers = boxFrom(modelsBoxes, "act2/models-boxes.json", "tiers");
+  const modelsShot: Shot = { x: 0.33, y: 0.0, w: 0.56, h: tiers.y + tiers.h + 0.04 };
 
   const keys: [number, Shot][] = [
     [F.ask + 4, WHOLE],
@@ -240,6 +303,27 @@ export const Act1: React.FC = () => {
     [F.open + 56, WHOLE],
     [F.passage + 6, WHOLE],
     [F.passage + 70, passageShot],
+    [F.ground - 8, passageShot],
+    [F.ground + 30, WHOLE],
+    [F.ground + 44, flagShot],
+    [F.ground + 112, flagShot],
+    [F.ground + 150, panelShot],
+    [F.activity - 4, panelShot],
+    [F.activity + 30, WHOLE],
+    [F.activity + 110, WHOLE],
+    [F.activity + 150, activityShot],
+    [F.graph - 4, activityShot],
+    [F.graph + 30, WHOLE],
+    [F.graph + 70, WHOLE],
+    [F.graph + 110, graphShot],
+    [F.workspace - 4, graphShot],
+    [F.workspace + 30, WHOLE],
+    [F.workspace + 90, WHOLE],
+    [F.workspace + 130, workspaceShot],
+    [F.models - 4, workspaceShot],
+    [F.models + 30, WHOLE],
+    [F.models + 90, WHOLE],
+    [F.models + 140, modelsShot],
   ];
   let cam = frameShot(keys[0][1]);
   for (let i = 1; i < keys.length; i++) {
@@ -257,7 +341,7 @@ export const Act1: React.FC = () => {
   const tag = ramp(frame, F.passage + 100, F.passage + 120, expo);
   const pass = box("passage");
 
-  const caption = [...CAPTIONS].reverse().find((c) => frame >= at(c.from));
+  const caption = frame < F.close ? [...CAPTIONS].reverse().find((c) => frame >= at(c.from)) : undefined;
   const captionStart = caption ? at(caption.from) : 0;
   const captionIndex = caption ? CAPTIONS.indexOf(caption) : -1;
   const cIn = ramp(frame, captionStart + 4, captionStart + 22, expo);
@@ -267,7 +351,7 @@ export const Act1: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          left: mix(2400, WIN.x, rise),
+          left: mix(mix(2400, WIN.x, rise), 2400, leave),
           top: WIN.y,
           width: WIN.w,
           height: WIN.h,
@@ -275,7 +359,7 @@ export const Act1: React.FC = () => {
           overflow: "hidden",
           background: "#fff",
           boxShadow: look.shadow,
-          transform: `rotateY(${(1 - rise) * -24}deg)`,
+          transform: `rotateY(${(1 - rise) * -24 + leave * -24}deg)`,
           transformOrigin: "100% 50%",
         }}
       >
@@ -290,13 +374,27 @@ export const Act1: React.FC = () => {
             <OffthreadVideo src={staticFile("act1/answer.mp4")} muted style={fill} />
             <Img src={staticFile("act1/hold-answer.png")} style={{ ...fill, opacity: ramp(frame, F.answer + 136, F.answer + 146) }} />
           </Sequence>
-          <Sequence from={F.open} durationInFrames={F.end + 60 - F.open} layout="none">
+          <Sequence from={F.open} durationInFrames={F.ground - F.open} layout="none">
             <OffthreadVideo src={staticFile("act1/click.mp4")} muted style={fill} />
             <Img src={staticFile("act1/hold-viewer.png")} style={{ ...fill, opacity: ramp(frame, F.open + 132, F.open + 142) }} />
           </Sequence>
+          {(
+            [
+              ["ground", F.ground, F.activity],
+              ["activity", F.activity, F.graph],
+              ["graph", F.graph, F.workspace],
+              ["workspace", F.workspace, F.models],
+              ["models", F.models, F.close + 30],
+            ] as const
+          ).map(([name, from, to]) => (
+            <Sequence key={name} from={from} durationInFrames={to - from} layout="none">
+              <OffthreadVideo src={staticFile(`act2/${name}.mp4`)} muted style={fill} />
+              <Img src={staticFile(`act2/${name}-hold.png`)} style={{ ...fill, opacity: ramp(frame, to - 26, to - 16) }} />
+            </Sequence>
+          ))}
           {frame >= F.cite + 50 && frame < F.open + 20 ? <Outline b={CHIPS} p={ramp(frame, F.cite + 50, F.cite + 76, expo)} pad={5} radius={8} width={2.5} color={look.accent} /> : null}
-          {frame >= F.passage + 74 ? <Outline b={pass} p={outline} pad={8} radius={8} width={3} color={look.accent} /> : null}
-          {frame >= F.passage + 100 ? (
+          {frame >= F.passage + 74 && frame < F.ground + 16 ? <Outline b={pass} p={outline} pad={8} radius={8} width={3} color={look.accent} /> : null}
+          {frame >= F.passage + 100 && frame < F.ground + 16 ? (
             <div style={{ position: "absolute", left: pass.x * WIN.w, top: pass.y * WIN.h - 42, padding: "6px 14px", borderRadius: 999, background: look.accent, color: "#fff", fontFamily: font.sans, fontSize: 15, fontWeight: 700, opacity: tag, transform: `translateY(${(1 - tag) * 8}px)` }}>
               Cited passage · SPANN, page 2
             </div>
@@ -313,6 +411,7 @@ export const Act1: React.FC = () => {
           <Brand settle={settle} look={look} />
         </div>
       ) : null}
+      {frame >= F.close ? <Close frame={frame - F.close} look={look} /> : null}
       <div style={{ position: "absolute", left: 0, right: 0, top: 590, textAlign: "center", fontFamily: font.sans, fontSize: 50, fontWeight: 600, letterSpacing: "-0.02em", color: look.text, opacity: tagline, transform: `translateY(${(1 - tagline) * 14}px)` }}>
         A research assistant for your own papers.
       </div>

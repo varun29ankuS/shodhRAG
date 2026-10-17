@@ -442,7 +442,7 @@ impl SettingsStore {
                 ));
                 Ok(Loaded {
                     value: recovered(AppSettings::default()),
-                    origin: Origin::Backup { problem },
+                    origin: Origin::Damaged { problem },
                 })
             }
         }

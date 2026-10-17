@@ -27,6 +27,10 @@ pub enum Origin {
     /// The file was damaged (or missing) and its backup was read.
     /// `problem` says what was wrong with the file.
     Backup { problem: String },
+    /// The file and its backup were both unusable and the caller chose to
+    /// go on without them (settings fall back to defaults). Saving moves
+    /// both aside, never over them.
+    Damaged { problem: String },
 }
 
 /// A store's contents and where they came from.
@@ -185,7 +189,9 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// Replace the store at `path` with `bytes`, keeping what was there: the
 /// file it was read from (`origin`) becomes `<name>.bak`; a damaged file
 /// (the store was read from its backup) is moved aside as
-/// `<name>.damaged-<UTC time>` and the backup is kept.
+/// `<name>.damaged-<UTC time>` and the backup is kept; when the backup was
+/// unusable too ([`Origin::Damaged`]) it is moved aside as
+/// `<name>.bak.damaged-<UTC time>`, so neither is ever written over.
 pub fn write_with_backup(path: &Path, bytes: &[u8], origin: &Origin) -> io::Result<()> {
     let dir = parent_dir(path);
     fs::create_dir_all(&dir)?;
@@ -211,6 +217,15 @@ pub fn write_with_backup(path: &Path, bytes: &[u8], origin: &Origin) -> io::Resu
             }
         }
         Origin::Backup { .. } => {
+            if path.exists() {
+                fs::rename(path, damaged_path(path))?;
+            }
+        }
+        Origin::Damaged { .. } => {
+            let backup = backup_path(path);
+            if backup.exists() {
+                fs::rename(&backup, damaged_path(&backup))?;
+            }
             if path.exists() {
                 fs::rename(path, damaged_path(path))?;
             }
@@ -363,6 +378,33 @@ mod tests {
         // Both damaged.
         fs::write(backup_path(&path), "{").unwrap();
         assert!(matches!(read(&path), Err(ReadFailure::Damaged { .. })));
+    }
+
+    #[test]
+    fn a_damaged_backup_is_moved_aside_too_never_written_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.json");
+        fs::write(&path, "{").unwrap();
+        fs::write(backup_path(&path), "[").unwrap();
+        let problem = match read(&path) {
+            Err(ReadFailure::Damaged { problem, .. }) => problem,
+            other => panic!("expected a damaged store, got {other:?}"),
+        };
+        // The caller goes on with defaults and saves.
+        write_with_backup(&path, b"1", &Origin::Damaged { problem }).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "1");
+        let all = names(dir.path());
+        let kept = |prefix: &str, text: &str| {
+            all.iter()
+                .filter(|n| n.starts_with(prefix))
+                .any(|n| fs::read_to_string(dir.path().join(n)).unwrap() == text)
+        };
+        assert!(kept("store.json.damaged-", "{"), "{all:?}");
+        assert!(kept("store.json.bak.damaged-", "["), "{all:?}");
+        assert!(!backup_path(&path).exists());
+        // The next save starts a new backup from the good file.
+        save(&path, "2");
+        assert_eq!(fs::read_to_string(backup_path(&path)).unwrap(), "1");
     }
 
     #[test]

@@ -209,6 +209,11 @@ pub fn close_after_saves(window: &Window) {
         prepare_exit(&app).await;
         if let Err(e) = window.destroy() {
             tracing::warn!(error = %e, "could not close the main window");
+            // The window stays: later closes and exits must save again.
+            app.state::<ShutdownState>()
+                .closing
+                .store(false, Ordering::SeqCst);
+            cancel_exit(&app);
         }
     });
 }

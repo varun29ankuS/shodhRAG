@@ -386,7 +386,7 @@ impl Learner {
             }
             self.inbox
                 .count(UsageCounter::Refused, validated.ungrounded(), now)?;
-            self.count_and_log_drops(&model.model_id(), &parsed.rejections, &validated, None)?;
+            self.count_and_log_drops(&model.model_id(), &parsed.rejections, &validated)?;
             for candidate in validated.candidates {
                 self.propose_candidate(
                     &candidate,
@@ -521,7 +521,7 @@ impl Learner {
             }
             self.inbox
                 .count(UsageCounter::Refused, validated.ungrounded(), now)?;
-            self.count_and_log_drops(&model.model_id(), &parsed.rejections, &validated, None)?;
+            self.count_and_log_drops(&model.model_id(), &parsed.rejections, &validated)?;
             for candidate in validated.candidates {
                 // The steps must follow the sequence that worked, in order.
                 let steps = candidate
@@ -569,7 +569,6 @@ impl Learner {
         model: &str,
         malformed: &[Rejection],
         validated: &extract::Validated,
-        turn: Option<&str>,
     ) -> LearnResult<()> {
         let invalid = validated.dropped_total() - validated.ungrounded() + malformed.len();
         self.inbox
@@ -578,7 +577,6 @@ impl Learner {
             .iter()
             .chain(&validated.rejections)
             .cloned()
-            .map(|r| r.about(turn))
             .collect();
         self.log_rejections(model, &rejections);
         Ok(())

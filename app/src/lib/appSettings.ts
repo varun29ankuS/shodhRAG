@@ -5,6 +5,8 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { parseNotificationPrefs, saveNotificationPrefs } from '../features/notifications/notificationPrefs.ts';
+import type { NotificationPrefs } from '../features/notifications/notificationPrefs.ts';
 
 export const APP_SETTINGS_CHANGED = 'app-settings-changed';
 
@@ -115,6 +117,8 @@ export interface AppSettings {
   policy: Policy;
   memory: MemoryPrefs;
   answers: AnswerPrefs;
+  /** Desktop notifications by category. User-only. */
+  notifications: NotificationPrefs;
   seeded: boolean;
 }
 
@@ -134,11 +138,14 @@ export function parseAppSettings(value: unknown): AppSettings | null {
   if (!memory) return null;
   const answers = parseAnswerPrefs(value.answers);
   if (!answers) return null;
+  const notifications = parseNotificationPrefs(value.notifications);
+  if (!notifications) return null;
   return {
     preferences: { theme: preferences.theme, searchMaxResults: preferences.searchMaxResults },
     policy: { localOnly: policy.localOnly, webAccess: policy.webAccess },
     memory,
     answers,
+    notifications,
     seeded: value.seeded === true,
   };
 }
@@ -167,6 +174,10 @@ export async function setMemoryPreferences(memory: MemoryPrefs): Promise<AppSett
 
 export async function setAnswerPreferences(answers: AnswerPrefs): Promise<AppSettings | null> {
   return parseAppSettings(await invoke<unknown>('set_answer_preferences', { answers }));
+}
+
+export async function setNotificationPreferences(notifications: NotificationPrefs): Promise<AppSettings | null> {
+  return parseAppSettings(await saveNotificationPrefs(invoke, notifications));
 }
 
 /** Listen for settings changes (from the UI or the agent). Returns the unsubscribe function. */

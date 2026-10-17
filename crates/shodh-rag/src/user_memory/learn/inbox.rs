@@ -139,6 +139,13 @@ fn masked(text: &str, max_bytes: usize) -> String {
     }) {
         return "[withheld: it looks like a secret or a financial identifier]".to_string();
     }
+    safe_cut(text, max_bytes)
+}
+
+/// `text` with anything shaped like a key or bearer token masked (as provider errors
+/// are), cut to `max_bytes` on a character boundary. For the app's own detail of a
+/// rejection, which never holds the model's answer.
+fn safe_cut(text: &str, max_bytes: usize) -> String {
     let safe = crate::harness::provider_error::safe_detail(text, None, max_bytes);
     let mut end = safe.len().min(max_bytes);
     while !safe.is_char_boundary(end) {
@@ -1149,7 +1156,7 @@ impl Inbox {
                     rejection.turn_id,
                     crate::harness::truncate_chars(model, 200),
                     crate::harness::truncate_chars(&rejection.code, 64),
-                    masked(&rejection.detail, MAX_DETAIL_BYTES),
+                    safe_cut(&rejection.detail, MAX_DETAIL_BYTES),
                     masked(&rejection.excerpt, MAX_EXCERPT_BYTES),
                     at,
                 ],
@@ -1159,9 +1166,15 @@ impl Inbox {
         Ok(())
     }
 
-    /// Today's rejections by reason, most frequent first.
+    /// Today's rejections by reason, most frequent first (forgetting those older than
+    /// [`REJECTION_LOG_DAYS`]).
     pub fn rejections_today(&self, now: DateTime<Utc>) -> LearnResult<Vec<RejectionCount>> {
         let conn = self.lock();
+        // Kept 14 days even on a day nothing is rejected.
+        conn.execute(
+            "DELETE FROM memory_learn_rejections WHERE created_at < ?1",
+            params![ts(now - Duration::days(REJECTION_LOG_DAYS))],
+        )?;
         let mut stmt = conn.prepare(
             "SELECT code, count(*) FROM memory_learn_rejections WHERE day = ?1
              GROUP BY code ORDER BY count(*) DESC, code",

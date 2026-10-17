@@ -1669,3 +1669,27 @@ async fn a_note_saved_and_then_forgotten_can_be_asked_for_again() {
         RequestedOutcome::Filed(_)
     ));
 }
+
+#[tokio::test]
+async fn the_apps_own_detail_is_kept_and_old_reasons_go_without_a_new_one() {
+    let e = env().await;
+    let inbox = e.learner.inbox();
+    let now = e.f.store.now();
+    // "token" in the app's own detail is not a secret: it is kept as written.
+    inbox
+        .record_rejections(
+            "m",
+            &[Rejection::new(
+                "truncated",
+                "the model stopped at its 4000-token limit",
+                "{\"memories\": [",
+            )],
+            now - Duration::days(inbox::REJECTION_LOG_DAYS + 1),
+        )
+        .unwrap();
+    let rows = rejection_rows(&e);
+    assert_eq!(rows[0].2, "the model stopped at its 4000-token limit");
+    // Reading today's reasons forgets the old one, though nothing new was rejected.
+    assert!(inbox.rejections_today(now).unwrap().is_empty());
+    assert!(rejection_rows(&e).is_empty());
+}

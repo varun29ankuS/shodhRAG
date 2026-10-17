@@ -297,3 +297,15 @@ test('a discussion brought back does not carry its flagged citations up', async 
   // The excerpt offered when no summary could be written.
   assert.equal(threadSummary(thread), `**Asked:** And closure?\n\n${cleaned}`);
 });
+
+test("the main conversation replayed into a fresh session drops an answer's flagged citations", async () => {
+  const { replayedContent } = await import('../src/features/ask/chatHistory.ts');
+  const { content, transcript, cleaned } = flaggedAnswer();
+  assert.equal(replayedContent({ role: 'assistant', content, transcript }), cleaned);
+  assert.equal(replayedContent({ role: 'assistant', content }), content, 'no transcript: as written');
+  assert.equal(replayedContent({ role: 'user', content: 'See [3].' }), 'See [3].', 'what the user wrote is never changed');
+  assert.equal(
+    replayedContent({ role: 'user', content: 'A note', sideSummary: { threadId: 't', label: 'Closure', parentMessageId: null } }),
+    'From a side discussion about "Closure":\n\nA note',
+  );
+});

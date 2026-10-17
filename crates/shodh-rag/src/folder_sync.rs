@@ -808,13 +808,19 @@ enum Unread {
 /// when only the format is older, or, for a scan to be chunked again whose
 /// OCR reading is not cached, by keeping its chunks rather than reading it
 /// with OCR again. `None`: the file is to be read and indexed again in full.
+/// A file that failed before and has changed since (`changed_since_failure`)
+/// is always read: its chunks are of what it was, not of what it is.
 async fn bring_up_to_date_unread(
     rag: &RwLock<RAGEngine>,
     key: &str,
     path: &Path,
     format_stale: bool,
     rechunk: bool,
+    changed_since_failure: bool,
 ) -> Result<Option<Unread>, String> {
+    if changed_since_failure {
+        return Ok(None);
+    }
     if format_stale && upgrade_unchanged_in_place(rag, key).await? {
         return Ok(Some(Unread::InPlace));
     }
@@ -958,14 +964,15 @@ pub async fn upgrade_file_source(
     if failed_as_it_is(&failures, &key, stamp) {
         return Ok(false);
     }
-    let outcome = match bring_up_to_date_unread(rag, &key, &file, format_stale, rechunk).await {
-        Ok(Some(Unread::InPlace)) => Ok(true),
-        Ok(Some(Unread::ScanKept)) => Ok(false),
-        Ok(None) => crate::indexing::index_single_file(path, source_id, rag, None)
-            .await
-            .map(|_| true),
-        Err(reason) => Err(reason),
-    };
+    let outcome =
+        match bring_up_to_date_unread(rag, &key, &file, format_stale, rechunk, changed).await {
+            Ok(Some(Unread::InPlace)) => Ok(true),
+            Ok(Some(Unread::ScanKept)) => Ok(false),
+            Ok(None) => crate::indexing::index_single_file(path, source_id, rag, None)
+                .await
+                .map(|_| true),
+            Err(reason) => Err(reason),
+        };
     record_heal_outcome(
         store,
         &key,
@@ -1038,9 +1045,19 @@ async fn upgrade_one_unowned(
     source: &str,
     format_stale: bool,
     rechunk: bool,
+    changed_since_failure: bool,
 ) -> Result<Upgraded, String> {
     let path = Path::new(source);
-    match bring_up_to_date_unread(rag, source, path, format_stale, rechunk).await? {
+    match bring_up_to_date_unread(
+        rag,
+        source,
+        path,
+        format_stale,
+        rechunk,
+        changed_since_failure,
+    )
+    .await?
+    {
         Some(Unread::InPlace) => return Ok(Upgraded::InPlace),
         Some(Unread::ScanKept) => return Ok(Upgraded::ScanKept),
         None => {}
@@ -1072,6 +1089,8 @@ struct UnownedDocument {
     space_id: String,
     format_stale: bool,
     rechunk: bool,
+    /// It failed before and has changed since: it is read, never kept.
+    changed: bool,
     /// A `scheme://` source no indexer here reads again (not a calendar
     /// item): its chunks are recorded as kept, so it does not stay listed.
     foreign: bool,
@@ -1136,6 +1155,7 @@ where
         .filter(|row| !owned.contains(&row.space_id) && !row.source.starts_with("calendar://"))
         .filter(|row| seen.insert(row.source.clone()))
         .map(|row| UnownedDocument {
+            changed: false,
             foreign: row.source.contains("://"),
             format_stale: format_stale.contains(&row.source),
             rechunk: to_rechunk.contains(&row.source),
@@ -1170,6 +1190,7 @@ where
         documents.push(UnownedDocument {
             format_stale: format_stale.contains(&source),
             rechunk: true,
+            changed: true,
             foreign: false,
             source,
             space_id,
@@ -1200,8 +1221,16 @@ where
             }
             continue;
         }
-        let outcome =
-            upgrade_one_unowned(rag, &source, document.format_stale, document.rechunk).await;
+        // Listed as outdated, it may have failed before and changed since too.
+        let changed = document.changed || changed_since_failure(&failures, &source, stamp);
+        let outcome = upgrade_one_unowned(
+            rag,
+            &source,
+            document.format_stale,
+            document.rechunk,
+            changed,
+        )
+        .await;
         record_heal_outcome(
             store,
             &source,
@@ -1524,7 +1553,9 @@ async fn sync_folder_scanned(
         let healing = heal.contains(&key);
         // A failed file is read again in full: it has no chunks to keep.
         let unread = if unchanged && !failures.contains_key(&key) {
-            bring_up_to_date_unread(rag, &key, path, format_stale.contains(&key), healing).await
+            // A file changed since it failed is not unchanged: it never gets here.
+            bring_up_to_date_unread(rag, &key, path, format_stale.contains(&key), healing, false)
+                .await
         } else {
             Ok(None)
         };
@@ -2952,6 +2983,81 @@ mod tests {
             (synced.scans_kept, synced.indexed, synced.failures.len()),
             (0, 0, 1),
             "{synced:?}"
+        );
+    }
+
+    /// A scan that failed before and has changed since is read again, never
+    /// kept, even when its new reading is not cached: here, with the scan
+    /// reader missing, that read fails and is recorded, not counted as kept.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_changed_scan_that_failed_is_read_not_kept() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.path().join("data");
+        config.embedding.model_dir = dir.path().join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        config.ocr.engine = crate::config::OcrEngineChoice::PpOcr;
+        let cache = crate::processing::ocr::cache::OcrCache::new(
+            config.data_dir.join(crate::rag_engine::OCR_CACHE_DIR),
+        );
+        let mut engine = RAGEngine::new(config).await.expect("engine");
+        engine
+            .attach_search_models(crate::rag_engine::SearchModels::from_embedder(Arc::new(
+                crate::statements::testing::WordEmbedder::default(),
+            )))
+            .expect("models");
+        let rag = Arc::new(RwLock::new(engine));
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let uploads = dir.path().join("chat_uploads");
+        std::fs::create_dir_all(&uploads).expect("folder");
+        let scan = uploads.join("msa-scan.pdf");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(
+                "../shodh-eval/data/scanned/corpus/contracts/lease-saffron-tidewater-scan.pdf",
+            ),
+            &scan,
+        )
+        .expect("scan");
+        let key = normalize_source_path(&canonical_path(&scan));
+        cache
+            .put(&crate::processing::parser::tests::cached_scan(
+                &canonical_path(&scan),
+                "The courts at Bengaluru have exclusive jurisdiction over any dispute arising out of or in connection with this agreement.",
+            ))
+            .expect("cached");
+        index_as_chunker_one(&rag, &scan, "chat-uploads:main").await;
+        assert!(cache.remove(&key));
+        // It failed before, as it was then; it has changed since.
+        record_heal_outcome(
+            &store,
+            &key,
+            &scan,
+            Some(FileStamp {
+                modified_ms: 1,
+                size: 1,
+            }),
+            Err("read before"),
+        );
+        rag.write()
+            .await
+            .keep_chunks_of_older_chunker(&key)
+            .await
+            .expect("kept");
+
+        let report = upgrade_unowned(&rag, &BTreeSet::new(), &store)
+            .await
+            .expect("upgrade");
+        assert_eq!(
+            (report.scans_kept, report.reindexed, report.failed.len()),
+            (0, 0, 1),
+            "{report:?}"
+        );
+        assert_ne!(report.failed[0].reason, "read before", "read again");
+        assert_eq!(
+            store.load_heal_failures()[&key].stamp,
+            FileStamp::of_file(&scan).expect("stamp"),
+            "recorded as it is now"
         );
     }
 

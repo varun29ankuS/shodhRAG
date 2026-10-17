@@ -5,29 +5,155 @@
 //! was in, an id no workspace run looks for; [`settle_scopes`] moves such rows, and the
 //! rows of workspaces that no longer exist, to [`Scope::Global`].
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+
+use serde::Serialize;
+use serde_json::json;
 
 use super::results::RESULT_CLASS;
 use super::snippets::SNIPPET_CLASS;
+use crate::audit::{AuditEventType, AuditRecord, SYSTEM_PRINCIPAL};
 use crate::statements::{Scope, StatementResult, StatementStore};
 
 /// Label of the extractor of the snippets the user saved (`ExtractorKind::User`).
 const USER_EXTRACTOR: &str = "user";
 
-/// What [`settle_scopes`] moved to [`Scope::Global`], in statements (every version).
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+/// Ontology source of the research pack: its classes other than snippets and results
+/// (the citation graph's papers, authors, venues, methods) count as "others".
+const RESEARCH_SOURCE: &str = "shodh.research";
+
+/// Statements moved, by kind (every version counts).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct MovedCounts {
+    pub memories: u64,
+    pub snippets: u64,
+    pub results: u64,
+    pub others: u64,
+}
+
+impl MovedCounts {
+    /// Statements moved.
+    pub fn total(&self) -> u64 {
+        self.memories + self.snippets + self.results + self.others
+    }
+
+    fn add(&mut self, store: &StatementStore, by_class: &BTreeMap<String, u64>) {
+        for (class, n) in by_class {
+            let slot = if class == SNIPPET_CLASS {
+                &mut self.snippets
+            } else if class == RESULT_CLASS {
+                &mut self.results
+            } else if store
+                .ontology()
+                .class(class)
+                .is_some_and(|c| c.source == RESEARCH_SOURCE)
+            {
+                &mut self.others
+            } else {
+                &mut self.memories
+            };
+            *slot += n;
+        }
+    }
+}
+
+/// Why statements moved to [`Scope::Global`]; recorded in the audit log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveReason {
+    /// The one-time move of what the Library made under a workspace scope.
+    LibraryMigration,
+    /// The user deleted the workspace.
+    WorkspaceDeleted,
+    /// The scope names no workspace.
+    OrphanSweep,
+}
+
+impl MoveReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MoveReason::LibraryMigration => "library-scope migration",
+            MoveReason::WorkspaceDeleted => "workspace deleted",
+            MoveReason::OrphanSweep => "orphan scope sweep",
+        }
+    }
+}
+
+/// Statements moved to [`Scope::Global`] from the scopes `from`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ScopeMove {
+    /// The scopes something moved from.
+    pub from: BTreeSet<Scope>,
+    pub moved: MovedCounts,
+}
+
+impl ScopeMove {
+    fn add(&mut self, store: &StatementStore, scope: &Scope, by_class: &BTreeMap<String, u64>) {
+        if by_class.values().any(|n| *n > 0) {
+            self.from.insert(scope.clone());
+            self.moved.add(store, by_class);
+        }
+    }
+
+    /// The `scope_change` audit event of this move: the scopes, the counts per kind and
+    /// why, never statement text. `None` when nothing moved. A deleted workspace is the
+    /// user's doing; the other moves are the app's.
+    pub fn audit_record(&self, reason: MoveReason) -> Option<AuditRecord> {
+        let total = self.moved.total();
+        if total == 0 {
+            return None;
+        }
+        let record = AuditRecord::new(
+            AuditEventType::ScopeChange,
+            json!({
+                "reason": reason.as_str(),
+                "from": self.from.iter().map(Scope::as_key).collect::<Vec<_>>(),
+                "to": Scope::Global.as_key(),
+                "moved": self.moved,
+                "total": total,
+            }),
+        );
+        Some(match reason {
+            MoveReason::WorkspaceDeleted => record,
+            MoveReason::LibraryMigration | MoveReason::OrphanSweep => {
+                record.principal(SYSTEM_PRINCIPAL)
+            }
+        })
+    }
+}
+
+/// What [`settle_scopes`] moved to [`Scope::Global`].
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SettledScopes {
     /// Results, and snippets the user saved, that were filed under a workspace scope.
-    pub library: u64,
+    pub library: ScopeMove,
     /// Statements of scopes that name no workspace.
-    pub orphaned: u64,
+    pub orphaned: ScopeMove,
 }
 
 impl SettledScopes {
     /// Statements moved.
     pub fn moved(&self) -> u64 {
-        self.library + self.orphaned
+        self.library.moved.total() + self.orphaned.moved.total()
     }
+
+    /// One audit event per kind of move that moved something.
+    pub fn audit_records(&self) -> Vec<AuditRecord> {
+        [
+            self.library.audit_record(MoveReason::LibraryMigration),
+            self.orphaned.audit_record(MoveReason::OrphanSweep),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+}
+
+/// Moves every statement of `scope` (a workspace being deleted) to [`Scope::Global`].
+pub async fn move_to_global(store: &StatementStore, scope: &Scope) -> StatementResult<ScopeMove> {
+    let mut out = ScopeMove::default();
+    let by_class = store.rescope(scope, &Scope::Global, &[], None).await?;
+    out.add(store, scope, &by_class);
+    Ok(out)
 }
 
 /// Moves statements whose scope no run can see to [`Scope::Global`]:
@@ -56,14 +182,16 @@ pub async fn settle_scopes(
             continue;
         };
         if !workspaces.contains(id) {
-            settled.orphaned += store.rescope(scope, &Scope::Global, &[], None).await?;
+            let by_class = store.rescope(scope, &Scope::Global, &[], None).await?;
+            settled.orphaned.add(store, scope, &by_class);
             continue;
         }
         if library {
-            settled.library += store
+            let results = store
                 .rescope(scope, &Scope::Global, &[RESULT_CLASS], None)
                 .await?;
-            settled.library += store
+            settled.library.add(store, scope, &results);
+            let snippets = store
                 .rescope(
                     scope,
                     &Scope::Global,
@@ -71,6 +199,7 @@ pub async fn settle_scopes(
                     Some(USER_EXTRACTOR),
                 )
                 .await?;
+            settled.library.add(store, scope, &snippets);
         }
     }
     Ok(settled)
@@ -226,11 +355,48 @@ mod tests {
         // Both versions of the source-filed snippet, and the memory: orphaned; the
         // user's snippet in the live workspace: Library-made.
         assert_eq!(
-            settled,
-            SettledScopes {
-                library: 1,
-                orphaned: 3
+            settled.library,
+            ScopeMove {
+                from: BTreeSet::from([live.clone()]),
+                moved: MovedCounts {
+                    snippets: 1,
+                    ..MovedCounts::default()
+                },
             }
+        );
+        assert_eq!(
+            settled.orphaned,
+            ScopeMove {
+                from: BTreeSet::from([source.clone(), gone.clone()]),
+                moved: MovedCounts {
+                    memories: 1,
+                    snippets: 2,
+                    ..MovedCounts::default()
+                },
+            }
+        );
+        // Each move is one audit event of scopes and counts, without any statement text.
+        let records = settled.audit_records();
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(
+            |r| r.event_type == crate::audit::AuditEventType::ScopeChange
+                && r.principal == crate::audit::SYSTEM_PRINCIPAL
+        ));
+        assert_eq!(
+            records[1].payload,
+            serde_json::json!({
+                "reason": "orphan scope sweep",
+                "from": ["workspace:src-papers", "workspace:ws-deleted"],
+                "to": "global",
+                "moved": {"memories": 1, "snippets": 2, "results": 0, "others": 0},
+                "total": 3,
+            })
+        );
+        assert_eq!(records[0].payload["reason"], "library-scope migration");
+        let text: String = records.iter().map(|r| r.payload.to_string()).collect();
+        assert!(
+            !text.contains("recall") && !text.contains("LaTeX"),
+            "{text}"
         );
         assert_eq!(
             scope_of(&s.store, &revised.statement_id).await,
@@ -290,6 +456,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(again.moved(), 0);
+        assert!(again.audit_records().is_empty());
         let kept = s
             .snippets
             .create(snippet(

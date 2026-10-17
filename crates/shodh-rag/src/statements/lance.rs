@@ -292,9 +292,35 @@ impl StatementTable {
         Ok(rows(&batches)?.into_iter().map(|(row, _)| row).collect())
     }
 
-    /// The ids of the rows matching `predicate`, every one of them.
-    pub(crate) async fn ids(&self, predicate: &str) -> StatementResult<Vec<String>> {
-        self.column_values("id", predicate).await
+    /// The id and class of every row matching `predicate`.
+    pub(crate) async fn id_classes(
+        &self,
+        predicate: &str,
+    ) -> StatementResult<Vec<(String, String)>> {
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .select(Select::columns(&["id", "class"]))
+            .only_if(predicate)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+        let mut out = Vec::new();
+        for batch in &batches {
+            let text = |name: &str| -> StatementResult<&StringArray> {
+                batch
+                    .column_by_name(name)
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                    .ok_or_else(|| StatementError::Lance(format!("column `{name}` is missing")))
+            };
+            let (ids, classes) = (text("id")?, text("class")?);
+            out.extend(
+                (0..batch.num_rows())
+                    .map(|i| (ids.value(i).to_string(), classes.value(i).to_string())),
+            );
+        }
+        Ok(out)
     }
 
     /// The distinct scopes stored, of every row (forgotten and superseded ones too).
@@ -330,17 +356,16 @@ impl StatementTable {
         Ok(out)
     }
 
-    /// Gives every row matching `predicate` the scope `scope` (its stored form). Returns
-    /// the rows changed. Only the scope column is written, never the content.
-    pub(crate) async fn set_scope(&self, predicate: &str, scope: &str) -> StatementResult<u64> {
-        let result = self
-            .table
+    /// Gives every row matching `predicate` the scope `scope` (its stored form). Only the
+    /// scope column is written, never the content.
+    pub(crate) async fn set_scope(&self, predicate: &str, scope: &str) -> StatementResult<()> {
+        self.table
             .update()
             .only_if(predicate)
             .column("scope", quote(scope))
             .execute()
             .await?;
-        Ok(result.rows_updated)
+        Ok(())
     }
 
     /// Nearest rows by cosine distance, prefiltered. Returns `(row, similarity)`.

@@ -806,16 +806,17 @@ impl StatementStore {
     /// means every class) and, when given, written by the `extractor` kind (its label,
     /// `user`, `llm`, ...) move. Statements are never merged with ones already in `to`:
     /// the same fact in both is then current twice until a write supersedes one. Returns
-    /// the statements moved.
+    /// the rows moved per class.
     pub async fn rescope(
         &self,
         from: &Scope,
         to: &Scope,
         classes: &[&str],
         extractor: Option<&str>,
-    ) -> StatementResult<u64> {
+    ) -> StatementResult<BTreeMap<String, u64>> {
+        let mut moved: BTreeMap<String, u64> = BTreeMap::new();
         if from == to {
-            return Ok(0);
+            return Ok(moved);
         }
         let _guard = self.write_lock.lock().await;
         let mut parts = vec![format!("scope = {}", quote(&from.as_key()))];
@@ -833,11 +834,16 @@ impl StatementStore {
             parts.push(format!("extractor = {}", quote(extractor)));
         }
         let predicate = parts.join(" AND ");
-        let ids = self.table.ids(&predicate).await?;
-        if ids.is_empty() {
-            return Ok(0);
+        let rows = self.table.id_classes(&predicate).await?;
+        if rows.is_empty() {
+            return Ok(moved);
         }
-        let moved = self.table.set_scope(&predicate, &to.as_key()).await?;
+        self.table.set_scope(&predicate, &to.as_key()).await?;
+        let mut ids = Vec::with_capacity(rows.len());
+        for (id, class) in rows {
+            *moved.entry(class).or_default() += 1;
+            ids.push(id);
+        }
         self.dynamics.set_scope(&ids, &to.as_key())?;
         Ok(moved)
     }

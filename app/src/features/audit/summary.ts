@@ -155,6 +155,23 @@ export function summarise(row: AuditRow): string {
       const score = num(p.score);
       return `You changed a citation ${from || '?'} → [${num(p.to) ?? '?'}]${score !== null ? ` · grounding ${Math.round(score * 100)}%` : ''}`;
     }
+    case 'scope_change': {
+      const moved = (p.moved ?? {}) as Record<string, unknown>;
+      const kinds: [string, string, string][] = [
+        ['memories', 'memory', 'memories'],
+        ['snippets', 'snippet', 'snippets'],
+        ['results', 'result', 'results'],
+        ['others', 'other statement', 'other statements'],
+      ];
+      const parts = kinds
+        .map(([key, one, many]) => {
+          const n = num(moved[key]) ?? 0;
+          return n > 0 ? `${n} ${n === 1 ? one : many}` : null;
+        })
+        .filter((part): part is string => part !== null);
+      const reason = str(p.reason);
+      return `${parts.join(', ') || 'Nothing'} made global${reason ? ` (${reason})` : ''}`;
+    }
     case 'retention_checkpoint': {
       const deleted = num(p.deleted) ?? 0;
       return `Retention removed ${deleted} ${deleted === 1 ? 'event' : 'events'} (through #${num(p.last_deleted_id) ?? '?'})`;

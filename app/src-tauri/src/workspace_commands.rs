@@ -15,10 +15,10 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::json;
-use shodh_rag::audit::AuditKey;
+use shodh_rag::audit::{AuditKey, AuditLog, AuditRecord};
 use shodh_rag::harness::tools::sources::{load_sources, SourceKind as IndexKind};
 use shodh_rag::harness::tools::ScopedSnippet;
-use shodh_rag::research::scopes::{settle_scopes, SettledScopes};
+use shodh_rag::research::scopes::{move_to_global, settle_scopes, MoveReason, SettledScopes};
 use shodh_rag::research::ResearchError;
 use shodh_rag::statements::Scope;
 use shodh_rag::workspaces::{
@@ -443,15 +443,50 @@ pub(crate) async fn release_workspace_statements(
         return Ok(0);
     }
     let service = memory.service().await?;
-    let moved = service
-        .store()
-        .rescope(&scope, &Scope::Global, &[], None)
+    let moved = move_to_global(service.store(), &scope)
         .await
         .map_err(|e| e.to_string())?;
-    if moved > 0 {
-        tracing::info!(target: "shodh::workspaces", workspace_id, moved, "a deleted workspace's statements moved to global");
+    let total = moved.moved.total();
+    if total > 0 {
+        tracing::info!(target: "shodh::workspaces", workspace_id, moved = total, "a deleted workspace's statements moved to global");
     }
-    Ok(moved)
+    record_scope_moves(
+        service.audit_log(),
+        moved.audit_record(MoveReason::WorkspaceDeleted),
+    )
+    .await;
+    Ok(total)
+}
+
+/// Appends `records` (scope moves) to the audit log, waiting until each is written. The
+/// statements have moved already; a record that cannot be written is logged.
+async fn record_scope_moves(
+    log: Option<&Arc<AuditLog>>,
+    records: impl IntoIterator<Item = AuditRecord>,
+) {
+    let records: Vec<AuditRecord> = records.into_iter().collect();
+    if records.is_empty() {
+        return;
+    }
+    let Some(log) = log.cloned() else {
+        tracing::warn!(target: "shodh::audit", events = records.len(), "no audit log: scope moves not recorded");
+        return;
+    };
+    let written = tokio::task::spawn_blocking(move || {
+        records
+            .into_iter()
+            .try_for_each(|record| log.append(record).map(|_| ()))
+    })
+    .await;
+    match written {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::error!(target: "shodh::audit", error = %e, "a scope move was not recorded")
+        }
+        Err(e) => {
+            tracing::error!(target: "shodh::audit", error = %e, "a scope move was not recorded")
+        }
+    }
 }
 
 /// `workspace_state` key of the one-time move of the snippets and results the Library made
@@ -487,8 +522,9 @@ pub async fn settle_statement_scopes(
     let settled = settle_scopes(store, &scopes, &workspaces, library)
         .await
         .map_err(|e| e.to_string())?;
+    record_scope_moves(service.audit_log(), settled.audit_records()).await;
     if library {
-        let note = format!("{} statements", settled.library);
+        let note = format!("{} statements", settled.library.moved.total());
         state
             .run(move |s| s.set_state(LIBRARY_RESEARCH_KEY, &note))
             .await
@@ -497,8 +533,8 @@ pub async fn settle_statement_scopes(
     if library || settled.moved() > 0 {
         tracing::info!(
             target: "shodh::workspaces",
-            library = settled.library,
-            orphaned = settled.orphaned,
+            library = settled.library.moved.total(),
+            orphaned = settled.orphaned.moved.total(),
             "statements no workspace run could see moved to global"
         );
     }
@@ -1127,6 +1163,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(again.moved(), 0);
+        // Each move that moved something is one audit event: scopes and counts, no text.
+        let log = t.host.audit.clone().unwrap();
+        let mut events = log
+            .query(&shodh_rag::audit::AuditQuery {
+                types: vec![shodh_rag::audit::AuditEventType::ScopeChange],
+                ..Default::default()
+            })
+            .unwrap();
+        events.reverse();
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[0].principal, shodh_rag::audit::LOCAL_OWNER);
+        assert_eq!(
+            events[0].payload,
+            json!({
+                "reason": "workspace deleted",
+                "from": [format!("workspace:{}", draft.id)],
+                "to": "global",
+                "moved": {"memories": 0, "snippets": 1, "results": 0, "others": 0},
+                "total": 1,
+            })
+        );
+        assert_eq!(events[1].principal, shodh_rag::audit::SYSTEM_PRINCIPAL);
+        assert_eq!(events[1].payload["reason"], "orphan scope sweep");
+        assert_eq!(events[1].payload["from"], json!(["workspace:src-papers"]));
+        assert!(!events
+            .iter()
+            .any(|e| e.payload.to_string().contains("recall")));
         // Releasing the global scope moves nothing.
         assert_eq!(
             release_workspace_statements(&t.host.memory, " ")

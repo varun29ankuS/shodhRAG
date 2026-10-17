@@ -154,6 +154,22 @@ pub(crate) fn summarize(row: &AuditRow) -> String {
                 p.get("to").and_then(Value::as_u64).unwrap_or(0)
             )
         }
+        "scope_change" => {
+            let moved = |key: &str| {
+                p.get("moved")
+                    .and_then(|m| m.get(key))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            };
+            format!(
+                "{} memories, {} snippets, {} results and {} other statements made global ({})",
+                moved("memories"),
+                moved("snippets"),
+                moved("results"),
+                moved("others"),
+                s(p, "reason")
+            )
+        }
         other => other.to_string(),
     };
     truncate(text.trim(), MAX_SUMMARY_CHARS)
@@ -379,5 +395,20 @@ mod tests {
             hash: String::new(),
         };
         assert_eq!(summarize(&row).chars().count(), MAX_SUMMARY_CHARS);
+        let moved = AuditRow {
+            event_type: "scope_change".into(),
+            payload: json!({
+                "reason": "workspace deleted",
+                "from": ["workspace:ws-1"],
+                "to": "global",
+                "moved": {"memories": 2, "snippets": 1, "results": 0, "others": 0},
+                "total": 3,
+            }),
+            ..row
+        };
+        assert_eq!(
+            summarize(&moved),
+            "2 memories, 1 snippets, 0 results and 0 other statements made global (workspace deleted)"
+        );
     }
 }

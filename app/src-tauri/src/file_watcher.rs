@@ -148,35 +148,6 @@ impl FolderSyncState {
         }
     }
 
-    /// Forgets the removals nothing can bring back any more, at start: a
-    /// removed source the saved Library list (`listed`, the list the Library
-    /// restores from) no longer names and that has no manifest. The list
-    /// names it until the Library saved itself without it; the manifest is
-    /// deleted only once the source's chunks are, so a removal cut short
-    /// (the app killed while it deleted) keeps its record. Returns the ids
-    /// forgotten.
-    pub fn prune_removed(&self, listed: &HashSet<String>) -> Vec<String> {
-        let mut removed = self.removed.lock().unwrap_or_else(|e| e.into_inner());
-        let mut pruned: Vec<String> = removed
-            .iter()
-            .filter(|id| !listed.contains(*id) && !self.store.has_manifest(id))
-            .cloned()
-            .collect();
-        if pruned.is_empty() {
-            return pruned;
-        }
-        for id in &pruned {
-            removed.remove(id);
-        }
-        if let Err(error) = save_removed(&self.removed_file, &removed) {
-            // Kept on disk: forgotten next time instead.
-            tracing::warn!(%error, "removed sources not pruned");
-            removed.extend(pruned.drain(..));
-        }
-        pruned.sort();
-        pruned
-    }
-
     /// The sources removed from the Library, in this run and before: the
     /// Library drops them from a saved list that still names them, and their
     /// index runs are refused ([`IndexingState::mark_removed`]).
@@ -559,18 +530,6 @@ fn watch(app: &AppHandle, source: &FolderSourceRef) -> Result<Watched, String> {
     })
 }
 
-/// The source ids a saved Library list (`library_sources` of the UI state)
-/// names; `None` when it is not a list of sources.
-pub fn listed_source_ids(saved: &serde_json::Value) -> Option<HashSet<String>> {
-    let entries = saved.as_array()?;
-    Some(
-        entries
-            .iter()
-            .filter_map(|entry| entry.get("id")?.as_str().map(str::to_string))
-            .collect(),
-    )
-}
-
 /// The sources removed from the Library (in this run or before), for the
 /// Library to drop from a saved list that still names them.
 #[tauri::command]
@@ -868,39 +827,6 @@ mod tests {
             "not indexed again"
         );
         assert!(indexing.begin_run("folder-other").is_some());
-    }
-
-    /// A removal record is forgotten once nothing can bring the source back:
-    /// the saved Library list no longer names it and it has no manifest.
-    #[tokio::test]
-    async fn removal_records_are_pruned_once_nothing_names_them() {
-        let dir = tempfile::tempdir().unwrap();
-        let rag =
-            RwLock::new(crate::agent_tools::testing::engine_with_search_models(dir.path()).await);
-        let state = FolderSyncState::new(dir.path().join("sync"));
-        for id in ["gone", "still-listed", "cut-short"] {
-            state
-                .remove_source(&rag, &IndexingState::default(), id, None)
-                .await
-                .unwrap();
-        }
-        // A removal cut short: its manifest is still there.
-        std::fs::write(
-            dir.path().join("sync").join("cut-short.json"),
-            r#"{"folder":"papers","files":{}}"#,
-        )
-        .unwrap();
-        let saved =
-            serde_json::json!([{ "id": "still-listed", "path": "C:/papers" }, { "path": "x" }]);
-        let listed = listed_source_ids(&saved).unwrap();
-        assert_eq!(listed_source_ids(&serde_json::json!({})), None);
-
-        assert_eq!(state.prune_removed(&listed), ["gone"]);
-        assert_eq!(state.removed_ids(), ["cut-short", "still-listed"]);
-        // Kept on disk too.
-        let next = FolderSyncState::new(dir.path().join("sync"));
-        assert_eq!(next.removed_ids(), ["cut-short", "still-listed"]);
-        assert!(next.prune_removed(&listed).is_empty());
     }
 
     /// The removal waits for the sync that holds the turn, so that sync

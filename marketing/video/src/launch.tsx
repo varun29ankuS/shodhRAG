@@ -15,7 +15,7 @@ import {
 import { barBeat, beatFrame } from "./beats";
 import { FOOTAGE_SHOTS, type Slot } from "./cut";
 import { aspectOf, cameraAt, footageFor, mediaOf, type Media } from "./footage";
-import { Glyph } from "./glyphs";
+import { STAGE, Vignette } from "./vignettes";
 import { color, font } from "./theme";
 
 const clamp = { extrapolateLeft: "clamp", extrapolateRight: "clamp" } as const;
@@ -85,7 +85,7 @@ const RevealLine: React.FC<{ children: React.ReactNode; at: number; exitAt: numb
   );
 };
 
-/** The left column: illustration, chapter label, headline and one line of detail. */
+/** The left column: the chapter's animated scene, its label, headline and one line of detail. */
 const TextColumn: React.FC<{ slot: Slot; index: number }> = ({ slot, index }) => {
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
@@ -112,22 +112,21 @@ const TextColumn: React.FC<{ slot: Slot; index: number }> = ({ slot, index }) =>
     >
       <div
         style={{
-          width: 128,
-          height: 128,
-          borderRadius: 32,
-          background: "rgba(255,255,255,0.13)",
-          border: "1.5px solid rgba(255,255,255,0.34)",
-          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.25), 0 18px 40px rgba(70,18,0,0.25)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          marginBottom: 44,
+          width: STAGE.width + 40,
+          height: STAGE.height + 32,
+          boxSizing: "border-box",
+          padding: "16px 20px",
+          borderRadius: 28,
+          background: "rgba(255,255,255,0.10)",
+          border: "1.5px solid rgba(255,255,255,0.30)",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.22), 0 24px 50px rgba(70,18,0,0.22)",
+          marginBottom: 40,
           opacity: Math.min(1, tile * 1.4) * (1 - tileOut),
-          transform: `scale(${(0.7 + 0.3 * tile) * (1 - 0.15 * tileOut)}) translateY(${-tileOut * 20}px)`,
+          transform: `translateY(${(1 - tile) * 24 - tileOut * 20}px) scale(${0.96 + 0.04 * tile})`,
           transformOrigin: "left center",
         }}
       >
-        <Glyph id={slot.id} frame={frame} size={86} />
+        {slot.id === "close" ? null : <Vignette id={slot.id} frame={frame} fps={fps} />}
       </div>
       <RevealLine
         at={2}

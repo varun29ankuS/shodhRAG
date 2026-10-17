@@ -1,0 +1,90 @@
+{
+ "page": {
+  "w": 1836,
+  "h": 2376,
+  "pt": [
+   612.0,
+   792.0
+  ]
+ },
+ "passage": [
+  0.17588398503322228,
+  0.22473903617473565,
+  0.826381010167739,
+  0.41647608593256785
+ ],
+ "covers": [
+  {
+   "file": "cover-00.png",
+   "title": "ANN-Benchmarks",
+   "w": 834,
+   "h": 1179
+  },
+  {
+   "file": "cover-01.png",
+   "title": "Big-ANN Benchmarks NeurIPS 2021",
+   "w": 857,
+   "h": 1109
+  },
+  {
+   "file": "cover-02.png",
+   "title": "Billion-scale Similarity Search with GPUs",
+   "w": 857,
+   "h": 1109
+  },
+  {
+   "file": "cover-03.png",
+   "title": "FreshDiskANN",
+   "w": 857,
+   "h": 1109
+  },
+  {
+   "file": "cover-04.png",
+   "title": "Graph-based ANN Survey and Comparison",
+   "w": 857,
+   "h": 1109
+  },
+  {
+   "file": "cover-05.png",
+   "title": "HNSW - Hierarchical Navigable Small World Graphs",
+   "w": 794,
+   "h": 1084
+  },
+  {
+   "file": "cover-06.png",
+   "title": "NSG - Navigating Spreading-out Graph",
+   "w": 857,
+   "h": 1109
+  },
+  {
+   "file": "cover-07.png",
+   "title": "Practical and Optimal LSH for Angular Distance",
+   "w": 857,
+   "h": 1109
+  },
+  {
+   "file": "cover-08.png",
+   "title": "RaBitQ - Quantizing High-Dimensional Vectors",
+   "w": 857,
+   "h": 1109
+  },
+  {
+   "file": "cover-09.png",
+   "title": "SPANN - Billion-scale ANN Search",
+   "w": 857,
+   "h": 1109
+  },
+  {
+   "file": "cover-10.png",
+   "title": "ScaNN - Anisotropic Vector Quantization",
+   "w": 857,
+   "h": 1109
+  },
+  {
+   "file": "cover-11.png",
+   "title": "The Faiss Library",
+   "w": 834,
+   "h": 1179
+  }
+ ]
+}

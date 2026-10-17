@@ -69,6 +69,7 @@ function memoryApp(pending: Item[]) {
     /** The list reloads from the backend. */
     reload() {
       state.pending = state.pending.filter(s => !rejectedInBackend.includes(s.id));
+      store.settle(state.pending.map(s => s.id));
     },
     batch: () => batchAcceptable(state.pending, store.get()).map(s => s.id),
     shown: () => withoutRejecting(state.pending, store.get()).map(s => s.id),
@@ -88,9 +89,16 @@ test('a suggestion rejected within its undo window is left out of the batch and 
   assert.deepEqual(app.batch(), ['b', 'c'], 'the declined memory is not accepted with the others');
   assert.deepEqual(app.shown(), ['b', 'c', 's']);
 
-  // The rejection is carried out; the list reloads without it.
+  // The rejection is carried out. Until the list reloads it is still listed as pending
+  // there, and still left out (it does not reappear or count again).
   await clock.advance(1);
   assert.deepEqual(app.rejectedInBackend, ['a']);
+  assert.deepEqual(app.batch(), ['b', 'c']);
+  assert.deepEqual(app.shown(), ['b', 'c', 's']);
+  assert.equal(app.store.get().has('a'), true);
+  // A stale reload that still lists it keeps it out too.
+  app.store.settle(['a', 'b', 'c', 's']);
+  assert.equal(app.store.get().has('a'), true);
   app.reload();
   assert.deepEqual(app.batch(), ['b', 'c']);
   assert.equal(app.store.get().size, 0);

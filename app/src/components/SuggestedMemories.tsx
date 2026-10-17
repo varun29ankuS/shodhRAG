@@ -428,6 +428,13 @@ export default function SuggestedMemories({
   // Suggestions whose rejection waits out its undo window, here or in the Inbox (still
   // pending in the backend).
   const rejecting = useSyncExternalStore(pendingRejections.subscribe, pendingRejections.get);
+  // Every waiting suggestion's id (not only this scope's), as last loaded.
+  const [waitingIds, setWaitingIds] = useState<string[]>([]);
+  // After the reloaded list is shown: rejections carried out that it no longer has are
+  // done with (until then they stay hidden and out of the batch).
+  useEffect(() => {
+    pendingRejections.settle(waitingIds);
+  }, [waitingIds]);
 
   const refresh = useCallback(async () => {
     try {
@@ -437,6 +444,7 @@ export default function SuggestedMemories({
         listSuggestions(['learned', 'accepted'], scope ? 200 : 30),
       ]);
       const inScope = (list: Suggestion[]) => (scope ? list.filter(x => x.scope === scope) : list);
+      setWaitingIds(waiting.map(x => x.id));
       setStatus(s);
       setPending(inScope(waiting));
       setDecided(inScope(recent).slice(0, 30));

@@ -18,7 +18,10 @@ use crate::harness::events::RiskTier;
 use crate::harness::protocol::ToolLoadMode;
 use crate::harness::truncate_chars;
 use crate::path_case::PathSpellings;
-use crate::rag_engine::{normalize_source_path, page_numbers_from_metadata, DISPLAY_PATH_KEY};
+use crate::rag_engine::{
+    normalize_source_path, page_numbers_from_metadata, page_range_from_metadata, NeighborPart,
+    SnippetParts, DISPLAY_PATH_KEY,
+};
 use crate::types::{ComprehensiveResult, MetadataFilter, SourceSet};
 use crate::RAGEngine;
 
@@ -43,17 +46,7 @@ const MAX_PAGE_FETCH: usize = 48;
 /// The pages a result covers, from the metadata written at indexing time
 /// (`page_start`/`page_end`, else `page`). `None` for unpaged chunks.
 fn result_pages(result: &ComprehensiveResult) -> Option<(u32, u32)> {
-    let read = |key: &str| {
-        result
-            .metadata
-            .get(key)
-            .and_then(|v| v.trim().parse::<u32>().ok())
-    };
-    match (read("page_start"), read("page_end")) {
-        (Some(start), Some(end)) => Some((start.min(end), start.max(end))),
-        (Some(one), None) | (None, Some(one)) => Some((one, one)),
-        (None, None) => read("page").map(|p| (p, p)),
-    }
+    page_range_from_metadata(&result.metadata)
 }
 
 /// Whether `result` lies on one of `pages`. Unpaged chunks never do.
@@ -280,7 +273,120 @@ async fn resolve_display_paths(passages: &mut [Passage]) {
     }
 }
 
-fn passage(n: u32, result: &ComprehensiveResult, max_chars: usize) -> Passage {
+/// Whether a neighbouring chunk on `pages` may join a passage limited to
+/// `allowed` pages: always without a limit; else only when every page it
+/// covers is allowed (an unpaged chunk never is).
+fn neighbor_allowed(pages: Option<(u32, u32)>, allowed: &[u32]) -> bool {
+    if allowed.is_empty() {
+        return true;
+    }
+    pages.is_some_and(|(start, end)| {
+        end.checked_sub(start)
+            .and_then(|span| usize::try_from(span).ok())
+            .is_some_and(|span| span < allowed.len())
+            && (start..=end).all(|p| allowed.contains(&p))
+    })
+}
+
+/// The last characters of `text` within `max_chars`, a `…` in front marking
+/// the cut; all of it when it fits. `None` when nothing fits.
+fn tail_within(text: &str, max_chars: usize) -> Option<String> {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return (!text.is_empty()).then(|| text.to_string());
+    }
+    let keep = max_chars.checked_sub(1).filter(|&k| k > 0)?;
+    let at = text
+        .char_indices()
+        .nth(count - keep)
+        .map_or(text.len(), |(i, _)| i);
+    let tail = text[at..].trim_start();
+    (!tail.is_empty()).then(|| format!("\u{2026}{tail}"))
+}
+
+/// The first characters of `text` within `max_chars`, a `…` after them
+/// marking the cut; all of it when it fits. `None` when nothing fits.
+fn head_within(text: &str, max_chars: usize) -> Option<String> {
+    if text.chars().count() <= max_chars {
+        return (!text.is_empty()).then(|| text.to_string());
+    }
+    if max_chars < 2 {
+        return None;
+    }
+    let head: String = text.chars().take(max_chars - 1).collect();
+    let head = head.trim_end();
+    (!head.is_empty()).then(|| format!("{head}\u{2026}"))
+}
+
+/// `matched` with as much of `before` (cut from its start) and `after` (cut
+/// from its end) as fits in `max_chars` characters, one line break apart.
+/// The room is shared evenly, a side that needs less leaving the rest to the
+/// other. A `matched` that does not fit alone is cut from its end: the index
+/// keeps no offsets of where in a chunk the query matched.
+fn fit_around(matched: &str, before: &str, after: &str, max_chars: usize) -> String {
+    let matched_chars = matched.chars().count();
+    if matched_chars >= max_chars {
+        return truncate_chars(matched, max_chars);
+    }
+    let room = max_chars - matched_chars;
+    // A side costs its text and the line break that joins it.
+    let need = |side: &str| {
+        if side.is_empty() {
+            0
+        } else {
+            side.chars().count() + 1
+        }
+    };
+    let (before_need, after_need) = (need(before), need(after));
+    let before_room = before_need.min((room / 2).max(room.saturating_sub(after_need)));
+    let after_room = after_need.min(room - before_room);
+    let mut out = String::new();
+    if let Some(text) = tail_within(before, before_room.saturating_sub(1)) {
+        out.push_str(&text);
+        out.push('\n');
+    }
+    out.push_str(matched);
+    if let Some(text) = head_within(after, after_room.saturating_sub(1)) {
+        out.push('\n');
+        out.push_str(&text);
+    }
+    out
+}
+
+/// The text of `result` within `max_chars` characters. A result widened with
+/// its neighbours ([`SnippetParts`]) keeps the chunk that matched (whole when
+/// it fits) and spends the rest on the neighbours allowed on `neighbor_pages`
+/// ([`neighbor_allowed`]); any other result is cut from its end.
+fn passage_text(result: &ComprehensiveResult, max_chars: usize, neighbor_pages: &[u32]) -> String {
+    let snippet = result.snippet.as_str();
+    let Some(parts) = SnippetParts::of(snippet, &result.metadata) else {
+        return truncate_chars(snippet.trim(), max_chars);
+    };
+    let side = |list: &[NeighborPart]| -> String {
+        list.iter()
+            .filter(|p| neighbor_allowed(p.pages, neighbor_pages))
+            .map(|p| snippet[p.start..p.end].trim())
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let (start, end) = parts.matched;
+    fit_around(
+        snippet[start..end].trim(),
+        &side(&parts.before),
+        &side(&parts.after),
+        max_chars,
+    )
+}
+
+/// Passage `n` from `result`: its text within `max_chars` characters, with
+/// neighbouring chunks only from `neighbor_pages` (empty: any page).
+fn passage(
+    n: u32,
+    result: &ComprehensiveResult,
+    max_chars: usize,
+    neighbor_pages: &[u32],
+) -> Passage {
     let path = if result.citation.source.is_empty() {
         result
             .metadata
@@ -309,7 +415,7 @@ fn passage(n: u32, result: &ComprehensiveResult, max_chars: usize) -> Passage {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()),
         score: result.score,
-        text: truncate_chars(result.snippet.trim(), max_chars),
+        text: passage_text(result, max_chars, neighbor_pages),
         regions: passage_regions(result),
         display_path,
     }
@@ -717,7 +823,17 @@ impl HostTool for SearchDocumentsTool {
         let mut passages: Vec<Passage> = results
             .iter()
             .zip(first..)
-            .map(|(r, n)| passage(n, r, budget))
+            .map(|(r, n)| {
+                // The page limit holds for the neighbours joined to a passage of
+                // the user's files too, not only for the chunk that matched.
+                let file = r.metadata.get("source_file").map_or("", String::as_str);
+                let neighbor_pages: &[u32] = if scoped_files.iter().any(|f| f == file) {
+                    pages
+                } else {
+                    &[]
+                };
+                passage(n, r, budget, neighbor_pages)
+            })
             .collect();
         resolve_display_paths(&mut passages).await;
         for p in &passages {
@@ -831,7 +947,7 @@ mod tests {
             snippet: "  Notice period is sixty days. ".into(),
             source_index: "hybrid".into(),
         };
-        let p = passage(3, &result, MAX_PASSAGE_CHARS);
+        let p = passage(3, &result, MAX_PASSAGE_CHARS, &[]);
         assert_eq!(p.n, 3);
         assert_eq!(p.file, "acme_msa.pdf");
         assert_eq!(p.page.as_deref(), Some("4"));
@@ -864,7 +980,7 @@ mod tests {
             snippet: "The chunkwise form computes...".into(),
             source_index: "hybrid".into(),
         };
-        let p = passage(1, &result, MAX_PASSAGE_CHARS);
+        let p = passage(1, &result, MAX_PASSAGE_CHARS, &[]);
         assert_eq!(p.page.as_deref(), Some("5-6"));
         assert_eq!(p.section.as_deref(), Some("3 Method > 3.2 Chunkwise form"));
         let for_model = serde_json::to_value(&p).expect("json");
@@ -908,7 +1024,7 @@ mod tests {
             "",
         );
         assert_eq!(
-            passage(1, &by_filename, MAX_PASSAGE_CHARS).file,
+            passage(1, &by_filename, MAX_PASSAGE_CHARS, &[]).file,
             "SPANN - Billion-scale ANN Search.pdf"
         );
 
@@ -918,13 +1034,13 @@ mod tests {
             "",
         );
         assert_eq!(
-            passage(1, &by_title, MAX_PASSAGE_CHARS).file,
+            passage(1, &by_title, MAX_PASSAGE_CHARS, &[]).file,
             "SPANN - Billion-scale ANN Search.pdf"
         );
 
         let by_citation = file_result(source, &[], "SPANN - Billion-scale ANN Search");
         assert_eq!(
-            passage(1, &by_citation, MAX_PASSAGE_CHARS).file,
+            passage(1, &by_citation, MAX_PASSAGE_CHARS, &[]).file,
             "SPANN - Billion-scale ANN Search.pdf"
         );
 
@@ -938,7 +1054,7 @@ mod tests {
             "Microsoft Word - draft3",
         );
         assert_eq!(
-            passage(1, &other, MAX_PASSAGE_CHARS).file,
+            passage(1, &other, MAX_PASSAGE_CHARS, &[]).file,
             "spann - billion-scale ann search.pdf"
         );
     }
@@ -952,7 +1068,7 @@ mod tests {
             &[("display_path", "D:\\Elsewhere\\Other.pdf")],
             "",
         );
-        let p = passage(1, &result, MAX_PASSAGE_CHARS);
+        let p = passage(1, &result, MAX_PASSAGE_CHARS, &[]);
         assert!(p.display_path.is_none());
         assert!(p.detail_value().get("display_path").is_none());
         assert!(serde_json::to_value(&p)
@@ -971,7 +1087,7 @@ mod tests {
             &[("display_path", "C:\\Research\\papers\\SPANN.pdf")],
             "",
         );
-        let p = passage(1, &result, MAX_PASSAGE_CHARS);
+        let p = passage(1, &result, MAX_PASSAGE_CHARS, &[]);
         assert_eq!(p.path, "c:/research/papers/spann.pdf");
         assert_eq!(
             p.detail_value()["display_path"],
@@ -998,7 +1114,7 @@ mod tests {
             snippet: "Task: File GST return.".into(),
             source_index: "hybrid".into(),
         };
-        let p = passage(1, &result, MAX_PASSAGE_CHARS);
+        let p = passage(1, &result, MAX_PASSAGE_CHARS, &[]);
         assert_eq!(p.file, "Task: File GST return");
         assert_eq!(
             p.path,
@@ -1009,7 +1125,7 @@ mod tests {
         untitled.metadata.clear();
         untitled.citation.source = "calendar://event/1".into();
         assert_eq!(
-            passage(2, &untitled, MAX_PASSAGE_CHARS).file,
+            passage(2, &untitled, MAX_PASSAGE_CHARS, &[]).file,
             "Event (untitled)"
         );
     }
@@ -1357,5 +1473,259 @@ mod tests {
         .await;
         assert!(paths.is_empty(), "{paths:?}");
         assert!(text.contains("outside the workspace"), "{text}");
+    }
+
+    /// A result as search returns it after widening it with neighbours: the
+    /// snippet joined in reading order and where each part lies in it.
+    fn widened(
+        before: &[(&str, Option<(u32, u32)>)],
+        matched: &str,
+        after: &[(&str, Option<(u32, u32)>)],
+    ) -> ComprehensiveResult {
+        fn push(snippet: &mut String, piece: &str) -> (usize, usize) {
+            if !snippet.is_empty() {
+                snippet.push('\n');
+            }
+            let start = snippet.len();
+            snippet.push_str(piece);
+            (start, snippet.len())
+        }
+        let mut snippet = String::new();
+        let mut parts = SnippetParts::default();
+        for (text, pages) in before {
+            let (start, end) = push(&mut snippet, text);
+            parts.before.push(NeighborPart {
+                start,
+                end,
+                pages: *pages,
+            });
+        }
+        parts.matched = push(&mut snippet, matched);
+        for (text, pages) in after {
+            let (start, end) = push(&mut snippet, text);
+            parts.after.push(NeighborPart {
+                start,
+                end,
+                pages: *pages,
+            });
+        }
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            crate::rag_engine::SNIPPET_PARTS_KEY.to_string(),
+            serde_json::to_string(&parts).unwrap(),
+        );
+        metadata.insert("page_start".to_string(), "4".to_string());
+        metadata.insert("page_end".to_string(), "4".to_string());
+        ComprehensiveResult {
+            id: Uuid::nil(),
+            score: 0.5,
+            metadata,
+            citation: Citation {
+                title: "notes".into(),
+                source: "c:/docs/notes.txt".into(),
+                ..Citation::default()
+            },
+            snippet,
+            source_index: "hybrid".into(),
+        }
+    }
+
+    #[test]
+    fn a_widened_passage_keeps_the_chunk_that_matched() {
+        let before = format!("Spring ledger. {}", "b".repeat(985));
+        let matched = format!("Summer ledger. {} The saffron comet.", "m".repeat(560));
+        let after = format!("{} Autumn ledger.", "a".repeat(985));
+        let result = widened(&[(&before, None)], &matched, &[(&after, None)]);
+        let matched_chars = matched.chars().count();
+        // Cut from its start, the snippet would be mostly the chunk before.
+        assert!(!truncate_chars(result.snippet.trim(), 785).contains("saffron comet"));
+
+        for budget in [MAX_PASSAGE_CHARS, passage_budget(MAX_K), MIN_PASSAGE_CHARS] {
+            let text = passage(1, &result, budget, &[]).text;
+            assert!(text.chars().count() <= budget, "{budget}: {text}");
+            assert!(
+                !text.contains("Spring ledger"),
+                "the start of the chunk before goes first"
+            );
+            if matched_chars < budget {
+                assert!(
+                    text.contains(&matched),
+                    "{budget}: the matched chunk is whole"
+                );
+                // The room left is shared by the two neighbours.
+                assert!(text.starts_with('\u{2026}'), "{budget}: {text}");
+                assert!(text.ends_with('\u{2026}'), "{budget}: {text}");
+                assert!(
+                    !text.contains("Autumn ledger"),
+                    "the end of the chunk after goes first"
+                );
+            } else {
+                // Alone too long for the budget: the matched chunk from its start.
+                assert_eq!(text, truncate_chars(&matched, budget));
+            }
+        }
+
+        // A short neighbour leaves its share to the other.
+        let short = widened(&[(&before, None)], &matched, &[("Autumn ledger.", None)]);
+        let text = passage(1, &short, MAX_PASSAGE_CHARS, &[]).text;
+        assert!(
+            text.ends_with(&format!("{matched}\nAutumn ledger.")),
+            "{text}"
+        );
+        assert_eq!(text.chars().count(), MAX_PASSAGE_CHARS);
+
+        // A result that was not widened is cut from its end, as before.
+        let plain = ComprehensiveResult {
+            metadata: HashMap::new(),
+            ..widened(&[], &"p".repeat(900), &[])
+        };
+        assert_eq!(
+            passage(1, &plain, MIN_PASSAGE_CHARS, &[]).text,
+            truncate_chars(&"p".repeat(900), MIN_PASSAGE_CHARS)
+        );
+    }
+
+    #[test]
+    fn widened_passages_are_cut_on_character_boundaries() {
+        let before = "東京の港は朝に開き、漁船が沖へ向かう。".repeat(30);
+        let matched = "灯台守は北の崖の上に彗星を見た。".repeat(12);
+        let after = "秋の帳簿には潮の満ち引きが記されている。".repeat(30);
+        let result = widened(&[(&before, None)], &matched, &[(&after, None)]);
+        for budget in [1, 2, 3, 7, 100, 191, 192, 193, 194, 300, 785, 1_500] {
+            let text = passage(1, &result, budget, &[]).text;
+            assert!(text.chars().count() <= budget, "{budget}: {text}");
+            if matched.chars().count() < budget {
+                assert!(text.contains(&matched), "{budget}");
+            } else {
+                assert!(
+                    matched.starts_with(text.trim_end_matches('\u{2026}')),
+                    "{budget}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_page_limited_passage_takes_neighbours_from_its_pages_only() {
+        let matched = "Page four holds the lighthouse keeper's log of the saffron comet.";
+        let result = widened(
+            &[
+                ("Page two: the spring tide tables.", Some((2, 2))),
+                ("Page three: the ferry timetable.", Some((3, 3))),
+            ],
+            matched,
+            &[
+                ("Pages four and five: the weather.", Some((4, 5))),
+                ("A note without a page.", None),
+            ],
+        );
+        let text = |pages: &[u32]| passage(1, &result, MAX_PASSAGE_CHARS, pages).text;
+        // Page 4 only: nothing from pages 2, 3 or 5, nor from no page.
+        assert_eq!(text(&[4]), matched);
+        assert_eq!(
+            text(&[3, 4]),
+            format!("Page three: the ferry timetable.\n{matched}")
+        );
+        assert_eq!(
+            text(&[2, 3, 4, 5]),
+            format!(
+                "Page two: the spring tide tables.\nPage three: the ferry timetable.\n\
+                 {matched}\nPages four and five: the weather."
+            )
+        );
+        // Without a page limit every neighbour joins.
+        assert!(text(&[]).ends_with("A note without a page."));
+        assert!(!neighbor_allowed(Some((1, u32::MAX)), &[1, 2]));
+        assert!(!neighbor_allowed(None, &[1]));
+        assert!(neighbor_allowed(None, &[]));
+    }
+
+    /// A plain-text document long enough for several window chunks, indexed
+    /// with windows that end at its paragraphs.
+    async fn engine_with_long_notes(dir: &std::path::Path) -> RAGEngine {
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.join("data");
+        config.embedding.model_dir = dir.join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        config.search.min_score_threshold = 0.0;
+        config.chunking.chunk_size = 600;
+        config.chunking.chunk_overlap = 0;
+        let mut engine = RAGEngine::new(config).await.unwrap();
+        engine
+            .attach_search_models(crate::rag_engine::SearchModels::from_embedder(Arc::new(
+                crate::statements::testing::WordEmbedder::default(),
+            )))
+            .unwrap();
+        let filler = "The harbour archive lists the tide tables, the ferry times and the \
+                      weather for each week of the season. ";
+        let text = [
+            format!("Spring ledger. {}", filler.repeat(5)),
+            format!(
+                "Summer ledger. {}The lighthouse keeper recorded a saffron comet above the \
+                 northern cliffs.",
+                filler.repeat(4)
+            ),
+            format!("Autumn ledger. {}", filler.repeat(5)),
+            format!("Winter ledger. {}", filler.repeat(5)),
+        ]
+        .map(|p| p.trim().to_string())
+        .join("\n\n");
+        let path = stored("C:/docs/notes/harbour.txt");
+        let mut metadata = HashMap::new();
+        metadata.insert("space_id".to_string(), "notes".to_string());
+        metadata.insert("file_path".to_string(), path.clone());
+        metadata.insert("title".to_string(), "harbour".to_string());
+        let ids = engine
+            .add_document(
+                &text,
+                crate::types::DocumentFormat::TXT,
+                metadata,
+                Citation {
+                    title: "harbour".into(),
+                    source: path,
+                    ..Citation::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(ids.len() >= 3, "{} chunks", ids.len());
+        engine
+    }
+
+    #[tokio::test]
+    async fn a_txt_passage_shows_the_chunk_that_matched_not_the_one_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Box::pin(engine_with_long_notes(dir.path())).await;
+        let results =
+            Box::pin(engine.search_comprehensive("saffron comet lighthouse keeper", 3, None))
+                .await
+                .unwrap();
+        let top = &results[0];
+        assert_eq!(
+            top.metadata.get("chunk_index").map(String::as_str),
+            Some("1"),
+            "{}",
+            top.snippet
+        );
+        let parts = SnippetParts::of(&top.snippet, &top.metadata).expect("widened");
+        let matched = top.snippet[parts.matched.0..parts.matched.1].trim();
+        assert!(matched.starts_with("Summer ledger."), "{matched}");
+        assert!(matched.ends_with("northern cliffs."), "{matched}");
+        assert!(
+            top.snippet.starts_with("Spring ledger."),
+            "the chunk before comes first"
+        );
+
+        for budget in [MAX_PASSAGE_CHARS, passage_budget(MAX_K), MIN_PASSAGE_CHARS] {
+            let text = passage(1, top, budget, &[]).text;
+            assert!(text.chars().count() <= budget, "{budget}: {text}");
+            if matched.chars().count() < budget {
+                assert!(text.contains(matched), "{budget}: {text}");
+            } else {
+                assert_eq!(text, truncate_chars(matched, budget));
+            }
+            assert!(!text.contains("Spring ledger"), "{budget}: {text}");
+        }
     }
 }

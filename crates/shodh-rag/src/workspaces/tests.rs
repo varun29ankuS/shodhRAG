@@ -329,6 +329,60 @@ fn paths_compare_across_separators_and_folders() {
     assert_eq!(normalize_path(r"\\?\C:\Docs\"), normalize_path("C:/Docs"));
 }
 
+/// A file on a share, as canonicalize spells it (`\\?\UNC\…`), is the share's file, never
+/// a relative `UNC/…` path; a mapped drive keeps its letter, as the index stores it.
+#[test]
+fn share_and_mapped_drive_paths_compare_as_indexed() {
+    let verbatim = r"\\?\UNC\server\share\Papers\a.pdf";
+    assert_eq!(
+        normalize_path(verbatim),
+        normalize_path(r"\\server\share\Papers\a.pdf")
+    );
+    assert!(normalize_path(verbatim).starts_with("//server/share/"));
+    assert!(path_within(verbatim, r"\\server\share\Papers"));
+    assert!(path_within(
+        r"\\server\share\Papers\deep\b.pdf",
+        r"\\?\UNC\server\share\Papers\"
+    ));
+    assert!(!path_within(verbatim, r"\\server\share\Other"));
+    assert!(!path_within(verbatim, "UNC/server/share/Papers"));
+    assert!(path_within(r"Z:\Papers\a.pdf", "Z:/Papers"));
+    if cfg!(windows) {
+        assert!(path_within(r"z:\papers\a.pdf", r"Z:\Papers"));
+        assert_eq!(normalize_path(r"Z:\Papers\a.pdf"), "z:/papers/a.pdf");
+    }
+    assert_eq!(normalize_path("  "), "");
+}
+
+/// A workspace run over a folder on a share reads the share's files however they are
+/// spelled, and nothing outside its folders; a mapped drive's files match by its letter.
+#[test]
+fn a_workspace_run_reads_share_and_mapped_drive_files() {
+    use crate::harness::tools::RunScope;
+    let share = RunScope {
+        restricted: true,
+        folders: vec![r"\\server\share\Papers".to_string()],
+        files: vec![r"\\?\UNC\server\share\Notes\n.pdf".to_string()],
+        ..RunScope::default()
+    };
+    assert!(share.allows_path(r"\\?\UNC\server\share\Papers\a.pdf"));
+    assert!(share.allows_path(r"\\server\share\Papers\a.pdf"));
+    assert!(share.allows_path(r"\\server\share\Notes\n.pdf"));
+    assert!(!share.allows_path(r"\\?\UNC\server\share\Other\a.pdf"));
+    assert!(!share.allows_path(r"UNC\server\share\Other\a.pdf"));
+    let mapped = RunScope {
+        restricted: true,
+        folders: vec![r"Z:\Papers".to_string()],
+        ..RunScope::default()
+    };
+    assert!(mapped.allows_path(r"Z:\Papers\a.pdf"));
+    assert!(mapped.allows_path("Z:/Papers/deep/b.pdf"));
+    assert!(!mapped.allows_path(r"Z:\Other\a.pdf"));
+    if cfg!(windows) {
+        assert!(mapped.allows_path("z:/papers/a.pdf"));
+    }
+}
+
 #[test]
 fn every_template_is_valid() {
     for t in TEMPLATES {

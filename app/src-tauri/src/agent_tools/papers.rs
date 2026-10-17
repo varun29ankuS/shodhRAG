@@ -7,7 +7,6 @@
 //! claim — and every number of a comparison — against the snippet or table cell it cites.
 //! Editing, deleting and reviewing snippets and results is the user's and has no tool.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -25,7 +24,6 @@ use shodh_rag::research::snippets::{
 };
 use shodh_rag::statements::Scope;
 
-use super::sources::strip_verbatim;
 use super::{invalid, limit_arg, str_arg, AgentHost};
 use crate::research_commands::{indexed_pdfs, scopes_for, ResearchCommandError, ResultFilterInput};
 
@@ -315,9 +313,8 @@ impl CreateSnippetTool {
                 "Snippets are taken from indexed PDF files.".to_string(),
             ));
         }
-        Ok(std::fs::canonicalize(Path::new(&source))
-            .map(|p| strip_verbatim(&p).display().to_string())
-            .unwrap_or(source))
+        // A mapped drive keeps its letter, so the snippet's file matches the index.
+        Ok(crate::research_commands::disk_spelling(&source))
     }
 }
 

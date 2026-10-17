@@ -321,20 +321,31 @@ pub async fn discard_upload(
 /// Longest wait for the index before a discard gives up (and keeps the file).
 const DISCARD_INDEX_WAIT: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// `folder/<name of requested>` without Windows' `\\?\` prefix, the
-/// spelling the indexer may have recorded.
+/// `folder/<name of requested>` in the indexer's spelling
+/// ([`shodh_rag::rag_engine::canonical_path`]): without Windows' `\\?\` prefix, and a
+/// share's `\\?\UNC\server\share\…` as `\\server\share\…`.
 fn without_verbatim_prefix(folder: &Path, requested: &Path) -> std::path::PathBuf {
-    let joined = folder.join(requested.file_name().unwrap_or_default());
-    let text = joined.to_string_lossy();
-    match text.strip_prefix(r"\\?\") {
-        Some(rest) => std::path::PathBuf::from(rest),
-        None => joined,
-    }
+    shodh_rag::rag_engine::canonical_path(&folder.join(requested.file_name().unwrap_or_default()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The upload folder as canonicalize spells it maps to the index's spelling: a drive
+    /// path without `\\?\`, a share as `\\server\share`, never a relative `UNC\…`.
+    #[test]
+    fn an_upload_is_looked_up_under_the_index_spelling() {
+        let name = Path::new("paper.pdf");
+        assert_eq!(
+            without_verbatim_prefix(Path::new(r"\\?\C:\Data\uploads\u1"), name),
+            Path::new(r"C:\Data\uploads\u1\paper.pdf")
+        );
+        assert_eq!(
+            without_verbatim_prefix(Path::new(r"\\?\UNC\server\share\uploads\u1"), name),
+            Path::new(r"\\server\share\uploads\u1\paper.pdf")
+        );
+    }
 
     #[test]
     fn a_dropped_file_name_is_one_plain_component() {

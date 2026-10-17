@@ -30,10 +30,11 @@ pub(super) fn register(
     Ok(())
 }
 
-/// Strip the Windows verbatim prefix so paths match the index.
+/// The indexer's spelling of a canonicalized path ([`shodh_rag::rag_engine::canonical_path`]):
+/// no verbatim prefix, and a share's `\\?\UNC\server\share\…` as `\\server\share\…`, never
+/// the relative `UNC\…`.
 pub(crate) fn strip_verbatim(path: &Path) -> PathBuf {
-    let text = path.display().to_string();
-    PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
+    shodh_rag::rag_engine::canonical_path(path)
 }
 
 fn validate_folder(tool: &str, raw: &str) -> Result<PathBuf, ToolError> {

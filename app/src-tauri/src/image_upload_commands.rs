@@ -47,11 +47,12 @@ async fn run_ocr_on_file(path: std::path::PathBuf) -> Result<(String, f32), Stri
         use windows::Storage::{FileAccessMode, StorageFile};
 
         let abs_path = std::fs::canonicalize(&path).map_err(|e| format!("Path error: {}", e))?;
-        let path_str = abs_path.to_string_lossy().to_string();
-        // Strip \\?\ prefix that canonicalize adds on Windows
-        let clean_path = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
+        // Without the \\?\ prefix canonicalize adds (a share's \\?\UNC\ as \\server\share).
+        let clean_path = shodh_rag::rag_engine::canonical_path(&abs_path)
+            .to_string_lossy()
+            .to_string();
 
-        let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(clean_path))
+        let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(clean_path.as_str()))
             .map_err(|e| format!("GetFileFromPath failed: {}", e))?
             .get()
             .map_err(|e| format!("GetFileFromPath get failed: {}", e))?;

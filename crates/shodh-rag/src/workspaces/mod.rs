@@ -377,15 +377,18 @@ fn collapse_spaces(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Normalised form of a file or folder path for comparison: forward slashes, no trailing
-/// slash, no `\\?\` prefix, and lower case on Windows (where paths are case-insensitive).
+/// Normalised form of a file or folder path for comparison: the indexer's spelling
+/// ([`crate::rag_engine::canonical_path`]: no verbatim prefix, `\\?\UNC\server\share\…`
+/// as `\\server\share\…`, no `.` components) with forward slashes, no trailing slash, and
+/// lower case on Windows (where paths are case-insensitive). A mapped drive keeps its
+/// letter: nothing here resolves it to its share.
 pub fn normalize_path(path: &str) -> String {
     let path = path.trim();
-    let path = path
-        .strip_prefix(r"\\?\")
-        .or_else(|| path.strip_prefix("//?/"))
-        .unwrap_or(path);
-    let mut out = path.replace('\\', "/");
+    if path.is_empty() {
+        return String::new();
+    }
+    let canonical = crate::rag_engine::canonical_path(std::path::Path::new(path));
+    let mut out = canonical.to_string_lossy().replace('\\', "/");
     while out.len() > 1 && out.ends_with('/') && !out.ends_with(":/") {
         out.pop();
     }

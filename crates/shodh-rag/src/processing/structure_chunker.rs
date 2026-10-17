@@ -807,6 +807,7 @@ fn push_chunk(
         start_offset: 0,
         end_offset: text.len(),
         page: layout.page_start.map(|p| p as usize),
+        page_end: None,
         text,
         layout: Some(ChunkLayout {
             unit: kind.name(),

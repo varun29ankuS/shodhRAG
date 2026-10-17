@@ -381,7 +381,7 @@ fn prepare_chunks(
         }
         match &chunk.layout {
             Some(layout) => insert_layout_metadata(&mut per_chunk_meta, layout),
-            None => insert_page_metadata(&mut per_chunk_meta, chunk.page),
+            None => insert_page_metadata(&mut per_chunk_meta, chunk.page, chunk.page_end),
         }
         // Extract structured fields (emails, phones, etc.) at ingest time
         for (k, v) in extract_structured_fields(&chunk.text) {
@@ -556,16 +556,25 @@ static RE_INVOICE_NO: LazyLock<Regex> = LazyLock::new(|| {
 /// Extract structured fields from chunk text using regex.
 /// Returns key-value pairs to merge into chunk metadata.
 /// This runs once at ingest time — zero cost at query time.
-/// Record a chunk's source page in its metadata. Paged chunks get `page`,
-/// `page_start` and `page_end` (a chunk is produced from exactly one page, so
-/// start and end are equal; the range keys let consumers treat merged/expanded
-/// results uniformly). Unpaged chunks get no page keys.
-fn insert_page_metadata(meta: &mut HashMap<String, String>, page: Option<usize>) {
+/// Record a chunk's source pages in its metadata. Paged chunks get `page`,
+/// `page_start` and `page_end`: equal for a chunk of one page, a range for a
+/// chunk whose text runs onto a later page (a short page merged with its
+/// neighbour, `page_end`); the range keys let consumers treat merged/expanded
+/// results uniformly. Unpaged chunks get no page keys.
+fn insert_page_metadata(
+    meta: &mut HashMap<String, String>,
+    page: Option<usize>,
+    page_end: Option<usize>,
+) {
     if let Some(page) = page {
-        let page = page.to_string();
-        meta.insert("page".to_string(), page.clone());
-        meta.insert("page_start".to_string(), page.clone());
-        meta.insert("page_end".to_string(), page);
+        let start = page.to_string();
+        let end = page_end
+            .filter(|&end| end > page)
+            .unwrap_or(page)
+            .to_string();
+        meta.insert("page".to_string(), start.clone());
+        meta.insert("page_start".to_string(), start);
+        meta.insert("page_end".to_string(), end);
     }
 }
 
@@ -3245,7 +3254,7 @@ Language models trained on long documents reach lower perplexity.
     #[test]
     fn paged_chunk_metadata_round_trips_to_page_label() {
         let mut meta = HashMap::new();
-        insert_page_metadata(&mut meta, Some(7));
+        insert_page_metadata(&mut meta, Some(7), None);
         assert_eq!(meta.get("page").map(String::as_str), Some("7"));
         assert_eq!(meta.get("page_start").map(String::as_str), Some("7"));
         assert_eq!(meta.get("page_end").map(String::as_str), Some("7"));
@@ -3253,9 +3262,23 @@ Language models trained on long documents reach lower perplexity.
     }
 
     #[test]
+    fn a_chunk_running_onto_a_later_page_records_the_range() {
+        let mut meta = HashMap::new();
+        insert_page_metadata(&mut meta, Some(2), Some(3));
+        assert_eq!(meta.get("page").map(String::as_str), Some("2"));
+        assert_eq!(meta.get("page_start").map(String::as_str), Some("2"));
+        assert_eq!(meta.get("page_end").map(String::as_str), Some("3"));
+        assert_eq!(page_numbers_from_metadata(&meta).as_deref(), Some("2-3"));
+        // An end before the start is no range.
+        let mut meta = HashMap::new();
+        insert_page_metadata(&mut meta, Some(4), Some(1));
+        assert_eq!(page_numbers_from_metadata(&meta).as_deref(), Some("4"));
+    }
+
+    #[test]
     fn unpaged_chunk_has_no_page_label() {
         let mut meta = HashMap::new();
-        insert_page_metadata(&mut meta, None);
+        insert_page_metadata(&mut meta, None, None);
         assert!(meta.is_empty());
         assert_eq!(page_numbers_from_metadata(&meta), None);
     }

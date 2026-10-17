@@ -313,6 +313,10 @@ pub struct ContextualChunkResult {
     /// 1-based source page for chunks produced from a paged section (PDF page).
     /// `None` for unpaged content (plain text, spreadsheets, CSV, document-level data).
     pub page: Option<usize>,
+    /// Last source page of a window chunk that runs onto later pages (a page
+    /// too short for a chunk of its own, merged with its neighbour); `None`
+    /// when the chunk is on `page` alone.
+    pub page_end: Option<usize>,
     /// Pages, boxes, section path and block kinds for chunks made from a
     /// structured document; `None` for window and section chunks.
     pub layout: Option<super::structure_chunker::ChunkLayout>,
@@ -361,6 +365,7 @@ impl TextChunker {
                     start_offset: chunk.start_offset,
                     end_offset: chunk.end_offset,
                     page: None,
+                    page_end: None,
                     layout: None,
                 }
             })
@@ -378,8 +383,15 @@ impl TextChunker {
     ) -> Vec<ContextualChunkResult> {
         let mut results = Vec::new();
         let mut global_index = 0usize;
+        // Text sections are chunked in groups ([`Self::text_groups`]), each
+        // where its first section is.
+        let groups = self.text_groups(sections);
+        let mut group_at: Vec<Option<&[usize]>> = vec![None; sections.len()];
+        for group in &groups {
+            group_at[group[0]] = Some(group.as_slice());
+        }
 
-        for section in sections {
+        for (section_index, section) in sections.iter().enumerate() {
             match section {
                 DocumentSection::FormFields { fields, page } => {
                     let mut body = String::new();
@@ -419,6 +431,7 @@ impl TextChunker {
                             start_offset: 0,
                             end_offset: body.len(),
                             page: form_page,
+                            page_end: None,
                             layout: None,
                         });
                         global_index += 1;
@@ -455,6 +468,7 @@ impl TextChunker {
                                 start_offset: 0,
                                 end_offset: chunk_text.len(),
                                 page: form_page,
+                                page_end: None,
                                 layout: None,
                             });
                             global_index += 1;
@@ -502,6 +516,7 @@ impl TextChunker {
                             start_offset: 0,
                             end_offset: content.len(),
                             page: None,
+                            page_end: None,
                             layout: None,
                         });
                         global_index += 1;
@@ -517,32 +532,12 @@ impl TextChunker {
                     }
                 }
 
-                DocumentSection::Text {
-                    content,
-                    page,
-                    heading,
-                } => {
-                    let content = content.trim();
-                    if content.is_empty() {
+                DocumentSection::Text { .. } => {
+                    let Some(group) = group_at[section_index] else {
                         continue;
-                    }
-
-                    let text_page = page_of(*page);
-                    let section_label = heading
-                        .clone()
-                        .or_else(|| text_page.map(|p| format!("Page {}", p)));
-                    let page_source = match text_page {
-                        Some(p) => format!("{} (Page {})", doc_source, p),
-                        None => doc_source.to_string(),
                     };
-
-                    let sub_chunks = self.chunk_with_context(content, doc, &page_source);
-                    for mut sc in sub_chunks {
+                    for mut sc in self.chunk_text_group(sections, group, doc, doc_source) {
                         sc.index = global_index;
-                        sc.page = text_page;
-                        if sc.heading.is_none() {
-                            sc.heading = section_label.clone();
-                        }
                         results.push(sc);
                         global_index += 1;
                     }
@@ -551,6 +546,109 @@ impl TextChunker {
         }
 
         results
+    }
+}
+
+impl TextChunker {
+    /// The non-blank Text sections of `sections` (indices, in order) grouped
+    /// to be chunked as one text each. A section shorter than
+    /// `min_chunk_size` joins the next Text section, or the previous one when
+    /// none follows, so a page that holds only its number ("3") is neither
+    /// dropped nor a chunk of its own. Only when every Text section is short
+    /// do they form a group of their own.
+    fn text_groups(&self, sections: &[DocumentSection]) -> Vec<Vec<usize>> {
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        let mut pending: Vec<usize> = Vec::new();
+        for (index, section) in sections.iter().enumerate() {
+            let DocumentSection::Text { content, .. } = section else {
+                continue;
+            };
+            let content = content.trim();
+            if content.is_empty() {
+                continue;
+            }
+            pending.push(index);
+            if content.len() >= self.min_chunk_size {
+                groups.push(std::mem::take(&mut pending));
+            }
+        }
+        if !pending.is_empty() {
+            match groups.last_mut() {
+                Some(last) => last.extend(pending),
+                None => groups.push(pending),
+            }
+        }
+        groups
+    }
+
+    /// Window chunks of the Text sections `group` of `sections`, joined by
+    /// blank lines. Each chunk carries the page its text starts on and, when
+    /// its text runs onto a later section's page, that page as `page_end`;
+    /// its heading is that of the section it starts in, else its page.
+    fn chunk_text_group(
+        &self,
+        sections: &[DocumentSection],
+        group: &[usize],
+        doc: &DocumentContext,
+        doc_source: &str,
+    ) -> Vec<ContextualChunkResult> {
+        // Where each section starts in the joined text, its page and heading.
+        let mut text = String::new();
+        let mut segments: Vec<(usize, Option<usize>, Option<&str>)> = Vec::new();
+        for &index in group {
+            let Some(DocumentSection::Text {
+                content,
+                page,
+                heading,
+            }) = sections.get(index)
+            else {
+                continue;
+            };
+            if !text.is_empty() {
+                text.push_str("\n\n");
+            }
+            segments.push((text.len(), page_of(*page), heading.as_deref()));
+            text.push_str(content.trim());
+        }
+        let segment_at = |offset: usize| {
+            segments
+                .iter()
+                .rev()
+                .find(|(start, _, _)| *start <= offset)
+                .or(segments.first())
+                .copied()
+        };
+        let first_page = segments.first().and_then(|s| s.1);
+        let last_page = segments.last().and_then(|s| s.1);
+        let page_source = match (first_page, last_page) {
+            (Some(first), Some(last)) if last > first => {
+                format!("{} (Pages {}-{})", doc_source, first, last)
+            }
+            (Some(first), _) => format!("{} (Page {})", doc_source, first),
+            (None, _) => doc_source.to_string(),
+        };
+
+        let mut chunks = self.chunk_with_context(&text, doc, &page_source);
+        for chunk in &mut chunks {
+            // The chunk's first and last characters that are not whitespace.
+            let start = chunk.start_offset + (chunk.text.len() - chunk.text.trim_start().len());
+            let end = chunk.end_offset - (chunk.text.len() - chunk.text.trim_end().len());
+            let (start_page, start_heading) = segment_at(start)
+                .map(|(_, page, heading)| (page, heading))
+                .unwrap_or((None, None));
+            let end_page = segment_at(end.saturating_sub(1)).and_then(|(_, page, _)| page);
+            chunk.page = start_page;
+            chunk.page_end = match (start_page, end_page) {
+                (Some(first), Some(last)) if last > first => Some(last),
+                _ => None,
+            };
+            if chunk.heading.is_none() {
+                chunk.heading = start_heading
+                    .map(str::to_string)
+                    .or_else(|| start_page.map(|p| format!("Page {}", p)));
+            }
+        }
+        chunks
     }
 }
 
@@ -612,6 +710,7 @@ impl TextChunker {
             end_offset: text.len(),
             text,
             page: table_page,
+            page_end: None,
             layout: None,
         };
 
@@ -1101,8 +1200,10 @@ mod tests {
         }
     }
 
-    /// The reported hang: 700 three-byte characters without a break, where
-    /// the last window's step used to snap back to its own start.
+    /// The reported hang: 700 three-byte characters without a break. The
+    /// chunker before this fix went on to a third window, 1899..2100, whose
+    /// one-byte step snapped back to 1899 forever; now the second window
+    /// reaches the end and is the last.
     #[test]
     fn cjk_text_without_breaks_ends_after_two_windows() {
         let chunker = TextChunker::default();
@@ -1116,7 +1217,8 @@ mod tests {
         for script in ["я", "م", "ह", "é"] {
             assert_chunked_safely(&chunker, &script.repeat(1100));
         }
-        // One four-byte character where the last window's step lands.
+        // A four-byte character at len − 200: where the old chunker's third
+        // window started, so its step snapped back inside the character.
         let mut emoji = "a".repeat(1899);
         emoji.push('🚀');
         emoji.push_str(&"b".repeat(197));
@@ -1169,6 +1271,56 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].text, "Signed.");
         assert_eq!(chunks[0].page, Some(4));
+        assert_eq!(chunks[0].page_end, None);
+    }
+
+    fn page_text(page: usize, content: &str) -> DocumentSection {
+        DocumentSection::Text {
+            content: content.to_string(),
+            page,
+            heading: None,
+        }
+    }
+
+    /// A page too short for a chunk of its own (a lopdf page holding only
+    /// its number) joins the next page's text, or the previous page's when
+    /// it is the last, and the chunk records both pages.
+    #[test]
+    fn a_short_page_joins_its_neighbour_with_both_pages() {
+        let chunker = TextChunker::new(500, 50, 100);
+        let context = DocumentContext::titled("Report");
+        let first = "The first page describes the scope of the audit and the period it covers, from April to March of the following year.";
+        let third = "The third page lists the findings: two controls failed and one was not tested at all during this audit year.";
+        assert!(first.len() >= 100 && third.len() >= 100);
+
+        let sections = vec![
+            page_text(1, first),
+            page_text(2, " 3 "),
+            page_text(3, third),
+        ];
+        let chunks = chunker.chunk_structured(&sections, &context, "report.pdf");
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].text, first);
+        assert_eq!((chunks[0].page, chunks[0].page_end), (Some(1), None));
+        assert_eq!(chunks[1].text, format!("3\n\n{third}"));
+        assert_eq!((chunks[1].page, chunks[1].page_end), (Some(2), Some(3)));
+        assert_eq!(chunks[1].heading.as_deref(), Some("Page 2"));
+        assert!(chunks[1].context.contains("report.pdf (Pages 2-3)"));
+        assert_eq!((chunks[0].index, chunks[1].index), (0, 1));
+
+        // The last page joins the one before it.
+        let sections = vec![page_text(1, first), page_text(2, "3")];
+        let chunks = chunker.chunk_structured(&sections, &context, "report.pdf");
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text, format!("{first}\n\n3"));
+        assert_eq!((chunks[0].page, chunks[0].page_end), (Some(1), Some(2)));
+
+        // Short pages only: one chunk of all of them.
+        let sections = vec![page_text(1, "1"), page_text(2, "2")];
+        let chunks = chunker.chunk_structured(&sections, &context, "report.pdf");
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text, "1\n\n2");
+        assert_eq!((chunks[0].page, chunks[0].page_end), (Some(1), Some(2)));
     }
 
     #[test]

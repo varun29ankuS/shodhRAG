@@ -381,6 +381,16 @@ fn a_workspace_run_reads_share_and_mapped_drive_files() {
     if cfg!(windows) {
         assert!(mapped.allows_path("z:/papers/a.pdf"));
     }
+    // `..` leaves the folder: refused, however the path starts.
+    let ws = RunScope {
+        restricted: true,
+        folders: vec![r"C:\ws".to_string()],
+        ..RunScope::default()
+    };
+    assert!(ws.allows_path(r"C:\ws\a.pdf"));
+    assert!(!ws.allows_path(r"C:\ws\..\other\a.pdf"));
+    assert!(!ws.allows_path("C:/ws/../other/a.pdf"));
+    assert!(!ws.allows_path(r"\\?\C:\ws\..\other\a.pdf"));
 }
 
 #[test]

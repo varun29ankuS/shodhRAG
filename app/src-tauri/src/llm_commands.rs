@@ -35,6 +35,25 @@ pub struct ApiKeys {
     pub perplexity: Option<String>,
     pub google: Option<String>,
     pub baseten: Option<String>,
+    /// Bumped every time a provider's key is set or removed in this run
+    /// ([`ApiKeys::set`]), so work that read a key can tell it changed since.
+    generations: KeyGenerations,
+}
+
+/// How many times each provider's key changed in this run (see
+/// [`ApiKeys::generation`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KeyGenerations(std::collections::HashMap<String, u64>);
+
+impl KeyGenerations {
+    /// The generation of `provider`'s key (0 until it first changes).
+    pub fn get(&self, provider: &str) -> u64 {
+        self.0.get(provider).copied().unwrap_or(0)
+    }
+
+    fn bump(&mut self, provider: &str) {
+        *self.0.entry(provider.to_string()).or_insert(0) += 1;
+    }
 }
 
 impl ApiKeys {
@@ -53,11 +72,24 @@ impl ApiKeys {
         }
     }
 
-    /// Set (or clear) the key of a provider id. Unknown ids are ignored.
+    /// Set (or clear) the key of a provider id, and bump its generation.
+    /// Unknown ids are ignored.
     pub fn set(&mut self, provider: &str, key: Option<String>) {
         if let Some(slot) = self.slot_mut(provider) {
             *slot = key;
+            self.generations.bump(provider);
         }
+    }
+
+    /// The generation of `provider`'s key: it changes whenever the key is
+    /// set or removed, never otherwise.
+    pub fn generation(&self, provider: &str) -> u64 {
+        self.generations.get(provider)
+    }
+
+    /// Every provider's generation now, to compare against later.
+    pub fn generations(&self) -> KeyGenerations {
+        self.generations.clone()
     }
 
     /// The key of a provider id, if one is set. Never log the result.
@@ -102,10 +134,20 @@ impl ApiKeys {
 
     /// Fill providers that have no key yet with keys loaded from the OS
     /// credential store. Keys already in memory (set by the user or the
-    /// environment in this session) are newer and are kept.
-    pub fn merge_missing(&mut self, stored: Vec<(&'static str, String)>) -> usize {
+    /// environment in this session) are newer and are kept. `since` are the
+    /// generations from before the store was read: a provider whose key was
+    /// saved or removed while it was read is left alone, so a key removed
+    /// during startup never comes back from the copy read before.
+    pub fn merge_missing(
+        &mut self,
+        stored: Vec<(&'static str, String)>,
+        since: &KeyGenerations,
+    ) -> usize {
         let mut merged = 0;
         for (provider, key) in stored {
+            if self.generations.get(provider) != since.get(provider) {
+                continue;
+            }
             if let Some(slot) = self.slot_mut(provider) {
                 if slot.as_deref().is_none_or(|k| k.trim().is_empty()) {
                     *slot = Some(key);
@@ -314,9 +356,7 @@ pub async fn set_api_key(
 
     {
         let mut api_keys = state.api_keys.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(slot) = api_keys.slot_mut(&provider) {
-            *slot = Some(api_key);
-        }
+        api_keys.set(&provider, Some(api_key));
     }
     // The provider id only; the key value is never passed to the audit log.
     audit.record(AuditRecord::new(
@@ -464,11 +504,14 @@ mod tests {
             anthropic: Some("   ".to_string()),
             ..ApiKeys::default()
         };
-        let merged = keys.merge_missing(vec![
-            ("openai", "stored-openai".to_string()),
-            ("anthropic", "stored-anthropic".to_string()),
-            ("google", "stored-google".to_string()),
-        ]);
+        let merged = keys.merge_missing(
+            vec![
+                ("openai", "stored-openai".to_string()),
+                ("anthropic", "stored-anthropic".to_string()),
+                ("google", "stored-google".to_string()),
+            ],
+            &KeyGenerations::default(),
+        );
         assert_eq!(merged, 2);
         assert_eq!(keys.openai.as_deref(), Some("session-key"));
         assert_eq!(keys.anthropic.as_deref(), Some("stored-anthropic"));
@@ -477,6 +520,38 @@ mod tests {
             keys.configured_providers(),
             vec!["openai", "anthropic", "google"]
         );
+    }
+
+    #[test]
+    fn a_key_removed_while_the_store_is_read_is_not_restored() {
+        let mut keys = ApiKeys::default();
+        keys.set("openrouter", Some("sk-or-old".to_string()));
+        // Startup reads the credential store...
+        let since = keys.generations();
+        // ...while the user removes the OpenRouter key. Google's is untouched.
+        keys.set("openrouter", None);
+        let merged = keys.merge_missing(
+            vec![
+                ("openrouter", "sk-or-old".to_string()),
+                ("google", "g-key".to_string()),
+            ],
+            &since,
+        );
+        assert_eq!(merged, 1);
+        assert_eq!(keys.openrouter, None, "the removed key stays removed");
+        assert_eq!(keys.google.as_deref(), Some("g-key"));
+    }
+
+    #[test]
+    fn every_change_of_a_key_moves_its_generation() {
+        let mut keys = ApiKeys::default();
+        assert_eq!(keys.generation("openrouter"), 0);
+        keys.set("openrouter", Some("a".to_string()));
+        keys.set("openrouter", None);
+        assert_eq!(keys.generation("openrouter"), 2);
+        assert_eq!(keys.generation("google"), 0);
+        keys.set("not-a-provider", Some("x".to_string()));
+        assert_eq!(keys.generation("not-a-provider"), 0);
     }
 
     #[test]

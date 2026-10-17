@@ -302,13 +302,20 @@ pub fn run() {
                 {
                     tracing::warn!("Environment key migration failed: {}", e);
                 }
+                // A key saved or removed while the store is read is not
+                // overwritten with the copy read before.
+                let since = llm_state
+                    .api_keys
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .generations();
                 match tokio::task::spawn_blocking(api_key_store::load_all).await {
                     Ok(stored) => {
                         let merged = llm_state
                             .api_keys
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
-                            .merge_missing(stored);
+                            .merge_missing(stored, &since);
                         if merged > 0 {
                             tracing::info!(
                                 "Loaded {} provider API key(s) from the OS credential store",

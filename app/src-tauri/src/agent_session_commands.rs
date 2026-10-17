@@ -499,7 +499,8 @@ impl AgentSessions {
     /// Stop every session whose model answers through `provider`, because
     /// its key was removed: each was launched with that key, and a running
     /// answer would keep sending it on its next request, so running answers
-    /// stop too (they end as "The session was closed"). Each session is
+    /// stop too (they end with "Stopped because the <provider> key was
+    /// removed."). Each session is
     /// stopped under its conversation's start lock, after a start in
     /// progress there. The next answer starts a session with the key in use
     /// now (the environment's, or none). Returns how many were stopped.
@@ -528,7 +529,10 @@ impl AgentSessions {
                 continue;
             }
             if let Some(entry) = self.remove(&session_id) {
-                entry.session.shutdown().await;
+                entry
+                    .session
+                    .shutdown_because(key_removed_message(provider))
+                    .await;
                 closed += 1;
                 tracing::info!(target: "shodh::harness", session = %session_id, provider = provider.as_str(), "agent session stopped: its provider's key was removed");
             }
@@ -1039,6 +1043,10 @@ fn session_reuse(closed: bool, running: bool, fits: bool) -> SessionReuse {
 /// `mode` is the conversation's (absent is Research). Code mode works in the
 /// code folder of `workspace_id` (the workspace's one folder source); a
 /// change of mode restarts the session for the next answer, never during one.
+///
+/// A key saved or removed while the session starts (see [`StartAttempt`])
+/// starts it again with the key in use now, at most
+/// [`MAX_KEY_CHANGE_RESTARTS`] times.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri injects each managed state as an argument.
 pub async fn agent_start(
@@ -1058,6 +1066,122 @@ pub async fn agent_start(
     learn: State<'_, LearnState>,
     answer_check: State<'_, AnswerCheckState>,
 ) -> CommandResult<String> {
+    let mut changed = None;
+    for _ in 0..=MAX_KEY_CHANGE_RESTARTS {
+        let attempt = start_attempt(
+            app.clone(),
+            conversation_id.clone(),
+            profile_id.clone(),
+            instructions.clone(),
+            parent_conversation_id.clone(),
+            model_override.clone(),
+            mode,
+            workspace_id.clone(),
+            sessions.clone(),
+            workspaces.clone(),
+            rag.clone(),
+            llm.clone(),
+            audit.clone(),
+            learn.clone(),
+            answer_check.clone(),
+        )
+        .await?;
+        match attempt {
+            StartAttempt::Started(session_id) => return Ok(session_id),
+            StartAttempt::KeyChanged(provider) => {
+                tracing::info!(target: "shodh::harness", provider = provider.as_str(), "agent_start: the key changed while the session started; starting again");
+                changed = Some(provider);
+            }
+        }
+    }
+    Err(AgentCommandError {
+        code: "model_config",
+        message: key_changed_message(changed),
+    })
+}
+
+/// Restarts of a session start whose provider key kept changing under it.
+const MAX_KEY_CHANGE_RESTARTS: usize = 2;
+
+/// What one start gave.
+#[derive(Debug)]
+enum StartAttempt {
+    /// The session id (new or reused) for the answer.
+    Started(String),
+    /// `provider`'s key was saved or removed after this start read it: no
+    /// session launched with the old key is kept (a new one was shut down,
+    /// an existing one is left to the removal, which stops it).
+    KeyChanged(ProviderId),
+}
+
+/// Why a start gave up after the key kept changing, in plain words.
+fn key_changed_message(provider: Option<ProviderId>) -> String {
+    match provider {
+        Some(provider) => format!(
+            "Stopped because the {} key changed while the answer was starting. Send it again.",
+            provider.label()
+        ),
+        None => "The answer could not start. Send it again.".to_string(),
+    }
+}
+
+/// The message a session stopped by removing its provider's key ends with.
+pub(crate) fn key_removed_message(provider: ProviderId) -> String {
+    format!("Stopped because the {} key was removed.", provider.label())
+}
+
+/// What a start read about its provider's key: the provider, its key-store
+/// id and the key's generation (see
+/// [`crate::llm_commands::ApiKeys::generation`]).
+type KeyRead = (ProviderId, &'static str, u64);
+
+/// The key generation of the provider `mode` answers through, read before
+/// its key is: a change after this read shows up as a different generation.
+fn key_generation(llm: &LLMState, mode: &LLMMode) -> Option<KeyRead> {
+    let LLMMode::External { provider, .. } = mode else {
+        return None;
+    };
+    let store_id = key_store_id(provider)?;
+    let id = ProviderId::from_api(provider)?;
+    let generation = llm
+        .api_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .generation(store_id);
+    Some((id, store_id, generation))
+}
+
+/// The provider whose key changed since `read` ([`key_generation`]). Read
+/// under the key lock, which a save or removal also takes to change it.
+fn key_changed_since(llm: &LLMState, read: Option<KeyRead>) -> Option<ProviderId> {
+    let (provider, store_id, generation) = read?;
+    let now = llm
+        .api_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .generation(store_id);
+    (now != generation).then_some(provider)
+}
+
+/// One start of [`agent_start`].
+#[allow(clippy::too_many_arguments)]
+async fn start_attempt(
+    app: AppHandle,
+    conversation_id: String,
+    profile_id: Option<String>,
+    instructions: Option<String>,
+    parent_conversation_id: Option<String>,
+    model_override: Option<ModelOverride>,
+    mode: Option<ConversationMode>,
+    workspace_id: Option<String>,
+    sessions: State<'_, AgentSessions>,
+    workspaces: State<'_, WorkspaceState>,
+    rag: State<'_, RagState>,
+    llm: State<'_, LLMState>,
+    audit: State<'_, AuditState>,
+    learn: State<'_, LearnState>,
+    answer_check: State<'_, AnswerCheckState>,
+) -> CommandResult<StartAttempt> {
     let started = Instant::now();
     check_id("conversation id", &conversation_id)?;
     let parent_conversation_id = parent_conversation_id
@@ -1111,6 +1235,9 @@ pub async fn agent_start(
             None,
         ),
     };
+    // Read before the key: a key saved or removed from here on is noticed
+    // once the session exists (below), under the conversation's start lock.
+    let generation = key_generation(&llm, &mode);
     let mode = with_resolved_key(resolve_key(&llm, &mode).await, mode);
     let settings = SettingsStore::in_dir(&app_data_dir(&app)?)
         .load()
@@ -1205,11 +1332,16 @@ pub async fn agent_start(
         });
         match (decision, current) {
             (Some(SessionReuse::Reuse), Some(entry)) => {
+                // Launched with a key that was just saved over or removed:
+                // not reused (a removal stops it; a new key replaces it).
+                if let Some(provider) = key_changed_since(&llm, generation) {
+                    return Ok(StartAttempt::KeyChanged(provider));
+                }
                 entry.touch();
                 if let Some(record) = override_audit {
                     audit.record(record);
                 }
-                return Ok(session_id);
+                return Ok(StartAttempt::Started(session_id));
             }
             // A different model (or instructions) while an answer is running:
             // that answer finishes on the session it started with. The change
@@ -1384,6 +1516,17 @@ More tools, from the MCP servers and skills the user connected: {}.             
     sessions
         .by_conversation
         .insert(conversation_id, session_id.clone());
+    // The key may have been saved or removed while the session launched. A
+    // removal that listed the sessions before this one was added did not
+    // see it: shut it down here and start again with the key in use now. A
+    // removal from here on lists it and stops it.
+    if let Some(provider) = key_changed_since(&llm, generation) {
+        if let Some(entry) = sessions.remove(&session_id) {
+            entry.session.shutdown().await;
+        }
+        emit_counts(&app, &sessions);
+        return Ok(StartAttempt::KeyChanged(provider));
+    }
     emit_counts(&app, &sessions);
     tracing::info!(
         target: "shodh::harness",
@@ -1395,7 +1538,7 @@ More tools, from the MCP servers and skills the user connected: {}.             
     if let Some(record) = override_audit {
         audit.record(record);
     }
-    Ok(session_id)
+    Ok(StartAttempt::Started(session_id))
 }
 
 /// Keeps the Inbox in step with the session: an approval request adds an item (and a
@@ -2418,6 +2561,53 @@ mod tests {
             panic!("still an external model");
         };
         assert_eq!(api_key, "lm-studio");
+    }
+
+    #[test]
+    fn a_key_changed_while_a_session_starts_is_noticed() {
+        let mode = openrouter("sk-or-old-key");
+        let llm = llm_without_keys(mode.clone());
+        llm.api_keys
+            .lock()
+            .unwrap()
+            .set("openrouter", Some("sk-or-old-key".into()));
+        // The start reads the generation, then the key...
+        let read = key_generation(&llm, &mode);
+        assert!(read.is_some());
+        assert_eq!(key_changed_since(&llm, read), None, "nothing changed yet");
+        // ...the user removes the key while the session launches...
+        llm.api_keys.lock().unwrap().set("openrouter", None);
+        // ...and the start sees it once the session exists.
+        assert_eq!(key_changed_since(&llm, read), Some(ProviderId::OpenRouter));
+        // Saving a key counts too; another provider's change does not.
+        let read = key_generation(&llm, &mode);
+        llm.api_keys
+            .lock()
+            .unwrap()
+            .set("anthropic", Some("sk-ant-x".into()));
+        assert_eq!(key_changed_since(&llm, read), None);
+        llm.api_keys
+            .lock()
+            .unwrap()
+            .set("openrouter", Some("sk-or-new-key".into()));
+        assert_eq!(key_changed_since(&llm, read), Some(ProviderId::OpenRouter));
+        // Providers without a saved key have nothing to watch.
+        let lmstudio = LLMMode::External {
+            provider: ApiProvider::LmStudio,
+            api_key: "lm-studio".into(),
+            model: "qwen3".into(),
+        };
+        assert!(key_generation(&llm, &lmstudio).is_none());
+        assert_eq!(key_changed_since(&llm, None), None);
+    }
+
+    #[test]
+    fn a_stopped_answer_says_which_key_was_removed() {
+        assert_eq!(
+            key_removed_message(ProviderId::OpenRouter),
+            "Stopped because the OpenRouter key was removed."
+        );
+        assert!(key_changed_message(Some(ProviderId::Anthropic)).contains("Anthropic key changed"));
     }
 
     #[test]

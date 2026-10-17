@@ -30,12 +30,15 @@ SOURCE = "Study Music (The_Mountain, Pixabay 602501)"
 # EDIT, in grid beats: keep [0, A_END) and [B_START, B_END); bars start on BAR_PHASE.
 A_END = 153
 B_START = 249
-B_END = 325
+B_END = 357
 BAR_PHASE = 1
 
 
 def fit_grid(y: np.ndarray, sr: int) -> tuple[float, float]:
-    _, beats = librosa.beat.beat_track(y=y, sr=sr, units="time")
+    # The tracker runs at 22.05 kHz, where it holds this track's 129.6 BPM; at
+    # full rate it can lock onto a slower subdivision. The fit is refined on
+    # full-rate onsets below.
+    _, beats = librosa.beat.beat_track(y=librosa.resample(y, orig_sr=sr, target_sr=22050), sr=22050, units="time")
     index = np.arange(len(beats))
     period, start = np.polyfit(index, beats, 1)
     close = np.abs(beats - (start + period * index)) < 0.06

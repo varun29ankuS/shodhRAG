@@ -1,7 +1,9 @@
 // The Shodh film — the problem, what Shodh is and who it is for, then one
 // unhurried walkthrough on the real app: the core flow (ask, search, answer,
-// citations, the exact passage), trust (flagged statements, the verified
-// log), a short tour (paper graph, workspaces, models), and the close. Two problem beats (too many
+// citations, the exact passage), going deeper (select a phrase to ask about
+// it, then layers deep with the trail of how you got there), trust (flagged
+// statements, the verified log), a short tour (paper graph, workspaces,
+// models), and the close. Two problem beats (too many
 // papers to read; AI answers that cannot be traced to a source), then the
 // Shodh logo, name, line and audience, which settle into the brand mark top
 // left as the app window rises. One window, one continuous
@@ -17,7 +19,9 @@ import boxes from "../public/act1/boxes.json";
 import activityBoxes from "../public/act2/activity-boxes.json";
 import graphBoxes from "../public/act2/graph-boxes.json";
 import groundBoxes from "../public/act2/ground-boxes.json";
+import deeperBoxes from "../public/act2/deeper-boxes.json";
 import modelsBoxes from "../public/act2/models-boxes.json";
+import selectBoxes from "../public/act2/select-boxes.json";
 import workspaceBoxes from "../public/act2/workspace-boxes.json";
 import { barBeat, beatFrame } from "./beats";
 import { font } from "./theme";
@@ -62,6 +66,9 @@ function boxFrom(log: Record<string, { box: Box | null }>, file: string, name: s
  */
 const CHIPS: Box = { x: 0.4083, y: 0.4865, w: 0.0604, h: 0.0277 };
 
+/** The trail of levels in the pop-out, measured from the held still (public/act2/deeper-hold.png). */
+const TRAIL: Box = { x: 0.052, y: 0.088, w: 0.245, h: 0.032 };
+
 /** The app window, on the right; the narration column is on the left. */
 const WIN = { x: 700, y: 225, w: 1120, h: 630 };
 
@@ -90,7 +97,7 @@ function frameShot(shot: Shot): { scale: number; tx: number; ty: number } {
 }
 
 /** Scenes, in bars of the track. */
-const SCENE = { papers: 0, trust: 4, brand: 8, ask: 12, search: 16, answer: 19, cite: 23, open: 26, passage: 29, ground: 33, activity: 37, graph: 41, workspace: 44, models: 47, close: 51 } as const;
+const SCENE = { papers: 0, trust: 4, brand: 8, ask: 12, search: 16, answer: 19, cite: 23, open: 26, passage: 29, select: 33, deeper: 37, ground: 41, activity: 45, graph: 49, workspace: 52, models: 55, close: 59 } as const;
 type SceneName = keyof typeof SCENE;
 
 const CAPTIONS: { from: SceneName; text: string }[] = [
@@ -100,6 +107,8 @@ const CAPTIONS: { from: SceneName; text: string }[] = [
   { from: "cite", text: "Each number links a sentence to the paper it came from." },
   { from: "open", text: "Click a number to open that paper…" },
   { from: "passage", text: "…at the exact passage, outlined." },
+  { from: "select", text: "Select any phrase in an answer to ask about it, right beside it." },
+  { from: "deeper", text: "Go layers deep. The trail shows how you got there." },
   { from: "ground", text: "When a sentence is not backed by its source, Shodh flags it." },
   { from: "activity", text: "Every question, search and answer is kept in a tamper-evident log on your computer." },
   { from: "graph", text: "See how your papers cite each other." },
@@ -249,6 +258,8 @@ export const ShodhFilm: React.FC = () => {
     cite: at("cite"),
     open: at("open"),
     passage: at("passage"),
+    select: at("select"),
+    deeper: at("deeper"),
     ground: at("ground"),
     activity: at("activity"),
     graph: at("graph"),
@@ -278,6 +289,14 @@ export const ShodhFilm: React.FC = () => {
   // The full width of the answer column, its last lines and the chips.
   const citeShot: Shot = { x: 0.33, y: CHIPS.y - 0.24, w: 0.5, h: 0.34 };
   const passageShot = pad(box("passage"), 0.05, 0.07);
+  // Going deeper: the phrase, then the side answer; the second phrase, then the trail.
+  const phrase1Shot = pad(boxFrom(selectBoxes, "act2/select-boxes.json", "phrase1"), 0.2, 0.16);
+  const thread1 = boxFrom(selectBoxes, "act2/select-boxes.json", "thread1");
+  const sideShot: Shot = { x: thread1.x - 0.04, y: 0.06, w: thread1.w + 0.08, h: thread1.y + thread1.h + 0.08 - 0.06 };
+  const phrase2Shot = pad(boxFrom(deeperBoxes, "act2/deeper-boxes.json", "phrase2"), 0.18, 0.16);
+  // The trail ("Answer › closure augmentation › posting list quality") and the selection card under it,
+  // as drawn in the held still (public/act2/deeper-hold.png).
+  const trailShot: Shot = { x: 0.03, y: 0.03, w: 0.46, h: 0.26 };
   // Trust and the tour, from the boxes each take logged.
   const flagShot = pad(boxFrom(groundBoxes, "act2/ground-boxes.json", "flag"), 0.16, 0.14);
   const chipAfter = boxFrom(groundBoxes, "act2/ground-boxes.json", "chipAfter");
@@ -303,7 +322,18 @@ export const ShodhFilm: React.FC = () => {
     [F.open + 56, WHOLE],
     [F.passage + 6, WHOLE],
     [F.passage + 70, passageShot],
-    [F.ground - 8, passageShot],
+    [F.select - 8, passageShot],
+    [F.select + 24, WHOLE],
+    [F.select + 50, phrase1Shot],
+    [F.select + 112, phrase1Shot],
+    [F.select + 140, WHOLE],
+    [F.select + 160, WHOLE],
+    [F.select + 196, sideShot],
+    [F.deeper - 4, sideShot],
+    [F.deeper + 30, phrase2Shot],
+    [F.deeper + 104, phrase2Shot],
+    [F.deeper + 140, trailShot],
+    [F.ground - 8, trailShot],
     [F.ground + 30, WHOLE],
     [F.ground + 44, flagShot],
     [F.ground + 112, flagShot],
@@ -374,12 +404,14 @@ export const ShodhFilm: React.FC = () => {
             <OffthreadVideo src={staticFile("act1/answer.mp4")} muted style={fill} />
             <Img src={staticFile("act1/hold-answer.png")} style={{ ...fill, opacity: ramp(frame, F.answer + 136, F.answer + 146) }} />
           </Sequence>
-          <Sequence from={F.open} durationInFrames={F.ground - F.open} layout="none">
+          <Sequence from={F.open} durationInFrames={F.select - F.open} layout="none">
             <OffthreadVideo src={staticFile("act1/click.mp4")} muted style={fill} />
             <Img src={staticFile("act1/hold-viewer.png")} style={{ ...fill, opacity: ramp(frame, F.open + 132, F.open + 142) }} />
           </Sequence>
           {(
             [
+              ["select", F.select, F.deeper],
+              ["deeper", F.deeper, F.ground],
               ["ground", F.ground, F.activity],
               ["activity", F.activity, F.graph],
               ["graph", F.graph, F.workspace],
@@ -392,9 +424,10 @@ export const ShodhFilm: React.FC = () => {
               <Img src={staticFile(`act2/${name}-hold.png`)} style={{ ...fill, opacity: ramp(frame, to - 26, to - 16) }} />
             </Sequence>
           ))}
+          {frame >= F.deeper + 150 && frame < F.ground ? <Outline b={TRAIL} p={ramp(frame, F.deeper + 150, F.deeper + 176, expo)} pad={6} radius={8} width={2.5} color={look.accent} /> : null}
           {frame >= F.cite + 50 && frame < F.open + 20 ? <Outline b={CHIPS} p={ramp(frame, F.cite + 50, F.cite + 76, expo)} pad={5} radius={8} width={2.5} color={look.accent} /> : null}
-          {frame >= F.passage + 74 && frame < F.ground + 16 ? <Outline b={pass} p={outline} pad={8} radius={8} width={3} color={look.accent} /> : null}
-          {frame >= F.passage + 100 && frame < F.ground + 16 ? (
+          {frame >= F.passage + 74 && frame < F.select + 16 ? <Outline b={pass} p={outline} pad={8} radius={8} width={3} color={look.accent} /> : null}
+          {frame >= F.passage + 100 && frame < F.select + 16 ? (
             <div style={{ position: "absolute", left: pass.x * WIN.w, top: pass.y * WIN.h - 42, padding: "6px 14px", borderRadius: 999, background: look.accent, color: "#fff", fontFamily: font.sans, fontSize: 15, fontWeight: 700, opacity: tag, transform: `translateY(${(1 - tag) * 8}px)` }}>
               Cited passage · SPANN, page 2
             </div>

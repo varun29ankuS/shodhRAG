@@ -296,3 +296,65 @@ test('the pick of a model the environment sets is shown selected', () => {
   assert.equal(selectedPick({ active: { model: nemotron, source: 'settings' }, prefs, picks }), null);
   assert.equal(selectedPick({ active: null, prefs, picks }), null);
 });
+
+test('every failure kind has plain words; timeouts name the provider, upstream and model', () => {
+  const kinds: ProviderError['kind'][] = [
+    'rate_limited', 'quota_exhausted', 'model_unavailable', 'auth', 'timeout', 'network',
+    'invalid_request', 'context_too_long', 'content_filtered', 'empty_response', 'other',
+  ];
+  const titles = new Set<string>();
+  for (const kind of kinds) {
+    const copy = providerErrorCopy({ kind, status: null, retryAfterSecs: null }, 'vendor/model', 'openrouter');
+    assert.ok(copy.title.length > 0 && copy.hint.length > 0, kind);
+    titles.add(copy.title);
+    assert.deepEqual(readProviderError({ kind, status: null, retryAfterSecs: null }), { kind, status: null, retryAfterSecs: null });
+  }
+  assert.equal(titles.size, kinds.length, 'one message per kind');
+  const timeout = providerErrorCopy({ kind: 'timeout', status: null, retryAfterSecs: null, upstream: 'Nvidia' }, 'vendor/model', 'openrouter');
+  assert.equal(timeout.title, "The model's provider did not answer in time (OpenRouter via Nvidia · vendor/model)");
+  assert.equal(timeout.hint, 'Try again, or choose another model in Settings → Model.');
+  assert.equal(
+    providerErrorCopy({ kind: 'timeout', status: null, retryAfterSecs: null }, 'vendor/model', 'openrouter').title,
+    "The model's provider did not answer in time (OpenRouter · vendor/model)",
+  );
+});
+
+test('retry where trying again can help; no automatic retry for the new kinds', () => {
+  const e = (kind: ProviderError['kind']): ProviderError => ({ kind, status: null, retryAfterSecs: 5 });
+  for (const kind of ['timeout', 'network', 'empty_response', 'model_unavailable', 'other'] as const) {
+    assert.equal(canRetry(e(kind)), true, kind);
+    assert.equal(autoRetrySeconds(e(kind), 0), null, kind);
+  }
+  for (const kind of ['invalid_request', 'context_too_long', 'content_filtered'] as const) {
+    assert.equal(canRetry(e(kind)), false, kind);
+    assert.equal(fallbackHelps(e(kind)), false, kind);
+  }
+  assert.equal(fallbackHelps(e('timeout')), true, 'a timeout keeps the fallback offer 504 had');
+  assert.equal(fallbackHelps(e('network')), true, 'a broken connection keeps the fallback offer it had');
+  assert.equal(fallbackDecision(e('timeout'), { model: { provider: 'anthropic', model: 'claude-haiku-4-5' }, name: 'Claude Haiku 4.5', automatic: false }, false), 'offer');
+});
+
+test('the upstream provider is read only when it is a short name', () => {
+  assert.deepEqual(readProviderError({ kind: 'timeout', status: null, retryAfterSecs: null, upstream: ' Nvidia ' }), {
+    kind: 'timeout', status: null, retryAfterSecs: null, upstream: 'Nvidia',
+  });
+  assert.equal(readProviderError({ kind: 'timeout', upstream: 'x'.repeat(65) })?.upstream, undefined);
+  assert.equal(readProviderError({ kind: 'timeout', upstream: 7 })?.upstream, undefined);
+});
+
+test('OpenRouter privacy settings that leave no provider get their own hint; network copy stays neutral', () => {
+  const raw = '404 {"error":{"message":"No endpoints available matching your guardrail restrictions and data policy. Configure: https://openrouter.ai/settings/privacy","code":404}}';
+  const unavailable: ProviderError = { kind: 'model_unavailable', status: 404, retryAfterSecs: null };
+  const copy = providerErrorCopy(unavailable, 'nemotron:free', 'openrouter', raw);
+  assert.equal(
+    copy.hint,
+    "OpenRouter's privacy settings leave no provider for this model. Change them at openrouter.ai/settings/privacy, or choose another model in Settings → Model.",
+  );
+  assert.ok(canRetry(unavailable));
+  assert.ok(fallbackHelps(unavailable));
+  assert.notEqual(providerErrorCopy(unavailable, 'm', 'openrouter', 'No endpoints found for m.').hint, copy.hint);
+  assert.equal(providerErrorCopy(unavailable, 'm', 'openrouter').hint, providerErrorCopy(unavailable, 'm', 'openrouter', null).hint);
+  const network = providerErrorCopy({ kind: 'network', status: null, retryAfterSecs: null }, 'vendor/model', 'openrouter');
+  assert.equal(network.title, "The connection to the model's provider broke (OpenRouter · vendor/model)");
+  assert.equal(network.hint, 'Try again, or choose another model in Settings → Model.');
+});

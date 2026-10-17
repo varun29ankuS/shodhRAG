@@ -1,9 +1,11 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::AppHandle;
+
+use crate::durable_file::{self, Loaded, Origin};
+use crate::store_notices::{self, NoticeKind, StoreNotice};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -116,41 +118,69 @@ impl ConversationStore {
         }
     }
 
-    fn read_unlocked(&self) -> Result<Vec<ConversationRecord>, String> {
-        match fs::read_to_string(&self.path) {
-            Ok(data) => serde_json::from_str::<ConversationsFile>(&data)
-                .map(|f| f.conversations)
-                .map_err(|e| format!("Failed to parse conversations: {e}")),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(e) => Err(format!("Failed to read conversations: {e}")),
+    /// The saved conversations and the file they came from: the backup
+    /// when the file is damaged (reported as a notice). Fails when neither
+    /// can be read; nothing is written then.
+    fn read_unlocked(&self) -> Result<Loaded<Vec<ConversationRecord>>, String> {
+        let loaded = durable_file::read_with_backup(
+            &self.path,
+            |text| {
+                serde_json::from_str::<ConversationsFile>(text)
+                    .map(|f| f.conversations)
+                    .map_err(|e| e.to_string())
+            },
+            Vec::new,
+        )
+        .map_err(|e| format!("The saved conversations could not be read: {e}"))?;
+        if let Origin::Backup { problem } = &loaded.origin {
+            store_notices::report(StoreNotice::new(
+                "conversations",
+                NoticeKind::Restored,
+                &self.path,
+                "Conversations restored from the backup",
+                format!(
+                    "The conversations file could not be read ({problem}), so the copy kept before \
+                     the last save was loaded. The latest change may be missing. The damaged file \
+                     is kept next to it ({CONVERSATIONS_FILE}.damaged-…) when you next save."
+                ),
+            ));
         }
+        Ok(loaded)
     }
 
-    fn write_unlocked(&self, conversations: Vec<ConversationRecord>) -> Result<(), String> {
-        if let Some(dir) = self.path.parent() {
-            fs::create_dir_all(dir).map_err(|e| format!("Failed to create app dir: {e}"))?;
-        }
-        let tmp_path = self.path.with_extension("json.tmp");
+    fn write_unlocked(
+        &self,
+        conversations: Vec<ConversationRecord>,
+        origin: &Origin,
+    ) -> Result<(), String> {
         let data = serde_json::to_string_pretty(&ConversationsFile { conversations })
             .map_err(|e| format!("Failed to serialize conversations: {e}"))?;
-        fs::write(&tmp_path, &data).map_err(|e| format!("Failed to write temp file: {e}"))?;
-        fs::rename(&tmp_path, &self.path).map_err(|e| format!("Failed to rename temp file: {e}"))
+        durable_file::write_with_backup(&self.path, data.as_bytes(), origin).map_err(|e| {
+            format!(
+                "The conversations could not be saved to {}: {e}",
+                self.path.display()
+            )
+        })
     }
 
     pub fn load(&self) -> Result<Vec<ConversationRecord>, String> {
         let _guard = CONVERSATIONS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        self.read_unlocked()
+        self.read_unlocked().map(|loaded| loaded.value)
     }
 
-    /// Apply `change` and save. Nothing is written when it fails.
+    /// Apply `change` and save. Nothing is written when it fails, or when
+    /// the saved conversations cannot be read.
     pub fn update<R>(
         &self,
         change: impl FnOnce(&mut Vec<ConversationRecord>) -> Result<R, String>,
     ) -> Result<R, String> {
         let _guard = CONVERSATIONS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut conversations = self.read_unlocked()?;
+        let Loaded {
+            value: mut conversations,
+            origin,
+        } = self.read_unlocked()?;
         let result = change(&mut conversations)?;
-        self.write_unlocked(conversations)?;
+        self.write_unlocked(conversations, &origin)?;
         Ok(result)
     }
 }
@@ -307,5 +337,76 @@ mod tests {
         let unknown = old.replace(r#""pinned": false"#, r#""pinned": false, "mode": "turbo""#);
         let read: ConversationRecord = serde_json::from_str(&unknown).unwrap();
         assert_eq!(read.mode, None);
+    }
+
+    fn record(id: &str) -> ConversationRecord {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "title": id, "messages": [],
+            "createdAt": "2026-10-01T00:00:00Z", "updatedAt": "2026-10-01T00:00:00Z",
+            "pinned": false
+        }))
+        .unwrap()
+    }
+
+    fn ids(records: &[ConversationRecord]) -> Vec<&str> {
+        records.iter().map(|c| c.id.as_str()).collect()
+    }
+
+    fn add(store: &ConversationStore, id: &str) -> Result<(), String> {
+        store.update(|all| {
+            all.push(record(id));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn a_truncated_file_loads_the_backup_with_a_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ConversationStore::in_dir(dir.path());
+        add(&store, "c1").unwrap();
+        add(&store, "c2").unwrap();
+        let path = dir.path().join(CONVERSATIONS_FILE);
+        let full = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, &full.as_bytes()[..full.len() / 2]).unwrap();
+
+        assert_eq!(ids(&store.load().unwrap()), ["c1"]);
+        let notice = store_notices::store_notices()
+            .into_iter()
+            .find(|n| n.store == "conversations" && n.path == path.display().to_string())
+            .expect("a notice says the backup was used");
+        assert_eq!(notice.kind, NoticeKind::Restored);
+
+        // The next save starts from the backup and keeps the damaged file aside.
+        add(&store, "c3").unwrap();
+        assert_eq!(ids(&store.load().unwrap()), ["c1", "c3"]);
+        let kept_aside = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().contains(".damaged-"))
+            })
+            .expect("the damaged file is kept");
+        assert_eq!(
+            std::fs::read(kept_aside).unwrap(),
+            &full.as_bytes()[..full.len() / 2]
+        );
+    }
+
+    #[test]
+    fn a_damaged_file_without_a_backup_is_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ConversationStore::in_dir(dir.path());
+        let path = dir.path().join(CONVERSATIONS_FILE);
+        std::fs::write(&path, r#"{"conversations": [{"id": "c1", "#).unwrap();
+
+        let error = store.load().unwrap_err();
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert!(add(&store, "c2").is_err(), "saving refuses");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"conversations": [{"id": "c1", "#
+        );
+        assert!(!durable_file::backup_path(&path).exists());
     }
 }

@@ -601,7 +601,8 @@ pub async fn connect_save_key(
     // The check above is the provider's answer for this key: the status
     // shows it works without a second request.
     crate::connection_health::record_verified_key(&app, provider, &key);
-    lock(&llm.api_keys).set(id, Some(key));
+    lock(&llm.api_keys).set(id, Some(key.clone()));
+    crate::llm_commands::use_provider_key(&llm, provider, &key).await;
     crate::connection_health::notify(&app);
     audit.record(AuditRecord::new(
         AuditEventType::SettingsChange,
@@ -614,6 +615,12 @@ pub async fn connect_save_key(
 }
 
 /// Remove a saved key (an environment key, if set, is used from then on).
+///
+/// Every copy goes: the vault entry, the in-memory key, the copy the
+/// configured model was set up with (in the mode and the in-process
+/// manager), and the agent sessions launched with it. The next request to
+/// the provider then carries the environment's key or none, which is what
+/// the connection status shows.
 #[tauri::command]
 pub async fn connect_remove_key(
     app: AppHandle,
@@ -633,6 +640,9 @@ pub async fn connect_remove_key(
         .map_err(|e| ConnectError::new("failed", format!("Credential store task failed: {e}")))?
         .map_err(|e| ConnectError::new("failed", e))?;
     lock(&llm.api_keys).set(id, None);
+    crate::llm_commands::forget_provider_key(&llm, provider, api_key_store::process_env_key(id))
+        .await;
+    crate::agent_session_commands::stop_provider_sessions(&app, provider).await;
     crate::connection_health::notify(&app);
     audit.record(AuditRecord::new(
         AuditEventType::SettingsChange,

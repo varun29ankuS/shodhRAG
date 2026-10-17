@@ -118,3 +118,25 @@ test('streaming: a labelled open ```json block is hidden, an unlabelled one stay
   assert.equal(stripFollowups('Answer.\n\nFollow-ups:\n```js'), 'Answer.');
   assert.equal(stripFollowups('Answer.\n```json\n["Wh'), 'Answer.\n```json\n["Wh');
 });
+
+test('heading and "suggested" label forms go with the block', () => {
+  const labels = [
+    '### Follow-up questions',
+    '## Follow-ups:',
+    '**Follow-ups**',
+    'Suggested follow-ups:',
+    '**Suggested follow-up questions:**',
+    'Suggested questions:',
+    '#### suggested questions',
+  ];
+  for (const label of labels) {
+    const { body, followups } = splitFollowups(`Answer.\n\n${label}\n\`\`\`json\n["Show an example"]\n\`\`\``);
+    assert.equal(body, 'Answer.', label);
+    assert.deepEqual(followups, ['Show an example'], label);
+  }
+  // Not labels: other headings, and "questions" alone, keep an unlabelled list of non-questions in place.
+  for (const label of ['### Questions', 'Open questions:', '### Follow the money']) {
+    const text = `Answer.\n\n${label}\n\`\`\`json\n["id", "name"]\n\`\`\``;
+    assert.equal(stripFollowups(text), text, label);
+  }
+});

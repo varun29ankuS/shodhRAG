@@ -39,8 +39,11 @@ export const FOLLOWUPS_INSTRUCTION = [
 ].join('\n');
 
 const BLOCK = /(^|\n)[ \t]*(`{3,}|~{3,})[ \t]*followups[ \t]*\n([\s\S]*?)(?:\n[ \t]*\2[ \t]*(?=\n|$)|$)/g;
-/** "Follow-ups:", "**Follow-up questions:**", "Followups" … on a line of its own. */
-const LABEL = /^[ \t]*(?:\*\*|__)?[ \t]*follow[- ]?ups?(?:[ \t]+questions)?[ \t]*:?[ \t]*(?:\*\*|__)?[ \t]*:?[ \t]*$/i;
+/**
+ * A follow-ups label on a line of its own: "Follow-ups:", "**Follow-up questions:**",
+ * "### Follow-up questions", "Suggested follow-ups:", "Suggested questions:" …
+ */
+const LABEL = /^[ \t]*(?:#{1,6}[ \t]+)?(?:\*\*|__)?[ \t]*(?:suggested[ \t]+(?:follow[- ]?ups?(?:[ \t]+questions)?|questions)|follow[- ]?ups?(?:[ \t]+questions)?)[ \t]*:?[ \t]*(?:\*\*|__)?[ \t]*:?[ \t]*$/i;
 /** A fence opening line: its marker and the first word of its info string. */
 const FENCE_OPEN = /^[ \t]*(`{3,}|~{3,})[ \t]*([^\s`]*)[^`]*$/;
 const FENCE_CLOSE = /^[ \t]*(`{3,}|~{3,})[ \t]*$/;

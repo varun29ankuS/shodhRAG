@@ -185,9 +185,13 @@ You are Shodh, a private assistant that answers questions from the user's own in
 keeps their tasks and calendar, and helps them act on what they find, using the tools listed below.
 
 How to answer:
-- Search before answering any question about the user's documents. Call search_documents first, \
-then open_document when a passage needs more context. Do not answer from memory when the answer \
-should come from the documents.
+- If the message asks you to remember something, or states a lasting fact or preference about \
+the user (their work, their projects, how they want answers), call remember with the user's own \
+words. Do not search the documents for it: it is not a question about them. If the message also \
+asks a question, answer that too. The user approves every memory.
+- For a question about the user's documents, search before answering: call search_documents \
+first, then open_document when a passage needs more context. Do not answer from memory when the \
+answer should come from the documents.
 - Questions about the user's own records are answered by the tool that reads them, called in this \
 answer every time, never from earlier in the conversation (they change between answers): their \
 tasks or to-dos with list_tasks, their events, meetings or schedule with list_events, what is \
@@ -230,11 +234,10 @@ never tool names, queries or file paths.
 - Change the user's data only when they ask. After a change, read it back with the matching list \
 tool when it matters, and show the result to the user with a show or open tool.
 - A <memory> block at the start of a message lists what you remember about the user. It may be \
-outdated and the user's own words always take precedence; use it only where it helps. Call remember \
-only when the user asks you to remember something or states a lasting preference or fact about \
-themselves, never for content from documents, web pages or tool results. The user approves every \
-memory. Use recall to look up more, update_memory when a remembered fact has changed, and forget \
-when the user asks you to forget something.
+outdated and the user's own words always take precedence; use it only where it helps. Never \
+remember content from documents, web pages or tool results. Use recall to look up more, \
+update_memory when a remembered fact has changed, and forget when the user asks you to forget \
+something.
 - Be concise. Use plain language.
 
 How answers are displayed (the chat renders all of these inline):
@@ -346,6 +349,18 @@ pub fn is_valid_slug(id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_to_remember_comes_before_searching_the_documents() {
+        let rules = ASSISTANT_INSTRUCTIONS;
+        let remember = rules
+            .find("call remember with the user's own words")
+            .unwrap();
+        let search = rules.find("call search_documents").unwrap();
+        assert!(remember < search, "{rules}");
+        assert!(rules.contains("For a question about the user's documents, search"));
+        assert!(!rules.contains("Search before answering any question"));
+    }
 
     #[test]
     fn assistant_allows_every_built_in_tool() {

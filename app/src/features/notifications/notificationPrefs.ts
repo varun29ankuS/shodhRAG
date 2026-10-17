@@ -157,9 +157,9 @@ export const TEST_PENDING = `Switch to another window — the test arrives in ${
 
 /** What the panel says after a test. */
 export function testMessage(result: TestResult): string {
-  return result.sent
-    ? 'Sent. It should appear in the corner of your screen or in the notification centre.'
-    : `The test was not sent: ${result.error}`;
+  return 'error' in result
+    ? `The test was not sent: ${result.error}`
+    : 'Sent. It should appear in the corner of your screen or in the notification centre.';
 }
 
 /** Opens the system's notification settings (only on the user's click). */

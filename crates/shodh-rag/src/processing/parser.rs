@@ -1136,140 +1136,112 @@ fn extract_pptx_slide_text(xml: &str) -> String {
     result
 }
 
-/// Strip HTML tags and decode common entities, returning visible text content.
-fn strip_html_tags(html: &str) -> String {
-    let mut result = String::with_capacity(html.len() / 2);
-    let mut in_tag = false;
-    let mut in_script = false;
-    let mut in_style = false;
-    let mut last_was_whitespace = false;
+/// Elements that start a new line in the text: their opening and closing tags.
+const HTML_BLOCK_ELEMENTS: &[&str] = &[
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "br",
+    "dd",
+    "div",
+    "dl",
+    "dt",
+    "figcaption",
+    "figure",
+    "footer",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hr",
+    "li",
+    "main",
+    "nav",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "table",
+    "tr",
+    "ul",
+];
 
-    let lower = html.to_lowercase();
-    let chars: Vec<char> = html.chars().collect();
-    let len = chars.len();
+/// Elements whose content is never text: everything up to their closing tag
+/// is skipped.
+const HTML_RAW_TEXT_ELEMENTS: &[&str] = &["script", "style", "template"];
+
+/// Strip HTML tags and decode common entities, returning visible text content.
+///
+/// Works on byte offsets into `html`, which only ever stop at ASCII bytes
+/// (`<`, `>`, `&`, `;`, quotes) or after a whole character, so every slice
+/// is on a char boundary whatever the script of the page. Tag and entity
+/// names are compared ASCII-case-insensitively in place; the page is never
+/// lowercased (which can change its byte length).
+fn strip_html_tags(html: &str) -> String {
+    let bytes = html.as_bytes();
+    let mut result = String::with_capacity(html.len() / 2);
+    let mut last_was_whitespace = false;
     let mut i = 0;
 
-    while i < len {
-        if in_script {
-            // Skip until </script>
-            if i + 9 <= len && &lower[i..i + 9] == "</script>" {
-                in_script = false;
-                i += 9;
-            } else {
-                i += 1;
-            }
-            continue;
-        }
-        if in_style {
-            if i + 8 <= len && &lower[i..i + 8] == "</style>" {
-                in_style = false;
-                i += 8;
-            } else {
-                i += 1;
-            }
-            continue;
-        }
-
-        if chars[i] == '<' {
-            // Check for <script or <style
-            if i + 7 <= len && &lower[i..i + 7] == "<script" {
-                in_script = true;
-                i += 7;
-                continue;
-            }
-            if i + 6 <= len && &lower[i..i + 6] == "<style" {
-                in_style = true;
-                i += 6;
-                continue;
-            }
-            in_tag = true;
-
-            // Block elements get a newline
-            let tag_lower = &lower[i..];
-            let is_block = tag_lower.starts_with("<p")
-                || tag_lower.starts_with("<div")
-                || tag_lower.starts_with("<br")
-                || tag_lower.starts_with("<h1")
-                || tag_lower.starts_with("<h2")
-                || tag_lower.starts_with("<h3")
-                || tag_lower.starts_with("<h4")
-                || tag_lower.starts_with("<li")
-                || tag_lower.starts_with("<tr")
-                || tag_lower.starts_with("</p")
-                || tag_lower.starts_with("</div")
-                || tag_lower.starts_with("</tr");
-
-            if is_block && !result.is_empty() && !result.ends_with('\n') {
-                result.push('\n');
-                last_was_whitespace = true;
-            }
-
-            // <td> / <th> get a tab separator
-            if (tag_lower.starts_with("<td") || tag_lower.starts_with("<th"))
-                && !result.is_empty()
-                && !result.ends_with('\n')
-                && !result.ends_with('\t')
-            {
-                result.push('\t');
-            }
-
-            i += 1;
-            continue;
-        }
-
-        if chars[i] == '>' && in_tag {
-            in_tag = false;
-            i += 1;
-            continue;
-        }
-
-        if !in_tag {
-            // Decode HTML entities
-            if chars[i] == '&' {
-                if i + 4 <= len && &html[i..i + 4] == "&lt;" {
-                    result.push('<');
-                    i += 4;
-                    last_was_whitespace = false;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'<' => {
+                let Some(tag) = html_tag_at(html, i) else {
+                    // A `<` that opens no tag ("p < 0.05") is text.
+                    push_html_text(&mut result, &mut last_was_whitespace, '<');
+                    i += 1;
+                    continue;
+                };
+                if !tag.closing
+                    && HTML_RAW_TEXT_ELEMENTS
+                        .iter()
+                        .any(|name| tag.name.eq_ignore_ascii_case(name))
+                {
+                    i = html_raw_text_end(html, tag.end, tag.name);
                     continue;
                 }
-                if i + 4 <= len && &html[i..i + 4] == "&gt;" {
-                    result.push('>');
-                    i += 4;
-                    last_was_whitespace = false;
-                    continue;
-                }
-                if i + 5 <= len && &html[i..i + 5] == "&amp;" {
-                    result.push('&');
-                    i += 5;
-                    last_was_whitespace = false;
-                    continue;
-                }
-                if i + 6 <= len && &html[i..i + 6] == "&nbsp;" {
-                    result.push(' ');
-                    i += 6;
+                if HTML_BLOCK_ELEMENTS
+                    .iter()
+                    .any(|name| tag.name.eq_ignore_ascii_case(name))
+                {
+                    if !result.is_empty() && !result.ends_with('\n') {
+                        result.push('\n');
+                    }
                     last_was_whitespace = true;
-                    continue;
-                }
-                if i + 6 <= len && &html[i..i + 6] == "&quot;" {
-                    result.push('"');
-                    i += 6;
-                    last_was_whitespace = false;
-                    continue;
-                }
-            }
-
-            let ch = chars[i];
-            if ch.is_whitespace() {
-                if !last_was_whitespace && !result.is_empty() {
-                    result.push(if ch == '\n' { '\n' } else { ' ' });
+                } else if !tag.closing
+                    && (tag.name.eq_ignore_ascii_case("td") || tag.name.eq_ignore_ascii_case("th"))
+                    && !result.is_empty()
+                    && !result.ends_with('\n')
+                    && !result.ends_with('\t')
+                {
+                    // Table cells are separated by a tab.
+                    result.push('\t');
                     last_was_whitespace = true;
                 }
-            } else {
-                result.push(ch);
-                last_was_whitespace = false;
+                i = tag.end;
+            }
+            b'&' => match decode_html_entity(&html[i..]) {
+                Some((ch, len)) => {
+                    push_html_text(&mut result, &mut last_was_whitespace, ch);
+                    i += len;
+                }
+                None => {
+                    push_html_text(&mut result, &mut last_was_whitespace, '&');
+                    i += 1;
+                }
+            },
+            _ => {
+                let Some(ch) = html[i..].chars().next() else {
+                    break;
+                };
+                push_html_text(&mut result, &mut last_was_whitespace, ch);
+                i += ch.len_utf8();
             }
         }
-        i += 1;
     }
 
     // Clean up excessive blank lines
@@ -1292,6 +1264,165 @@ fn strip_html_tags(html: &str) -> String {
     }
 
     cleaned
+}
+
+/// Append one character of page text, collapsing runs of whitespace (a
+/// non-breaking space included) to one space or line break.
+fn push_html_text(result: &mut String, last_was_whitespace: &mut bool, ch: char) {
+    if ch.is_whitespace() {
+        if !*last_was_whitespace && !result.is_empty() {
+            result.push(if ch == '\n' { '\n' } else { ' ' });
+            *last_was_whitespace = true;
+        }
+    } else {
+        result.push(ch);
+        *last_was_whitespace = false;
+    }
+}
+
+/// A tag, comment, doctype or processing instruction in a page.
+struct HtmlTag<'a> {
+    /// The element name (ASCII letters and digits); empty for a comment,
+    /// doctype or processing instruction.
+    name: &'a str,
+    closing: bool,
+    /// Byte offset just past the tag (past its `>`, or the end of the page
+    /// for a tag never closed).
+    end: usize,
+}
+
+/// The tag starting at the `<` at byte `start`, or `None` when that `<` is
+/// text: a tag begins with a letter, `/` and a letter, `!` or `?`.
+fn html_tag_at(html: &str, start: usize) -> Option<HtmlTag<'_>> {
+    let bytes = html.as_bytes();
+    let after = start + 1;
+    if html
+        .get(after..after + 3)
+        .is_some_and(|s| s.as_bytes() == b"!--")
+    {
+        let body = after + 3;
+        let end = html[body..]
+            .find("-->")
+            .map_or(html.len(), |p| body + p + 3);
+        return Some(HtmlTag {
+            name: "",
+            closing: false,
+            end,
+        });
+    }
+    if matches!(bytes.get(after), Some(b'!' | b'?')) {
+        let end = html[after..]
+            .find('>')
+            .map_or(html.len(), |p| after + p + 1);
+        return Some(HtmlTag {
+            name: "",
+            closing: false,
+            end,
+        });
+    }
+    let closing = bytes.get(after) == Some(&b'/');
+    let name_start = if closing { after + 1 } else { after };
+    if !bytes.get(name_start).is_some_and(u8::is_ascii_alphabetic) {
+        return None;
+    }
+    let name_len = bytes[name_start..]
+        .iter()
+        .take_while(|b| b.is_ascii_alphanumeric())
+        .count();
+    let name_end = name_start + name_len;
+    Some(HtmlTag {
+        name: &html[name_start..name_end],
+        closing,
+        end: html_tag_end(bytes, name_end),
+    })
+}
+
+/// Byte offset just past the `>` that closes a tag whose attributes start at
+/// `from`; a `>` inside a quoted attribute value does not close it.
+fn html_tag_end(bytes: &[u8], from: usize) -> usize {
+    let mut quote: Option<u8> = None;
+    for (offset, &b) in bytes[from..].iter().enumerate() {
+        match quote {
+            Some(q) if b == q => quote = None,
+            Some(_) => {}
+            None if b == b'"' || b == b'\'' => quote = Some(b),
+            None if b == b'>' => return from + offset + 1,
+            None => {}
+        }
+    }
+    bytes.len()
+}
+
+/// Byte offset just past the closing tag of the raw-text element `name`
+/// whose content starts at `from` (the end of the page when it is never
+/// closed). `</SCRIPT >` closes `<script>`.
+fn html_raw_text_end(html: &str, from: usize, name: &str) -> usize {
+    let bytes = html.as_bytes();
+    let mut at = from;
+    while let Some(offset) = html[at..].find("</") {
+        let name_start = at + offset + 2;
+        let closes = html
+            .get(name_start..name_start + name.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name))
+            && !bytes
+                .get(name_start + name.len())
+                .is_some_and(u8::is_ascii_alphanumeric);
+        if closes {
+            return html_tag_end(bytes, name_start + name.len());
+        }
+        at = name_start;
+    }
+    html.len()
+}
+
+/// The character an entity at the start of `text` (which starts with `&`)
+/// stands for, and the entity's length in bytes: `&amp;`, `&lt;`, `&gt;`,
+/// `&quot;`, `&apos;`, `&nbsp;`, a few typographic names, and numeric
+/// `&#39;` / `&#x27;`. `None` for anything else, which stays as written.
+fn decode_html_entity(text: &str) -> Option<(char, usize)> {
+    // The longest entity decoded: `&#x10FFFF;` or `&#1114111;`.
+    const MAX_ENTITY_LEN: usize = 10;
+    let semicolon = text
+        .bytes()
+        .take(MAX_ENTITY_LEN + 1)
+        .position(|b| b == b';')?;
+    let name = text.get(1..semicolon)?;
+    let ch = if let Some(number) = name.strip_prefix('#') {
+        let (digits, radix) = match number.strip_prefix(['x', 'X']) {
+            Some(hex) => (hex, 16),
+            None => (number, 10),
+        };
+        if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+            return None;
+        }
+        let code = u32::from_str_radix(digits, radix).ok()?;
+        match char::from_u32(code) {
+            Some('\0') | None => char::REPLACEMENT_CHARACTER,
+            Some(c) => c,
+        }
+    } else {
+        match name {
+            "amp" => '&',
+            "lt" => '<',
+            "gt" => '>',
+            "quot" => '"',
+            "apos" => '\'',
+            "nbsp" => '\u{a0}',
+            "ndash" => '\u{2013}',
+            "mdash" => '\u{2014}',
+            "hellip" => '\u{2026}',
+            "lsquo" => '\u{2018}',
+            "rsquo" => '\u{2019}',
+            "ldquo" => '\u{201c}',
+            "rdquo" => '\u{201d}',
+            "copy" => '\u{a9}',
+            "reg" => '\u{ae}',
+            "trade" => '\u{2122}',
+            "euro" => '\u{20ac}',
+            _ => return None,
+        }
+    };
+    Some((ch, semicolon + 1))
 }
 
 /// Extract text from DOCX XML by parsing <w:t> elements within <w:p> paragraphs
@@ -1909,5 +2040,59 @@ pub(crate) mod tests {
             Some(OCR_ENGINE_PPOCR)
         );
         assert_eq!(seen.into_inner().unwrap(), [(1, 2), (2, 2)]);
+    }
+
+    /// Non-ASCII text before a script or style used to put char and byte
+    /// offsets out of step: the page panicked or its scripts became text.
+    #[test]
+    fn html_text_survives_non_ascii_before_scripts_and_styles() {
+        let html = "<p>café</p><script>var x = '<p>hidden</p>';</script>\
+                    <p>naïve</p><STYLE>p { color: red }</STYLE ><p>Größe</p>";
+        assert_eq!(strip_html_tags(html), "café\nnaïve\nGröße");
+    }
+
+    #[test]
+    fn html_tags_match_in_any_case_and_scripts_stay_out() {
+        let html = "<DIV>One</DIV><Div>Two<BR>Three</div>\
+                    <SCRIPT type=\"text/javascript\">steal(document.cookie)</SCRIPT>";
+        assert_eq!(strip_html_tags(html), "One\nTwo\nThree");
+    }
+
+    #[test]
+    fn html_entities_are_decoded_once() {
+        let html = "<p>R&amp;D &lt;b&gt; &quot;q&quot; it&#39;s it&apos;s&nbsp;&nbsp;x \
+                    &#x41;&#66; &unknown; &#xZZ; AT&T &amp;lt;</p>";
+        assert_eq!(
+            strip_html_tags(html),
+            "R&D <b> \"q\" it's it's x AB &unknown; &#xZZ; AT&T &lt;"
+        );
+    }
+
+    #[test]
+    fn cjk_and_emoji_pages_keep_their_text() {
+        let html = "<html><head><title>ページ</title></head><body>\
+                    <h1>日本語のページ</h1><p>絵文字 😀 &amp; 記号</p>\
+                    <ul><li>牛乳</li><li>🇮🇳 भारत</li></ul></body></html>";
+        assert_eq!(
+            strip_html_tags(html),
+            "ページ\n日本語のページ\n絵文字 😀 & 記号\n牛乳\n🇮🇳 भारत"
+        );
+    }
+
+    #[test]
+    fn stray_brackets_comments_and_unclosed_tags() {
+        let html = "<!DOCTYPE html><!-- <p>hidden</p> --><p>p < 0.05 and 3 > 2</p>\
+                    <?xml version=\"1.0\"?><p>Open <b class=\"x";
+        assert_eq!(strip_html_tags(html), "p < 0.05 and 3 > 2\nOpen");
+        assert_eq!(strip_html_tags("<p>日本<script>never closed"), "日本");
+        assert_eq!(strip_html_tags("text then <"), "text then <");
+        assert_eq!(strip_html_tags("<!-- never closed"), "");
+    }
+
+    #[test]
+    fn html_table_cells_are_tab_separated_rows() {
+        let html = "<table><tr><th>Name</th><th>Qty</th></tr>\
+                    <tr><td>Milk</td><td>2</td></tr></table>";
+        assert_eq!(strip_html_tags(html), "Name\tQty\nMilk\t2");
     }
 }

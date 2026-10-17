@@ -26,9 +26,14 @@ export interface AnswerBlocks {
   citations: ReadonlySet<number> | null;
   /** Open source `n` of the answer (as its citation pill does). */
   openCitation: ((n: number, trigger: HTMLElement) => void) | null;
+  /**
+   * How many "go deeper" marks of the fenced block with this body may
+   * render (the answer's budget, in document order); 0 outside model answers.
+   */
+  markAllowance: (source: string) => number;
 }
 
-const NONE: AnswerBlocks = { symbols: [], renderInline: text => text, modelAnswer: false, citations: null, openCitation: null };
+const NONE: AnswerBlocks = { symbols: [], renderInline: text => text, modelAnswer: false, citations: null, openCitation: null, markAllowance: () => 0 };
 
 export const AnswerBlocksContext = createContext<AnswerBlocks>(NONE);
 

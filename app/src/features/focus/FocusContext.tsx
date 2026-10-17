@@ -74,6 +74,8 @@ export interface FocusRequest {
   trigger?: HTMLElement | null;
   /** The gallery visual shown (version switcher, refine, export). */
   visual?: VisualRef | null;
+  /** A prepared question the new level sends once (a "go deeper" mark). */
+  question?: string | null;
 }
 
 /** An object opened inside the current level (a visual or a selection in a side answer). */
@@ -83,6 +85,8 @@ export interface DrillRequest {
   parentThreadId: string;
   /** Answer it was found in; null when found in the level's object itself. */
   parentTurnId: string | null;
+  /** A prepared question the new level sends once (a "go deeper" mark). */
+  question?: string | null;
 }
 
 /** "opened", "depth" when the depth cap is reached, "closed" when no pop-out is open. */
@@ -103,6 +107,8 @@ export interface OpenFocus {
   seq: number;
   /** The gallery visual this level shows, when it was opened from the gallery. */
   visual: VisualRef | null;
+  /** A prepared question this level sends once, unless its thread already asked it. */
+  question: string | null;
 }
 
 /** The pop-out as opened: its levels. `key` stays while levels change. */
@@ -752,6 +758,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
         trigger: s.stack.levels[0].trigger,
         seq,
         visual: visualRef(record),
+        question: null,
       };
       return { ...s, stack: initialStack(level) };
     });
@@ -816,6 +823,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       trigger: null,
       seq: nextSeq(),
       visual: null,
+      question: null,
     };
     const closeRepairSession = () => {
       api.closeSession(key).catch(error => console.error('Diagram correction session not closed:', toAgentError(error).message));
@@ -889,6 +897,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       trigger,
       seq: nextSeq(),
       visual: null,
+      question: null,
     }));
   }, [locationThreads]);
 
@@ -917,6 +926,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
         trigger,
         seq: nextSeq(),
         visual: request.visual ?? null,
+        question: request.question ?? null,
       }),
     });
   }, [levelsFor, locationThreads]);
@@ -947,6 +957,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       trigger: here.trigger,
       seq: nextSeq(),
       visual: null,
+      question: request.question ?? null,
     };
     setSession(s => (s ? { ...s, stack: stackReducer(s.stack, { type: 'push', level }) } : s));
     return 'opened';

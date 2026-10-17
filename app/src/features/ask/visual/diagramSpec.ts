@@ -24,6 +24,8 @@
  * Pure module, unit-tested with Node (`app/tests/visualDiagram.test.ts`).
  */
 
+import { readDeeper } from './marks.ts';
+
 /** Largest diagram spec read, in characters. */
 export const DIAGRAM_MAX_CHARS = 20_000;
 export const MAX_NODES = 12;
@@ -60,6 +62,8 @@ export interface DiagramNode {
   y: number | null;
   /** Timeline: when. */
   at: string | null;
+  /** A prepared question that explains this node on its own ("go deeper"). */
+  deeper?: string | null;
 }
 
 export interface DiagramEdge {
@@ -234,6 +238,7 @@ export function parseDiagram(source: string, context: DiagramContext): DiagramPa
       x: coordinate('x'),
       y: coordinate('y'),
       at: kind === 'timeline' ? at : null,
+      deeper: readDeeper(item.deeper),
     });
   });
 
@@ -411,6 +416,7 @@ export function describeNode(spec: DiagramSpec, id: string): string {
   if (node.detail) lines.push(node.detail);
   if (node.path) lines.push(`File: ${node.path}`);
   if (node.cite !== null) lines.push(`Source: [${node.cite}]`);
+  if (node.deeper) lines.push(`Prepared question: ${node.deeper}`);
   const outgoing = spec.edges.filter(e => e.from === id).map(e => `→ ${name(e.to)}${e.label ? ` (${e.label})` : ''}`);
   const incoming = spec.edges.filter(e => e.to === id).map(e => `← ${name(e.from)}${e.label ? ` (${e.label})` : ''}`);
   if (outgoing.length) lines.push(`Leads to: ${outgoing.join('; ')}`);

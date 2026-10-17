@@ -100,7 +100,7 @@ impl HostEffects for TauriEffects {
             let indexing = app.state::<IndexingState>();
             // Registered while it runs: removing the source waits for it, and
             // a removed source is not indexed again.
-            let result = match indexing.begin_run(&job.source_id) {
+            let result = match indexing.begin_run_at(&job.source_id, &job.path) {
                 Some(_run) => {
                     shodh_rag::indexing::index_single_file(
                         &job.path,

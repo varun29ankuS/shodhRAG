@@ -33,6 +33,11 @@ use tokio::sync::{mpsc, RwLock};
 use crate::background::BackgroundState;
 use crate::rag_commands::RagState;
 
+/// Why a folder was not synced while the files added in chats could not be
+/// put where they belong.
+const HANDOVER_PENDING: &str = "Not synced yet: the files added in chats could not be checked \
+     first, and a sync now could remove some of them. It is tried again with the next change.";
+
 /// Emitted after every sync of a folder source.
 pub const FOLDER_SYNC_EVENT: &str = "folder-sync";
 
@@ -313,13 +318,21 @@ impl FolderSyncState {
     /// per run and before any folder sync: a sync of a folder without a
     /// manifest would otherwise take an upload an older version filed under
     /// it for one of its own files, find it missing from the folder and
-    /// delete it. The caller holds the syncs' turn. A handover that fails is
-    /// tried again before the next sync.
-    async fn hand_over_uploads_in_turn(&self, app: &AppHandle, rag: &RwLock<RAGEngine>) {
+    /// delete it. The caller holds the syncs' turn. Returns whether the
+    /// handover is done; one that failed is tried again before the next
+    /// sync, and no folder is synced until it is done ([`Self::sync_in_turn`]).
+    ///
+    /// The workspaces are read once the engine is held for writing: an
+    /// upload needs the engine too, so every upload already stored belongs
+    /// to a workspace that the list read then names (a workspace exists
+    /// before a chat in it does), and a just-created workspace's uploads are
+    /// never taken for a deleted workspace's.
+    async fn hand_over_uploads_in_turn(&self, app: &AppHandle, rag: &RwLock<RAGEngine>) -> bool {
         use std::sync::atomic::Ordering;
         if self.uploads_handed_over.load(Ordering::SeqCst) {
-            return;
+            return true;
         }
+        let mut engine = rag.write().await;
         let workspaces = app
             .state::<crate::workspace_commands::WorkspaceState>()
             .run(|store| store.list(true))
@@ -328,9 +341,7 @@ impl FolderSyncState {
         if let Err(e) = &workspaces {
             tracing::warn!(error = %e.message, "workspaces unreadable; their chats' files stay where they are");
         }
-        match rag
-            .write()
-            .await
+        match engine
             .hand_over_chat_uploads(workspaces.as_ref().ok())
             .await
         {
@@ -339,11 +350,35 @@ impl FolderSyncState {
                 if moved > 0 {
                     tracing::info!(chunks = moved, "files added in chats given to the main Ask");
                 }
+                true
             }
             Err(e) => {
                 tracing::warn!(error = %format!("{e:#}"), "files added in chats not given to the main Ask");
+                false
             }
         }
+    }
+
+    /// Syncs the watched `source` in the syncs' turn, once the files added
+    /// in chats are where they belong (`handed_over`,
+    /// [`Self::hand_over_uploads_in_turn`]); until then the sync is skipped
+    /// and the card says why, since a folder without a manifest could take
+    /// an older upload for one of its own missing files and delete it. A
+    /// source removed or no longer listed meanwhile stops before its next
+    /// file.
+    async fn sync_in_turn(
+        &self,
+        rag: &RwLock<RAGEngine>,
+        source: &FolderSourceRef,
+        handed_over: bool,
+    ) -> Result<SyncReport, String> {
+        if !handed_over {
+            return Err(HANDOVER_PENDING.to_string());
+        }
+        sync_folder(&source.path, &source.id, &self.store, rag, || {
+            !self.is_watched(source)
+        })
+        .await
     }
 
     /// Where the folder manifests are kept.
@@ -520,12 +555,8 @@ async fn sync_once(app: &AppHandle, source: &FolderSourceRef) {
         return;
     }
     let rag = app.state::<RagState>().rag.clone();
-    state.hand_over_uploads_in_turn(app, &rag).await;
-    // A source removed or no longer listed meanwhile stops before its next file.
-    let result = sync_folder(&source.path, &source.id, &state.store, &rag, || {
-        !state.is_watched(source)
-    })
-    .await;
+    let handed_over = state.hand_over_uploads_in_turn(app, &rag).await;
+    let result = state.sync_in_turn(&rag, source, handed_over).await;
     if let Err(e) = &result {
         tracing::warn!(source_id = %source.id, error = %e, "folder sync failed");
     }
@@ -1087,6 +1118,75 @@ mod tests {
             left,
             ["papers", "theses"],
             "only Research's own legacy file went"
+        );
+    }
+
+    /// Until the files added in chats are where they belong, no folder is
+    /// synced: a folder without a manifest would take an upload an older
+    /// version filed under it for one of its own missing files and delete it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_folder_is_synced_before_the_uploads_are_handed_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let rag =
+            RwLock::new(crate::agent_tools::testing::engine_with_search_models(dir.path()).await);
+        let state = FolderSyncState::new(dir.path().join("sync"));
+        let folder = dir.path().join("papers");
+        let uploads = dir.path().join("uploads");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::create_dir_all(&uploads).unwrap();
+        let upload = uploads.join("chat.md");
+        std::fs::write(
+            &upload,
+            "# Notes\n\nThe heron was seen near the river at dawn. The heron returned the next morning, and the notes describe the heron at length.\n",
+        )
+        .unwrap();
+        // Filed by an older version under the folder selected then.
+        rag.write()
+            .await
+            .add_document_from_file(
+                &upload,
+                HashMap::from([
+                    ("space_id".to_string(), "folder-papers".to_string()),
+                    (
+                        "uploaded_at".to_string(),
+                        "2026-10-01T09:00:00Z".to_string(),
+                    ),
+                ]),
+            )
+            .await
+            .unwrap();
+        let source = FolderSourceRef {
+            id: "folder-papers".into(),
+            path: folder.display().to_string(),
+        };
+        state.watch_quietly(&source);
+        let owners = |rows: Vec<shodh_rag::storage::DocumentSourceRow>| -> Vec<String> {
+            rows.into_iter().map(|row| row.space_id).collect()
+        };
+
+        // The handover failed: the sync is skipped, with a reason, and the
+        // upload stays.
+        let skipped = state.sync_in_turn(&rag, &source, false).await;
+        assert_eq!(skipped, Err(HANDOVER_PENDING.to_string()));
+        assert_eq!(
+            owners(rag.read().await.document_sources().await.unwrap()),
+            ["folder-papers"]
+        );
+        assert!(
+            !state.store().has_manifest(&source.id),
+            "nothing was synced"
+        );
+
+        // Handed over: the sync runs and the upload is the main Ask's, kept.
+        rag.write()
+            .await
+            .hand_over_chat_uploads(None)
+            .await
+            .unwrap();
+        state.sync_in_turn(&rag, &source, true).await.unwrap();
+        assert_eq!(
+            owners(rag.read().await.document_sources().await.unwrap()),
+            [shodh_rag::rag_engine::CHAT_UPLOADS_MAIN]
         );
     }
 

@@ -2013,7 +2013,7 @@ impl RAGEngine {
             .map(|chunk| chunk.source)
             .collect();
         let unowned = match path.map(str::trim).filter(|p| !p.is_empty()) {
-            Some(path) => self.unowned_under(Path::new(path), keep).await?,
+            Some(path) => self.unowned_under(Path::new(path), keep, space_id).await?,
             None => Vec::new(),
         };
         for source in &uploads {
@@ -2026,18 +2026,29 @@ impl RAGEngine {
     }
 
     /// The chunks no source owns of the file `path` or of the files under
-    /// the folder `path` ([`lies_under`]), except files added in a chat and
-    /// files under any of `keep`. Matched by plain string comparison: no
-    /// `LIKE` pattern is involved.
+    /// the folder `path` ([`lies_under`]), except files added in a chat,
+    /// files under any of `keep`, and files a source other than `removing`
+    /// has chunks of (a listed single-file source, say, whose path is known
+    /// only from its chunks). Matched by plain string comparison: no `LIKE`
+    /// pattern is involved.
     async fn unowned_under(
         &self,
         path: &Path,
         keep: &[String],
+        removing: &str,
     ) -> Result<Vec<crate::storage::SearchHit>> {
         let spellings = source_spellings(path);
         let kept: Vec<Vec<String>> = keep
             .iter()
             .map(|folder| source_spellings(Path::new(folder)))
+            .collect();
+        let owned_elsewhere: std::collections::HashSet<String> = self
+            .store
+            .document_sources()
+            .await?
+            .into_iter()
+            .filter(|row| !row.space_id.is_empty() && row.space_id != removing)
+            .map(|row| row.source)
             .collect();
         Ok(self
             .store
@@ -2047,6 +2058,7 @@ impl RAGEngine {
             .filter(|chunk| {
                 lies_under(&chunk.source, &spellings)
                     && !kept.iter().any(|k| lies_under(&chunk.source, k))
+                    && !owned_elsewhere.contains(&chunk.source)
                     && !added_in_chat(&chunk.metadata_json)
             })
             .collect())

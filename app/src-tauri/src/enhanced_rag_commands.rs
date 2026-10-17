@@ -168,7 +168,7 @@ pub async fn index_single_file(
     let emitter = TauriEventEmitter::new(app);
     // Registered while it runs: removing the source waits for it, and a
     // removed source is not indexed again.
-    let result = match indexing_state.begin_run(&space_id) {
+    let result = match indexing_state.begin_run_at(&space_id, &file_path) {
         Some(_run) => {
             shodh_rag::indexing::index_single_file(
                 &file_path,

@@ -41,6 +41,14 @@ export function leavesSnippetMode(input: { key: string; snipping: boolean; inFin
   return input.key === 'Escape' && input.snipping && !input.inFindBar;
 }
 
+/** A trigger whose dialog is open (the Instructions button while its popover shows). */
+export const OPEN_DIALOG_TRIGGER_SELECTOR = '[aria-expanded="true"][aria-haspopup="dialog"]';
+
+/** Whether Esc on `target` belongs to the dialog of an open trigger it is (or is inside). */
+export function onOpenDialogTrigger(target: ClosestTarget | null): boolean {
+  return target !== null && target.closest(OPEN_DIALOG_TRIGGER_SELECTOR) !== null;
+}
+
 export type InstructionsEscapeAction = 'ignore' | 'cancel-edit' | 'close';
 
 export interface InstructionsEscapeInput {

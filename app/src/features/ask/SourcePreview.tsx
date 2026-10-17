@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { ExternalLink, Loader2, Maximize2, MessageSquareText, Minimize2, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
-import { escapeStaysLocal, insideOtherDialog } from '../../lib/escapeScope';
+import { escapeStaysLocal, insideOtherDialog, onOpenDialogTrigger } from '../../lib/escapeScope';
 import { openExternal } from '../agent/WebSources';
 import { FOCUS_OVERLAY_SELECTOR } from '../focus/focusDom';
 import { appRecordKind, formatLocation, isWebUrl, jumpToSourceArgs, shownPath, sourceLabel } from './searchResults';
@@ -69,6 +69,8 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose, onOpenView,
       if (escapeStaysLocal<Element>(target, panelRef.current)) return;
       // A dialog over the preview (feedback, the Instructions popover) closes itself first.
       if (insideOtherDialog<Element>(target, panelRef.current)) return;
+      // Also on the button of such a dialog (the Instructions trigger while its popover is open).
+      if (onOpenDialogTrigger(target)) return;
       e.preventDefault();
       onClose();
     };

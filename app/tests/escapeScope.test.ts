@@ -5,7 +5,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ESC_LOCAL_SELECTOR, escapeStaysLocal, insideOtherDialog, instructionsEscape, leavesSnippetMode } from '../src/lib/escapeScope.ts';
+import { ESC_LOCAL_SELECTOR, OPEN_DIALOG_TRIGGER_SELECTOR, escapeStaysLocal, insideOtherDialog, instructionsEscape, leavesSnippetMode, onOpenDialogTrigger } from '../src/lib/escapeScope.ts';
 
 interface Node {
   id: string;
@@ -82,4 +82,17 @@ test('Esc in a dialog over the preview belongs to that dialog, not the preview',
   assert.equal(insideOtherDialog(page, preview), false);
   assert.equal(insideOtherDialog(null, preview), false);
   assert.equal(insideOtherDialog(feedbackField, null), true);
+});
+
+test('Esc on the trigger of an open dialog (the Instructions button) is left to that dialog', () => {
+  const trigger = (open: boolean) => ({
+    closest: (selector: string) => {
+      assert.equal(selector, OPEN_DIALOG_TRIGGER_SELECTOR);
+      return open ? {} : null;
+    },
+  });
+  assert.equal(onOpenDialogTrigger(trigger(true)), true);
+  assert.equal(onOpenDialogTrigger(trigger(false)), false);
+  assert.equal(onOpenDialogTrigger(null), false);
+  assert.equal(OPEN_DIALOG_TRIGGER_SELECTOR, '[aria-expanded="true"][aria-haspopup="dialog"]');
 });

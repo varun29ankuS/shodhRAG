@@ -1969,6 +1969,13 @@ impl RAGEngine {
         Ok(moved)
     }
 
+    /// Compacts the chunk store: an update rewrites the rows it changes, so
+    /// after [`Self::move_source_to_space`] has moved files the old rows are
+    /// removed from disk here, once for all of them.
+    pub async fn compact_chunks(&mut self) -> Result<()> {
+        self.store.compact().await
+    }
+
     /// Clear all data
     pub async fn clear_all_data(&mut self) -> Result<()> {
         self.store.clear().await?;

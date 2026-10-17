@@ -472,6 +472,13 @@ pub(crate) async fn adopt_indexed<'a>(
         }
     }
 
+    // The rows the moves replaced leave the disk once, not per file.
+    if !adopted.is_empty() {
+        if let Err(e) = rag.write().await.compact_chunks().await {
+            tracing::warn!(error = %format!("{e:#}"), "chunk store not compacted after adoption");
+        }
+    }
+
     // Where the source's own manifest left off (a source being indexed
     // again), else what it owns in the index, now with the adopted files.
     let (mut files, mut failures) = match manifests.remove(&ManifestStore::file_id(source_id)) {

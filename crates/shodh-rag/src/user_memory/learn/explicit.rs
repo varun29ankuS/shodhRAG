@@ -20,7 +20,8 @@ pub struct MemoryRequest {
     pub note: String,
     /// The user's words it was taken from, request included ("Remember that I'm ...").
     pub evidence: String,
-    /// What the message says after the note (a separate question), if anything.
+    /// What the message says after the note's sentence (a separate question or request),
+    /// if anything: it is what the answer is about.
     pub rest: Option<String>,
 }
 
@@ -103,16 +104,48 @@ fn first_word(text: &str) -> String {
         .to_lowercase()
 }
 
-/// `text` split before its first question: the statement part (up to the end of the
-/// sentence before the first `?`) and what follows. `None` when the text opens with a
-/// question.
-fn statement_part(text: &str) -> Option<(&str, Option<&str>)> {
-    let Some(question) = text.find('?') else {
-        return Some((text.trim(), None));
-    };
-    let end = text[..question].rfind(['.', '!', ';', '\n'])?;
-    let rest = text[end + 1..].trim();
-    Some((text[..=end].trim(), (!rest.is_empty()).then_some(rest)))
+/// Words before a full stop that do not end a sentence ("Dr. Rao", "e.g. DiskANN").
+const ABBREVIATIONS: [&str; 14] = [
+    "dr", "mr", "mrs", "ms", "prof", "st", "vs", "etc", "e.g", "i.e", "fig", "eq", "no", "al",
+];
+
+/// Whether the `.` at byte `at` of `text` ends a sentence: it is followed by a space or the
+/// end, and does not close an abbreviation or an initial.
+fn ends_sentence(text: &str, at: usize) -> bool {
+    if !text[at + 1..]
+        .chars()
+        .next()
+        .is_none_or(char::is_whitespace)
+    {
+        return false;
+    }
+    let word = text[..at]
+        .rsplit(char::is_whitespace)
+        .next()
+        .unwrap_or("")
+        .trim_start_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase();
+    let initial = word.chars().count() == 1 && word.chars().all(char::is_alphabetic);
+    !(initial || ABBREVIATIONS.contains(&word.as_str()))
+}
+
+/// The first sentence of `text` (the note) and what follows it (`None` when nothing
+/// does). `None` when the first sentence is a question: the message asks something about
+/// remembering, it does not ask to keep anything.
+fn first_sentence(text: &str) -> Option<(&str, Option<&str>)> {
+    for (at, c) in text.char_indices() {
+        let end = match c {
+            '?' => return None,
+            '!' | ';' | '\n' => true,
+            '.' => ends_sentence(text, at),
+            _ => false,
+        };
+        if end {
+            let rest = text[at + c.len_utf8()..].trim();
+            return Some((text[..=at].trim(), (!rest.is_empty()).then_some(rest)));
+        }
+    }
+    Some((text.trim(), None))
 }
 
 /// The request in `text`, if the message is one.
@@ -156,7 +189,7 @@ fn keep_request(text: &str) -> Option<(&str, Option<&str>)> {
         if !that && NOT_KEPT_AFTER.contains(&first_word(body).as_str()) {
             return None;
         }
-        return statement_part(body);
+        return first_sentence(body);
     }
     None
 }
@@ -173,7 +206,7 @@ fn standing_instruction(text: &str) -> Option<(&str, Option<&str>)> {
     if !standing && !about_answers {
         return None;
     }
-    statement_part(text)
+    first_sentence(text)
 }
 
 #[cfg(test)]
@@ -248,6 +281,33 @@ mod tests {
             Some("How does SPANN compare with DiskANN?")
         );
         assert_eq!(request.evidence, "Remember that I care about memory cost.");
+    }
+
+    #[test]
+    fn the_note_is_the_first_sentence_and_the_rest_is_the_question() {
+        let request =
+            memory_request("Remember that I use DiskANN. Summarise the SPANN paper.").unwrap();
+        assert_eq!(request.note, "I use DiskANN.");
+        assert_eq!(request.rest.as_deref(), Some("Summarise the SPANN paper."));
+        assert_eq!(request.evidence, "Remember that I use DiskANN.");
+        let request = memory_request(
+            "From now on, cite page numbers! Then compare SPANN with DiskANN, e.g. on recall.",
+        )
+        .unwrap();
+        assert_eq!(request.note, "From now on, cite page numbers!");
+        assert_eq!(
+            request.rest.as_deref(),
+            Some("Then compare SPANN with DiskANN, e.g. on recall.")
+        );
+        // Abbreviations, initials and decimals do not end the note.
+        let request =
+            memory_request("Remember that my advisor is Prof. R. K. Rao, and I use 3.5 GB.")
+                .unwrap();
+        assert_eq!(
+            request.note,
+            "my advisor is Prof. R. K. Rao, and I use 3.5 GB."
+        );
+        assert_eq!(request.rest, None);
     }
 
     #[test]

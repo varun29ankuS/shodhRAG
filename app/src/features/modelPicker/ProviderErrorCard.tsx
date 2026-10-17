@@ -56,7 +56,7 @@ interface ProviderErrorCardProps {
 export function ProviderErrorCard({ error, runModel, message, fellBack, actions, onOpenSettings, compact = false }: ProviderErrorCardProps) {
   const failed = useMemo(() => modelRefFromRun(runModel), [runModel]);
   const modelLabel = failed?.model ?? runModel ?? 'The model';
-  const copy = providerErrorCopy(error, modelLabel, failed?.provider ?? null);
+  const copy = providerErrorCopy(error, modelLabel, failed?.provider ?? null, message);
   const [offer, setOffer] = useState<FallbackOffer | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
   const firedRef = useRef(false);

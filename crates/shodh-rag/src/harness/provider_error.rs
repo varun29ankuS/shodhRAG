@@ -53,7 +53,8 @@ pub struct ProviderError {
 
 impl ProviderError {
     /// Whether another model could answer instead (rate limit, quota,
-    /// unavailable, or a provider too slow to answer).
+    /// unavailable, a provider too slow to answer or a broken connection
+    /// to it).
     pub fn fallback_helps(&self) -> bool {
         matches!(
             self.kind,
@@ -61,6 +62,7 @@ impl ProviderError {
                 | ProviderErrorKind::QuotaExhausted
                 | ProviderErrorKind::ModelUnavailable
                 | ProviderErrorKind::Timeout
+                | ProviderErrorKind::Network
         )
     }
 }
@@ -219,6 +221,17 @@ const UNAVAILABLE_MARKERS: &[&str] = &[
     "provider returned error",
     "upstream error",
     "provider_unavailable",
+    "no endpoints available",
+];
+
+/// The provider's stream to the runtime was cut or stalled (omp's own
+/// wording, and a `network_error` finish reason): a provider-side outage,
+/// not the person's connection.
+const PROVIDER_STREAM_MARKERS: &[&str] = &[
+    "stream closed before",
+    "stream ended before",
+    "stream stalled",
+    "finish_reason: network_error",
 ];
 
 fn contains_any(text: &str, markers: &[&str]) -> bool {
@@ -233,7 +246,6 @@ const FILTER_MARKERS: &[&str] = &[
     "content_policy",
     "content_filter",
     "content filter",
-    "guardrail",
 ];
 
 /// A prompt longer than the model accepts.
@@ -252,7 +264,6 @@ const TIMEOUT_MARKERS: &[&str] = &[
     "time out",
     "deadline exceeded",
     "deadline_exceeded",
-    "stream stalled",
     "did not answer in time",
 ];
 
@@ -274,15 +285,12 @@ const NETWORK_MARKERS: &[&str] = &[
     "econnrefused",
     "enotfound",
     "network error",
-    "network_error",
     "fetch failed",
     "socket hang up",
     "dns error",
     "error sending request",
     "broken pipe",
     "unexpected eof",
-    "stream closed before",
-    "stream ended before",
 ];
 
 const INVALID_REQUEST_MARKERS: &[&str] = &["invalid_request", "bad request", "invalid request"];
@@ -305,6 +313,9 @@ fn kind_of(lower: &str, status: Option<u16>, retryable: Option<bool>) -> Provide
     }
     if contains_any(lower, RATE_MARKERS) || status == Some(429) {
         return ProviderErrorKind::RateLimited;
+    }
+    if contains_any(lower, PROVIDER_STREAM_MARKERS) {
+        return ProviderErrorKind::ModelUnavailable;
     }
     if contains_any(lower, TIMEOUT_MARKERS) || matches!(status, Some(408) | Some(504)) {
         return ProviderErrorKind::Timeout;
@@ -631,9 +642,16 @@ mod tests {
             kind("Provider finish_reason: content_filter"),
             ProviderErrorKind::ContentFiltered
         );
+        // OpenRouter's privacy settings leave no provider (common for
+        // :free models): the model is unavailable, not filtered.
+        let privacy = r#"404 {"error":{"message":"No endpoints available matching your guardrail restrictions and data policy. Configure: https://openrouter.ai/settings/privacy","code":404}}"#;
+        let e = classify(privacy, None, NOW_MS);
+        assert_eq!(e.kind, ProviderErrorKind::ModelUnavailable);
+        assert!(e.fallback_helps());
         assert_eq!(
-            kind(r#"403 {"error":{"code":403,"message":"Blocked by guardrail"}}"#),
-            ProviderErrorKind::ContentFiltered
+            kind("No endpoints available matching your guardrail restrictions and data policy. Configure: https://openrouter.ai/settings/privacy"),
+            ProviderErrorKind::ModelUnavailable,
+            "also without a status"
         );
         assert_eq!(
             kind(r#"{"error":{"message":"x","metadata":{"error_type":"provider_unavailable"}}}"#),
@@ -656,7 +674,7 @@ mod tests {
         );
         assert_eq!(kind("504 Gateway Timeout"), ProviderErrorKind::Timeout);
         assert_eq!(
-            kind("OpenAI completions stream stalled while waiting for the next event"),
+            kind("OpenAI completions stream timed out while waiting for the first event"),
             ProviderErrorKind::Timeout
         );
     }
@@ -717,14 +735,18 @@ mod tests {
             kind("error sending request for url (https://openrouter.ai/api/v1/chat/completions)"),
             ProviderErrorKind::Network
         );
-        assert_eq!(
-            kind("OpenAI completions stream closed before a finish_reason was received"),
-            ProviderErrorKind::Network
-        );
-        assert_eq!(
-            kind("Provider finish_reason: network_error"),
-            ProviderErrorKind::Network
-        );
+        assert!(classify("connection reset by peer", None, NOW_MS).fallback_helps());
+        // Provider-side stream cuts (omp's wording) are outages, not the
+        // person's connection.
+        for cut in [
+            "OpenAI completions stream closed before a finish_reason was received",
+            "OpenAI completions stream stalled while waiting for the next event",
+            "Provider finish_reason: network_error",
+        ] {
+            let e = classify(cut, None, NOW_MS);
+            assert_eq!(e.kind, ProviderErrorKind::ModelUnavailable, "{cut}");
+            assert!(e.fallback_helps(), "{cut}");
+        }
         assert_eq!(
             kind("The provider sent an empty response"),
             ProviderErrorKind::EmptyResponse

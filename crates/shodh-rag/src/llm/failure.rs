@@ -415,7 +415,7 @@ impl OpenAiSse {
             return self.finish();
         }
         let failure = self.ctx.failure(
-            ProviderErrorKind::Network,
+            ProviderErrorKind::ModelUnavailable,
             None,
             "The stream ended before the answer was complete",
         );
@@ -533,7 +533,7 @@ impl AnthropicSse {
             Some(detail) => self.ctx.interrupted(detail),
             None if !self.produced => self.ctx.empty(),
             None => self.ctx.failure(
-                ProviderErrorKind::Network,
+                ProviderErrorKind::ModelUnavailable,
                 None,
                 "The stream ended before the answer was complete",
             ),
@@ -772,7 +772,11 @@ mod tests {
         let mut cut = OpenAiSse::new(ctx());
         let mut items = cut.line(r#"data: {"choices":[{"index":0,"delta":{"content":"Half"}}]}"#);
         items.extend(cut.end(None));
-        assert_eq!(failure(&items).kind, ProviderErrorKind::Network);
+        assert_eq!(
+            failure(&items).kind,
+            ProviderErrorKind::ModelUnavailable,
+            "the provider closed the stream mid-answer"
+        );
         // A finish reason without [DONE] is complete (some servers omit it).
         let mut no_done = OpenAiSse::new(ctx());
         let mut items = no_done.line(
@@ -912,7 +916,7 @@ mod tests {
             r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}"#,
         );
         items.extend(cut.end(None));
-        assert_eq!(failure(&items).kind, ProviderErrorKind::Network);
+        assert_eq!(failure(&items).kind, ProviderErrorKind::ModelUnavailable);
         assert_eq!(
             failure(&AnthropicSse::new(anthropic()).end(None)).kind,
             ProviderErrorKind::EmptyResponse

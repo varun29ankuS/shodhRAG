@@ -330,6 +330,7 @@ test('retry where trying again can help; no automatic retry for the new kinds', 
     assert.equal(fallbackHelps(e(kind)), false, kind);
   }
   assert.equal(fallbackHelps(e('timeout')), true, 'a timeout keeps the fallback offer 504 had');
+  assert.equal(fallbackHelps(e('network')), true, 'a broken connection keeps the fallback offer it had');
   assert.equal(fallbackDecision(e('timeout'), { model: { provider: 'anthropic', model: 'claude-haiku-4-5' }, name: 'Claude Haiku 4.5', automatic: false }, false), 'offer');
 });
 
@@ -339,4 +340,21 @@ test('the upstream provider is read only when it is a short name', () => {
   });
   assert.equal(readProviderError({ kind: 'timeout', upstream: 'x'.repeat(65) })?.upstream, undefined);
   assert.equal(readProviderError({ kind: 'timeout', upstream: 7 })?.upstream, undefined);
+});
+
+test('OpenRouter privacy settings that leave no provider get their own hint; network copy stays neutral', () => {
+  const raw = '404 {"error":{"message":"No endpoints available matching your guardrail restrictions and data policy. Configure: https://openrouter.ai/settings/privacy","code":404}}';
+  const unavailable: ProviderError = { kind: 'model_unavailable', status: 404, retryAfterSecs: null };
+  const copy = providerErrorCopy(unavailable, 'nemotron:free', 'openrouter', raw);
+  assert.equal(
+    copy.hint,
+    "OpenRouter's privacy settings leave no provider for this model. Change them at openrouter.ai/settings/privacy, or choose another model in Settings → Model.",
+  );
+  assert.ok(canRetry(unavailable));
+  assert.ok(fallbackHelps(unavailable));
+  assert.notEqual(providerErrorCopy(unavailable, 'm', 'openrouter', 'No endpoints found for m.').hint, copy.hint);
+  assert.equal(providerErrorCopy(unavailable, 'm', 'openrouter').hint, providerErrorCopy(unavailable, 'm', 'openrouter', null).hint);
+  const network = providerErrorCopy({ kind: 'network', status: null, retryAfterSecs: null }, 'vendor/model', 'openrouter');
+  assert.equal(network.title, "The connection to the model's provider broke (OpenRouter · vendor/model)");
+  assert.equal(network.hint, 'Try again, or choose another model in Settings → Model.');
 });

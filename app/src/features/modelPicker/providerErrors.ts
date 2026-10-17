@@ -26,8 +26,17 @@ export interface ErrorCopy {
 /** Where to change the model, as the hints say it. */
 const CHOOSE_ANOTHER = 'choose another model in Settings → Model';
 
-/** The card's text. `model` is the model's display name. */
-export function providerErrorCopy(error: ProviderError, model: string, provider: ProviderId | null): ErrorCopy {
+/** OpenRouter's privacy settings leave no provider for the model (common for :free models). */
+const OPENROUTER_PRIVACY = /no endpoints available matching your guardrail restrictions and data policy/i;
+
+/** Shown as text; never opened without an explicit click. */
+export const OPENROUTER_PRIVACY_SETTINGS = 'openrouter.ai/settings/privacy';
+
+/**
+ * The card's text. `model` is the model's display name; `message` is the
+ * provider's raw text, when known (some failures need their own hint).
+ */
+export function providerErrorCopy(error: ProviderError, model: string, provider: ProviderId | null, message: string | null = null): ErrorCopy {
   const who = provider ? PROVIDER_LABELS[provider] : 'the provider';
   // "OpenRouter via Nvidia · model": who failed, in the titles below.
   const where = `${provider ? PROVIDER_LABELS[provider] : 'provider'}${error.upstream ? ` via ${error.upstream}` : ''} · ${model}`;
@@ -43,6 +52,12 @@ export function providerErrorCopy(error: ProviderError, model: string, provider:
         hint: 'Waiting will not help today. Use another model, or add credits with the provider.',
       };
     case 'model_unavailable':
+      if (message && OPENROUTER_PRIVACY.test(message)) {
+        return {
+          title: `${model} is unavailable with your OpenRouter privacy settings`,
+          hint: `OpenRouter's privacy settings leave no provider for this model. Change them at ${OPENROUTER_PRIVACY_SETTINGS}, or choose another model in Settings → Model.`,
+        };
+      }
       return {
         title: `${model} is unavailable right now`,
         hint: 'The provider is overloaded or no longer serves this model. Retry, or use another model.',
@@ -60,7 +75,7 @@ export function providerErrorCopy(error: ProviderError, model: string, provider:
     case 'network':
       return {
         title: `The connection to the model's provider broke (${where})`,
-        hint: 'Check your internet connection and try again.',
+        hint: `Try again, or ${CHOOSE_ANOTHER}.`,
       };
     case 'empty_response':
       return {
@@ -111,8 +126,15 @@ export function canRetry(error: ProviderError): boolean {
 
 /** Whether another model could answer instead. */
 export function fallbackHelps(error: ProviderError): boolean {
-  // A timeout was "unavailable" (504) before it had its own kind; it keeps the fallback offer.
-  return error.kind === 'rate_limited' || error.kind === 'quota_exhausted' || error.kind === 'model_unavailable' || error.kind === 'timeout';
+  // Timeouts and broken connections were "unavailable" (504, connection reset) before they had
+  // their own kinds; they keep the fallback offer.
+  return (
+    error.kind === 'rate_limited' ||
+    error.kind === 'quota_exhausted' ||
+    error.kind === 'model_unavailable' ||
+    error.kind === 'timeout' ||
+    error.kind === 'network'
+  );
 }
 
 export type FallbackDecision =

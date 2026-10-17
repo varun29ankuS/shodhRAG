@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { addableFolders, isDriveRoot, librarySourcesChip, nativePath, reconcileSources, searchedSources } from '../src/features/library/reconcile.ts';
+import { addableFolders, indexedFilePaths, isDriveRoot, librarySourcesChip, nativePath, reconcileSources, searchedSources } from '../src/features/library/reconcile.ts';
 
 const folders = (...paths: string[]) => paths.map(path => ({ path }));
 
@@ -221,4 +221,37 @@ test('the empty state and the sources chip use one check', () => {
   }
   assert.equal(searchedSources([{ path: 'C:\\Failed', selected: true }], []).hasSources, true);
   assert.equal(searchedSources([], []).hasSources, false);
+});
+
+test('indexed files are listed as the file system spells them, else by identity', () => {
+  const docs = [
+    { doc_id: '1', title: 'SPANN', source: 'c:/research/papers/spann.pdf', display_path: 'C:\\Research\\papers\\SPANN.pdf' },
+    // Another file's path never stands in for the identity.
+    { doc_id: '2', title: 'X', source: 'c:/research/papers/x.pdf', display_path: 'D:\\Other\\X.pdf' },
+    // Rows from builds without display paths.
+    { doc_id: '3', title: 'Y', source: 'c:/research/papers/y.pdf' },
+    { doc_id: '4', title: 'Task', source: 'calendar://task/1', display_path: 'calendar://task/1' },
+    { doc_id: '5', title: 'Broken' },
+    null,
+  ];
+  assert.deepEqual(indexedFilePaths(docs), [
+    'C:\\Research\\papers\\SPANN.pdf',
+    'c:/research/papers/x.pdf',
+    'c:/research/papers/y.pdf',
+    'calendar://task/1',
+  ]);
+  assert.deepEqual(indexedFilePaths({ not: 'a list' }), []);
+});
+
+test('unlisted groups show the folder in its case on disk and "Add these folders" offers it so', () => {
+  const files = indexedFilePaths([
+    { source: 'c:/research/papers/spann.pdf', display_path: 'C:\\Research\\papers\\SPANN.pdf' },
+    { source: 'c:/research/papers/diskann.pdf', display_path: 'C:\\Research\\papers\\DiskANN.pdf' },
+  ]);
+  const result = reconcileSources([], files);
+  assert.deepEqual(result.groups, [{ folder: 'C:/Research/papers', files: 2 }]);
+  assert.deepEqual(addableFolders(result.groups, []), ['C:/Research/papers']);
+  assert.equal(nativePath(addableFolders(result.groups, [])[0], true), 'C:\\Research\\papers');
+  // Identity stays case-insensitive: a folder listed in lowercase covers them.
+  assert.deepEqual(reconcileSources([{ path: 'c:\\research\\papers' }], files), { unlisted: [], groups: [] });
 });

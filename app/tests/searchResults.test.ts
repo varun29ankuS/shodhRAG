@@ -7,7 +7,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appRecordKind, originalCaseName, recordLabel, sourceLabel, toSearchHits } from '../src/features/ask/searchResults.ts';
+import { appRecordKind, originalCaseName, recordLabel, samePathSpelling, shownPath, sourceLabel, toSearchHits } from '../src/features/ask/searchResults.ts';
 
 const TASK = 'calendar://task/ae887fee-eaa5-4c05-b53d-9b3e9905edef';
 
@@ -73,4 +73,26 @@ test('search results take the file name from the stored filename, else the title
   const [paperTitle] = toSearchHits([{ sourceFile: SPANN, text: 'x', citation: { title: 'Highly-efficient Billion-scale Search' } }]);
   assert.equal(paperTitle.fileName, 'spann - billion-scale ann search.pdf');
   assert.equal(paperTitle.title, 'Highly-efficient Billion-scale Search');
+});
+
+test('a hit shows the path as the file system spells it, never another file', () => {
+  const [stored] = toSearchHits([{ sourceFile: SPANN, text: 'x', metadata: { display_path: 'C:\\Research\\papers\\SPANN - Billion-scale ANN Search.pdf' } }]);
+  assert.equal(stored.sourceFile, SPANN, 'the identity is unchanged');
+  assert.equal(stored.displayPath, 'C:\\Research\\papers\\SPANN - Billion-scale ANN Search.pdf');
+  assert.equal(shownPath(stored), 'C:\\Research\\papers\\SPANN - Billion-scale ANN Search.pdf');
+
+  const [other] = toSearchHits([{ sourceFile: SPANN, text: 'x', metadata: { display_path: 'D:\\Elsewhere\\Other.pdf' } }]);
+  assert.equal(other.displayPath, undefined);
+  assert.equal(shownPath(other), SPANN);
+
+  const [none] = toSearchHits([{ sourceFile: SPANN, text: 'x' }]);
+  assert.ok(!('displayPath' in none), 'rows indexed before display paths add no field');
+  assert.equal(shownPath(none), SPANN);
+
+  const [record] = toSearchHits([{ sourceFile: TASK, text: 'x', metadata: { display_path: TASK } }]);
+  assert.equal(record.displayPath, undefined, 'in-app records have no file path');
+
+  assert.equal(samePathSpelling('c:/research/papers/', 'C:\\Research\\Papers'), true);
+  assert.equal(samePathSpelling('c:/research/papers', '  '), false);
+  assert.equal(samePathSpelling('c:/research/papers', null), false);
 });

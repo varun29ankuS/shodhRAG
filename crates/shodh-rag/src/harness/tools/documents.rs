@@ -23,6 +23,7 @@ use super::{
 };
 use crate::harness::events::RiskTier;
 use crate::processing::parser::ParsedDocument;
+use crate::rag_engine::{normalize_source_path, on_disk_spelling};
 use crate::types::{DocumentFormat, DocumentSection};
 use crate::RAGEngine;
 
@@ -545,8 +546,13 @@ fn file_name(source: &str) -> String {
 /// Number every piece of `read` in the run (a piece read before keeps its
 /// number) and build the tool output: the pieces with their numbers for the
 /// model, and the same passages in the step detail for the transcript.
-fn cite_read(read: &Read, source: &str, ctx: &ToolContext) -> ToolOutput {
-    let file = file_name(source);
+/// `display` is the file's path as the file system spells it
+/// ([`on_disk_spelling`]); `source` (the identity, lowercased on Windows)
+/// is named by it, in the case the file has, when it spells the same file.
+fn cite_read(read: &Read, source: &str, display: Option<&str>, ctx: &ToolContext) -> ToolOutput {
+    let identity = normalize_source_path(Path::new(source));
+    let display = display.filter(|d| normalize_source_path(Path::new(d)) == identity);
+    let file = file_name(display.unwrap_or(source));
     let mut text = format!(
         "{UNTRUSTED_NOTICE}\nDocument: {} ({source}), {}\nCite what you use with the passage numbers below.\n",
         read.title, read.location
@@ -583,8 +589,13 @@ fn cite_read(read: &Read, source: &str, ctx: &ToolContext) -> ToolOutput {
             "score": 1.0,
             "text": segment.text,
         });
-        if let (false, Some(map)) = (segment.regions.is_empty(), passage.as_object_mut()) {
-            map.insert("regions".to_string(), Value::Array(segment.regions.clone()));
+        if let Some(map) = passage.as_object_mut() {
+            if !segment.regions.is_empty() {
+                map.insert("regions".to_string(), Value::Array(segment.regions.clone()));
+            }
+            if let Some(display) = display {
+                map.insert("display_path".to_string(), json!(display));
+            }
         }
         passages.push(passage);
     }
@@ -684,14 +695,14 @@ impl HostTool for OpenDocumentTool {
         let wants_page = selection.wants_page();
         // The indexer's parser: a scan is read with the OCR it was indexed with.
         let parser = self.rag.read().await.parser();
-        let (parsed, pages) = tokio::task::spawn_blocking(move || {
+        let (parsed, pages, display) = tokio::task::spawn_blocking(move || {
             let file = Path::new(&path);
             let parsed = parser.parse_file(file)?;
             let mut pages = parsed_pages(&parsed);
             if wants_page && pages.is_empty() && parsed.format == DocumentFormat::PDF {
                 pages = pdf_pages_from_file(file).unwrap_or_default();
             }
-            Ok::<_, anyhow::Error>((parsed, pages))
+            Ok::<_, anyhow::Error>((parsed, pages, on_disk_spelling(file)))
         })
         .await
         .map_err(|e| ToolError::Failed(format!("Reading the document was interrupted: {e}")))?
@@ -706,7 +717,7 @@ impl HostTool for OpenDocumentTool {
         for segment in &read.segments {
             ctx.record_opened(&source, &segment.text);
         }
-        Ok(cite_read(&read, &source, ctx))
+        Ok(cite_read(&read, &source, display.as_deref(), ctx))
     }
 }
 
@@ -776,7 +787,12 @@ mod tests {
         source: &str,
         selection: Selection,
     ) -> ToolOutput {
-        cite_read(&render(parsed, pages, selection).unwrap(), source, ctx)
+        cite_read(
+            &render(parsed, pages, selection).unwrap(),
+            source,
+            None,
+            ctx,
+        )
     }
 
     fn passages_of(out: &ToolOutput) -> Vec<Value> {
@@ -898,6 +914,34 @@ mod tests {
         assert_eq!(cited.page.as_deref(), Some("2"));
         assert!(!cited.web);
         assert_eq!(ctx.passages_issued(), 4);
+    }
+
+    /// A read names its file in the case the file has on disk; the spelling
+    /// is sent to the UI, and one naming another file is never used.
+    #[test]
+    fn reads_name_the_file_as_spelled_on_disk() {
+        let parsed = doc("", &[(1, "first page")]);
+        let pages = parsed_pages(&parsed);
+        let read = render(&parsed, &pages, Selection::Page(1)).unwrap();
+        let source = if cfg!(windows) {
+            "c:/docs/acme msa.pdf"
+        } else {
+            "C:/Docs/Acme MSA.pdf"
+        };
+        let first = ctx();
+        let out = cite_read(&read, source, Some("C:/Docs/Acme MSA.pdf"), &first);
+        assert!(out.text_for_model.contains("[1] Acme MSA.pdf, p. 1"));
+        let passages = passages_of(&out);
+        assert_eq!(passages[0]["file"], json!("Acme MSA.pdf"));
+        assert_eq!(passages[0]["path"], json!(source));
+        assert_eq!(passages[0]["display_path"], json!("C:/Docs/Acme MSA.pdf"));
+        assert_eq!(first.cited_passage(1).unwrap().file, "Acme MSA.pdf");
+
+        let second = ctx();
+        let other = cite_read(&read, source, Some("D:/Elsewhere/Other.pdf"), &second);
+        let passages = passages_of(&other);
+        assert_eq!(passages[0]["file"], json!(file_name(source)));
+        assert!(passages[0].get("display_path").is_none());
     }
 
     #[test]

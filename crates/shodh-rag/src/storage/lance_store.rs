@@ -435,6 +435,44 @@ impl LanceStore {
         Ok(docs)
     }
 
+    /// The `metadata_json` of each document's first chunk (`chunk_index` 0),
+    /// by `doc_id`: one row per document, for the metadata a document's
+    /// chunks share. Reads only the `doc_id` and `metadata_json` columns.
+    pub async fn first_chunk_metadata(&self) -> Result<std::collections::HashMap<String, String>> {
+        let table = self.db.open_table(&self.table_name).execute().await?;
+        let results = table
+            .query()
+            .only_if("chunk_index = 0")
+            .select(lancedb::query::Select::columns(&[
+                "doc_id",
+                "metadata_json",
+            ]))
+            .execute()
+            .await
+            .context("Failed to query first chunk metadata")?;
+
+        let batches: Vec<RecordBatch> = futures::TryStreamExt::try_collect(results).await?;
+        let mut out = std::collections::HashMap::new();
+        for batch in &batches {
+            let column = |name: &str| {
+                batch
+                    .column_by_name(name)
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            };
+            if let (Some(doc_ids), Some(metadata)) = (column("doc_id"), column("metadata_json")) {
+                for i in 0..batch.num_rows() {
+                    let doc_id = doc_ids.value(i);
+                    if doc_id.is_empty() || doc_id == "__seed__" {
+                        continue;
+                    }
+                    out.entry(doc_id.to_string())
+                        .or_insert_with(|| metadata.value(i).to_string());
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// List all chunks matching an optional predicate (no vector search).
     /// This is the correct way to enumerate documents — NOT search_comprehensive("").
     pub async fn list_chunks(

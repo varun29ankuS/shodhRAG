@@ -13,6 +13,7 @@ import {
   scannedPagesStep,
   serializeSources,
   syncedFolders,
+  withPathCase,
 } from '../src/features/library/sources.ts';
 
 const stored = (over: Record<string, unknown> = {}) => ({
@@ -154,4 +155,29 @@ test('a failed sync is shown and cleared by the next one, never stored', () => {
   assert.ok(!serializeSources([failed]).includes('syncError'));
   const recovered = applyFolderSync(failed, { sourceId: 'folder-1', at, indexed: 0, removed: 0, files: 12, failures: [] });
   assert.equal(recovered.syncError, undefined);
+});
+
+test('a path saved lowercased gets its case on disk back, keeping its identity', () => {
+  const [saved] = parseStoredSources(JSON.stringify([stored({ name: 'papers', path: 'c:\\research\\papers' })]));
+  const fixed = withPathCase(saved, 'C:\\Research\\papers');
+  assert.equal(fixed.path, 'C:\\Research\\papers');
+  assert.equal(fixed.name, 'papers', 'the name follows the folder');
+  assert.equal(fixed.id, saved.id);
+
+  const renamed = withPathCase({ ...saved, name: 'PAPERS' }, 'C:\\Research\\Papers');
+  assert.equal(renamed.name, 'Papers', 'a name that is the folder in another case follows too');
+
+  const custom = withPathCase({ ...saved, name: 'Reading list' }, 'C:\\Research\\papers');
+  assert.equal(custom.name, 'Reading list', 'a name of its own is kept');
+
+  // Separators and a trailing slash are spelling, not identity.
+  assert.equal(withPathCase({ ...saved, path: 'c:/research/papers/' }, 'C:\\Research\\papers').path, 'C:\\Research\\papers');
+
+  // Another folder (a short name expanded, a junction followed) is never applied.
+  assert.equal(withPathCase(saved, 'C:\\Users\\Varun Sharma\\papers'), saved);
+  assert.equal(withPathCase(saved, ''), saved);
+  assert.equal(withPathCase(saved, saved.path), saved);
+  // A source being indexed is left alone.
+  const indexing = { ...saved, status: 'indexing' as const };
+  assert.equal(withPathCase(indexing, 'C:\\Research\\papers'), indexing);
 });

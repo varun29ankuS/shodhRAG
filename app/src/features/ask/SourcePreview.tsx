@@ -4,7 +4,7 @@ import { ExternalLink, Loader2, Maximize2, MessageSquareText, Minimize2, X } fro
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import { FOCUS_OVERLAY_SELECTOR } from '../focus/focusDom';
-import { appRecordKind, formatLocation, isWebUrl, jumpToSourceArgs, sourceLabel } from './searchResults';
+import { appRecordKind, formatLocation, isWebUrl, jumpToSourceArgs, shownPath, sourceLabel } from './searchResults';
 import type { ViewTab } from '../../lib/viewTabs';
 import type { SearchHit } from './types';
 import { useSourceDocument } from './useSourceDocument';
@@ -112,7 +112,7 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose, onOpenView,
 
   const fileName = record ? sourceLabel(hit) : info?.fileName ?? hit.fileName;
   const location = formatLocation(hit);
-  const folder = isUrl || record ? null : shortFolder(info?.path ?? hit.sourceFile);
+  const folder = isUrl || record ? null : shortFolder(info?.path ?? shownPath(hit));
   const subtitle = [location, folder].filter(Boolean).join(' · ');
   const otherPassages = siblings.filter(s => s.number !== hit.number);
   const fileMissing = panel.status === 'unavailable' && panel.error.kind === 'notFound';
@@ -137,7 +137,7 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose, onOpenView,
           {hit.number}
         </span>
         <div className="flex flex-col min-w-0 flex-1">
-          <h2 id={titleId} className="text-[13.5px] font-semibold text-shodh-text truncate" title={record ? fileName : info?.path ?? hit.sourceFile}>
+          <h2 id={titleId} className="text-[13.5px] font-semibold text-shodh-text truncate" title={record ? fileName : info?.path ?? shownPath(hit)}>
             {fileName}
           </h2>
           {subtitle && <span className="text-[11.5px] text-shodh-text-muted truncate">{subtitle}</span>}

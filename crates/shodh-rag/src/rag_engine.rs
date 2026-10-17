@@ -123,6 +123,18 @@ impl FilePreparer {
         // deletion when the file is stored. This prevents mismatches if the
         // caller passes a differently-formatted path string.
         merged_metadata.insert("file_path".to_string(), source.clone());
+        // The identity above is lowercased on Windows; what the user sees
+        // keeps the file system's spelling. A spelling the caller kept from
+        // an earlier index stands in when the file system gives none.
+        let display = on_disk_spelling(path)
+            .or_else(|| {
+                merged_metadata
+                    .get(DISPLAY_PATH_KEY)
+                    .filter(|kept| normalize_source_path(Path::new(kept.as_str())) == source)
+                    .cloned()
+            })
+            .unwrap_or_else(|| canonical_path(path).display().to_string());
+        merged_metadata.insert(DISPLAY_PATH_KEY.to_string(), display);
 
         let citation = Citation {
             title: parsed.title.clone(),
@@ -471,6 +483,47 @@ pub fn normalize_source_path(path: &Path) -> String {
     } else {
         s
     }
+}
+
+/// Chunk metadata key: the indexed file's path as the file system spells it
+/// (see [`on_disk_spelling`]), for display. The chunk's `source` and
+/// `file_path` stay the identity ([`normalize_source_path`]).
+pub const DISPLAY_PATH_KEY: &str = "display_path";
+
+/// The names of a document's file a chunk's metadata keeps
+/// ([`RAGEngine::document_names`]); blank values read as absent.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct DocumentNames {
+    /// [`DISPLAY_PATH_KEY`]: the path as the file system spelled it at indexing.
+    #[serde(default, deserialize_with = "non_blank")]
+    pub display_path: Option<String>,
+    /// The file name in its original case.
+    #[serde(default, deserialize_with = "non_blank")]
+    pub filename: Option<String>,
+}
+
+fn non_blank<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    let value: Option<String> = serde::Deserialize::deserialize(deserializer)?;
+    Ok(value.filter(|v| !v.trim().is_empty()))
+}
+
+/// The path of the file at `path` as the file system spells it, in its
+/// [`canonical_path`] form: on Windows the case each folder and the file
+/// have on disk, however `path` was cased; elsewhere `path` itself, whose
+/// case is already the file's. `None` on Windows when the file cannot be
+/// resolved (gone, unreadable), or when resolving it reaches the file under
+/// another identity (a short `8.3` name expanded, a mapped drive or a
+/// junction followed): only a spelling that differs from `path` in case is
+/// returned, so it never names the file differently from the index.
+pub fn on_disk_spelling(path: &Path) -> Option<String> {
+    if !cfg!(windows) {
+        return Some(canonical_path(path).display().to_string());
+    }
+    let resolved = canonical_path(&std::fs::canonicalize(path).ok()?);
+    (normalize_source_path(&resolved) == normalize_source_path(path))
+        .then(|| resolved.display().to_string())
 }
 
 // Compiled-once regex patterns for structured field extraction at ingest time.
@@ -1963,6 +2016,24 @@ impl RAGEngine {
         self.store.get_document_info().await
     }
 
+    /// How each document's file is named in the index, by `doc_id`: its
+    /// stored [`DISPLAY_PATH_KEY`] and its `filename`, read from its first
+    /// chunk (other metadata is skipped, not decoded). Documents indexed
+    /// before the display path was stored have none; their spelling is
+    /// resolved where it is shown ([`crate::path_case::PathSpellings`]).
+    pub async fn document_names(&self) -> Result<HashMap<String, DocumentNames>> {
+        Ok(self
+            .store
+            .first_chunk_metadata()
+            .await?
+            .into_iter()
+            .filter_map(|(doc_id, json)| {
+                let names: DocumentNames = serde_json::from_str(&json).ok()?;
+                Some((doc_id, names))
+            })
+            .collect())
+    }
+
     /// The indexed documents with chunks of an older [`INDEX_FORMAT`] than
     /// this build writes: they were embedded and keyword-indexed with another
     /// context than the chunks indexed now, so they rank on other terms. Each
@@ -3119,6 +3190,96 @@ Language models trained on long documents reach lower perplexity.
         let mut blank = HashMap::new();
         blank.insert("page".to_string(), "  ".to_string());
         assert_eq!(page_numbers_from_metadata(&blank), None);
+    }
+
+    /// `relative` (folders and file, with their case) created under `dir`
+    /// with `text`, below `dir` as the file system spells it: a Windows
+    /// runner's temporary folder is often a short `8.3` name, which
+    /// resolving a path expands.
+    #[cfg(windows)]
+    fn mixed_case_file(dir: &Path, relative: &str, text: &str) -> std::path::PathBuf {
+        let root = canonical_path(&std::fs::canonicalize(dir).unwrap());
+        let file = root.join(relative);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, text).unwrap();
+        file
+    }
+
+    /// A file indexed under a lowercased spelling of its path keeps the
+    /// lowercase identity (`source`, `file_path`) and records the case its
+    /// folders and name have on disk (`display_path`).
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_lowercased_path_keeps_its_identity_and_records_the_case_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let file = mixed_case_file(dir.path(), "Tmp\\Mixed\\SPANN - X.md", LEASE);
+        let spelled = file.display().to_string();
+        let lowered = std::path::PathBuf::from(spelled.to_lowercase());
+        let identity = normalize_source_path(&file);
+        assert_eq!(identity, identity.to_lowercase());
+        assert_eq!(normalize_source_path(&lowered), identity);
+        assert_eq!(
+            on_disk_spelling(&lowered).as_deref(),
+            Some(spelled.as_str())
+        );
+
+        let prepared = engine
+            .file_preparer()
+            .unwrap()
+            .prepare(&lowered, HashMap::new())
+            .unwrap();
+        assert_eq!(prepared.source, identity);
+        assert!(!prepared.document.records.is_empty());
+        for record in &prepared.document.records {
+            assert_eq!(record.source, identity);
+            let metadata: HashMap<String, String> =
+                serde_json::from_str(&record.metadata_json).unwrap();
+            assert_eq!(metadata["file_path"], identity);
+            assert_eq!(metadata[DISPLAY_PATH_KEY], spelled);
+        }
+        engine.commit_file(prepared).await.unwrap();
+        let shown = engine.document_names().await.unwrap();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(
+            shown.values().next().and_then(|n| n.display_path.as_ref()),
+            Some(&spelled)
+        );
+    }
+
+    /// Only the names are read from a chunk's metadata; blank ones are absent.
+    #[test]
+    fn document_names_skip_other_metadata() {
+        let names: DocumentNames = serde_json::from_str(
+            r#"{"display_path":"C:\\Papers\\A.pdf","filename":"  ","bboxes":"[{\"page\":1}]","title":"A"}"#,
+        )
+        .unwrap();
+        assert_eq!(names.display_path.as_deref(), Some("C:\\Papers\\A.pdf"));
+        assert_eq!(names.filename, None);
+        let none: DocumentNames = serde_json::from_str(r#"{"title":"A"}"#).unwrap();
+        assert_eq!(none, DocumentNames::default());
+    }
+
+    /// A file that cannot be resolved gives no spelling on Windows (its
+    /// display path then falls back to the caller's spelling).
+    #[cfg(windows)]
+    #[test]
+    fn an_unresolvable_file_has_no_spelling_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = mixed_case_file(dir.path(), "Papers\\A.md", "# A\n");
+        assert!(on_disk_spelling(&file.with_file_name("Gone.md")).is_none());
+        assert!(on_disk_spelling(&file).is_some());
+    }
+
+    /// Elsewhere a path keeps its case, so the caller's path is its spelling.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_path_is_its_own_spelling_off_windows() {
+        let path = Path::new("/home/v/Research/./SPANN - X.pdf");
+        assert_eq!(
+            on_disk_spelling(path).as_deref(),
+            Some("/home/v/Research/SPANN - X.pdf")
+        );
     }
 }
 

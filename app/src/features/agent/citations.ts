@@ -1,4 +1,4 @@
-import { parsePageSpan } from '../ask/searchResults';
+import { parsePageSpan, samePathSpelling } from '../ask/searchResults';
 import type { SearchHit } from '../ask/types';
 import type { Passage } from './reducer';
 
@@ -22,5 +22,6 @@ export function passageHits(passages: readonly Passage[]): SearchHit[] {
     url: p.web ? p.path : null,
     section: p.web ? null : (p.section ?? null),
     regions: p.web ? null : (p.regions ?? null),
+    ...(!p.web && samePathSpelling(p.path, p.displayPath) ? { displayPath: p.displayPath } : {}),
   }));
 }

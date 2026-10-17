@@ -62,10 +62,10 @@ function writeDurable(key: DurableKey, value: unknown): Promise<void> {
 }
 
 // Core components
-import { applyFolderSync, parseStoredSources, readIndexingResult, scannedPagesStep, serializeSources, SOURCES_STORAGE_KEY, syncedFolders } from './features/library/sources';
+import { applyFolderSync, parseStoredSources, readIndexingResult, scannedPagesStep, serializeSources, SOURCES_STORAGE_KEY, syncedFolders, withPathCase } from './features/library/sources';
 import { explainFailure } from './features/library/indexingAdvice';
 import type { FolderSyncOutcome, LibrarySource } from './features/library/sources';
-import { addableFolders, librarySourcesChip, nativePath, NOT_ADDED_REASON, reconcileSources, searchedSources } from './features/library/reconcile';
+import { addableFolders, indexedFilePaths, librarySourcesChip, nativePath, NOT_ADDED_REASON, reconcileSources, searchedSources } from './features/library/reconcile';
 import type { FileNode } from './features/library/fileTree';
 import { errorMessage as searchErrorMessage } from './features/setup/searchModels';
 import Sidebar from './components/shell/Sidebar';
@@ -121,6 +121,9 @@ const newNoticeId = () => `notice-${Date.now()}-${Math.random().toString(36).sli
 
 /** A Library source (see features/library/sources). */
 type Source = LibrarySource;
+
+/** Library paths resolved at once when their saved case is restored. */
+const PATH_CASE_BATCH = 8;
 
 
 function AppSplitView() {
@@ -206,6 +209,30 @@ function AppSplitView() {
       console.error('The Library sources could not be saved:', error);
     });
   }, []);
+  // Library paths older builds saved lowercased ("c:\research\papers") get
+  // the case they have on disk back, once the sources are restored. Never
+  // blocks startup; a few paths at a time; identity is unchanged, since
+  // every comparison of source paths ignores case.
+  const restorePathCase = useCallback(async (list: readonly Source[], cancelled: () => boolean) => {
+    const fixes = new Map<string, { from: string; to: string }>();
+    const candidates = list.filter(s => s.path.trim() && s.status !== 'indexing');
+    for (let i = 0; i < candidates.length; i += PATH_CASE_BATCH) {
+      const batch = candidates.slice(i, i + PATH_CASE_BATCH);
+      const resolved = await Promise.all(
+        batch.map(s => invoke<string>('resolve_path_case', { path: s.path }).catch(() => s.path)),
+      );
+      if (cancelled()) return;
+      batch.forEach((s, j) => {
+        const to = resolved[j];
+        if (typeof to === 'string' && withPathCase(s, to) !== s) fixes.set(s.id, { from: s.path, to });
+      });
+    }
+    if (fixes.size === 0) return;
+    setSources(prev => prev.map(s => {
+      const fix = fixes.get(s.id);
+      return fix && s.path === fix.from ? withPathCase(s, fix.to) : s;
+    }));
+  }, []);
   useEffect(() => {
     let cancelled = false;
     void readDurable('library_sources').then(stored => {
@@ -217,11 +244,12 @@ function AppSplitView() {
       if (save) saveSourcesDurably(restored);
       else savedSourcesRef.current = serializeSources(restored);
       if (restored !== local) setSources(restored);
+      if (IS_WINDOWS) void restorePathCase(restored, () => cancelled);
     });
     return () => {
       cancelled = true;
     };
-  }, [saveSourcesDurably]);
+  }, [saveSourcesDurably, restorePathCase]);
   // Persist sources on every change (live progress fields are not stored).
   useEffect(() => {
     try {
@@ -265,9 +293,10 @@ function AppSplitView() {
   const refreshIndexedFiles = useCallback(async () => {
     const read = ++indexedReadRef.current;
     try {
-      const docs = await invoke<{ source?: unknown }[]>('list_indexed_sources');
+      const docs = await invoke<unknown>('list_indexed_sources');
       if (read !== indexedReadRef.current) return;
-      setIndexedFiles(Array.isArray(docs) ? docs.map(d => d?.source).filter((p): p is string => typeof p === 'string') : []);
+      // Shown as the file system spells them; compared case-insensitively.
+      setIndexedFiles(indexedFilePaths(docs));
       setIndexedLoad('loaded');
     } catch (error) {
       if (read !== indexedReadRef.current) return;

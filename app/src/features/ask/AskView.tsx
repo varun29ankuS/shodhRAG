@@ -31,7 +31,7 @@ import { MessageContentRenderer } from './MessageContentRenderer';
 import { RunChip } from './RunChip';
 import { SourcePreview } from './SourcePreview';
 import { useNavigationTarget } from '../agent/useNavigationTarget';
-import { appRecordKind, citedNumbers, documentHit, fileExtensionOf, formatLocation, groupSources, sourceLabel, toSearchHits, webHost } from './searchResults';
+import { appRecordKind, citedNumbers, documentHit, fileExtensionOf, formatLocation, groupSources, shownPath, sourceLabel, toSearchHits, webHost } from './searchResults';
 import type { SourceGroup } from './searchResults';
 import { openExternal } from '../agent/WebSources';
 import { notify } from '../../lib/notify';
@@ -180,7 +180,7 @@ function SourceChips({
               type="button"
               onClick={e => onOpen(group.primary, e.currentTarget)}
               aria-pressed={isActive}
-              title={group.primary.url ? `${sourceLabel(group.primary)} — ${group.primary.url} (opens in your browser)` : appRecordKind(group.sourceFile) ? sourceLabel(group.primary) : group.sourceFile}
+              title={group.primary.url ? `${sourceLabel(group.primary)} — ${group.primary.url} (opens in your browser)` : appRecordKind(group.sourceFile) ? sourceLabel(group.primary) : shownPath(group.primary)}
               className={cn(
                 'inline-flex items-center gap-2 h-8 max-w-full pl-2 pr-3 rounded-[10px] border text-shodh-text transition-colors duration-micro',
                 isActive

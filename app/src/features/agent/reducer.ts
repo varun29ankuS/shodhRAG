@@ -70,6 +70,8 @@ export interface Passage {
   section?: string | null;
   /** Layout boxes on the cited pages; absent for unstructured sources. */
   regions?: PdfRegion[] | null;
+  /** `path` as the file system spells it (`path` is lowercased on Windows); absent when unknown. */
+  displayPath?: string | null;
 }
 
 /** A web source as returned in a web tool's `detail.webSources`. */
@@ -327,6 +329,7 @@ export function passagesFromDetail(detail: unknown): Passage[] {
     const path = str(entry.path);
     if (typeof n !== 'number' || !Number.isInteger(n) || n < 1 || !path) continue;
     const page = typeof entry.page === 'number' ? String(entry.page) : str(entry.page);
+    const displayPath = str(entry.display_path);
     out.push({
       n,
       file: str(entry.file) ?? path,
@@ -337,6 +340,7 @@ export function passagesFromDetail(detail: unknown): Passage[] {
       text: typeof entry.text === 'string' ? entry.text : '',
       section: str(entry.section),
       regions: parseRegions(entry.regions),
+      ...(displayPath ? { displayPath } : {}),
     });
   }
   return out;

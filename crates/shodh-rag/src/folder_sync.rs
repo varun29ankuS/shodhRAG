@@ -307,9 +307,10 @@ pub async fn upgrade_file_source(
 /// Chunk metadata a file was indexed with by its caller (not read from the
 /// file, not about one chunk): kept when the file is indexed again by
 /// [`upgrade_unowned`].
-const DOCUMENT_KEYS: [&str; 10] = [
+const DOCUMENT_KEYS: [&str; 11] = [
     "space_id",
     "title",
+    "display_path",
     "doc_type",
     "file_name",
     "filename",

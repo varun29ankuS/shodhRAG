@@ -16,6 +16,9 @@ export function revisionText(
   const search = missingNeeds.length === 1
     ? `${searchVerb} for a part no passage covered: ${missingNeeds[0]}`
     : `${searchVerb} for ${missingNeeds.length} parts no passage covered`;
+  if (reason === 'retrieve') {
+    return `${live ? 'Searching' : 'Searched'} your documents for the question`;
+  }
   if (reason === 'repair') return fix;
   if (reason === 'coverage') return search;
   return `${fix}; ${search.charAt(0).toLowerCase()}${search.slice(1)}`;

@@ -213,6 +213,9 @@ pub enum RevisionReason {
     Coverage,
     /// Both.
     RepairAndCoverage,
+    /// The answer did not search the user's documents: the app searched
+    /// them for the question and asks for the answer from what it found.
+    Retrieve,
 }
 
 /// Where a `navigated` event points inside a view. Serialised with a `kind`

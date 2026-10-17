@@ -246,6 +246,12 @@ pub struct RunScope {
     /// cite them as the answer does, its claims citing them are checked
     /// against them, and its own searches number on after them.
     pub carried: Vec<CitedPassage>,
+    /// The user's question as they asked it, without the blocks the sent
+    /// message adds in front of it (workspace instructions, memories, the
+    /// conversation replayed into a new session). The answer check searches
+    /// the documents with it when an answer skipped the search. `None`: the
+    /// sent message is the question.
+    pub question: Option<String>,
 }
 
 /// A snippet an answer may use: the region of a page the user saved.

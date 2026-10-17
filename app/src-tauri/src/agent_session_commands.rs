@@ -1496,7 +1496,12 @@ pub async fn agent_send(
     if scope.workspace.is_some() && workspace.is_none() {
         tracing::info!(target: "shodh::workspaces", "the conversation's workspace no longer exists; answering without it");
     }
-    let scope = scope_for_workspace(scope, workspace.as_ref(), search_all);
+    let scope = RunScope {
+        // What the answer check searches with if the answer skips the search: the question
+        // as typed, never the composed message with its context blocks.
+        question: Some(text.trim().to_string()),
+        ..scope_for_workspace(scope, workspace.as_ref(), search_all)
+    };
     let workspace_block = workspace
         .as_ref()
         .and_then(|w| instructions_block(&w.name, &w.instructions));

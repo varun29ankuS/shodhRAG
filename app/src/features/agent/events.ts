@@ -101,7 +101,11 @@ export interface GroundingReport {
   supersededMessageIds: string[];
 }
 
-export type RevisionReason = "repair" | "coverage" | "repair_and_coverage";
+/**
+ * Why the check asked for a follow-up turn. `retrieve`: the answer did not search the user's
+ * documents, so the app searched them for the question and asked for the answer from what it found.
+ */
+export type RevisionReason = "repair" | "coverage" | "repair_and_coverage" | "retrieve";
 
 export interface RunStartedEvent {
   type: "run_started";

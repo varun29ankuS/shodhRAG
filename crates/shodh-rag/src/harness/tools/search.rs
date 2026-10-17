@@ -255,7 +255,7 @@ fn search_schema() -> Value {
 const MAX_QUERY_CHARS: usize = 500;
 
 /// `query` cut to [`MAX_QUERY_CHARS`] at a word boundary.
-fn truncate_query(query: &str) -> String {
+pub(crate) fn truncate_query(query: &str) -> String {
     let query = query.trim();
     if query.chars().count() <= MAX_QUERY_CHARS {
         return query.to_string();

@@ -328,6 +328,28 @@ impl NormaliserState {
         Some(self.start_step(run_id, tool_call_id, tool, args, None, now_ms))
     }
 
+    /// Close a step the host ran itself (no `tool_execution_end` follows),
+    /// e.g. the answer check's own search. `None` when no run is active or
+    /// the step is not open (the run ended and closed it).
+    pub fn close_step(
+        &mut self,
+        step_id: &str,
+        outcome: StepOutcome,
+        now_ms: u64,
+    ) -> Option<AgentEvent> {
+        let run_id = self.active_run_id()?.to_string();
+        let step = self.steps.remove(step_id)?;
+        Some(AgentEvent::StepFinished {
+            run_id,
+            step_id: step_id.to_string(),
+            ok: outcome.ok,
+            summary: outcome.summary,
+            detail: outcome.detail,
+            duration_ms: now_ms.saturating_sub(step.started_at_ms),
+            invalid_arguments: outcome.invalid_arguments,
+        })
+    }
+
     /// End the active run with an error (e.g. the sidecar exited).
     pub fn fail_run(&mut self, error: &str, now_ms: u64) -> Vec<AgentEvent> {
         match self.run.as_mut() {

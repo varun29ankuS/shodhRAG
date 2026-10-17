@@ -32,9 +32,11 @@ use super::code_mode::{
     CodeFolder, CodeSettings, GuardRequest, ALLOW_ANSWER, CODE_TOOLS, GUARD_COMMAND,
 };
 use super::error::HarnessError;
-use super::events::{AgentEvent, ClaimCheck, GroundingReport, NeedCheck, RiskTier, ScoringMethod};
+use super::events::{
+    AgentEvent, ClaimCheck, GroundingReport, NeedCheck, RevisionReason, RiskTier, ScoringMethod,
+};
 use super::grounding::absence::flag_unverified_absence;
-use super::grounding::followup::{self, Next, Rounds};
+use super::grounding::followup::{self, Next, Retrieval, RetrieveResult, Rounds};
 use super::grounding::verify::{check_needs, summarise, verify_answer, Thresholds};
 use super::grounding::{AnswerMessage, Evidence, GroundingConfig, OpenedText, VerifyInput};
 use super::model::EnvValue;
@@ -46,9 +48,10 @@ use super::protocol::{
 };
 use super::sidecar::{self, LaunchSpec};
 use super::tools::plan::UPDATE_PLAN;
+use super::tools::search::{truncate_query, SEARCH_DOCUMENTS};
 use super::tools::{
-    ApprovalDecision, ApprovalGate, RunPassages, RunPlan, RunScope, ToolAudit, ToolCall,
-    ToolContext, ToolRegistry,
+    ApprovalDecision, ApprovalGate, DispatchOutcome, RunPassages, RunPlan, RunScope, ToolAudit,
+    ToolCall, ToolContext, ToolRegistry,
 };
 use super::{truncate_chars, AgentHarness};
 use crate::audit::{payload as audit_payload, AuditEventType, LOCAL_OWNER, SYSTEM_PRINCIPAL};
@@ -172,6 +175,12 @@ impl CodeRuntime {
 #[derive(Debug, Default)]
 struct GroundingRun {
     run_id: String,
+    /// The user's question ([`RunScope::question`], else the sent message):
+    /// what the check searches the documents for when the answer did not.
+    question: String,
+    /// Citation numbers the run started with (passages carried into a side
+    /// discussion): numbers above it were handed out by tools of this run.
+    seeded: u32,
     rounds: Rounds,
     /// Follow-up turns so far (the next report's round).
     round: u32,
@@ -830,8 +839,17 @@ impl Inner {
             self.passages_in_run.reset();
             self.passages_in_run.seed(&scope.carried);
             self.plan_in_run.reset();
+            let question = scope
+                .question
+                .as_deref()
+                .map(str::trim)
+                .filter(|q| !q.is_empty())
+                .unwrap_or(message)
+                .to_string();
             *lock(&self.grounding_run) = GroundingRun {
                 run_id: run_id.clone(),
+                question,
+                seeded: self.passages_in_run.issued(),
                 ..GroundingRun::default()
             };
             *lock(&self.scope) = Arc::new(scope);
@@ -1001,12 +1019,25 @@ impl Inner {
         } else {
             0
         };
+        // The answer had sources of its own when a search succeeded (even
+        // one that found nothing) or when any tool of the run handed out
+        // passages: a web search, a fetched page, an opened document, a
+        // paper or figure tool. Counting numbers beyond the seeded ones
+        // covers every tool that numbers passages, including app tools,
+        // without a list to keep in step with the registry; the carried
+        // passages of a side discussion are not counted.
+        let seeded = lock(&self.grounding_run).seeded;
+        let retrieval = Retrieval {
+            sourced: followup::searched(&tools_ok) || self.passages_in_run.issued() > seeded,
+            available: self.can_search_documents(),
+        };
         let next = followup::decide(
             &answer_checks,
             &need_checks,
             rounds,
             auto_repair,
             calls_left,
+            retrieval,
         );
         let report = |is_final: bool| GroundingReport {
             round,
@@ -1038,6 +1069,11 @@ impl Inner {
                     });
                 }
                 self.finish_held(&held);
+            }
+            Next::Retrieve { flagged } => {
+                let flagged = u32::try_from(flagged.len()).unwrap_or(u32::MAX);
+                self.retrieve_for_answer(&held, round, flagged, report(false))
+                    .await;
             }
             Next::FollowUp {
                 reason,
@@ -1101,6 +1137,168 @@ impl Inner {
 
     fn lock_still_held(&self, held: &HeldRun) -> bool {
         lock(&self.state).still_held(&held.run_id, held.generation)
+    }
+
+    /// Whether the session can search the user's documents itself: the tool
+    /// is registered and the profile allows it (not in Code mode).
+    fn can_search_documents(&self) -> bool {
+        self.profile.allows(SEARCH_DOCUMENTS) && self.registry.describe(SEARCH_DOCUMENTS).is_some()
+    }
+
+    /// The answer cited passages, or said what the documents hold, without
+    /// any search ([`Next::Retrieve`]): search the documents for the user's
+    /// question through the registry, as the model's own call would be (the
+    /// answer's scope, its citation numbers, the audit log, a step in the
+    /// transcript), then ask for the answer again from what was found.
+    /// `report` is the check of the answer being replaced.
+    async fn retrieve_for_answer(
+        self: &Arc<Self>,
+        held: &HeldRun,
+        round: u32,
+        flagged: u32,
+        report: GroundingReport,
+    ) {
+        let question = lock(&self.grounding_run).question.clone();
+        let args = json!({ "query": truncate_query(&question) });
+        let step_id = format!("{}-{}", held.run_id, self.next_id("check-search-"));
+        // Under the state lock, as for any follow-up: the round is counted
+        // (so a turn checked later is never this round again, and the
+        // search is never made twice) and announced before anything of the
+        // turn reaches the transcript. The search is started and registered
+        // among the in-flight calls under the same lock, so a stop can never
+        // fall between the check and the registration and leave a search no
+        // run owns (it would number passages in the next run).
+        let (task, issued_before, limited_to) = {
+            let mut state = lock(&self.state);
+            if !state.still_held(&held.run_id, held.generation) {
+                return;
+            }
+            {
+                let mut g = lock(&self.grounding_run);
+                g.round += 1;
+                g.round_start = held.messages.len();
+                g.rounds.retrieve += 1;
+            }
+            tracing::info!(target: "shodh::grounding", run_id = %held.run_id, round = round + 1, flagged, "answer had no sources; searching the documents for the question");
+            self.emit(AgentEvent::Grounding {
+                run_id: held.run_id.clone(),
+                report,
+            });
+            self.emit(AgentEvent::RevisionStarted {
+                run_id: held.run_id.clone(),
+                round: round + 1,
+                reason: RevisionReason::Retrieve,
+                flagged,
+                missing_needs: Vec::new(),
+            });
+            if let Some(event) = state.open_step(&step_id, SEARCH_DOCUMENTS, &args, now_ms()) {
+                self.emit(event);
+            }
+
+            let call_index = self.calls_in_run.fetch_add(1, Ordering::SeqCst) + 1;
+            let issued_before = self.passages_in_run.issued();
+            let scope = Arc::clone(&lock(&self.scope));
+            // What a search that finds nothing did not cover: the answer's
+            // limit, never the whole library when the answer is limited.
+            let limited_to = (!scope.is_empty()).then(|| match &scope.workspace_name {
+                Some(name) if scope.restricted => {
+                    format!("the sources of the workspace \"{name}\"")
+                }
+                _ => "the sources this answer is limited to".to_string(),
+            });
+            let ctx = ToolContext::new(held.run_id.clone(), step_id.clone(), self.events.clone())
+                .with_run_passages(Arc::clone(&self.passages_in_run))
+                .with_run_plan(Arc::clone(&self.plan_in_run))
+                .with_scope(scope)
+                .with_audit(self.audit.clone());
+            let call = ToolCall {
+                tool: SEARCH_DOCUMENTS.to_string(),
+                args,
+                call_index,
+            };
+            // Lock order state -> inflight; nothing takes the state lock
+            // while holding inflight.
+            let mut inflight = lock(&self.inflight);
+            let inner = Arc::clone(self);
+            let handle = tokio::spawn(async move {
+                inner
+                    .registry
+                    .dispatch(call, &inner.profile, &inner.approvals, &ctx)
+                    .await
+            });
+            inflight.insert(step_id.clone(), (step_id.clone(), handle.abort_handle()));
+            (handle, issued_before, limited_to)
+        };
+        let joined = task.await;
+        lock(&self.inflight).remove(&step_id);
+        let outcome = match joined {
+            Ok(outcome) => outcome,
+            // Stopped with the run, which closed the step.
+            Err(e) if e.is_cancelled() => return,
+            Err(e) => {
+                tracing::error!(target: "shodh::grounding", run_id = %held.run_id, error = %e, "the answer check's search did not finish");
+                DispatchOutcome {
+                    ok: false,
+                    text_for_model: "the search stopped unexpectedly".to_string(),
+                    summary: "Did not complete".to_string(),
+                    detail: None,
+                    invalid_arguments: false,
+                }
+            }
+        };
+        let result = if !outcome.ok {
+            RetrieveResult::Failed {
+                error: outcome.text_for_model.clone(),
+            }
+        } else if self.passages_in_run.issued() > issued_before {
+            RetrieveResult::Found {
+                text: outcome.text_for_model.clone(),
+            }
+        } else {
+            RetrieveResult::Empty
+        };
+        let prompt = followup::retrieve_prompt(&result, issued_before > 0, limited_to.as_deref());
+        let prompt_id = self.next_id("p");
+        let mut state = lock(&self.state);
+        if let Some(event) = state.close_step(
+            &step_id,
+            StepOutcome {
+                ok: outcome.ok,
+                summary: outcome.summary,
+                detail: outcome.detail,
+                invalid_arguments: outcome.invalid_arguments,
+            },
+            now_ms(),
+        ) {
+            self.emit(event);
+        }
+        if !state.resume_held(&held.run_id, held.generation, &prompt_id) {
+            // Stopped or steered meanwhile: the model never saw this search's
+            // passages, so they must not make a later turn count as sourced.
+            let mut g = lock(&self.grounding_run);
+            if g.run_id == held.run_id {
+                g.seeded = g.seeded.max(self.passages_in_run.issued());
+            }
+            return;
+        }
+        // Only once its passages go to the model (not when the user stopped
+        // or steered the run meanwhile) does the run count as searched: a
+        // later "the documents do not cover it" then stands on this search.
+        if outcome.ok {
+            lock(&self.tools_ok_in_run).insert(SEARCH_DOCUMENTS.to_string());
+        }
+        let sent = self.send(OutboundFrame::Prompt {
+            id: prompt_id,
+            message: prompt,
+            streaming_behavior: None,
+        });
+        if sent.is_err() {
+            let events = state.fail_run("The agent session has ended", now_ms());
+            drop(state);
+            for event in events {
+                self.emit(event);
+            }
+        }
     }
 }
 
@@ -1570,7 +1768,9 @@ impl AgentHarness for OmpSession {
             // A new run started by steering keeps the scope of the conversation's last
             // answer (a workspace chat stays limited to the workspace's sources).
             None => {
-                let scope = RunScope::clone(&lock(&inner.scope));
+                let mut scope = RunScope::clone(&lock(&inner.scope));
+                // The steer text is this run's question, not the last one's.
+                scope.question = None;
                 inner.start_run(message, None, scope)
             }
         }
@@ -1615,7 +1815,7 @@ impl AgentHarness for OmpSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::events::{ClaimOutcome, RevisionReason, RunStatus};
+    use crate::harness::events::{ClaimOutcome, RunStatus};
     use crate::harness::grounding::GroundingConfig;
     use crate::harness::tools::CitedPassage;
 
@@ -2056,6 +2256,561 @@ mod tests {
             AgentEvent::Grounding { report, .. }
                 if report.claims.iter().any(|c| c.outcome == ClaimOutcome::UnverifiedAbsence)
         )));
+    }
+
+    /// `search_documents` over one (synthetic) indexed paper, or over none;
+    /// it keeps the queries it was called with.
+    struct OnePaper {
+        passage: Option<&'static str>,
+        queries: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::harness::tools::HostTool for OnePaper {
+        fn name(&self) -> &str {
+            SEARCH_DOCUMENTS
+        }
+        fn label(&self) -> &str {
+            "Search documents"
+        }
+        fn label_template(&self) -> &str {
+            "Searching {query}"
+        }
+        fn description(&self) -> &str {
+            "Search the user's indexed documents."
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {"query": {"type": "string", "minLength": 1}},
+                "required": ["query"],
+                "additionalProperties": false
+            })
+        }
+        fn tier(&self) -> RiskTier {
+            RiskTier::Read
+        }
+        async fn execute(
+            &self,
+            args: serde_json::Value,
+            ctx: &crate::harness::tools::ToolContext,
+        ) -> Result<crate::harness::tools::ToolOutput, crate::harness::tools::ToolError> {
+            let query = args["query"].as_str().unwrap_or_default().to_string();
+            lock(&self.queries).push(query);
+            let Some(text) = self.passage else {
+                return Ok(crate::harness::tools::ToolOutput {
+                    text_for_model: "No passages matched.".into(),
+                    summary_for_ui: "No matching passages".into(),
+                    detail: Some(serde_json::json!({ "passages": [] })),
+                });
+            };
+            let n = ctx.reserve_passages(1);
+            ctx.record_passage(CitedPassage {
+                n,
+                file: "freshdiskann.pdf".into(),
+                path: "c:/papers/freshdiskann.pdf".into(),
+                page: Some("3".into()),
+                web: false,
+                text: text.into(),
+                checkable: true,
+            });
+            Ok(crate::harness::tools::ToolOutput {
+                text_for_model: format!("[{{\"n\": {n}, \"text\": \"{text}\"}}]"),
+                summary_for_ui: "1 passage from 1 file".into(),
+                detail: None,
+            })
+        }
+    }
+
+    /// A Research session with `search_documents`, a run started with a
+    /// composed message whose question is `question`, and the first prompt.
+    fn research_run(
+        passage: Option<&'static str>,
+        question: &str,
+    ) -> (
+        Arc<Inner>,
+        mpsc::UnboundedReceiver<AgentEvent>,
+        mpsc::UnboundedReceiver<OutboundFrame>,
+        Arc<Mutex<Vec<String>>>,
+        String,
+    ) {
+        research_run_with(passage, question, GroundingConfig::lexical(), &[])
+    }
+
+    /// [`research_run`] with `config` and, besides `search_documents`, a
+    /// [`Numbered`] tool under each of `numbering`.
+    fn research_run_with(
+        passage: Option<&'static str>,
+        question: &str,
+        config: GroundingConfig,
+        numbering: &[&'static str],
+    ) -> (
+        Arc<Inner>,
+        mpsc::UnboundedReceiver<AgentEvent>,
+        mpsc::UnboundedReceiver<OutboundFrame>,
+        Arc<Mutex<Vec<String>>>,
+        String,
+    ) {
+        let queries = Arc::new(Mutex::new(Vec::new()));
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(OnePaper {
+                passage,
+                queries: Arc::clone(&queries),
+            }))
+            .unwrap();
+        for &name in numbering {
+            registry.register(Arc::new(Numbered { name })).unwrap();
+        }
+        let (inner, events, mut out) = offline_session_with(Some(config), None, registry);
+        inner
+            .start_run(
+                &format!("[Memories the user saved]\nprefers short answers\n\n{question}"),
+                Some("run-1".into()),
+                RunScope {
+                    question: Some(question.into()),
+                    ..RunScope::default()
+                },
+            )
+            .unwrap();
+        let (first_prompt, _) = sent_prompt(&mut out);
+        (inner, events, out, queries, first_prompt)
+    }
+
+    /// A tool other than a search that numbers what it shows the model, as
+    /// `web_search`, `fetch_url` and `open_document` do.
+    struct Numbered {
+        name: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::harness::tools::HostTool for Numbered {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn label(&self) -> &str {
+            self.name
+        }
+        fn label_template(&self) -> &str {
+            "Reading"
+        }
+        fn description(&self) -> &str {
+            "Shows the model a numbered passage."
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false})
+        }
+        fn tier(&self) -> RiskTier {
+            RiskTier::Read
+        }
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            ctx: &crate::harness::tools::ToolContext,
+        ) -> Result<crate::harness::tools::ToolOutput, crate::harness::tools::ToolError> {
+            let n = ctx.reserve_passages(1);
+            ctx.record_passage(CitedPassage {
+                n,
+                file: "SPANN overview".into(),
+                path: "https://example.org/spann".into(),
+                page: None,
+                web: true,
+                text: "SPANN keeps the posting list centroids in memory.".into(),
+                checkable: true,
+            });
+            Ok(crate::harness::tools::ToolOutput {
+                text_for_model: format!("[{n}] SPANN keeps the posting list centroids in memory."),
+                summary_for_ui: "1 passage".into(),
+                detail: None,
+            })
+        }
+    }
+
+    const SPANN_QUESTION: &str =
+        "How do FreshDiskANN and SPANN keep search fast when the index no longer fits in RAM?";
+
+    #[tokio::test]
+    async fn an_answer_that_skipped_the_search_gets_one_and_is_answered_from_it() {
+        let passage =
+            "FreshDiskANN keeps a compressed graph in memory and the full vectors on SSD.";
+        let (inner, mut events, mut out, queries, first_prompt) =
+            research_run(Some(passage), SPANN_QUESTION);
+        // The reported answer: no tool call, citations of passages it never had.
+        say(
+            &inner,
+            "m1",
+            "FreshDiskANN keeps the graph on SSD [1]. SPANN keeps centroids in memory [2].",
+        );
+        complete(&inner, &first_prompt);
+
+        let round0 = events_until(&mut events, |e| {
+            matches!(e, AgentEvent::StepFinished { .. })
+        })
+        .await;
+        let report = round0
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::Grounding { report, .. } => Some(report.clone()),
+                _ => None,
+            })
+            .expect("a grounding report");
+        assert!(!report.is_final);
+        assert!(report
+            .claims
+            .iter()
+            .all(|c| c.outcome == ClaimOutcome::InvalidCitation));
+        let revision = round0
+            .iter()
+            .position(|e| {
+                matches!(
+                    e,
+                    AgentEvent::RevisionStarted {
+                        round: 1,
+                        reason: RevisionReason::Retrieve,
+                        ..
+                    }
+                )
+            })
+            .expect("a retrieve revision");
+        let started = round0
+            .iter()
+            .position(|e| {
+                matches!(e, AgentEvent::StepStarted { tool, label, args, .. }
+                    if tool == SEARCH_DOCUMENTS
+                        && label.starts_with("Searching “How do FreshDiskANN")
+                        && args["query"] == SPANN_QUESTION)
+            })
+            .expect("the search is a step of the transcript");
+        assert!(revision < started, "the revision row comes first");
+        assert!(matches!(
+            round0.last(),
+            Some(AgentEvent::StepFinished { ok: true, summary, .. }) if summary == "1 passage from 1 file"
+        ));
+        assert_eq!(
+            *lock(&queries),
+            vec![SPANN_QUESTION.to_string()],
+            "searched with the question as typed, not the composed message"
+        );
+
+        let (retrieve_prompt, message) = match next_frame(&mut out).await {
+            OutboundFrame::Prompt { id, message, .. } => (id, message),
+            other => panic!("expected the follow-up prompt, got {other:?}"),
+        };
+        assert!(message.contains(passage), "{message}");
+        assert!(message.contains("using only these passages"), "{message}");
+        assert!(!message.contains("Use only passage numbers you were given"));
+
+        let answer =
+            "FreshDiskANN keeps a compressed graph in memory and the full vectors on SSD [1]. \
+                      The documents do not cover SPANN.";
+        say(&inner, "m2", answer);
+        complete(&inner, &retrieve_prompt);
+        let round1 =
+            events_until(&mut events, |e| matches!(e, AgentEvent::RunFinished { .. })).await;
+        let last = round1
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::Grounding { report, .. } => Some(report.clone()),
+                _ => None,
+            })
+            .expect("a final report");
+        assert!(last.is_final);
+        assert_eq!(last.round, 1);
+        assert_eq!(last.message_ids, vec!["m2"]);
+        assert_eq!(last.superseded_message_ids, vec!["m1"]);
+        assert!(last
+            .claims
+            .iter()
+            .all(|c| c.outcome != ClaimOutcome::InvalidCitation));
+        assert_eq!(last.summary.supported, 1);
+        assert!(matches!(
+            round1.last(),
+            Some(AgentEvent::RunFinished {
+                status: RunStatus::Completed,
+                ..
+            })
+        ));
+        assert!(out.try_recv().is_err(), "no further prompt");
+        assert_eq!(lock(&queries).len(), 1, "one search");
+    }
+
+    #[tokio::test]
+    async fn when_the_search_finds_nothing_the_answer_may_say_so() {
+        let (inner, mut events, mut out, queries, first_prompt) =
+            research_run(None, SPANN_QUESTION);
+        say(&inner, "m1", "SPANN keeps centroids in memory [1].");
+        complete(&inner, &first_prompt);
+        events_until(&mut events, |e| {
+            matches!(e, AgentEvent::StepFinished { .. })
+        })
+        .await;
+        let (retrieve_prompt, message) = match next_frame(&mut out).await {
+            OutboundFrame::Prompt { id, message, .. } => (id, message),
+            other => panic!("expected the follow-up prompt, got {other:?}"),
+        };
+        assert!(message.contains("no passage matched"), "{message}");
+
+        // The refusal, now made after a real search, stands.
+        say(
+            &inner,
+            "m2",
+            "I don't have any documents indexed that contain information about SPANN.",
+        );
+        complete(&inner, &retrieve_prompt);
+        let round1 =
+            events_until(&mut events, |e| matches!(e, AgentEvent::RunFinished { .. })).await;
+        assert!(!round1.iter().any(|e| matches!(
+            e,
+            AgentEvent::Grounding { report, .. }
+                if report.claims.iter().any(|c| c.outcome == ClaimOutcome::UnverifiedAbsence)
+        )));
+        assert!(!round1
+            .iter()
+            .any(|e| matches!(e, AgentEvent::RevisionStarted { .. })));
+        assert!(out.try_recv().is_err(), "no further prompt");
+        assert_eq!(lock(&queries).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_searched_is_not_searched_again() {
+        let (inner, mut events, mut out, queries, first_prompt) = research_run(
+            Some("SPANN keeps the posting list centroids in memory."),
+            SPANN_QUESTION,
+        );
+        // The model's own search, then a citation of a number it did not get.
+        feed(
+            &inner,
+            r#"{"type":"host_tool_call","id":"h1","toolCallId":"t1","toolName":"search_documents","arguments":{"query":"SPANN memory"}}"#,
+        );
+        assert!(matches!(
+            next_frame(&mut out).await,
+            OutboundFrame::HostToolResult {
+                is_error: false,
+                ..
+            }
+        ));
+        say(
+            &inner,
+            "m1",
+            "SPANN keeps the posting list centroids in memory [4].",
+        );
+        complete(&inner, &first_prompt);
+        let round0 = events_until(&mut events, |e| {
+            matches!(e, AgentEvent::RevisionStarted { .. })
+        })
+        .await;
+        assert!(matches!(
+            round0.last(),
+            Some(AgentEvent::RevisionStarted {
+                reason: RevisionReason::Repair,
+                ..
+            })
+        ));
+        let (_, message) = sent_prompt(&mut out);
+        assert!(message.contains("Use only passage numbers you were given"));
+        assert_eq!(lock(&queries).len(), 1, "only the model's search");
+    }
+
+    #[tokio::test]
+    async fn an_answer_with_web_or_opened_passages_is_repaired_not_searched_again() {
+        for tool in ["web_search", "open_document"] {
+            let (inner, mut events, mut out, queries, first_prompt) = research_run_with(
+                Some("SPANN keeps the posting list centroids in memory."),
+                SPANN_QUESTION,
+                GroundingConfig::lexical(),
+                &[tool],
+            );
+            feed(
+                &inner,
+                &format!(
+                    r#"{{"type":"host_tool_call","id":"h1","toolCallId":"t1","toolName":"{tool}","arguments":{{}}}}"#
+                ),
+            );
+            assert!(
+                matches!(
+                    next_frame(&mut out).await,
+                    OutboundFrame::HostToolResult {
+                        is_error: false,
+                        ..
+                    }
+                ),
+                "{tool}"
+            );
+            // One bad number next to the passage the tool gave.
+            say(
+                &inner,
+                "m1",
+                "SPANN keeps the posting list centroids in memory [7].",
+            );
+            complete(&inner, &first_prompt);
+            let round0 = events_until(&mut events, |e| {
+                matches!(e, AgentEvent::RevisionStarted { .. })
+            })
+            .await;
+            assert!(
+                matches!(
+                    round0.last(),
+                    Some(AgentEvent::RevisionStarted {
+                        reason: RevisionReason::Repair,
+                        ..
+                    })
+                ),
+                "{tool}: {:?}",
+                round0.last()
+            );
+            let (_, message) = sent_prompt(&mut out);
+            assert!(
+                message.contains("Use only passage numbers you were given"),
+                "{tool}: {message}"
+            );
+            assert!(lock(&queries).is_empty(), "{tool}: no document search");
+        }
+    }
+
+    /// `search_documents` that finds one passage once `release` is notified.
+    struct HeldSearch {
+        release: Arc<Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::harness::tools::HostTool for HeldSearch {
+        fn name(&self) -> &str {
+            SEARCH_DOCUMENTS
+        }
+        fn label(&self) -> &str {
+            "Search documents"
+        }
+        fn label_template(&self) -> &str {
+            "Searching {query}"
+        }
+        fn description(&self) -> &str {
+            "Search the user's indexed documents."
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {"query": {"type": "string", "minLength": 1}},
+                "required": ["query"],
+                "additionalProperties": false
+            })
+        }
+        fn tier(&self) -> RiskTier {
+            RiskTier::Read
+        }
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            ctx: &crate::harness::tools::ToolContext,
+        ) -> Result<crate::harness::tools::ToolOutput, crate::harness::tools::ToolError> {
+            self.release.notified().await;
+            let n = ctx.reserve_passages(1);
+            ctx.record_passage(CitedPassage {
+                n,
+                file: "spann.pdf".into(),
+                path: "c:/papers/spann.pdf".into(),
+                page: Some("2".into()),
+                web: false,
+                text: "SPANN keeps the posting list centroids in memory.".into(),
+                checkable: true,
+            });
+            Ok(crate::harness::tools::ToolOutput {
+                text_for_model: format!(
+                    "[{{\"n\": {n}, \"text\": \"SPANN keeps the posting list centroids in memory.\"}}]"
+                ),
+                summary_for_ui: "1 passage from 1 file".into(),
+                detail: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn passages_of_a_search_the_user_steered_past_do_not_count_as_sources() {
+        let release = Arc::new(Notify::new());
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(HeldSearch {
+                release: Arc::clone(&release),
+            }))
+            .unwrap();
+        let (inner, mut events, mut out) =
+            offline_session_with(Some(GroundingConfig::lexical()), None, registry);
+        inner
+            .start_run(SPANN_QUESTION, Some("run-1".into()), RunScope::default())
+            .unwrap();
+        let (first_prompt, _) = sent_prompt(&mut out);
+        say(&inner, "m1", "SPANN keeps centroids in memory [1].");
+        complete(&inner, &first_prompt);
+        // The app's search has started and waits.
+        events_until(
+            &mut events,
+            |e| matches!(e, AgentEvent::StepStarted { tool, .. } if tool == SEARCH_DOCUMENTS),
+        )
+        .await;
+        // The user steers the held run (as `steer` does), then the search ends.
+        assert!(lock(&inner.state).attach_prompt("p-steer"));
+        release.notify_one();
+        events_until(&mut events, |e| {
+            matches!(e, AgentEvent::StepFinished { .. })
+        })
+        .await;
+        assert!(out.try_recv().is_err(), "the retrieve prompt is not sent");
+        assert!(
+            !lock(&inner.tools_ok_in_run).contains(SEARCH_DOCUMENTS),
+            "the model never saw the search"
+        );
+
+        // The steered turn cites a number nothing gave it.
+        say(
+            &inner,
+            "m2",
+            "SPANN keeps the posting list centroids in memory [9].",
+        );
+        complete(&inner, "p-steer");
+        let round = events_until(&mut events, |e| {
+            matches!(e, AgentEvent::RevisionStarted { .. })
+        })
+        .await;
+        assert!(matches!(
+            round.last(),
+            Some(AgentEvent::RevisionStarted {
+                reason: RevisionReason::Repair,
+                ..
+            })
+        ));
+        let message = match next_frame(&mut out).await {
+            OutboundFrame::Prompt { message, .. } => message,
+            other => panic!("expected the repair prompt, got {other:?}"),
+        };
+        assert!(
+            !message.contains("Use only passage numbers you were given"),
+            "{message}"
+        );
+        assert!(message.contains("Call search_documents now"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn with_automatic_follow_ups_off_the_documents_are_not_searched() {
+        let off = GroundingConfig {
+            auto_repair: Arc::new(|| false),
+            ..GroundingConfig::lexical()
+        };
+        let (inner, mut events, mut out, queries, first_prompt) = research_run_with(
+            Some("FreshDiskANN keeps a compressed graph in memory."),
+            SPANN_QUESTION,
+            off,
+            &[],
+        );
+        say(&inner, "m1", "FreshDiskANN keeps the graph on SSD [1].");
+        complete(&inner, &first_prompt);
+        let all = events_until(&mut events, |e| matches!(e, AgentEvent::RunFinished { .. })).await;
+        assert!(!all
+            .iter()
+            .any(|e| matches!(e, AgentEvent::RevisionStarted { .. })));
+        assert!(!all
+            .iter()
+            .any(|e| matches!(e, AgentEvent::StepStarted { .. })));
+        assert!(out.try_recv().is_err(), "no follow-up prompt");
+        assert!(lock(&queries).is_empty());
     }
 
     #[tokio::test]

@@ -10,7 +10,9 @@
 //!   number and word checks, never an LLM judge, and checks the question's
 //!   information needs against every passage;
 //! * [`followup`] decides whether to ask the model once to re-ground flagged
-//!   claims and/or (at most twice) to search for uncovered needs;
+//!   claims and/or (at most twice) to search for uncovered needs, and, for an
+//!   answer that cites passages without having searched, has the session
+//!   search the documents for the question and ask for the answer again;
 //! * [`absence`] flags a claim that the user has none of their own data
 //!   ("You have no tasks") unless a tool that reads that data succeeded in
 //!   the run;

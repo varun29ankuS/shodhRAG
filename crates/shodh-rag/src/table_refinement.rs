@@ -123,6 +123,7 @@ const DOCUMENT_KEYS: &[&str] = &[
     "doc_type",
     "indexed_at",
     "title",
+    "display_path",
 ];
 
 /// The document-level metadata of a stored chunk (see [`DOCUMENT_KEYS`]), with the

@@ -1413,7 +1413,7 @@ function AppSplitView() {
       },
       commit: async () => {
         try {
-          return await invoke<string>('delete_folder_source', { folderPath: source.path });
+          return await invoke<string>('delete_folder_source', { folderPath: source.path, sourceId: source.id });
         } finally {
           await refreshIndexedFiles();
           dropPending();

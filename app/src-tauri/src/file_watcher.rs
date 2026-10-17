@@ -102,6 +102,13 @@ impl FolderSyncState {
         }
     }
 
+    /// Drops the manifest of `source_id`, a source removed from the Library.
+    /// Waits for a running sync, which would otherwise write it back.
+    pub async fn forget_source(&self, source_id: &str) {
+        let _turn = self.running.lock().await;
+        self.store.forget(source_id);
+    }
+
     /// Where the folder manifests are kept.
     pub fn store(&self) -> &ManifestStore {
         &self.store

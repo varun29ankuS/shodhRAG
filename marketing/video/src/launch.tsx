@@ -193,8 +193,8 @@ const MediaView: React.FC<{ media: Media }> = ({ media }) => {
 
 /**
  * The app, in a window on the right: it swings in on a perspective turn and
- * settles flat, floats gently, kicks on the beat, and the camera inside moves
- * from the whole app to the action. It leaves to the left as the shot ends.
+ * settles flat and still, and the camera inside moves from the whole app to
+ * the action. It leaves to the left as the shot ends.
  */
 const AppWindow: React.FC<{ slot: Slot; first: boolean }> = ({ slot, first }) => {
   const frame = useCurrentFrame();
@@ -211,8 +211,7 @@ const AppWindow: React.FC<{ slot: Slot; first: boolean }> = ({ slot, first }) =>
   const leave = interpolate(frame, [durationInFrames - EXIT, durationInFrames], [0, 1], { ...clamp, easing: expoIn });
   const turn = (1 - enter) * -22 + leave * 10;
   const x = (1 - enter) * 160 - leave * 120;
-  const scale = (0.92 + 0.08 * enter) * (1 - 0.05 * leave) * (1 + 0.006 * pulse(slot.start + frame, 8));
-  const float = Math.sin((slot.start + frame) / 34) * 4;
+  const scale = (0.92 + 0.08 * enter) * (1 - 0.05 * leave);
   const opacity = Math.min(1, enter * 1.6) * (1 - leave);
   const blur = (1 - enter) * 6 + leave * 10;
 
@@ -229,7 +228,7 @@ const AppWindow: React.FC<{ slot: Slot; first: boolean }> = ({ slot, first }) =>
           overflow: "hidden",
           background: color.surface,
           boxShadow: "0 50px 110px rgba(60,14,0,0.45), 0 12px 30px rgba(60,14,0,0.28), inset 0 0 0 1px rgba(255,255,255,0.5)",
-          transform: `translate3d(${x}px, ${float}px, 0) rotateY(${turn}deg) scale(${scale})`,
+          transform: `translate3d(${x}px, 0, 0) rotateY(${turn}deg) scale(${scale})`,
           transformOrigin: "left center",
           opacity,
           filter: blur > 0.3 ? `blur(${blur}px)` : undefined,

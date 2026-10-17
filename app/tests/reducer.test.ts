@@ -11,6 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentEvent, GroundingReport } from '../src/features/agent/events.ts';
 import {
+  answerIncomplete,
   answerText,
   awaitingRetry,
   currentStep,
@@ -316,4 +317,34 @@ test('a call refused for its arguments is not shown as failed while the run can 
   assert.equal(awaitingRetry(live.steps.gone, true), false);
   // The run ended without a corrected call: it is a failure after all.
   assert.equal(awaitingRetry(live.steps.bad, false), false);
+});
+
+test('a run that fails mid-answer keeps its partial text, marked incomplete, not finished', () => {
+  const field = '[ERROR: Agent failed (Function process_single_item_agent timed out after 90.0 seconds)]';
+  const events: AgentEvent[] = [
+    { type: 'run_started', runId: RUN, sessionId: 's1', model: 'openrouter/vendor/model', atMs: 1000, warning: null },
+    { type: 'text_delta', runId: RUN, messageId: 'm1', delta: 'The notice period is ' },
+    {
+      type: 'run_finished', runId: RUN, status: 'error', durationMs: 900, error: field,
+      providerError: { kind: 'timeout', status: null, retryAfterSecs: null, upstream: 'Nvidia' },
+    },
+  ];
+  const state = reduceAll(initialTranscript(RUN, 1000), events);
+  assert.equal(state.status, 'error', 'not saved as a finished answer');
+  assert.equal(answerText(state), 'The notice period is', 'the partial text stays');
+  assert.ok(answerIncomplete(state));
+  assert.deepEqual(state.providerError, { kind: 'timeout', status: null, retryAfterSecs: null, upstream: 'Nvidia' });
+  assert.equal(state.error, field, 'the raw provider text is kept for Details');
+  const restored = fromPersisted(JSON.parse(JSON.stringify(toPersisted(state))));
+  assert.ok(restored);
+  assert.equal(restored.status, 'error');
+  assert.ok(answerIncomplete(restored));
+
+  const done = reduceAll(initialTranscript(RUN, 1000), spikeRun());
+  assert.equal(answerIncomplete(done), false, 'a finished answer is complete');
+  const failedEmpty = reduceAll(initialTranscript(RUN, 1000), [
+    events[0],
+    { type: 'run_finished', runId: RUN, status: 'error', durationMs: 5, error: 'x', providerError: null },
+  ]);
+  assert.equal(answerIncomplete(failedEmpty), false, 'no text, nothing to mark');
 });

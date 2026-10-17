@@ -296,3 +296,46 @@ test('the pick of a model the environment sets is shown selected', () => {
   assert.equal(selectedPick({ active: { model: nemotron, source: 'settings' }, prefs, picks }), null);
   assert.equal(selectedPick({ active: null, prefs, picks }), null);
 });
+
+test('every failure kind has plain words; timeouts name the provider, upstream and model', () => {
+  const kinds: ProviderError['kind'][] = [
+    'rate_limited', 'quota_exhausted', 'model_unavailable', 'auth', 'timeout', 'network',
+    'invalid_request', 'context_too_long', 'content_filtered', 'empty_response', 'other',
+  ];
+  const titles = new Set<string>();
+  for (const kind of kinds) {
+    const copy = providerErrorCopy({ kind, status: null, retryAfterSecs: null }, 'vendor/model', 'openrouter');
+    assert.ok(copy.title.length > 0 && copy.hint.length > 0, kind);
+    titles.add(copy.title);
+    assert.deepEqual(readProviderError({ kind, status: null, retryAfterSecs: null }), { kind, status: null, retryAfterSecs: null });
+  }
+  assert.equal(titles.size, kinds.length, 'one message per kind');
+  const timeout = providerErrorCopy({ kind: 'timeout', status: null, retryAfterSecs: null, upstream: 'Nvidia' }, 'vendor/model', 'openrouter');
+  assert.equal(timeout.title, "The model's provider did not answer in time (OpenRouter via Nvidia · vendor/model)");
+  assert.equal(timeout.hint, 'Try again, or choose another model in Settings → Model.');
+  assert.equal(
+    providerErrorCopy({ kind: 'timeout', status: null, retryAfterSecs: null }, 'vendor/model', 'openrouter').title,
+    "The model's provider did not answer in time (OpenRouter · vendor/model)",
+  );
+});
+
+test('retry where trying again can help; no automatic retry for the new kinds', () => {
+  const e = (kind: ProviderError['kind']): ProviderError => ({ kind, status: null, retryAfterSecs: 5 });
+  for (const kind of ['timeout', 'network', 'empty_response', 'model_unavailable', 'other'] as const) {
+    assert.equal(canRetry(e(kind)), true, kind);
+    assert.equal(autoRetrySeconds(e(kind), 0), null, kind);
+  }
+  for (const kind of ['invalid_request', 'context_too_long', 'content_filtered'] as const) {
+    assert.equal(canRetry(e(kind)), false, kind);
+    assert.equal(fallbackHelps(e(kind)), false, kind);
+  }
+  assert.equal(fallbackHelps(e('timeout')), false, 'no automatic fallback for a timeout');
+});
+
+test('the upstream provider is read only when it is a short name', () => {
+  assert.deepEqual(readProviderError({ kind: 'timeout', status: null, retryAfterSecs: null, upstream: ' Nvidia ' }), {
+    kind: 'timeout', status: null, retryAfterSecs: null, upstream: 'Nvidia',
+  });
+  assert.equal(readProviderError({ kind: 'timeout', upstream: 'x'.repeat(65) })?.upstream, undefined);
+  assert.equal(readProviderError({ kind: 'timeout', upstream: 7 })?.upstream, undefined);
+});

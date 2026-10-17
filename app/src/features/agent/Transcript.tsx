@@ -6,7 +6,7 @@ import type { SearchHit } from '../ask/types';
 import { ReasoningPanel } from './ReasoningPanel';
 import { RuntimeCard } from './RuntimeCard';
 import { Spinner, StepLine } from './StepLine';
-import { currentStep, interimBlocks, isLive, notAnswerBlocks, supersededBlocks } from './reducer';
+import { answerIncomplete, currentStep, interimBlocks, isLive, notAnswerBlocks, supersededBlocks } from './reducer';
 import type { TranscriptBlock, TranscriptState } from './reducer';
 import { workFold } from './workSummary';
 import { revisionText } from './revisionText';
@@ -23,6 +23,12 @@ const FALLBACK_REASON: Record<ProviderErrorKind, string> = {
   quota_exhausted: 'out of credits or its daily limit',
   model_unavailable: 'unavailable',
   auth: 'refused (key rejected)',
+  timeout: 'too slow to answer',
+  network: 'unreachable',
+  invalid_request: 'refusing the request',
+  context_too_long: 'given too much text',
+  content_filtered: 'blocked by a content filter',
+  empty_response: 'answering with nothing',
   other: 'unable to answer',
 };
 
@@ -248,6 +254,12 @@ export function Transcript({
       {transcript.fallback && (
         <p className="m-0 text-[12px] text-shodh-text-muted">
           {`Answered with a fallback model: ${transcript.fallback.from} was ${FALLBACK_REASON[transcript.fallback.kind]}${transcript.fallback.automatic ? ' (always fall back is on)' : ''}.`}
+        </p>
+      )}
+
+      {answerIncomplete(transcript) && (
+        <p className="m-0 text-[12.5px] text-shodh-text-muted">
+          Incomplete: the answer above stopped when the model failed.
         </p>
       )}
 

@@ -7,7 +7,7 @@
  *
  * Pure module (no React), unit-tested with Node (`app/tests/modelPicker.test.ts`).
  */
-import type { FallbackOffer, ProviderError, ProviderId } from './modelTypes.ts';
+import type { FallbackOffer, ProviderError, ProviderErrorKind, ProviderId } from './modelTypes.ts';
 import { PROVIDER_LABELS } from './modelTypes.ts';
 
 /** Longest wait the card counts down before retrying by itself. */
@@ -23,9 +23,14 @@ export interface ErrorCopy {
   hint: string;
 }
 
+/** Where to change the model, as the hints say it. */
+const CHOOSE_ANOTHER = 'choose another model in Settings → Model';
+
 /** The card's text. `model` is the model's display name. */
 export function providerErrorCopy(error: ProviderError, model: string, provider: ProviderId | null): ErrorCopy {
   const who = provider ? PROVIDER_LABELS[provider] : 'the provider';
+  // "OpenRouter via Nvidia · model": who failed, in the titles below.
+  const where = `${provider ? PROVIDER_LABELS[provider] : 'provider'}${error.upstream ? ` via ${error.upstream}` : ''} · ${model}`;
   switch (error.kind) {
     case 'rate_limited':
       return {
@@ -47,6 +52,36 @@ export function providerErrorCopy(error: ProviderError, model: string, provider:
         title: `Your ${who} key was rejected`,
         hint: 'Use Fix key to paste a new one in Settings → Model. Keys are kept in the system keychain.',
       };
+    case 'timeout':
+      return {
+        title: `The model's provider did not answer in time (${where})`,
+        hint: `Try again, or ${CHOOSE_ANOTHER}.`,
+      };
+    case 'network':
+      return {
+        title: `The connection to the model's provider broke (${where})`,
+        hint: 'Check your internet connection and try again.',
+      };
+    case 'empty_response':
+      return {
+        title: `The model sent back an empty answer (${where})`,
+        hint: `Try again, or ${CHOOSE_ANOTHER}.`,
+      };
+    case 'invalid_request':
+      return {
+        title: `The model's provider refused the request (${where})`,
+        hint: `Trying again will not help; ${CHOOSE_ANOTHER}.`,
+      };
+    case 'context_too_long':
+      return {
+        title: `The question and its sources are too long for the model (${where})`,
+        hint: `Ask about fewer documents, or ${CHOOSE_ANOTHER} with a longer context.`,
+      };
+    case 'content_filtered':
+      return {
+        title: `The provider's content filter stopped this answer (${where})`,
+        hint: `Rephrase the question, or ${CHOOSE_ANOTHER}.`,
+      };
     case 'other':
       return {
         title: `${model} could not answer`,
@@ -66,9 +101,12 @@ export function autoRetrySeconds(error: ProviderError, autoRetriesSoFar: number)
   return wait > MAX_AUTO_RETRY_SECS ? null : Math.max(1, wait);
 }
 
+/** Kinds where the same request to the same model fails the same way again. */
+const NO_RETRY: readonly ProviderErrorKind[] = ['auth', 'quota_exhausted', 'invalid_request', 'context_too_long', 'content_filtered'];
+
 /** Whether retrying the same model makes sense at all. */
 export function canRetry(error: ProviderError): boolean {
-  return error.kind !== 'auth' && error.kind !== 'quota_exhausted';
+  return !NO_RETRY.includes(error.kind);
 }
 
 /** Whether another model could answer instead. */

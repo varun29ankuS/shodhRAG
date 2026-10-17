@@ -692,6 +692,14 @@ export function answerText(state: TranscriptState): string {
     .join('\n\n');
 }
 
+/**
+ * The run failed after part of an answer was written: the text stays, marked
+ * as incomplete (it is not a finished answer).
+ */
+export function answerIncomplete(state: TranscriptState): boolean {
+  return state.status === 'error' && answerText(state).length > 0;
+}
+
 /** The step to show as "what the agent is doing now", if any. */
 export function currentStep(state: TranscriptState): TranscriptStep | null {
   let latest: TranscriptStep | null = null;

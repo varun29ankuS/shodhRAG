@@ -330,6 +330,7 @@ mod tests {
                 closest: None,
                 closest_score: None,
                 suggested: None,
+                suggested_score: None,
             }],
             needs: vec![],
             message_ids: vec!["m2".into()],

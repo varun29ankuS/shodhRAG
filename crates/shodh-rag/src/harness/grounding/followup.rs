@@ -471,6 +471,7 @@ mod tests {
             closest: Some(4),
             closest_score: Some(0.7),
             suggested: None,
+            suggested_score: None,
         }
     }
 

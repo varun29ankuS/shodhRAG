@@ -70,6 +70,11 @@ export interface ClaimCheck {
    * not (the answer cited the wrong passage). Absent in reports saved before it existed.
    */
   suggested?: number | null;
+  /**
+   * The support score the check gave the claim against `suggested` (same method as `support`):
+   * its support once the answer cites that passage. Absent in reports saved before it existed.
+   */
+  suggestedScore?: number | null;
 }
 
 export interface GroundingSummary {

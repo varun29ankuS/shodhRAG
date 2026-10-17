@@ -288,6 +288,7 @@ pub fn flag_unverified_absence(
                     check.outcome = ClaimOutcome::UnverifiedAbsence;
                     // A passage cannot back a claim of absence: no citation is offered.
                     check.suggested = None;
+                    check.suggested_score = None;
                     out.push(check);
                 }
                 (Some(check), None) => out.push(check),
@@ -305,6 +306,7 @@ pub fn flag_unverified_absence(
                     closest: None,
                     closest_score: None,
                     suggested: None,
+                    suggested_score: None,
                 }),
                 (None, None) => {}
             }
@@ -490,6 +492,7 @@ mod tests {
                 closest: None,
                 closest_score: None,
                 suggested: None,
+                suggested_score: None,
             };
             let out = flag_unverified_absence(&messages, &searched, vec![supported.clone()]);
             assert_eq!(out, vec![supported], "{text}");
@@ -515,6 +518,7 @@ mod tests {
             closest: None,
             closest_score: None,
             suggested: None,
+            suggested_score: None,
         };
         let claims = split_claims(&messages[0].text);
         let anchors: Vec<String> = claims.iter().map(|c| c.anchor.clone()).collect();

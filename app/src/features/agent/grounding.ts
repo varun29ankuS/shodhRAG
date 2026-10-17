@@ -437,8 +437,8 @@ export function summariseClaims(claims: readonly ClaimCheck[]): GroundingSummary
 /**
  * A finished answer with one miscited claim citing the passage the check found supporting it
  * (`citeInsteadOffer`), as the user asked with "Cite N instead": the claim's citation in the
- * answer text is rewritten and the claim is recorded as supported by that passage (the check
- * scored it at the supported threshold). Null while the answer is running, and when the claim,
+ * answer text is rewritten and the claim is recorded as supported by that passage, with the
+ * support score the check gave it there (`suggestedScore`; none in reports saved before it). Null while the answer is running, and when the claim,
  * its text block or its anchor is no longer there.
  */
 export function citeSuggested(state: TranscriptState, check: ClaimCheck): TranscriptState | null {
@@ -470,12 +470,13 @@ export function citeSuggested(state: TranscriptState, check: ClaimCheck): Transc
           anchor,
           cited: [n],
           outcome: 'supported' as const,
-          support: null,
+          support: typeof c.suggestedScore === 'number' ? c.suggestedScore : null,
           contradiction: null,
           missingNumbers: [],
           closest: null,
           closestScore: null,
           suggested: null,
+          suggestedScore: null,
         }
       : c,
   );

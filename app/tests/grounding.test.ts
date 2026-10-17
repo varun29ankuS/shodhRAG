@@ -163,6 +163,7 @@ const miscited = (partial: Partial<ClaimCheck> = {}): ClaimCheck =>
     closest: 2,
     closestScore: 0.97,
     suggested: 2,
+    suggestedScore: 0.91,
     ...partial,
   });
 
@@ -225,6 +226,8 @@ test('"Cite N instead" rewrites the stored answer and records the claim as suppo
   assert.deepEqual(claim.cited, [2]);
   assert.equal(claim.anchor, 'SPANN expands posting lists with the points in the closure, reducing disk-access latency. [2]');
   assert.equal(claim.suggested, null);
+  assert.equal(claim.support, 0.91, "the claim shows the support the check found in passage 2");
+  assert.equal(claim.suggestedScore, null);
   assert.equal(claim.closest, null);
   assert.equal(next.groundings[0].summary.supported, 2);
   assert.equal(next.groundings[0].summary.score, 1);
@@ -235,6 +238,12 @@ test('"Cite N instead" rewrites the stored answer and records the claim as suppo
   assert.equal(citeSuggested({ ...state, status: 'running' }, wrong), null);
   assert.equal(citeSuggested(transcriptWith('Other text.', [wrong]), wrong), null);
   assert.equal(citeSuggested(state, supported), null);
+  // A report saved before the score was kept: the claim's support is not known.
+  const older = miscited();
+  delete older.suggestedScore;
+  const rewritten = citeSuggested(transcriptWith(older.anchor, [older]), older);
+  assert.ok(rewritten);
+  assert.equal(rewritten.groundings[0].claims[0].support, null);
 });
 
 test('of two identical miscited sentences, the one whose flag was used is rewritten', () => {

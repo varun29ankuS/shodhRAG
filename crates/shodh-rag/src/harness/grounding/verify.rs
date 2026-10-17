@@ -601,6 +601,7 @@ fn check_claim(
         closest: None,
         closest_score: None,
         suggested: None,
+        suggested_score: None,
     };
     // The cited passages were scored and the score alone failed the claim
     // (no missing number, no misquote).
@@ -723,8 +724,9 @@ fn check_claim(
     // the passage that supports it is offered instead.
     if failed_on_score && check.outcome == ClaimOutcome::Unsupported {
         if let Some(p) = closest {
-            if supported_by(scorers, &claim.text, p, thresholds, methods).is_some() {
+            if let Some(found) = supported_by(scorers, &claim.text, p, thresholds, methods) {
                 check.suggested = Some(p.n);
+                check.suggested_score = Some(found.score);
             }
         }
     }
@@ -1005,6 +1007,12 @@ mod tests {
         assert_eq!(checks[0].cited, vec![2]);
         assert_eq!(checks[0].closest, Some(1));
         assert_eq!(checks[0].suggested, Some(1));
+        // Scored by the same method as the cited passages, at the supported cut.
+        let score = checks[0]
+            .suggested_score
+            .expect("the suggested passage's score");
+        assert!(score >= THRESHOLDS.support, "{score}");
+        assert!(checks[0].support.unwrap() < THRESHOLDS.weak);
         assert_eq!(
             summarise(&checks).score,
             Some(0.0),
@@ -1022,6 +1030,7 @@ mod tests {
         assert_eq!(partial[0].outcome, ClaimOutcome::Unsupported);
         assert_eq!(partial[0].closest, Some(1));
         assert_eq!(partial[0].suggested, None);
+        assert_eq!(partial[0].suggested_score, None);
         // A number no passage holds is not a miscitation either.
         let number = run(
             "Either party may terminate the agreement with 90 days written notice [2].",

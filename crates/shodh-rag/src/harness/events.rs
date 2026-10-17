@@ -159,6 +159,11 @@ pub struct ClaimCheck {
     /// saved before it existed.
     #[serde(default)]
     pub suggested: Option<u32>,
+    /// The support score the check gave the claim against `suggested`, by
+    /// the same method as `support`: the claim's support once the user cites
+    /// that passage instead. Absent in reports saved before it existed.
+    #[serde(default)]
+    pub suggested_score: Option<f32>,
 }
 
 /// Counts over the checked claims of one answer.
@@ -657,6 +662,7 @@ mod tests {
                 closest: Some(2),
                 closest_score: Some(0.41),
                 suggested: Some(2),
+                suggested_score: Some(0.93),
             }],
             needs: vec![NeedCheck {
                 id: "2".into(),
@@ -732,10 +738,13 @@ mod tests {
         assert_eq!(value["needs"][0]["state"], "missing");
         // Optional in the TS mirror: reports saved before it existed lack it.
         assert_eq!(value["claims"][0]["suggested"], 2);
-        assert!(
-            TS_CONTRACT.contains("suggested?:"),
-            "events.ts is missing report key suggested"
-        );
+        assert!(value["claims"][0]["suggestedScore"].is_number());
+        for key in ["suggested", "suggestedScore"] {
+            assert!(
+                TS_CONTRACT.contains(&format!("{key}?:")),
+                "events.ts is missing report key {key}"
+            );
+        }
         let back: GroundingReport = serde_json::from_value(value).unwrap();
         assert_eq!(back, sample_report());
     }
@@ -743,12 +752,12 @@ mod tests {
     #[test]
     fn claims_saved_before_the_suggested_passage_existed_still_load() {
         let mut value = serde_json::to_value(sample_report()).unwrap();
-        value["claims"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("suggested");
+        let claim = value["claims"][0].as_object_mut().unwrap();
+        claim.remove("suggested");
+        claim.remove("suggestedScore");
         let back: GroundingReport = serde_json::from_value(value).unwrap();
         assert_eq!(back.claims[0].suggested, None);
+        assert_eq!(back.claims[0].suggested_score, None);
         assert_eq!(back.claims[0].closest, Some(2));
     }
 

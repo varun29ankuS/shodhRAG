@@ -472,6 +472,7 @@ mod tests {
             closest_score: Some(0.7),
             suggested: None,
             suggested_score: None,
+            suggested_contradiction: None,
         }
     }
 

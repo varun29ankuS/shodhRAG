@@ -602,6 +602,7 @@ fn check_claim(
         closest_score: None,
         suggested: None,
         suggested_score: None,
+        suggested_contradiction: None,
     };
     // The cited passages were scored and the score alone failed the claim
     // (no missing number, no misquote).
@@ -727,6 +728,7 @@ fn check_claim(
             if let Some(found) = supported_by(scorers, &claim.text, p, thresholds, methods) {
                 check.suggested = Some(p.n);
                 check.suggested_score = Some(found.score);
+                check.suggested_contradiction = found.contradiction;
             }
         }
     }

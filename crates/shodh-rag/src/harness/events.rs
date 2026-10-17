@@ -164,6 +164,11 @@ pub struct ClaimCheck {
     /// that passage instead. Absent in reports saved before it existed.
     #[serde(default)]
     pub suggested_score: Option<f32>,
+    /// With the entailment model: the highest contradiction probability of
+    /// the `suggested` passage's windows (as `contradiction` is for the cited
+    /// ones). Absent in reports saved before it existed.
+    #[serde(default)]
+    pub suggested_contradiction: Option<f32>,
 }
 
 /// Counts over the checked claims of one answer.
@@ -663,6 +668,7 @@ mod tests {
                 closest_score: Some(0.41),
                 suggested: Some(2),
                 suggested_score: Some(0.93),
+                suggested_contradiction: Some(0.02),
             }],
             needs: vec![NeedCheck {
                 id: "2".into(),
@@ -739,7 +745,8 @@ mod tests {
         // Optional in the TS mirror: reports saved before it existed lack it.
         assert_eq!(value["claims"][0]["suggested"], 2);
         assert!(value["claims"][0]["suggestedScore"].is_number());
-        for key in ["suggested", "suggestedScore"] {
+        assert!(value["claims"][0]["suggestedContradiction"].is_number());
+        for key in ["suggested", "suggestedScore", "suggestedContradiction"] {
             assert!(
                 TS_CONTRACT.contains(&format!("{key}?:")),
                 "events.ts is missing report key {key}"
@@ -755,9 +762,11 @@ mod tests {
         let claim = value["claims"][0].as_object_mut().unwrap();
         claim.remove("suggested");
         claim.remove("suggestedScore");
+        claim.remove("suggestedContradiction");
         let back: GroundingReport = serde_json::from_value(value).unwrap();
         assert_eq!(back.claims[0].suggested, None);
         assert_eq!(back.claims[0].suggested_score, None);
+        assert_eq!(back.claims[0].suggested_contradiction, None);
         assert_eq!(back.claims[0].closest, Some(2));
     }
 

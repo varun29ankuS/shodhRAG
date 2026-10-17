@@ -68,6 +68,7 @@
     "print_job_ready": { "excluded": "Plumbing of the print window: the print view reports that it finished rendering so the app can print it. The agent prints through export_document with format pdf." },
     "audit_export": { "excluded": "Audit policy is withheld from the assistant: exporting moves the record of its own actions." },
     "audit_set_retention_days": { "excluded": "Audit policy is withheld from the assistant: shortening retention deletes the record of its own actions." },
+    "audit_record_citation_correction": { "excluded": "Records the user's own correction of a miscited claim (\"Cite N instead\"); an assistant that could write audit entries could forge the record of its own answers." },
 
     "get_app_settings": { "tool": "get_settings" },
     "update_app_preferences": { "tool": "update_setting" },

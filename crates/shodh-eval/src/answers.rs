@@ -589,6 +589,7 @@ mod tests {
                 closest_score: None,
                 suggested: None,
                 suggested_score: None,
+                suggested_contradiction: None,
             }],
             needs: vec![],
             message_ids: message_ids.iter().map(|s| s.to_string()).collect(),

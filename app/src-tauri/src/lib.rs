@@ -634,6 +634,7 @@ pub fn run() {
             audit_commands::audit_export,
             audit_commands::audit_set_retention_days,
             audit_commands::audit_stats,
+            audit_commands::audit_record_citation_correction,
             agent_session_commands::agent_runtime_status,
             agent_session_commands::agent_close_session,
             agent_session_commands::agent_session_counts,

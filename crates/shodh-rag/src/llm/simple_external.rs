@@ -206,14 +206,11 @@ pub struct BoundedCompletion {
 impl SimpleExternalProvider {
     /// Completes `prompt` like [`LLMProvider::generate`], and reports whether the answer
     /// was cut off at `config.max_tokens` (OpenAI-compatible APIs, Anthropic and Gemini
-    /// say so; other providers are reported as not cut off). For a strict-format answer
-    /// (extraction), `low_reasoning` asks OpenRouter to keep a reasoning model's hidden
-    /// reasoning short and leave it out of the answer.
+    /// say so; other providers are reported as not cut off).
     pub async fn generate_bounded(
         &self,
         prompt: &str,
         config: &GenerationConfig,
-        low_reasoning: bool,
     ) -> Result<BoundedCompletion> {
         match &self.provider {
             ApiProvider::OpenAI
@@ -224,10 +221,7 @@ impl SimpleExternalProvider {
             | ApiProvider::Baseten
             | ApiProvider::Ollama
             | ApiProvider::LmStudio
-            | ApiProvider::Custom { .. } => {
-                self.openai_compatible_complete(prompt, config, low_reasoning)
-                    .await
-            }
+            | ApiProvider::Custom { .. } => self.openai_compatible_complete(prompt, config).await,
             ApiProvider::Anthropic => self.anthropic_complete(prompt, config).await,
             ApiProvider::Google => self.google_complete(prompt, config).await,
             ApiProvider::Subscription(_)
@@ -497,9 +491,7 @@ impl SimpleExternalProvider {
         prompt: &str,
         config: &GenerationConfig,
     ) -> Result<String> {
-        let completion = self
-            .openai_compatible_complete(prompt, config, false)
-            .await?;
+        let completion = self.openai_compatible_complete(prompt, config).await?;
         if completion.text.trim().is_empty() {
             return Err(failed(self.call().empty()));
         }
@@ -507,14 +499,11 @@ impl SimpleExternalProvider {
     }
 
     /// One OpenAI-compatible completion and whether it stopped at `max_tokens`
-    /// (`finish_reason: "length"`). `low_reasoning` asks OpenRouter to keep a reasoning
-    /// model's hidden reasoning short and out of the answer: that reasoning counts
-    /// against `max_tokens` there.
+    /// (`finish_reason: "length"`).
     async fn openai_compatible_complete(
         &self,
         prompt: &str,
         config: &GenerationConfig,
-        low_reasoning: bool,
     ) -> Result<BoundedCompletion> {
         let endpoint = self.get_endpoint();
         tracing::debug!(
@@ -525,7 +514,7 @@ impl SimpleExternalProvider {
             "Sending OpenAI-compatible request"
         );
 
-        let mut request = json!({
+        let request = json!({
             "model": self.model,
             "messages": [
                 {"role": "user", "content": prompt}
@@ -536,9 +525,6 @@ impl SimpleExternalProvider {
             "frequency_penalty": (config.repetition_penalty - 1.0).max(0.0),
             "stream": false
         });
-        if low_reasoning && matches!(self.provider, ApiProvider::OpenRouter) {
-            request["reasoning"] = json!({"effort": "low", "exclude": true});
-        }
 
         let response = self
             .send_checked(

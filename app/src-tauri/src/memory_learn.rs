@@ -287,10 +287,9 @@ impl LearnModel for AppModel {
                 };
                 let client = SimpleExternalProvider::new(provider.clone(), key, model.clone())
                     .map_err(|e| LearnError::Model(format!("{e:#}")))?;
-                // Learning answers are strict JSON: a reasoning model is asked to keep its
-                // hidden reasoning short, and an answer cut off at the limit is refused.
+                // Learning answers are strict JSON: an answer cut off at the limit is refused.
                 let completion = client
-                    .generate_bounded(prompt, &self.generation(max_output_tokens), true)
+                    .generate_bounded(prompt, &self.generation(max_output_tokens))
                     .await
                     .map_err(|e| LearnError::Model(format!("{e:#}")))?;
                 if completion.truncated {

@@ -1547,6 +1547,14 @@ impl RAGEngine {
         // Written down before anything is stored, so a quit or a failure at
         // any later point is finished by `settle_replaced`.
         let written = !previous.is_empty() && self.begin_replacement(&file.source, &previous);
+        if !previous.is_empty() && !written {
+            // Without the record a quit after storing would leave both copies
+            // for good: keep the previous chunks and let the file be retried.
+            anyhow::bail!(
+                "could not record the replacement of {}'s chunks; its index entries are unchanged",
+                file.source
+            );
+        }
         let ids = match self.store_document(file.document).await {
             Ok(ids) => ids,
             Err(e) => {
@@ -1772,8 +1780,18 @@ impl RAGEngine {
             std::fs::create_dir_all(parent)?;
         }
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(replacements)?)?;
+        {
+            use std::io::Write;
+            let mut out = std::fs::File::create(&tmp)?;
+            out.write_all(&serde_json::to_vec(replacements)?)?;
+            // On disk before the rename, so a power loss can't leave an empty record.
+            out.sync_all()?;
+        }
         std::fs::rename(&tmp, &path)?;
+        #[cfg(unix)]
+        if let Some(parent) = path.parent() {
+            std::fs::File::open(parent)?.sync_all()?;
+        }
         Ok(())
     }
 

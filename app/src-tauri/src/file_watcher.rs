@@ -14,7 +14,8 @@
 //! again once if it was indexed in an older index format or chunker version
 //! ([`upgrade_file_source`]), as a folder's files are on its sync. Once per
 //! run, documents of an older format or chunker that no listed source owns
-//! (files added in a chat) are brought up to date too ([`upgrade_unowned`]).
+//! (files added in a chat) are brought up to date too, one document per turn
+//! ([`upgrade_unowned_in_turns`]).
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -24,7 +25,7 @@ use std::time::Duration;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use shodh_rag::folder_sync::{
-    is_temporary_file, sync_folder_with_progress, upgrade_file_source, upgrade_unowned,
+    is_temporary_file, sync_folder_with_progress, upgrade_file_source, upgrade_unowned_in_turns,
     ManifestStore, SyncReport,
 };
 use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus, NewInboxItem};
@@ -632,16 +633,25 @@ async fn upgrade_file_once(app: &AppHandle, source: &FolderSourceRef) {
 /// Brings the documents of an older index format that none of `owned` (the
 /// Library's source ids) owns up to date, once the files added in chats are
 /// where they belong ([`FolderSyncState::hand_over_uploads_in_turn`]). Takes
-/// its turn with the syncs.
+/// a turn with the syncs for each document, after background work is resumed.
 async fn upgrade_unowned_once(app: &AppHandle, owned: std::collections::BTreeSet<String>) {
-    app.state::<BackgroundState>().wait_until_resumed().await;
-    let state = app.state::<FolderSyncState>();
-    let _turn = state.running.lock().await;
+    let background = app.state::<BackgroundState>().inner();
+    let state = app.state::<FolderSyncState>().inner();
     let rag = app.state::<RagState>().rag.clone();
-    // Files added in chats go where they belong before they are brought up
-    // to date with the others.
-    state.hand_over_uploads_in_turn(app, &rag).await;
-    if let Err(e) = upgrade_unowned(&rag, &owned, state.store()).await {
+    background.wait_until_resumed().await;
+    {
+        let _turn = state.running.lock().await;
+        // Files added in chats go where they belong before they are brought
+        // up to date with the others.
+        state.hand_over_uploads_in_turn(app, &rag).await;
+    }
+    // One document per turn, each after background work is resumed: a
+    // removal or a folder sync waits for one document at most.
+    let turn = move || async move {
+        background.wait_until_resumed().await;
+        state.running.lock().await
+    };
+    if let Err(e) = upgrade_unowned_in_turns(&rag, &owned, state.store(), turn).await {
         tracing::warn!(error = %e, "documents outside the Library not brought up to date");
     }
 }

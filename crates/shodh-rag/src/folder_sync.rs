@@ -33,7 +33,7 @@
 //! interrupted sync goes on where it stopped. Its old chunks stay searchable
 //! until their replacement is stored. A scan whose OCR reading is not in the
 //! OCR cache is not read with OCR again to be re-chunked: its chunks are
-//! kept ([`RAGEngine::upgrade_format_keeping_chunks`]).
+//! kept and recorded as kept ([`RAGEngine::keep_chunks_of_older_chunker`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -795,7 +795,10 @@ enum Unread {
     InPlace,
     /// A scan whose chunks of an older chunker were kept: re-chunking it
     /// would read it with OCR again. Its contexts were brought to the
-    /// current index format where its chunks allow it.
+    /// current index format where its chunks allow it, and its chunks are
+    /// recorded as kept under this chunker
+    /// ([`RAGEngine::keep_chunks_of_older_chunker`]), so no run looks at it
+    /// again until it changes.
     ScanKept,
 }
 
@@ -818,17 +821,18 @@ async fn bring_up_to_date_unread(
     if !rechunk || !needs_fresh_ocr(rag, path).await? {
         return Ok(None);
     }
+    let mut engine = rag.write().await;
     if format_stale {
-        rag.write()
-            .await
+        engine
             .upgrade_format_keeping_chunks(key)
             .await
             .map_err(|e| format!("{e:#}"))?;
     }
-    tracing::info!(
-        source = key,
-        "scan kept as it was indexed: re-chunking it would read it with OCR again"
-    );
+    // Recorded as looked at under this chunker, so it is not listed again.
+    engine
+        .keep_chunks_of_older_chunker(key)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
     Ok(Some(Unread::ScanKept))
 }
 
@@ -1028,12 +1032,31 @@ async fn upgrade_one_unowned(
 /// kept); others are indexed again from their file with the metadata they
 /// were indexed with. One whose file is gone is left as it is and reported.
 /// One that fails is reported and recorded in `store`, and the others go on;
-/// it is not tried again until it changes. The caller holds the syncs' turn.
+/// it is not tried again until it changes. The caller holds the syncs' turn;
+/// [`upgrade_unowned_in_turns`] takes it for one document at a time.
 pub async fn upgrade_unowned(
     rag: &RwLock<RAGEngine>,
     owned: &BTreeSet<String>,
     store: &ManifestStore,
 ) -> Result<UpgradeReport, String> {
+    upgrade_unowned_in_turns(rag, owned, store, || async {}).await
+}
+
+/// [`upgrade_unowned`], taking a turn (`turn`, held while one document is
+/// brought up to date) for each document and giving it back before the
+/// next, so a removal of a Library source or a folder sync waits for one
+/// document at most, and a pause (when `turn` waits for the resume) holds the
+/// rest back. A document whose chunks went meanwhile (removed with their
+/// folder) or now belong to another source is left alone.
+pub async fn upgrade_unowned_in_turns<F, G>(
+    rag: &RwLock<RAGEngine>,
+    owned: &BTreeSet<String>,
+    store: &ManifestStore,
+    turn: impl Fn() -> F,
+) -> Result<UpgradeReport, String>
+where
+    F: std::future::Future<Output = G>,
+{
     if !rag.read().await.has_search_models() {
         return Err(SearchModelsMissing.to_string());
     }
@@ -1049,16 +1072,26 @@ pub async fn upgrade_unowned(
     let format_stale: BTreeSet<String> = stale.iter().map(|row| row.source.clone()).collect();
     let to_rechunk: BTreeSet<String> = rechunk.iter().map(|row| row.source.clone()).collect();
     let mut seen = BTreeSet::new();
-    let sources: Vec<String> = stale
+    let documents: Vec<(String, String)> = stale
         .into_iter()
         .chain(rechunk)
         .filter(|row| !owned.contains(&row.space_id) && !row.source.contains("://"))
-        .map(|row| row.source)
-        .filter(|source| seen.insert(source.clone()))
+        .filter(|row| seen.insert(row.source.clone()))
+        .map(|row| (row.source, row.space_id))
         .collect();
     let mut failures = store.load_heal_failures();
     let mut report = UpgradeReport::default();
-    for source in sources {
+    for (source, space_id) in documents {
+        let _turn = turn().await;
+        let owner = rag
+            .read()
+            .await
+            .source_owner(&source)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        if owner.as_deref() != Some(space_id.as_str()) {
+            continue;
+        }
         let path = PathBuf::from(&source);
         let stamp = FileStamp::of_file(&path);
         if failed_as_it_is(&failures, &source, stamp) {
@@ -2608,7 +2641,27 @@ mod tests {
             "chunked again from the OCR cache"
         );
         assert_eq!(stored_texts(&rag, "msa-scan.pdf").await, kept_before);
+        // Recorded as kept under this chunker: nothing is listed for
+        // re-chunking any more, and the scan over every chunk's metadata
+        // that lists it is skipped from now on.
+        let metadata = rag
+            .read()
+            .await
+            .document_metadata(&normalize_source_path(&canonical_path(&uncached)))
+            .await
+            .expect("metadata");
+        assert_eq!(
+            metadata
+                .get(crate::rag_engine::CHUNKS_KEPT_FROM_KEY)
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(rechunk_count(&rag).await, 0);
+        assert!(rag.read().await.rechunk_latched());
+        let after_heal = chunk_ids(&rag).await;
 
+        // The next run reads nothing: not the folder's sync, not the
+        // upgrade of documents outside the Library.
         let settled = sync_folder(&folder_text, "s1", &store, &rag, || false)
             .await
             .expect("sync");
@@ -2616,6 +2669,83 @@ mod tests {
             (settled.indexed, settled.scans_kept, settled.failures.len()),
             (0, 0, 0),
             "{settled:?}"
+        );
+        let outside = upgrade_unowned(&rag, &BTreeSet::new(), &store)
+            .await
+            .expect("upgrade");
+        assert_eq!(outside, UpgradeReport::default());
+        assert!(rag.read().await.rechunk_latched());
+        assert_eq!(chunk_ids(&rag).await, after_heal);
+    }
+
+    /// A removal of a Library source asked for while documents outside the
+    /// Library are brought up to date goes ahead after one document at most,
+    /// and a document its removal took is not indexed back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_removal_waits_for_one_document_of_the_heal_at_most() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rag = engine(dir.path()).await;
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let folder = dir.path().join("papers");
+        std::fs::create_dir_all(&folder).expect("folder");
+        // Indexed before chunks recorded their source: removing the folder's
+        // source takes them with it.
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            let path = folder.join(name);
+            std::fs::write(&path, format!("{name}: {PASSAGE}")).expect("file");
+            index_as_chunker_one(&rag, &path, "").await;
+        }
+        let folder_text = canonical_path(&folder).display().to_string();
+
+        let running = tokio::sync::Mutex::new(());
+        let turns = std::sync::atomic::AtomicUsize::new(0);
+        let started = tokio::sync::Notify::new();
+        let removed = tokio::sync::Notify::new();
+        let (running, turns, started_ref, removed_ref) = (&running, &turns, &started, &removed);
+        let turn = move || async move {
+            let n = turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 1 {
+                // The removal asked for during the first document must be
+                // done before the second one starts.
+                tokio::time::timeout(std::time::Duration::from_secs(30), removed_ref.notified())
+                    .await
+                    .expect("the removal waited for more than one document");
+            }
+            let held = running.lock().await;
+            if n == 0 {
+                started_ref.notify_one();
+            }
+            held
+        };
+        let removal = async {
+            started.notified().await;
+            let held = running.lock().await;
+            rag.write()
+                .await
+                .delete_library_source("folder-papers", Some(&folder_text), &[])
+                .await
+                .expect("removed");
+            drop(held);
+            removed.notify_one();
+        };
+        let (report, ()) = tokio::join!(
+            upgrade_unowned_in_turns(&rag, &BTreeSet::new(), &store, turn),
+            removal
+        );
+        let report = report.expect("upgrade");
+        assert_eq!(
+            (report.reindexed, report.failed.len()),
+            (1, 0),
+            "one document before the removal, none after: {report:?}"
+        );
+        assert!(
+            rag.read()
+                .await
+                .document_sources()
+                .await
+                .expect("sources")
+                .is_empty(),
+            "nothing the removal took is indexed back"
         );
     }
 

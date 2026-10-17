@@ -16,6 +16,7 @@ use super::inbox::{
     AppliedOutcome, Inbox, NewProposal, Proposal, ProposalAction, ProposalOrigin, ProposalStatus,
     ProposalView, PutOutcomeView, Rejection, StatusEvent, Undo, UsageCounter,
 };
+use super::{explicit, sensitivity};
 use super::{
     normalise_text, LearnError, LearnMode, LearnModel, LearnPolicy, LearnResult, PolicySource,
 };
@@ -373,6 +374,7 @@ impl Learner {
             model: model.model_id(),
             at: candidate.source.at,
             source: candidate.source.source.clone(),
+            by_user: false,
         };
         let new = NewProposal {
             origin,
@@ -385,6 +387,64 @@ impl Learner {
             sensitive: candidate.sensitive.clone(),
         };
         self.file(new, proposed, learned, suppressed).await
+    }
+
+    /// Files what the user explicitly asked Shodh to remember (`request`, matched by
+    /// [`explicit::memory_request`] on their message of turn `turn_id`) as a note
+    /// suggestion, without a model. It is the user's own words, so it is stored with
+    /// extractor `user`, and only when the user accepts it. Asking is not learning: it is
+    /// filed whatever the learning mode, is never applied automatically, and neither the
+    /// daily caps nor an earlier rejection of the same words hold it back. Returns the
+    /// suggestion, or `None` when the same note is already waiting or saved.
+    pub fn file_user_note(
+        &self,
+        request: &explicit::MemoryRequest,
+        conversation_id: &str,
+        turn_id: &str,
+        at: DateTime<Utc>,
+        scope: Scope,
+    ) -> LearnResult<Option<ProposalView>> {
+        let content = MemoryContent::Note {
+            text: request.note.clone(),
+        };
+        let app_version = self.service.app_version().to_string();
+        let origin = Origin::approved_in_conversation(
+            conversation_id,
+            turn_id,
+            "explicit-request",
+            &app_version,
+        );
+        // The text the memory will have, so the learner's own note of the same words is
+        // recognised as the same suggestion.
+        let text = self.service.preview(content.clone(), &origin)?;
+        let mut sensitive = sensitivity::classify_text(&request.note);
+        sensitive.sort();
+        sensitive.dedup();
+        let new = NewProposal {
+            origin: ProposalOrigin::Turn,
+            fingerprint: remember_fingerprint(&scope, "Note", &text),
+            scope,
+            conversation_id: Some(conversation_id.to_string()),
+            turn_id: Some(turn_id.to_string()),
+            action: ProposalAction::Remember {
+                content,
+                text,
+                decision: Decision::Add,
+                decided_by: DecidedBy::Rule,
+                target_text: None,
+                evidence: request.evidence.clone(),
+                model: app_version,
+                at,
+                source: origin.source.clone(),
+                by_user: true,
+            },
+            confidence: 1.0,
+            sensitive,
+        };
+        Ok(self
+            .inbox
+            .insert_requested(new, self.now())?
+            .map(ProposalView::from))
     }
 
     /// Stores a suggestion and applies it automatically when eligible.
@@ -660,19 +720,24 @@ impl Learner {
             at,
             source,
             model,
+            by_user,
             ..
         } = &proposal.action
         else {
             return None;
         };
-        let origin = Origin {
-            source: source.clone(),
-            extractor: ExtractorKind::Llm,
-            extractor_version: model.clone(),
-            confidence: proposal.confidence,
-            authority: WriteAuthority::UserApproval {
-                step_id: proposal.id.clone(),
-            },
+        let origin = if *by_user {
+            user_origin(source, model, &proposal.id)
+        } else {
+            Origin {
+                source: source.clone(),
+                extractor: ExtractorKind::Llm,
+                extractor_version: model.clone(),
+                confidence: proposal.confidence,
+                authority: WriteAuthority::UserApproval {
+                    step_id: proposal.id.clone(),
+                },
+            }
         };
         let content = with_valid_from(content.clone(), *at);
         Some(
@@ -797,12 +862,14 @@ impl Learner {
                 at,
                 source,
                 model,
+                by_user,
                 ..
             } => {
                 let edited = edit.is_some();
                 let content = edit.unwrap_or_else(|| content.clone());
                 let content = with_valid_from(content, *at);
-                let origin = origin_for(source, model, edited);
+                // The user's own words are the user's formulation, as an edit is.
+                let origin = origin_for(source, model, edited || *by_user);
                 let statement = self
                     .service
                     .build_statement_at(content.clone(), &origin, *at)?;
@@ -1034,6 +1101,20 @@ fn is_stale(error: &LearnError) -> bool {
     )
 }
 
+/// The origin of a suggestion the user formulated, applied on the user's Accept of
+/// `proposal_id`: extractor `user` at `app_version`, confidence 1.
+fn user_origin(source: &str, app_version: &str, proposal_id: &str) -> Origin {
+    Origin {
+        source: source.to_string(),
+        extractor: ExtractorKind::User,
+        extractor_version: app_version.to_string(),
+        confidence: 1.0,
+        authority: WriteAuthority::UserApproval {
+            step_id: proposal_id.to_string(),
+        },
+    }
+}
+
 /// An LLM origin (for building statements that are only validated or rendered).
 pub(crate) fn llm_origin(source: &str, model: &str, confidence: f64, step: &str) -> Origin {
     Origin {
@@ -1072,6 +1153,8 @@ pub fn auto_eligible(proposal: &Proposal, policy: &LearnPolicy) -> bool {
         return false;
     }
     match &proposal.action {
+        // What the user asked to remember is theirs to accept: it always asks.
+        ProposalAction::Remember { by_user: true, .. } => false,
         ProposalAction::Remember {
             decision,
             decided_by,

@@ -33,6 +33,7 @@ pub mod consolidate;
 pub mod decide;
 pub mod engine;
 pub mod evolve;
+pub mod explicit;
 pub mod extract;
 pub mod inbox;
 pub mod sensitivity;
@@ -46,6 +47,7 @@ use super::MemoryError;
 
 pub use decide::{DecidedBy, Decision, ValueChange};
 pub use engine::{ConsolidationReport, Learner, TurnReport};
+pub use explicit::{memory_request, MemoryRequest};
 pub use extract::TurnInput;
 pub use inbox::{
     rejection_reason, AppliedOutcome, Inbox, Proposal, ProposalAction, ProposalKind,

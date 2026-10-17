@@ -1432,3 +1432,100 @@ fn learning_makes_ten_model_calls_a_day_by_default() {
     assert_eq!(LearnCaps::default().max_calls_per_day, 10);
     assert_eq!(DEFAULT_CALLS_PER_DAY, 10);
 }
+
+impl Env {
+    fn file_request(&self, text: &str) -> Option<ProposalView> {
+        let request = memory_request(text).expect("a request to remember");
+        self.learner
+            .file_user_note(&request, "c1", "r1", self.f.store.now(), Scope::Global)
+            .unwrap()
+    }
+}
+
+#[tokio::test]
+async fn a_request_to_remember_becomes_a_note_suggestion_without_a_model() {
+    let e = env().await;
+    // Not learning: filed whatever the mode, and never applied automatically.
+    e.set(|p| p.mode = LearnMode::Off);
+    let view = e.file_request(THESIS_TURN).unwrap();
+    assert_eq!(e.model.calls(), 0);
+    assert_eq!(view.status, ProposalStatus::Pending);
+    let ProposalAction::Remember {
+        content,
+        text,
+        evidence,
+        by_user,
+        source,
+        ..
+    } = &view.action
+    else {
+        panic!("not a remember suggestion");
+    };
+    let note =
+        "I'm writing my thesis on disk-based vector search, and memory cost matters most to me.";
+    assert_eq!(content, &MemoryContent::Note { text: note.into() });
+    assert_eq!(text, note);
+    assert_eq!(evidence, THESIS_TURN);
+    assert!(*by_user);
+    assert_eq!(source, "conversation://c1/turn/r1");
+    assert!((view.confidence - 1.0).abs() < 1e-9);
+    // Asked again while it waits: the same suggestion, not a second one.
+    assert!(e.file_request(THESIS_TURN).is_none());
+
+    // The learner's note of the same words is the same suggestion.
+    e.set(|p| p.mode = LearnMode::Auto);
+    e.model.answer(json!({"memories": [
+        {"turn": "T1", "class": "Note", "properties": {"noteText": note},
+         "confidence": 0.95, "evidence": note}
+    ]}));
+    let report = e.learn(THESIS_TURN).await;
+    assert!(report.proposed.is_empty(), "{report:?}");
+    assert_eq!(report.suppressed, 1);
+    assert!(!auto_eligible(
+        &e.learner.inbox().get(&view.id).unwrap(),
+        &e.learner.policy()
+    ));
+
+    // Accepting stores the user's words as the user's memory.
+    let accepted = e
+        .learner
+        .accept(&view.id, None, &Actor::ui())
+        .await
+        .unwrap();
+    let memory = e
+        .service
+        .get(&accepted.outcome.unwrap().memory_id.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(memory.text, note);
+    assert_eq!(memory.extractor, "user");
+    assert_eq!(memory.source, "conversation://c1/turn/r1");
+    let writes = e.memory_writes();
+    assert!(writes
+        .iter()
+        .any(|w| w["authority"] == "user_approval" && w["approval"] == json!(view.id)));
+}
+
+#[tokio::test]
+async fn a_rejected_request_can_be_asked_again_and_batch_accepted_as_the_users() {
+    let e = env().await;
+    let first = e.file_request("Note: I review papers on Fridays").unwrap();
+    e.learner.reject(&first.id).unwrap();
+    // The user asks again: an explicit request is not held back by the earlier rejection.
+    let again = e
+        .file_request("Remember that I review papers on Fridays")
+        .unwrap();
+    assert_ne!(again.id, first.id);
+    let results = e
+        .learner
+        .accept_many(std::slice::from_ref(&again.id), &Actor::ui())
+        .await;
+    let view = results[0].1.as_ref().unwrap();
+    let memory = e
+        .service
+        .get(view.outcome.as_ref().unwrap().memory_id.as_deref().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(memory.extractor, "user");
+    assert_eq!(memory.text, "I review papers on Fridays");
+}

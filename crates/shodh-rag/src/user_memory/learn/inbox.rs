@@ -346,6 +346,11 @@ pub enum ProposalAction {
         at: DateTime<Utc>,
         /// Provenance source (`conversation://<id>/turn/<run>`).
         source: String,
+        /// The user formulated it: their own words, filed when they asked Shodh to
+        /// remember something (`model` is then the app version). Stored with extractor
+        /// `user`, and only on the user's Accept.
+        #[serde(default)]
+        by_user: bool,
     },
     /// A new version of `target`.
     Revise {
@@ -722,33 +727,69 @@ impl Inbox {
         caps: &LearnCaps,
         now: DateTime<Utc>,
     ) -> LearnResult<Option<Proposal>> {
+        self.insert_checked(new, Some(caps), now)
+    }
+
+    /// Stores a suggestion the user asked for in their own words ("Remember that ..."):
+    /// suppressed only when the same one is already waiting or applied. Neither an earlier
+    /// rejection (the user asks again) nor today's suggestion cap (a cap on what the model
+    /// suggests) holds it back; it is counted in today's suggestions.
+    pub fn insert_requested(
+        &self,
+        new: NewProposal,
+        now: DateTime<Utc>,
+    ) -> LearnResult<Option<Proposal>> {
+        self.insert_checked(new, None, now)
+    }
+
+    /// [`Self::insert`]; with `caps` `None`, the user's own request
+    /// ([`Self::insert_requested`]).
+    fn insert_checked(
+        &self,
+        new: NewProposal,
+        caps: Option<&LearnCaps>,
+        now: DateTime<Utc>,
+    ) -> LearnResult<Option<Proposal>> {
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let since = ts(now - Duration::days(REJECTION_MEMORY_DAYS));
-        let duplicate: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM memory_proposals WHERE fingerprint = ?1 AND (
-                status IN ('pending', 'accepted', 'learned', 'failed')
-                OR (status IN ('rejected', 'undone') AND decided_at >= ?2)))",
-            params![new.fingerprint, since],
-            |r| r.get(0),
-        )?;
+        let duplicate: bool = match caps {
+            Some(_) => tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM memory_proposals WHERE fingerprint = ?1 AND (
+                    status IN ('pending', 'accepted', 'learned', 'failed')
+                    OR (status IN ('rejected', 'undone') AND decided_at >= ?2)))",
+                params![
+                    new.fingerprint,
+                    ts(now - Duration::days(REJECTION_MEMORY_DAYS))
+                ],
+                |r| r.get(0),
+            )?,
+            // The user's request: only what is waiting or applied suppresses it.
+            None => tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM memory_proposals WHERE fingerprint = ?1
+                    AND status IN ('pending', 'accepted', 'learned', 'failed'))",
+                params![new.fingerprint],
+                |r| r.get(0),
+            )?,
+        };
         if duplicate {
             return Ok(None);
         }
         let day = day_key(now);
-        let made: u32 = tx
-            .query_row(
-                "SELECT proposals FROM memory_learn_usage WHERE day = ?1",
-                params![day],
-                |r| r.get(0),
-            )
-            .optional()?
-            .unwrap_or(0);
-        if made >= caps.max_proposals_per_day {
-            return Err(LearnError::BudgetExhausted(format!(
-                "{} suggestions per day",
-                caps.max_proposals_per_day
-            )));
+        if let Some(caps) = caps {
+            let made: u32 = tx
+                .query_row(
+                    "SELECT proposals FROM memory_learn_usage WHERE day = ?1",
+                    params![day],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .unwrap_or(0);
+            if made >= caps.max_proposals_per_day {
+                return Err(LearnError::BudgetExhausted(format!(
+                    "{} suggestions per day",
+                    caps.max_proposals_per_day
+                )));
+            }
         }
         let id = format!("sug-{}", uuid::Uuid::new_v4());
         let payload =

@@ -34,7 +34,8 @@ use shodh_rag::user_memory::learn::engine::ModelSource;
 use shodh_rag::user_memory::learn::extract::learned_scope;
 use shodh_rag::user_memory::learn::{
     ConsolidationReport, Inbox, LearnCaps, LearnError, LearnMode, LearnModel, LearnPolicy, Learner,
-    PolicySource, ProposalStatus, ProposalView, RejectionCount, TurnInput, UsageToday,
+    MemoryRequest, PolicySource, ProposalStatus, ProposalView, RejectionCount, TurnInput,
+    UsageToday,
 };
 use shodh_rag::user_memory::{Actor, MemoryContent};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -577,6 +578,45 @@ impl LearnState {
                 });
             }
             _ => {}
+        }
+    }
+
+    /// Files what the user explicitly asked Shodh to remember in run `run_id` (`request`,
+    /// matched on their typed words) as a note suggestion for them to approve, before the
+    /// answer starts and without a model. Asking is not learning: the learning mode does
+    /// not apply. Returns whether the request now waits for the user (filed, or the same
+    /// note already waiting or saved), so the answering model can be told it is handled.
+    pub async fn file_memory_request(
+        &self,
+        request: &MemoryRequest,
+        conversation_id: &str,
+        run_id: &str,
+        workspace: Option<&str>,
+    ) -> bool {
+        self.touch();
+        let learner = match self.learner().await {
+            Ok(learner) => learner,
+            Err(e) => {
+                tracing::info!(target: "shodh::memory", error = %e, "the request to remember was left to the assistant");
+                return false;
+            }
+        };
+        let at = learner.service().store().now();
+        match learner.file_user_note(
+            request,
+            conversation_id,
+            run_id,
+            at,
+            learned_scope(workspace),
+        ) {
+            Ok(_) => {
+                self.notify(&learner);
+                true
+            }
+            Err(e) => {
+                tracing::warn!(target: "shodh::memory", error = %e, "the request to remember was not filed; left to the assistant");
+                false
+            }
         }
     }
 

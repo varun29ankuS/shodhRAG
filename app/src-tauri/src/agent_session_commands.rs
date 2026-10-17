@@ -66,6 +66,7 @@ use shodh_rag::harness::grounding::{GroundingConfig, ScorerSet, SharedEntailment
 use shodh_rag::harness::web::relevance::SharedScorer;
 use shodh_rag::harness::web::SafeClient;
 use shodh_rag::rag_engine::{RAGEngine, SharedReranker};
+use shodh_rag::user_memory::learn::memory_request;
 use shodh_rag::user_memory::Actor;
 use shodh_rag::workspaces::instructions_block;
 
@@ -785,12 +786,20 @@ pub(crate) fn scope_for_workspace(
     scope
 }
 
+/// Put in front of a message whose request to remember something the app has already
+/// filed as a memory suggestion ([`crate::memory_learn::LearnState::file_memory_request`]).
+pub(crate) const MEMORY_REQUEST_NOTE: &str = "Shodh has already saved what the user asked you \
+     to remember as a memory suggestion for them to approve, so do not call remember and do \
+     not search the documents for it. Acknowledge it in one short sentence, then answer any \
+     separate question in the message.";
+
 /// The note put in front of a question asked with "search all my library".
 const SEARCH_ALL_NOTE: &str = "For this question the user turned on \"search all my library\": \
      search all of their sources, not only this workspace's.";
 
 /// The message sent to the model: the workspace's instructions and the recalled memories
-/// (each a delimited block), then the conversation so far when it is replayed into a new
+/// (each a delimited block) and, when the app filed the message's request to remember
+/// something, `request_note`; then the conversation so far when it is replayed into a new
 /// session, then the user's message. The `question` audit event never sees the blocks.
 pub(crate) fn compose_message(
     text: &str,
@@ -799,6 +808,7 @@ pub(crate) fn compose_message(
     workspace_block: Option<&str>,
     search_all: bool,
     passages_block: Option<&str>,
+    request_note: Option<&str>,
 ) -> String {
     let mut preamble: Vec<&str> = Vec::new();
     if let Some(block) = workspace_block {
@@ -812,6 +822,9 @@ pub(crate) fn compose_message(
     }
     if let Some(block) = memories {
         preamble.push(block);
+    }
+    if let Some(note) = request_note {
+        preamble.push(note);
     }
     let with_turns = replay.map(|history| with_history(text, history));
     match (preamble.is_empty(), with_turns) {
@@ -1531,6 +1544,23 @@ pub async fn agent_send(
     } else {
         None
     };
+    let learnable =
+        text_origin == Some(TextOrigin::Typed) && entry.parent_conversation_id.is_none();
+    // "Remember that ...": the user's words are filed as a memory suggestion now, so the
+    // request never depends on the model choosing to call `remember`.
+    let request_filed = match learnable.then(|| memory_request(&text)).flatten() {
+        Some(request) => {
+            learn
+                .file_memory_request(
+                    &request,
+                    &entry.conversation_id,
+                    &request_id,
+                    scope.workspace.as_deref(),
+                )
+                .await
+        }
+        None => false,
+    };
     let message = compose_message(
         &text,
         history.as_deref().filter(|_| replay),
@@ -1538,12 +1568,11 @@ pub async fn agent_send(
         workspace_block.as_deref(),
         search_all && workspace.is_some(),
         passages_block.as_deref(),
+        request_filed.then_some(MEMORY_REQUEST_NOTE),
     );
     let scoped = !scope.is_empty();
     // Registered before prompting: the run id is `request_id`, and the first events may
     // arrive before `prompt_scoped` returns.
-    let learnable =
-        text_origin == Some(TextOrigin::Typed) && entry.parent_conversation_id.is_none();
     if learnable {
         learn.record_question(
             &entry.conversation_id,
@@ -2495,7 +2524,7 @@ mod tests {
             role: "assistant".into(),
             content: "HNSW keeps global connectivity [28].".into(),
         }];
-        let message = compose_message("Why?", Some(&history), None, None, false, Some(block));
+        let message = compose_message("Why?", Some(&history), None, None, false, Some(block), None);
         let at_block = message.find(block).unwrap();
         let at_history = message.find("Earlier in this conversation").unwrap();
         assert!(at_block < at_history, "{message}");
@@ -2554,10 +2583,17 @@ mod tests {
     #[test]
     fn instructions_and_memories_come_before_the_question_in_every_path() {
         let block = instructions_block("Thesis", "Cite page numbers.").unwrap();
-        let plain = compose_message("What is X?", None, None, None, false, None);
+        let plain = compose_message("What is X?", None, None, None, false, None, None);
         assert_eq!(plain, "What is X?");
-        let with_block =
-            compose_message("What is X?", None, Some("MEM"), Some(&block), false, None);
+        let with_block = compose_message(
+            "What is X?",
+            None,
+            Some("MEM"),
+            Some(&block),
+            false,
+            None,
+            None,
+        );
         let ws = with_block.find("<workspace_instructions").unwrap();
         let mem = with_block.find("MEM").unwrap();
         let question = with_block.find("Current message:\nWhat is X?").unwrap();
@@ -2574,14 +2610,40 @@ mod tests {
             Some(&block),
             false,
             None,
+            None,
         );
         let earlier = replayed.find("Earlier question").unwrap();
         assert!(replayed.find("<workspace_instructions").unwrap() < earlier);
         assert!(earlier < replayed.find("What is X?").unwrap());
         assert_eq!(replayed.matches("Cite page numbers.").count(), 1);
         // Search all: the note says so.
-        let all = compose_message("What is X?", None, None, Some(&block), true, None);
+        let all = compose_message("What is X?", None, None, Some(&block), true, None, None);
         assert!(all.contains("search all my library"));
+    }
+
+    #[test]
+    fn a_filed_request_to_remember_is_announced_right_before_the_message() {
+        let text = "Remember that I'm writing my thesis on disk-based vector search, and memory cost matters most to me.";
+        let message = compose_message(
+            text,
+            None,
+            Some("MEM"),
+            None,
+            false,
+            None,
+            Some(MEMORY_REQUEST_NOTE),
+        );
+        let memories = message.find("MEM").unwrap();
+        let note = message.find(MEMORY_REQUEST_NOTE).unwrap();
+        let question = message.find(text).unwrap();
+        assert!(memories < note && note < question, "{message}");
+        assert!(MEMORY_REQUEST_NOTE.contains("do not search the documents"));
+        assert!(!MEMORY_REQUEST_NOTE.contains('\n'));
+        // Nothing filed: the message is the user's own.
+        assert_eq!(
+            compose_message(text, None, None, None, false, None, None),
+            text
+        );
     }
 
     #[test]

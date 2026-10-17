@@ -22,6 +22,7 @@ import { cssToSnippetRect, rectToRegion, type CssBox } from '../../research/snip
 import { renderSnippet, snippetText } from '../../research/snippetRender';
 import type { SnippetRect } from '../../research/types';
 import { countOf } from '../../../lib/plural';
+import { useDevicePixelRatio } from './useDevicePixelRatio';
 
 type TextContent = Awaited<ReturnType<PDFPageProxy['getTextContent']>>;
 type TextLayerInstance = InstanceType<Awaited<ReturnType<typeof loadPdfJs>>['TextLayer']>;
@@ -128,6 +129,8 @@ interface PdfPageViewProps {
   doc: PDFDocumentProxy | null;
   pageNumber: number;
   scale: number;
+  /** The window's device pixel ratio: pages are drawn again at a new one. */
+  pixelRatio: number;
   size: PageSize;
   active: boolean;
   /** Draw a low-resolution pass first (read when rendering starts). */
@@ -147,6 +150,7 @@ function PdfPageView({
   doc,
   pageNumber,
   scale,
+  pixelRatio,
   size,
   active,
   quick,
@@ -209,7 +213,7 @@ function PdfPageView({
       const viewport = page.getViewport({ scale });
       const sharpRatio = Math.max(
         0.5,
-        Math.min(window.devicePixelRatio || 1, Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, viewport.width * viewport.height))),
+        Math.min(pixelRatio, Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, viewport.width * viewport.height))),
       );
       // A fresh canvas per render: pdf.js refuses concurrent renders on one
       // canvas, and swapping on completion avoids a blank flash while zooming.
@@ -287,7 +291,7 @@ function PdfPageView({
       (renderTask as RenderTask | null)?.cancel();
       textLayer?.cancel();
     };
-  }, [active, doc, pageNumber, scale, getText, onPainted]);
+  }, [active, doc, pageNumber, scale, pixelRatio, getText, onPainted]);
 
   useLayoutEffect(() => {
     const pageEl = pageRef.current;
@@ -487,6 +491,7 @@ export function PdfViewer({
   const viewKey = pathKey(filePath);
   const pageInputId = useId();
   const findInputId = useId();
+  const pixelRatio = useDevicePixelRatio();
 
   // Where to start: the remembered position when browsing a file; nothing
   // when a citation decides the page.
@@ -1523,6 +1528,7 @@ export function PdfViewer({
                   doc={doc}
                   pageNumber={pageNumber}
                   scale={scale}
+                  pixelRatio={pixelRatio}
                   size={{ width: Math.floor(size.width * scale), height: Math.floor(size.height * scale) }}
                   active={visible.has(pageNumber) || isTarget}
                   quick={!firstPainted && pageNumber === initialPage}

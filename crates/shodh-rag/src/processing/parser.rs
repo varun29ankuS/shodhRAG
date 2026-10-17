@@ -1174,6 +1174,20 @@ const HTML_BLOCK_ELEMENTS: &[&str] = &[
 /// is skipped.
 const HTML_RAW_TEXT_ELEMENTS: &[&str] = &["script", "style", "template"];
 
+/// What numeric references to 0x80-0x9F stand for: the Windows-1252
+/// characters of those bytes, as the HTML standard reads them. The five bytes
+/// Windows-1252 leaves undefined keep their code.
+const WINDOWS_1252_C1: [u32; 32] = [
+    0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, // 0x80
+    0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F, // 0x88
+    0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, // 0x90
+    0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178, // 0x98
+];
+
+/// Opens and closes a CDATA section.
+const CDATA_OPEN: &str = "<![CDATA[";
+const CDATA_CLOSE: &str = "]]>";
+
 /// Strip HTML tags and decode common entities, returning visible text content.
 ///
 /// Works on byte offsets into `html`, which only ever stop at ASCII bytes
@@ -1189,6 +1203,20 @@ fn strip_html_tags(html: &str) -> String {
 
     while i < bytes.len() {
         match bytes[i] {
+            b'<' if html[i..].starts_with(CDATA_OPEN) => {
+                // Character data (XHTML, SVG, MathML): its text as written,
+                // up to `]]>`.
+                let body = i + CDATA_OPEN.len();
+                let (text_end, end) = html[body..]
+                    .find(CDATA_CLOSE)
+                    .map_or((html.len(), html.len()), |p| {
+                        (body + p, body + p + CDATA_CLOSE.len())
+                    });
+                for ch in html[body..text_end].chars() {
+                    push_html_text(&mut result, &mut last_was_whitespace, ch);
+                }
+                i = end;
+            }
             b'<' => {
                 let Some(tag) = html_tag_at(html, i) else {
                     // A `<` that opens no tag ("p < 0.05") is text.
@@ -1301,9 +1329,15 @@ fn html_tag_at(html: &str, start: usize) -> Option<HtmlTag<'_>> {
         .is_some_and(|s| s.as_bytes() == b"!--")
     {
         let body = after + 3;
-        let end = html[body..]
-            .find("-->")
-            .map_or(html.len(), |p| body + p + 3);
+        let rest = &html[body..];
+        // `<!-->` and `<!--->` are empty comments, closed there.
+        let end = if rest.starts_with('>') {
+            body + 1
+        } else if rest.starts_with("->") {
+            body + 2
+        } else {
+            rest.find("-->").map_or(html.len(), |p| body + p + 3)
+        };
         return Some(HtmlTag {
             name: "",
             closing: false,
@@ -1407,6 +1441,12 @@ fn decode_html_entity(text: &str) -> Option<(char, usize)> {
             return None;
         }
         let code = u32::from_str_radix(digits, radix).ok()?;
+        // Pages written in Windows-1252 refer to its characters 0x80-0x9F
+        // by their byte (`&#150;` for an en dash); browsers read them so.
+        let code = match code {
+            0x80..=0x9F => WINDOWS_1252_C1[(code - 0x80) as usize],
+            _ => code,
+        };
         match char::from_u32(code) {
             Some('\0') | None => char::REPLACEMENT_CHARACTER,
             Some(c) => c,
@@ -2114,5 +2154,31 @@ pub(crate) mod tests {
         let html = "<table><tr><th>Name</th><th>Qty</th></tr>\
                     <tr><td>Milk</td><td>2</td></tr></table>";
         assert_eq!(strip_html_tags(html), "Name\tQty\nMilk\t2");
+    }
+
+    /// `<!-->` and `<!--->` close where they open; a CDATA section is its
+    /// text as written, up to `]]>`.
+    #[test]
+    fn empty_comments_close_at_once_and_cdata_is_text() {
+        assert_eq!(strip_html_tags("a<!-->b<!--->c<!-- x -->d"), "abcd");
+        assert_eq!(
+            strip_html_tags("<p>x<![CDATA[ 1 < 2 && a > b ]]>y</p>"),
+            "x 1 < 2 && a > b y"
+        );
+        assert_eq!(strip_html_tags("<p>日本<![CDATA[語"), "日本語");
+    }
+
+    /// Numeric references to 0x80-0x9F mean the Windows-1252 characters of
+    /// those bytes; the five bytes it leaves undefined keep their code.
+    #[test]
+    fn c1_references_are_read_as_windows_1252() {
+        assert_eq!(strip_html_tags("&#150;"), "\u{2013}");
+        assert_eq!(strip_html_tags("it&#146;s"), "it\u{2019}s");
+        assert_eq!(
+            strip_html_tags("&#x80;&#147;q&#148;&#159;"),
+            "\u{20ac}\u{201c}q\u{201d}\u{178}"
+        );
+        assert_eq!(strip_html_tags("&#157;"), "\u{9d}");
+        assert_eq!(strip_html_tags("&#160;x&#8211;"), "x\u{2013}");
     }
 }

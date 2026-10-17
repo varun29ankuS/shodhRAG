@@ -20,10 +20,14 @@ interface Source {
   status: string;
 }
 
+/** `database_commands.rs::IndexedSourceInfo`. */
 interface IndexedSource {
   doc_id: string;
   title: string;
+  /** The file's identity in the index (lowercased on Windows). */
   source: string;
+  /** The file system's spelling of `source`, for display. */
+  display_path?: string;
 }
 
 interface DataManagementProps {
@@ -235,8 +239,8 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
                   <div className="text-[11px] font-medium truncate" style={{ color: colors.text }}>
                     {src.title}
                   </div>
-                  <div className="text-[10px] truncate" style={{ color: colors.textMuted }}>
-                    {src.source}
+                  <div className="text-[10px] truncate" style={{ color: colors.textMuted }} title={src.display_path || src.source}>
+                    {src.display_path || src.source}
                   </div>
                 </div>
               ))

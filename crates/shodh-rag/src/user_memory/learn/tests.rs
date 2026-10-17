@@ -1624,3 +1624,18 @@ async fn the_legacy_import_has_its_own_one_time_allowance() {
     let today = e.learner.learn_from_turns(&[e.turn("I prefer tea")]).await;
     assert!(matches!(today, Err(LearnError::BudgetExhausted(_))));
 }
+
+#[tokio::test]
+async fn a_requested_note_about_someone_else_is_marked_sensitive() {
+    let e = env().await;
+    let view = e.filed("Remember that Asha's email is asha@acme.com and her number is 98200 12345");
+    assert!(
+        view.sensitive
+            .contains(&SensitiveReason::ThirdPartyPersonal),
+        "{:?}",
+        view.sensitive
+    );
+    // The user's own details are not someone else's.
+    let own = e.filed("Remember that my email is varun@example.com");
+    assert!(own.sensitive.is_empty(), "{:?}", own.sensitive);
+}

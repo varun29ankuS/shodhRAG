@@ -57,6 +57,9 @@ static CREDENTIAL: OnceLock<Option<Regex>> = OnceLock::new();
 static HEALTH: OnceLock<Option<Regex>> = OnceLock::new();
 static FINANCIAL: OnceLock<Option<Regex>> = OnceLock::new();
 static CARD: OnceLock<Option<Regex>> = OnceLock::new();
+static CONTACT: OnceLock<Option<Regex>> = OnceLock::new();
+static OWN_CONTACT: OnceLock<Option<Regex>> = OnceLock::new();
+static OTHERS_DETAIL: OnceLock<Option<Regex>> = OnceLock::new();
 
 const CREDENTIAL_PATTERN: &str = r"(?i)\b(pass(word|code|phrase)?s?|passwd|pwd|pin( ?code)?|otp|one[- ]time (code|password)|2fa|mfa|api[ _-]?keys?|secret|token|private[ _-]?key|ssh[ _-]?key|recovery (code|phrase)|seed phrase|cvv|cvc|login|credentials?)\b";
 
@@ -64,6 +67,16 @@ const HEALTH_PATTERN: &str = r"(?i)\b(health|medical|medicine|medication|medicin
 
 /// Account numbers, IFSC, IBAN, Aadhaar, PAN, GSTIN, UPI ids.
 const FINANCIAL_PATTERN: &str = r"(?i)\b(account (number|no)|a/c|ifsc|iban|swift|routing number|aadhaar|aadhar|upi id|credit card|debit card|card number|bank account|salary|net worth|loan|tax return)\b|\b[A-Z]{4}0[A-Z0-9]{6}\b|\b[A-Z]{5}[0-9]{4}[A-Z]\b|\b[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]\b|\b[0-9]{4} ?[0-9]{4} ?[0-9]{4}\b|\b[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\b|\b[\w.-]{2,}@(ok\w+|ybl|paytm|upi|ibl|axl)\b";
+
+/// An email address, or a run of digits that may be a phone number ([`phone_like`]).
+const CONTACT_PATTERN: &str = r"[\w.+-]+@[\w-]+(\.[\w-]+)+|\+?\d[\d ()-]{6,16}\d";
+
+/// The user's own contact details ("my email is ...", "my number ...").
+const OWN_CONTACT_PATTERN: &str =
+    r"(?i)\b(my|mine)\b[^.;]{0,20}\b(e-?mail|number|phone|mobile|contact|address|whatsapp)\b";
+
+/// Someone else's personal detail: "Asha's email", "her phone number", "his address".
+const OTHERS_DETAIL_PATTERN: &str = r"(\b[A-Z][a-z]+(?:'s|\x{2019}s)|(?i:\b(?:his|her|their)))\s+(?i:(?:personal|home|work|private)\s+)?(?i:e-?mail|phone|phone number|number|mobile|address|birthday|date of birth|salary|diagnosis|whatsapp)\b";
 
 /// 13 to 19 digits, optionally grouped (a payment card number when it passes Luhn).
 const CARD_PATTERN: &str = r"\b(?:[0-9][ -]?){12,18}[0-9]\b";
@@ -107,6 +120,18 @@ pub fn classify_text(text: &str) -> Vec<SensitiveReason> {
             .is_some_and(|re| re.find_iter(text).any(|m| luhn(m.as_str())));
     if financial {
         reasons.push(SensitiveReason::FinancialIdentifier);
+    }
+    // Someone else's contact or personal details: a named or pronoun owner of a personal
+    // detail, or an email address or phone number that is not said to be the user's own.
+    let others_detail =
+        regex(&OTHERS_DETAIL, OTHERS_DETAIL_PATTERN).is_some_and(|re| re.is_match(text));
+    let contact = regex(&CONTACT, CONTACT_PATTERN).is_some_and(|re| {
+        re.find_iter(text)
+            .any(|m| m.as_str().contains('@') || phone_like(m.as_str()))
+    });
+    let own = regex(&OWN_CONTACT, OWN_CONTACT_PATTERN).is_some_and(|re| re.is_match(text));
+    if others_detail || (contact && !own) {
+        reasons.push(SensitiveReason::ThirdPartyPersonal);
     }
     reasons
 }
@@ -198,6 +223,21 @@ mod tests {
             SensitiveReason::FinancialIdentifier
         ));
         assert!(classify_text("I prefer dark roast coffee").is_empty());
+        // Someone else's contact or personal details.
+        let third = SensitiveReason::ThirdPartyPersonal;
+        assert!(has(
+            "Asha's email is asha@acme.com and her number is 98200 12345",
+            third
+        ));
+        assert!(has("her phone number is in the CRM", third));
+        assert!(has("Ravi\u{2019}s birthday is on 3 May", third));
+        assert!(has("write to asha@acme.com about the review", third));
+        assert!(has("call +91 98200 12345 after 6", third));
+        // The user's own details are not someone else's.
+        assert!(!has("my email is varun@example.com", third));
+        assert!(!has("my mobile number is 98200 12345", third));
+        assert!(!has("I review papers on Fridays", third));
+        assert!(!has("SPANN keeps centroids in memory", third));
         assert!(classify_text("Project Apollo is on hold").is_empty());
     }
 

@@ -1,6 +1,8 @@
-// Act 1 — one unhurried walkthrough of the core flow, on the real app.
-// It opens on the Shodh logo, name and line, which then settle into the
-// brand mark top left as the app window rises. One window, one continuous
+// Act 1 — the problem, what Shodh is and who it is for, then one unhurried
+// walkthrough of the core flow on the real app. Two problem beats (too many
+// papers to read; AI answers that cannot be traced to a source), then the
+// Shodh logo, name, line and audience, which settle into the brand mark top
+// left as the app window rises. One window, one continuous
 // camera that frames each part of the app in turn (the composer, the
 // conversation, the answer, the citations, the passage) with even margins;
 // a numbered caption under the window says what is happening at each step.
@@ -16,42 +18,14 @@ import { font } from "./theme";
 /** A look for the act: ground, type and the one accent (the deep Shodh orange family). */
 export type Look = { ground: string; text: string; sub: string; accent: string; shadow: string };
 
-/** Pastel directions under review; `apricot` is the current one. */
+/** Anthropic beige: an ivory-to-oat ground, slate type, Shodh orange as the one accent. */
 export const LOOKS = {
-  apricot: {
-    ground: "radial-gradient(85% 75% at 50% 40%, #fff3ea 0%, #fddcc6 55%, #f7c3a1 100%)",
-    text: "#2a1409",
-    sub: "rgba(42,20,9,0.66)",
+  beige: {
+    ground: "radial-gradient(90% 80% at 50% 40%, #faf9f5 0%, #f3f0e8 60%, #ebe6da 100%)",
+    text: "#141413",
+    sub: "rgba(20,20,19,0.6)",
     accent: "#c94d1c",
-    shadow: "0 50px 110px rgba(150,64,22,0.20), 0 14px 34px rgba(150,64,22,0.14)",
-  },
-  cream: {
-    ground: "radial-gradient(85% 75% at 50% 38%, #fffaf5 0%, #fbede2 58%, #f3dac8 100%)",
-    text: "#2b1d16",
-    sub: "rgba(43,29,22,0.64)",
-    accent: "#d4582a",
-    shadow: "0 50px 110px rgba(120,70,40,0.16), 0 14px 34px rgba(120,70,40,0.10)",
-  },
-  blush: {
-    ground: "linear-gradient(135deg, #ffe9dc 0%, #fcd8cc 45%, #f5d2e2 100%)",
-    text: "#2a1420",
-    sub: "rgba(42,20,32,0.64)",
-    accent: "#cf4f22",
-    shadow: "0 50px 110px rgba(140,60,70,0.18), 0 14px 34px rgba(140,60,70,0.12)",
-  },
-  sorbet: {
-    ground: "radial-gradient(85% 75% at 50% 38%, #ffeedd 0%, #ffd3b0 55%, #ffbb8c 100%)",
-    text: "#3a1606",
-    sub: "rgba(58,22,6,0.66)",
-    accent: "#b9410f",
-    shadow: "0 50px 110px rgba(170,70,10,0.22), 0 14px 34px rgba(170,70,10,0.15)",
-  },
-  sand: {
-    ground: "radial-gradient(85% 75% at 50% 38%, #f8f3ed 0%, #efe5da 60%, #e5d6c6 100%)",
-    text: "#1c2030",
-    sub: "rgba(28,32,48,0.62)",
-    accent: "#e2622b",
-    shadow: "0 50px 110px rgba(60,50,40,0.18), 0 14px 34px rgba(60,50,40,0.12)",
+    shadow: "0 40px 100px rgba(60,50,30,0.14), 0 12px 30px rgba(60,50,30,0.10)",
   },
 } satisfies Record<string, Look>;
 export type LookName = keyof typeof LOOKS;
@@ -106,7 +80,7 @@ function frameShot(shot: Shot): { scale: number; tx: number; ty: number } {
 }
 
 /** Scenes, in bars of the track. */
-const SCENE = { intro: 0, ask: 2, search: 6, answer: 9, cite: 13, open: 16, passage: 19, end: 23 } as const;
+const SCENE = { papers: 0, trust: 4, brand: 8, ask: 12, search: 16, answer: 19, cite: 23, open: 26, passage: 29, end: 33 } as const;
 type SceneName = keyof typeof SCENE;
 
 const CAPTIONS: { from: SceneName; text: string }[] = [
@@ -147,15 +121,102 @@ const Brand: React.FC<{ settle: number; look: Look }> = ({ settle, look }) => {
   );
 };
 
-export const Act1: React.FC<{ look: LookName }> = ({ look: lookName }) => {
-  const frame = useCurrentFrame();
-  const look = LOOKS[lookName];
-  const at = (s: SceneName) => (SCENE[s] === 0 ? 0 : bar(SCENE[s]));
-  const F = { ask: at("ask"), search: at("search"), answer: at("answer"), cite: at("cite"), open: at("open"), passage: at("passage"), end: at("end") };
+/** The library: twelve real paper covers, rendered from their first pages. */
+const COVERS = Array.from({ length: 12 }, (_, i) => `act1/cover-${String(i).padStart(2, "0")}.png`);
 
-  // Opening: logo, name and line hold, then settle top left as the window rises.
+/** Problem one: the twelve papers falling into a pile, with their real page count. */
+const PaperPile: React.FC<{ frame: number; look: Look; out: number }> = ({ frame, look, out }) => {
+  const cx = WIN.x + WIN.w / 2;
+  const cy = WIN.y + WIN.h / 2 - 20;
+  const angles = [-9, 6, -4, 11, -13, 3, 8, -6, 14, -2, 5, -10];
+  const dxs = [-210, 150, -60, 230, -260, 40, 190, -150, 260, -30, 90, -200];
+  const dys = [-40, -80, 30, 10, 60, -110, 80, -10, -60, 70, -30, 100];
+  return (
+    <>
+      {COVERS.map((src, i) => {
+        const t = ramp(frame, 10 + i * 7, 34 + i * 7, expo);
+        const w = 250;
+        return (
+          <div
+            key={src}
+            style={{
+              position: "absolute",
+              left: cx + dxs[i] * t - w / 2,
+              top: mix(-460, cy + dys[i] - 162, t) - out * 60,
+              width: w,
+              height: 324,
+              borderRadius: 6,
+              overflow: "hidden",
+              background: "#fff",
+              boxShadow: "0 18px 40px rgba(60,50,30,0.18)",
+              transform: `rotate(${angles[i] * t}deg)`,
+              opacity: Math.min(1, t * 2) * (1 - out),
+            }}
+          >
+            <Img src={staticFile(src)} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          </div>
+        );
+      })}
+      <div style={{ position: "absolute", left: WIN.x, width: WIN.w, top: WIN.y + WIN.h - 10, textAlign: "center", fontFamily: font.sans, fontSize: 30, fontWeight: 600, color: look.sub, opacity: ramp(frame, 100, 120, expo) * (1 - out) }}>
+        12 papers · 224 pages
+      </div>
+    </>
+  );
+};
+
+/** Problem two: an answer whose claim has an empty source slot. */
+const Untraced: React.FC<{ frame: number; look: Look; out: number }> = ({ frame, look, out }) => {
+  const card = ramp(frame, 0, 26, expo);
+  const lines = [470, 520, 430, 500, 380];
+  const mark = ramp(frame, 40, 64, expo);
+  const slot = ramp(frame, 66, 86, expo);
+  return (
+    <div style={{ position: "absolute", left: WIN.x + 150, top: WIN.y + 90, width: 820, opacity: card * (1 - out), transform: `translateY(${(1 - card) * 30 - out * 30}px)` }}>
+      <div style={{ borderRadius: 20, background: "#fff", boxShadow: look.shadow, padding: "40px 44px" }}>
+        {lines.map((w, i) => (
+          <div key={i} style={{ position: "relative", height: 16, width: w, borderRadius: 8, background: "#e7e4dc", marginBottom: 26 }}>
+            {i === 2 ? (
+              <>
+                <div style={{ position: "absolute", left: -6, top: -8, height: 32, width: (w + 12) * mark, borderRadius: 8, background: "rgba(201,77,28,0.16)" }} />
+                <div style={{ position: "absolute", left: w + 18, top: -12, padding: "6px 14px", borderRadius: 10, border: `2.5px dashed ${look.accent}`, color: look.accent, fontFamily: font.sans, fontSize: 20, fontWeight: 700, opacity: slot, transform: `scale(${0.8 + 0.2 * slot})`, transformOrigin: "left center", whiteSpace: "nowrap" }}>
+                  source?
+                </div>
+              </>
+            ) : null}
+          </div>
+        ))}
+      </div>
+      <div style={{ marginTop: 34, fontFamily: font.sans, fontSize: 34, fontWeight: 600, color: look.sub, opacity: ramp(frame, 80, 100, expo) }}>Where did this sentence come from?</div>
+    </div>
+  );
+};
+
+/** The left column for the problem beats: a small label and the line. */
+const ProblemText: React.FC<{ text: string; inn: number; out: number; look: Look }> = ({ text, inn, out, look }) => (
+  <div style={{ position: "absolute", left: COLUMN.x, top: 0, bottom: 0, width: COLUMN.w, display: "flex", flexDirection: "column", justifyContent: "center", fontFamily: font.sans, color: look.text, opacity: inn * (1 - out) }}>
+    <div style={{ fontSize: 22, fontWeight: 650, letterSpacing: "0.2em", textTransform: "uppercase", color: look.accent, marginBottom: 26 }}>The problem</div>
+    <div style={{ overflow: "hidden", paddingBottom: 8 }}>
+      <div style={{ fontSize: 58, fontWeight: 700, lineHeight: 1.12, letterSpacing: "-0.03em", transform: `translateY(${(1 - inn) * 40}px)` }}>{text}</div>
+    </div>
+  </div>
+);
+
+export const Act1: React.FC = () => {
+  const frame = useCurrentFrame();
+  const look = LOOKS.beige;
+  const at = (s: SceneName) => (SCENE[s] === 0 ? 0 : bar(SCENE[s]));
+  const F = { trust: at("trust"), brand: at("brand"), ask: at("ask"), search: at("search"), answer: at("answer"), cite: at("cite"), open: at("open"), passage: at("passage"), end: at("end") };
+
+  // The problem, in two beats; then the brand, which settles top left as the window rises.
+  const papersIn = ramp(frame, 4, 26, expo);
+  const papersOut = ramp(frame, F.trust - 16, F.trust + 4);
+  const trustIn = ramp(frame, F.trust + 6, F.trust + 28, expo);
+  const trustOut = ramp(frame, F.brand - 16, F.brand + 2);
+  const brandIn = ramp(frame, F.brand, F.brand + 26, expo);
   const settle = ramp(frame, F.ask - 50, F.ask - 6);
-  const tagline = ramp(frame, 18, 40, expo) * (1 - ramp(frame, F.ask - 62, F.ask - 40));
+  const fadeCopy = 1 - ramp(frame, F.ask - 62, F.ask - 40);
+  const tagline = ramp(frame, F.brand + 18, F.brand + 40, expo) * fadeCopy;
+  const audience = ramp(frame, F.brand + 46, F.brand + 68, expo) * fadeCopy;
   const rise = ramp(frame, F.ask - 46, F.ask + 4);
 
   // The shots, each the part of the app in play with even margins around it.
@@ -243,9 +304,20 @@ export const Act1: React.FC<{ look: LookName }> = ({ look: lookName }) => {
         </div>
       </div>
 
-      <Brand settle={settle} look={look} />
-      <div style={{ position: "absolute", left: 0, right: 0, top: 600, textAlign: "center", fontFamily: font.sans, fontSize: 46, fontWeight: 520, letterSpacing: "-0.02em", color: look.sub, opacity: tagline, transform: `translateY(${(1 - tagline) * 14}px)` }}>
-        Answers from your own papers, with the source for every claim.
+      {frame < F.trust + 4 ? <PaperPile frame={frame} look={look} out={papersOut} /> : null}
+      {frame < F.trust + 4 ? <ProblemText text="You have more papers than time to read them." inn={papersIn} out={papersOut} look={look} /> : null}
+      {frame >= F.trust && frame < F.brand + 2 ? <Untraced frame={frame - F.trust} look={look} out={trustOut} /> : null}
+      {frame >= F.trust && frame < F.brand + 2 ? <ProblemText text="AI answers you cannot check are a risk in research." inn={trustIn} out={trustOut} look={look} /> : null}
+      {frame >= F.brand ? (
+        <div style={{ position: "absolute", inset: 0, opacity: Math.min(1, brandIn * 1.4), transform: `scale(${0.94 + 0.06 * brandIn})`, transformOrigin: "50% 40%" }}>
+          <Brand settle={settle} look={look} />
+        </div>
+      ) : null}
+      <div style={{ position: "absolute", left: 0, right: 0, top: 590, textAlign: "center", fontFamily: font.sans, fontSize: 50, fontWeight: 600, letterSpacing: "-0.02em", color: look.text, opacity: tagline, transform: `translateY(${(1 - tagline) * 14}px)` }}>
+        A research assistant for your own papers.
+      </div>
+      <div style={{ position: "absolute", left: 0, right: 0, top: 672, textAlign: "center", fontFamily: font.sans, fontSize: 34, fontWeight: 500, color: look.sub, opacity: audience, transform: `translateY(${(1 - audience) * 12}px)` }}>
+        For researchers, students and analysts. Every answer cites the exact page.
       </div>
 
       {caption ? (

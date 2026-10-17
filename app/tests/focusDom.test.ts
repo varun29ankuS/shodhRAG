@@ -8,7 +8,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ANSWER_UI_ATTR, readableSelection, readableText } from '../src/features/focus/focusDom.ts';
+import { ANSWER_UI_ATTR, isAnswerScope, readableSelection, readableText } from '../src/features/focus/focusDom.ts';
 import type { ReadableNode } from '../src/features/focus/focusDom.ts';
 import { selectionTarget, surroundingText } from '../src/features/focus/targets.ts';
 
@@ -108,4 +108,10 @@ test('a selection range reads through its cloned contents (Ask about this and th
   assert.equal(readableSelection(range), 'lowering latency. It scales');
   assert.equal(clones, 1);
   assert.equal(readableSelection({ cloneContents: () => fragment() }), '');
+});
+
+test('only answer scopes (conversation and side thread) read selections without answer controls', () => {
+  assert.equal(isAnswerScope('answer'), true);
+  assert.equal(isAnswerScope('thread'), true);
+  for (const kind of ['document', '', null, undefined]) assert.equal(isAnswerScope(kind), false, String(kind));
 });

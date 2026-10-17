@@ -13,6 +13,24 @@ export function isInFocusOverlay(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest(FOCUS_OVERLAY_SELECTOR) !== null;
 }
 
+/** Attribute marking where selected text can be asked about; its value is the scope's kind. */
+export const ASK_SCOPE_ATTR = 'data-ask-scope';
+
+/** Whether an ask scope's kind is an answer: one in the conversation, or one in a side thread. */
+export function isAnswerScope(kind: string | null | undefined): boolean {
+  return kind === 'answer' || kind === 'thread';
+}
+
+/**
+ * Whether a node is inside an answer's ask scope, the only place citation
+ * pills and grounding flags appear (and so the only place `readableSelection`
+ * is worth its cost).
+ */
+export function inAnswerScope(node: Node | null): boolean {
+  const element = node instanceof Element ? node : node?.parentElement ?? null;
+  return isAnswerScope(element?.closest(`[${ASK_SCOPE_ATTR}]`)?.getAttribute(ASK_SCOPE_ATTR));
+}
+
 /**
  * Attribute on inline controls inside an answer whose text is not answer
  * text: citation pills, grounding flags, copy buttons. Quoted text leaves

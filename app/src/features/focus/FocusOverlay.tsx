@@ -8,7 +8,7 @@ import { sourceLabel } from '../ask/searchResults';
 import type { SearchHit } from '../ask/types';
 import { MAX_SELECTION_CHARS } from './contextBlock';
 import { ExplorationMap } from './ExplorationMap';
-import { readableSelection } from './focusDom';
+import { inAnswerScope, readableSelection } from './focusDom';
 import { focusCommand } from './focusKeys';
 import { crumbs, stackKey } from './focusStack';
 import type { FocusKind, FocusParamValue, FocusTarget } from './focusTypes';
@@ -164,8 +164,11 @@ export function FocusOverlay({ session, onClose }: FocusOverlayProps) {
       const area = stageAreaRef.current;
       const sel = document.getSelection();
       if (!area || !sel || sel.rangeCount === 0 || !sel.anchorNode || !area.contains(sel.anchorNode)) return;
-      // As the reader sees it: citation pills and grounding flags are not attached.
-      const text = readableSelection(sel.getRangeAt(0)).replace(/\s+/g, ' ').trim();
+      // In an answer, as the reader sees it: citation pills and grounding flags are
+      // not attached. Elsewhere (a document, a figure) there are none, and the
+      // native text is cheaper on every selection change.
+      const raw = inAnswerScope(sel.anchorNode) ? readableSelection(sel.getRangeAt(0)) : sel.toString();
+      const text = raw.replace(/\s+/g, ' ').trim();
       setSelection(text ? Array.from(text).slice(0, MAX_SELECTION_CHARS).join('') : null);
     };
     document.addEventListener('selectionchange', onSelection);

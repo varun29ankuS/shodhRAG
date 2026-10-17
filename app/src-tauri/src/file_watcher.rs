@@ -82,9 +82,30 @@ struct FolderSyncProgress<'a> {
 
 struct Watched {
     path: String,
-    /// Dropping the watcher closes the source's change channel, which ends
-    /// its sync task.
+    /// Dropping the watcher and `resync` closes the source's change channel,
+    /// which ends its sync task.
     _watcher: RecommendedWatcher,
+    /// The source's change channel: a sync that gave its turn to a removal
+    /// asks for another sync through it ([`FolderSyncState::request_sync`]).
+    resync: mpsc::UnboundedSender<()>,
+}
+
+/// Counts a removal of a Library source in flight while it lasts: syncs
+/// stop before their next file and give it the turn
+/// ([`FolderSyncState::removals_pending`]).
+struct PendingRemoval<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl<'a> PendingRemoval<'a> {
+    fn begin(count: &'a std::sync::atomic::AtomicUsize) -> Self {
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(count)
+    }
+}
+
+impl Drop for PendingRemoval<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// Managed by Tauri.
@@ -108,6 +129,11 @@ pub struct FolderSyncState {
     /// The files added in chats were given to where they belong in this run
     /// ([`Self::hand_over_uploads_in_turn`]).
     uploads_handed_over: std::sync::atomic::AtomicBool,
+    /// Removals of Library sources asked for and not done yet. A folder's
+    /// sync stops before its next file while one is, gives it the syncs'
+    /// turn, and asks for another sync of its folder ([`Self::sync_in_turn`]),
+    /// so a removal waits for one file at most, however long the sync.
+    removals_pending: std::sync::atomic::AtomicUsize,
 }
 
 /// The file, in the folder manifests' directory, that lists the sources
@@ -172,6 +198,7 @@ impl FolderSyncState {
             removed: Mutex::new(load_removed(&removed_file)),
             removed_file,
             uploads_handed_over: std::sync::atomic::AtomicBool::new(false),
+            removals_pending: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -244,6 +271,8 @@ impl FolderSyncState {
                 "{source_id} holds files added in chats; it is not a Library source"
             ));
         }
+        // Until it is done, a running sync stops before its next file.
+        let _pending = PendingRemoval::begin(&self.removals_pending);
         let recorded_before = self.begin_removal(source_id)?;
         indexing.stop_source(source_id).await;
         let _turn = self.running.lock().await;
@@ -395,15 +424,40 @@ impl FolderSyncState {
         if !handed_over {
             return Err(HANDOVER_PENDING.to_string());
         }
-        sync_folder_with_progress(
-            &source.path,
-            &source.id,
-            &self.store,
-            rag,
-            || !self.is_watched(source),
-            progress,
-        )
-        .await
+        let gave_way = std::sync::atomic::AtomicBool::new(false);
+        let stop = || {
+            if !self.is_watched(source) {
+                return true;
+            }
+            if self
+                .removals_pending
+                .load(std::sync::atomic::Ordering::SeqCst)
+                > 0
+            {
+                gave_way.store(true, std::sync::atomic::Ordering::SeqCst);
+                return true;
+            }
+            false
+        };
+        let result =
+            sync_folder_with_progress(&source.path, &source.id, &self.store, rag, stop, progress)
+                .await;
+        // Stopped for a removal: its progress is saved, and the folder is
+        // synced again once the removal has had the turn.
+        if gave_way.load(std::sync::atomic::Ordering::SeqCst) {
+            self.request_sync(source);
+        }
+        result
+    }
+
+    /// Asks the watched `source` for another sync (its change channel), as a
+    /// change in its folder does.
+    fn request_sync(&self, source: &FolderSourceRef) {
+        let watched = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(w) = watched.get(&source.id).filter(|w| w.path == source.path) {
+            // The task is gone only when the source stopped being watched.
+            let _ = w.resync.send(());
+        }
     }
 
     /// Where the folder manifests are kept.
@@ -441,9 +495,11 @@ impl FolderSyncState {
 
     /// Watches `source` without a watcher task (tests).
     #[cfg(test)]
-    pub(crate) fn watch_quietly(&self, source: &FolderSourceRef) {
+    /// Returns its change channel, which gets the syncs it asks for.
+    pub(crate) fn watch_quietly(&self, source: &FolderSourceRef) -> mpsc::UnboundedReceiver<()> {
         let watcher =
             notify::recommended_watcher(|_: notify::Result<Event>| {}).expect("a file watcher");
+        let (resync, changes) = mpsc::unbounded_channel();
         self.watched
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -452,8 +508,10 @@ impl FolderSyncState {
                 Watched {
                     path: source.path.clone(),
                     _watcher: watcher,
+                    resync,
                 },
             );
+        changes
     }
 
     fn is_watched(&self, source: &FolderSourceRef) -> bool {
@@ -681,6 +739,7 @@ pub async fn sync_source_now(app: &AppHandle, source_id: &str) {
 
 fn watch(app: &AppHandle, source: &FolderSourceRef) -> Result<Watched, String> {
     let (tx, rx) = mpsc::unbounded_channel();
+    let resync = tx.clone();
     let mut watcher = notify::recommended_watcher(move |result: notify::Result<Event>| {
         let changed = match result {
             Ok(event) => is_relevant(&event),
@@ -700,6 +759,7 @@ fn watch(app: &AppHandle, source: &FolderSourceRef) -> Result<Watched, String> {
     Ok(Watched {
         path: source.path.clone(),
         _watcher: watcher,
+        resync,
     })
 }
 
@@ -1239,6 +1299,69 @@ mod tests {
             owners(rag.read().await.document_sources().await.unwrap()),
             [shodh_rag::rag_engine::CHAT_UPLOADS_MAIN]
         );
+    }
+
+    /// A removal of one source asked for while another folder's sync holds
+    /// the turn goes ahead after one file at most: the sync stops, its
+    /// progress saved, asks for another sync, and that one finishes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_removal_waits_for_one_file_of_another_folders_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let rag =
+            RwLock::new(crate::agent_tools::testing::engine_with_search_models(dir.path()).await);
+        let state = FolderSyncState::new(dir.path().join("sync"));
+        let indexing = IndexingState::default();
+        let folder_a = dir.path().join("papers");
+        let folder_b = dir.path().join("notes");
+        std::fs::create_dir_all(&folder_a).unwrap();
+        std::fs::create_dir_all(&folder_b).unwrap();
+        let names = ["a.txt", "b.txt", "c.txt", "d.txt"];
+        for name in names {
+            std::fs::write(
+                folder_a.join(name),
+                format!("{name}: Quiet hours begin at ten in the evening and end at seven in the morning; parties need a week of notice to the neighbours."),
+            )
+            .unwrap();
+        }
+        let a = FolderSourceRef {
+            id: "folder-a".into(),
+            path: folder_a.display().to_string(),
+        };
+        let b = FolderSourceRef {
+            id: "folder-b".into(),
+            path: folder_b.display().to_string(),
+        };
+        let mut a_changes = state.watch_quietly(&a);
+        let _b_changes = state.watch_quietly(&b);
+
+        let started = tokio::sync::Notify::new();
+        let sync = async {
+            let _turn = state.running.lock().await;
+            started.notify_one();
+            state.sync_in_turn(&rag, &a, true, |_, _| {}).await
+        };
+        let removal = async {
+            started.notified().await;
+            state
+                .remove_source(&rag, &indexing, &b.id, Some(b.path.as_str()))
+                .await
+        };
+        let (synced, removed) = tokio::join!(sync, removal);
+        let synced = synced.unwrap();
+        removed.unwrap();
+        assert!(
+            synced.indexed <= 1,
+            "gave way after one file at most: {synced:?}"
+        );
+        assert!(a_changes.try_recv().is_ok(), "another sync was asked for");
+        assert!(state.removed_ids().contains(&b.id));
+
+        // The sync asked for goes on with the rest.
+        let _turn = state.running.lock().await;
+        let rest = state.sync_in_turn(&rag, &a, true, |_, _| {}).await.unwrap();
+        assert_eq!(synced.indexed + rest.indexed, names.len(), "{rest:?}");
+        let rows = rag.read().await.document_sources().await.unwrap();
+        assert_eq!(file_count(&rows, &a.id), names.len());
     }
 
     /// The removal waits for the sync that holds the turn, so that sync

@@ -103,6 +103,15 @@ pub fn report(notice: StoreNotice) {
         if let Err(e) = app.emit(STORE_NOTICE_EVENT, &notice) {
             tracing::warn!(error = %e, "could not emit {STORE_NOTICE_EVENT}");
         }
+        // The message names the file and its error: the window shows it; the
+        // desktop notification only says what happened. Delivered later, off
+        // the reporting store's lock.
+        crate::notifications::problem(
+            app,
+            notice.id.clone(),
+            notice.title.clone(),
+            "Open Shodh to see what happened and what to do.",
+        );
     }
 }
 

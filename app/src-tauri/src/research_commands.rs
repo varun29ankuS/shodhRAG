@@ -576,14 +576,37 @@ pub async fn results_extract(
         None
     };
     let services = state.services().await?;
-    let report = services
+    let extracted = services
         .results
         .extract(
             &file_path,
             Scope::for_workspace(workspace.as_deref()),
             model,
         )
-        .await?;
+        .await;
+    // Announced while the window is not in front (the paper page shows it otherwise).
+    let report = match extracted {
+        Ok(report) => report,
+        Err(e) => {
+            let name = Path::new(&file_path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| file_path.clone());
+            crate::notifications::announce(
+                &app,
+                crate::notifications::results_outcome(&file_path, &name, None),
+            );
+            return Err(e.into());
+        }
+    };
+    crate::notifications::announce(
+        &app,
+        crate::notifications::results_outcome(
+            &report.file_path,
+            &report.file_name,
+            Some(report.added),
+        ),
+    );
     broadcast_change(&app, "result", Some(&report.file_path));
     Ok(report)
 }

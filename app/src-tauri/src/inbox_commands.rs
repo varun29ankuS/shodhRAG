@@ -7,10 +7,10 @@
 //! memory suggestions are not stored here: [`inbox_list`] reads them from the learner
 //! and merges them in. Every change is broadcast as [`INBOX_CHANGED_EVENT`].
 //!
-//! Desktop notifications (tauri-plugin-notification 2.3) carry a title and a body only
-//! on Windows: no action buttons, and a click does not reach the app (see
-//! `reminders.rs`). An approval that arrives while the window is not focused is
-//! announced that way; Approve / Deny live in the Inbox and in the chat.
+//! Desktop notifications go through [`crate::notifications`]: the agent event forwarder
+//! announces an approval there (title and body only; Approve / Deny live in the Inbox
+//! and in the chat), and [`post`] hands it every item, so a folder's indexing or sync
+//! that ended is announced as finished work or a problem.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,7 +23,6 @@ use shodh_rag::inbox::{
 };
 use shodh_rag::user_memory::learn::{ProposalAction, ProposalStatus, ProposalView};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_plugin_notification::NotificationExt;
 use tokio::sync::OnceCell;
 
 use crate::audit_commands::AuditState;
@@ -99,8 +98,10 @@ fn broadcast(app: &AppHandle) {
 }
 
 /// Adds or updates an item and tells the Inbox. Failures are logged: the Inbox is a
-/// view of work that already happened and never fails that work.
+/// view of work that already happened and never fails that work. The item may also
+/// raise a desktop notification ([`crate::notifications::on_inbox_item`]).
 pub async fn post(app: &AppHandle, item: NewInboxItem) {
+    crate::notifications::on_inbox_item(app, &item);
     let state = app.state::<InboxState>().inner().clone();
     let id = item.id.clone();
     match state.run(move |store| store.put(&item, Utc::now())).await {
@@ -237,27 +238,6 @@ pub fn approval_item(
         detail: Some(format!("The assistant waits for your approval ({tool}).")),
         link: Some(conversation_link(conversation_id)),
         data: json!({ "sessionId": session_id, "stepId": step_id }),
-    }
-}
-
-/// Shows a desktop notification for an approval when the main window is not focused
-/// (minimised, hidden in the tray, or behind another window).
-pub fn notify_if_unfocused(app: &AppHandle, title: &str) {
-    let focused = app
-        .get_webview_window("main")
-        .and_then(|w| w.is_focused().ok())
-        .unwrap_or(false);
-    if focused {
-        return;
-    }
-    if let Err(e) = app
-        .notification()
-        .builder()
-        .title("Shodh needs your approval")
-        .body(title)
-        .show()
-    {
-        tracing::warn!(target: "shodh::inbox", error = %e, "approval notification not shown");
     }
 }
 

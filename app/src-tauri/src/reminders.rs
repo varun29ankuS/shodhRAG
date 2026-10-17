@@ -18,6 +18,7 @@
 //!   ([`list_missed_reminders`] / [`dismiss_missed_reminders`]) and a single
 //!   native notification says how many there were.
 //!
+//! Notifications go through [`crate::notifications`] (category: reminders).
 //! What Windows supports (tauri-plugin-notification 2.3, desktop): a title
 //! and a body. The plugin's action types and click callbacks are mobile
 //! only, so a toast cannot carry Snooze / Mark done buttons and clicking it
@@ -31,7 +32,6 @@ use chrono::{DateTime, LocalResult, NaiveDateTime, TimeZone, Timelike, Utc};
 use serde::Serialize;
 use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus, NewInboxItem};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_plugin_notification::NotificationExt;
 use tokio::sync::Notify;
 
 use crate::calendar_commands::CALENDAR_CHANGED_EVENT;
@@ -230,10 +230,11 @@ async fn mark_fired(store: &CalendarStore, reminder: &DueReminder) -> bool {
     }
 }
 
+/// A desktop notification of the reminders category: shown while the window is not
+/// in front (the in-app reminder toast covers it otherwise) and the user has not
+/// turned reminders off in Settings → Notifications.
 fn notify(app: &AppHandle, title: &str, body: &str) {
-    if let Err(e) = app.notification().builder().title(title).body(body).show() {
-        tracing::warn!(error = %e, "could not show a reminder notification");
-    }
+    crate::notifications::notify(app, crate::notifications::Category::Reminders, title, body);
 }
 
 fn due_text(reminder: &DueReminder) -> String {

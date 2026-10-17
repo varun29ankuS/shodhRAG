@@ -17,7 +17,7 @@ import { onWorkspacesChanged, workspaceError, workspacesApi } from './api';
 import { OverviewTab } from './OverviewTab';
 import { SourcesTab } from './SourcesTab';
 import type { LibraryFolder } from './SourcesTab';
-import { pathWithin, sourceSummary, WORKSPACE_TAB_LABELS, WORKSPACE_TABS } from './model';
+import { deleteWorkspaceQuestion, pathWithin, sourceSummary, WORKSPACE_TAB_LABELS, WORKSPACE_TABS } from './model';
 import type { WorkspaceDetail, WorkspaceTab } from './types';
 import { WorkspaceIcon } from './WorkspaceIcon';
 import { FOCUS_RING, PRIMARY_BUTTON, QUIET_BUTTON, SECTION_TITLE } from './ui';
@@ -216,7 +216,7 @@ export function WorkspacePage({
   const remove = async () => {
     setMenuOpen(false);
     const confirmed = await ask(
-      `Delete the workspace “${detail.name}”? Its instructions and their history and its list of sources are deleted. Its ${chatIds.length} ${chatIds.length === 1 ? 'chat moves' : 'chats move'} to No workspace, and so do its tasks; your files, snippets and memories are kept.`,
+      deleteWorkspaceQuestion(detail.name, chatIds.length),
       { title: 'Delete workspace', kind: 'warning', okLabel: 'Delete', cancelLabel: 'Keep' },
     );
     if (!confirmed) return;

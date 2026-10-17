@@ -20,6 +20,7 @@ use shodh_rag::harness::tools::sources::{load_sources, SourceKind as IndexKind};
 use shodh_rag::harness::tools::ScopedSnippet;
 use shodh_rag::research::scopes::{settle_scopes, SettledScopes};
 use shodh_rag::research::ResearchError;
+use shodh_rag::statements::Scope;
 use shodh_rag::workspaces::{
     AddReport, InstructionVersion, NewSource, NewWorkspace, SourceKind, Workspace, WorkspaceAuthor,
     WorkspaceDetail, WorkspaceError, WorkspacePatch, WorkspaceResult, WorkspaceSource,
@@ -385,11 +386,13 @@ pub async fn workspaces_remove_source(
 }
 
 /// Deletes a workspace (its instructions history and source list; never the sources).
-/// Its chats and tasks are kept and move to "No workspace".
+/// Its chats and tasks are kept and move to "No workspace"; its memories, snippets and
+/// results are kept and become global ([`release_workspace_statements`]).
 #[tauri::command]
 pub async fn workspaces_delete(
     app: AppHandle,
     state: State<'_, WorkspaceState>,
+    memory: State<'_, MemoryState>,
     id: String,
 ) -> WorkspaceCommandResult<bool> {
     let dir = data_dir(&app)?;
@@ -407,11 +410,48 @@ pub async fn workspaces_delete(
     if removed {
         crate::mcp_commands::forget_workspace(&app, &workspace_id);
     }
+    // In the background (opening the memory store may wait for the index), and not fatal:
+    // the workspace is gone either way, and what is left in its scope becomes global at
+    // the next start (`settle_statement_scopes`).
+    if removed {
+        let memory = memory.inner().clone();
+        let released = workspace_id.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(message) = release_workspace_statements(&memory, &released).await {
+                tracing::warn!(target: "shodh::workspaces", workspace_id = %released, %message, "the workspace's memories, snippets and results were not made global");
+            }
+        });
+    }
     let detached = detach_conversations(&dir, &workspace_id)?;
     if removed || detached > 0 {
         broadcast_change(&app, Some(&workspace_id));
     }
     Ok(removed)
+}
+
+/// Moves the statements of `workspace_id`, a workspace being deleted, to global: its
+/// memories, the snippets made in its chats and any results, with their history. Deleting
+/// a workspace keeps its chats and tasks, and so keeps what was learned and saved in them;
+/// they are then recalled and listed everywhere, like everything outside a workspace.
+/// Returns the statements moved.
+pub(crate) async fn release_workspace_statements(
+    memory: &MemoryState,
+    workspace_id: &str,
+) -> Result<u64, String> {
+    let scope = Scope::for_workspace(Some(workspace_id));
+    if scope == Scope::Global {
+        return Ok(0);
+    }
+    let service = memory.service().await?;
+    let moved = service
+        .store()
+        .rescope(&scope, &Scope::Global, &[], None)
+        .await
+        .map_err(|e| e.to_string())?;
+    if moved > 0 {
+        tracing::info!(target: "shodh::workspaces", workspace_id, moved, "a deleted workspace's statements moved to global");
+    }
+    Ok(moved)
 }
 
 /// `workspace_state` key of the one-time move of the snippets and results the Library made
@@ -966,6 +1006,134 @@ mod tests {
             source_id: id.into(),
             folder: folder.into(),
         }
+    }
+
+    fn saved_snippet(
+        scope: Scope,
+        author: shodh_rag::research::snippets::SnippetAuthor,
+        text: &str,
+    ) -> shodh_rag::research::snippets::NewSnippet {
+        shodh_rag::research::snippets::NewSnippet {
+            file_path: "C:/papers/ann.pdf".into(),
+            page: 2,
+            rect: shodh_rag::research::pdf_text::PageRect {
+                x: 10.0,
+                y: 20.0,
+                width: 200.0,
+                height: 40.0,
+            },
+            text: text.into(),
+            image_png: None,
+            title: None,
+            note: None,
+            tags: Vec::new(),
+            kind: shodh_rag::research::snippets::SnippetKind::Passage,
+            scope,
+            author,
+        }
+    }
+
+    /// Deleting a workspace makes its memories, snippets and results global, so nothing
+    /// it held is lost or stranded. At the next start, what older versions filed under a
+    /// Library source id (or a workspace deleted before) becomes global too, while a live
+    /// workspace keeps the assistant's snippets; the one-time step runs once.
+    #[tokio::test]
+    async fn statements_no_workspace_run_could_see_become_global() {
+        use shodh_rag::research::snippets::SnippetAuthor;
+        let t = crate::agent_tools::testing::host().await;
+        let services = t.host.research.services().await.unwrap();
+        let store = t.host.memory.service().await.unwrap().store().clone();
+        let create = |name: &str| {
+            let new = NewWorkspace {
+                name: name.to_string(),
+                ..NewWorkspace::default()
+            };
+            move |s: &WorkspaceStore| s.create(&new, WorkspaceAuthor::User)
+        };
+        let thesis = t.host.workspaces.run(create("Thesis")).await.unwrap();
+        let draft = t.host.workspaces.run(create("Draft")).await.unwrap();
+        let agent = || SnippetAuthor::Agent {
+            model: "assistant".into(),
+        };
+        let from_library = services
+            .snippets
+            .create(saved_snippet(
+                Scope::Workspace("src-papers".into()),
+                SnippetAuthor::User,
+                "Graph indexes reach a recall of 95 percent on SIFT1M at ten neighbours.",
+            ))
+            .await
+            .unwrap();
+        let in_thesis = services
+            .snippets
+            .create(saved_snippet(
+                Scope::Workspace(thesis.id.clone()),
+                agent(),
+                "Quantisation trades recall for memory: IVF-PQ keeps 71 percent at ten.",
+            ))
+            .await
+            .unwrap();
+        let in_draft = services
+            .snippets
+            .create(saved_snippet(
+                Scope::Workspace(draft.id.clone()),
+                agent(),
+                "The draft compares graph and quantisation indexes on two datasets.",
+            ))
+            .await
+            .unwrap();
+        let scope_of = |id: String| {
+            let store = store.clone();
+            async move { store.get(&id).await.unwrap().scope }
+        };
+
+        // Deleting Draft: its snippet becomes global.
+        let draft_id = draft.id.clone();
+        assert!(t
+            .host
+            .workspaces
+            .run(move |s| s.delete(&draft_id))
+            .await
+            .unwrap());
+        assert_eq!(
+            release_workspace_statements(&t.host.memory, &draft.id)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(scope_of(in_draft.statement_id.clone()).await, Scope::Global);
+
+        // The next start: the Library-made snippet becomes global, Thesis keeps its own.
+        let settled = settle_statement_scopes(&t.host.workspaces, &t.host.memory)
+            .await
+            .unwrap();
+        assert_eq!(settled.moved(), 1, "{settled:?}");
+        assert_eq!(
+            scope_of(from_library.statement_id.clone()).await,
+            Scope::Global
+        );
+        assert_eq!(
+            scope_of(in_thesis.statement_id.clone()).await,
+            Scope::Workspace(thesis.id.clone())
+        );
+        assert!(t
+            .host
+            .workspaces
+            .run(|s| s.state(LIBRARY_RESEARCH_KEY))
+            .await
+            .unwrap()
+            .is_some());
+        let again = settle_statement_scopes(&t.host.workspaces, &t.host.memory)
+            .await
+            .unwrap();
+        assert_eq!(again.moved(), 0);
+        // Releasing the global scope moves nothing.
+        assert_eq!(
+            release_workspace_statements(&t.host.memory, " ")
+                .await
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

@@ -185,11 +185,13 @@ export interface FolderSyncOutcome {
 export function applyFolderSync(source: LibrarySource, outcome: FolderSyncOutcome): LibrarySource {
   if (source.id !== outcome.sourceId || source.status !== 'ready') return source;
   const error = typeof outcome.error === 'string' && outcome.error ? outcome.error : undefined;
+  // The sync is over: its progress goes either way.
+  const { syncProgress: _g, ...current } = source;
   // No report: the sync did not run.
-  if (error && typeof outcome.files !== 'number') return { ...source, syncError: error };
+  if (error && typeof outcome.files !== 'number') return { ...current, syncError: error };
   const failures = toFailures(outcome.failures);
   const changed = (outcome.indexed ?? 0) + (outcome.removed ?? 0) > 0;
-  const { syncError: _s, failures: _f, syncProgress: _g, ...rest } = source;
+  const { syncError: _s, failures: _f, ...rest } = current;
   return {
     ...rest,
     fileCount: Math.max(0, (outcome.files ?? source.fileCount) - failures.length),

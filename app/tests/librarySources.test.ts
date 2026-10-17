@@ -176,6 +176,10 @@ test('a sync chunking files again shows how far it is, until its outcome; never 
   // The sync's outcome clears it.
   const done = applyFolderSync(healing, { sourceId: 'folder-1', at, indexed: 400, removed: 0, files: 12, failures: [] });
   assert.equal(done.syncProgress, undefined);
+  // So does a sync that ended in an error.
+  const failed = applyFolderSync(healing, { sourceId: 'folder-1', at, error: 'The folder manifest could not be saved' });
+  assert.equal(failed.syncProgress, undefined);
+  assert.equal(failed.syncError, 'The folder manifest could not be saved');
   // Another source's progress, a source being indexed, or counts that do not read are ignored.
   assert.equal(applyFolderSyncProgress(source, { sourceId: 'other', done: 1, total: 2 }), source);
   const indexing = { ...source, status: 'indexing' as const };

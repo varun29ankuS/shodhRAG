@@ -20,7 +20,19 @@ pub enum ProviderErrorKind {
     ModelUnavailable,
     /// The API key was rejected (401/403).
     Auth,
-    /// Anything else (bad request, context too long, network, …).
+    /// The provider did not answer in time (408, 504, "timed out").
+    Timeout,
+    /// The connection broke or never opened, or the stream ended mid-answer.
+    Network,
+    /// The provider refused the request itself (400/422 without a known reason).
+    InvalidRequest,
+    /// The question with its sources is longer than the model accepts.
+    ContextTooLong,
+    /// A content filter or moderation stopped the request or the answer.
+    ContentFiltered,
+    /// The provider answered with nothing: no text and no tool call.
+    EmptyResponse,
+    /// Anything else.
     Other,
 }
 
@@ -33,6 +45,10 @@ pub struct ProviderError {
     pub status: Option<u16>,
     /// Seconds to wait before retrying, when the provider said.
     pub retry_after_secs: Option<u32>,
+    /// The provider behind a router that failed (OpenRouter's
+    /// `metadata.provider_name`), when the message names one.
+    #[serde(default)]
+    pub upstream: Option<String>,
 }
 
 impl ProviderError {
@@ -67,7 +83,79 @@ pub fn classify(message: &str, retryable: Option<bool>, now_ms: u64) -> Provider
         kind,
         status,
         retry_after_secs,
+        upstream: upstream_provider(message),
     }
+}
+
+/// Longest upstream provider name kept.
+const MAX_UPSTREAM_CHARS: usize = 64;
+
+/// The upstream provider a router names in its error body
+/// (`"provider_name":"Nvidia"`, also inside an escaped JSON string).
+pub fn upstream_provider(message: &str) -> Option<String> {
+    const KEY: &str = "provider_name";
+    let at = message.find(KEY)?;
+    let after = message[at + KEY.len()..]
+        .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '"' | '\\' | ':'));
+    let name: String = after
+        .chars()
+        .take_while(|c| !matches!(c, '"' | '\\' | ',' | '}') && !c.is_control())
+        .take(MAX_UPSTREAM_CHARS + 1)
+        .collect();
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > MAX_UPSTREAM_CHARS || name == "null" {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// Longest provider detail shown behind "Details" and written to the log.
+pub const MAX_DETAIL_CHARS: usize = 2_000;
+
+/// Provider text fit to show and log: `secret` (the API key, when known)
+/// and anything shaped like a credential (`Bearer …`, `sk-…`) replaced by
+/// `[REDACTED]`, then cut to `max` characters.
+pub fn safe_detail(text: &str, secret: Option<&str>, max: usize) -> String {
+    let unkeyed = match secret.map(str::trim) {
+        Some(key) if key.len() >= 8 => text.replace(key, "[REDACTED]"),
+        _ => text.to_string(),
+    };
+    super::truncate_chars(mask_credentials(&unkeyed).trim(), max)
+}
+
+fn is_token_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')
+}
+
+/// Replace bearer tokens and `sk-` keys. A masked key such as
+/// `sk-proj-****abcd` (as OpenAI echoes it) stays: `*` ends the token.
+fn mask_credentials(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut after_bearer = false;
+    let mut chars = text.char_indices().peekable();
+    while let Some((start, c)) = chars.next() {
+        if !is_token_char(c) {
+            out.push(c);
+            if !c.is_whitespace() {
+                after_bearer = false;
+            }
+            continue;
+        }
+        let mut end = start + c.len_utf8();
+        while let Some(&(at, next)) = chars.peek() {
+            if !is_token_char(next) {
+                break;
+            }
+            end = at + next.len_utf8();
+            chars.next();
+        }
+        let token = &text[start..end];
+        let credential =
+            (token.starts_with("sk-") && token.len() >= 20) || (after_bearer && token.len() >= 8);
+        out.push_str(if credential { "[REDACTED]" } else { token });
+        after_bearer = token.eq_ignore_ascii_case("bearer");
+    }
+    out
 }
 
 const AUTH_MARKERS: &[&str] = &[
@@ -125,7 +213,6 @@ const UNAVAILABLE_MARKERS: &[&str] = &[
     "service unavailable",
     "\"unavailable\"",
     "bad gateway",
-    "gateway timeout",
     "internal server error",
     "provider returned error",
     "upstream error",
@@ -135,21 +222,75 @@ fn contains_any(text: &str, markers: &[&str]) -> bool {
     markers.iter().any(|m| text.contains(m))
 }
 
-/// Refusals of the request itself (moderation, a prompt too long for the
-/// model): another try or a key change does not help, whatever the status.
-const REQUEST_MARKERS: &[&str] = &[
+/// Moderation and content filters (OpenRouter answers a moderation refusal
+/// with 403; it is not a bad key).
+const FILTER_MARKERS: &[&str] = &[
     "requires moderation",
     "was flagged",
     "content_policy",
-    "maximum context length",
-    "context_length_exceeded",
-    "prompt is too long",
+    "content_filter",
+    "content filter",
 ];
 
+/// A prompt longer than the model accepts.
+const CONTEXT_MARKERS: &[&str] = &[
+    "context length",
+    "context_length_exceeded",
+    "context window",
+    "prompt is too long",
+    "input is too long",
+    "maximum prompt length",
+];
+
+const TIMEOUT_MARKERS: &[&str] = &[
+    "timed out",
+    "timeout",
+    "time out",
+    "deadline exceeded",
+    "deadline_exceeded",
+    "stream stalled",
+    "did not answer in time",
+];
+
+const EMPTY_MARKERS: &[&str] = &[
+    "empty response",
+    "empty answer",
+    "no choices returned",
+    "returned no choices",
+    "no content returned",
+];
+
+const NETWORK_MARKERS: &[&str] = &[
+    "connection reset",
+    "connection refused",
+    "connection closed",
+    "connection aborted",
+    "connection error",
+    "econnreset",
+    "econnrefused",
+    "enotfound",
+    "network error",
+    "network_error",
+    "fetch failed",
+    "socket hang up",
+    "dns error",
+    "error sending request",
+    "broken pipe",
+    "unexpected eof",
+    "stream closed before",
+    "stream ended before",
+];
+
+const INVALID_REQUEST_MARKERS: &[&str] = &["invalid_request", "bad request", "invalid request"];
+
 fn kind_of(lower: &str, status: Option<u16>, retryable: Option<bool>) -> ProviderErrorKind {
-    // OpenRouter answers a moderation refusal with 403; it is not a bad key.
-    if contains_any(lower, REQUEST_MARKERS) {
-        return ProviderErrorKind::Other;
+    // Refusals of the request itself first: another try or a key change does
+    // not help, whatever the status.
+    if contains_any(lower, FILTER_MARKERS) {
+        return ProviderErrorKind::ContentFiltered;
+    }
+    if contains_any(lower, CONTEXT_MARKERS) || status == Some(413) {
+        return ProviderErrorKind::ContextTooLong;
     }
     // Quota before auth: some providers send quota failures as 403.
     if contains_any(lower, QUOTA_MARKERS) || status == Some(402) {
@@ -161,14 +302,26 @@ fn kind_of(lower: &str, status: Option<u16>, retryable: Option<bool>) -> Provide
     if contains_any(lower, RATE_MARKERS) || status == Some(429) {
         return ProviderErrorKind::RateLimited;
     }
+    if contains_any(lower, TIMEOUT_MARKERS) || matches!(status, Some(408) | Some(504)) {
+        return ProviderErrorKind::Timeout;
+    }
+    if contains_any(lower, EMPTY_MARKERS) {
+        return ProviderErrorKind::EmptyResponse;
+    }
+    if contains_any(lower, NETWORK_MARKERS) {
+        return ProviderErrorKind::Network;
+    }
     if contains_any(lower, UNAVAILABLE_MARKERS)
-        || matches!(status, Some(404) | Some(500..=504) | Some(529))
+        || matches!(status, Some(404) | Some(500..=503) | Some(529))
     {
         return ProviderErrorKind::ModelUnavailable;
     }
     // An upstream "rate-limited" phrasing without the markers above.
     if lower.contains("rate-limited") || lower.contains("ratelimited") {
         return ProviderErrorKind::RateLimited;
+    }
+    if contains_any(lower, INVALID_REQUEST_MARKERS) || matches!(status, Some(400) | Some(422)) {
+        return ProviderErrorKind::InvalidRequest;
     }
     if retryable == Some(true) && status.is_none() {
         return ProviderErrorKind::ModelUnavailable;
@@ -448,16 +601,11 @@ mod tests {
 
     #[test]
     fn other_errors_stay_other() {
-        assert_eq!(
-            kind(
-                r#"400 {"error":{"message":"This model's maximum context length is 128000 tokens.","code":400}}"#
-            ),
-            ProviderErrorKind::Other
-        );
         assert_eq!(kind("omp exited"), ProviderErrorKind::Other);
         assert_eq!(
-            classify("connection reset", Some(true), NOW_MS).kind,
-            ProviderErrorKind::ModelUnavailable
+            classify("something odd", Some(true), NOW_MS).kind,
+            ProviderErrorKind::ModelUnavailable,
+            "the runtime's retry hint without a status reads as a passing outage"
         );
     }
 
@@ -465,10 +613,159 @@ mod tests {
     fn refusals_of_the_request_are_not_key_or_rate_problems() {
         let moderation = r#"403 {"error":{"message":"meta-llama/llama-3-70b requires moderation on OpenRouter. Your input was flagged for \"harassment\".","code":403,"metadata":{"reasons":["harassment"],"flagged_input":"..."}}}"#;
         let e = classify(moderation, None, NOW_MS);
-        assert_eq!(e.kind, ProviderErrorKind::Other);
+        assert_eq!(e.kind, ProviderErrorKind::ContentFiltered);
         assert!(!e.fallback_helps());
         let too_long = r#"400 {"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}"#;
-        assert_eq!(kind(too_long), ProviderErrorKind::Other);
+        assert_eq!(kind(too_long), ProviderErrorKind::ContextTooLong);
+        assert_eq!(
+            kind(
+                r#"400 {"error":{"message":"This model's maximum context length is 128000 tokens.","code":400}}"#
+            ),
+            ProviderErrorKind::ContextTooLong
+        );
+        assert_eq!(
+            kind("Provider finish_reason: content_filter"),
+            ProviderErrorKind::ContentFiltered
+        );
+    }
+
+    #[test]
+    fn the_field_report_is_a_timeout() {
+        // What the tester saw (an upstream provider's own failure text).
+        let field = "[ERROR: Agent failed (Function process_single_item_agent timed out after 90.0 seconds), API failed (API request returned None after all retries)]";
+        let e = classify(field, None, NOW_MS);
+        assert_eq!(e.kind, ProviderErrorKind::Timeout);
+        assert_eq!(e.status, None);
+        assert_eq!(e.retry_after_secs, None);
+        assert_eq!(
+            kind(r#"408 {"error":{"message":"Request timed out","code":408}}"#),
+            ProviderErrorKind::Timeout
+        );
+        assert_eq!(kind("504 Gateway Timeout"), ProviderErrorKind::Timeout);
+        assert_eq!(
+            kind("OpenAI completions stream stalled while waiting for the next event"),
+            ProviderErrorKind::Timeout
+        );
+    }
+
+    #[test]
+    fn openrouter_status_codes_map_to_kinds() {
+        let body = |code: u16, message: &str| {
+            format!(r#"{code} {{"error":{{"code":{code},"message":"{message}"}}}}"#)
+        };
+        let cases = [
+            (
+                400,
+                "Invalid model parameters",
+                ProviderErrorKind::InvalidRequest,
+            ),
+            (401, "Invalid credentials", ProviderErrorKind::Auth),
+            (
+                402,
+                "Insufficient credits",
+                ProviderErrorKind::QuotaExhausted,
+            ),
+            (
+                403,
+                "Your input was flagged",
+                ProviderErrorKind::ContentFiltered,
+            ),
+            (408, "Your request timed out", ProviderErrorKind::Timeout),
+            (
+                429,
+                "You are being rate limited",
+                ProviderErrorKind::RateLimited,
+            ),
+            (
+                502,
+                "Your chosen model is down",
+                ProviderErrorKind::ModelUnavailable,
+            ),
+            (
+                503,
+                "No available model provider",
+                ProviderErrorKind::ModelUnavailable,
+            ),
+        ];
+        for (code, message, expected) in cases {
+            let e = classify(&body(code, message), None, NOW_MS);
+            assert_eq!(e.kind, expected, "{code} {message}");
+            assert_eq!(e.status, Some(code));
+        }
+    }
+
+    #[test]
+    fn network_and_empty_answers() {
+        assert_eq!(
+            classify("connection reset by peer", Some(true), NOW_MS).kind,
+            ProviderErrorKind::Network
+        );
+        assert_eq!(
+            kind("error sending request for url (https://openrouter.ai/api/v1/chat/completions)"),
+            ProviderErrorKind::Network
+        );
+        assert_eq!(
+            kind("OpenAI completions stream closed before a finish_reason was received"),
+            ProviderErrorKind::Network
+        );
+        assert_eq!(
+            kind("Provider finish_reason: network_error"),
+            ProviderErrorKind::Network
+        );
+        assert_eq!(
+            kind("The provider sent an empty response"),
+            ProviderErrorKind::EmptyResponse
+        );
+        assert_eq!(
+            kind("Provider returned error finish_reason"),
+            ProviderErrorKind::ModelUnavailable
+        );
+    }
+
+    #[test]
+    fn the_upstream_provider_is_named() {
+        let body = r#"502 {"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"upstream died","provider_name":"Nvidia"}}}"#;
+        assert_eq!(
+            classify(body, None, NOW_MS).upstream.as_deref(),
+            Some("Nvidia")
+        );
+        // Inside an escaped JSON string.
+        assert_eq!(
+            upstream_provider(r#"{\"provider_name\": \"Chutes\"}"#).as_deref(),
+            Some("Chutes")
+        );
+        assert_eq!(upstream_provider(r#"{"provider_name":null}"#), None);
+        assert_eq!(upstream_provider("no name here"), None);
+        let long = format!(r#"{{"provider_name":"{}"}}"#, "x".repeat(200));
+        assert_eq!(upstream_provider(&long), None);
+    }
+
+    #[test]
+    fn details_never_carry_credentials() {
+        let key = "sk-or-v1-0123456789abcdef0123456789abcdef";
+        let text =
+            format!("401 Authorization: Bearer {key} rejected; key {key}; other sk-proj-****abcd");
+        let safe = safe_detail(&text, Some(key), MAX_DETAIL_CHARS);
+        assert!(!safe.contains(key), "{safe}");
+        assert!(!safe.contains("0123456789abcdef"), "{safe}");
+        assert!(safe.contains("Bearer [REDACTED]"), "{safe}");
+        assert!(
+            safe.contains("sk-proj-****abcd"),
+            "a masked key stays: {safe}"
+        );
+        // Without the key: credential-shaped tokens are still masked.
+        let unknown = safe_detail(
+            "Authorization: Bearer abcdefgh12345678 and sk-ant-api03-ABCDEFGHIJKLMNOP",
+            None,
+            MAX_DETAIL_CHARS,
+        );
+        assert!(!unknown.contains("abcdefgh12345678"), "{unknown}");
+        assert!(!unknown.contains("ABCDEFGHIJKLMNOP"), "{unknown}");
+        // Cut on a character boundary.
+        let long = "é".repeat(5_000);
+        let cut = safe_detail(&long, None, 100);
+        assert_eq!(cut.chars().count(), 100);
+        assert!(cut.ends_with('…'));
     }
 
     #[test]
@@ -512,5 +809,14 @@ mod tests {
         assert_eq!(v["kind"], "rate_limited");
         assert_eq!(v["status"], 429);
         assert_eq!(v["retryAfterSecs"], 5);
+        assert_eq!(v["upstream"], serde_json::Value::Null);
+        assert_eq!(
+            serde_json::to_value(ProviderErrorKind::ContextTooLong).unwrap(),
+            "context_too_long"
+        );
+        // Stored before `upstream` existed.
+        let old: ProviderError =
+            serde_json::from_str(r#"{"kind":"auth","status":401,"retryAfterSecs":null}"#).unwrap();
+        assert_eq!(old.upstream, None);
     }
 }

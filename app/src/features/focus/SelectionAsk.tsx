@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { MessageSquareText } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { FOCUS_OVERLAY_SELECTOR, readableText } from './focusDom';
+import { FOCUS_OVERLAY_SELECTOR, readableSelection, readableText } from './focusDom';
 import { notifyDepthLimit, useFocus } from './FocusContext';
 import type { DrillResult } from './FocusContext';
 import { MAX_SELECTED_CHARS, selectionTarget } from './targets';
@@ -82,7 +82,7 @@ function readSelection(focus: NonNullable<ReturnType<typeof useFocus>>): Omit<Pe
   if (kind === 'answer' || kind === 'thread') {
     // The selection as the reader sees it: pills and flags it crosses are not
     // quoted, and it still matches the paragraph's text below.
-    const text = readableText(range.cloneContents()).slice(0, MAX_SELECTED_CHARS * 2);
+    const text = readableSelection(range).slice(0, MAX_SELECTED_CHARS * 2);
     if (text.replace(/\s+/g, ' ').trim().length < 2) return null;
     const block = common?.closest<HTMLElement>(BLOCK_SELECTOR);
     const context = nearText(block && scope.contains(block) ? block : scope, text);

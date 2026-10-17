@@ -8,7 +8,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ANSWER_UI_ATTR, readableText } from '../src/features/focus/focusDom.ts';
+import { ANSWER_UI_ATTR, readableSelection, readableText } from '../src/features/focus/focusDom.ts';
 import type { ReadableNode } from '../src/features/focus/focusDom.ts';
 import { selectionTarget, surroundingText } from '../src/features/focus/targets.ts';
 
@@ -82,4 +82,17 @@ test('a long paragraph is windowed around a clean selection', () => {
   const long = el({}, [], text(`${'Background sentence. '.repeat(60)}SPANN lowers latency.`), pill(1), pill(2), text(` ${'More text here. '.repeat(60)}`));
   const window = surroundingText(readableText(long), readableText(fragment(text('SPANN lowers latency.'), pill(1))));
   assert.ok(window.includes('SPANN lowers latency. More'), window);
+});
+
+test('a selection range reads through its cloned contents (Ask about this and the pop-out share it)', () => {
+  let clones = 0;
+  const range = {
+    cloneContents: () => {
+      clones += 1;
+      return fragment(text('lowering latency.'), pill(1), invalid(4), text(' It scales'));
+    },
+  };
+  assert.equal(readableSelection(range), 'lowering latency. It scales');
+  assert.equal(clones, 1);
+  assert.equal(readableSelection({ cloneContents: () => fragment() }), '');
 });

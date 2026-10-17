@@ -8,6 +8,7 @@ import { sourceLabel } from '../ask/searchResults';
 import type { SearchHit } from '../ask/types';
 import { MAX_SELECTION_CHARS } from './contextBlock';
 import { ExplorationMap } from './ExplorationMap';
+import { readableSelection } from './focusDom';
 import { focusCommand } from './focusKeys';
 import { crumbs, stackKey } from './focusStack';
 import type { FocusKind, FocusParamValue, FocusTarget } from './focusTypes';
@@ -163,7 +164,8 @@ export function FocusOverlay({ session, onClose }: FocusOverlayProps) {
       const area = stageAreaRef.current;
       const sel = document.getSelection();
       if (!area || !sel || sel.rangeCount === 0 || !sel.anchorNode || !area.contains(sel.anchorNode)) return;
-      const text = sel.toString().replace(/\s+/g, ' ').trim();
+      // As the reader sees it: citation pills and grounding flags are not attached.
+      const text = readableSelection(sel.getRangeAt(0)).replace(/\s+/g, ' ').trim();
       setSelection(text ? Array.from(text).slice(0, MAX_SELECTION_CHARS).join('') : null);
     };
     document.addEventListener('selectionchange', onSelection);

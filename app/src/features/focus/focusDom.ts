@@ -58,6 +58,15 @@ export function readableText(node: ReadableNode): string {
 }
 
 /**
+ * Selected text as a reader sees it: `readableText` of the range's contents,
+ * so pills and flags the selection crosses are never quoted or attached.
+ * `Selection.toString()` would include them.
+ */
+export function readableSelection(range: { cloneContents(): ReadableNode }): string {
+  return readableText(range.cloneContents());
+}
+
+/**
  * Rows of an HTML table as cell text (header row first). Answer controls
  * inside cells (citation pills) are left out, so "$4.5M" with pill 2 does not
  * read as "$4.5M2".

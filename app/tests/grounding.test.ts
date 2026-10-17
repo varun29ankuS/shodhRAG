@@ -16,6 +16,7 @@ import {
   citeInsteadOffer,
   citeSuggested,
   citedNumbersIn,
+  citedPillIndex,
   flagDescription,
   flagLabel,
   insertFlagMarkers,
@@ -280,4 +281,15 @@ Search is partial [9]. Recall is high [7].`;
   assert.equal(storedAnswerReport({ groundings: [r, report({ isFinal: true })] })?.isFinal, true);
   assert.equal(storedAnswerReport(undefined), null);
   assert.equal(storedAnswerReport({ groundings: 'x' }), null);
+});
+
+test("after the rewrite, focus goes to the claim's own new pill", () => {
+  // "Centroids [1]. Closure ... latency. [3]" + flag: 2 pills before the flag, the claim owns 1.
+  assert.equal(citedPillIndex(2, miscited()), 1);
+  // Its citations were [3][7]: both pills become the one [2].
+  assert.equal(citedPillIndex(4, miscited({ anchor: 'Latency drops [3][7].', cited: [3, 7] })), 2);
+  // A range marker [3-4] is two pills.
+  assert.equal(citedPillIndex(2, miscited({ anchor: 'Latency drops [3-4].', cited: [3, 4] })), 0);
+  // An inherited citation: the new pill comes after every pill before the flag.
+  assert.equal(citedPillIndex(3, miscited({ anchor: 'Latency drops.' })), 3);
 });

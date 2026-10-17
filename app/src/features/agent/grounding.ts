@@ -404,6 +404,16 @@ export function citeInsteadOffer(check: ClaimCheck): number | null {
   return n;
 }
 
+/**
+ * Which citation pill of its block is the claim's after "Cite N instead": `before` pills came
+ * before the claim's flag, and the claim's own pills (one per number its anchor's markers cite)
+ * become the one pill [N]. 0-based, in reading order.
+ */
+export function citedPillIndex(before: number, check: ClaimCheck): number {
+  const own = parseCitationMarkers(check.anchor).reduce((sum, m) => sum + m.numbers.length, 0);
+  return Math.max(0, before - own);
+}
+
 /** Counts and score of a set of checked claims (mirrors `verify::summarise`). */
 export function summariseClaims(claims: readonly ClaimCheck[]): GroundingSummary {
   const s: GroundingSummary = { checked: claims.length, supported: 0, weak: 0, unsupported: 0, uncited: 0, invalid: 0, unchecked: 0, score: null };

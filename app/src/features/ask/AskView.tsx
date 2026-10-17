@@ -348,7 +348,7 @@ interface AssistantMessageProps {
   onOpenSettings: () => void;
   onOpenThread: (messageId: string, thread: FocusThread, trigger: HTMLElement) => void;
   /** "Cite N instead" on a miscited claim of this answer. */
-  onCiteInstead: (messageId: string, check: ClaimCheck) => void;
+  onCiteInstead: (messageId: string, check: ClaimCheck) => boolean;
 }
 
 /** How long an answer reached with "Go to message" stays highlighted. */
@@ -876,17 +876,17 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   // ref so the callback stays the same while answers stream (every answer is memoised on it).
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
-  const citeInstead = useCallback((messageId: string, check: ClaimCheck) => {
+  const citeInstead = useCallback((messageId: string, check: ClaimCheck): boolean => {
     const owner = messagesRef.current.find(m => m.id === messageId);
-    if (!owner?.transcript || isLive(owner.transcript)) return;
-    const next = citeSuggested(owner.transcript, check);
-    if (!next) {
+    const next = owner?.transcript && !isLive(owner.transcript) ? citeSuggested(owner.transcript, check) : null;
+    if (!owner || !next) {
       notify.error('This citation could not be changed', { description: 'The statement is no longer in the answer as it was checked.' });
-      return;
+      return false;
     }
     updateMessage(owner.id, { content: answerText(next), transcript: next });
     // The flag and its button are gone; say what changed (toasts are a live region).
     notify.success(`Now cites passage ${check.suggested}`);
+    return true;
   }, [updateMessage]);
 
   const markRuntimeInstalled = useCallback(() => setRuntimeInstalled(true), [setRuntimeInstalled]);

@@ -8,6 +8,7 @@ import { sourceLabel } from '../ask/searchResults';
 import type { ClaimCheck, GroundingReport } from './events';
 import {
   citeInsteadOffer,
+  citedPillIndex,
   flagDescription,
   flagLabel,
   isFlagged,
@@ -26,8 +27,43 @@ function hitLabel(hit: SearchHit): string {
   return `${hit.number}, ${sourceLabel(hit)}`;
 }
 
-/** Callback of "Cite N instead": rewrite this claim's citation to the passage that supports it. */
-export type CiteInstead = (check: ClaimCheck) => void;
+/**
+ * Callback of "Cite N instead": rewrite this claim's citation to the passage that supports it.
+ * True when the answer was changed.
+ */
+export type CiteInstead = (check: ClaimCheck) => boolean;
+
+/** Attribute of a working citation pill, holding its number (`data-cite` in `MessageContentRenderer`). */
+const CITE_PILL_ATTR = 'data-cite';
+
+/** Blocks a claim's flag sits in; its citation pills are counted within the block. */
+const PILL_BLOCK = 'p, li, td, th, blockquote, h1, h2, h3, h4, h5, h6, dd, dt, figcaption';
+
+/** The inline flag of each claim on screen, so either "Cite N instead" can find the claim's place. */
+const flagElements = new WeakMap<ClaimCheck, HTMLElement>();
+
+/**
+ * After "Cite N instead" the flag and its button are gone. Keyboard focus moves to the claim's
+ * new citation pill: the block the flag was in is found before the change, and the pill counted
+ * from the pills that came before the flag (`citedPillIndex`). Null when the flag is not on screen.
+ */
+function focusRewrittenCitation(check: ClaimCheck, n: number): (() => void) | null {
+  const flag = flagElements.get(check);
+  if (!flag) return null;
+  const block = flag.closest<HTMLElement>(PILL_BLOCK) ?? flag.parentElement;
+  if (!block) return null;
+  const pills = () => Array.from(block.querySelectorAll<HTMLElement>(`[${CITE_PILL_ATTR}]`));
+  const before = pills().filter(p => (p.compareDocumentPosition(flag) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).length;
+  const index = citedPillIndex(before, check);
+  return () => {
+    if (!block.isConnected) return;
+    const all = pills();
+    const pill = all[index]?.getAttribute(CITE_PILL_ATTR) === String(n)
+      ? all[index]
+      : all.find(p => p.getAttribute(CITE_PILL_ATTR) === String(n));
+    pill?.focus();
+  };
+}
 
 /**
  * "Cite 2 instead" for a miscited claim, when the answer can be changed here. The user acts;
@@ -37,11 +73,16 @@ function CiteInsteadButton({ check, onCiteInstead, className }: { check: ClaimCh
   const n = onCiteInstead ? citeInsteadOffer(check) : null;
   if (n === null || !onCiteInstead) return null;
   const cited = check.cited.map(c => `[${c}]`).join('');
+  const act = () => {
+    const refocus = focusRewrittenCitation(check, n);
+    // The change re-renders the answer within this click; the pill is there on the next frame.
+    if (onCiteInstead(check) && refocus) requestAnimationFrame(refocus);
+  };
   return (
     <button
       type="button"
       data-answer-ui=""
-      onClick={() => onCiteInstead(check)}
+      onClick={act}
       aria-label={`Cite ${n} instead of ${check.cited.join(', ')} for this statement`}
       title={`Change this statement's citation from ${cited} to [${n}]`}
       className={className}
@@ -71,7 +112,14 @@ export function ClaimFlag({ check, closest, onOpenCitation, onCiteInstead }: Cla
   const flag = <ClaimFlagBody check={check} closest={closest} onOpenCitation={onOpenCitation} />;
   if (!onCiteInstead || citeInsteadOffer(check) === null) return flag;
   return (
-    <span className="inline" data-answer-ui="">
+    <span
+      className="inline"
+      data-answer-ui=""
+      ref={el => {
+        if (el) flagElements.set(check, el);
+        else flagElements.delete(check);
+      }}
+    >
       {flag}
       <CiteInsteadButton
         check={check}

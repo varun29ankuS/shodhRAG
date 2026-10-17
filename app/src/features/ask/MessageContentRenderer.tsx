@@ -335,6 +335,7 @@ function MessageContent({
             key={`cite-${index}-${number}`}
             type="button"
             data-answer-ui=""
+            data-cite={number}
             onClick={e => onOpenCitation(hit, e.currentTarget)}
             aria-label={`${isWeb ? 'Web source' : 'Source'} ${number}, ${sourceLabel(hit)}`}
             aria-pressed={isActive}

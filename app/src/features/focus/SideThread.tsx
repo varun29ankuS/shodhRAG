@@ -115,15 +115,13 @@ const AnswerTurn = React.memo(function AnswerTurn({
   onRuntimeInstalled: () => void;
   onOpenSettings: () => void;
   /** "Cite N instead" on a miscited claim of a stored answer. */
-  onCiteInstead?: (turnId: string, check: ClaimCheck) => void;
+  onCiteInstead?: (turnId: string, check: ClaimCheck) => boolean;
 }) {
   const shown = useMemo(() => (transcript ? withoutFollowups(transcript) : null), [transcript]);
   const hits = useMemo(() => (shown ? passageHits(shown.passages) : []), [shown]);
   const open = useCallback((hit: SearchHit) => onOpenCitation(hit), [onOpenCitation]);
   const citeInstead = useCallback(
-    (check: ClaimCheck) => {
-      if (turnId) onCiteInstead?.(turnId, check);
-    },
+    (check: ClaimCheck): boolean => (turnId && onCiteInstead ? onCiteInstead(turnId, check) : false),
     [turnId, onCiteInstead],
   );
   if (!shown) {
@@ -369,15 +367,15 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
   focusRef.current = focus;
   const openRef = useRef(open);
   openRef.current = open;
-  const citeInstead = useCallback((turnId: string, check: ClaimCheck) => {
+  const citeInstead = useCallback((turnId: string, check: ClaimCheck): boolean => {
     const api = focusRef.current;
-    if (!api) return;
     const n = check.suggested;
-    if (api.citeInstead(openRef.current, turnId, check)) {
+    if (api && api.citeInstead(openRef.current, turnId, check)) {
       notify.success(`Now cites passage ${n}`);
-    } else {
-      notify.error('This citation could not be changed', { description: 'The statement is no longer in the answer as it was checked.' });
+      return true;
     }
+    notify.error('This citation could not be changed', { description: 'The statement is no longer in the answer as it was checked.' });
+    return false;
   }, []);
 
   const contextNote = contextLabel(open.target, extras);

@@ -255,7 +255,8 @@ impl HostTool for RemoveSourceTool {
         })
     }
     fn description(&self) -> &'static str {
-        "Remove a folder source (id from list_sources) from the index. Files on disk are not \
+        "Remove a folder source (id from list_sources) from the index and the Library: its \
+         indexing and syncing stop, and its card leaves the Library. Files on disk are not \
          touched."
     }
     fn schema(&self) -> Value {
@@ -268,13 +269,14 @@ impl HostTool for RemoveSourceTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let source = resolve_source(&self.host, app_tools::REMOVE_SOURCE, &args).await?;
         let source_id = source.source_id.as_str();
-        let deleted = {
-            let mut engine = self.host.rag.write().await;
-            engine
-                .delete_by_space_id(&source.source_id)
-                .await
-                .map_err(|e| ToolError::Failed(format!("Removing the source failed: {e}")))?
-        };
+        // As the Library removes a source: syncing and indexing stopped,
+        // chunks deleted by source id, manifest dropped, the card told to go.
+        let deleted = self
+            .host
+            .effects
+            .remove_source(&self.host.rag, source_id, source.folder.as_deref())
+            .await
+            .map_err(|e| ToolError::Failed(format!("Removing the source failed: {e}")))?;
         let folder = source.folder.unwrap_or_else(|| source.source_id.clone());
         ctx.audit(
             AuditEventType::SourceChange,
@@ -330,6 +332,93 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].action, "add");
         assert!(jobs[0].folder.ends_with("docs"));
+    }
+
+    /// The agent removes a source as the Library does: its chunks go (and no
+    /// neighbour's whose path starts the same), its sync and manifest go, and
+    /// the Library is told so it drops the card.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remove_source_removes_it_from_the_library() {
+        let t = testing::host_with_search_models().await;
+        let papers = t.dir.path().join("Papers");
+        let later = t.dir.path().join("Papers 2024");
+        std::fs::create_dir_all(&papers).unwrap();
+        std::fs::create_dir_all(&later).unwrap();
+        std::fs::write(
+            papers.join("lease.txt"),
+            "The lease notice period is sixty days for either party.",
+        )
+        .unwrap();
+        std::fs::write(
+            later.join("parking.txt"),
+            "Visitors park on the street next to the courtyard.",
+        )
+        .unwrap();
+        for (file, source_id) in [
+            (papers.join("lease.txt"), "folder-papers"),
+            (later.join("parking.txt"), "folder-later"),
+        ] {
+            t.host
+                .rag
+                .write()
+                .await
+                .add_document_from_file(
+                    &file,
+                    std::collections::HashMap::from([(
+                        "space_id".to_string(),
+                        source_id.to_string(),
+                    )]),
+                )
+                .await
+                .unwrap();
+        }
+        let sync = &t.effects.folder_sync;
+        let folder = crate::file_watcher::FolderSourceRef {
+            id: "folder-papers".into(),
+            path: papers.display().to_string(),
+        };
+        sync.watch_quietly(&folder);
+        let manifest = t.dir.path().join("folder_sync").join("folder-papers.json");
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        std::fs::write(&manifest, r#"{"folder":"Papers","files":{}}"#).unwrap();
+
+        let remove = RemoveSourceTool {
+            host: t.host.clone(),
+        };
+        let (ctx, _rx) = testing::ctx();
+        let out = remove
+            .execute(json!({"source_id": "folder-papers"}), &ctx)
+            .await
+            .unwrap();
+        assert!(out.summary_for_ui.starts_with("Removed "));
+
+        let owners: Vec<String> = t
+            .host
+            .rag
+            .read()
+            .await
+            .document_sources()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.space_id)
+            .collect();
+        assert_eq!(
+            owners,
+            ["folder-later"],
+            "only the removed source's chunks go"
+        );
+        assert!(!manifest.exists(), "its manifest is gone");
+        assert!(
+            !sync.watched_ids().contains("folder-papers"),
+            "no longer watched"
+        );
+        assert!(t.effects.indexing_state.is_removed("folder-papers"));
+        assert_eq!(
+            *t.effects.removed_sources.lock().unwrap(),
+            ["folder-papers"],
+            "the Library is told"
+        );
     }
 
     #[tokio::test]

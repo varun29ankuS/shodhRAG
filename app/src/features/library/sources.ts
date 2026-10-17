@@ -188,6 +188,29 @@ export function applyFolderSync(source: LibrarySource, outcome: FolderSyncOutcom
   };
 }
 
+/**
+ * The `library-changed` event: the files of `sourceId` changed (the agent
+ * indexed or downloaded a file, indexed a folder), or the sources in
+ * `removed` were removed from the index (the agent's remove_source).
+ */
+export interface LibraryChange {
+  sourceId?: string;
+  removed?: unknown;
+}
+
+/** The ids a `library-changed` event says were removed; none for a change. */
+export function removedSourceIds(change: unknown): string[] {
+  if (!isRecord(change) || !Array.isArray(change.removed)) return [];
+  return change.removed.filter((id): id is string => typeof id === 'string' && id.length > 0);
+}
+
+/** `sources` without those a `library-changed` event removed (the same list when it removed none). */
+export function applyLibraryChange<S extends Pick<LibrarySource, 'id'>>(sources: S[], change: unknown): S[] {
+  const removed = new Set(removedSourceIds(change));
+  if (removed.size === 0 || !sources.some(s => removed.has(s.id))) return sources;
+  return sources.filter(s => !removed.has(s.id));
+}
+
 export interface IndexingOutcome {
   filesProcessed: number;
   /** Files already indexed and unchanged, not indexed again (adopted from another source). */

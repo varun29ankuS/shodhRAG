@@ -12,10 +12,13 @@ use crate::app_settings::AppSettings;
 use crate::background::BackgroundState;
 use crate::calendar_commands::{spawn_reindex, CALENDAR_CHANGED_EVENT};
 use crate::event_emitter::TauriEventEmitter;
+use crate::file_watcher::FolderSyncState;
 use crate::llm_commands::LLMState;
 use crate::rag_commands::RagState;
 use shodh_rag::audit::payload::{is_cloud, provider_id};
 use shodh_rag::llm::LLMMode;
+use shodh_rag::RAGEngine;
+use tokio::sync::RwLock;
 
 pub struct TauriEffects {
     app: AppHandle,
@@ -38,14 +41,37 @@ fn agent_indexing_options() -> IndexingOptions {
     }
 }
 
-/// Emitted when files or folders of a source change on disk (the agent
-/// created a folder or downloaded a file); the Library refreshes.
+/// Emitted when the files of a source change (the agent created a folder,
+/// downloaded or indexed a file, indexed a folder) or a source was removed;
+/// the Library reads the indexed files again. The payload names the source
+/// changed, `{ "sourceId": id }` ([`library_changed_payload`]), or removed,
+/// `{ "sourceId": id, "removed": [id] }` ([`library_removed_payload`]), whose
+/// card the Library drops.
 pub const LIBRARY_CHANGED_EVENT: &str = "library-changed";
+
+/// The [`LIBRARY_CHANGED_EVENT`] of a source whose files changed.
+pub fn library_changed_payload(source_id: &str) -> serde_json::Value {
+    json!({ "sourceId": source_id })
+}
+
+/// The [`LIBRARY_CHANGED_EVENT`] of a source removed from the index.
+pub fn library_removed_payload(source_id: &str) -> serde_json::Value {
+    json!({ "sourceId": source_id, "removed": [source_id] })
+}
 
 /// Emitted when the agent renames or pins a saved conversation; the UI
 /// patches its in-memory list so its next save keeps the change.
 pub const CONVERSATION_UPDATED_EVENT: &str = "conversation-updated";
 
+impl TauriEffects {
+    fn emit_library(&self, payload: serde_json::Value) {
+        if let Err(e) = self.app.emit(LIBRARY_CHANGED_EVENT, payload) {
+            tracing::warn!("Failed to emit {}: {}", LIBRARY_CHANGED_EVENT, e);
+        }
+    }
+}
+
+#[async_trait::async_trait]
 impl HostEffects for TauriEffects {
     fn visuals_changed(&self, conversation_id: &str) {
         crate::visual_commands::broadcast_change(&self.app, Some(conversation_id));
@@ -91,19 +117,33 @@ impl HostEffects for TauriEffects {
                     indexing_outcome(&result),
                 ),
             );
-            if let Err(e) = app.emit(LIBRARY_CHANGED_EVENT, json!({ "sourceId": job.source_id })) {
+            if let Err(e) = app.emit(
+                LIBRARY_CHANGED_EVENT,
+                library_changed_payload(&job.source_id),
+            ) {
                 tracing::warn!("Failed to emit {}: {}", LIBRARY_CHANGED_EVENT, e);
             }
         });
     }
 
     fn library_changed(&self, source_id: &str) {
-        if let Err(e) = self
+        self.emit_library(library_changed_payload(source_id));
+    }
+
+    async fn remove_source(
+        &self,
+        rag: &RwLock<RAGEngine>,
+        source_id: &str,
+        folder: Option<&str>,
+    ) -> Result<usize, String> {
+        let indexing = self.app.state::<IndexingState>();
+        let deleted = self
             .app
-            .emit(LIBRARY_CHANGED_EVENT, json!({ "sourceId": source_id }))
-        {
-            tracing::warn!("Failed to emit {}: {}", LIBRARY_CHANGED_EVENT, e);
-        }
+            .state::<FolderSyncState>()
+            .remove_source(rag, &indexing, source_id, folder)
+            .await?;
+        self.emit_library(library_removed_payload(source_id));
+        Ok(deleted)
     }
 
     fn documents_dir(&self) -> Option<std::path::PathBuf> {
@@ -219,6 +259,30 @@ impl HostEffects for TauriEffects {
                     indexing_outcome(&result),
                 ),
             );
+            // The Library reads the indexed files again: the folder's are new.
+            if let Err(e) = app.emit(
+                LIBRARY_CHANGED_EVENT,
+                library_changed_payload(&job.source_id),
+            ) {
+                tracing::warn!("Failed to emit {}: {}", LIBRARY_CHANGED_EVENT, e);
+            }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn library_events_name_the_source_and_what_was_removed() {
+        assert_eq!(
+            library_changed_payload("folder-1"),
+            json!({ "sourceId": "folder-1" })
+        );
+        assert_eq!(
+            library_removed_payload("folder-1"),
+            json!({ "sourceId": "folder-1", "removed": ["folder-1"] })
+        );
     }
 }

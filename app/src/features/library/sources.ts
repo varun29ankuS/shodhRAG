@@ -89,6 +89,33 @@ export function parseStoredSources(raw: string | null): LibrarySource[] {
   return out;
 }
 
+/** A path as Windows compares paths: forward slashes, no trailing slash, lowercase. */
+function pathKey(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function lastSegment(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
+/**
+ * `source` with `resolved`, its path as the file system spells it
+ * (`resolve_path_case`), when that differs from the saved path only in
+ * case and separators: Library paths saved lowercased by older builds
+ * ("c:\research\papers") get their real case back. The name follows when
+ * it was the path's last folder, in any case. Any other difference (another
+ * folder) is never applied, so the source keeps its identity; a source being
+ * indexed is left alone.
+ */
+export function withPathCase(source: LibrarySource, resolved: string): LibrarySource {
+  if (source.status === 'indexing' || !resolved || resolved === source.path) return source;
+  if (pathKey(resolved) !== pathKey(source.path)) return source;
+  const oldName = lastSegment(source.path);
+  const newName = lastSegment(resolved);
+  const name = source.name.toLowerCase() === oldName.toLowerCase() ? newName : source.name;
+  return { ...source, path: resolved, name };
+}
+
 /** The persisted form: live progress and sync fields are not stored. */
 export function serializeSources(sources: readonly LibrarySource[]): string {
   return JSON.stringify(

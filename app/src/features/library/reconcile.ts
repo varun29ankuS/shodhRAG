@@ -63,6 +63,28 @@ function indexedFileKeys(indexedFiles: readonly string[]): Map<string, string> {
   return files;
 }
 
+/**
+ * The indexed files `list_indexed_sources` lists, each as it is shown: its
+ * `display_path` (the file system's spelling, "C:\Research\papers\SPANN.pdf")
+ * when that names the same file as its `source` (the identity, lowercased
+ * on Windows), else its `source`. Entries without a string source are dropped.
+ */
+export function indexedFilePaths(docs: unknown): string[] {
+  if (!Array.isArray(docs)) return [];
+  const paths: string[] = [];
+  for (const doc of docs) {
+    if (typeof doc !== 'object' || doc === null) continue;
+    const { source, display_path: display } = doc as { source?: unknown; display_path?: unknown };
+    if (typeof source !== 'string') continue;
+    if (typeof display === 'string' && display.trim() !== '' && normalise(display).toLowerCase() === normalise(source).toLowerCase()) {
+      paths.push(display);
+    } else {
+      paths.push(source);
+    }
+  }
+  return paths;
+}
+
 export function reconcileSources(
   folders: readonly { path: string }[],
   indexedFiles: readonly string[],

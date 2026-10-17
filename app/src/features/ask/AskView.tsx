@@ -9,7 +9,11 @@ import { AgentComposer } from '../agent/AgentComposer';
 import type { AgentComposerHandle } from '../agent/AgentComposer';
 import { passageHits } from '../agent/citations';
 import { PlanPanel } from '../agent/PlanPanel';
-import { pendingApproval, isLive } from '../agent/reducer';
+import { answerText, pendingApproval, isLive } from '../agent/reducer';
+import type { ClaimCheck } from '../agent/events';
+import type { CorrectionOutcome } from '../agent/grounding';
+import { CORRECTION_BUSY, CORRECTION_NOT_RECORDED, CorrectionGuard, applyAuditedCorrection, citationCorrection, citeSuggested, sameCorrection } from '../agent/grounding';
+import { recordCitationCorrection } from '../audit/api';
 import type { TranscriptState } from '../agent/reducer';
 import { RuntimeCard } from '../agent/RuntimeCard';
 import { SearchSetupCard } from '../setup/SearchSetupCard';
@@ -345,6 +349,8 @@ interface AssistantMessageProps {
   onRuntimeInstalled: () => void;
   onOpenSettings: () => void;
   onOpenThread: (messageId: string, thread: FocusThread, trigger: HTMLElement) => void;
+  /** "Cite N instead" on a miscited claim of this answer. */
+  onCiteInstead: (messageId: string, check: ClaimCheck) => Promise<boolean>;
 }
 
 /** How long an answer reached with "Go to message" stays highlighted. */
@@ -366,6 +372,7 @@ function AssistantMessageView({
   onRuntimeInstalled,
   onOpenSettings,
   onOpenThread,
+  onCiteInstead,
 }: AssistantMessageProps) {
   const transcript = message.transcript;
   const passages = transcript?.passages;
@@ -394,6 +401,11 @@ function AssistantMessageView({
   const openThread = useCallback(
     (thread: FocusThread, trigger: HTMLElement) => onOpenThread(messageId, thread, trigger),
     [messageId, onOpenThread],
+  );
+
+  const citeInstead = useCallback(
+    (check: ClaimCheck) => onCiteInstead(messageId, check),
+    [messageId, onCiteInstead],
   );
 
   // Retry and fallback after a provider failure, on the newest answer only
@@ -433,6 +445,7 @@ function AssistantMessageView({
             onRuntimeInstalled={onRuntimeInstalled}
             onOpenSettings={onOpenSettings}
             providerActions={providerActions}
+            onCiteInstead={conversationId ? citeInstead : undefined}
           />
         </>
       ) : (
@@ -860,6 +873,57 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     });
   }, [messages, updateMessage]);
 
+  // "Cite N instead": the user moves a miscited claim's citation to the passage the check found
+  // supporting it; the answer is saved with the conversation like any other edit. Read through a
+  // ref so the callback stays the same while answers stream (every answer is memoised on it).
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const correctionsRef = useRef(new CorrectionGuard());
+  const citeInstead = useCallback(async (messageId: string, check: ClaimCheck): Promise<boolean> => {
+    const rewriteOf = () => {
+      const owner = messagesRef.current.find(m => m.id === messageId);
+      return owner?.transcript && !isLive(owner.transcript) ? citeSuggested(owner.transcript, check) : null;
+    };
+    const rewrite = rewriteOf();
+    const conversationId = session.activeConversationId;
+    if (!rewrite || !conversationId) {
+      notify.error('This citation could not be changed', { description: 'The statement is no longer in the answer as it was checked.' });
+      return false;
+    }
+    const guard = correctionsRef.current;
+    if (!guard.claim(messageId)) {
+      notify.info(CORRECTION_BUSY);
+      return false;
+    }
+    let outcome: CorrectionOutcome;
+    try {
+      // Audit first: the answer changes only once Activity has the record, and then from its
+      // latest state, never over a change made in between.
+      outcome = await applyAuditedCorrection(
+        () => recordCitationCorrection(citationCorrection(rewrite, conversationId)),
+        () => {
+          const latest = rewriteOf();
+          if (!latest || !sameCorrection(rewrite, latest)) return false;
+          updateMessage(messageId, { content: answerText(latest.transcript), transcript: latest.transcript });
+          return true;
+        },
+      );
+    } finally {
+      guard.release(messageId);
+    }
+    if (outcome === 'not_recorded') {
+      notify.error(CORRECTION_NOT_RECORDED);
+      return false;
+    }
+    if (outcome !== 'applied') {
+      notify.error('This citation could not be changed', { description: 'The answer changed while the correction was recorded.' });
+      return false;
+    }
+    // The flag and its button are gone; say what changed (toasts are a live region).
+    notify.success(`Now cites passage ${check.suggested}`);
+    return true;
+  }, [updateMessage, session.activeConversationId]);
+
   const markRuntimeInstalled = useCallback(() => setRuntimeInstalled(true), [setRuntimeInstalled]);
   const openSettings = useCallback(() => onNavigate('settings'), [onNavigate]);
   const openMemorySettings = useCallback(() => {
@@ -1091,6 +1155,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         onRuntimeInstalled={markRuntimeInstalled}
         onOpenSettings={openSettings}
         onOpenThread={openThread}
+        onCiteInstead={citeInstead}
       />
     );
   };

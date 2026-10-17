@@ -197,3 +197,115 @@ test('replayed history alternates: unanswered brought-back notes merge into the 
     { role: 'assistant', content: 'side a' },
   ]);
 });
+
+test("a nested question does not inherit an outer answer's flagged citations", async () => {
+  const { ancestorsFor } = await import('../src/features/focus/threadTree.ts');
+  // The reported Q1 answer: [3] flagged (passage 2 states it), [1] supported.
+  const flaggedAnchor = 'SPANN expands posting lists with the points in the closure, reducing disk-access latency. [3]';
+  const supportedAnchor = 'Closure augmentation adds boundary points to nearby clusters [1].';
+  const claim = (anchor: string, outcome: string, cited: number[], extra: Record<string, unknown> = {}) => ({
+    messageId: 'm1', text: anchor.replace(/\s*\[\d+\]/, ''), anchor, kind: 'sentence', outcome, cited, invalid: [],
+    support: 0.3, contradiction: null, missingNumbers: [], closest: null, closestScore: null, ...extra,
+  });
+  const answer = `${supportedAnchor} ${flaggedAnchor}`;
+  const transcript = {
+    runId: 'run-q1', startedAtMs: 0, status: 'completed', blocks: [{ kind: 'text', id: 'm1', text: answer }], steps: {},
+    groundings: [{
+      round: 0, isFinal: true, method: 'cross_encoder', needs: [], messageIds: ['m1'], supersededMessageIds: [],
+      summary: { checked: 2, supported: 1, weak: 0, unsupported: 1, uncited: 0, invalid: 0, unchecked: 0, score: 0.5 },
+      claims: [
+        claim(supportedAnchor, 'supported', [1]),
+        claim(flaggedAnchor, 'unsupported', [3], { closest: 2, closestScore: 0.97, suggested: 2 }),
+      ],
+    }],
+  };
+  const q1 = {
+    id: 'q1',
+    anchor: { conversationId: 'c', parentMessageId: 'm', target: eq },
+    turns: [
+      { id: 'u1', role: 'user' as const, content: 'What is closure augmentation?', timestamp: '1' },
+      { id: 'a1', role: 'assistant' as const, content: answer, timestamp: '2', transcript },
+    ],
+    createdAt: '0',
+    updatedAt: '0',
+  };
+  const chain = ancestorsFor([q1], 'q1', 'a1');
+  assert.equal(
+    chain[0].answer,
+    'Closure augmentation adds boundary points to nearby clusters [1]. SPANN expands posting lists with the points in the closure, reducing disk-access latency.',
+  );
+  const nested = composeSideQuestion(diagram, 'How is posting list quality improved?', {}, { ancestors: chain, followups: true });
+  assert.ok(nested.includes('reducing disk-access latency.'), nested);
+  assert.ok(!nested.includes('latency. [3]') && !nested.includes('[3]'), nested);
+  assert.ok(nested.includes('nearby clusters [1].'), 'a supported citation is kept');
+  // A turn saved without a transcript is passed on as written.
+  const plain = { ...q1, turns: [q1.turns[0], { ...q1.turns[1], transcript: undefined }] };
+  assert.equal(ancestorsFor([plain], 'q1', 'a1')[0].answer, answer);
+});
+
+/** An answer whose check flagged its [3] (passage 2 states it) and supported its [1]. */
+function flaggedAnswer() {
+  const flaggedAnchor = 'Posting lists are expanded with the closure points. [3]';
+  const supportedAnchor = 'Centroids stay in memory [1].';
+  const claim = (anchor: string, outcome: string, cited: number[]) => ({
+    messageId: 'm1', text: anchor.replace(/\s*\[\d+\]/, ''), anchor, kind: 'sentence', outcome, cited, invalid: [],
+    support: 0.3, contradiction: null, missingNumbers: [], closest: null, closestScore: null,
+  });
+  const content = `${supportedAnchor} ${flaggedAnchor}`;
+  const transcript = {
+    runId: 'r', startedAtMs: 0, status: 'completed', blocks: [{ kind: 'text', id: 'm1', text: content }], steps: {},
+    groundings: [{
+      round: 0, isFinal: true, method: 'entailment', needs: [], messageIds: ['m1'], supersededMessageIds: [],
+      summary: { checked: 2, supported: 1, weak: 0, unsupported: 1, uncited: 0, invalid: 0, unchecked: 0, score: 0.5 },
+      claims: [claim(supportedAnchor, 'supported', [1]), claim(flaggedAnchor, 'unsupported', [3])],
+    }],
+  };
+  return { content, transcript, cleaned: 'Centroids stay in memory [1]. Posting lists are expanded with the closure points.' };
+}
+
+test("replayed history drops an answer's flagged citations, in the thread and in the main conversation", async () => {
+  const { threadHistory } = await import('../src/features/focus/threadStore.ts');
+  const { content, transcript, cleaned } = flaggedAnswer();
+  const history = threadHistory(
+    [{ role: 'user', content: 'What is SPANN?' }, { role: 'assistant', content, transcript }],
+    [{ role: 'user', content: 'And closure?' }, { role: 'assistant', content, transcript }],
+  );
+  assert.deepEqual(history, [
+    { role: 'user', content: 'What is SPANN?' },
+    { role: 'assistant', content: cleaned },
+    { role: 'user', content: 'And closure?' },
+    { role: 'assistant', content: cleaned },
+  ]);
+  // Without a stored transcript the answer is replayed as written.
+  assert.equal(threadHistory([], [{ role: 'assistant', content }])[0].content, content);
+});
+
+test('a discussion brought back does not carry its flagged citations up', async () => {
+  const { composeSummaryRequest, discussionText } = await import('../src/features/focus/summary.ts');
+  const { threadSummary } = await import('../src/features/focus/threadStore.ts');
+  const { content, transcript, cleaned } = flaggedAnswer();
+  const thread = {
+    anchor: { conversationId: 'c', parentMessageId: 'm', target: eq },
+    turns: [
+      { id: 'u', role: 'user' as const, content: 'And closure?', timestamp: '1' },
+      { id: 'a', role: 'assistant' as const, content, timestamp: '2', transcript },
+    ],
+  };
+  assert.equal(discussionText(thread), `Q: And closure?\n\nA: ${cleaned}`);
+  const request = composeSummaryRequest(thread, { kind: 'conversation' });
+  assert.ok(request.includes(cleaned) && !request.includes('[3]'), request);
+  // The excerpt offered when no summary could be written.
+  assert.equal(threadSummary(thread), `**Asked:** And closure?\n\n${cleaned}`);
+});
+
+test("the main conversation replayed into a fresh session drops an answer's flagged citations", async () => {
+  const { replayedContent } = await import('../src/features/ask/chatHistory.ts');
+  const { content, transcript, cleaned } = flaggedAnswer();
+  assert.equal(replayedContent({ role: 'assistant', content, transcript }), cleaned);
+  assert.equal(replayedContent({ role: 'assistant', content }), content, 'no transcript: as written');
+  assert.equal(replayedContent({ role: 'user', content: 'See [3].' }), 'See [3].', 'what the user wrote is never changed');
+  assert.equal(
+    replayedContent({ role: 'user', content: 'A note', sideSummary: { threadId: 't', label: 'Closure', parentMessageId: null } }),
+    'From a side discussion about "Closure":\n\nA note',
+  );
+});

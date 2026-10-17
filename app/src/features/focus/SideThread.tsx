@@ -7,6 +7,8 @@ import type { AgentComposerHandle } from '../agent/AgentComposer';
 import { passageHits } from '../agent/citations';
 import { fromPersisted, pendingApproval } from '../agent/reducer';
 import type { TranscriptState } from '../agent/reducer';
+import type { ClaimCheck } from '../agent/events';
+import { CORRECTION_BUSY, CORRECTION_NOT_RECORDED } from '../agent/grounding';
 import { Transcript } from '../agent/Transcript';
 import { useChatSession } from '../ask/ChatSessionContext';
 import { MessageContentRenderer } from '../ask/MessageContentRenderer';
@@ -98,21 +100,31 @@ function UserTurn({ turn, onOpenThread }: { turn: ThreadTurn; onOpenThread: (thr
 const AnswerTurn = React.memo(function AnswerTurn({
   transcript,
   content,
+  turnId,
   onOpenCitation,
   onDecide,
   onRuntimeInstalled,
   onOpenSettings,
+  onCiteInstead,
 }: {
   transcript: TranscriptState | null;
   content: string;
+  /** The stored answer turn; null for the answer being written. */
+  turnId: string | null;
   onOpenCitation: (hit: SearchHit) => void;
   onDecide?: (stepId: string, approved: boolean) => void;
   onRuntimeInstalled: () => void;
   onOpenSettings: () => void;
+  /** "Cite N instead" on a miscited claim of a stored answer. */
+  onCiteInstead?: (turnId: string, check: ClaimCheck) => Promise<boolean>;
 }) {
   const shown = useMemo(() => (transcript ? withoutFollowups(transcript) : null), [transcript]);
   const hits = useMemo(() => (shown ? passageHits(shown.passages) : []), [shown]);
   const open = useCallback((hit: SearchHit) => onOpenCitation(hit), [onOpenCitation]);
+  const citeInstead = useCallback(
+    (check: ClaimCheck): Promise<boolean> => (turnId && onCiteInstead ? onCiteInstead(turnId, check) : Promise.resolve(false)),
+    [turnId, onCiteInstead],
+  );
   if (!shown) {
     return <MessageContentRenderer compact content={stripFollowups(content)} hits={[]} onOpenCitation={open} />;
   }
@@ -125,6 +137,7 @@ const AnswerTurn = React.memo(function AnswerTurn({
       onDecide={onDecide}
       onRuntimeInstalled={onRuntimeInstalled}
       onOpenSettings={onOpenSettings}
+      onCiteInstead={turnId && onCiteInstead ? citeInstead : undefined}
     />
   );
 });
@@ -348,6 +361,26 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
     onDone();
   }, [onDone]);
   const openThread = useCallback((threadId: string) => focus?.jumpToThread(threadId), [focus]);
+  // "Cite N instead" on a stored answer of this discussion; the user acts, the app never does.
+  // Read through refs: the pop-out's context changes on every streamed frame, and a new
+  // callback would re-render every memoised answer of the discussion with it.
+  const focusRef = useRef(focus);
+  focusRef.current = focus;
+  const openRef = useRef(open);
+  openRef.current = open;
+  const citeInstead = useCallback(async (turnId: string, check: ClaimCheck): Promise<boolean> => {
+    const api = focusRef.current;
+    const n = check.suggested;
+    const outcome = api ? await api.citeInstead(openRef.current, turnId, check) : 'stale';
+    if (outcome === 'applied') {
+      notify.success(`Now cites passage ${n}`);
+      return true;
+    }
+    if (outcome === 'not_recorded') notify.error(CORRECTION_NOT_RECORDED);
+    else if (outcome === 'busy') notify.info(CORRECTION_BUSY);
+    else notify.error('This citation could not be changed', { description: 'The statement is no longer in the answer as it was checked.' });
+    return false;
+  }, []);
 
   const contextNote = contextLabel(open.target, extras);
   const selection = extras.selection?.trim() || null;
@@ -501,9 +534,11 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
                 <AnswerTurn
                   transcript={restored.get(turn.id) ?? null}
                   content={turn.content}
+                  turnId={turn.id}
                   onOpenCitation={onOpenCitation}
                   onRuntimeInstalled={markInstalled}
                   onOpenSettings={openSettings}
+                  onCiteInstead={thread ? citeInstead : undefined}
                 />
               </div>
             </FocusDrillProvider>
@@ -514,6 +549,7 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
             <AnswerTurn
               transcript={live}
               content=""
+              turnId={null}
               onOpenCitation={onOpenCitation}
               onDecide={focus?.approve}
               onRuntimeInstalled={markInstalled}

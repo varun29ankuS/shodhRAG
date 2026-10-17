@@ -150,6 +150,11 @@ export function summarise(row: AuditRow): string {
         ? `Discarded Code changes: back on ${base} (kept on ${branch})`
         : `Code changes go to ${branch} (from ${base})`;
     }
+    case 'citation_corrected': {
+      const from = Array.isArray(p.from) ? p.from.filter(n => typeof n === 'number').map(n => `[${n}]`).join('') : '';
+      const score = num(p.score);
+      return `You changed a citation ${from || '?'} → [${num(p.to) ?? '?'}]${score !== null ? ` · grounding ${Math.round(score * 100)}%` : ''}`;
+    }
     case 'retention_checkpoint': {
       const deleted = num(p.deleted) ?? 0;
       return `Retention removed ${deleted} ${deleted === 1 ? 'event' : 'events'} (through #${num(p.last_deleted_id) ?? '?'})`;

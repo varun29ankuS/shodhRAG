@@ -113,10 +113,14 @@ pub enum AuditEventType {
     /// Code mode changed a code folder's git state (switched to its branch,
     /// or discarded its changes).
     CodeChange,
+    /// The user moved a miscited claim's citation to the passage the
+    /// grounding check found supporting it ("Cite N instead"). Numbers and
+    /// counts only, never answer text.
+    CitationCorrected,
 }
 
 impl AuditEventType {
-    pub const ALL: [AuditEventType; 14] = [
+    pub const ALL: [AuditEventType; 15] = [
         AuditEventType::Question,
         AuditEventType::ToolCall,
         AuditEventType::Approval,
@@ -131,6 +135,7 @@ impl AuditEventType {
         AuditEventType::MemoryUse,
         AuditEventType::ModelChange,
         AuditEventType::CodeChange,
+        AuditEventType::CitationCorrected,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -149,6 +154,7 @@ impl AuditEventType {
             AuditEventType::MemoryUse => "memory_use",
             AuditEventType::ModelChange => "model_change",
             AuditEventType::CodeChange => "code_change",
+            AuditEventType::CitationCorrected => "citation_corrected",
         }
     }
 }
@@ -364,6 +370,14 @@ mod tests {
             );
         }
         assert!("profile".parse::<AuditEventType>().is_err());
+        assert_eq!(
+            "citation_corrected".parse::<AuditEventType>().unwrap(),
+            AuditEventType::CitationCorrected
+        );
+        assert_eq!(
+            serde_json::to_value(AuditEventType::CitationCorrected).unwrap(),
+            Value::String("citation_corrected".into())
+        );
     }
 
     #[test]

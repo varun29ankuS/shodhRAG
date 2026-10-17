@@ -23,6 +23,7 @@ import { answerScope } from '../workspaces/model';
 import type { FocusThread } from '../focus/focusTypes';
 import { metadataWithThreads, metadataWithoutThreads, threadsFromMetadata } from '../focus/threadStore';
 import { metadataWithSummary, readSideSummary, summaryPrompt } from '../focus/summary';
+import { replayedContent } from './chatHistory';
 import type { SideSummaryRef } from '../focus/summary';
 import type { ModelOverride } from '../modelPicker/modelTypes';
 import type {
@@ -289,7 +290,7 @@ function historyOf(messages: readonly ChatMessage[]): HistoryTurn[] {
     // A failed answer's partial text is not an answer the model gave.
     .filter(m => m.content.trim().length > 0 && isPersistable(m) && m.transcript?.status !== 'error')
     .slice(-HISTORY_LIMIT)
-    .map(m => ({ role: m.role, content: m.sideSummary ? summaryPrompt(m.sideSummary, m.content) : m.content }));
+    .map(m => ({ role: m.role, content: replayedContent(m) }));
 }
 
 export function ChatSessionProvider({ children }: { children: React.ReactNode }) {

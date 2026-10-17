@@ -1,12 +1,16 @@
-import React, { useCallback, useId, useMemo, useRef, useSyncExternalStore } from 'react';
+import React, { useCallback, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { firstUseStore } from '../../lib/firstUse';
 import type { FirstUseHint } from '../../lib/firstUse';
-import { AlertTriangle, ChevronRight, CircleCheck, CircleHelp, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, ChevronRight, CircleCheck, CircleHelp, Pencil, ShieldCheck } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { SearchHit } from '../ask/types';
 import { sourceLabel } from '../ask/searchResults';
 import type { ClaimCheck, GroundingReport } from './events';
 import {
+  citeInAnchor,
+  citeInsteadOffer,
+  correctionLabel,
+  isCorrected,
   flagDescription,
   flagLabel,
   isFlagged,
@@ -25,19 +29,137 @@ function hitLabel(hit: SearchHit): string {
   return `${hit.number}, ${sourceLabel(hit)}`;
 }
 
+/**
+ * Callback of "Cite N instead": record, then rewrite, this claim's citation to the passage that
+ * supports it. Resolves true when the answer was changed.
+ */
+export type CiteInstead = (check: ClaimCheck) => Promise<boolean>;
+
+/** Attribute of a working citation pill, holding its number (`data-cite` in `MessageContentRenderer`). */
+const CITE_PILL_ATTR = 'data-cite';
+
+/** Attribute of a corrected claim's note: its text block and anchor (`correctionKey`). */
+const CORRECTED_ATTR = 'data-corrected';
+
+/** Blocks a claim sits in; the pill before its note is looked for within the block. */
+const PILL_BLOCK = 'p, li, td, th, blockquote, h1, h2, h3, h4, h5, h6, dd, dt, figcaption';
+
+/** Identifies a corrected claim's note on screen. */
+function correctionKey(messageId: string, anchor: string): string {
+  return `${messageId}\u0001${anchor}`;
+}
+
+/**
+ * After "Cite N instead" the flag and its button are gone and the claim shows its "corrected by
+ * you" note. Keyboard focus moves to the claim's new citation pill (the last pill of passage N
+ * before the note in its block), else to the note itself.
+ */
+function focusCorrectedClaim(check: ClaimCheck, n: number): void {
+  const key = correctionKey(check.messageId, citeInAnchor(check.anchor, n));
+  const note = Array.from(document.querySelectorAll<HTMLElement>(`[${CORRECTED_ATTR}]`)).find(
+    el => el.getAttribute(CORRECTED_ATTR) === key,
+  );
+  if (!note) return;
+  const block = note.closest<HTMLElement>(PILL_BLOCK) ?? note.parentElement;
+  const before = Array.from(block?.querySelectorAll<HTMLElement>(`[${CITE_PILL_ATTR}="${n}"]`) ?? []).filter(
+    p => (p.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+  );
+  (before[before.length - 1] ?? note).focus();
+}
+
+/**
+ * Inline note after a claim whose citation the user corrected, so the change never reads as
+ * the model's. Focusable from script only: focus lands here when its pill cannot be found.
+ */
+export function CorrectionNote({ check }: { check: ClaimCheck }) {
+  const label = correctionLabel(check);
+  return (
+    <span
+      role="note"
+      tabIndex={-1}
+      data-answer-ui=""
+      data-corrected={correctionKey(check.messageId, check.anchor)}
+      title={label}
+      className={cn(
+        'inline-flex items-center gap-0.5 ml-1 px-1 h-[18px] rounded-[5px] align-[2px] text-[10.5px] font-medium leading-none border border-shodh-border-strong text-shodh-text-muted',
+        FOCUS_RING,
+      )}
+    >
+      <Pencil className="w-2.5 h-2.5 shrink-0" aria-hidden="true" />
+      <span>{label}</span>
+    </span>
+  );
+}
+
+/**
+ * "Cite 2 instead" for a miscited claim, when the answer can be changed here. The user acts;
+ * the app never rewrites a citation by itself.
+ */
+function CiteInsteadButton({ check, onCiteInstead, className }: { check: ClaimCheck; onCiteInstead?: CiteInstead; className: string }) {
+  const [pending, setPending] = useState(false);
+  const n = onCiteInstead ? citeInsteadOffer(check) : null;
+  if (n === null || !onCiteInstead) return null;
+  const cited = check.cited.map(c => `[${c}]`).join('');
+  const act = () => {
+    if (pending) return;
+    setPending(true);
+    void onCiteInstead(check).then(changed => {
+      // A change unmounts this button; the pill is there on the next frame.
+      if (changed) requestAnimationFrame(() => focusCorrectedClaim(check, n));
+      else setPending(false);
+    });
+  };
+  return (
+    <button
+      type="button"
+      data-answer-ui=""
+      aria-disabled={pending}
+      aria-busy={pending}
+      onClick={act}
+      aria-label={`Cite ${n} instead of ${check.cited.join(', ')} for this statement`}
+      title={`Change this statement's citation from ${cited} to [${n}]`}
+      className={className}
+    >
+      {`Cite ${n} instead`}
+    </button>
+  );
+}
+
 interface ClaimFlagProps {
   check: ClaimCheck;
   /** The passage that comes closest to supporting the claim, when there is one. */
   closest: SearchHit | null;
   onOpenCitation: (hit: SearchHit, trigger: HTMLElement) => void;
+  /** Rewrites a miscited claim's citation (finished answers that can be changed here). */
+  onCiteInstead?: CiteInstead;
 }
 
 /**
  * Inline flag after a statement the grounding check could not ground: icon,
  * short text, a tooltip and a full description for screen readers. With a
- * closest passage it is a button that opens it.
+ * closest passage it is a button that opens it. A miscitation (another
+ * passage supports the statement) also gets a "Cite N instead" button, a
+ * sibling of the flag, never inside it.
  */
-export function ClaimFlag({ check, closest, onOpenCitation }: ClaimFlagProps) {
+export function ClaimFlag({ check, closest, onOpenCitation, onCiteInstead }: ClaimFlagProps) {
+  const flag = <ClaimFlagBody check={check} closest={closest} onOpenCitation={onOpenCitation} />;
+  if (!onCiteInstead || citeInsteadOffer(check) === null) return flag;
+  return (
+    <span className="inline" data-answer-ui="">
+      {flag}
+      <CiteInsteadButton
+        check={check}
+        onCiteInstead={onCiteInstead}
+        className={cn(
+          'inline-flex items-center ml-1 px-1.5 h-[18px] rounded-[5px] align-[2px] text-[10.5px] font-semibold leading-none border border-shodh-border-strong text-shodh-text-secondary hover:bg-shodh-raised-2 hover:text-shodh-text transition-colors duration-micro',
+          FOCUS_RING,
+        )}
+      />
+    </span>
+  );
+}
+
+function ClaimFlagBody({ check, closest, onOpenCitation }: Omit<ClaimFlagProps, 'onCiteInstead'>) {
   const label = flagLabel(check);
   const description = flagDescription(check, closest ? hitLabel(closest) : null);
   const className = cn(
@@ -93,6 +215,8 @@ interface GroundingChipProps {
   report: GroundingReport;
   hits: readonly SearchHit[];
   onOpenCitation: (hit: SearchHit, trigger: HTMLElement) => void;
+  /** Rewrites a miscited claim's citation (finished answers that can be changed here). */
+  onCiteInstead?: CiteInstead;
   compact?: boolean;
 }
 
@@ -109,7 +233,7 @@ function useFirstUse(hint: FirstUseHint): [boolean, () => void] {
   return [!seen, dismiss];
 }
 
-export function GroundingChip({ report, hits, onOpenCitation, compact = false }: GroundingChipProps) {
+export function GroundingChip({ report, hits, onOpenCitation, onCiteInstead, compact = false }: GroundingChipProps) {
   const listId = useId();
   const detailsRef = useRef<HTMLDetailsElement>(null);
   const [explainChip, dismissChip] = useFirstUse('grounding-chip');
@@ -122,6 +246,7 @@ export function GroundingChip({ report, hits, onOpenCitation, compact = false }:
   const tone = summaryTone(summary);
   const flagged = report.claims.filter(c => isFlagged(c.outcome));
   const weak = report.claims.filter(c => c.outcome === 'weak');
+  const corrected = report.claims.filter(isCorrected);
   const Icon = tone === 'ok' ? ShieldCheck : tone === 'partial' ? CircleHelp : AlertTriangle;
   // One-time hints: what to do about flagged statements, else what the chip is.
   const hint = flagged.length > 0 && explainFlags ? 'flags' : explainChip ? 'chip' : null;
@@ -186,14 +311,27 @@ export function GroundingChip({ report, hits, onOpenCitation, compact = false }:
         </summary>
         <div id={listId} className={cn('mt-2 flex flex-col gap-2 rounded-xl border border-shodh-border bg-shodh-surface p-3', compact ? 'text-[12px]' : 'text-[12.5px]')}>
           <p className="text-shodh-text-muted">{`${summaryDescription(summary)}; ${methodLabel(report.method)}.`}</p>
-          {flagged.length === 0 && weak.length === 0 && missing.length === 0 && (
+          {corrected.length > 0 && (
+            <div className="flex flex-col gap-1">
+              <p className="font-semibold text-shodh-text">Corrected by you</p>
+              <ul className="list-none m-0 p-0 flex flex-col gap-1.5">
+                {corrected.map((check, i) => (
+                  <li key={`${check.messageId}-corrected-${i}`} className="flex flex-col gap-0.5 min-w-0">
+                    <span className="text-shodh-text-secondary break-words">{check.text}</span>
+                    <span className="text-shodh-text-muted">{correctionLabel(check)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {flagged.length === 0 && weak.length === 0 && missing.length === 0 && corrected.length === 0 && (
             <p className="flex items-center gap-1.5 text-shodh-success">
               <CircleCheck className="w-3.5 h-3.5" aria-hidden="true" />
               Every checked statement is supported by the passage it cites.
             </p>
           )}
           {flagged.length > 0 && (
-            <ClaimList title="Flagged" checks={flagged} byNumber={byNumber} onOpenCitation={onOpenCitation} />
+            <ClaimList title="Flagged" checks={flagged} byNumber={byNumber} onOpenCitation={onOpenCitation} onCiteInstead={onCiteInstead} />
           )}
           {weak.length > 0 && (
             <ClaimList title="Partly supported" checks={weak} byNumber={byNumber} onOpenCitation={onOpenCitation} />
@@ -219,11 +357,13 @@ function ClaimList({
   checks,
   byNumber,
   onOpenCitation,
+  onCiteInstead,
 }: {
   title: string;
   checks: readonly ClaimCheck[];
   byNumber: Map<number, SearchHit>;
   onOpenCitation: (hit: SearchHit, trigger: HTMLElement) => void;
+  onCiteInstead?: CiteInstead;
 }) {
   return (
     <div className="flex flex-col gap-1">
@@ -245,6 +385,11 @@ function ClaimList({
                     {`closest passage: ${hitLabel(closest)}`}
                   </button>
                 )}
+                <CiteInsteadButton
+                  check={check}
+                  onCiteInstead={onCiteInstead}
+                  className={cn('h-6 px-2 rounded-md text-[11.5px] font-medium bg-shodh-raised-2 text-shodh-text hover:bg-shodh-pressed transition-colors duration-micro', FOCUS_RING)}
+                />
               </span>
             </li>
           );

@@ -2845,6 +2845,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_side_run_checks_carried_passages_under_their_own_numbers() {
+        // A side discussion: follow-ups off, the run seeded with the
+        // passages the parent answer cites, under its numbers 1, 2, 3, 7, 8.
+        let side = GroundingConfig {
+            follow_ups: false,
+            ..GroundingConfig::lexical()
+        };
+        let (inner, mut events, mut out) = offline_inner(Some(side));
+        let carried = |n: u32, page: &str, text: &str| CitedPassage {
+            n,
+            file: "spann.pdf".into(),
+            path: "c:/papers/spann.pdf".into(),
+            page: Some(page.into()),
+            web: false,
+            text: text.into(),
+            checkable: true,
+        };
+        inner
+            .start_run(
+                "What is closure augmentation?",
+                Some("run-side".into()),
+                RunScope {
+                    carried: vec![
+                        carried(
+                            1,
+                            "1",
+                            "SPANN augments the posting list with points in the closure of each cluster.",
+                        ),
+                        carried(
+                            2,
+                            "2",
+                            "Posting lists are expanded by adding the points in the closure of the cluster boundary.",
+                        ),
+                        carried(
+                            3,
+                            "3",
+                            "SPANN keeps centroids in memory and posting lists on disk for partial search.",
+                        ),
+                        carried(7, "7", "Recall at ten is compared against DiskANN on SPACEV1B."),
+                        carried(8, "10", "SPANN reaches high recall with low memory and latency."),
+                    ],
+                    ..RunScope::default()
+                },
+            )
+            .unwrap();
+        let (first_prompt, _) = sent_prompt(&mut out);
+        say(
+            &inner,
+            "m1",
+            "Posting lists are expanded by adding the points in the closure of the cluster boundary [3]. \
+             Posting lists are expanded by adding the points in the closure of the cluster boundary [2].",
+        );
+        complete(&inner, &first_prompt);
+        let all = events_until(&mut events, |e| matches!(e, AgentEvent::RunFinished { .. })).await;
+        let report = all
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::Grounding { report, .. } => Some(report.clone()),
+                _ => None,
+            })
+            .expect("a final report");
+        assert!(report.is_final);
+        // The numbers the check reports are the carried numbers.
+        assert_eq!(report.claims[0].outcome, ClaimOutcome::Unsupported);
+        assert_eq!(report.claims[0].cited, vec![3]);
+        assert_eq!(report.claims[0].closest, Some(2));
+        assert_eq!(report.claims[0].suggested, Some(2));
+        assert_eq!(report.claims[1].outcome, ClaimOutcome::Supported);
+        assert_eq!(report.claims[1].cited, vec![2]);
+        // Side threads are flagged, never repaired.
+        assert!(!all
+            .iter()
+            .any(|e| matches!(e, AgentEvent::RevisionStarted { .. })));
+        assert!(out.try_recv().is_err(), "no follow-up prompt");
+    }
+
+    #[tokio::test]
     async fn stopping_during_the_check_ends_the_run() {
         let (inner, _events, mut out) = offline_inner(Some(GroundingConfig::lexical()));
         start(&inner);

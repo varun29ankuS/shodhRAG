@@ -17,7 +17,8 @@ export type AuditEventType =
   | 'memory_write'
   | 'memory_forget'
   | 'memory_use'
-  | 'code_change';
+  | 'code_change'
+  | 'citation_corrected';
 
 export const EVENT_TYPES: readonly { id: AuditEventType; label: string }[] = [
   { id: 'question', label: 'Questions' },
@@ -31,6 +32,7 @@ export const EVENT_TYPES: readonly { id: AuditEventType; label: string }[] = [
   { id: 'memory_forget', label: 'Memory forgotten' },
   { id: 'memory_use', label: 'Memory used' },
   { id: 'code_change', label: 'Code branches' },
+  { id: 'citation_corrected', label: 'Citations corrected' },
   { id: 'runtime_install', label: 'Runtime' },
   { id: 'retention_checkpoint', label: 'Retention' },
 ];
@@ -63,6 +65,8 @@ export function eventLabel(type: string): string {
       return 'Memory used';
     case 'code_change':
       return 'Code branch';
+    case 'citation_corrected':
+      return 'Citation corrected';
     default:
       return type;
   }

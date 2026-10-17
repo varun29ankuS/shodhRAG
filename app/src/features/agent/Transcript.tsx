@@ -13,6 +13,7 @@ import { revisionText } from './revisionText';
 import type { GroundingReport } from './events';
 import { answerReport, checksForMessage } from './grounding';
 import { GroundingChip } from './GroundingFlags';
+import type { CiteInstead } from './GroundingFlags';
 import { ProviderErrorCard } from '../modelPicker/ProviderErrorCard';
 import type { ProviderErrorActions } from '../modelPicker/ProviderErrorCard';
 import type { ProviderErrorKind } from '../modelPicker/modelTypes';
@@ -44,6 +45,11 @@ interface TranscriptProps {
   compact?: boolean;
   /** Retry and fallback for a provider failure (the newest answer in Ask only). */
   providerActions?: ProviderErrorActions | null;
+  /**
+   * Rewrites a miscited claim of the finished answer to cite the passage that
+   * supports it ("Cite N instead"); absent where the answer cannot be changed.
+   */
+  onCiteInstead?: CiteInstead;
 }
 
 /** A live "what is happening now" row with a spinner. */
@@ -92,8 +98,10 @@ export function Transcript({
   onOpenArtifact,
   compact = false,
   providerActions = null,
+  onCiteInstead,
 }: TranscriptProps) {
   const live = isLive(transcript);
+  const citeInstead = live ? undefined : onCiteInstead;
   const step = currentStep(transcript);
   const lastBlock = transcript.blocks[transcript.blocks.length - 1];
   const superseded = useMemo(() => supersededBlocks(transcript), [transcript]);
@@ -172,6 +180,7 @@ export function Transcript({
                   hits={hits}
                   activeCitation={activeCitation}
                   onOpenCitation={onOpenCitation}
+                  onCiteInstead={superseded.has(block.id) || notes.has(block.id) ? undefined : citeInstead}
                   compact
                 />
               );
@@ -219,6 +228,7 @@ export function Transcript({
             activeCitation={activeCitation}
             onOpenCitation={onOpenCitation}
             onOpenArtifact={onOpenArtifact}
+            onCiteInstead={superseded.has(block.id) || notes.has(block.id) ? undefined : citeInstead}
             compact={compact}
           />
         );
@@ -228,7 +238,7 @@ export function Transcript({
 
       <ReasoningPanel transcript={transcript} compact={compact} />
 
-      {!live && answer && <GroundingChip report={answer} hits={hits} onOpenCitation={onOpenCitation} compact={compact} />}
+      {!live && answer && <GroundingChip report={answer} hits={hits} onOpenCitation={onOpenCitation} onCiteInstead={citeInstead} compact={compact} />}
 
       {transcript.status === 'aborted' && (
         <p className="text-[12.5px] text-shodh-text-muted">
@@ -306,6 +316,8 @@ interface TextBlockProps {
   activeCitation: number | null;
   onOpenCitation: (hit: SearchHit, trigger: HTMLElement) => void;
   onOpenArtifact?: (artifactId: string) => void;
+  /** Only for the answer's own text, never for an earlier draft. */
+  onCiteInstead?: CiteInstead;
   compact: boolean;
 }
 
@@ -323,6 +335,7 @@ function TextBlock({
   activeCitation,
   onOpenCitation,
   onOpenArtifact,
+  onCiteInstead,
   compact,
 }: TextBlockProps) {
   const report = superseded ? reportFor(groundings, id) : answer;
@@ -337,6 +350,7 @@ function TextBlock({
       onOpenCitation={onOpenCitation}
       onOpenArtifact={onOpenArtifact}
       claims={claims}
+      onCiteInstead={superseded ? undefined : onCiteInstead}
       flagUnknownCitations
     />
   );

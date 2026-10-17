@@ -12,7 +12,16 @@ import {
   FLAG_OPEN,
   answerReport,
   checksForMessage,
+  citeInAnchor,
+  citeInsteadOffer,
+  CorrectionGuard,
+  applyAuditedCorrection,
+  citationCorrection,
+  citeSuggested,
   citedNumbersIn,
+  correctionLabel,
+  sameCorrection,
+  isCorrected,
   flagDescription,
   flagLabel,
   insertFlagMarkers,
@@ -20,9 +29,15 @@ import {
   parseCitationMarkers,
   summaryDescription,
   summaryLabel,
+  storedAnswerReport,
+  suggestedPassage,
+  summariseClaims,
   summaryTone,
   supersededMessages,
+  withoutFlaggedCitations,
 } from '../src/features/agent/grounding.ts';
+import { answerText, initialTranscript } from '../src/features/agent/reducer.ts';
+import type { TranscriptState } from '../src/features/agent/reducer.ts';
 
 const shared = JSON.parse(
   readFileSync(new URL('../../crates/shodh-rag/src/harness/fixtures/citations.json', import.meta.url), 'utf8'),
@@ -142,4 +157,276 @@ test('the final report describes the answer and superseded drafts are collected'
   assert.deepEqual([...supersededMessages([first, final])], ['m1', 'm2']);
   assert.equal(checksForMessage(first, 'm2').length, 1);
   assert.equal(checksForMessage(null, 'm2').length, 0);
+});
+
+// The reported side answer: it cites [3] for what passage 2 states; the check offers 2.
+const miscited = (partial: Partial<ClaimCheck> = {}): ClaimCheck =>
+  check({
+    text: 'SPANN expands posting lists with the points in the closure, reducing disk-access latency.',
+    anchor: 'SPANN expands posting lists with the points in the closure, reducing disk-access latency. [3]',
+    cited: [3],
+    support: 0.29,
+    closest: 2,
+    closestScore: 0.97,
+    suggested: 2,
+    suggestedScore: 0.91,
+    suggestedContradiction: 0.04,
+    ...partial,
+  });
+
+test('a miscitation says which passage supports the statement and what the answer cited', () => {
+  assert.equal(flagLabel(miscited()), 'Supported by passage 2 (answer cited 3)');
+  assert.equal(
+    flagDescription(miscited(), '2, spann.pdf p.2'),
+    'Passage 2 supports this statement; the answer cited [3], which does not. Closest passage: 2, spann.pdf p.2.',
+  );
+  assert.equal(suggestedPassage(miscited()), 2);
+  assert.equal(citeInsteadOffer(miscited()), 2);
+  // A report saved before the check named the passage reads as before.
+  const old = miscited();
+  delete old.suggested;
+  assert.equal(suggestedPassage(old), null);
+  assert.equal(flagLabel(old), 'not found in the cited source');
+  // Only an unsupported claim is offered a passage, never one it already cites.
+  assert.equal(suggestedPassage(miscited({ outcome: 'weak' })), null);
+  assert.equal(suggestedPassage(miscited({ cited: [2, 3] })), null);
+  // A table row whose citation is in another cell than its anchor is not rewritten.
+  assert.equal(citeInsteadOffer(miscited({ kind: 'table_row', anchor: '0.97' })), null);
+  assert.equal(citeInsteadOffer(miscited({ kind: 'table_row', anchor: '0.97 [3]' })), 2);
+});
+
+test('citing another passage rewrites the markers inside the anchor only', () => {
+  assert.equal(citeInAnchor('latency. [3]', 2), 'latency. [2]');
+  assert.equal(citeInAnchor('Latency drops [3].', 2), 'Latency drops [2].');
+  assert.equal(citeInAnchor('Latency drops [3][7].', 2), 'Latency drops [2].');
+  assert.equal(citeInAnchor('Latency drops [3], [7].', 2), 'Latency drops [2].');
+  assert.equal(citeInAnchor('Latency drops [3-4].', 2), 'Latency drops [2].');
+  // An inherited citation: the marker goes before the full stop.
+  assert.equal(citeInAnchor('Latency drops.', 2), 'Latency drops [2].');
+  assert.equal(citeInAnchor('Latency drops', 2), 'Latency drops [2]');
+});
+
+function transcriptWith(text: string, claims: ClaimCheck[], partial: Partial<TranscriptState> = {}): TranscriptState {
+  return {
+    ...initialTranscript('run-1', 0),
+    status: 'completed',
+    blocks: [{ kind: 'text', id: 'm1', text }],
+    groundings: [report({ isFinal: true, messageIds: ['m1'], claims, summary: summariseClaims(claims) })],
+    ...partial,
+  };
+}
+
+test('"Cite N instead" rewrites the stored answer and records the claim as supported', () => {
+  const supported = check({ text: 'SPANN keeps centroids in memory.', anchor: 'SPANN keeps centroids in memory [1].', outcome: 'supported', cited: [1] });
+  const wrong = miscited();
+  const text = `${supported.anchor} ${wrong.anchor}`;
+  const state = transcriptWith(text, [supported, wrong]);
+  assert.equal(state.groundings[0].summary.score, 0.5);
+  const rewrite = citeSuggested(state, state.groundings[0].claims[1]);
+  assert.ok(rewrite);
+  const next = rewrite.transcript;
+  assert.equal(
+    answerText(next),
+    'SPANN keeps centroids in memory [1]. SPANN expands posting lists with the points in the closure, reducing disk-access latency. [2]',
+  );
+  const claim = next.groundings[0].claims[1];
+  assert.equal(claim.outcome, 'supported');
+  assert.deepEqual(claim.cited, [2]);
+  assert.equal(claim.anchor, 'SPANN expands posting lists with the points in the closure, reducing disk-access latency. [2]');
+  assert.equal(claim.suggested, null);
+  assert.equal(claim.support, 0.91, "the claim shows the support the check found in passage 2");
+  assert.equal(claim.suggestedScore, null);
+  assert.equal(claim.closest, null);
+  assert.equal(claim.contradiction, 0.04, 'the contradiction the check measured in passage 2');
+  assert.deepEqual(claim.correctedFrom, [3], 'the change is recorded as the user\'s');
+  assert.ok(isCorrected(claim) && !isCorrected(supported));
+  assert.equal(correctionLabel(claim), 'citation corrected by you ([3] → [2])');
+  assert.deepEqual([rewrite.claimIndex, rewrite.from, rewrite.to, rewrite.messageId], [1, [3], 2, 'm1']);
+  assert.equal(next.groundings[0].summary.supported, 2);
+  assert.equal(next.groundings[0].summary.score, 1);
+  // The supported claim and the original state are untouched.
+  assert.equal(next.groundings[0].claims[0], supported);
+  assert.equal(answerText(state), text);
+  // Nothing to rewrite: a running answer, a claim no longer there, a claim without a suggestion.
+  assert.equal(citeSuggested({ ...state, status: 'running' }, wrong), null);
+  assert.equal(citeSuggested(transcriptWith('Other text.', [wrong]), wrong), null);
+  assert.equal(citeSuggested(state, supported), null);
+  // A report saved before the score was kept: the claim's support is not known.
+  const older = miscited();
+  delete older.suggestedScore;
+  older.suggestedContradiction = 0.02;
+  const rewritten = citeSuggested(transcriptWith(older.anchor, [older]), older);
+  assert.ok(rewritten);
+  assert.equal(rewritten.transcript.groundings[0].claims[0].support, null);
+  assert.equal(rewritten.transcript.groundings[0].claims[0].contradiction, 0.02, 'contradiction is kept when it was measured');
+});
+
+test('of two identical miscited sentences, the one whose flag was used is rewritten', () => {
+  const first = miscited();
+  const second = miscited();
+  const text = `${first.anchor}
+
+${second.anchor}`;
+  const state = transcriptWith(text, [first, second]);
+  const rewrite = citeSuggested(state, state.groundings[0].claims[1]);
+  assert.ok(rewrite);
+  const next = rewrite.transcript;
+  assert.equal(answerText(next), `${first.anchor}
+
+${second.anchor.replace('[3]', '[2]')}`);
+  assert.equal(next.groundings[0].claims[0].outcome, 'unsupported');
+  assert.equal(next.groundings[0].claims[1].outcome, 'supported');
+});
+
+test('flagged citations are not passed on as context; supported ones are', () => {
+  const supported = check({ anchor: 'Centroids stay in memory [1].', outcome: 'supported', cited: [1] });
+  const invalid = check({ anchor: 'Search is partial [9].', outcome: 'invalid_citation', cited: [9], invalid: [9] });
+  const weak = check({ anchor: 'Recall is high [7].', outcome: 'weak', cited: [7] });
+  const answer = `Centroids stay in memory [1]. ${miscited().anchor}
+
+Search is partial [9]. Recall is high [7].`;
+  const r = report({ claims: [supported, miscited(), invalid, weak] });
+  assert.equal(
+    withoutFlaggedCitations(answer, r),
+    'Centroids stay in memory [1]. SPANN expands posting lists with the points in the closure, reducing disk-access latency.\n\nSearch is partial. Recall is high [7].',
+  );
+  assert.equal(withoutFlaggedCitations(answer, null), answer);
+  // A stored transcript's final report is the one read.
+  assert.equal(storedAnswerReport({ groundings: [report({}), r] }), r);
+  assert.equal(storedAnswerReport({ groundings: [r, report({ isFinal: true })] })?.isFinal, true);
+  assert.equal(storedAnswerReport(undefined), null);
+  assert.equal(storedAnswerReport({ groundings: 'x' }), null);
+});
+
+// "Centroids stay in memory. Points are added at the boundary [3]." The first sentence has no
+// marker of its own and inherits [3] (claims.rs inherit_citations); the check supports it with
+// passage 3 and flags the second, which passage 2 states.
+function sharedMarker() {
+  const inheritor = check({
+    text: 'Centroids stay in memory.', anchor: 'Centroids stay in memory.', outcome: 'supported', cited: [3], support: 0.9,
+  });
+  const owner = miscited({ text: 'Points are added at the boundary.', anchor: 'Points are added at the boundary [3].' });
+  const text = `${inheritor.anchor} ${owner.anchor}`;
+  return { inheritor, owner, text };
+}
+
+test('a marker an unflagged claim inherited is passed on as context', () => {
+  const { inheritor, owner, text } = sharedMarker();
+  assert.equal(withoutFlaggedCitations(text, report({ claims: [inheritor, owner] })), text);
+  // Flagged for it too: the marker goes.
+  const flaggedToo = { ...inheritor, outcome: 'unsupported' as const };
+  assert.equal(
+    withoutFlaggedCitations(text, report({ claims: [flaggedToo, owner] })),
+    'Centroids stay in memory. Points are added at the boundary.',
+  );
+  // A claim with a marker of its own did not inherit: the flagged marker goes.
+  const own = check({ text: 'Centroids stay in memory.', anchor: 'Centroids stay in memory [3].', outcome: 'supported', cited: [3] });
+  assert.equal(
+    withoutFlaggedCitations(`${own.anchor} ${owner.anchor}`, report({ claims: [own, owner] })),
+    'Centroids stay in memory [3]. Points are added at the boundary.',
+  );
+});
+
+test('"Cite N instead" keeps the citation an unflagged claim inherited', () => {
+  const { inheritor, owner, text } = sharedMarker();
+  const state = transcriptWith(text, [inheritor, owner]);
+  const rewrite = citeSuggested(state, state.groundings[0].claims[1]);
+  assert.ok(rewrite);
+  assert.equal(answerText(rewrite.transcript), 'Centroids stay in memory [3]. Points are added at the boundary [2].');
+  const [kept, corrected] = rewrite.transcript.groundings[0].claims;
+  assert.equal(kept.anchor, 'Centroids stay in memory [3].');
+  assert.deepEqual([kept.outcome, kept.cited, kept.correctedFrom], ['supported', [3], undefined]);
+  assert.equal(corrected.anchor, 'Points are added at the boundary [2].');
+  // The stored anchors still find their claims in the rewritten text.
+  for (const c of rewrite.transcript.groundings[0].claims) assert.ok(answerText(rewrite.transcript).includes(c.anchor), c.anchor);
+});
+
+test('the audit record of a correction holds ids, numbers and counts, never text', () => {
+  const supported = check({ anchor: 'SPANN keeps centroids in memory [1].', outcome: 'supported', cited: [1] });
+  const wrong = miscited();
+  const state = transcriptWith(`${supported.anchor} ${wrong.anchor}`, [supported, wrong]);
+  const rewrite = citeSuggested(state, state.groundings[0].claims[1]);
+  assert.ok(rewrite);
+  const record = citationCorrection(rewrite, 'conv-1');
+  assert.deepEqual(record, {
+    conversationId: 'conv-1',
+    runId: 'run-1',
+    messageId: 'm1',
+    claimIndex: 1,
+    from: [3],
+    to: 2,
+    suggestedScore: 0.91,
+    summary: { checked: 2, supported: 2, weak: 0, unsupported: 0, uncited: 0, invalid: 0, unchecked: 0, score: 1 },
+  });
+  const json = JSON.stringify(record);
+  for (const words of ['SPANN', 'latency', 'posting', 'fee']) assert.ok(!json.includes(words), json);
+});
+
+test('a correction is applied only after the audit log has taken its record', async () => {
+  const order: string[] = [];
+  const applied = await applyAuditedCorrection(
+    async () => {
+      order.push('record');
+    },
+    () => {
+      order.push('apply');
+      return true;
+    },
+  );
+  assert.equal(applied, 'applied');
+  assert.deepEqual(order, ['record', 'apply'], 'recorded first, then applied');
+
+  const refused: string[] = [];
+  const outcome = await applyAuditedCorrection(
+    async () => {
+      refused.push('record');
+      throw new Error('The audit log is unavailable');
+    },
+    () => {
+      refused.push('apply');
+      return true;
+    },
+  );
+  assert.equal(outcome, 'not_recorded');
+  assert.deepEqual(refused, ['record'], 'a failed record changes nothing');
+});
+
+test('a correction recorded while the answer changed is not applied over the change', async () => {
+  const supported = check({ anchor: 'SPANN keeps centroids in memory [1].', outcome: 'supported', cited: [1] });
+  const first = miscited({ anchor: 'Posting lists grow [3].', text: 'Posting lists grow.' });
+  const second = miscited({ anchor: 'Latency drops [7].', text: 'Latency drops.', cited: [7] });
+  const state = transcriptWith(`${supported.anchor} ${first.anchor} ${second.anchor}`, [supported, first, second]);
+  const recorded = citeSuggested(state, state.groundings[0].claims[1]);
+  assert.ok(recorded);
+  // Built again from the same state: the same correction.
+  assert.ok(sameCorrection(recorded, citeSuggested(state, state.groundings[0].claims[1])));
+  // The claim was corrected in between: no rewrite is left to apply.
+  assert.equal(citeSuggested(recorded.transcript, first), null);
+  assert.ok(!sameCorrection(recorded, null));
+  // Another claim's correction is a different one.
+  assert.ok(!sameCorrection(recorded, citeSuggested(state, state.groundings[0].claims[2])));
+  // After the record, the apply step reads the latest state and skips.
+  let latest: TranscriptState = recorded.transcript;
+  let writes = 0;
+  const outcome = await applyAuditedCorrection(
+    async () => undefined,
+    () => {
+      const again = citeSuggested(latest, first);
+      if (!again || !sameCorrection(recorded, again)) return false;
+      latest = again.transcript;
+      writes += 1;
+      return true;
+    },
+  );
+  assert.equal(outcome, 'stale');
+  assert.equal(writes, 0);
+});
+
+test('one correction per answer is in flight at a time', () => {
+  const guard = new CorrectionGuard();
+  assert.ok(guard.claim('m1'));
+  assert.ok(!guard.claim('m1'), 'a second correction of the same answer waits');
+  assert.ok(guard.claim('m2'), 'another answer is independent');
+  guard.release('m1');
+  assert.ok(guard.claim('m1'));
 });

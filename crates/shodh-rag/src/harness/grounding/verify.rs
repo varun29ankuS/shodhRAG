@@ -26,7 +26,10 @@
 //!      `weak` or `unsupported`.
 //!
 //! Flagged claims are also scored against every passage of the run, so the
-//! transcript can offer the closest one.
+//! transcript can offer the closest one. When the cited passages fail a
+//! claim on its support score but the closest passage, checked the same way,
+//! supports it, the claim stays unsupported and that passage is recorded as
+//! `suggested`: the answer cited the wrong passage.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -551,6 +554,27 @@ pub fn outcome_for(score: f32, method: ScoringMethod, t: &Thresholds) -> ClaimOu
     }
 }
 
+/// What `passage` alone gives `claim` when it supports it at the supported
+/// threshold and holds every number and quote the claim states; `None`
+/// otherwise (also for a passage the models cannot judge).
+fn supported_by(
+    scorers: Scorers<'_>,
+    claim: &str,
+    passage: &Evidence,
+    thresholds: &Thresholds,
+    methods: &mut HashSet<ScoringMethod>,
+) -> Option<Support> {
+    if !passage.checkable {
+        return None;
+    }
+    let found = support(scorers, claim, std::slice::from_ref(&passage.text));
+    methods.insert(found.method);
+    (outcome_for(found.score, found.method, thresholds) == ClaimOutcome::Supported
+        && missing_numbers(claim, &[passage.text.as_str()]).is_empty()
+        && misquoted(claim, &[passage.text.as_str()]).is_empty())
+    .then_some(found)
+}
+
 /// Check one claim. `None` when the claim is not checked at all (no
 /// citation and not a factual statement in a sourced answer).
 fn check_claim(
@@ -576,7 +600,13 @@ fn check_claim(
         missing_numbers: Vec::new(),
         closest: None,
         closest_score: None,
+        suggested: None,
+        suggested_score: None,
+        suggested_contradiction: None,
     };
+    // The cited passages were scored and the score alone failed the claim
+    // (no missing number, no misquote).
+    let mut failed_on_score = false;
     if claim.citations.is_empty() {
         if !(claim.factual && sourced_answer) {
             return None;
@@ -642,7 +672,9 @@ fn check_claim(
                 // however close the rest of the claim is.
                 let misquotes = misquoted(&claim.text, &quote_sources);
                 check.outcome = if check.missing_numbers.is_empty() && misquotes.is_empty() {
-                    outcome_for(found.score, found.method, thresholds)
+                    let outcome = outcome_for(found.score, found.method, thresholds);
+                    failed_on_score = outcome == ClaimOutcome::Unsupported;
+                    outcome
                 } else {
                     ClaimOutcome::Unsupported
                 };
@@ -669,25 +701,34 @@ fn check_claim(
             }
         }
     }
+    let closest = check
+        .closest
+        .and_then(|n| input.passages.iter().find(|p| p.n == n));
     // An uncited claim that a passage of this answer clearly supports is
     // grounded, not "no source": verify it against that passage and, when
     // it passes the support threshold, record the passage as its source.
     if check.outcome == ClaimOutcome::UncitedFactual {
-        if let Some(n) = check.closest {
-            if let Some(p) = input.passages.iter().find(|p| p.n == n && p.checkable) {
-                let found = support(scorers, &claim.text, std::slice::from_ref(&p.text));
-                methods.insert(found.method);
-                if outcome_for(found.score, found.method, thresholds) == ClaimOutcome::Supported
-                    && missing_numbers(&claim.text, &[p.text.as_str()]).is_empty()
-                    && misquoted(&claim.text, &[p.text.as_str()]).is_empty()
-                {
-                    check.outcome = ClaimOutcome::Supported;
-                    check.cited = vec![n];
-                    check.support = Some(found.score);
-                    check.contradiction = found.contradiction;
-                    check.closest = None;
-                    check.closest_score = None;
-                }
+        if let Some(p) = closest {
+            if let Some(found) = supported_by(scorers, &claim.text, p, thresholds, methods) {
+                check.outcome = ClaimOutcome::Supported;
+                check.cited = vec![p.n];
+                check.support = Some(found.score);
+                check.contradiction = found.contradiction;
+                check.closest = None;
+                check.closest_score = None;
+            }
+        }
+    }
+    // A cited claim its passages do not support, which another passage of
+    // the run does support by the same check: a miscitation. The outcome
+    // stays unsupported (the answer as written cites the wrong passage);
+    // the passage that supports it is offered instead.
+    if failed_on_score && check.outcome == ClaimOutcome::Unsupported {
+        if let Some(p) = closest {
+            if let Some(found) = supported_by(scorers, &claim.text, p, thresholds, methods) {
+                check.suggested = Some(p.n);
+                check.suggested_score = Some(found.score);
+                check.suggested_contradiction = found.contradiction;
             }
         }
     }
@@ -956,6 +997,98 @@ mod tests {
         let summary = summarise(&checks);
         assert_eq!((summary.checked, summary.supported), (4, 1));
         assert_eq!(summary.score, Some(0.25));
+    }
+
+    #[test]
+    fn a_claim_citing_the_wrong_passage_is_offered_the_one_that_supports_it() {
+        let checks = run(
+            "Either party may terminate the agreement with sixty days written notice [2].",
+            relevance(&Overlap),
+        );
+        assert_eq!(checks[0].outcome, ClaimOutcome::Unsupported, "{checks:?}");
+        assert_eq!(checks[0].cited, vec![2]);
+        assert_eq!(checks[0].closest, Some(1));
+        assert_eq!(checks[0].suggested, Some(1));
+        // Scored by the same method as the cited passages, at the supported cut.
+        let score = checks[0]
+            .suggested_score
+            .expect("the suggested passage's score");
+        assert!(score >= THRESHOLDS.support, "{score}");
+        assert!(checks[0].support.unwrap() < THRESHOLDS.weak);
+        assert_eq!(
+            summarise(&checks).score,
+            Some(0.0),
+            "the score stays honest"
+        );
+    }
+
+    #[test]
+    fn a_passage_that_only_comes_close_is_not_suggested() {
+        // Passage 1 shares the topic, not the claim: closest, below supported.
+        let partial = run(
+            "Either party may terminate the agreement by registered letter to the board [2].",
+            relevance(&Overlap),
+        );
+        assert_eq!(partial[0].outcome, ClaimOutcome::Unsupported);
+        assert_eq!(partial[0].closest, Some(1));
+        assert_eq!(partial[0].suggested, None);
+        assert_eq!(partial[0].suggested_score, None);
+        // A number no passage holds is not a miscitation either.
+        let number = run(
+            "Either party may terminate the agreement with 90 days written notice [2].",
+            relevance(&Overlap),
+        );
+        assert_eq!(number[0].outcome, ClaimOutcome::Unsupported);
+        assert_eq!(number[0].missing_numbers, vec!["90"]);
+        assert_eq!(number[0].suggested, None);
+        // A supported claim needs no suggestion.
+        let right = run(
+            "Either party may terminate the agreement with sixty days written notice [1].",
+            relevance(&Overlap),
+        );
+        assert_eq!(right[0].outcome, ClaimOutcome::Supported);
+        assert_eq!((right[0].closest, right[0].suggested), (None, None));
+    }
+
+    #[test]
+    fn suggestions_use_the_run_numbers_of_a_sparse_carried_set() {
+        // A side run carries passages 1, 2, 3, 7 and 8 under the parent's
+        // numbers; the check names them by number, never by position.
+        let carried = vec![
+            passage(
+                1,
+                "SPANN augments the posting list with points in the closure of each cluster.",
+            ),
+            passage(
+                2,
+                "Posting lists are expanded by adding the points in the closure of the cluster boundary.",
+            ),
+            passage(
+                3,
+                "SPANN keeps centroids in memory and posting lists on disk for partial search.",
+            ),
+            passage(7, "Recall at ten is compared against DiskANN on SPACEV1B."),
+            passage(8, "SPANN reaches high recall with low memory and latency."),
+        ];
+        let messages = message(
+            "Posting lists are expanded by adding the points in the closure of the cluster boundary [3]. \
+             Posting lists are expanded by adding the points in the closure of the cluster boundary [2].",
+        );
+        let (checks, _) = verify_answer(
+            &VerifyInput {
+                messages: &messages,
+                passages: &carried,
+                opened: &[],
+            },
+            relevance(&Overlap),
+            &THRESHOLDS,
+        );
+        assert_eq!(checks[0].outcome, ClaimOutcome::Unsupported, "{checks:?}");
+        assert_eq!(checks[0].closest, Some(2));
+        assert_eq!(checks[0].suggested, Some(2));
+        assert_eq!(checks[1].outcome, ClaimOutcome::Supported);
+        assert_eq!(checks[1].cited, vec![2]);
+        assert_eq!(checks[1].suggested, None);
     }
 
     #[test]

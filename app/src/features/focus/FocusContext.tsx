@@ -1,6 +1,9 @@
 import React, { Suspense, createContext, lazy, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { notify } from '../../lib/notify';
-import type { AgentEventEnvelope } from '../agent/events';
+import type { AgentEventEnvelope, ClaimCheck } from '../agent/events';
+import { CorrectionGuard, applyAuditedCorrection, citationCorrection, citeSuggested, sameCorrection } from '../agent/grounding';
+import type { CorrectionOutcome } from '../agent/grounding';
+import { recordCitationCorrection } from '../audit/api';
 import { answerText, fromPersisted, initialTranscript, isLive, reduceAll, toPersisted } from '../agent/reducer';
 import type { Passage, TranscriptAction, TranscriptState } from '../agent/reducer';
 import { carriedPassages, toWire } from './carriedPassages';
@@ -220,6 +223,12 @@ export interface FocusContextValue {
   repairDiagram: (request: DiagramRepairRequest) => Promise<DiagramRepairOutcome>;
   /** Whether the answer at `place` is the newest one where it is shown (read on call, no re-render). */
   isLatestAnswer: (place: DiagramPlace) => boolean;
+  /**
+   * "Cite N instead" on a miscited claim of a stored side answer: records the
+   * correction in the audit log, then rewrites that answer's citation and
+   * saves the thread (audit first: nothing changes without the record).
+   */
+  citeInstead: (open: OpenFocus, turnId: string, check: ClaimCheck) => Promise<CorrectionOutcome>;
   /** Interrupt the side answer. */
   stop: () => void;
   /** Answer a pending approval of the side answer. */
@@ -425,7 +434,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     const upTo = end >= 0 ? stored.slice(0, end + 1) : stored;
     return upTo
       .filter((m): m is typeof m & { role: 'user' | 'assistant' } => m.role === 'user' || m.role === 'assistant')
-      .map(m => ({ role: m.role, content: m.content }));
+      .map(m => ({ role: m.role, content: m.content, transcript: m.transcript }));
   }, []);
 
   const settle = useCallback((live: SideLive) => {
@@ -643,6 +652,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       .map(t => ({
         role: t.role,
         content: t.summaryOf ? `Brought back from the nested discussion about "${t.summaryOf.label}":\n\n${t.content}` : t.content,
+        transcript: t.transcript,
       }));
     const history = alternateTurns(threadHistory(mainTurns(conversationId, parentMessageId), replay));
     const ancestors = ancestorsFor(list, level.parentThreadId, level.parentTurnId);
@@ -1001,6 +1011,47 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     return true;
   }, [findThread, mutateThread]);
 
+  const correctionsRef = useRef(new CorrectionGuard());
+  // The latest stored threads, also after awaiting the audit record.
+  const findThreadRef = useRef(findThread);
+  findThreadRef.current = findThread;
+  const citeInstead = useCallback(async (level: OpenFocus, turnId: string, check: ClaimCheck): Promise<CorrectionOutcome> => {
+    // The stored answer, read again after the record so a change made in between is never overwritten.
+    const latestRewrite = () => {
+      const thread = findThreadRef.current(level.conversationId, level.parentMessageId, level.threadId);
+      const turn = thread?.turns.find(t => t.id === turnId && t.role === 'assistant');
+      const stored = turn?.transcript ? fromPersisted(turn.transcript) : null;
+      if (!thread || !turn || !stored || isLive(stored)) return null;
+      const rewrite = citeSuggested(stored, check);
+      return rewrite ? { thread, turn, rewrite } : null;
+    };
+    const first = latestRewrite();
+    if (!first) return 'stale';
+    const guard = correctionsRef.current;
+    if (!guard.claim(turnId)) return 'busy';
+    try {
+      // Audit first: the thread changes only once Activity has the record.
+      return await applyAuditedCorrection(
+        () => recordCitationCorrection(citationCorrection(first.rewrite, first.thread.anchor.conversationId)),
+        () => {
+          const latest = latestRewrite();
+          if (!latest || !sameCorrection(first.rewrite, latest.rewrite)) return false;
+          const next = latest.rewrite.transcript;
+          // Stored as a finished answer is: the followups block stays out of the text.
+          const changed: ThreadTurn = {
+            ...latest.turn,
+            content: splitFollowups(answerText(next)).body,
+            transcript: toPersisted(next) as unknown as Record<string, unknown>,
+          };
+          mutateThread(latest.thread.anchor, latest.thread.id, t => ({ ...t, turns: t.turns.map(x => (x.id === turnId ? changed : x)) }));
+          return true;
+        },
+      );
+    } finally {
+      guard.release(turnId);
+    }
+  }, [mutateThread]);
+
   const closeFocus = useCallback(() => {
     // The pop-out's side sessions are stopped (each is one agent process). The
     // backend keeps any session whose answer is still running and stops it once idle.
@@ -1029,10 +1080,11 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     repairDiagram,
     isLatestAnswer,
     bringBack,
+    citeInstead,
     stop,
     approve,
     sideLive,
-  }), [openFocus, closeFocus, drillDown, navigate, jumpToThread, session, localThreads, locationThreads, findThread, ask, summarize, refine, showVisualVersion, repairDiagram, isLatestAnswer, bringBack, stop, approve, sideLive]);
+  }), [openFocus, closeFocus, drillDown, navigate, jumpToThread, session, localThreads, locationThreads, findThread, ask, summarize, refine, showVisualVersion, repairDiagram, isLatestAnswer, bringBack, citeInstead, stop, approve, sideLive]);
 
   return (
     <FocusContext.Provider value={value}>

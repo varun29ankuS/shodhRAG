@@ -136,6 +136,24 @@ pub(crate) fn summarize(row: &AuditRow) -> String {
             s(p, "base"),
             s(p, "folder")
         ),
+        "citation_corrected" => {
+            let numbers = |key: &str| -> String {
+                p.get(key)
+                    .and_then(Value::as_array)
+                    .map(|ns| {
+                        ns.iter()
+                            .filter_map(Value::as_u64)
+                            .map(|n| format!("[{n}]"))
+                            .collect::<String>()
+                    })
+                    .unwrap_or_default()
+            };
+            format!(
+                "The user changed a citation from {} to [{}]",
+                numbers("from"),
+                p.get("to").and_then(Value::as_u64).unwrap_or(0)
+            )
+        }
         other => other.to_string(),
     };
     truncate(text.trim(), MAX_SUMMARY_CHARS)

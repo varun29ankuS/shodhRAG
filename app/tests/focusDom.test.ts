@@ -145,3 +145,18 @@ test('only answer scopes (conversation and side thread) read selections without 
   assert.equal(isAnswerScope('thread'), true);
   for (const kind of ['document', '', null, undefined]) assert.equal(isAnswerScope(kind), false, String(kind));
 });
+
+test('a miscitation flag and its "Cite N instead" button are not answer text', () => {
+  // As ClaimFlag draws it: a wrapper with the flag and a sibling button, all answer UI.
+  const flag = el({ [ANSWER_UI_ATTR]: '' }, [],
+    el({ [ANSWER_UI_ATTR]: '' }, [],
+      el({ 'aria-hidden': 'true' }, [], text('Supported by passage 2 (answer cited 3)')),
+      el({}, ['sr-only'], text('Passage 2 supports this statement; the answer cited [3], which does not.'))),
+    el({ [ANSWER_UI_ATTR]: '' }, [], text('Cite 2 instead')));
+  const p = el({}, [], text('SPANN expands posting lists with the closure, reducing disk-access latency.'), pill(3), flag);
+  assert.equal(readableText(p), 'SPANN expands posting lists with the closure, reducing disk-access latency.');
+  // The surrounding text of a selection made in that answer carries no citation marker.
+  const target = selectionTarget({ text: 'disk-access latency', context: readableText(p), origin: 'answer' });
+  assert.ok(target && target.kind === 'selection');
+  assert.ok(!/\[\d+\]|Cite 2/.test(target.paragraph), target.paragraph);
+});

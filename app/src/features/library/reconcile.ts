@@ -204,8 +204,9 @@ export function librarySourcesChip(searched: SearchedSources): { label: string; 
   if (!searched.hasSources) return { label: 'No sources yet', title: 'Add a folder in Library' };
   if (searched.limited) {
     const files = searched.files === null ? '' : ` (${countOf(searched.files, 'indexed file')})`;
+    const count = searched.files === null ? '' : ` · ${countOf(searched.files, 'file')}`;
     return {
-      label: `${searched.included.toLocaleString()} of ${countOf(searched.folders, 'folder')}`,
+      label: `${searched.included.toLocaleString()} of ${countOf(searched.folders, 'folder')}${count}`,
       title: `Answers search only the ${countOf(searched.included, 'folder')} included in Ask${files}. Manage sources in Library.`,
     };
   }

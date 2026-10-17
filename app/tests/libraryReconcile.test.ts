@@ -192,8 +192,16 @@ test('the sources chip: one label for the top bar and the composer', () => {
     { path: 'D:\\Contracts', selected: false },
     { path: 'E:\\Notes', selected: true },
   ], [...twelve, 'd:/contracts/a.pdf', 'e:/notes/n.md']));
-  assert.equal(limited.label, '2 of 3 folders');
+  assert.equal(limited.label, '2 of 3 folders · 13 files');
   assert.match(limited.title, /only the 2 folders included in Ask \(13 indexed files\)/);
+  // One of two folders: its 12 files; one file reads singular; no number before the index is listed.
+  const papersOnly = [
+    { path: 'C:\\Research\\papers', selected: true },
+    { path: 'D:\\Contracts', selected: false },
+  ];
+  assert.equal(librarySourcesChip(searchedSources(papersOnly, [...twelve, 'd:/contracts/a.pdf'])).label, '1 of 2 folders · 12 files');
+  assert.equal(librarySourcesChip(searchedSources(papersOnly, ['c:/research/papers/a.pdf', 'd:/contracts/a.pdf'])).label, '1 of 2 folders · 1 file');
+  assert.equal(librarySourcesChip(searchedSources(papersOnly, null)).label, '1 of 2 folders');
 });
 
 test('the empty state and the sources chip use one check', () => {

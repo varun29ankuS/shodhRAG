@@ -101,6 +101,8 @@ import type { NewMenuItemId } from './lib/newMenu';
 import { TableModelPrompt } from './features/setup/TableModelPrompt';
 import { AskView } from './features/ask/AskView';
 import { failureNotice, imageNotice, readImageText } from './features/ask/imageNotice';
+import { endsRun, withIndexingProgress } from './features/library/indexingProgress';
+import type { IndexingProgressPayload } from './features/library/indexingProgress';
 import { isIndexableDocument, legacyOfficeNotice, legacyOfficeTarget, sortDroppedPaths } from './features/library/dropFiles';
 import type { PastedImage } from './features/agent/AgentComposer';
 import { ChatActionsMenu } from './features/ask/ChatActionsMenu';
@@ -959,11 +961,8 @@ function AppSplitView() {
     initializeApp();
   }, []); // Empty dependency array - run only once on mount
 
-  // Setup other event listeners
+  // Tab switches asked for by child components.
   useEffect(() => {
-    let unlistenProg: (() => void) | null = null;
-
-    // Listen for tab switching events from child components
     const handleSwitchTab = (event: Event) => {
       const tab = normalizeViewTab((event as CustomEvent<unknown>).detail);
       if (tab) {
@@ -971,44 +970,38 @@ function AppSplitView() {
       }
     };
     window.addEventListener('switchTab', handleSwitchTab);
+    return () => window.removeEventListener('switchTab', handleSwitchTab);
+  }, []);
 
-    // Listen for indexing progress events
-    listen('indexing-progress', (event: any) => {
-      debugLog('=== INDEXING PROGRESS EVENT ===');
-      debugLog('Full event:', event);
-      debugLog('Payload:', event.payload);
-      const { current_file, processed_files, total_files, percentage } = event.payload;
-      const currentStep = scannedPagesStep(event.payload);
+  // Indexing progress on the card of the source it names, while that source is
+  // indexing (features/library/indexingProgress). Registered once; the source
+  // being indexed is read through a ref.
+  const currentlyIndexingRef = useRef(currentlyIndexing);
+  currentlyIndexingRef.current = currentlyIndexing;
+  useEffect(() => {
+    let unlistenProg: (() => void) | null = null;
+    let disposed = false;
 
-      // Update the currently indexing source with progress
-      setSources(prev => prev.map(source => {
-        // Update the source that's currently being indexed
-        if (source.id === currentlyIndexing || source.status === 'indexing') {
-          return {
-            ...source,
-            status: percentage >= 100 ? 'ready' : 'indexing',
-            progress: Math.round(percentage),
-            currentFile: current_file === 'Completed' ? undefined : current_file,
-            currentStep,
-            fileCount: total_files || source.fileCount,
-            processedCount: processed_files
-          };
-        }
-        return source;
-      }));
+    listen<IndexingProgressPayload>('indexing-progress', event => {
+      const payload = event.payload;
+      const currentStep = scannedPagesStep(payload);
+      setSources(prev => prev.map(source => withIndexingProgress(source, payload, currentStep)));
 
-      // If complete, update stats and clear indexing flag
-      if (percentage >= 100 && current_file === 'Completed') {
+      if (endsRun(payload, currentlyIndexingRef.current)) {
         setCurrentlyIndexing(null);
-        updateStats();
+        // The sources as they are now: this listener outlives the render it was made in.
+        void updateStats(sourcesRef.current);
       }
-    }).then(fn => { unlistenProg = fn; });
+    }).then(fn => {
+      if (disposed) fn();
+      else unlistenProg = fn;
+    });
 
     return () => {
-      window.removeEventListener('switchTab', handleSwitchTab);
+      disposed = true;
       unlistenProg?.();
     };
-  }, [currentlyIndexing]);
+  }, []);
 
   useEffect(() => {
     updateSelectedStats();

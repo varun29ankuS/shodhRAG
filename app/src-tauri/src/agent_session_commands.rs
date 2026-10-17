@@ -52,7 +52,7 @@ use crate::conversation_commands::ConversationMode;
 use crate::inbox_commands;
 use crate::llm_commands::LLMState;
 use crate::memory_commands::{recall_for_run, with_memories, MemoryState};
-use crate::memory_learn::{LearnState, TextOrigin};
+use crate::memory_learn::{LearnState, RequestHandled, TextOrigin};
 use crate::model_picker_commands::{override_mode, ModelOverride};
 use crate::rag_commands::RagState;
 use crate::research_commands::ResearchState;
@@ -66,7 +66,7 @@ use shodh_rag::harness::grounding::{GroundingConfig, ScorerSet, SharedEntailment
 use shodh_rag::harness::web::relevance::SharedScorer;
 use shodh_rag::harness::web::SafeClient;
 use shodh_rag::rag_engine::{RAGEngine, SharedReranker};
-use shodh_rag::user_memory::learn::memory_request;
+use shodh_rag::user_memory::learn::{memory_request, MemoryRequest};
 use shodh_rag::user_memory::Actor;
 use shodh_rag::workspaces::instructions_block;
 
@@ -786,12 +786,73 @@ pub(crate) fn scope_for_workspace(
     scope
 }
 
-/// Put in front of a message whose request to remember something the app has already
-/// filed as a memory suggestion ([`crate::memory_learn::LearnState::file_memory_request`]).
-pub(crate) const MEMORY_REQUEST_NOTE: &str = "Shodh has already saved what the user asked you \
-     to remember as a memory suggestion for them to approve, so do not call remember and do \
-     not search the documents for it. Acknowledge it in one short sentence, then answer any \
-     separate question in the message.";
+/// How a message that asked to remember something goes to the model once the app handled
+/// the request ([`crate::memory_learn::LearnState::file_memory_request`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MemoryTurn {
+    /// The message: in the main conversation, what the user asked after the request (the
+    /// request itself is handled); the whole message when nothing follows it, and a side
+    /// thread's composed message as it is.
+    pub body: String,
+    /// One line in front of the message: what the app did, and what the model should do.
+    pub note: String,
+    /// What the answer is about besides the request, if anything (the answer check's
+    /// question).
+    pub question: Option<String>,
+    /// Nothing but the request: no question about the documents.
+    pub memory_only: bool,
+}
+
+/// The message for the model after the app handled `request`, the request to remember
+/// something in `text` (a side thread's `text` is the composed message around it).
+pub(crate) fn memory_turn(
+    text: &str,
+    side_thread: bool,
+    request: &MemoryRequest,
+    handled: RequestHandled,
+) -> MemoryTurn {
+    let note = request
+        .note
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let done = match handled {
+        RequestHandled::Filed | RequestHandled::AlreadyKept => format!(
+            "Shodh has already saved what the user asked you to remember (\u{201c}{note}\u{201d}) \
+             as a memory suggestion for them to approve, so do not call remember and do not \
+             search the documents for it. Acknowledge it in one short sentence"
+        ),
+        RequestHandled::Declined => format!(
+            "The user asked you to remember \u{201c}{note}\u{201d}, which they declined to keep \
+             as a memory before, so it was not saved again: do not call remember and do not \
+             search the documents for it. Say so in one short sentence"
+        ),
+    };
+    let rest = request.rest.as_deref();
+    let note = match rest {
+        Some(_) => format!("{done}, then answer the user's message below."),
+        None => format!("{done}; the message asks nothing else."),
+    };
+    let body = match rest {
+        Some(rest) if !side_thread => rest.to_string(),
+        _ => text.to_string(),
+    };
+    MemoryTurn {
+        body,
+        note,
+        question: rest.map(str::to_string),
+        memory_only: rest.is_none(),
+    }
+}
+
+/// The user's words learned from in this turn: none when the turn asked to remember
+/// something and the app handled it (that turn never costs a learning call).
+fn words_to_learn<'a>(own_words: Option<&'a str>, handled: Option<&MemoryTurn>) -> Option<&'a str> {
+    match handled {
+        Some(_) => None,
+        None => own_words,
+    }
+}
 
 /// The note put in front of a question asked with "search all my library".
 const SEARCH_ALL_NOTE: &str = "For this question the user turned on \"search all my library\": \
@@ -1513,7 +1574,7 @@ pub async fn agent_send(
     if scope.workspace.is_some() && workspace.is_none() {
         tracing::info!(target: "shodh::workspaces", "the conversation's workspace no longer exists; answering without it");
     }
-    let scope = RunScope {
+    let mut scope = RunScope {
         // What the answer check searches with if the answer skips the search: the question
         // as typed, never the composed message with its context blocks.
         question: Some(text.trim().to_string()),
@@ -1555,33 +1616,45 @@ pub async fn agent_send(
         entry.parent_conversation_id.is_some(),
     );
     // "Remember that ...": the user's words are filed as a memory suggestion now, so the
-    // request never depends on the model choosing to call `remember`.
-    let request_filed = match own_words.and_then(memory_request) {
+    // request never depends on the model choosing to call `remember`; the model answers
+    // what the message asks besides it.
+    let request = own_words.and_then(memory_request);
+    let handled = match &request {
         Some(request) => {
             learn
                 .file_memory_request(
-                    &request,
+                    request,
                     entry.audit_conversation(),
                     &request_id,
                     scope.workspace.as_deref(),
                 )
                 .await
         }
-        None => false,
+        None => None,
     };
+    let memory_turn = request
+        .as_ref()
+        .zip(handled)
+        .map(|(request, handled)| memory_turn(&text, entry.is_side(), request, handled));
+    if let Some(turn) = &memory_turn {
+        scope.question = turn.question.clone();
+        scope.memory_instruction = turn.memory_only;
+    }
     let message = compose_message(
-        &text,
+        memory_turn
+            .as_ref()
+            .map_or(text.as_str(), |t| t.body.as_str()),
         history.as_deref().filter(|_| replay),
         memories.as_deref(),
         workspace_block.as_deref(),
         search_all && workspace.is_some(),
         passages_block.as_deref(),
-        request_filed.then_some(MEMORY_REQUEST_NOTE),
+        memory_turn.as_ref().map(|t| t.note.as_str()),
     );
     let scoped = !scope.is_empty();
     // Registered before prompting: the run id is `request_id`, and the first events may
     // arrive before `prompt_scoped` returns.
-    if let Some(words) = own_words {
+    if let Some(words) = words_to_learn(own_words, memory_turn.as_ref()) {
         learn.record_question(
             entry.audit_conversation(),
             &request_id,
@@ -2687,26 +2760,73 @@ mod tests {
     #[test]
     fn a_filed_request_to_remember_is_announced_right_before_the_message() {
         let text = "Remember that I'm writing my thesis on disk-based vector search, and memory cost matters most to me.";
+        let request = memory_request(text).unwrap();
+        let turn = memory_turn(text, false, &request, RequestHandled::Filed);
+        // Nothing but the request: the whole message, and no question for the documents.
+        assert_eq!(turn.body, text);
+        assert!(turn.memory_only);
+        assert_eq!(turn.question, None);
+        assert!(
+            turn.note.contains("do not search the documents"),
+            "{}",
+            turn.note
+        );
+        assert!(turn.note.contains(&request.note), "{}", turn.note);
+        assert!(!turn.note.contains('\n'));
         let message = compose_message(
-            text,
+            &turn.body,
             None,
             Some("MEM"),
             None,
             false,
             None,
-            Some(MEMORY_REQUEST_NOTE),
+            Some(&turn.note),
         );
         let memories = message.find("MEM").unwrap();
-        let note = message.find(MEMORY_REQUEST_NOTE).unwrap();
+        let note = message.find(&turn.note).unwrap();
         let question = message.find(text).unwrap();
         assert!(memories < note && note < question, "{message}");
-        assert!(MEMORY_REQUEST_NOTE.contains("do not search the documents"));
-        assert!(!MEMORY_REQUEST_NOTE.contains('\n'));
         // Nothing filed: the message is the user's own.
         assert_eq!(
             compose_message(text, None, None, None, false, None, None),
             text
         );
+    }
+
+    #[test]
+    fn the_question_after_a_request_to_remember_is_what_the_model_answers() {
+        let text = "Remember that I use DiskANN. Summarise the SPANN paper.";
+        let request = memory_request(text).unwrap();
+        let turn = memory_turn(text, false, &request, RequestHandled::Filed);
+        assert_eq!(turn.body, "Summarise the SPANN paper.");
+        assert_eq!(turn.question.as_deref(), Some("Summarise the SPANN paper."));
+        assert!(!turn.memory_only, "the usual rules apply to the question");
+        assert!(
+            turn.note.contains("\u{201c}I use DiskANN.\u{201d}"),
+            "{}",
+            turn.note
+        );
+        assert!(turn.note.ends_with("answer the user's message below."));
+        // A side thread keeps its composed message (the content it is about).
+        let composed = format!("This question is about \"Table 2\".\n\nQuestion: {text}");
+        let side = memory_turn(&composed, true, &request, RequestHandled::AlreadyKept);
+        assert_eq!(side.body, composed);
+        assert_eq!(side.question.as_deref(), Some("Summarise the SPANN paper."));
+        // Declined before: the model is told it was not saved again.
+        let declined = memory_turn(text, false, &request, RequestHandled::Declined);
+        assert!(declined.note.contains("declined"), "{}", declined.note);
+        assert!(declined.note.contains("do not call remember"));
+    }
+
+    #[test]
+    fn a_turn_whose_request_to_remember_was_handled_is_not_learned_from() {
+        let text = "Remember that I use DiskANN.";
+        let request = memory_request(text).unwrap();
+        let turn = memory_turn(text, false, &request, RequestHandled::Filed);
+        assert_eq!(words_to_learn(Some(text), Some(&turn)), None);
+        // Not handled (filing failed, or no request): learned from as usual.
+        assert_eq!(words_to_learn(Some(text), None), Some(text));
+        assert_eq!(words_to_learn(None, None), None);
     }
 
     #[test]

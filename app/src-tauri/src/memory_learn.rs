@@ -35,8 +35,8 @@ use shodh_rag::user_memory::learn::engine::ModelSource;
 use shodh_rag::user_memory::learn::extract::learned_scope;
 use shodh_rag::user_memory::learn::{
     ConsolidationReport, Inbox, LearnCaps, LearnError, LearnMode, LearnModel, LearnPolicy, Learner,
-    MemoryRequest, PolicySource, ProposalStatus, ProposalView, RejectionCount, TurnInput,
-    UsageToday,
+    MemoryRequest, PolicySource, ProposalStatus, ProposalView, RejectionCount, RequestedOutcome,
+    TurnInput, UsageToday,
 };
 use shodh_rag::user_memory::{Actor, MemoryContent};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -103,6 +103,17 @@ fn save_legacy_progress(path: &Path, done: usize) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, done.to_string())?;
     std::fs::rename(&tmp, path)
+}
+
+/// What became of the user's request to remember something.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestHandled {
+    /// Filed as a suggestion waiting for the user.
+    Filed,
+    /// The same note is already waiting or saved.
+    AlreadyKept,
+    /// The user rejected the same note before: it is not offered again.
+    Declined,
 }
 
 /// Emitted with `{ pending }` whenever suggestions change.
@@ -602,21 +613,21 @@ impl LearnState {
     /// Files what the user explicitly asked Shodh to remember in run `run_id` (`request`,
     /// matched on their typed words) as a note suggestion for them to approve, before the
     /// answer starts and without a model. Asking is not learning: the learning mode does
-    /// not apply. Returns whether the request now waits for the user (filed, or the same
-    /// note already waiting or saved), so the answering model can be told it is handled.
+    /// not apply. Returns what became of it, so the answering model can be told; `None`
+    /// when it could not be filed (the request is then left to the assistant).
     pub async fn file_memory_request(
         &self,
         request: &MemoryRequest,
         conversation_id: &str,
         run_id: &str,
         workspace: Option<&str>,
-    ) -> bool {
+    ) -> Option<RequestHandled> {
         self.touch();
         let learner = match self.learner().await {
             Ok(learner) => learner,
             Err(e) => {
                 tracing::info!(target: "shodh::memory", error = %e, "the request to remember was left to the assistant");
-                return false;
+                return None;
             }
         };
         let at = learner.service().store().now();
@@ -627,13 +638,15 @@ impl LearnState {
             at,
             learned_scope(workspace),
         ) {
-            Ok(_) => {
+            Ok(RequestedOutcome::Filed(_)) => {
                 self.notify(&learner);
-                true
+                Some(RequestHandled::Filed)
             }
+            Ok(RequestedOutcome::AlreadyKept) => Some(RequestHandled::AlreadyKept),
+            Ok(RequestedOutcome::Declined) => Some(RequestHandled::Declined),
             Err(e) => {
                 tracing::warn!(target: "shodh::memory", error = %e, "the request to remember was not filed; left to the assistant");
-                false
+                None
             }
         }
     }

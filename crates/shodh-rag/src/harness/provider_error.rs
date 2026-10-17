@@ -629,6 +629,14 @@ mod tests {
             kind("Provider finish_reason: content_filter"),
             ProviderErrorKind::ContentFiltered
         );
+        assert_eq!(
+            kind(r#"403 {"error":{"code":403,"message":"Blocked by guardrail"}}"#),
+            ProviderErrorKind::ContentFiltered
+        );
+        assert_eq!(
+            kind(r#"{"error":{"message":"x","metadata":{"error_type":"provider_unavailable"}}}"#),
+            ProviderErrorKind::ModelUnavailable
+        );
     }
 
     #[test]

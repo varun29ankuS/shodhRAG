@@ -71,12 +71,25 @@ const FINANCIAL_PATTERN: &str = r"(?i)\b(account (number|no)|a/c|ifsc|iban|swift
 /// An email address, or a run of digits that may be a phone number ([`phone_like`]).
 const CONTACT_PATTERN: &str = r"[\w.+-]+@[\w-]+(\.[\w-]+)+|\+?\d[\d ()-]{6,16}\d";
 
-/// The user's own contact details ("my email is ...", "my number ...").
-const OWN_CONTACT_PATTERN: &str =
-    r"(?i)\b(my|mine)\b[^.;]{0,20}\b(e-?mail|number|phone|mobile|contact|address|whatsapp)\b";
+/// The user's own contact details: the detail directly follows "my" ("my email is ...",
+/// "my work number ..."), not "my manager's number".
+const OWN_CONTACT_PATTERN: &str = r"(?i)\bmy\s+(?:personal\s+|work\s+|home\s+|office\s+|mobile\s+|cell\s+)?(?:e-?mail(?:\s+address)?|number|phone(?:\s+number)?|mobile(?:\s+number)?|contact|address|whatsapp)\b";
 
-/// Someone else's personal detail: "Asha's email", "her phone number", "his address".
-const OTHERS_DETAIL_PATTERN: &str = r"(\b[A-Z][a-z]+(?:'s|\x{2019}s)|(?i:\b(?:his|her|their)))\s+(?i:(?:personal|home|work|private)\s+)?(?i:e-?mail|phone|phone number|number|mobile|address|birthday|date of birth|salary|diagnosis|whatsapp)\b";
+/// Someone else's personal detail: "Asha's email", "my manager's number", "her phone
+/// number", "his address".
+const OTHERS_DETAIL_PATTERN: &str = r"(\b[A-Za-z]+(?:'s|\x{2019}s)|(?i:\b(?:his|her|their)))\s+(?i:(?:personal|home|work|private|office)\s+)?(?i:e-?mail|phone|phone number|number|mobile|address|birthday|date of birth|salary|diagnosis|whatsapp)\b";
+
+/// A year or a range of years ("2019", "2019-2023"): a run of digits that is not a phone.
+static YEARS: OnceLock<Option<Regex>> = OnceLock::new();
+const YEARS_PATTERN: &str = r"^(?:19|20)\d{2}(?:\s*[-\x{2013}/]\s*(?:19|20)\d{2})?$";
+
+/// Whether a run of digits found by [`CONTACT_PATTERN`] is shaped like a phone number: at
+/// least 8 digits and at most 15, not a year or a range of years ("2019-2023").
+fn phone_like(text: &str) -> bool {
+    let digits = text.chars().filter(char::is_ascii_digit).count();
+    (8..=15).contains(&digits)
+        && !regex(&YEARS, YEARS_PATTERN).is_some_and(|re| re.is_match(text.trim()))
+}
 
 /// 13 to 19 digits, optionally grouped (a payment card number when it passes Luhn).
 const CARD_PATTERN: &str = r"\b(?:[0-9][ -]?){12,18}[0-9]\b";
@@ -236,6 +249,17 @@ mod tests {
         // The user's own details are not someone else's.
         assert!(!has("my email is varun@example.com", third));
         assert!(!has("my mobile number is 98200 12345", third));
+        assert!(!has("my work phone is +91 22 2345 6789", third));
+        // Someone the user names with "my" is still someone else.
+        assert!(has("my manager's number is 98200 12345", third));
+        assert!(has("my wife\u{2019}s phone is 98200 12345", third));
+        assert!(has("my manager's email is ravi@acme.com", third));
+        // Years and year ranges are not phone numbers.
+        assert!(!has("2019-2023 results", third));
+        assert!(!has("papers from 2019 - 2023 on recall", third));
+        assert!(!phone_like("2019-2023"));
+        assert!(phone_like("98200 12345"));
+        assert!(!phone_like("1234567"));
         assert!(!has("I review papers on Fridays", third));
         assert!(!has("SPANN keeps centroids in memory", third));
         assert!(classify_text("Project Apollo is on hold").is_empty());

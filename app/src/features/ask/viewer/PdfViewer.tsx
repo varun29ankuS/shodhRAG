@@ -23,6 +23,7 @@ import { renderSnippet, snippetText } from '../../research/snippetRender';
 import type { SnippetRect } from '../../research/types';
 import { countOf } from '../../../lib/plural';
 import { useDevicePixelRatio } from './useDevicePixelRatio';
+import { leavesSnippetMode } from '../../../lib/escapeScope';
 
 type TextContent = Awaited<ReturnType<PDFPageProxy['getTextContent']>>;
 type TextLayerInstance = InstanceType<Awaited<ReturnType<typeof loadPdfJs>>['TextLayer']>;
@@ -1300,7 +1301,8 @@ export function PdfViewer({
     // fire. Checked before `isDefaultPrevented`: a focus pop-out marks Esc
     // handled first for its data-esc-local content (this viewer while
     // snipping). The find field closes itself.
-    if (e.key === 'Escape' && (snipping || marquee) && !(e.target instanceof Element && e.target.closest('[role="search"]'))) {
+    const inFindBar = e.target instanceof Element && e.target.closest('[role="search"]') !== null;
+    if (leavesSnippetMode({ key: e.key, snipping: snipping || marquee !== null, inFindBar })) {
       e.preventDefault();
       e.stopPropagation();
       setMarquee(null);

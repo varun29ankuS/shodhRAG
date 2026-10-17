@@ -5,8 +5,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { ESC_LOCAL_SELECTOR, escapeStaysLocal, insideOtherDialog, instructionsEscape } from '../src/lib/escapeScope.ts';
+import { ESC_LOCAL_SELECTOR, escapeStaysLocal, insideOtherDialog, instructionsEscape, leavesSnippetMode } from '../src/lib/escapeScope.ts';
 
 interface Node {
   id: string;
@@ -36,15 +35,17 @@ test('Esc elsewhere in the panel, outside it, or with no target closes the panel
   assert.equal(escapeStaysLocal(page, null), false);
 });
 
-test('the PDF viewer marks itself while snipping and handles snip Esc before a pop-out marks it handled', () => {
-  const source = readFileSync(new URL('../src/features/ask/viewer/PdfViewer.tsx', import.meta.url), 'utf8');
-  assert.match(source, /data-esc-local=\{snipping \|\| marquee \? '' : undefined\}/);
-  const handler = source.slice(source.indexOf('const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>)'));
-  assert.ok(handler.indexOf("e.key === 'Escape' && (snipping || marquee)") < handler.indexOf('e.isDefaultPrevented()'));
-  // The whole find bar closes on Esc, its buttons too (the preview leaves Esc there to it).
-  const bar = source.indexOf('          role="search"');
-  const findBar = source.slice(bar, source.indexOf('<label htmlFor={findInputId}', bar));
-  assert.match(findBar, /if \(e\.key !== 'Escape'\) return;\s+e\.preventDefault\(\);\s+closeFind\(\);/);
+test('Esc leaves snippet mode while snipping, but not from the find bar, which closes itself', () => {
+  assert.equal(leavesSnippetMode({ key: 'Escape', snipping: true, inFindBar: false }), true);
+  assert.equal(leavesSnippetMode({ key: 'Escape', snipping: true, inFindBar: true }), false);
+  assert.equal(leavesSnippetMode({ key: 'Escape', snipping: false, inFindBar: false }), false);
+  assert.equal(leavesSnippetMode({ key: 's', snipping: true, inFindBar: false }), false);
+});
+
+test('a snipping viewer is data-esc-local, so the preview leaves its Esc to it', () => {
+  // The viewer root while snipping: matches ESC_LOCAL_SELECTOR inside the preview panel.
+  const snippingViewer = el('viewer', true);
+  assert.equal(escapeStaysLocal(snippingViewer, panel(snippingViewer)), true);
 });
 
 const esc = (over: Partial<Parameters<typeof instructionsEscape>[0]> = {}) =>

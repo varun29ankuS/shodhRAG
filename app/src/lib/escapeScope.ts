@@ -32,6 +32,15 @@ export function insideOtherDialog<T extends ClosestTarget>(target: T | null, con
   return target.closest('[role="dialog"]') !== null;
 }
 
+/**
+ * Whether a key in the PDF viewer leaves snippet mode: Esc while snipping (or drawing
+ * a rectangle), also when a focus pop-out already marked it handled (the viewer is
+ * `data-esc-local` while snipping), except in the find bar, which closes itself.
+ */
+export function leavesSnippetMode(input: { key: string; snipping: boolean; inFindBar: boolean }): boolean {
+  return input.key === 'Escape' && input.snipping && !input.inFindBar;
+}
+
 export type InstructionsEscapeAction = 'ignore' | 'cancel-edit' | 'close';
 
 export interface InstructionsEscapeInput {

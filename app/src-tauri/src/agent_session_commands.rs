@@ -708,12 +708,17 @@ const MAX_CITATION_NUMBER: u32 = 100_000;
 
 /// Carried passages as the run holds them, in the order given (the frontend puts the ones
 /// the question is about first): numbers in range and not repeated, text present and
-/// capped, within [`MAX_CARRIED_PASSAGES`] and [`MAX_CARRIED_CHARS`]. Web passages are
+/// capped, within [`MAX_CARRIED_PASSAGES`] and [`MAX_CARRIED_CHARS`]; and the highest
+/// number among all of them, the ones left out included (`RunScope::carried_through`).
+/// The frontend shows the same passages (`keptCarriedPassages` in
+/// `app/src/features/focus/carriedPassages.ts` applies these limits). Web passages are
 /// checked for numbers only, as a search provider's text is (the frontend does not know
 /// which web text was a provider's).
-fn carried_passages(passages: Vec<CarriedPassage>) -> CommandResult<Vec<CitedPassage>> {
+fn carried_passages(passages: Vec<CarriedPassage>) -> CommandResult<(Vec<CitedPassage>, u32)> {
     let mut out: Vec<CitedPassage> = Vec::new();
     let mut used = 0usize;
+    let mut through = 0u32;
+    let mut full = false;
     for p in passages {
         if p.n == 0 || p.n > MAX_CITATION_NUMBER {
             return Err(AgentCommandError::invalid(format!(
@@ -726,13 +731,19 @@ fn carried_passages(passages: Vec<CarriedPassage>) -> CommandResult<Vec<CitedPas
                 "A carried passage's source is too long",
             ));
         }
+        // A passage left out keeps its number: the conversation still cites it.
+        through = through.max(p.n);
+        if full {
+            continue;
+        }
         let text = truncate(p.text.trim(), MAX_CARRIED_PASSAGE_CHARS);
         if text.is_empty() || out.iter().any(|c| c.n == p.n) {
             continue;
         }
         let size = text.chars().count();
         if out.len() == MAX_CARRIED_PASSAGES || used + size > MAX_CARRIED_CHARS {
-            break;
+            full = true;
+            continue;
         }
         used += size;
         out.push(CitedPassage {
@@ -748,7 +759,7 @@ fn carried_passages(passages: Vec<CarriedPassage>) -> CommandResult<Vec<CitedPas
             checkable: !p.web,
         });
     }
-    Ok(out)
+    Ok((out, through))
 }
 
 impl SendScope {
@@ -795,12 +806,14 @@ impl SendScope {
         if workspace.as_ref().is_some_and(|w| w.len() > MAX_ID_LEN) {
             return Err(AgentCommandError::invalid("The workspace id is too long"));
         }
+        let (carried, carried_through) = carried_passages(self.passages.unwrap_or_default())?;
         Ok(RunScope {
             source_ids: clean(self.source_ids, "sources")?,
             files,
             pages,
             workspace,
-            carried: carried_passages(self.passages.unwrap_or_default())?,
+            carried,
+            carried_through,
             ..RunScope::default()
         })
     }
@@ -2868,8 +2881,56 @@ mod tests {
             ),
             ..SendScope::default()
         };
-        let kept = many.validated().unwrap().carried;
-        assert_eq!(kept.len(), MAX_CARRIED_CHARS / MAX_CARRIED_PASSAGE_CHARS);
+        let scope = many.validated().unwrap();
+        assert_eq!(
+            scope.carried.len(),
+            MAX_CARRIED_CHARS / MAX_CARRIED_PASSAGE_CHARS
+        );
+        // The numbers of the passages left out are still taken: the side run's own
+        // search numbers after [20], never reusing one the context cites.
+        assert_eq!(scope.carried_through, 20);
+        let last_kept = scope.carried.iter().map(|p| p.n).max().unwrap();
+        assert!(last_kept < 20, "[{last_kept}] kept");
+        let run = shodh_rag::harness::tools::RunPassages::new();
+        run.seed(&scope.carried, scope.carried_through);
+        assert_eq!(run.reserve(1), 21);
+
+        // Passages past the count limit keep their numbers too.
+        let numerous = SendScope {
+            passages: Some(
+                (1..=50)
+                    .map(|n| CarriedPassage {
+                        n,
+                        file: "a.pdf".into(),
+                        path: "c:/a.pdf".into(),
+                        page: None,
+                        text: format!("passage {n}"),
+                        web: false,
+                    })
+                    .collect(),
+            ),
+            ..SendScope::default()
+        };
+        let scope = numerous.validated().unwrap();
+        assert_eq!(scope.carried.len(), MAX_CARRIED_PASSAGES);
+        assert_eq!(scope.carried_through, 50);
+        // And are still checked.
+        let invalid = SendScope {
+            passages: Some(
+                (1..=50)
+                    .map(|n| CarriedPassage {
+                        n: if n == 50 { 0 } else { n },
+                        file: "a.pdf".into(),
+                        path: "c:/a.pdf".into(),
+                        page: None,
+                        text: format!("passage {n}"),
+                        web: false,
+                    })
+                    .collect(),
+            ),
+            ..SendScope::default()
+        };
+        assert!(invalid.validated().is_err());
     }
 
     #[test]

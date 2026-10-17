@@ -5,7 +5,15 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { carriedPassages, MAX_CARRIED_PASSAGES, toWire } from '../src/features/focus/carriedPassages.ts';
+import { readFileSync } from 'node:fs';
+import {
+  carriedPassages,
+  keptCarriedPassages,
+  MAX_CARRIED_CHARS,
+  MAX_CARRIED_PASSAGE_CHARS,
+  MAX_CARRIED_PASSAGES,
+  toWire,
+} from '../src/features/focus/carriedPassages.ts';
 import type { Passage } from '../src/features/agent/reducer.ts';
 import { initialTranscript, reduceAll } from '../src/features/agent/reducer.ts';
 import type { AgentEvent } from '../src/features/agent/events.ts';
@@ -43,11 +51,73 @@ test("a thread's earlier answers add their own passages; the anchored answer win
   assert.equal(carried[0].text, 'passage 21', 'the anchored answer keeps its number');
 });
 
-test('numbers without a passage, and empty passages, are not carried; the count is capped', () => {
+test('numbers without a passage, and empty passages, are not carried; every cited one is sent', () => {
   assert.deepEqual(carriedPassages([{ text: 'See [99] and [1].', passages: [passage(1, 'a.pdf', '  ')] }]), []);
   const many = Array.from({ length: 60 }, (_, i) => passage(i + 1, 'a.pdf', `t${i + 1}`));
   const text = many.map(p => `[${p.n}]`).join(' ');
-  assert.equal(carriedPassages([{ text, passages: many }]).length, MAX_CARRIED_PASSAGES);
+  // Past the backend's count limit too: the numbers it leaves out stay taken in the side run.
+  const carried = carriedPassages([{ text, passages: many }]);
+  assert.equal(carried.length, 60);
+  assert.equal(keptCarriedPassages(carried).length, MAX_CARRIED_PASSAGES);
+});
+
+test('the side transcript starts with the passages the backend keeps', () => {
+  // 20 passages of 1,500 characters: the text limit keeps the first 16.
+  const long = Array.from({ length: 20 }, (_, i) => passage(i + 1, 'a.pdf', `${'x'.repeat(1_499)}${i % 10}`));
+  const kept = keptCarriedPassages(long);
+  assert.equal(kept.length, Math.floor(MAX_CARRIED_CHARS / 1_500));
+  assert.deepEqual(kept.map(p => p.n), long.slice(0, kept.length).map(p => p.n));
+  assert.equal(kept[0], long[0], 'a passage within the limits is kept as it is');
+
+  // Nothing after the first passage that does not fit, also a short one.
+  const blocked = keptCarriedPassages([
+    passage(1, 'a.pdf', 'y'.repeat(MAX_CARRIED_PASSAGE_CHARS)),
+    passage(2, 'a.pdf', 'y'.repeat(MAX_CARRIED_PASSAGE_CHARS)),
+    passage(3, 'a.pdf', 'y'.repeat(MAX_CARRIED_PASSAGE_CHARS)),
+    passage(4, 'a.pdf', 'y'.repeat(MAX_CARRIED_PASSAGE_CHARS)),
+    passage(5, 'a.pdf', 'y'.repeat(MAX_CARRIED_PASSAGE_CHARS)),
+    passage(6, 'a.pdf', 'y'.repeat(MAX_CARRIED_PASSAGE_CHARS - 1)),
+    passage(7, 'a.pdf', 'y'.repeat(2)),
+    passage(8, 'a.pdf', 'short'),
+  ]);
+  assert.deepEqual(blocked.map(p => p.n), [1, 2, 3, 4, 5, 6]);
+
+  // Trimmed, cut per passage as the backend cuts, blanks and repeated numbers skipped.
+  const cut = keptCarriedPassages([
+    passage(9, 'a.pdf', `  ${'z'.repeat(MAX_CARRIED_PASSAGE_CHARS + 10)}  `),
+    passage(9, 'b.pdf', 'repeated'),
+    passage(10, 'a.pdf', '   '),
+    passage(11, 'a.pdf', ' kept '),
+  ]);
+  assert.deepEqual(cut.map(p => p.n), [9, 11]);
+  assert.equal(Array.from(cut[0].text).length, MAX_CARRIED_PASSAGE_CHARS);
+  assert.ok(cut[0].text.endsWith('\u2026'));
+  assert.equal(cut[1].text, 'kept');
+});
+
+test('characters are counted as the backend counts them, by code point', () => {
+  // 2,000 code points each, but 4,000 UTF-16 units for the emoji: counted in units, the
+  // limit would keep 6 where the backend keeps 12.
+  const emoji = Array.from({ length: 13 }, (_, i) => passage(i + 1, 'a.pdf', '\u{1F600}'.repeat(2_000)));
+  assert.equal(keptCarriedPassages(emoji).length, 12);
+  const cjk = Array.from({ length: 13 }, (_, i) => passage(i + 1, 'a.pdf', '東'.repeat(2_000)));
+  assert.equal(keptCarriedPassages(cjk).length, 12);
+  // Cut on a code point, never inside a surrogate pair.
+  const [one] = keptCarriedPassages([passage(1, 'a.pdf', '\u{1F600}'.repeat(MAX_CARRIED_PASSAGE_CHARS + 1))]);
+  assert.equal(Array.from(one.text).length, MAX_CARRIED_PASSAGE_CHARS);
+  assert.ok(!/[\uD800-\uDBFF]\u2026$/.test(one.text));
+});
+
+test("the limits are the backend's", () => {
+  const rust = readFileSync(new URL('../src-tauri/src/agent_session_commands.rs', import.meta.url), 'utf8');
+  const constant = (name: string) => {
+    const found = new RegExp(`const ${name}: usize = ([0-9_]+);`).exec(rust);
+    assert.ok(found, `${name} is defined`);
+    return Number(found[1].replace(/_/g, ''));
+  };
+  assert.equal(constant('MAX_CARRIED_PASSAGES'), MAX_CARRIED_PASSAGES);
+  assert.equal(constant('MAX_CARRIED_CHARS'), MAX_CARRIED_CHARS);
+  assert.equal(constant('MAX_CARRIED_PASSAGE_CHARS'), MAX_CARRIED_PASSAGE_CHARS);
 });
 
 test('the wire form is what agent_send takes', () => {

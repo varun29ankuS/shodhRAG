@@ -36,12 +36,13 @@ import type {
 } from './types';
 import { onApprovalAnswered } from '../inbox/approvalBus';
 import {
+  appliesAtOnce,
   changeMessages,
   emptyView,
   loadConversation,
-  messagesToSave,
   publishMessage,
-  saveDue,
+  saveStep,
+  startsCheck,
   upsertById,
 } from './chatPersistence';
 import type { PersistMode, PersistView } from './chatPersistence';
@@ -324,12 +325,12 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
    * render writes only its own changes and leaves newer ones due.
    */
   const saveView = useCallback((v: ViewState) => {
-    const due = saveDue(v.persist, lastSavedSeqRef.current);
-    if (!due) return;
-    lastSavedSeqRef.current = due.seq;
-    if (!v.conversationId) return;
-    const stored = messagesToSave(v, isPersistable, toStored);
-    updateConversationMessages(v.conversationId, () => stored, { immediate: due.immediate });
+    const step = saveStep(v, lastSavedSeqRef.current, isPersistable, toStored);
+    if (!step) return;
+    lastSavedSeqRef.current = step.seq;
+    if (step.conversationId === null) return;
+    const stored = step.messages;
+    updateConversationMessages(step.conversationId, () => stored, { immediate: step.immediate });
   }, [updateConversationMessages]);
 
   // Load messages when the active conversation changes. A running answer for
@@ -411,7 +412,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     if (isLive(transcript)) {
       // Each check round (the first answer, then any revision) starts once
       // the text it checks is complete.
-      if (actions.some(a => a.type === 'grounding_started') && message.content.trim().length > 0) {
+      if (startsCheck(actions, message.content)) {
         checkpoint(live.conversationId, message);
       } else {
         publish(live.conversationId, message, 'none');
@@ -470,9 +471,9 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         window.dispatchEvent(new CustomEvent('switchTab', { detail: tab }));
       }
     }
-    // Lifecycle changes are applied at once; streamed content waits for the frame.
-    const immediate = event.type === 'run_started' || event.type === 'run_finished' || event.type === 'approval_requested';
-    enqueue(live, event, immediate);
+    // Lifecycle changes and the start of the answer's check are applied at
+    // once; streamed content waits for the frame.
+    enqueue(live, event, appliesAtOnce(event.type));
   }, [enqueue]);
 
   const api = useAgentSession(onEnvelope);

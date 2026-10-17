@@ -6,13 +6,13 @@
  * at an animation frame (display only, the run still live), then
  * `run_finished` applied at once (the finished answer, to be saved), with the
  * frame render's save effect still pending when the second update is made.
- * The provider's effect is modelled by `effect`: the same `saveDue` /
- * `messagesToSave` calls `ChatSessionContext.saveView` makes, against one
- * render's view.
+ * The provider's effect is modelled by `effect`: `saveStep`, the function
+ * `ChatSessionContext.saveView` runs, against one render's view.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  appliesAtOnce,
   changeMessages,
   emptyView,
   loadConversation,
@@ -21,10 +21,12 @@ import {
   NO_CHANGES,
   publishMessage,
   saveDue,
+  saveStep,
+  startsCheck,
   upsertById,
 } from '../src/features/ask/chatPersistence.ts';
 import type { PersistView } from '../src/features/ask/chatPersistence.ts';
-import type { AgentEvent } from '../src/features/agent/events.ts';
+import type { AgentEvent, GroundingReport } from '../src/features/agent/events.ts';
 import { fromPersisted, initialTranscript, reduceAll, toCheckpoint, toPersisted } from '../src/features/agent/reducer.ts';
 
 interface Msg {
@@ -52,15 +54,11 @@ function store() {
   let lastSavedSeq = 0;
   const saves: Save[] = [];
   const effect = (v: View) => {
-    const due = saveDue(v.persist, lastSavedSeq);
-    if (!due) return;
-    lastSavedSeq = due.seq;
-    if (!v.conversationId) return;
-    saves.push({
-      conversationId: v.conversationId,
-      messages: messagesToSave(v, m => !m.live, m => ({ id: m.id, text: m.text })),
-      immediate: due.immediate,
-    });
+    const step = saveStep(v, lastSavedSeq, m => !m.live, m => ({ id: m.id, text: m.text }));
+    if (!step) return;
+    lastSavedSeq = step.seq;
+    if (step.conversationId === null) return;
+    saves.push({ conversationId: step.conversationId, messages: step.messages, immediate: step.immediate });
   };
   return { effect, saves };
 }
@@ -249,6 +247,84 @@ test('a transcript stored while its answer was being checked restores as interru
   assert.match(restored.error ?? '', /being checked against its sources/);
   assert.equal('savedWhileChecking' in restored, false);
   assert.deepEqual(restored.blocks, live.blocks);
+});
+
+function groundingReport(partial: Partial<GroundingReport>): GroundingReport {
+  return {
+    round: 0,
+    isFinal: false,
+    method: 'entailment',
+    summary: { checked: 1, supported: 0, weak: 0, unsupported: 1, uncited: 0, invalid: 0, unchecked: 0, score: 0 },
+    claims: [],
+    needs: [],
+    messageIds: ['m1'],
+    supersededMessageIds: [],
+    ...partial,
+  };
+}
+
+test('a revision checkpoint keeps no earlier round report: restored, it shows no check at all', () => {
+  const events: AgentEvent[] = [
+    { type: 'run_started', runId: 'run-3', sessionId: 's1', model: 'm', atMs: 1_000, warning: null },
+    { type: 'text_delta', runId: 'run-3', messageId: 'm1', delta: 'The notice period is 90 days [1].' },
+    { type: 'grounding_started', runId: 'run-3', round: 0 },
+    { type: 'grounding', runId: 'run-3', report: groundingReport({ round: 0 }) },
+    { type: 'revision_started', runId: 'run-3', round: 1, reason: 'repair', flagged: 1, missingNeeds: [] },
+    { type: 'text_delta', runId: 'run-3', messageId: 'm2', delta: 'The notice period is 60 days [1].' },
+    { type: 'grounding_started', runId: 'run-3', round: 1 },
+  ];
+  const live = reduceAll(initialTranscript('run-3', 1_000), events);
+  assert.equal(live.groundings.length, 1, 'round 0 report is in the live transcript');
+  const stored = JSON.parse(JSON.stringify(toPersisted(toCheckpoint(live))));
+  assert.deepEqual(stored.groundings, []);
+  const restored = fromPersisted(stored);
+  assert.ok(restored);
+  assert.equal(restored.status, 'aborted');
+  assert.deepEqual(restored.groundings, []);
+  assert.match(restored.error ?? '', /not checked/);
+  assert.deepEqual(restored.blocks, live.blocks, 'both drafts kept');
+});
+
+test('a final report survives a checkpoint', () => {
+  const state = { ...initialTranscript('run-4', 1_000), status: 'running' as const, groundings: [groundingReport({ round: 0 }), groundingReport({ round: 1, isFinal: true })] };
+  assert.deepEqual(toCheckpoint(state).groundings.map(g => g.round), [1]);
+});
+
+test('grounding_started is applied at once, so a window without animation frames still saves the checkpoint', () => {
+  assert.equal(appliesAtOnce('grounding_started'), true);
+  for (const type of ['run_started', 'run_finished', 'approval_requested']) assert.equal(appliesAtOnce(type), true, type);
+  for (const type of ['text_delta', 'grounding', 'step_started', 'usage']) assert.equal(appliesAtOnce(type), false, type);
+
+  // The provider's flush on that envelope, with no frame having run:
+  // queued deltas plus grounding_started fold in one batch, which starts the check.
+  const batch: AgentEvent[] = [
+    { type: 'text_delta', runId: 'run-5', messageId: 'm1', delta: 'Answer [1].' },
+    { type: 'grounding_started', runId: 'run-5', round: 0 },
+  ];
+  assert.equal(startsCheck(batch, 'Answer [1].'), true);
+  assert.equal(startsCheck(batch.slice(0, 1), 'Answer [1].'), false, 'streaming alone is no checkpoint');
+  assert.equal(startsCheck(batch, '   '), false, 'no text, nothing to keep');
+
+  const { effect, saves } = store();
+  let v = loaded('c1', [user]);
+  v = publishMessage(v, 'c1', { id: 'a1', text: 'Answer [1].', live: true }, 'immediate', { id: 'a1', text: 'Answer [1].', checkpoint: true });
+  effect(v);
+  assert.equal(saves.length, 1);
+  assert.equal(saves[0].immediate, true);
+  assert.deepEqual(saves[0].messages[1], { id: 'a1', text: 'Answer [1].', checkpoint: true });
+});
+
+test('saveStep: nothing for a view already saved; no messages computed without a conversation', () => {
+  let calls = 0;
+  const toStored = (m: Msg): Stored => {
+    calls += 1;
+    return { id: m.id, text: m.text };
+  };
+  const v = publishMessage(loaded('c1', [user]), 'c1', { id: 'n1', text: 'x', live: false }, 'debounced');
+  assert.equal(saveStep(v, v.persist.seq, m => !m.live, toStored), null);
+  const orphan: View = { ...v, conversationId: null };
+  assert.deepEqual(saveStep(orphan, 0, m => !m.live, toStored), { seq: v.persist.seq, immediate: false, conversationId: null, messages: [] });
+  assert.equal(calls, 0);
 });
 
 test('a transcript stored live without a checkpoint keeps the existing interrupted message', () => {

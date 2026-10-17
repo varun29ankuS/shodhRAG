@@ -48,6 +48,33 @@ export interface SaveDue {
   immediate: boolean;
 }
 
+/**
+ * One save of a view: record `seq` as saved, and store `messages` in
+ * `conversationId` (nothing to store when it is null).
+ */
+export interface SaveStep<S> extends SaveDue {
+  conversationId: string | null;
+  messages: S[];
+}
+
+/**
+ * Agent events applied at once instead of at the next animation frame.
+ * Lifecycle changes, and `grounding_started`: the answer's text is complete
+ * and is saved as a checkpoint, which must happen in a hidden, minimised or
+ * tray window too, where frames do not run.
+ */
+export function appliesAtOnce(eventType: string): boolean {
+  return eventType === 'run_started'
+    || eventType === 'run_finished'
+    || eventType === 'approval_requested'
+    || eventType === 'grounding_started';
+}
+
+/** Whether a batch of events folded into a live answer makes it a checkpoint. */
+export function startsCheck(actions: readonly { type: string }[], answerText: string): boolean {
+  return answerText.trim().length > 0 && actions.some(a => a.type === 'grounding_started');
+}
+
 export function emptyView<M extends { id: string }, S>(): PersistView<M, S> {
   return { conversationId: null, messages: [], persist: NO_CHANGES, checkpoints: {} };
 }
@@ -68,6 +95,26 @@ export function markChange(mark: PersistMark, mode: PersistMode): PersistMark {
 export function saveDue(mark: PersistMark, lastSavedSeq: number): SaveDue | null {
   if (mark.seq <= lastSavedSeq) return null;
   return { seq: mark.seq, immediate: mark.immediateSeq > lastSavedSeq };
+}
+
+/**
+ * The save a view needs, given the latest seq already saved; null when it
+ * needs none. The chat provider's save path (`saveView`) is this step plus
+ * recording `seq` and handing `messages` to the conversation store.
+ */
+export function saveStep<M extends { id: string }, S>(
+  view: PersistView<M, S>,
+  lastSavedSeq: number,
+  isSettled: (message: M) => boolean,
+  toStored: (message: M) => S,
+): SaveStep<S> | null {
+  const due = saveDue(view.persist, lastSavedSeq);
+  if (!due) return null;
+  return {
+    ...due,
+    conversationId: view.conversationId,
+    messages: view.conversationId === null ? [] : messagesToSave(view, isSettled, toStored),
+  };
 }
 
 /** Replace the item with the same id, or append it. */

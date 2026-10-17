@@ -27,73 +27,94 @@ impl TextChunker {
         }
     }
 
+    /// Sliding windows over `text`, in order, covering all of it. Each window
+    /// ends near `chunk_size` bytes from its start, at a paragraph, sentence,
+    /// line or word break when one is close; the next starts up to
+    /// `chunk_overlap` bytes before it ends. Every window ends past the end of
+    /// the one before, so the windows always reach the end of the text, and
+    /// a remaining tail shorter than `min_chunk_size` joins the window before
+    /// it. Text shorter than `min_chunk_size` is still one chunk; only blank
+    /// text (and blank windows) yields none.
     pub fn chunk(&self, text: &str) -> Vec<ChunkResult> {
-        if text.len() <= self.chunk_size {
-            if text.len() < self.min_chunk_size {
-                return Vec::new();
-            }
-            return vec![ChunkResult {
-                id: Uuid::new_v4(),
-                text: text.to_string(),
-                index: 0,
-                heading: None,
-                start_offset: 0,
-                end_offset: text.len(),
-            }];
+        if text.trim().is_empty() {
+            return Vec::new();
         }
 
         let mut chunks = Vec::new();
         let mut start = 0;
-        let mut index = 0;
-
-        while start < text.len() {
-            let raw_end = (start + self.chunk_size).min(text.len());
-            let end = snap_to_char_boundary(text, raw_end);
-
-            // Try to find a sentence boundary near the end
-            let actual_end = if end < text.len() {
-                self.find_break_point(text, start, end)
-            } else {
-                end
-            };
-
-            let chunk_text = &text[start..actual_end];
-
-            if chunk_text.len() >= self.min_chunk_size {
-                let heading = self.extract_heading(chunk_text);
-
+        let mut prev_end = 0;
+        loop {
+            let end = self.window_end(text, start, prev_end);
+            let chunk_text = &text[start..end];
+            if !chunk_text.trim().is_empty() {
+                let index = chunks.len();
                 chunks.push(ChunkResult {
                     id: Uuid::new_v4(),
                     text: chunk_text.to_string(),
                     index,
-                    heading,
+                    heading: self.extract_heading(chunk_text),
                     start_offset: start,
-                    end_offset: actual_end,
+                    end_offset: end,
                 });
-                index += 1;
             }
-
-            // Move forward with overlap
-            let step = if actual_end - start > self.chunk_overlap {
-                actual_end - start - self.chunk_overlap
-            } else {
-                actual_end - start
-            };
-
-            let raw_next = start + step;
-            start = snap_to_char_boundary(text, raw_next);
-            if start >= text.len() {
+            if end >= text.len() {
                 break;
             }
+            start = self.next_start(text, start, end);
+            prev_end = end;
         }
 
         chunks
     }
 
-    fn find_break_point(&self, text: &str, start: usize, preferred_end: usize) -> usize {
-        // Within this chunk: a chunk shorter than the search window would
-        // otherwise end before it starts.
-        let raw_search_start = preferred_end.saturating_sub(200).max(start);
+    /// The end of the window that starts at `start` and follows a window
+    /// ending at `prev_end` (0 for the first window). `start` and `prev_end`
+    /// are char boundaries before the end of `text`. The end is a char
+    /// boundary past both, so every window adds text and the windows reach
+    /// the end of the text in at most `text.len()` steps.
+    fn window_end(&self, text: &str, start: usize, prev_end: usize) -> usize {
+        let len = text.len();
+        if start.saturating_add(self.chunk_size) >= len {
+            return len;
+        }
+        let floor = start.max(prev_end);
+        let mut end = snap_to_char_boundary(text, start + self.chunk_size);
+        if end <= floor {
+            // A chunk size smaller than one character, or an overlap as
+            // large as the chunk size: take one character past the floor.
+            end = next_char_boundary(text, floor);
+        }
+        if end >= len {
+            return len;
+        }
+        let end = self.find_break_point(text, floor, end);
+        if len - end < self.min_chunk_size {
+            len
+        } else {
+            end
+        }
+    }
+
+    /// The start of the window after `[start, end)`: `chunk_overlap` bytes
+    /// before `end`, rounded up to a char boundary (so the overlap never
+    /// exceeds `chunk_overlap`), and at least one character past `start`. A
+    /// window no longer than the overlap is followed without overlap.
+    fn next_start(&self, text: &str, start: usize, end: usize) -> usize {
+        let raw = if end - start > self.chunk_overlap {
+            end - self.chunk_overlap
+        } else {
+            end
+        };
+        snap_up_to_char_boundary(text, raw).max(next_char_boundary(text, start))
+    }
+
+    /// A break in `(floor, preferred_end]` near `preferred_end`, else
+    /// `preferred_end`. `floor` is a char boundary below `preferred_end`; the
+    /// result is a char boundary past it.
+    fn find_break_point(&self, text: &str, floor: usize, preferred_end: usize) -> usize {
+        // Past the floor: a window that ended before it would add no text,
+        // or none past the window before it.
+        let raw_search_start = preferred_end.saturating_sub(200).max(floor);
         let search_start = snap_to_char_boundary(text, raw_search_start);
         let safe_end = snap_to_char_boundary(text, preferred_end);
 
@@ -146,6 +167,27 @@ fn snap_to_char_boundary(text: &str, pos: usize) -> usize {
         p -= 1;
     }
     p
+}
+
+/// Snap a byte offset to the nearest valid UTF-8 char boundary (rounding up).
+/// If `pos` is beyond text length, returns `text.len()`.
+fn snap_up_to_char_boundary(text: &str, pos: usize) -> usize {
+    if pos >= text.len() {
+        return text.len();
+    }
+    let mut p = pos;
+    while !text.is_char_boundary(p) {
+        p += 1;
+    }
+    p
+}
+
+/// The char boundary after the character at `pos` (a char boundary), or
+/// `text.len()` at the end of the text.
+fn next_char_boundary(text: &str, pos: usize) -> usize {
+    text.get(pos..)
+        .and_then(|rest| rest.chars().next())
+        .map_or(text.len(), |c| pos + c.len_utf8())
 }
 
 /// Most tokens of a document's opening carried by each of its chunks.
@@ -481,7 +523,7 @@ impl TextChunker {
                     heading,
                 } => {
                     let content = content.trim();
-                    if content.len() < self.min_chunk_size {
+                    if content.is_empty() {
                         continue;
                     }
 
@@ -906,6 +948,227 @@ mod tests {
             context.header(),
             "Document: \"lease\". Opening: Lessor: Saffron Estates. Lessee: Tidewater."
         );
+    }
+
+    /// A small deterministic generator (xorshift64*) for property tests.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next_u64(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            (self.next_u64() % n as u64) as usize
+        }
+    }
+
+    const SCRIPTS: &[&[&str]] = &[
+        &["a", "b", "c", "x", "y", "z", "Q", "7"],
+        &["日", "本", "語", "中", "文", "字", "漢"],
+        &["ह", "ि", "न", "्", "द", "ी", "भ", "ा"],
+        &["п", "р", "и", "в", "е", "т", "Ж"],
+        &["م", "ر", "ح", "ب", "ا", "ك"],
+        &["😀", "🚀", "👍🏽", "🇮🇳", "é", "ñ"],
+    ];
+
+    const BREAKS: &[&str] = &[" ", "\n", ". ", "\n\n", ".\n"];
+
+    /// Text of at least `target` bytes in one of [`SCRIPTS`] (every script
+    /// mixed when `script` is `None`), with break characters when `breaks`.
+    fn generated(rng: &mut Rng, target: usize, script: Option<usize>, breaks: bool) -> String {
+        let mut text = String::new();
+        while text.len() < target {
+            let pieces = SCRIPTS[script.unwrap_or_else(|| rng.below(SCRIPTS.len()))];
+            text.push_str(pieces[rng.below(pieces.len())]);
+            if breaks && rng.below(7) == 0 {
+                text.push_str(BREAKS[rng.below(BREAKS.len())]);
+            }
+        }
+        text
+    }
+
+    /// The windows of `text`, driven step by step with an iteration bound so
+    /// that a chunker that stops making progress fails instead of hanging.
+    fn windows(chunker: &TextChunker, text: &str) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let (mut start, mut prev_end) = (0, 0);
+        for _ in 0..=text.len() {
+            let end = chunker.window_end(text, start, prev_end);
+            out.push((start, end));
+            if end >= text.len() {
+                return out;
+            }
+            start = chunker.next_start(text, start, end);
+            prev_end = end;
+        }
+        panic!(
+            "no end after {} windows over {} bytes ({:?})",
+            out.len(),
+            text.len(),
+            &out[out.len().saturating_sub(3)..]
+        );
+    }
+
+    /// The windows cover the text in order, on char boundaries, each ending
+    /// past the one before and overlapping it by at most the configured
+    /// overlap; the chunks are the non-blank windows.
+    fn assert_chunked_safely(chunker: &TextChunker, text: &str) {
+        let spans = windows(chunker, text);
+        let case = format!(
+            "{}/{}/{} over {} bytes",
+            chunker.chunk_size,
+            chunker.chunk_overlap,
+            chunker.min_chunk_size,
+            text.len()
+        );
+        assert_eq!(spans.first().map(|s| s.0), Some(0), "{case}");
+        assert_eq!(spans.last().map(|s| s.1), Some(text.len()), "{case}");
+        for &(start, end) in &spans {
+            assert!(start < end, "empty window {start}..{end}: {case}");
+            assert!(text.get(start..end).is_some(), "{start}..{end}: {case}");
+        }
+        for pair in spans.windows(2) {
+            let ((start, end), (next_start, next_end)) = (pair[0], pair[1]);
+            assert!(next_start > start, "no progress at {start}: {case}");
+            assert!(next_start <= end, "gap {end}..{next_start}: {case}");
+            assert!(
+                next_end > end,
+                "{next_start}..{next_end} within {start}..{end}: {case}"
+            );
+            assert!(
+                end - next_start <= chunker.chunk_overlap,
+                "overlap at {end}: {case}"
+            );
+        }
+
+        let chunks = chunker.chunk(text);
+        let expected: Vec<(usize, usize)> = spans
+            .into_iter()
+            .filter(|&(start, end)| !text[start..end].trim().is_empty())
+            .collect();
+        let got: Vec<(usize, usize)> = chunks
+            .iter()
+            .map(|c| (c.start_offset, c.end_offset))
+            .collect();
+        assert_eq!(got, expected, "{case}");
+        for (i, chunk) in chunks.iter().enumerate() {
+            assert_eq!(chunk.index, i, "{case}");
+            assert_eq!(
+                chunk.text,
+                text[chunk.start_offset..chunk.end_offset],
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_terminate_and_cover_every_script_on_char_boundaries() {
+        let configs = [
+            (1750, 200, 100),
+            (100, 80, 10),
+            (64, 0, 1),
+            (50, 50, 5),
+            (40, 100, 1),
+            (5, 3, 1),
+            (2, 1, 1),
+            (0, 0, 0),
+        ];
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        for (size, overlap, min) in configs {
+            let chunker = TextChunker::new(size, overlap, min);
+            let targets = [
+                1,
+                size.saturating_sub(overlap),
+                size,
+                size + 1,
+                size + overlap,
+                2 * size + 3,
+                3 * size + overlap + 1,
+                2100,
+            ];
+            for target in targets {
+                for script in (0..SCRIPTS.len()).map(Some).chain([None]) {
+                    for breaks in [false, true] {
+                        let text = generated(&mut rng, target.max(1), script, breaks);
+                        assert_chunked_safely(&chunker, &text);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The reported hang: 700 three-byte characters without a break, where
+    /// the last window's step used to snap back to its own start.
+    #[test]
+    fn cjk_text_without_breaks_ends_after_two_windows() {
+        let chunker = TextChunker::default();
+        let text = "日".repeat(700);
+        assert_chunked_safely(&chunker, &text);
+        let chunks = chunker.chunk(&text);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].end_offset, 1749);
+        assert_eq!(chunks[1].start_offset, 1551);
+        assert_eq!(chunks[1].end_offset, 2100);
+        for script in ["я", "م", "ह", "é"] {
+            assert_chunked_safely(&chunker, &script.repeat(1100));
+        }
+        // One four-byte character where the last window's step lands.
+        let mut emoji = "a".repeat(1899);
+        emoji.push('🚀');
+        emoji.push_str(&"b".repeat(197));
+        assert_chunked_safely(&chunker, &emoji);
+    }
+
+    /// Once a window reaches the end of the text there is no further,
+    /// redundant tail window.
+    #[test]
+    fn the_window_that_reaches_the_end_is_the_last() {
+        let chunker = TextChunker::default();
+        let chunks = chunker.chunk(&"a".repeat(2100));
+        let spans: Vec<(usize, usize)> = chunks
+            .iter()
+            .map(|c| (c.start_offset, c.end_offset))
+            .collect();
+        assert_eq!(spans, vec![(0, 1750), (1550, 2100)]);
+    }
+
+    /// A tail shorter than the minimum joins the window before it.
+    #[test]
+    fn a_tail_shorter_than_the_minimum_joins_the_window_before() {
+        let chunker = TextChunker::new(100, 0, 30);
+        let text = format!("{} {}", "a".repeat(99), "b".repeat(20));
+        let chunks = chunker.chunk(&text);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text, text);
+    }
+
+    /// The minimum governs merging, never dropping: short non-blank text is
+    /// one chunk, blank text none.
+    #[test]
+    fn short_text_is_one_chunk_and_blank_text_none() {
+        let chunker = TextChunker::default();
+        for text in ["Yes.", "牛乳", "- Milk", "x"] {
+            let chunks = chunker.chunk(text);
+            assert_eq!(chunks.len(), 1, "{text}");
+            assert_eq!(chunks[0].text, text);
+        }
+        assert!(chunker.chunk("").is_empty());
+        assert!(chunker.chunk(" \n\t ").is_empty());
+
+        let sections = vec![DocumentSection::Text {
+            content: "  Signed.  ".to_string(),
+            page: 4,
+            heading: None,
+        }];
+        let chunks =
+            chunker.chunk_structured(&sections, &DocumentContext::titled("Deed"), "deed.pdf");
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text, "Signed.");
+        assert_eq!(chunks[0].page, Some(4));
     }
 
     #[test]

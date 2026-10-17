@@ -258,7 +258,7 @@ export default function Sidebar({
       className={cn(
         'shrink-0 inline-flex items-center justify-center transition-colors duration-micro',
         collapsed
-          ? 'w-10 h-6 rounded-md text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text'
+          ? 'w-10 h-6 rounded-md text-shodh-text-muted hover:bg-shodh-raised-2/60 hover:text-shodh-text'
           : 'w-8 h-9 rounded-r-[9px] border-l border-shodh-accent-hover hover:bg-shodh-accent-hover',
         FOCUS_RING
       )}
@@ -303,7 +303,7 @@ export default function Sidebar({
           aria-keyshortcuts={IS_MAC ? 'Meta+B' : 'Control+B'}
           title={`${collapsed ? 'Expand' : 'Collapse'} sidebar (${TOGGLE_HINT})`}
           className={cn(
-            'w-8 h-8 rounded-lg shrink-0 inline-flex items-center justify-center text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
+            'w-8 h-8 rounded-lg shrink-0 inline-flex items-center justify-center text-shodh-text-muted hover:bg-shodh-raised-2/60 hover:text-shodh-text transition-colors duration-micro',
             FOCUS_RING
           )}
         >
@@ -461,7 +461,7 @@ function NavButton({
         collapsed ? 'w-10 justify-center' : 'w-full gap-2.5 px-3',
         active
           ? 'bg-shodh-raised-2 text-shodh-text font-semibold'
-          : 'text-shodh-text-secondary font-medium hover:bg-shodh-raised hover:text-shodh-text',
+          : 'text-shodh-text-secondary font-medium hover:bg-shodh-raised-2/60 hover:text-shodh-text',
         FOCUS_RING
       )}
     >
@@ -491,7 +491,7 @@ function FooterIconButton({
       aria-label={label}
       title={label}
       className={cn(
-        'w-8 h-8 rounded-lg inline-flex items-center justify-center text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
+        'w-8 h-8 rounded-lg inline-flex items-center justify-center text-shodh-text-muted hover:bg-shodh-raised-2/60 hover:text-shodh-text transition-colors duration-micro',
         FOCUS_RING
       )}
     >

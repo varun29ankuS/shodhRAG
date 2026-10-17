@@ -117,8 +117,8 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
         className={cn(
-          'relative w-8 h-8 rounded-lg inline-flex items-center justify-center text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
-          open && 'bg-shodh-raised text-shodh-text',
+          'relative w-8 h-8 rounded-lg inline-flex items-center justify-center text-shodh-text-muted hover:bg-shodh-raised-2/60 hover:text-shodh-text transition-colors duration-micro',
+          open && 'bg-shodh-raised-2 text-shodh-text',
           FOCUS_RING,
         )}
       >

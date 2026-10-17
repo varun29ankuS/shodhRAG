@@ -1,6 +1,7 @@
 import React, { Suspense, createContext, lazy, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { notify } from '../../lib/notify';
-import type { AgentEventEnvelope } from '../agent/events';
+import type { AgentEventEnvelope, ClaimCheck } from '../agent/events';
+import { citeSuggested } from '../agent/grounding';
 import { answerText, fromPersisted, initialTranscript, isLive, reduceAll, toPersisted } from '../agent/reducer';
 import type { Passage, TranscriptAction, TranscriptState } from '../agent/reducer';
 import { carriedPassages, toWire } from './carriedPassages';
@@ -220,6 +221,12 @@ export interface FocusContextValue {
   repairDiagram: (request: DiagramRepairRequest) => Promise<DiagramRepairOutcome>;
   /** Whether the answer at `place` is the newest one where it is shown (read on call, no re-render). */
   isLatestAnswer: (place: DiagramPlace) => boolean;
+  /**
+   * "Cite N instead" on a miscited claim of a stored side answer: rewrites
+   * that answer's citation and saves the thread. False when the answer or
+   * the claim is no longer there as it was checked.
+   */
+  citeInstead: (open: OpenFocus, turnId: string, check: ClaimCheck) => boolean;
   /** Interrupt the side answer. */
   stop: () => void;
   /** Answer a pending approval of the side answer. */
@@ -1001,6 +1008,23 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     return true;
   }, [findThread, mutateThread]);
 
+  const citeInstead = useCallback((level: OpenFocus, turnId: string, check: ClaimCheck): boolean => {
+    const thread = findThread(level.conversationId, level.parentMessageId, level.threadId);
+    const turn = thread?.turns.find(t => t.id === turnId && t.role === 'assistant');
+    const stored = turn?.transcript ? fromPersisted(turn.transcript) : null;
+    if (!thread || !turn || !stored || isLive(stored)) return false;
+    const next = citeSuggested(stored, check);
+    if (!next) return false;
+    // Stored as a finished answer is: the followups block stays out of the text.
+    const changed: ThreadTurn = {
+      ...turn,
+      content: splitFollowups(answerText(next)).body,
+      transcript: toPersisted(next) as unknown as Record<string, unknown>,
+    };
+    mutateThread(thread.anchor, thread.id, t => ({ ...t, turns: t.turns.map(x => (x.id === turnId ? changed : x)) }));
+    return true;
+  }, [findThread, mutateThread]);
+
   const closeFocus = useCallback(() => {
     // The pop-out's side sessions are stopped (each is one agent process). The
     // backend keeps any session whose answer is still running and stops it once idle.
@@ -1029,10 +1053,11 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     repairDiagram,
     isLatestAnswer,
     bringBack,
+    citeInstead,
     stop,
     approve,
     sideLive,
-  }), [openFocus, closeFocus, drillDown, navigate, jumpToThread, session, localThreads, locationThreads, findThread, ask, summarize, refine, showVisualVersion, repairDiagram, isLatestAnswer, bringBack, stop, approve, sideLive]);
+  }), [openFocus, closeFocus, drillDown, navigate, jumpToThread, session, localThreads, locationThreads, findThread, ask, summarize, refine, showVisualVersion, repairDiagram, isLatestAnswer, bringBack, citeInstead, stop, approve, sideLive]);
 
   return (
     <FocusContext.Provider value={value}>

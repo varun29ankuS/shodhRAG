@@ -32,6 +32,7 @@ import { escapeCurrency, isMermaidLanguage, mermaidSource, normalizeMathDelimite
 import type { ClaimCheck } from '../agent/events';
 import { FLAG_CLOSE, FLAG_OPEN, insertFlagMarkers, parseCitationMarkers } from '../agent/grounding';
 import { ClaimFlag, InvalidCitation } from '../agent/GroundingFlags';
+import type { CiteInstead } from '../agent/GroundingFlags';
 import { sourceAnchor } from '../print/printModel';
 import { markBudget, placeTextMarks, stripTextMarks } from './visual/marks';
 import { DeeperChips, MarkText } from './visual/DeeperMarks';
@@ -141,6 +142,12 @@ export interface MessageContentRendererProps {
    */
   claims?: readonly ClaimCheck[];
   /**
+   * Rewrites a miscited claim's citation to the passage that supports it
+   * ("Cite N instead" next to its flag). Absent where the answer cannot be
+   * changed (a running answer, an earlier draft, a read-only view).
+   */
+  onCiteInstead?: CiteInstead;
+  /**
    * Show a citation number with no matching source as flagged even when the
    * answer has no sources at all (agent answers). Otherwise such numbers are
    * dropped when there are no sources.
@@ -192,6 +199,7 @@ function MessageContent({
   compact = false,
   citations = true,
   claims,
+  onCiteInstead,
   flagUnknownCitations = false,
   print = false,
   mathEnabled,
@@ -299,7 +307,9 @@ function MessageContent({
         const check = claims?.[Number(match[2])];
         if (check) {
           const closest = check.closest !== null ? hitsByNumber.get(check.closest) ?? null : null;
-          parts.push(<ClaimFlag key={`flag-${index}`} check={check} closest={closest} onOpenCitation={onOpenCitation} />);
+          parts.push(
+            <ClaimFlag key={`flag-${index}`} check={check} closest={closest} onOpenCitation={onOpenCitation} onCiteInstead={print ? undefined : onCiteInstead} />,
+          );
         }
         continue;
       }
@@ -350,7 +360,7 @@ function MessageContent({
     }
     if (lastIndex < text.length) parts.push(text.slice(lastIndex));
     return parts.length > 0 ? <>{parts}</> : text;
-  }, [hitsByNumber, activeCitation, onOpenCitation, claims, flagUnknownCitations, print, textMarks]);
+  }, [hitsByNumber, activeCitation, onOpenCitation, onCiteInstead, claims, flagUnknownCitations, print, textMarks]);
 
   const processChildren = useCallback((children: React.ReactNode): React.ReactNode =>
     React.Children.map(children, child => {

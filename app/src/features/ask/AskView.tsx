@@ -9,7 +9,9 @@ import { AgentComposer } from '../agent/AgentComposer';
 import type { AgentComposerHandle } from '../agent/AgentComposer';
 import { passageHits } from '../agent/citations';
 import { PlanPanel } from '../agent/PlanPanel';
-import { pendingApproval, isLive } from '../agent/reducer';
+import { answerText, pendingApproval, isLive } from '../agent/reducer';
+import type { ClaimCheck } from '../agent/events';
+import { citeSuggested } from '../agent/grounding';
 import type { TranscriptState } from '../agent/reducer';
 import { RuntimeCard } from '../agent/RuntimeCard';
 import { SearchSetupCard } from '../setup/SearchSetupCard';
@@ -345,6 +347,8 @@ interface AssistantMessageProps {
   onRuntimeInstalled: () => void;
   onOpenSettings: () => void;
   onOpenThread: (messageId: string, thread: FocusThread, trigger: HTMLElement) => void;
+  /** "Cite N instead" on a miscited claim of this answer. */
+  onCiteInstead: (messageId: string, check: ClaimCheck) => void;
 }
 
 /** How long an answer reached with "Go to message" stays highlighted. */
@@ -366,6 +370,7 @@ function AssistantMessageView({
   onRuntimeInstalled,
   onOpenSettings,
   onOpenThread,
+  onCiteInstead,
 }: AssistantMessageProps) {
   const transcript = message.transcript;
   const passages = transcript?.passages;
@@ -394,6 +399,11 @@ function AssistantMessageView({
   const openThread = useCallback(
     (thread: FocusThread, trigger: HTMLElement) => onOpenThread(messageId, thread, trigger),
     [messageId, onOpenThread],
+  );
+
+  const citeInstead = useCallback(
+    (check: ClaimCheck) => onCiteInstead(messageId, check),
+    [messageId, onCiteInstead],
   );
 
   // Retry and fallback after a provider failure, on the newest answer only
@@ -433,6 +443,7 @@ function AssistantMessageView({
             onRuntimeInstalled={onRuntimeInstalled}
             onOpenSettings={onOpenSettings}
             providerActions={providerActions}
+            onCiteInstead={conversationId ? citeInstead : undefined}
           />
         </>
       ) : (
@@ -860,6 +871,22 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     });
   }, [messages, updateMessage]);
 
+  // "Cite N instead": the user moves a miscited claim's citation to the passage the check found
+  // supporting it; the answer is saved with the conversation like any other edit. Read through a
+  // ref so the callback stays the same while answers stream (every answer is memoised on it).
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const citeInstead = useCallback((messageId: string, check: ClaimCheck) => {
+    const owner = messagesRef.current.find(m => m.id === messageId);
+    if (!owner?.transcript || isLive(owner.transcript)) return;
+    const next = citeSuggested(owner.transcript, check);
+    if (!next) {
+      notify.error('This citation could not be changed', { description: 'The statement is no longer in the answer as it was checked.' });
+      return;
+    }
+    updateMessage(owner.id, { content: answerText(next), transcript: next });
+  }, [updateMessage]);
+
   const markRuntimeInstalled = useCallback(() => setRuntimeInstalled(true), [setRuntimeInstalled]);
   const openSettings = useCallback(() => onNavigate('settings'), [onNavigate]);
   const openMemorySettings = useCallback(() => {
@@ -1091,6 +1118,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         onRuntimeInstalled={markRuntimeInstalled}
         onOpenSettings={openSettings}
         onOpenThread={openThread}
+        onCiteInstead={citeInstead}
       />
     );
   };

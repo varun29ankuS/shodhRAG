@@ -9,6 +9,7 @@
  */
 
 import type { ClaimCheck, ClaimOutcome, GroundingReport, GroundingSummary, NeedCheck } from './events';
+import type { TranscriptBlock, TranscriptState } from './reducer';
 
 /** Widest range expanded into citations (`[1-10]`); wider ones are prose. */
 export const MAX_RANGE_SPAN = 10;
@@ -123,8 +124,25 @@ export function isFlagged(outcome: ClaimOutcome): boolean {
   );
 }
 
+/**
+ * The passage the check found supporting an unsupported claim that cites another one (a
+ * miscitation), or null. Reports saved before the check named it have none.
+ */
+export function suggestedPassage(check: ClaimCheck): number | null {
+  const n = check.suggested;
+  if (check.outcome !== 'unsupported' || typeof n !== 'number' || !Number.isInteger(n) || n <= 0) return null;
+  return check.cited.includes(n) ? null : n;
+}
+
+/** "3" or "3, 7": the numbers a claim cites, as the flag says them. */
+function citedList(check: ClaimCheck): string {
+  return check.cited.join(', ');
+}
+
 /** Short visible text of a claim's flag. */
 export function flagLabel(check: ClaimCheck): string {
+  const suggested = suggestedPassage(check);
+  if (suggested !== null) return `Supported by passage ${suggested} (answer cited ${citedList(check)})`;
   switch (check.outcome) {
     case 'invalid_citation':
       return check.invalid.length === 1
@@ -147,7 +165,11 @@ export function flagLabel(check: ClaimCheck): string {
 
 /** Full sentence for tooltips and screen readers. */
 export function flagDescription(check: ClaimCheck, closestLabel: string | null): string {
+  const suggested = suggestedPassage(check);
   const what = (() => {
+    if (suggested !== null) {
+      return `Passage ${suggested} supports this statement; the answer cited ${check.cited.map(n => `[${n}]`).join('')}, which does not.`;
+    }
     switch (check.outcome) {
       case 'invalid_citation':
         return `This statement cites ${check.invalid.map(n => `[${n}]`).join('')}, which is not one of this answer's sources.`;
@@ -329,4 +351,126 @@ export function storedAnswerReport(transcript: unknown): GroundingReport | null 
     (r): r is GroundingReport => typeof r === 'object' && r !== null && Array.isArray((r as GroundingReport).claims),
   );
   return answerReport(reports);
+}
+
+/** Trailing sentence punctuation of an anchor, with closing quotes and emphasis. */
+const ANCHOR_END = /[.!?。;:]+["'”’)*_]*\s*$/;
+
+/**
+ * `anchor` citing passage `n` instead of what it cites: its first citation marker becomes
+ * `[n]` and its other markers go (with the separators between them); an anchor without a
+ * marker (its citation was inherited from the paragraph) gets `[n]` before its full stop.
+ */
+export function citeInAnchor(anchor: string, n: number): string {
+  const markers = parseCitationMarkers(anchor);
+  if (markers.length === 0) {
+    const end = ANCHOR_END.exec(anchor);
+    const at = end ? end.index : anchor.trimEnd().length;
+    return `${anchor.slice(0, at).trimEnd()} [${n}]${anchor.slice(at)}`;
+  }
+  let out = `${anchor.slice(0, markers[0].start)}[${n}]`;
+  let last = markers[0].end;
+  for (let i = 1; i < markers.length; i++) {
+    const gap = anchor.slice(last, markers[i].start);
+    // "[3], [7]" or "[3][7]": a run of markers becomes the one marker.
+    if (!/^[\s,;]*$/.test(gap)) out += gap.replace(/[ \t]+$/, '');
+    last = markers[i].end;
+  }
+  return out + anchor.slice(last);
+}
+
+/**
+ * The passage "Cite N instead" puts in a claim's place, or null: a miscitation whose citations
+ * can be rewritten where the claim is written. A table row's anchor is its last cell, so a row
+ * whose citations sit in other cells is not rewritten (it would then cite both).
+ */
+export function citeInsteadOffer(check: ClaimCheck): number | null {
+  const n = suggestedPassage(check);
+  if (n === null) return null;
+  if (check.kind === 'table_row') {
+    const inAnchor = citedNumbersIn(check.anchor);
+    if (!check.cited.every(c => inAnchor.has(c))) return null;
+  }
+  return n;
+}
+
+/** Counts and score of a set of checked claims (mirrors `verify::summarise`). */
+export function summariseClaims(claims: readonly ClaimCheck[]): GroundingSummary {
+  const s: GroundingSummary = { checked: claims.length, supported: 0, weak: 0, unsupported: 0, uncited: 0, invalid: 0, unchecked: 0, score: null };
+  for (const c of claims) {
+    switch (c.outcome) {
+      case 'supported':
+        s.supported += 1;
+        break;
+      case 'weak':
+        s.weak += 1;
+        break;
+      case 'unsupported':
+      case 'unverified_absence':
+        s.unsupported += 1;
+        break;
+      case 'uncited_factual':
+        s.uncited += 1;
+        break;
+      case 'invalid_citation':
+        s.invalid += 1;
+        break;
+      default:
+        s.unchecked += 1;
+    }
+  }
+  const scored = s.checked - s.unchecked;
+  s.score = scored > 0 ? (s.supported + 0.5 * s.weak) / scored : null;
+  return s;
+}
+
+/**
+ * A finished answer with one miscited claim citing the passage the check found supporting it
+ * (`citeInsteadOffer`), as the user asked with "Cite N instead": the claim's citation in the
+ * answer text is rewritten and the claim is recorded as supported by that passage (the check
+ * scored it at the supported threshold). Null while the answer is running, and when the claim,
+ * its text block or its anchor is no longer there.
+ */
+export function citeSuggested(state: TranscriptState, check: ClaimCheck): TranscriptState | null {
+  if (state.status === 'starting' || state.status === 'running') return null;
+  const n = citeInsteadOffer(check);
+  const report = answerReport(state.groundings);
+  if (n === null || !report) return null;
+  const reportIndex = state.groundings.indexOf(report);
+  // The check the flag was drawn from; a copy is matched by its fields.
+  const same = report.claims.indexOf(check);
+  const claimIndex = same >= 0
+    ? same
+    : report.claims.findIndex(
+        c => c.messageId === check.messageId && c.anchor === check.anchor && c.text === check.text && c.outcome === check.outcome,
+      );
+  const blockIndex = state.blocks.findIndex(b => b.kind === 'text' && b.id === check.messageId);
+  const block = blockIndex >= 0 ? state.blocks[blockIndex] : null;
+  if (claimIndex < 0 || !block || block.kind !== 'text') return null;
+  // The claim's place among the claims of its block, found the way its flag is.
+  const own = report.claims.map((c, i) => ({ c, i })).filter(({ c }) => c.messageId === check.messageId);
+  const at = anchorOffsets(block.text, own.map(({ c }) => c))[own.findIndex(({ i }) => i === claimIndex)];
+  if (at === null || at === undefined) return null;
+  const anchor = citeInAnchor(check.anchor, n);
+  const text = block.text.slice(0, at) + anchor + block.text.slice(at + check.anchor.length);
+  const claims: ClaimCheck[] = report.claims.map((c, i) =>
+    i === claimIndex
+      ? {
+          ...c,
+          anchor,
+          cited: [n],
+          outcome: 'supported' as const,
+          support: null,
+          contradiction: null,
+          missingNumbers: [],
+          closest: null,
+          closestScore: null,
+          suggested: null,
+        }
+      : c,
+  );
+  const groundings = state.groundings.map((r, i) => (i === reportIndex ? { ...r, claims, summary: summariseClaims(claims) } : r));
+  const rewritten: TranscriptBlock = { kind: 'text', id: block.id, text };
+  const blocks: TranscriptBlock[] = state.blocks.map((b, i) => (i === blockIndex ? rewritten : b));
+  return { ...state, blocks, groundings };
 }

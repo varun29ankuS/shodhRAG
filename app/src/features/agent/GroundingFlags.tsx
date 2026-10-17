@@ -7,6 +7,7 @@ import type { SearchHit } from '../ask/types';
 import { sourceLabel } from '../ask/searchResults';
 import type { ClaimCheck, GroundingReport } from './events';
 import {
+  citeInsteadOffer,
   flagDescription,
   flagLabel,
   isFlagged,
@@ -25,19 +26,66 @@ function hitLabel(hit: SearchHit): string {
   return `${hit.number}, ${sourceLabel(hit)}`;
 }
 
+/** Callback of "Cite N instead": rewrite this claim's citation to the passage that supports it. */
+export type CiteInstead = (check: ClaimCheck) => void;
+
+/**
+ * "Cite 2 instead" for a miscited claim, when the answer can be changed here. The user acts;
+ * the app never rewrites a citation by itself.
+ */
+function CiteInsteadButton({ check, onCiteInstead, className }: { check: ClaimCheck; onCiteInstead?: CiteInstead; className: string }) {
+  const n = onCiteInstead ? citeInsteadOffer(check) : null;
+  if (n === null || !onCiteInstead) return null;
+  const cited = check.cited.map(c => `[${c}]`).join('');
+  return (
+    <button
+      type="button"
+      data-answer-ui=""
+      onClick={() => onCiteInstead(check)}
+      aria-label={`Cite passage ${n} instead of ${cited} for this statement`}
+      title={`Change this statement's citation from ${cited} to [${n}]`}
+      className={className}
+    >
+      {`Cite ${n} instead`}
+    </button>
+  );
+}
+
 interface ClaimFlagProps {
   check: ClaimCheck;
   /** The passage that comes closest to supporting the claim, when there is one. */
   closest: SearchHit | null;
   onOpenCitation: (hit: SearchHit, trigger: HTMLElement) => void;
+  /** Rewrites a miscited claim's citation (finished answers that can be changed here). */
+  onCiteInstead?: CiteInstead;
 }
 
 /**
  * Inline flag after a statement the grounding check could not ground: icon,
  * short text, a tooltip and a full description for screen readers. With a
- * closest passage it is a button that opens it.
+ * closest passage it is a button that opens it. A miscitation (another
+ * passage supports the statement) also gets a "Cite N instead" button, a
+ * sibling of the flag, never inside it.
  */
-export function ClaimFlag({ check, closest, onOpenCitation }: ClaimFlagProps) {
+export function ClaimFlag({ check, closest, onOpenCitation, onCiteInstead }: ClaimFlagProps) {
+  const flag = <ClaimFlagBody check={check} closest={closest} onOpenCitation={onOpenCitation} />;
+  if (!onCiteInstead || citeInsteadOffer(check) === null) return flag;
+  return (
+    <span className="inline" data-answer-ui="">
+      {flag}
+      <CiteInsteadButton
+        check={check}
+        onCiteInstead={onCiteInstead}
+        className={cn(
+          'inline-flex items-center ml-1 px-1.5 h-[18px] rounded-[5px] align-[2px] text-[10.5px] font-semibold leading-none border border-shodh-border-strong text-shodh-text-secondary hover:bg-shodh-raised-2 hover:text-shodh-text transition-colors duration-micro',
+          FOCUS_RING,
+        )}
+      />
+    </span>
+  );
+}
+
+function ClaimFlagBody({ check, closest, onOpenCitation }: Omit<ClaimFlagProps, 'onCiteInstead'>) {
   const label = flagLabel(check);
   const description = flagDescription(check, closest ? hitLabel(closest) : null);
   const className = cn(
@@ -93,6 +141,8 @@ interface GroundingChipProps {
   report: GroundingReport;
   hits: readonly SearchHit[];
   onOpenCitation: (hit: SearchHit, trigger: HTMLElement) => void;
+  /** Rewrites a miscited claim's citation (finished answers that can be changed here). */
+  onCiteInstead?: CiteInstead;
   compact?: boolean;
 }
 
@@ -109,7 +159,7 @@ function useFirstUse(hint: FirstUseHint): [boolean, () => void] {
   return [!seen, dismiss];
 }
 
-export function GroundingChip({ report, hits, onOpenCitation, compact = false }: GroundingChipProps) {
+export function GroundingChip({ report, hits, onOpenCitation, onCiteInstead, compact = false }: GroundingChipProps) {
   const listId = useId();
   const detailsRef = useRef<HTMLDetailsElement>(null);
   const [explainChip, dismissChip] = useFirstUse('grounding-chip');
@@ -193,7 +243,7 @@ export function GroundingChip({ report, hits, onOpenCitation, compact = false }:
             </p>
           )}
           {flagged.length > 0 && (
-            <ClaimList title="Flagged" checks={flagged} byNumber={byNumber} onOpenCitation={onOpenCitation} />
+            <ClaimList title="Flagged" checks={flagged} byNumber={byNumber} onOpenCitation={onOpenCitation} onCiteInstead={onCiteInstead} />
           )}
           {weak.length > 0 && (
             <ClaimList title="Partly supported" checks={weak} byNumber={byNumber} onOpenCitation={onOpenCitation} />
@@ -219,11 +269,13 @@ function ClaimList({
   checks,
   byNumber,
   onOpenCitation,
+  onCiteInstead,
 }: {
   title: string;
   checks: readonly ClaimCheck[];
   byNumber: Map<number, SearchHit>;
   onOpenCitation: (hit: SearchHit, trigger: HTMLElement) => void;
+  onCiteInstead?: CiteInstead;
 }) {
   return (
     <div className="flex flex-col gap-1">
@@ -245,6 +297,11 @@ function ClaimList({
                     {`closest passage: ${hitLabel(closest)}`}
                   </button>
                 )}
+                <CiteInsteadButton
+                  check={check}
+                  onCiteInstead={onCiteInstead}
+                  className={cn('h-6 px-2 rounded-md text-[11.5px] font-medium bg-shodh-raised-2 text-shodh-text hover:bg-shodh-pressed transition-colors duration-micro', FOCUS_RING)}
+                />
               </span>
             </li>
           );

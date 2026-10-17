@@ -19,7 +19,7 @@ use std::fmt::Write as _;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::Value as JsonValue;
 
-use super::engine::{fingerprint, ConsolidationReport, Learner};
+use super::engine::{fingerprint, CallBudget, ConsolidationReport, Learner};
 use super::extract::{self, SourceText};
 use super::inbox::{NewProposal, ProposalAction, ProposalOrigin, Rejection, UsageCounter};
 use super::{normalise_text, LearnError, LearnMode, LearnResult};
@@ -351,7 +351,13 @@ impl Learner {
             }
             let prompt = consolidation_prompt(&slice.render_prompt(), &sources);
             let answer = match self
-                .call_model(model.as_ref(), &prompt, CONSOLIDATE_MAX_TOKENS, None)
+                .call_model(
+                    model.as_ref(),
+                    &prompt,
+                    CONSOLIDATE_MAX_TOKENS,
+                    None,
+                    CallBudget::Daily,
+                )
                 .await
             {
                 Ok(answer) => answer,
@@ -395,6 +401,7 @@ impl Learner {
                     &mut report.proposed,
                     &mut report.learned,
                     suppressed,
+                    CallBudget::Daily,
                 )
                 .await?;
             }
@@ -486,7 +493,13 @@ impl Learner {
             };
             let prompt = procedure_prompt(&class.description, &source_text);
             let answer = match self
-                .call_model(model.as_ref(), &prompt, CONSOLIDATE_MAX_TOKENS, None)
+                .call_model(
+                    model.as_ref(),
+                    &prompt,
+                    CONSOLIDATE_MAX_TOKENS,
+                    None,
+                    CallBudget::Daily,
+                )
                 .await
             {
                 Ok(answer) => answer,
@@ -550,6 +563,7 @@ impl Learner {
                     &mut report.proposed,
                     &mut report.learned,
                     suppressed,
+                    CallBudget::Daily,
                 )
                 .await?;
             }

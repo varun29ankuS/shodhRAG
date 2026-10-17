@@ -1585,3 +1585,42 @@ fn notes_are_the_same_whatever_their_case_spacing_or_closing_punctuation() {
     assert!(!inbox::same_note("I use DiskANN", "I use SPANN"));
     assert!(!inbox::same_note(".", ""));
 }
+
+#[tokio::test]
+async fn the_legacy_import_has_its_own_one_time_allowance() {
+    let e = env().await;
+    e.set(|p| p.caps.max_calls_per_day = 1);
+    // Today's one call is spent by the user's own conversation.
+    e.model.answer(json!({"memories": []}));
+    e.learn("I moved to Pune last month.").await;
+    assert_eq!(
+        e.learner.inbox().usage(e.f.store.now()).unwrap().llm_calls,
+        1
+    );
+
+    // The import still has its allowance, and never touches today's calls.
+    let left = inbox::LEGACY_IMPORT_CALLS;
+    assert_eq!(e.learner.inbox().legacy_calls_left().unwrap(), left);
+    for _ in 0..left {
+        e.model.answer(json!({"memories": []}));
+        e.learner
+            .learn_from_legacy(&[e.turn("I prefer tea")])
+            .await
+            .unwrap();
+    }
+    assert_eq!(e.learner.inbox().legacy_calls_left().unwrap(), 0);
+    assert_eq!(
+        e.learner.inbox().usage(e.f.store.now()).unwrap().llm_calls,
+        1
+    );
+    let calls = e.model.calls();
+    let spent = e.learner.learn_from_legacy(&[e.turn("I prefer tea")]).await;
+    assert!(
+        matches!(spent, Err(LearnError::BudgetExhausted(_))),
+        "{spent:?}"
+    );
+    assert_eq!(e.model.calls(), calls);
+    // Today's cap still applies to the conversation.
+    let today = e.learner.learn_from_turns(&[e.turn("I prefer tea")]).await;
+    assert!(matches!(today, Err(LearnError::BudgetExhausted(_))));
+}

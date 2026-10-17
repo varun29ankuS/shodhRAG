@@ -46,7 +46,7 @@ use serde::{Deserialize, Serialize};
 use super::MemoryError;
 
 pub use decide::{DecidedBy, Decision, ValueChange};
-pub use engine::{ConsolidationReport, Learner, TurnReport};
+pub use engine::{CallBudget, ConsolidationReport, Learner, TurnReport};
 pub use explicit::{memory_request, MemoryRequest};
 pub use extract::TurnInput;
 pub use inbox::{

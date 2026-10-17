@@ -64,6 +64,16 @@ pub struct ConsolidationReport {
     pub dropped: BTreeMap<String, usize>,
 }
 
+/// Which allowance a model call is counted against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallBudget {
+    /// Today's caps ([`LearnPolicy::caps`]).
+    Daily,
+    /// The one-time allowance for learning from what the user wrote in the removed legacy
+    /// memory store ([`super::inbox::LEGACY_IMPORT_CALLS`]): never today's calls.
+    LegacyImport,
+}
+
 /// Reason code of an answer the model stopped at its token limit.
 pub const TRUNCATED: &str = "truncated";
 /// Reason code of a judgement that is not a decision on a memory shown.
@@ -139,13 +149,19 @@ impl Learner {
         prompt: &str,
         max_tokens: usize,
         turn: Option<&str>,
+        budget: CallBudget,
     ) -> LearnResult<String> {
         let policy = self.policy();
         if policy.mode == LearnMode::Off {
             return Err(LearnError::Disabled);
         }
-        self.inbox
-            .reserve_call(prompt.chars().count(), &policy.caps, self.now())?;
+        match budget {
+            CallBudget::Daily => {
+                self.inbox
+                    .reserve_call(prompt.chars().count(), &policy.caps, self.now())?
+            }
+            CallBudget::LegacyImport => self.inbox.reserve_legacy_call()?,
+        }
         let answer = match model.complete(prompt, max_tokens).await {
             Ok(answer) => answer,
             Err(LearnError::Truncated(partial)) => {
@@ -179,6 +195,17 @@ impl Learner {
     /// user's text, decides each against what is remembered and files suggestions
     /// (applying the eligible ones in automatic mode).
     pub async fn learn_from_turns(&self, turns: &[TurnInput]) -> LearnResult<TurnReport> {
+        self.learn_from(turns, CallBudget::Daily).await
+    }
+
+    /// [`Self::learn_from_turns`] for messages of the removed legacy memory store, counted
+    /// against its one-time allowance ([`super::inbox::LEGACY_IMPORT_CALLS`]) instead of
+    /// today's calls; [`LearnError::BudgetExhausted`] once it is spent.
+    pub async fn learn_from_legacy(&self, turns: &[TurnInput]) -> LearnResult<TurnReport> {
+        self.learn_from(turns, CallBudget::LegacyImport).await
+    }
+
+    async fn learn_from(&self, turns: &[TurnInput], budget: CallBudget) -> LearnResult<TurnReport> {
         let mut report = TurnReport::default();
         let policy = self.policy();
         if policy.mode == LearnMode::Off {
@@ -242,6 +269,7 @@ impl Learner {
                 &prompt,
                 extract::EXTRACTION_MAX_TOKENS,
                 newest,
+                budget,
             )
             .await?;
         let parsed = match extract::parse_answer(&answer) {
@@ -301,6 +329,7 @@ impl Learner {
                     &mut report.proposed,
                     &mut report.learned,
                     &mut report.suppressed,
+                    budget,
                 )
                 .await
             {
@@ -324,8 +353,9 @@ impl Learner {
         proposed: &mut Vec<String>,
         learned: &mut Vec<String>,
         suppressed: &mut usize,
+        budget: CallBudget,
     ) -> LearnResult<()> {
-        let record = self.decide(candidate, model).await?;
+        let record = self.decide(candidate, model, budget).await?;
         // A new memory goes where it was learned (the conversation's workspace, or global);
         // a change to an existing memory stays in that memory's scope, so a fact learned in
         // a workspace never moves a global memory out of every other chat.
@@ -492,6 +522,7 @@ impl Learner {
         &self,
         candidate: &Candidate,
         model: &Arc<dyn LearnModel>,
+        budget: CallBudget,
     ) -> LearnResult<DecisionRecord> {
         let ontology = self.service.store().ontology();
         let neighbours = decide::neighbours(
@@ -523,7 +554,13 @@ impl Learner {
         let prompt = decide::judge_prompt(&candidate.text, &shown);
         let turn = Some(candidate.source.turn_id.as_str());
         let answer = match self
-            .call_model(model.as_ref(), &prompt, decide::JUDGE_MAX_TOKENS, turn)
+            .call_model(
+                model.as_ref(),
+                &prompt,
+                decide::JUDGE_MAX_TOKENS,
+                turn,
+                budget,
+            )
             .await
         {
             Ok(answer) => answer,

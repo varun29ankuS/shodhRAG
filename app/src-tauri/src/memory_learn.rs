@@ -51,6 +51,9 @@ use crate::memory_commands::MemoryState;
 const LEGACY_MEMORIES: &str = "memory_store/memories.json";
 /// Written once the legacy messages were learned from. The legacy file is never changed.
 const LEGACY_IMPORTED: &str = "memory_store/learned-v1";
+/// How many legacy messages (oldest first) were already learned from: each is sent to the
+/// model at most once, across starts.
+const LEGACY_PROGRESS: &str = "memory_store/learned-progress-v1";
 /// How long after start the legacy messages are learned from.
 const LEGACY_IMPORT_DELAY: Duration = Duration::from_secs(120);
 
@@ -85,6 +88,21 @@ fn legacy_turns(json: &str) -> Result<Vec<TurnInput>, serde_json::Error> {
             scope: learned_scope(None),
         })
         .collect())
+}
+
+/// Legacy messages already learned from, as saved in `path` (0 when none or unreadable).
+fn legacy_progress(path: &Path) -> usize {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| text.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// Saves how many legacy messages were learned from.
+fn save_legacy_progress(path: &Path, done: usize) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, done.to_string())?;
+    std::fs::rename(&tmp, path)
 }
 
 /// Emitted with `{ pending }` whenever suggestions change.
@@ -763,23 +781,38 @@ impl LearnState {
                 return;
             }
         };
+        // The legacy messages are chat text, not typed facts: the model reads them, under the
+        // import's own one-time allowance (never the day's calls), each message at most once.
+        let progress = self.inner.data_dir.join(LEGACY_PROGRESS);
+        let mut done = legacy_progress(&progress).min(turns.len());
         let mut proposed = 0;
-        for batch in turns.chunks(MAX_BATCH_TURNS) {
-            match learner.learn_from_turns(batch).await {
-                Ok(report)
-                    if report
+        for batch in turns[done..].chunks(MAX_BATCH_TURNS) {
+            let suggestions_full = match learner.learn_from_legacy(batch).await {
+                Ok(report) => {
+                    proposed += report.proposed.len();
+                    report
                         .skipped
                         .as_deref()
-                        .is_some_and(|s| s.starts_with("today's limit")) =>
-                {
-                    tracing::info!(target: "shodh::memory", "legacy memories: today's learning limit reached; continued at a later start");
-                    return;
+                        .is_some_and(|s| s.starts_with("today's limit"))
                 }
-                Ok(report) => proposed += report.proposed.len(),
+                Err(LearnError::BudgetExhausted(what)) => {
+                    tracing::info!(target: "shodh::memory", limit = %what, remaining = turns.len() - done, "legacy memories: the import's allowance is spent; the rest is not learned from");
+                    break;
+                }
                 Err(e) => {
                     tracing::info!(target: "shodh::memory", error = %e, "legacy memories not imported yet");
                     return;
                 }
+            };
+            done += batch.len();
+            if let Err(e) = save_legacy_progress(&progress, done) {
+                tracing::warn!(target: "shodh::memory", error = %e, "legacy import progress not saved; stopped");
+                return;
+            }
+            if suggestions_full {
+                tracing::info!(target: "shodh::memory", "legacy memories: today's suggestion limit reached; continued at a later start");
+                self.notify(&learner);
+                return;
             }
         }
         self.notify(&learner);
@@ -1072,6 +1105,19 @@ mod tests {
         assert!(turns.iter().all(|t| t.assistant_context.is_none()));
         assert!(turns.iter().all(|t| t.scope == learned_scope(None)));
         assert!(legacy_turns("{}").is_err());
+    }
+
+    #[test]
+    fn legacy_import_progress_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("learned-progress-v1");
+        assert_eq!(legacy_progress(&path), 0, "nothing learned yet");
+        save_legacy_progress(&path, 8).unwrap();
+        assert_eq!(legacy_progress(&path), 8);
+        save_legacy_progress(&path, 12).unwrap();
+        assert_eq!(legacy_progress(&path), 12);
+        std::fs::write(&path, "not a number").unwrap();
+        assert_eq!(legacy_progress(&path), 0);
     }
 
     fn external(provider: ApiProvider) -> LLMMode {

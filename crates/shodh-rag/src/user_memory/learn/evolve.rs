@@ -15,7 +15,7 @@ use std::fmt::Write as _;
 use serde::Deserialize;
 use shodh_ontology::{RawValue, Value};
 
-use super::engine::{fingerprint, llm_origin, Learner};
+use super::engine::{fingerprint, llm_origin, CallBudget, Learner};
 use super::inbox::{NewProposal, Proposal, ProposalAction, ProposalOrigin, Rejection};
 use super::sensitivity;
 use super::{quotes, strip_fence, LearnError, LearnResult};
@@ -148,7 +148,13 @@ impl Learner {
         let prompt = evolve_prompt(&stored.text, &shown);
         let turn = trigger.turn_id.as_deref();
         let answer = match self
-            .call_model(model.as_ref(), &prompt, EVOLVE_MAX_TOKENS, turn)
+            .call_model(
+                model.as_ref(),
+                &prompt,
+                EVOLVE_MAX_TOKENS,
+                turn,
+                CallBudget::Daily,
+            )
             .await
         {
             Ok(answer) => answer,

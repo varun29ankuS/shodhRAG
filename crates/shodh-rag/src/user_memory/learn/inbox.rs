@@ -32,6 +32,13 @@ use crate::user_memory::MemoryContent;
 /// How long a rejected (or undone) suggestion suppresses the same suggestion.
 pub const REJECTION_MEMORY_DAYS: i64 = 180;
 
+/// Model calls the import of the removed legacy memory store may make, once, ever: its
+/// own allowance, so the import never spends the day's calls (it runs at start, before
+/// the user types anything).
+pub const LEGACY_IMPORT_CALLS: u32 = 8;
+/// State key counting the legacy import's model calls.
+const LEGACY_CALLS_KEY: &str = "legacy_import_calls";
+
 /// How long the reasons the learning model's answers were not used are kept.
 pub const REJECTION_LOG_DAYS: i64 = 14;
 /// Most bytes of the model's answer kept with one rejection.
@@ -1002,6 +1009,32 @@ impl Inbox {
         Ok(())
     }
 
+    /// Reserves one model call of the legacy import's one-time allowance
+    /// ([`LEGACY_IMPORT_CALLS`]); today's caps are not touched.
+    pub fn reserve_legacy_call(&self) -> LearnResult<()> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let used = legacy_calls(&tx)?;
+        if used >= LEGACY_IMPORT_CALLS {
+            return Err(LearnError::BudgetExhausted(format!(
+                "the {LEGACY_IMPORT_CALLS} model calls for learning from old memories"
+            )));
+        }
+        tx.execute(
+            "INSERT INTO memory_learn_state(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![LEGACY_CALLS_KEY, (used + 1).to_string()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Model calls left of the legacy import's one-time allowance.
+    pub fn legacy_calls_left(&self) -> LearnResult<u32> {
+        let conn = self.lock();
+        Ok(LEGACY_IMPORT_CALLS.saturating_sub(legacy_calls(&conn)?))
+    }
+
     /// Records the size of a model answer.
     pub fn record_output(&self, output_chars: usize, now: DateTime<Utc>) -> LearnResult<()> {
         let conn = self.lock();
@@ -1155,6 +1188,18 @@ impl Inbox {
             params![ts(now)],
         )?)
     }
+}
+
+/// Model calls the legacy import made so far.
+fn legacy_calls(conn: &Connection) -> LearnResult<u32> {
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM memory_learn_state WHERE key = ?1",
+            params![LEGACY_CALLS_KEY],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(value.and_then(|v| v.parse().ok()).unwrap_or(0))
 }
 
 /// What filing the user's own request to remember something did.

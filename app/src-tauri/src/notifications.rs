@@ -554,11 +554,15 @@ pub fn inbox_outcome(item: &NewInboxItem) -> Option<Outcome> {
                 .and_then(|f| f.as_str())
                 .map(one_line)
                 .filter(|f| !f.is_empty());
-            let body = match folder {
-                Some(folder) => {
+            let outright = item.data.get("failure").and_then(|f| f.as_str()) == Some("sync");
+            let body = match (folder, outright) {
+                (Some(folder), true) => {
+                    format!("{folder} could not be synced. The Inbox has the details.")
+                }
+                (Some(folder), false) => {
                     format!("{folder}: some files could not be read. The Inbox has the details.")
                 }
-                None => format!("{}. The Inbox has the details.", one_line(&item.title)),
+                (None, _) => format!("{}. The Inbox has the details.", one_line(&item.title)),
             };
             Some(Outcome::Problem {
                 source: item.id.clone(),
@@ -655,7 +659,21 @@ impl Drop for FirstSync {
     }
 }
 
-/// What indexing the assistant started announces (it has no Inbox item):
+/// What indexing the assistant started announces: only a failure. Its tools
+/// run inside an answer, and the answer's own notification covers the files
+/// it indexed (agent tools are never called outside a run).
+pub fn agent_indexing_outcome(
+    source: String,
+    path: &str,
+    result: &Result<IndexingResult, String>,
+) -> Option<Outcome> {
+    match indexing_result_outcome(source, path, result) {
+        problem @ Outcome::Problem { .. } => Some(problem),
+        Outcome::Finished(_) => None,
+    }
+}
+
+/// What indexing outside the Inbox announces (it has no Inbox item):
 /// `source` keys it, `path` is the folder or file, named by its last part.
 pub fn indexing_result_outcome(
     source: String,
@@ -1333,6 +1351,52 @@ mod tests {
         let started = item(InboxStatus::Failed, "Papers was not indexed", Some("boom"));
         assert!(memory.outcome(&started).is_some());
         assert!(memory.outcome(&started).is_some());
+    }
+
+    #[test]
+    fn a_sync_that_failed_outright_says_so() {
+        let mut memory = IndexingMemory::default();
+        let mut failed = sync_item(InboxStatus::Failed);
+        failed.data["failure"] = json!("sync");
+        match memory.outcome(&failed) {
+            Some(Outcome::Problem { notice, .. }) => assert_eq!(
+                notice.body,
+                "Papers could not be synced. The Inbox has the details."
+            ),
+            other => panic!("a problem: {other:?}"),
+        }
+        // A sync that ran but could not read some files (failure: null).
+        let mut partial = sync_item(InboxStatus::Failed);
+        partial.id = "indexing:src-2".into();
+        partial.data["failure"] = serde_json::Value::Null;
+        match memory.outcome(&partial) {
+            Some(Outcome::Problem { notice, .. }) => assert_eq!(
+                notice.body,
+                "Papers: some files could not be read. The Inbox has the details."
+            ),
+            other => panic!("a problem: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn indexing_during_an_answer_announces_only_failures() {
+        let ok = IndexingResult {
+            files_processed: 4,
+            total_chunks: 0,
+            failed_files: Vec::new(),
+            failures: Vec::new(),
+            files_unchanged: 0,
+            duration: 0,
+        };
+        assert_eq!(
+            agent_indexing_outcome("indexing:s".into(), "C:/d/Papers", &Ok(ok)),
+            None,
+            "the answer's notification covers it"
+        );
+        assert!(matches!(
+            agent_indexing_outcome("indexing:s".into(), "C:/d/Papers", &Err("x".into())),
+            Some(Outcome::Problem { .. })
+        ));
     }
 
     #[test]

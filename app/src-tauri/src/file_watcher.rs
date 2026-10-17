@@ -228,7 +228,12 @@ fn inbox_item(
             Some(serde_json::json!({ "kind": "source", "sourceId": source.id })),
         )),
         // A watcher's sync: routine, announced only as notifications.rs decides.
-        data: serde_json::json!({ "sourceId": source.id, "announce": false, "folder": name }),
+        data: serde_json::json!({
+            "sourceId": source.id,
+            "announce": false,
+            "folder": name,
+            "failure": result.is_err().then_some("sync"),
+        }),
     })
 }
 

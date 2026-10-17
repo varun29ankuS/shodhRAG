@@ -469,6 +469,8 @@ function AppSplitView() {
   const [newInstructionText, setNewInstructionText] = useState('');
   const [editingInstructionIdx, setEditingInstructionIdx] = useState<number | null>(null);
   const [editingInstructionText, setEditingInstructionText] = useState('');
+  // Focus returns to the Instructions button when its popover closes.
+  const instructionsButtonRef = useRef<HTMLButtonElement>(null);
 
   // Derive the system prompt from the active conversation
   const spaceSystemPrompt = activeConversation?.systemPrompt || '';
@@ -1551,6 +1553,10 @@ function AppSplitView() {
             {activeTab === 'ask' && activeConversationId && (
               <div className="relative">
                 <button
+                  ref={instructionsButtonRef}
+                  type="button"
+                  aria-expanded={showSystemPromptEditor}
+                  aria-haspopup="dialog"
                   onClick={() => {
                     setShowSystemPromptEditor(!showSystemPromptEditor);
                     setEditingInstructionIdx(null);
@@ -1570,6 +1576,17 @@ function AppSplitView() {
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => { setShowSystemPromptEditor(false); setEditingInstructionIdx(null); }} />
                     <div
+                      role="dialog"
+                      aria-label="Custom instructions"
+                      // Esc closes the popover (an edit in progress cancels itself
+                      // first) and is marked handled, so it never stops a running answer.
+                      onKeyDown={e => {
+                        if (e.key !== 'Escape' || e.isDefaultPrevented()) return;
+                        e.preventDefault();
+                        setShowSystemPromptEditor(false);
+                        setEditingInstructionIdx(null);
+                        instructionsButtonRef.current?.focus();
+                      }}
                       className="absolute right-0 top-8 z-50 w-96 rounded-lg border shadow-xl"
                       style={{ backgroundColor: colors.bgSecondary, borderColor: colors.border }}
                     >
@@ -1581,11 +1598,14 @@ function AppSplitView() {
                           </p>
                         </div>
                         <button
-                          onClick={() => { setShowSystemPromptEditor(false); setEditingInstructionIdx(null); }}
+                          type="button"
+                          onClick={() => { setShowSystemPromptEditor(false); setEditingInstructionIdx(null); instructionsButtonRef.current?.focus(); }}
                           className="w-5 h-5 rounded flex items-center justify-center"
                           style={{ color: colors.textMuted }}
+                          aria-label="Close instructions"
+                          title="Close (Esc)"
                         >
-                          <X className="w-3.5 h-3.5" />
+                          <X className="w-3.5 h-3.5" aria-hidden="true" />
                         </button>
                       </div>
 
@@ -1615,25 +1635,35 @@ function AppSplitView() {
                                       onChange={e => setEditingInstructionText(e.target.value)}
                                       onKeyDown={e => {
                                         if (e.key === 'Enter') commitEditInstruction();
-                                        if (e.key === 'Escape') { setEditingInstructionIdx(null); setEditingInstructionText(''); }
+                                        if (e.key === 'Escape') {
+                                          // Cancels the edit only: not the popover, not a running answer.
+                                          e.preventDefault();
+                                          setEditingInstructionIdx(null);
+                                          setEditingInstructionText('');
+                                        }
                                       }}
+                                      aria-label="Edit instruction"
                                       autoFocus
                                       className="flex-1 text-[11px] bg-transparent border-b outline-none py-0.5"
                                       style={{ color: colors.text, borderColor: colors.primary }}
                                     />
                                     <button
+                                      type="button"
                                       onClick={commitEditInstruction}
                                       className="shrink-0 p-0.5 rounded"
                                       title="Save"
+                                      aria-label="Save instruction"
                                     >
-                                      <Check className="w-3 h-3" style={{ color: colors.success }} />
+                                      <Check className="w-3 h-3" style={{ color: colors.success }} aria-hidden="true" />
                                     </button>
                                     <button
+                                      type="button"
                                       onClick={() => { setEditingInstructionIdx(null); setEditingInstructionText(''); }}
                                       className="shrink-0 p-0.5 rounded"
-                                      title="Cancel"
+                                      title="Cancel (Esc)"
+                                      aria-label="Cancel editing"
                                     >
-                                      <X className="w-3 h-3" style={{ color: colors.textMuted }} />
+                                      <X className="w-3 h-3" style={{ color: colors.textMuted }} aria-hidden="true" />
                                     </button>
                                   </div>
                                 ) : (
@@ -1641,22 +1671,26 @@ function AppSplitView() {
                                     <span className="flex-1 text-[11px] leading-snug" style={{ color: colors.textSecondary }}>
                                       {instruction}
                                     </span>
-                                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity shrink-0">
                                       <button
+                                        type="button"
                                         onClick={() => { setEditingInstructionIdx(idx); setEditingInstructionText(instruction); }}
                                         className="p-0.5 rounded transition-colors"
                                         style={{ color: colors.textMuted }}
                                         title="Edit"
+                                        aria-label={`Edit instruction: ${instruction}`}
                                       >
-                                        <Pencil className="w-3 h-3" />
+                                        <Pencil className="w-3 h-3" aria-hidden="true" />
                                       </button>
                                       <button
+                                        type="button"
                                         onClick={() => { removeInstruction(idx); notify.success('Instruction removed'); }}
                                         className="p-0.5 rounded transition-colors"
                                         style={{ color: colors.error }}
                                         title="Remove"
+                                        aria-label={`Remove instruction: ${instruction}`}
                                       >
-                                        <Trash2 className="w-3 h-3" />
+                                        <Trash2 className="w-3 h-3" aria-hidden="true" />
                                       </button>
                                     </div>
                                   </>
@@ -1676,6 +1710,7 @@ function AppSplitView() {
                             onChange={e => setNewInstructionText(e.target.value)}
                             onKeyDown={e => { if (e.key === 'Enter') addInstruction(); }}
                             placeholder="Add an instruction..."
+                            aria-label="New instruction"
                             className="flex-1 text-[11px] rounded-md border px-2 py-1.5 outline-none"
                             style={{
                               backgroundColor: colors.inputBg,
@@ -1684,12 +1719,15 @@ function AppSplitView() {
                             }}
                           />
                           <button
+                            type="button"
                             onClick={addInstruction}
                             disabled={!newInstructionText.trim()}
                             className="px-2 py-1.5 rounded-md text-[10px] font-medium text-white transition-colors disabled:opacity-40"
                             style={{ backgroundColor: colors.primary }}
+                            aria-label="Add instruction"
+                            title="Add instruction"
                           >
-                            <Plus className="w-3 h-3" />
+                            <Plus className="w-3 h-3" aria-hidden="true" />
                           </button>
                         </div>
                         {instructionsList.length > 0 && (

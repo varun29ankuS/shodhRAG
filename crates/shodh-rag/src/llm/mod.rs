@@ -8,10 +8,12 @@ use std::fmt;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
+pub mod failure;
 pub mod llamacpp_provider; // llama.cpp provider (CPU, GGUF models)
 pub mod simple_external;
 pub mod streaming;
 
+pub use failure::ProviderFailure;
 pub use llamacpp_provider::LlamaCppProvider;
 pub use simple_external::SimpleExternalProvider;
 pub use streaming::{StreamingResponse, TokenStream};
@@ -215,8 +217,16 @@ pub trait LLMProvider: Send + Sync {
         let (tx, rx) = tokio::sync::mpsc::channel(256);
         tokio::spawn(async move {
             while let Some(token) = token_stream.next().await {
-                if tx.send(ChatStreamEvent::ContentDelta(token)).await.is_err() {
-                    break;
+                let event = match token {
+                    Ok(text) => ChatStreamEvent::ContentDelta(text),
+                    Err(failure) => {
+                        // A failed stream ends with the failure, never `Done`.
+                        let _ = tx.send(ChatStreamEvent::Error(failure)).await;
+                        return;
+                    }
+                };
+                if tx.send(event).await.is_err() {
+                    return;
                 }
             }
             let _ = tx.send(ChatStreamEvent::Done).await;
@@ -368,8 +378,12 @@ pub enum ChatStreamEvent {
     ContentDelta(String),
     /// A tool call was fully received (streamed tool calls are assembled first)
     ToolCallComplete(ToolCall),
-    /// Stream is done
+    /// The answer is complete.
     Done,
+    /// The provider failed the answer (an error chunk, `finish_reason:
+    /// "error"`, a broken or empty stream). Ends the stream instead of `Done`;
+    /// text received before it is an incomplete answer.
+    Error(ProviderFailure),
 }
 
 /// Provider information

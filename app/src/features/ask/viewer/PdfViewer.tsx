@@ -1455,7 +1455,17 @@ export function PdfViewer({
       )}
 
       {findOpen && (
-        <div role="search" className="flex items-center gap-1.5 px-3 py-1.5 border-b border-shodh-border-subtle text-[12.5px] text-shodh-text-secondary">
+        <div
+          role="search"
+          // Esc anywhere in the find bar (field or buttons) closes find only;
+          // the surrounding viewer's Esc (close file or preview) must not also fire.
+          onKeyDown={e => {
+            if (e.key !== 'Escape') return;
+            e.preventDefault();
+            closeFind();
+          }}
+          className="flex items-center gap-1.5 px-3 py-1.5 border-b border-shodh-border-subtle text-[12.5px] text-shodh-text-secondary"
+        >
           <label htmlFor={findInputId} className="sr-only">
             Find in document
           </label>
@@ -1469,10 +1479,6 @@ export function PdfViewer({
               if (e.key === 'Enter') {
                 e.preventDefault();
                 stepFind(e.shiftKey ? -1 : 1);
-              } else if (e.key === 'Escape') {
-                // Closes find only; the browser's Esc (close file) must not also fire.
-                e.preventDefault();
-                closeFind();
               }
             }}
             placeholder="Find in document"

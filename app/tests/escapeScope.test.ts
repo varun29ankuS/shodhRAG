@@ -41,4 +41,8 @@ test('the PDF viewer marks itself while snipping and handles snip Esc before a p
   assert.match(source, /data-esc-local=\{snipping \|\| marquee \? '' : undefined\}/);
   const handler = source.slice(source.indexOf('const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>)'));
   assert.ok(handler.indexOf("e.key === 'Escape' && (snipping || marquee)") < handler.indexOf('e.isDefaultPrevented()'));
+  // The whole find bar closes on Esc, its buttons too (the preview leaves Esc there to it).
+  const bar = source.indexOf('          role="search"');
+  const findBar = source.slice(bar, source.indexOf('<label htmlFor={findInputId}', bar));
+  assert.match(findBar, /if \(e\.key !== 'Escape'\) return;\s+e\.preventDefault\(\);\s+closeFind\(\);/);
 });

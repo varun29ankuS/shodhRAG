@@ -250,6 +250,7 @@ pub async fn paper_detail(
                     file_path: Some(file.clone()),
                     text: None,
                     scopes: Vec::new(),
+                    within: None,
                     limit: Some(100),
                 })
                 .await?;

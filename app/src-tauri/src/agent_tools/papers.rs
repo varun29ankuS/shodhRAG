@@ -149,14 +149,13 @@ impl HostTool for ListSnippetsTool {
                     file_path: str_arg(&args, "file").map(str::to_string),
                     text: str_arg(&args, "query").map(str::to_string),
                     scopes: run_scopes(ctx),
+                    // In a workspace chat, only snippets of the workspace's files, filtered
+                    // before the limit so newer snippets of other files never crowd them out.
+                    within: ctx.scope().restricted.then(|| ctx.scope().clone()),
                     limit: Some(limit_arg(&args, DEFAULT_SNIPPETS, MAX_SNIPPETS)),
                 })
                 .await
-                .map_err(research_error)?
-                .into_iter()
-                // In a workspace chat, only snippets of the workspace's files.
-                .filter(|s| ctx.scope().allows_path(&s.file_path))
-                .collect(),
+                .map_err(research_error)?,
         };
         if snippets.is_empty() {
             return Ok(ToolOutput {
@@ -991,6 +990,168 @@ mod tests {
             "{}",
             out.text_for_model
         );
+    }
+
+    /// A restricted run filters by its files before the limit: more than `limit` newer
+    /// global snippets of other files never crowd out the workspace's own older one.
+    #[tokio::test]
+    async fn a_workspace_s_older_snippet_is_listed_past_newer_ones_elsewhere() {
+        use shodh_rag::harness::tools::RunScope;
+        let t = testing::host().await;
+        let services = t.host.research.services().await.unwrap();
+        let ours = t.dir.path().join("ours.pdf").display().to_string();
+        let theirs = t.dir.path().join("theirs.pdf").display().to_string();
+        let snippet = |file: &str, text: String| NewSnippet {
+            file_path: file.to_string(),
+            page: 1,
+            rect: PageRect {
+                x: 10.0,
+                y: 20.0,
+                width: 100.0,
+                height: 30.0,
+            },
+            text,
+            image_png: None,
+            title: None,
+            note: None,
+            tags: vec![],
+            kind: SnippetKind::Passage,
+            scope: Scope::Global,
+            author: SnippetAuthor::User,
+        };
+        services
+            .snippets
+            .create(snippet(
+                &ours,
+                "The workspace's own finding: recall rises with the graph degree.".into(),
+            ))
+            .await
+            .unwrap();
+        for i in 0..(DEFAULT_SNIPPETS + 3) {
+            services
+                .snippets
+                .create(snippet(
+                    &theirs,
+                    format!("Another paper's passage number {i} about quantisation."),
+                ))
+                .await
+                .unwrap();
+        }
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let ctx = ToolContext::new("run-1", "step-1", tx).with_scope(Arc::new(RunScope {
+            workspace: Some("ws-1".into()),
+            workspace_name: Some("Thesis".into()),
+            restricted: true,
+            files: vec![ours.clone()],
+            ..RunScope::default()
+        }));
+        let list = ListSnippetsTool {
+            host: t.host.clone(),
+        };
+        let out = list.execute(json!({}), &ctx).await.unwrap();
+        assert!(
+            out.text_for_model
+                .contains("recall rises with the graph degree"),
+            "{}",
+            out.text_for_model
+        );
+        assert!(!out.text_for_model.contains("quantisation"));
+        assert_eq!(ctx.passages_issued(), 1);
+        // A search reads past the limit the same way.
+        let out = list
+            .execute(json!({ "query": "graph degree recall" }), &ctx)
+            .await
+            .unwrap();
+        assert!(out
+            .text_for_model
+            .contains("recall rises with the graph degree"));
+    }
+
+    /// A result extracted in the Library (global) is compared in a workspace chat whose
+    /// workspace holds its paper, and not in one whose workspace does not.
+    #[tokio::test]
+    async fn library_results_are_compared_from_workspaces_holding_their_paper() {
+        use crate::agent_tools::testing::{WordEmbedder, WORD_DIM};
+        use shodh_rag::harness::tools::RunScope;
+        let t = testing::host().await;
+        // An index that can index: the deterministic embedder.
+        let mut config = shodh_rag::config::RAGConfig {
+            data_dir: t.dir.path().join("searchable"),
+            ..shodh_rag::config::RAGConfig::default()
+        };
+        config.embedding.model_dir = t.dir.path().join("no-models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = WORD_DIM;
+        let mut rag = shodh_rag::RAGEngine::new(config).await.unwrap();
+        rag.attach_search_models(shodh_rag::SearchModels::from_embedder(Arc::new(
+            WordEmbedder::default(),
+        )))
+        .unwrap();
+        let pdf = t.dir.path().join("ann.pdf");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+                "../../crates/shodh-eval/data/synthetic/corpus/contracts/nda-orchid-kestrel.pdf",
+            ),
+            &pdf,
+        )
+        .unwrap();
+        rag.add_document_from_file(&pdf, std::collections::HashMap::new())
+            .await
+            .unwrap();
+        let host = Arc::new(AgentHost {
+            data_dir: t.host.data_dir.clone(),
+            rag: Arc::new(tokio::sync::RwLock::new(rag)),
+            audit: t.host.audit.clone(),
+            effects: t.host.effects.clone(),
+            web: t.host.web.clone(),
+            roots: t.host.roots.clone(),
+            memory: t.host.memory.clone(),
+            visuals: t.host.visuals.clone(),
+            research: t.host.research.clone(),
+            pdf: t.host.pdf.clone(),
+            workspaces: t.host.workspaces.clone(),
+        });
+        let pdf = pdf.display().to_string();
+        let library_scope = crate::research_commands::owned_scope(&host.workspaces, None)
+            .await
+            .unwrap();
+        host.research
+            .services()
+            .await
+            .unwrap()
+            .results
+            .extract_document(&pdf, &table_doc(), library_scope, None)
+            .await
+            .unwrap();
+        let tool = QueryResultsTool { host: host.clone() };
+        let in_workspace = |files: Vec<String>| {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let ctx = ToolContext::new("run-1", "step-1", tx).with_scope(Arc::new(RunScope {
+                workspace: Some("ws-1".into()),
+                workspace_name: Some("Thesis".into()),
+                restricted: true,
+                files,
+                ..RunScope::default()
+            }));
+            (ctx, rx)
+        };
+        let args = json!({ "metric": "recall@10", "dataset": "SIFT1M" });
+        let (ctx, _rx) = in_workspace(vec![pdf.clone()]);
+        let out = tool.execute(args.clone(), &ctx).await.unwrap();
+        assert!(
+            out.text_for_model.contains("HNSW — R@10 on SIFT1M: 95.3"),
+            "{}",
+            out.text_for_model
+        );
+        let other = t.dir.path().join("other.pdf").display().to_string();
+        let (ctx, _rx) = in_workspace(vec![other]);
+        let out = tool.execute(args, &ctx).await.unwrap();
+        assert!(
+            !out.text_for_model.contains("95.3"),
+            "{}",
+            out.text_for_model
+        );
+        assert_eq!(out.summary_for_ui, "No results in this workspace");
     }
 
     fn saved_snippet(text: &str) -> Snippet {

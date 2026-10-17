@@ -388,6 +388,7 @@ pub async fn snippets_list(
             file_path: query.file_path,
             text: query.text,
             scopes: scopes_for(query.workspace.as_deref()),
+            within: None,
             limit: query.limit,
         })
         .await?)

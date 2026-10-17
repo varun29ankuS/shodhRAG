@@ -771,9 +771,9 @@ enum EmbedderSource {
 }
 
 impl SearchModels {
-    /// Models over a test embedder, without a reranker.
-    #[cfg(test)]
-    pub(crate) fn from_embedder(embeddings: Arc<dyn EmbeddingModel>) -> Self {
+    /// Models over an embedder that is already loaded (the app's tests use
+    /// a deterministic one), without a reranker or OCR model.
+    pub fn from_embedder(embeddings: Arc<dyn EmbeddingModel>) -> Self {
         Self {
             embeddings: EmbedderSource::Loaded(embeddings),
             reranker_dir: None,

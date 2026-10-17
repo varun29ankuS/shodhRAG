@@ -29,8 +29,10 @@ pub const MAX_SOURCE_CHARS: usize = 6_000;
 pub const MAX_CONTEXT_CHARS: usize = 1_200;
 /// Most candidates accepted from one answer.
 pub const MAX_CANDIDATES: usize = 12;
-/// Token budget of an extraction answer.
-pub const EXTRACTION_MAX_TOKENS: usize = 1_500;
+/// Token budget of an extraction answer. A reasoning model's hidden reasoning counts
+/// against it on OpenRouter: at 1 500 one candidate plus reasoning could be cut off, and a
+/// cut-off answer is lost. A model that answers directly stops long before it.
+pub const EXTRACTION_MAX_TOKENS: usize = 4_000;
 
 /// One completed conversation turn, as the learner sees it.
 #[derive(Debug, Clone, PartialEq)]

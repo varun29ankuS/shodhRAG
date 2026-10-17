@@ -18,7 +18,7 @@ use shodh_ontology::{RawValue, Value};
 use super::engine::{fingerprint, llm_origin, Learner};
 use super::inbox::{NewProposal, Proposal, ProposalAction, ProposalOrigin};
 use super::sensitivity;
-use super::{quotes, strip_fence, LearnResult};
+use super::{quotes, strip_fence, LearnError, LearnResult};
 use crate::statements::{render_text, StatementQuery, StoredStatement, SELF_ENTITY_ID};
 use crate::user_memory::{memory_source_prefixes, MemoryContent};
 
@@ -146,9 +146,15 @@ impl Learner {
             .map(|(k, n)| (k.clone(), n.text.clone()))
             .collect();
         let prompt = evolve_prompt(&stored.text, &shown);
-        let answer = self
+        let answer = match self
             .call_model(model.as_ref(), &prompt, EVOLVE_MAX_TOKENS)
-            .await?;
+            .await
+        {
+            Ok(answer) => answer,
+            // Counted as invalid by `call_model`; the links found above stand.
+            Err(LearnError::Truncated(_)) => return Ok(proposed.len()),
+            Err(e) => return Err(e),
+        };
         let Some(revisions) = parse_revisions(&answer) else {
             self.inbox
                 .count(super::inbox::UsageCounter::Invalid, 1, self.now())?;

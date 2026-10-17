@@ -28,8 +28,7 @@ use serde_json::json;
 use shodh_rag::audit::{AuditEventType, AuditKey, AuditRecord};
 use shodh_rag::harness::{AgentEvent, RunStatus};
 use shodh_rag::llm::{
-    ApiProvider, GenerationConfig, LLMConfig, LLMManager, LLMMode, LLMProvider,
-    SimpleExternalProvider,
+    ApiProvider, GenerationConfig, LLMConfig, LLMManager, LLMMode, SimpleExternalProvider,
 };
 use shodh_rag::user_memory::learn::engine::ModelSource;
 use shodh_rag::user_memory::learn::extract::learned_scope;
@@ -286,10 +285,16 @@ impl LearnModel for AppModel {
                 };
                 let client = SimpleExternalProvider::new(provider.clone(), key, model.clone())
                     .map_err(|e| LearnError::Model(format!("{e:#}")))?;
-                client
-                    .generate(prompt, &self.generation(max_output_tokens))
+                // Learning answers are strict JSON: a reasoning model is asked to keep its
+                // hidden reasoning short, and an answer cut off at the limit is refused.
+                let completion = client
+                    .generate_bounded(prompt, &self.generation(max_output_tokens), true)
                     .await
-                    .map_err(|e| LearnError::Model(format!("{e:#}")))
+                    .map_err(|e| LearnError::Model(format!("{e:#}")))?;
+                if completion.truncated {
+                    return Err(LearnError::Truncated(completion.text));
+                }
+                Ok(completion.text)
             }
         }
     }

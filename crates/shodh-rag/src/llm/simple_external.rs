@@ -193,6 +193,97 @@ impl SimpleExternalProvider {
     }
 }
 
+/// A completion, and whether the provider stopped it at the token limit (so the text is
+/// cut off: a JSON answer is incomplete).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundedCompletion {
+    /// The text written (empty when the whole budget went to hidden reasoning).
+    pub text: String,
+    /// The provider reported that it stopped at the token limit.
+    pub truncated: bool,
+}
+
+impl SimpleExternalProvider {
+    /// Completes `prompt` like [`LLMProvider::generate`], and reports whether the answer
+    /// was cut off at `config.max_tokens` (OpenAI-compatible APIs, Anthropic and Gemini
+    /// say so; other providers are reported as not cut off). For a strict-format answer
+    /// (extraction), `low_reasoning` asks OpenRouter to keep a reasoning model's hidden
+    /// reasoning short and leave it out of the answer.
+    pub async fn generate_bounded(
+        &self,
+        prompt: &str,
+        config: &GenerationConfig,
+        low_reasoning: bool,
+    ) -> Result<BoundedCompletion> {
+        match &self.provider {
+            ApiProvider::OpenAI
+            | ApiProvider::OpenRouter
+            | ApiProvider::Together
+            | ApiProvider::Grok
+            | ApiProvider::Perplexity
+            | ApiProvider::Baseten
+            | ApiProvider::Ollama
+            | ApiProvider::LmStudio
+            | ApiProvider::Custom { .. } => {
+                self.openai_compatible_complete(prompt, config, low_reasoning)
+                    .await
+            }
+            ApiProvider::Anthropic => self.anthropic_complete(prompt, config).await,
+            ApiProvider::Google => self.google_complete(prompt, config).await,
+            ApiProvider::Subscription(_)
+            | ApiProvider::HuggingFace { .. }
+            | ApiProvider::Replicate => Ok(BoundedCompletion {
+                text: LLMProvider::generate(self, prompt, config).await?,
+                truncated: false,
+            }),
+        }
+    }
+}
+
+/// A completion of `text`; `None` when it is empty although the provider did not stop it
+/// at the token limit (an empty answer). Read the stop reason before the empty check: a
+/// reasoning model can spend its whole budget thinking and stop with no text at all.
+fn bounded(text: String, truncated: bool) -> Option<BoundedCompletion> {
+    (truncated || !text.trim().is_empty()).then_some(BoundedCompletion { text, truncated })
+}
+
+/// The completion in an OpenAI-compatible body (`finish_reason: "length"` is cut off).
+fn openai_completion(body: &serde_json::Value) -> Option<BoundedCompletion> {
+    let choice = &body["choices"][0];
+    bounded(
+        choice["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string(),
+        choice["finish_reason"].as_str() == Some("length"),
+    )
+}
+
+/// The completion in an Anthropic answer (`stop_reason: "max_tokens"` is cut off).
+fn anthropic_completion(result: &AnthropicResponse) -> Option<BoundedCompletion> {
+    bounded(
+        result
+            .content
+            .first()
+            .map(|block| block.text.clone())
+            .unwrap_or_default(),
+        result.stop_reason.as_deref() == Some("max_tokens"),
+    )
+}
+
+/// The completion in a Gemini answer (`finishReason: "MAX_TOKENS"` is cut off).
+fn google_completion(result: &GoogleResponse) -> Option<BoundedCompletion> {
+    let candidate = result.candidates.first();
+    bounded(
+        candidate
+            .and_then(|c| c.content.as_ref())
+            .and_then(|c| c.parts.first())
+            .map(|p| p.text.clone())
+            .unwrap_or_default(),
+        candidate.and_then(|c| c.finish_reason.as_deref()) == Some("MAX_TOKENS"),
+    )
+}
+
 /// Log a provider failure and make it the call's error (callers can
 /// `downcast_ref::<ProviderFailure>()`).
 fn failed(failure: ProviderFailure) -> anyhow::Error {
@@ -406,6 +497,25 @@ impl SimpleExternalProvider {
         prompt: &str,
         config: &GenerationConfig,
     ) -> Result<String> {
+        let completion = self
+            .openai_compatible_complete(prompt, config, false)
+            .await?;
+        if completion.text.trim().is_empty() {
+            return Err(failed(self.call().empty()));
+        }
+        Ok(completion.text)
+    }
+
+    /// One OpenAI-compatible completion and whether it stopped at `max_tokens`
+    /// (`finish_reason: "length"`). `low_reasoning` asks OpenRouter to keep a reasoning
+    /// model's hidden reasoning short and out of the answer: that reasoning counts
+    /// against `max_tokens` there.
+    async fn openai_compatible_complete(
+        &self,
+        prompt: &str,
+        config: &GenerationConfig,
+        low_reasoning: bool,
+    ) -> Result<BoundedCompletion> {
         let endpoint = self.get_endpoint();
         tracing::debug!(
             endpoint = %endpoint,
@@ -415,7 +525,7 @@ impl SimpleExternalProvider {
             "Sending OpenAI-compatible request"
         );
 
-        let request = json!({
+        let mut request = json!({
             "model": self.model,
             "messages": [
                 {"role": "user", "content": prompt}
@@ -426,6 +536,9 @@ impl SimpleExternalProvider {
             "frequency_penalty": (config.repetition_penalty - 1.0).max(0.0),
             "stream": false
         });
+        if low_reasoning && matches!(self.provider, ApiProvider::OpenRouter) {
+            request["reasoning"] = json!({"effort": "low", "exclude": true});
+        }
 
         let response = self
             .send_checked(
@@ -436,18 +549,27 @@ impl SimpleExternalProvider {
             )
             .await?;
         let body = self.checked_body(response, &endpoint).await?;
-        let content = body["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or("");
-        if content.trim().is_empty() {
-            return Err(failed(self.call().empty()));
-        }
-        tracing::debug!("API response received, {} chars", content.len());
-        Ok(content.to_string())
+        let completion = openai_completion(&body).ok_or_else(|| failed(self.call().empty()))?;
+        tracing::debug!("API response received, {} chars", completion.text.len());
+        Ok(completion)
     }
 
     /// Anthropic generation
     async fn anthropic_generate(&self, prompt: &str, config: &GenerationConfig) -> Result<String> {
+        let completion = self.anthropic_complete(prompt, config).await?;
+        if completion.text.trim().is_empty() {
+            return Err(failed(self.call().empty()));
+        }
+        Ok(completion.text)
+    }
+
+    /// One Anthropic completion and whether it stopped at `max_tokens`
+    /// (`stop_reason: "max_tokens"`).
+    async fn anthropic_complete(
+        &self,
+        prompt: &str,
+        config: &GenerationConfig,
+    ) -> Result<BoundedCompletion> {
         let request = json!({
             "model": self.model,
             "messages": [
@@ -470,15 +592,25 @@ impl SimpleExternalProvider {
 
         let endpoint = self.get_endpoint();
         let result: AnthropicResponse = Self::parse_json_response(response, &endpoint).await?;
-
-        match result.content.first() {
-            Some(block) if !block.text.trim().is_empty() => Ok(block.text.clone()),
-            _ => Err(failed(self.call().empty())),
-        }
+        anthropic_completion(&result).ok_or_else(|| failed(self.call().empty()))
     }
 
     /// Google Gemini generation
     async fn google_generate(&self, prompt: &str, config: &GenerationConfig) -> Result<String> {
+        let completion = self.google_complete(prompt, config).await?;
+        if completion.text.trim().is_empty() {
+            return Err(failed(self.call().empty()));
+        }
+        Ok(completion.text)
+    }
+
+    /// One Gemini completion and whether it stopped at `maxOutputTokens`
+    /// (`finishReason: "MAX_TOKENS"`).
+    async fn google_complete(
+        &self,
+        prompt: &str,
+        config: &GenerationConfig,
+    ) -> Result<BoundedCompletion> {
         let request = json!({
             "contents": [{
                 "parts": [{"text": prompt}]
@@ -503,14 +635,7 @@ impl SimpleExternalProvider {
 
         let endpoint = self.get_endpoint();
         let result: GoogleResponse = Self::parse_json_response(response, &endpoint).await?;
-        match result
-            .candidates
-            .first()
-            .and_then(|c| c.content.parts.first())
-        {
-            Some(part) if !part.text.trim().is_empty() => Ok(part.text.clone()),
-            _ => Err(failed(self.call().empty())),
-        }
+        google_completion(&result).ok_or_else(|| failed(self.call().empty()))
     }
 
     /// HuggingFace generation
@@ -1052,6 +1177,8 @@ impl SimpleExternalProvider {
 #[derive(Deserialize)]
 struct AnthropicResponse {
     content: Vec<AnthropicContent>,
+    #[serde(default)]
+    stop_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1066,7 +1193,11 @@ struct GoogleResponse {
 
 #[derive(Deserialize)]
 struct GoogleCandidate {
-    content: GoogleContent,
+    /// Missing when the candidate stopped before writing anything (at the token limit).
+    #[serde(default)]
+    content: Option<GoogleContent>,
+    #[serde(default, rename = "finishReason")]
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1082,4 +1213,61 @@ struct GooglePart {
 #[derive(Deserialize)]
 struct HuggingFaceResponse {
     generated_text: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_completion_stopped_at_the_token_limit_is_reported_as_cut_off() {
+        let cut = openai_completion(&json!({"choices": [{
+            "message": {"content": "{\"memories\": [{\"turn\": \"T1\""},
+            "finish_reason": "length"
+        }]}))
+        .unwrap();
+        assert!(cut.truncated);
+        assert!(cut.text.starts_with("{\"memories\""));
+        // All of the budget went to hidden reasoning: no text, still cut off (not empty).
+        let thought = openai_completion(&json!({"choices": [{
+            "message": {"content": null}, "finish_reason": "length"
+        }]}))
+        .unwrap();
+        assert!(thought.truncated && thought.text.is_empty());
+        let done = openai_completion(&json!({"choices": [{
+            "message": {"content": "{\"memories\": []}"}, "finish_reason": "stop"
+        }]}))
+        .unwrap();
+        assert!(!done.truncated);
+        assert!(openai_completion(&json!({"choices": [{
+            "message": {"content": "  "}, "finish_reason": "stop"
+        }]}))
+        .is_none());
+    }
+
+    #[test]
+    fn anthropic_and_gemini_stop_reasons_are_read() {
+        let anthropic: AnthropicResponse = serde_json::from_value(json!({
+            "content": [{"type": "text", "text": "{\"memories\": ["}],
+            "stop_reason": "max_tokens"
+        }))
+        .unwrap();
+        assert!(anthropic_completion(&anthropic).unwrap().truncated);
+        let anthropic: AnthropicResponse = serde_json::from_value(json!({
+            "content": [{"type": "text", "text": "{}"}], "stop_reason": "end_turn"
+        }))
+        .unwrap();
+        assert!(!anthropic_completion(&anthropic).unwrap().truncated);
+        let gemini: GoogleResponse = serde_json::from_value(json!({
+            "candidates": [{"finishReason": "MAX_TOKENS"}]
+        }))
+        .unwrap();
+        let cut = google_completion(&gemini).unwrap();
+        assert!(cut.truncated && cut.text.is_empty());
+        let gemini: GoogleResponse = serde_json::from_value(json!({
+            "candidates": [{"content": {"parts": [{"text": "{}"}]}, "finishReason": "STOP"}]
+        }))
+        .unwrap();
+        assert!(!google_completion(&gemini).unwrap().truncated);
+    }
 }

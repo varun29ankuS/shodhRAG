@@ -14,16 +14,32 @@ use crate::statements::testing::{fixture, Fixture};
 use crate::statements::{PutIntent, Scope, SELF_ENTITY_ID};
 use crate::user_memory::{Actor, MemoryContent, MemoryService, Origin, WriteAuthority};
 
+/// One scripted answer: the text, or a text the model was cut off in.
+enum Scripted {
+    Answer(String),
+    CutOff(String),
+}
+
 /// Answers prompts from a script, in order, and records every prompt.
 #[derive(Default)]
 struct ScriptedModel {
-    answers: Mutex<VecDeque<String>>,
+    answers: Mutex<VecDeque<Scripted>>,
     prompts: Mutex<Vec<String>>,
 }
 
 impl ScriptedModel {
     fn answer(&self, answer: serde_json::Value) {
-        self.answers.lock().unwrap().push_back(answer.to_string());
+        self.answers
+            .lock()
+            .unwrap()
+            .push_back(Scripted::Answer(answer.to_string()));
+    }
+    /// The next answer stops at the token limit after `partial`.
+    fn cut_off(&self, partial: &str) {
+        self.answers
+            .lock()
+            .unwrap()
+            .push_back(Scripted::CutOff(partial.to_string()));
     }
     fn calls(&self) -> usize {
         self.prompts.lock().unwrap().len()
@@ -45,11 +61,11 @@ impl LearnModel for ScriptedModel {
     }
     async fn complete(&self, prompt: &str, _max: usize) -> Result<String, LearnError> {
         self.prompts.lock().unwrap().push(prompt.to_string());
-        self.answers
-            .lock()
-            .unwrap()
-            .pop_front()
-            .ok_or_else(|| LearnError::Model("no scripted answer".to_string()))
+        match self.answers.lock().unwrap().pop_front() {
+            Some(Scripted::Answer(answer)) => Ok(answer),
+            Some(Scripted::CutOff(partial)) => Err(LearnError::Truncated(partial)),
+            None => Err(LearnError::Model("no scripted answer".to_string())),
+        }
     }
 }
 
@@ -1240,4 +1256,24 @@ async fn the_user_stays_the_subject_of_a_person_fact() {
         subject.as_ref().map(|s| s.id.as_str()),
         Some(SELF_ENTITY_ID)
     );
+}
+
+#[tokio::test]
+async fn an_answer_cut_off_at_the_token_limit_is_refused_and_counted() {
+    let e = env().await;
+    e.model
+        .cut_off("{\"memories\": [{\"turn\": \"T1\", \"class\": \"Person\", \"subj");
+    let result = e
+        .learner
+        .learn_from_turns(&[e.turn("I moved to Pune last month.")])
+        .await;
+    assert!(
+        matches!(result, Err(LearnError::Truncated(_))),
+        "{result:?}"
+    );
+    assert!(e.pending().is_empty());
+    let usage = e.learner.inbox().usage(e.f.store.now()).unwrap();
+    assert_eq!(usage.llm_calls, 1);
+    assert_eq!(usage.invalid, 1);
+    assert!(usage.output_chars > 0);
 }

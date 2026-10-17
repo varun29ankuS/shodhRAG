@@ -156,7 +156,8 @@ pub trait LearnModel: Send + Sync {
     /// Model id recorded as the extractor version (`claude-haiku-4-5`, `qwen3:4b`, ...).
     fn model_id(&self) -> String;
 
-    /// Completes `prompt` with at most `max_output_tokens` tokens.
+    /// Completes `prompt` with at most `max_output_tokens` tokens. An answer the model
+    /// stopped at that limit is [`LearnError::Truncated`], never a (cut-off) answer.
     async fn complete(&self, prompt: &str, max_output_tokens: usize) -> Result<String, LearnError>;
 }
 
@@ -178,6 +179,10 @@ pub enum LearnError {
     /// The model's answer does not follow the schema.
     #[error("the learning model's answer is not valid: {0}")]
     InvalidOutput(String),
+    /// The model stopped at its token limit, so its answer is cut off. Carries the partial
+    /// answer (for the rejection log; never used as an answer).
+    #[error("the learning model's answer was cut off at its length limit")]
+    Truncated(String),
     /// No suggestion with this id.
     #[error("no suggestion with id `{0}`")]
     NotFound(String),

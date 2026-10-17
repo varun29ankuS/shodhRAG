@@ -138,7 +138,17 @@ impl Learner {
         }
         self.inbox
             .reserve_call(prompt.chars().count(), &policy.caps, self.now())?;
-        let answer = model.complete(prompt, max_tokens).await?;
+        let answer = match model.complete(prompt, max_tokens).await {
+            Ok(answer) => answer,
+            Err(LearnError::Truncated(partial)) => {
+                // Counted here, once, for every step: a cut-off answer is an invalid one.
+                let now = self.now();
+                self.inbox.record_output(partial.chars().count(), now)?;
+                self.inbox.count(UsageCounter::Invalid, 1, now)?;
+                return Err(LearnError::Truncated(partial));
+            }
+            Err(e) => return Err(e),
+        };
         self.inbox
             .record_output(answer.chars().count(), self.now())?;
         Ok(answer)
@@ -401,9 +411,9 @@ impl Learner {
             .await
         {
             Ok(answer) => answer,
-            Err(LearnError::BudgetExhausted(_)) | Err(LearnError::Model(_)) => {
-                return Ok(decide::undecided())
-            }
+            Err(LearnError::BudgetExhausted(_))
+            | Err(LearnError::Model(_))
+            | Err(LearnError::Truncated(_)) => return Ok(decide::undecided()),
             Err(e) => return Err(e),
         };
         let Some(judged) = decide::parse_judgement(&answer, &keys) else {

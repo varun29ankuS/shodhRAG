@@ -350,9 +350,15 @@ impl Learner {
                 continue;
             }
             let prompt = consolidation_prompt(&slice.render_prompt(), &sources);
-            let answer = self
+            let answer = match self
                 .call_model(model.as_ref(), &prompt, CONSOLIDATE_MAX_TOKENS)
-                .await?;
+                .await
+            {
+                Ok(answer) => answer,
+                // Counted as invalid by `call_model`; the next one may fit.
+                Err(LearnError::Truncated(_)) => continue,
+                Err(e) => return Err(e),
+            };
             let Ok(parsed) = extract::parse_answer(&answer) else {
                 self.inbox.count(UsageCounter::Invalid, 1, now)?;
                 continue;
@@ -467,9 +473,15 @@ impl Learner {
                 return Ok(());
             };
             let prompt = procedure_prompt(&class.description, &source_text);
-            let answer = self
+            let answer = match self
                 .call_model(model.as_ref(), &prompt, CONSOLIDATE_MAX_TOKENS)
-                .await?;
+                .await
+            {
+                Ok(answer) => answer,
+                // Counted as invalid by `call_model`; the next one may fit.
+                Err(LearnError::Truncated(_)) => continue,
+                Err(e) => return Err(e),
+            };
             let Ok(parsed) = extract::parse_answer(&answer) else {
                 self.inbox.count(UsageCounter::Invalid, 1, now)?;
                 continue;

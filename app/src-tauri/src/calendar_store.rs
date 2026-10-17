@@ -1727,7 +1727,7 @@ mod tests {
         task(&store, "First", None);
         task(&store, "Second", None);
         let full = std::fs::read_to_string(store.path()).unwrap();
-        std::fs::write(store.path(), &full[..full.len() / 2]).unwrap();
+        std::fs::write(store.path(), &full.as_bytes()[..full.len() / 2]).unwrap();
 
         assert_eq!(titles(&store.load().unwrap()), ["First"]);
         let path = store.path().display().to_string();

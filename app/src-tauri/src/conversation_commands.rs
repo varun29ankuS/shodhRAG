@@ -367,7 +367,7 @@ mod tests {
         add(&store, "c2").unwrap();
         let path = dir.path().join(CONVERSATIONS_FILE);
         let full = std::fs::read_to_string(&path).unwrap();
-        std::fs::write(&path, &full[..full.len() / 2]).unwrap();
+        std::fs::write(&path, &full.as_bytes()[..full.len() / 2]).unwrap();
 
         assert_eq!(ids(&store.load().unwrap()), ["c1"]);
         let notice = store_notices::store_notices()
@@ -388,8 +388,8 @@ mod tests {
             })
             .expect("the damaged file is kept");
         assert_eq!(
-            std::fs::read_to_string(kept_aside).unwrap(),
-            &full[..full.len() / 2]
+            std::fs::read(kept_aside).unwrap(),
+            &full.as_bytes()[..full.len() / 2]
         );
     }
 

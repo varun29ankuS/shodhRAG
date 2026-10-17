@@ -951,7 +951,7 @@ mod tests {
             })
             .unwrap();
         let full = std::fs::read_to_string(&path).unwrap();
-        std::fs::write(&path, &full[..full.len() / 2]).unwrap();
+        std::fs::write(&path, &full.as_bytes()[..full.len() / 2]).unwrap();
 
         // The backup (one change older) answers; nothing stops.
         let loaded = store.load().unwrap();
@@ -966,8 +966,8 @@ mod tests {
         );
         assert!(notice_for(&path, NoticeKind::Restored));
         assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            &full[..full.len() / 2],
+            std::fs::read(&path).unwrap(),
+            &full.as_bytes()[..full.len() / 2],
             "reading never rewrites the damaged file"
         );
 
@@ -983,8 +983,8 @@ mod tests {
         let damaged = damaged_copies(dir.path());
         assert_eq!(damaged.len(), 1);
         assert_eq!(
-            std::fs::read_to_string(&damaged[0]).unwrap(),
-            &full[..full.len() / 2]
+            std::fs::read(&damaged[0]).unwrap(),
+            &full.as_bytes()[..full.len() / 2]
         );
     }
 

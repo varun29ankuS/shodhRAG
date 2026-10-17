@@ -497,6 +497,26 @@ mod tests {
     }
 
     #[test]
+    fn a_damaged_calendar_without_a_backup_is_reported_and_left_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CalendarStore::in_dir(dir.path());
+        std::fs::write(store.path(), "{\"tasks\": [").unwrap();
+        let error = store.load().unwrap_err();
+        calendar_unreadable(&store, &error);
+        let path = store.path().display().to_string();
+        let notice = crate::store_notices::store_notices()
+            .into_iter()
+            .find(|n| n.store == "calendar" && n.path == path)
+            .expect("the user is told once");
+        assert_eq!(notice.kind, crate::store_notices::NoticeKind::Unreadable);
+        assert!(notice.message.contains("Reminders cannot ring"));
+        assert_eq!(
+            std::fs::read_to_string(store.path()).unwrap(),
+            "{\"tasks\": ["
+        );
+    }
+
+    #[test]
     fn local_times_resolve_across_daylight_saving() {
         // An ordinary time.
         assert_eq!(

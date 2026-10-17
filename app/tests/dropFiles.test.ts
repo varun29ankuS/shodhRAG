@@ -9,10 +9,13 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   DROP_DOCUMENT_EXTENSIONS,
+  INDEXABLE_EXTENSIONS,
   extensionOf,
   isIndexableDocument,
+  isIndexableFile,
   legacyOfficeNotice,
   sortDroppedPaths,
+  unsupportedFilesNotice,
 } from '../src/features/library/dropFiles.ts';
 
 /** `SUPPORTED_FILE_EXTENSIONS` of the indexer. */
@@ -36,6 +39,10 @@ test('every document a drop accepts is one the indexer reads; .doc and .ppt are 
   assert.ok(supported.length > 20);
   for (const ext of DROP_DOCUMENT_EXTENSIONS) assert.ok(supported.includes(ext), ext);
   assert.ok(!supported.includes('doc') && !supported.includes('ppt'));
+  // The app's list of indexable files is the indexer's, exactly.
+  assert.deepEqual([...INDEXABLE_EXTENSIONS].sort(), [...supported].sort());
+  assert.ok(isIndexableFile('C:\\src\\main.rs') && !isIndexableFile('setup.exe') && !isIndexableFile('archive.zip'));
+  assert.equal(unsupportedFilesNotice(['C:\\a\\setup.exe']), 'setup.exe is not a type Shodh can index (PDF, Word .docx, Excel, PowerPoint .pptx, text, Markdown, code or images).');
   assert.ok(isIndexableDocument('deck.pptx'));
 });
 

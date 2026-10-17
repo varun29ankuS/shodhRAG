@@ -103,7 +103,7 @@ import { AskView } from './features/ask/AskView';
 import { failureNotice, imageNotice, readImageText } from './features/ask/imageNotice';
 import { endsRun, withIndexingProgress } from './features/library/indexingProgress';
 import type { IndexingProgressPayload } from './features/library/indexingProgress';
-import { isIndexableDocument, legacyOfficeNotice, legacyOfficeTarget, sortDroppedPaths } from './features/library/dropFiles';
+import { isIndexableDocument, isIndexableFile, legacyOfficeNotice, legacyOfficeTarget, sortDroppedPaths, unsupportedFilesNotice } from './features/library/dropFiles';
 import type { PastedImage } from './features/agent/AgentComposer';
 import { ChatActionsMenu } from './features/ask/ChatActionsMenu';
 import { useCommandPalette } from './hooks/useCommandPalette';
@@ -874,6 +874,8 @@ function AppSplitView() {
               }
 
               if (dropped.library.length > 0) {
+                // Files of a type the indexer does not read are named once, not added.
+                const unsupported: string[] = [];
                 for (const path of dropped.library) {
                   if (indexingBusyRef.current?.()) break;
                   let isDirectory = false;
@@ -882,6 +884,10 @@ function AppSplitView() {
                     isDirectory = stats.isDirectory;
                   } catch (e) {
                     console.warn('Failed to check path type, assuming file:', e);
+                  }
+                  if (!isDirectory && !isIndexableFile(path)) {
+                    unsupported.push(path);
+                    continue;
                   }
                   const known = sourcesRef.current.find(s => s.path.toLowerCase() === path.toLowerCase());
                   const source: Source = known ?? {
@@ -898,6 +904,9 @@ function AppSplitView() {
                   // Sequential: progress events carry no source id. A folder
                   // added by dropping it adopts its indexed files, as when picked.
                   await indexSourceRef.current?.(source, isDirectory ? 'folder' : 'file', !known);
+                }
+                if (unsupported.length > 0) {
+                  notify.error('Some files were not added', { description: unsupportedFilesNotice(unsupported) });
                 }
               }
             } catch (error) {

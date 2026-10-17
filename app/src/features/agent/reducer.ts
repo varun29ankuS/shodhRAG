@@ -152,6 +152,12 @@ export interface TranscriptState {
   providerError?: ProviderError | null;
   /** This answer was retried with a fallback model (absent when it was not). */
   fallback?: TranscriptFallback | null;
+  /**
+   * Set only on a stored copy taken while the run was live and its answer
+   * text complete, being checked against its sources (`toCheckpoint`).
+   * Never present in a live or restored transcript.
+   */
+  savedWhileChecking?: boolean;
 }
 
 /** Most characters of reasoning kept per answer (about 32 KB); the rest is dropped and marked. */
@@ -709,6 +715,18 @@ export function toPersisted(state: TranscriptState): TranscriptState {
   return { ...state, thinking: '', interrupting: false, checking: false };
 }
 
+/**
+ * Form stored while the run is still live but its answer text is complete
+ * (the check against its sources has started), so an app that is closed or
+ * killed during the check keeps the answer. `fromPersisted` restores it as
+ * interrupted before the check, with the text intact. Only a final grounding
+ * report is kept: an earlier round's report describes a draft, and shown
+ * next to "not checked" it would read as this answer's check.
+ */
+export function toCheckpoint(state: TranscriptState): TranscriptState {
+  return { ...toPersisted(state), groundings: state.groundings.filter(g => g.isFinal), savedWhileChecking: true };
+}
+
 const STATUSES: readonly TranscriptStatus[] = ['starting', 'running', 'completed', 'aborted', 'error'];
 
 /**
@@ -719,7 +737,7 @@ export function fromPersisted(value: unknown): TranscriptState | null {
   if (!isRecord(value) || typeof value.runId !== 'string' || typeof value.startedAtMs !== 'number') return null;
   if (!STATUSES.includes(value.status as TranscriptStatus)) return null;
   if (!Array.isArray(value.blocks) || !isRecord(value.steps)) return null;
-  const { reasoning: storedReasoning, ...state } = value as unknown as TranscriptState;
+  const { reasoning: storedReasoning, savedWhileChecking, ...state } = value as unknown as TranscriptState;
   const reasoning = readReasoning(storedReasoning);
   const restored: TranscriptState = {
     ...initialTranscript(state.runId, state.startedAtMs),
@@ -738,7 +756,9 @@ export function fromPersisted(value: unknown): TranscriptState | null {
   return {
     ...restored,
     status: 'aborted',
-    error: 'The app closed before this answer finished.',
+    error: savedWhileChecking === true
+      ? 'The app closed while this answer was being checked against its sources, so it was not checked.'
+      : 'The app closed before this answer finished.',
     steps: closeOpenSteps(restored.steps, 'Interrupted', atMs),
   };
 }

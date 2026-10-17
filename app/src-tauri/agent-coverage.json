@@ -192,6 +192,7 @@
     "set_update_checks": { "excluded": "Whether Shodh contacts the update server is the user's privacy decision (AGENT_DENIED: check_for_updates)." },
     "check_for_update": { "excluded": "Contacts the update server for a newer version of Shodh itself; which version of itself runs is the user's decision, never the agent's." },
     "install_update": { "excluded": "Replaces the installed app with a new version and restarts it; installing software is the user's decision, never the agent's." },
+    "quit_ready": { "excluded": "Shutdown handshake: the window confirms its waiting saves are written before the app exits; not a user ability." },
     "pause_indexing": { "excluded": "Resource control for the user over background indexing; indexing the assistant starts is audited and runs in the background." },
     "resume_indexing": { "excluded": "Resource control for the user over background indexing; indexing the assistant starts is audited and runs in the background." },
     "index_single_file": { "excluded": "Indexes a file the user dropped or uploaded; the assistant indexes whole folders with add_folder and its downloads automatically." },

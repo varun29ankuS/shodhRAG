@@ -27,6 +27,7 @@ mod reminders;
 mod research_commands;
 mod scan_reader;
 mod search_models_commands;
+mod shutdown;
 mod source_viewer_commands;
 mod space_manager;
 mod storage_commands;
@@ -174,6 +175,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(background::on_window_event)
+        .manage(shutdown::ShutdownState::default())
         .setup(|app| {
             // The main window is created here rather than from the config, so
             // its WebView storage follows the profile. Logged on both sides so
@@ -741,6 +743,7 @@ pub fn run() {
             background::set_close_to_tray,
             background::set_agent_idle_minutes,
             background::set_start_with_windows,
+            shutdown::quit_ready,
         ])
         .build(tauri::generate_context!());
 
@@ -752,11 +755,18 @@ pub fn run() {
             std::process::exit(1);
         }
     };
-    app.run(|app_handle, event| {
-        if let tauri::RunEvent::Exit = event {
+    app.run(|app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { code, api, .. } => {
+            // The main window writes its waiting saves before the app exits.
+            if shutdown::on_exit_requested(app_handle, code) {
+                api.prevent_exit();
+            }
+        }
+        tauri::RunEvent::Exit => {
             // Stop every omp sidecar before the process exits.
             let sessions = app_handle.state::<agent_session_commands::AgentSessions>();
             tauri::async_runtime::block_on(sessions.shutdown_all());
         }
+        _ => {}
     });
 }

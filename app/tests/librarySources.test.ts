@@ -172,6 +172,20 @@ test('a failed sync is shown and cleared by the next one, never stored', () => {
   assert.equal(recovered.syncError, undefined);
 });
 
+test('a sync that could not read part of the folder counts what it found and says what it could not read', () => {
+  const [source] = parseStoredSources(JSON.stringify([stored()]));
+  const at = '2026-10-07T10:00:00.000Z';
+  const partial = applyFolderSync(source, {
+    sourceId: 'folder-1', at, indexed: 1, removed: 0, files: 13, failures: [],
+    error: 'C:\\Contracts\\private (Access is denied.) could not be read; what the index holds of it was left as it was',
+  });
+  assert.equal(partial.fileCount, 13);
+  assert.equal(partial.indexedAt, at);
+  assert.match(partial.syncError ?? '', /private \(Access is denied\.\) could not be read/);
+  const readable = applyFolderSync(partial, { sourceId: 'folder-1', at, indexed: 0, removed: 0, files: 13, failures: [], error: null });
+  assert.equal(readable.syncError, undefined);
+});
+
 test('a path saved lowercased gets its case on disk back, keeping its identity', () => {
   const [saved] = parseStoredSources(JSON.stringify([stored({ name: 'papers', path: 'c:\\research\\papers' })]));
   const fixed = withPathCase(saved, 'C:\\Research\\papers');

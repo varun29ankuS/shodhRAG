@@ -25,7 +25,7 @@ use shodh_rag::folder_sync::{
     is_temporary_file, sync_folder, upgrade_file_source, upgrade_unowned, ManifestStore, SyncReport,
 };
 use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus, NewInboxItem};
-use shodh_rag::indexing::IndexingState;
+use shodh_rag::indexing::{FileFailure, IndexingState};
 use shodh_rag::RAGEngine;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, RwLock};
@@ -277,7 +277,13 @@ fn inbox_item(
             if !report.failures.is_empty() {
                 parts.push(format!("{} could not be read", report.failures.len()));
             }
-            let status = if report.failures.is_empty() {
+            if !report.unreadable.is_empty() {
+                parts.push(format!(
+                    "{} folders or files could not be opened",
+                    report.unreadable.len()
+                ));
+            }
+            let status = if report.failures.is_empty() && report.unreadable.is_empty() {
                 InboxStatus::Done
             } else {
                 InboxStatus::Failed
@@ -304,6 +310,27 @@ fn inbox_item(
     })
 }
 
+/// Why a sync's card says something could not be read: the folders and
+/// files the sync could not open, whose index entries it left as they were.
+fn unreadable_message(unreadable: &[FileFailure]) -> Option<String> {
+    let first = unreadable.first()?;
+    let reason = if first.reason.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", first.reason)
+    };
+    Some(match unreadable.len() {
+        1 => format!(
+            "{}{reason} could not be read; what the index holds of it was left as it was",
+            first.file
+        ),
+        n => format!(
+            "{n} folders or files could not be read, among them {}{reason}; what the index holds of them was left as it was",
+            first.file
+        ),
+    })
+}
+
 async fn sync_once(app: &AppHandle, source: &FolderSourceRef) {
     app.state::<BackgroundState>().wait_until_resumed().await;
     let state = app.state::<FolderSyncState>();
@@ -324,7 +351,10 @@ async fn sync_once(app: &AppHandle, source: &FolderSourceRef) {
         crate::inbox_commands::post(app, item).await;
     }
     let (report, error) = match result {
-        Ok(report) => (Some(report), None),
+        Ok(report) => {
+            let error = unreadable_message(&report.unreadable);
+            (Some(report), error)
+        }
         Err(e) => (None, Some(e)),
     };
     let outcome = FolderSyncOutcome {
@@ -540,6 +570,7 @@ mod tests {
                 removed: 1,
                 files: 5,
                 failures: Vec::new(),
+                unreadable: Vec::new(),
             }),
             error: None,
         };
@@ -558,6 +589,32 @@ mod tests {
         let json = serde_json::to_value(&failed).unwrap();
         assert_eq!(json["error"], "D:/papers is not available");
         assert!(json.get("files").is_none());
+    }
+
+    #[test]
+    fn an_unreadable_folder_is_named_on_the_card() {
+        assert_eq!(unreadable_message(&[]), None);
+        let private = FileFailure {
+            file: "C:/papers/private".into(),
+            reason: "Access is denied.".into(),
+        };
+        let one = unreadable_message(std::slice::from_ref(&private)).unwrap();
+        assert!(
+            one.starts_with("C:/papers/private (Access is denied.) could not be read"),
+            "{one}"
+        );
+        let two = unreadable_message(&[
+            private.clone(),
+            FileFailure {
+                file: "C:/papers/old".into(),
+                reason: String::new(),
+            },
+        ])
+        .unwrap();
+        assert!(
+            two.starts_with("2 folders or files could not be read, among them C:/papers/private"),
+            "{two}"
+        );
     }
 
     fn file_count(rows: &[shodh_rag::storage::DocumentSourceRow], source_id: &str) -> usize {

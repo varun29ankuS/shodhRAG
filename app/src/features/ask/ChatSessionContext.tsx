@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useConversations } from '../../hooks/useConversations';
+import { ConversationsUnavailable } from './ConversationsUnavailable';
 import type { ConversationMessage } from '../../hooks/useConversations';
 import { notify } from '../../lib/notify';
 import { normalizeViewTab } from '../../lib/viewTabs';
@@ -764,5 +765,12 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     updateFocusThreads: conv.updateFocusThreads,
   }), [conv, view, streamingConversationId, liveRun, navigation, runtimeInstalled, prewarm, send, retry, steer, cancel, approve, appendMessage, updateMessage, sideRun, claimSideRun, releaseSideRun, updateThreads]);
 
-  return <ChatSessionContext.Provider value={value}>{children}</ChatSessionContext.Provider>;
+  return (
+    <ChatSessionContext.Provider value={value}>
+      {children}
+      {conv.loadFailure && !conv.loadFailureSeen && (
+        <ConversationsUnavailable notice={conv.loadFailure} onContinue={conv.acknowledgeLoadFailure} />
+      )}
+    </ChatSessionContext.Provider>
+  );
 }

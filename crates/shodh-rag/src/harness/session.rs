@@ -221,6 +221,10 @@ struct Inner {
     scope: Mutex<Arc<RunScope>>,
     next_id: AtomicU64,
     closing: AtomicBool,
+    /// Why the host closed the session, shown as the error of an answer it
+    /// stops ([`OmpSession::shutdown_because`]); `None`: "The session was
+    /// closed".
+    close_reason: Mutex<Option<String>>,
     closed: AtomicBool,
     close_writer: Arc<Notify>,
     child: tokio::sync::Mutex<Option<Child>>,
@@ -780,7 +784,9 @@ impl Inner {
     fn on_eof(&self) {
         self.closed.store(true, Ordering::SeqCst);
         let reason = if self.closing.load(Ordering::SeqCst) {
-            "The session was closed".to_string()
+            lock(&self.close_reason)
+                .clone()
+                .unwrap_or_else(|| "The session was closed".to_string())
         } else {
             format!(
                 "The agent runtime stopped unexpectedly ({})",
@@ -1533,6 +1539,7 @@ impl OmpSession {
             scope: Mutex::new(Arc::new(RunScope::default())),
             next_id: AtomicU64::new(0),
             closing: AtomicBool::new(false),
+            close_reason: Mutex::new(None),
             closed: AtomicBool::new(false),
             close_writer: close_writer.clone(),
             child: tokio::sync::Mutex::new(Some(process.child)),
@@ -1666,6 +1673,19 @@ impl OmpSession {
             "omp code session ready"
         );
         Ok(())
+    }
+
+    /// Close the session like [`AgentHarness::shutdown`]; an answer it stops
+    /// ends with `reason` as its error, in the user's words (for example,
+    /// that the provider's key was removed).
+    pub async fn shutdown_because(&self, reason: impl Into<String>) {
+        {
+            let mut slot = lock(&self.inner.close_reason);
+            if slot.is_none() {
+                *slot = Some(reason.into());
+            }
+        }
+        self.shutdown_inner().await;
     }
 
     async fn shutdown_inner(&self) {
@@ -1884,6 +1904,7 @@ mod tests {
             scope: Mutex::new(Arc::new(RunScope::default())),
             next_id: AtomicU64::new(0),
             closing: AtomicBool::new(false),
+            close_reason: Mutex::new(None),
             closed: AtomicBool::new(false),
             close_writer: Arc::new(Notify::new()),
             child: tokio::sync::Mutex::new(None),
@@ -1965,6 +1986,44 @@ mod tests {
             checkable: true,
         });
         "run-1".into()
+    }
+
+    /// The error of the answer a closed session stopped.
+    async fn stopped_with(
+        inner: &Arc<Inner>,
+        events: &mut mpsc::UnboundedReceiver<AgentEvent>,
+    ) -> Option<String> {
+        inner.on_eof();
+        events_until(events, |e| matches!(e, AgentEvent::RunFinished { .. }))
+            .await
+            .into_iter()
+            .find_map(|e| match e {
+                AgentEvent::RunFinished { error, .. } => Some(error),
+                _ => None,
+            })
+            .flatten()
+    }
+
+    #[tokio::test]
+    async fn an_answer_stopped_by_the_host_says_why() {
+        let (inner, mut events, _out) = offline_inner(None);
+        start(&inner);
+        *lock(&inner.close_reason) =
+            Some("Stopped because the OpenRouter key was removed.".to_string());
+        inner.closing.store(true, Ordering::SeqCst);
+        assert_eq!(
+            stopped_with(&inner, &mut events).await.as_deref(),
+            Some("Stopped because the OpenRouter key was removed.")
+        );
+
+        // Closed without a reason: the plain default.
+        let (inner, mut events, _out) = offline_inner(None);
+        start(&inner);
+        inner.closing.store(true, Ordering::SeqCst);
+        assert_eq!(
+            stopped_with(&inner, &mut events).await.as_deref(),
+            Some("The session was closed")
+        );
     }
 
     #[tokio::test]

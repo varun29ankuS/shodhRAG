@@ -194,11 +194,15 @@ pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(run(app));
 }
 
-async fn load(store: &CalendarStore) -> Result<CalendarData, String> {
+async fn load(store: &CalendarStore) -> Result<CalendarData, CalendarError> {
+    let path = store.path().to_path_buf();
     let store = store.clone();
-    tokio::task::spawn_blocking(move || store.load().map_err(|e| e.to_string()))
+    tokio::task::spawn_blocking(move || store.load())
         .await
-        .map_err(|e| format!("reading the calendar was interrupted: {e}"))?
+        .map_err(|e| CalendarError::Unreadable {
+            path,
+            message: format!("reading the calendar was interrupted: {e}"),
+        })?
 }
 
 /// Mark `reminder` fired; true when this call did it.
@@ -307,6 +311,35 @@ async fn record_missed(app: &AppHandle, store: &CalendarStore, missed: Vec<DueRe
     }
 }
 
+/// Longest wait between two reads of a calendar that cannot be read.
+pub const MAX_RETRY_DELAY: Duration = Duration::from_secs(30 * 60);
+
+/// How long to wait before reading an unreadable calendar again after
+/// `failures` failed reads in a row: a minute, doubling, at most
+/// [`MAX_RETRY_DELAY`].
+pub fn retry_delay(failures: u32) -> Duration {
+    let doublings = failures.saturating_sub(1).min(16);
+    MAX_SLEEP
+        .saturating_mul(1u32 << doublings)
+        .min(MAX_RETRY_DELAY)
+}
+
+/// The calendar cannot be read (the file and its backup are damaged, or it
+/// cannot be opened): reminders cannot ring. Said once, in plain words.
+fn calendar_unreadable(store: &CalendarStore, error: &CalendarError) {
+    tracing::warn!(error = %error, "reminders: calendar unreadable; retrying with a growing wait");
+    crate::store_notices::report(crate::store_notices::StoreNotice::new(
+        "calendar",
+        crate::store_notices::NoticeKind::Unreadable,
+        store.path(),
+        "Tasks and reminders could not be loaded",
+        format!(
+            "{error}. Reminders cannot ring until it can be read. Nothing is written to the file \
+             in the meantime, so it stays as it is for you to restore or move away."
+        ),
+    ));
+}
+
 async fn run(app: AppHandle) {
     let store = match crate::profile::app_data_dir(&app) {
         Ok(dir) => CalendarStore::in_dir(&dir),
@@ -318,6 +351,8 @@ async fn run(app: AppHandle) {
     let launched_at = Utc::now();
     let mut first = true;
     let mut cached: Option<CalendarData> = None;
+    // Reads of the calendar that failed in a row.
+    let mut failures: u32 = 0;
     loop {
         let state = app.state::<ReminderState>();
         // Registered before reading, so a change made while planning still
@@ -330,8 +365,9 @@ async fn run(app: AppHandle) {
             Some(data) => Ok(data),
             None => load(&store).await,
         };
-        let next_wake = match data {
+        let sleep = match data {
             Ok(data) => {
+                failures = 0;
                 let plan = plan(
                     pending(&data, &chrono::Local),
                     Utc::now(),
@@ -348,16 +384,23 @@ async fn run(app: AppHandle) {
                 if !wrote {
                     cached = Some(data);
                 }
-                plan.next_wake
+                sleep_for(plan.next_wake, Utc::now())
             }
             Err(e) => {
-                tracing::warn!(error = %e, "reminders: calendar unreadable; retrying");
-                None
+                failures = failures.saturating_add(1);
+                if failures == 1 {
+                    calendar_unreadable(&store, &e);
+                } else {
+                    tracing::debug!(error = %e, failures, "reminders: calendar still unreadable");
+                }
+                // A calendar change (the user fixing or replacing the file
+                // through the app) wakes the loop at once.
+                retry_delay(failures)
             }
         };
 
         tokio::select! {
-            _ = tokio::time::sleep(sleep_for(next_wake, Utc::now())) => {}
+            _ = tokio::time::sleep(sleep) => {}
             _ = &mut woken => cached = None,
         }
     }
@@ -442,6 +485,39 @@ mod tests {
             .unwrap();
         }
         data
+    }
+
+    #[test]
+    fn an_unreadable_calendar_is_read_again_less_and_less_often() {
+        assert_eq!(retry_delay(1), MAX_SLEEP);
+        assert_eq!(retry_delay(2), MAX_SLEEP * 2);
+        assert_eq!(retry_delay(3), MAX_SLEEP * 4);
+        assert_eq!(retry_delay(6), MAX_SLEEP * 30, "capped at half an hour");
+        for failures in [7, 20, 1_000, u32::MAX] {
+            assert_eq!(retry_delay(failures), MAX_RETRY_DELAY, "{failures}");
+        }
+        // Never faster than the first retry.
+        assert_eq!(retry_delay(0), MAX_SLEEP);
+    }
+
+    #[test]
+    fn a_damaged_calendar_without_a_backup_is_reported_and_left_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CalendarStore::in_dir(dir.path());
+        std::fs::write(store.path(), "{\"tasks\": [").unwrap();
+        let error = store.load().unwrap_err();
+        calendar_unreadable(&store, &error);
+        let path = store.path().display().to_string();
+        let notice = crate::store_notices::store_notices()
+            .into_iter()
+            .find(|n| n.store == "calendar" && n.path == path)
+            .expect("the user is told once");
+        assert_eq!(notice.kind, crate::store_notices::NoticeKind::Unreadable);
+        assert!(notice.message.contains("Reminders cannot ring"));
+        assert_eq!(
+            std::fs::read_to_string(store.path()).unwrap(),
+            "{\"tasks\": ["
+        );
     }
 
     #[test]

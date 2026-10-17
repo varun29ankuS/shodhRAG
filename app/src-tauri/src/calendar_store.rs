@@ -7,7 +7,6 @@
 //! [`crate::agent_tools::HostEffects::calendar_changed`], which re-indexes
 //! the record and tells open views to refresh.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -15,6 +14,9 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
+
+use crate::durable_file::{self, Loaded, Origin};
+use crate::store_notices::{self, NoticeKind, StoreNotice};
 
 pub const CALENDAR_FILE: &str = "calendar_data.json";
 
@@ -47,6 +49,8 @@ pub enum CalendarError {
         path: PathBuf,
         source: serde_json::Error,
     },
+    #[error("The calendar could not be read: {message}")]
+    Unreadable { path: PathBuf, message: String },
 }
 
 pub type CalendarResult<T> = Result<T, CalendarError>;
@@ -328,41 +332,58 @@ impl CalendarStore {
         }
     }
 
-    fn read_unlocked(&self) -> CalendarResult<CalendarData> {
-        match fs::read_to_string(&self.path) {
-            Ok(text) => serde_json::from_str(&text).map_err(|source| CalendarError::Parse {
-                path: self.path.clone(),
-                source,
-            }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(CalendarData::default()),
-            Err(source) => Err(CalendarError::Io {
-                path: self.path.clone(),
-                source,
-            }),
+    /// The calendar and the file it came from: the backup when the file is
+    /// damaged (reported as a notice). Fails when neither can be read;
+    /// nothing is written then.
+    fn read_unlocked(&self) -> CalendarResult<Loaded<CalendarData>> {
+        let loaded = durable_file::read_with_backup(
+            &self.path,
+            |text| serde_json::from_str::<CalendarData>(text).map_err(|e| e.to_string()),
+            CalendarData::default,
+        )
+        .map_err(|failure| CalendarError::Unreadable {
+            path: self.path.clone(),
+            message: failure.to_string(),
+        })?;
+        if let Origin::Backup { problem } = &loaded.origin {
+            store_notices::report(StoreNotice::new(
+                "calendar",
+                NoticeKind::Restored,
+                &self.path,
+                "Tasks and events restored from the backup",
+                format!(
+                    "The calendar file could not be read ({problem}), so the copy kept before the \
+                     last change was loaded. The latest change may be missing, and a reminder \
+                     already shown may ring once more. The damaged file is kept next to it \
+                     ({CALENDAR_FILE}.damaged-…) when the calendar is next saved."
+                ),
+            ));
         }
+        Ok(loaded)
     }
 
-    fn write_unlocked(&self, data: &CalendarData) -> CalendarResult<()> {
-        let io = |source| CalendarError::Io {
-            path: self.path.clone(),
-            source,
-        };
-        if let Some(dir) = self.path.parent() {
-            fs::create_dir_all(dir).map_err(io)?;
-        }
+    fn write_unlocked(&self, data: &CalendarData, origin: &Origin) -> CalendarResult<()> {
         let text = serde_json::to_string_pretty(data).map_err(|source| CalendarError::Parse {
             path: self.path.clone(),
             source,
         })?;
-        let tmp = self.path.with_extension("json.tmp");
-        fs::write(&tmp, text).map_err(io)?;
-        fs::rename(&tmp, &self.path).map_err(io)
+        durable_file::write_with_backup(&self.path, text.as_bytes(), origin).map_err(|source| {
+            CalendarError::Io {
+                path: self.path.clone(),
+                source,
+            }
+        })
+    }
+
+    /// The calendar file.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// Current tasks and events.
     pub fn load(&self) -> CalendarResult<CalendarData> {
         let _guard = CALENDAR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        self.read_unlocked()
+        self.read_unlocked().map(|loaded| loaded.value)
     }
 
     /// Apply `change` to the stored data and save it. Nothing is written
@@ -372,9 +393,12 @@ impl CalendarStore {
         change: impl FnOnce(&mut CalendarData) -> CalendarResult<R>,
     ) -> CalendarResult<R> {
         let _guard = CALENDAR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut data = self.read_unlocked()?;
+        let Loaded {
+            value: mut data,
+            origin,
+        } = self.read_unlocked()?;
         let result = change(&mut data)?;
-        self.write_unlocked(&data)?;
+        self.write_unlocked(&data, &origin)?;
         Ok(result)
     }
 }
@@ -1691,5 +1715,53 @@ mod tests {
         assert!(store
             .update(|d| d.snooze_reminder(&plain.id, nine_ten))
             .is_err());
+    }
+
+    fn titles(data: &CalendarData) -> Vec<&str> {
+        data.tasks.iter().map(|t| t.title.as_str()).collect()
+    }
+
+    #[test]
+    fn a_truncated_calendar_loads_the_backup_with_a_notice() {
+        let (dir, store) = store();
+        task(&store, "First", None);
+        task(&store, "Second", None);
+        let full = std::fs::read_to_string(store.path()).unwrap();
+        std::fs::write(store.path(), &full.as_bytes()[..full.len() / 2]).unwrap();
+
+        assert_eq!(titles(&store.load().unwrap()), ["First"]);
+        let path = store.path().display().to_string();
+        assert!(crate::store_notices::store_notices()
+            .iter()
+            .any(|n| n.store == "calendar" && n.path == path && n.kind == NoticeKind::Restored));
+
+        task(&store, "Third", None);
+        assert_eq!(titles(&store.load().unwrap()), ["First", "Third"]);
+        let kept_aside = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().contains(".damaged-"));
+        assert!(kept_aside, "the damaged file is kept");
+    }
+
+    #[test]
+    fn a_damaged_calendar_without_a_backup_is_never_overwritten() {
+        let (_dir, store) = store();
+        std::fs::write(store.path(), "{\"tasks\": [").unwrap();
+        let error = store.load().unwrap_err();
+        assert!(matches!(error, CalendarError::Unreadable { .. }), "{error}");
+        assert!(error
+            .to_string()
+            .contains(&store.path().display().to_string()));
+        assert!(store
+            .update(|d| d.insert_task(NewTask {
+                title: "Lost".into(),
+                ..NewTask::default()
+            }))
+            .is_err());
+        assert_eq!(
+            std::fs::read_to_string(store.path()).unwrap(),
+            "{\"tasks\": ["
+        );
     }
 }

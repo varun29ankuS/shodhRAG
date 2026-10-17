@@ -7,7 +7,10 @@
 //! `audit_stats` reports `encrypted: false`.
 //!
 //! Recording never blocks the caller: events are queued to the log's writer
-//! thread. Reads, verification and export run on the blocking pool.
+//! thread. Reads, verification and export run on the blocking pool. The one
+//! exception is `audit_record_citation_correction`, which waits on the
+//! blocking pool until its event is written: the app changes the answer only
+//! once the correction is recorded.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

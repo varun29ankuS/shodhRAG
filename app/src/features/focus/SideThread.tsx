@@ -8,7 +8,7 @@ import { passageHits } from '../agent/citations';
 import { fromPersisted, pendingApproval } from '../agent/reducer';
 import type { TranscriptState } from '../agent/reducer';
 import type { ClaimCheck } from '../agent/events';
-import { CORRECTION_NOT_RECORDED } from '../agent/grounding';
+import { CORRECTION_BUSY, CORRECTION_NOT_RECORDED } from '../agent/grounding';
 import { Transcript } from '../agent/Transcript';
 import { useChatSession } from '../ask/ChatSessionContext';
 import { MessageContentRenderer } from '../ask/MessageContentRenderer';
@@ -377,6 +377,7 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
       return true;
     }
     if (outcome === 'not_recorded') notify.error(CORRECTION_NOT_RECORDED);
+    else if (outcome === 'busy') notify.info(CORRECTION_BUSY);
     else notify.error('This citation could not be changed', { description: 'The statement is no longer in the answer as it was checked.' });
     return false;
   }, []);

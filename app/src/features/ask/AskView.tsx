@@ -11,7 +11,8 @@ import { passageHits } from '../agent/citations';
 import { PlanPanel } from '../agent/PlanPanel';
 import { answerText, pendingApproval, isLive } from '../agent/reducer';
 import type { ClaimCheck } from '../agent/events';
-import { CORRECTION_NOT_RECORDED, applyAuditedCorrection, citationCorrection, citeSuggested } from '../agent/grounding';
+import type { CorrectionOutcome } from '../agent/grounding';
+import { CORRECTION_BUSY, CORRECTION_NOT_RECORDED, CorrectionGuard, applyAuditedCorrection, citationCorrection, citeSuggested, sameCorrection } from '../agent/grounding';
 import { recordCitationCorrection } from '../audit/api';
 import type { TranscriptState } from '../agent/reducer';
 import { RuntimeCard } from '../agent/RuntimeCard';
@@ -877,21 +878,45 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   // ref so the callback stays the same while answers stream (every answer is memoised on it).
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  const correctionsRef = useRef(new CorrectionGuard());
   const citeInstead = useCallback(async (messageId: string, check: ClaimCheck): Promise<boolean> => {
-    const owner = messagesRef.current.find(m => m.id === messageId);
-    const rewrite = owner?.transcript && !isLive(owner.transcript) ? citeSuggested(owner.transcript, check) : null;
+    const rewriteOf = () => {
+      const owner = messagesRef.current.find(m => m.id === messageId);
+      return owner?.transcript && !isLive(owner.transcript) ? citeSuggested(owner.transcript, check) : null;
+    };
+    const rewrite = rewriteOf();
     const conversationId = session.activeConversationId;
-    if (!owner || !rewrite || !conversationId) {
+    if (!rewrite || !conversationId) {
       notify.error('This citation could not be changed', { description: 'The statement is no longer in the answer as it was checked.' });
       return false;
     }
-    // Audit first: the answer changes only once Activity has the record.
-    const outcome = await applyAuditedCorrection(
-      () => recordCitationCorrection(citationCorrection(rewrite, conversationId)),
-      () => updateMessage(owner.id, { content: answerText(rewrite.transcript), transcript: rewrite.transcript }),
-    );
-    if (outcome !== 'applied') {
+    const guard = correctionsRef.current;
+    if (!guard.claim(messageId)) {
+      notify.info(CORRECTION_BUSY);
+      return false;
+    }
+    let outcome: CorrectionOutcome;
+    try {
+      // Audit first: the answer changes only once Activity has the record, and then from its
+      // latest state, never over a change made in between.
+      outcome = await applyAuditedCorrection(
+        () => recordCitationCorrection(citationCorrection(rewrite, conversationId)),
+        () => {
+          const latest = rewriteOf();
+          if (!latest || !sameCorrection(rewrite, latest)) return false;
+          updateMessage(messageId, { content: answerText(latest.transcript), transcript: latest.transcript });
+          return true;
+        },
+      );
+    } finally {
+      guard.release(messageId);
+    }
+    if (outcome === 'not_recorded') {
       notify.error(CORRECTION_NOT_RECORDED);
+      return false;
+    }
+    if (outcome !== 'applied') {
+      notify.error('This citation could not be changed', { description: 'The answer changed while the correction was recorded.' });
       return false;
     }
     // The flag and its button are gone; say what changed (toasts are a live region).

@@ -614,22 +614,59 @@ export type CorrectionOutcome =
   /** The claim is no longer in the answer as it was checked: nothing to change. */
   | 'stale'
   /** The audit log refused or could not take the record: nothing was changed. */
-  | 'not_recorded';
+  | 'not_recorded'
+  /** Another correction of the same answer is being recorded: nothing was changed. */
+  | 'busy';
 
 /** The notice for a correction that could not be recorded. */
 export const CORRECTION_NOT_RECORDED = 'Could not record this correction in Activity, so nothing was changed.';
 
+/** The notice for a correction asked while another one of the same answer is recorded. */
+export const CORRECTION_BUSY = 'Another citation of this answer is being changed. Try again when it is done.';
+
 /**
  * Audit first: the correction is applied (and saved) only once the audit log has taken its
  * record, so the answer never changes without a record of who changed it. A failed record
- * applies nothing.
+ * applies nothing. `apply` runs after the record, on the latest state, and returns false
+ * when the claim is no longer as it was recorded (then nothing is changed: `stale`).
  */
-export async function applyAuditedCorrection(record: () => Promise<unknown>, apply: () => void): Promise<CorrectionOutcome> {
+export async function applyAuditedCorrection(record: () => Promise<unknown>, apply: () => boolean): Promise<CorrectionOutcome> {
   try {
     await record();
   } catch {
     return 'not_recorded';
   }
-  apply();
-  return 'applied';
+  return apply() ? 'applied' : 'stale';
+}
+
+/**
+ * Whether a rewrite built from the latest state is the one that was recorded: same claim, same
+ * text block, same numbers. A correction applied in between (or an edited answer) makes it
+ * differ, and the recorded one is not applied over it.
+ */
+export function sameCorrection(recorded: CitationRewrite, latest: CitationRewrite | null): boolean {
+  return (
+    latest !== null &&
+    latest.claimIndex === recorded.claimIndex &&
+    latest.messageId === recorded.messageId &&
+    latest.to === recorded.to &&
+    latest.from.length === recorded.from.length &&
+    latest.from.every((n, i) => n === recorded.from[i])
+  );
+}
+
+/** Correction keys in flight, one per answer: a second correction waits for the first. */
+export class CorrectionGuard {
+  private readonly busy = new Set<string>();
+
+  /** Claim `key` for one correction; false while another holds it. */
+  claim(key: string): boolean {
+    if (this.busy.has(key)) return false;
+    this.busy.add(key);
+    return true;
+  }
+
+  release(key: string): void {
+    this.busy.delete(key);
+  }
 }

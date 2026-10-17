@@ -113,7 +113,7 @@ function CiteInsteadButton({ check, onCiteInstead, className }: { check: ClaimCh
     <button
       type="button"
       data-answer-ui=""
-      disabled={pending}
+      aria-disabled={pending}
       aria-busy={pending}
       onClick={act}
       aria-label={`Cite ${n} instead of ${check.cited.join(', ')} for this statement`}

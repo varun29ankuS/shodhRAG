@@ -14,11 +14,13 @@ import {
   checksForMessage,
   citeInAnchor,
   citeInsteadOffer,
+  CorrectionGuard,
   applyAuditedCorrection,
   citationCorrection,
   citeSuggested,
   citedNumbersIn,
   correctionLabel,
+  sameCorrection,
   isCorrected,
   flagDescription,
   flagLabel,
@@ -366,7 +368,10 @@ test('a correction is applied only after the audit log has taken its record', as
     async () => {
       order.push('record');
     },
-    () => order.push('apply'),
+    () => {
+      order.push('apply');
+      return true;
+    },
   );
   assert.equal(applied, 'applied');
   assert.deepEqual(order, ['record', 'apply'], 'recorded first, then applied');
@@ -377,8 +382,51 @@ test('a correction is applied only after the audit log has taken its record', as
       refused.push('record');
       throw new Error('The audit log is unavailable');
     },
-    () => refused.push('apply'),
+    () => {
+      refused.push('apply');
+      return true;
+    },
   );
   assert.equal(outcome, 'not_recorded');
   assert.deepEqual(refused, ['record'], 'a failed record changes nothing');
+});
+
+test('a correction recorded while the answer changed is not applied over the change', async () => {
+  const supported = check({ anchor: 'SPANN keeps centroids in memory [1].', outcome: 'supported', cited: [1] });
+  const first = miscited({ anchor: 'Posting lists grow [3].', text: 'Posting lists grow.' });
+  const second = miscited({ anchor: 'Latency drops [7].', text: 'Latency drops.', cited: [7] });
+  const state = transcriptWith(`${supported.anchor} ${first.anchor} ${second.anchor}`, [supported, first, second]);
+  const recorded = citeSuggested(state, state.groundings[0].claims[1]);
+  assert.ok(recorded);
+  // Built again from the same state: the same correction.
+  assert.ok(sameCorrection(recorded, citeSuggested(state, state.groundings[0].claims[1])));
+  // The claim was corrected in between: no rewrite is left to apply.
+  assert.equal(citeSuggested(recorded.transcript, first), null);
+  assert.ok(!sameCorrection(recorded, null));
+  // Another claim's correction is a different one.
+  assert.ok(!sameCorrection(recorded, citeSuggested(state, state.groundings[0].claims[2])));
+  // After the record, the apply step reads the latest state and skips.
+  let latest: TranscriptState = recorded.transcript;
+  let writes = 0;
+  const outcome = await applyAuditedCorrection(
+    async () => undefined,
+    () => {
+      const again = citeSuggested(latest, first);
+      if (!again || !sameCorrection(recorded, again)) return false;
+      latest = again.transcript;
+      writes += 1;
+      return true;
+    },
+  );
+  assert.equal(outcome, 'stale');
+  assert.equal(writes, 0);
+});
+
+test('one correction per answer is in flight at a time', () => {
+  const guard = new CorrectionGuard();
+  assert.ok(guard.claim('m1'));
+  assert.ok(!guard.claim('m1'), 'a second correction of the same answer waits');
+  assert.ok(guard.claim('m2'), 'another answer is independent');
+  guard.release('m1');
+  assert.ok(guard.claim('m1'));
 });

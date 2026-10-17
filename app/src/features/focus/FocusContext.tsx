@@ -1,7 +1,7 @@
 import React, { Suspense, createContext, lazy, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { notify } from '../../lib/notify';
 import type { AgentEventEnvelope, ClaimCheck } from '../agent/events';
-import { applyAuditedCorrection, citationCorrection, citeSuggested } from '../agent/grounding';
+import { CorrectionGuard, applyAuditedCorrection, citationCorrection, citeSuggested, sameCorrection } from '../agent/grounding';
 import type { CorrectionOutcome } from '../agent/grounding';
 import { recordCitationCorrection } from '../audit/api';
 import { answerText, fromPersisted, initialTranscript, isLive, reduceAll, toPersisted } from '../agent/reducer';
@@ -1011,26 +1011,46 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     return true;
   }, [findThread, mutateThread]);
 
+  const correctionsRef = useRef(new CorrectionGuard());
+  // The latest stored threads, also after awaiting the audit record.
+  const findThreadRef = useRef(findThread);
+  findThreadRef.current = findThread;
   const citeInstead = useCallback(async (level: OpenFocus, turnId: string, check: ClaimCheck): Promise<CorrectionOutcome> => {
-    const thread = findThread(level.conversationId, level.parentMessageId, level.threadId);
-    const turn = thread?.turns.find(t => t.id === turnId && t.role === 'assistant');
-    const stored = turn?.transcript ? fromPersisted(turn.transcript) : null;
-    if (!thread || !turn || !stored || isLive(stored)) return 'stale';
-    const rewrite = citeSuggested(stored, check);
-    if (!rewrite) return 'stale';
-    const next = rewrite.transcript;
-    // Stored as a finished answer is: the followups block stays out of the text.
-    const changed: ThreadTurn = {
-      ...turn,
-      content: splitFollowups(answerText(next)).body,
-      transcript: toPersisted(next) as unknown as Record<string, unknown>,
+    // The stored answer, read again after the record so a change made in between is never overwritten.
+    const latestRewrite = () => {
+      const thread = findThreadRef.current(level.conversationId, level.parentMessageId, level.threadId);
+      const turn = thread?.turns.find(t => t.id === turnId && t.role === 'assistant');
+      const stored = turn?.transcript ? fromPersisted(turn.transcript) : null;
+      if (!thread || !turn || !stored || isLive(stored)) return null;
+      const rewrite = citeSuggested(stored, check);
+      return rewrite ? { thread, turn, rewrite } : null;
     };
-    // Audit first: the thread changes only once Activity has the record.
-    return applyAuditedCorrection(
-      () => recordCitationCorrection(citationCorrection(rewrite, thread.anchor.conversationId)),
-      () => mutateThread(thread.anchor, thread.id, t => ({ ...t, turns: t.turns.map(x => (x.id === turnId ? changed : x)) })),
-    );
-  }, [findThread, mutateThread]);
+    const first = latestRewrite();
+    if (!first) return 'stale';
+    const guard = correctionsRef.current;
+    if (!guard.claim(turnId)) return 'busy';
+    try {
+      // Audit first: the thread changes only once Activity has the record.
+      return await applyAuditedCorrection(
+        () => recordCitationCorrection(citationCorrection(first.rewrite, first.thread.anchor.conversationId)),
+        () => {
+          const latest = latestRewrite();
+          if (!latest || !sameCorrection(first.rewrite, latest.rewrite)) return false;
+          const next = latest.rewrite.transcript;
+          // Stored as a finished answer is: the followups block stays out of the text.
+          const changed: ThreadTurn = {
+            ...latest.turn,
+            content: splitFollowups(answerText(next)).body,
+            transcript: toPersisted(next) as unknown as Record<string, unknown>,
+          };
+          mutateThread(latest.thread.anchor, latest.thread.id, t => ({ ...t, turns: t.turns.map(x => (x.id === turnId ? changed : x)) }));
+          return true;
+        },
+      );
+    } finally {
+      guard.release(turnId);
+    }
+  }, [mutateThread]);
 
   const closeFocus = useCallback(() => {
     // The pop-out's side sessions are stopped (each is one agent process). The

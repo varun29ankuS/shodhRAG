@@ -46,6 +46,17 @@ async function readDurable(key: DurableKey): Promise<StoredRead> {
   }
 }
 
+/** The sources the backend removed from the Library (in this run or before); none when unreadable. */
+async function readRemovedSources(): Promise<string[]> {
+  try {
+    const ids = await invoke<unknown>('removed_library_sources');
+    return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [];
+  } catch (error) {
+    console.error('The removed sources could not be read:', error);
+    return [];
+  }
+}
+
 /** The last save of each durable UI state, so saves reach the disk in the order they were made. */
 const durableWrites = new Map<DurableKey, Promise<void>>();
 
@@ -235,11 +246,11 @@ function AppSplitView() {
   }, []);
   useEffect(() => {
     let cancelled = false;
-    void readDurable('library_sources').then(stored => {
+    void Promise.all([readDurable('library_sources'), readRemovedSources()]).then(([stored, removed]) => {
       if (cancelled) return;
       const local = sourcesRef.current;
       const changed = serializeSources(local) !== startSourcesRef.current;
-      const { sources: restored, save } = reconcileStoredSources(stored, local, changed);
+      const { sources: restored, save } = reconcileStoredSources(stored, local, changed, removed);
       sourcesRestoredRef.current = true;
       if (save) saveSourcesDurably(restored);
       else savedSourcesRef.current = serializeSources(restored);

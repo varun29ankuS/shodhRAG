@@ -216,6 +216,16 @@ impl IndexingState {
         let _ = runs.wait_for(|runs| !runs.contains_key(source_id)).await;
     }
 
+    /// Records `source_id` as removed from the Library (in an earlier run):
+    /// none of its runs starts. Unlike [`Self::stop_source`] it waits for
+    /// nothing; it is for sources removed before any run could start.
+    pub fn mark_removed(&self, source_id: &str) {
+        self.removed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(source_id.to_string());
+    }
+
     /// Lets `source_id` be indexed again after a removal that failed
     /// ([`Self::stop_source`]).
     pub fn restore_source(&self, source_id: &str) {

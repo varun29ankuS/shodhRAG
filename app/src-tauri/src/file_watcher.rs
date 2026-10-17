@@ -76,21 +76,91 @@ pub struct FolderSyncState {
     /// Scans read without the scan reader were looked for in this run, once
     /// the Library's folders are watched (see [crate::scan_reader::reread_on_start]).
     scans_checked: std::sync::atomic::AtomicBool,
-    /// Sources removed from the Library in this run ([`Self::remove_source`]):
-    /// never watched again, even when a list that still names them arrives.
+    /// Sources removed from the Library ([`Self::remove_source`]), in this
+    /// run and before: never watched again, even when a list that still
+    /// names them arrives (a saved Library list older than the removal).
     removed: Mutex<HashSet<String>>,
+    /// Where [`Self::removed`] is kept ([`REMOVED_SOURCES_FILE`]).
+    removed_file: std::path::PathBuf,
+}
+
+/// The file, in the folder manifests' directory, that lists the sources
+/// removed from the Library. Not a manifest: manifests are `<id>.json`
+/// directly in the directory, this is in a folder of its own.
+const REMOVED_SOURCES_FILE: &str = "removed/sources.json";
+
+/// The removed sources listed in `file`; none when it does not exist. A
+/// file that cannot be read is reported and read as none.
+fn load_removed(file: &Path) -> HashSet<String> {
+    match std::fs::read_to_string(file) {
+        Ok(text) => match serde_json::from_str::<Vec<String>>(&text) {
+            Ok(ids) => ids.into_iter().collect(),
+            Err(e) => {
+                tracing::warn!(file = %file.display(), error = %e, "removed sources unreadable");
+                HashSet::new()
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashSet::new(),
+        Err(e) => {
+            tracing::warn!(file = %file.display(), error = %e, "removed sources unreadable");
+            HashSet::new()
+        }
+    }
+}
+
+/// Saves `removed` to `file`: written to a temporary file, flushed, and
+/// renamed over the previous list, so a kill leaves one list or the other.
+fn save_removed(file: &Path, removed: &HashSet<String>) -> Result<(), String> {
+    use std::io::Write;
+    let mut ids: Vec<&String> = removed.iter().collect();
+    ids.sort();
+    let text = serde_json::to_string(&ids).map_err(|e| e.to_string())?;
+    let io = |e: std::io::Error| format!("{} could not be saved: {e}", file.display());
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).map_err(io)?;
+    }
+    let tmp = file.with_extension("json.tmp");
+    let written = (|| {
+        let mut out = std::fs::File::create(&tmp)?;
+        out.write_all(text.as_bytes())?;
+        out.sync_all()?;
+        drop(out);
+        std::fs::rename(&tmp, file)
+    })();
+    written.map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        io(e)
+    })
 }
 
 impl FolderSyncState {
     pub fn new(manifest_dir: impl Into<std::path::PathBuf>) -> Self {
+        let manifest_dir = manifest_dir.into();
+        let removed_file = manifest_dir.join(REMOVED_SOURCES_FILE);
         Self {
-            store: ManifestStore::in_dir(manifest_dir),
+            store: ManifestStore::in_dir(&manifest_dir),
             watched: Mutex::new(HashMap::new()),
             running: tokio::sync::Mutex::new(()),
             unowned_checked: std::sync::atomic::AtomicBool::new(false),
             scans_checked: std::sync::atomic::AtomicBool::new(false),
-            removed: Mutex::new(HashSet::new()),
+            removed: Mutex::new(load_removed(&removed_file)),
+            removed_file,
         }
+    }
+
+    /// The sources removed from the Library, in this run and before: the
+    /// Library drops them from a saved list that still names them, and their
+    /// index runs are refused ([`IndexingState::mark_removed`]).
+    pub fn removed_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .removed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect();
+        ids.sort();
+        ids
     }
 
     /// Drops what the manifest of `source_id` records about the file `key` (an
@@ -128,8 +198,11 @@ impl FolderSyncState {
     /// chunks are deleted ([`RAGEngine::delete_library_source`], by source
     /// id, never by path prefix) and its manifest with them. Nothing of the
     /// source runs after that, so nothing writes its chunks or its manifest
-    /// back. Returns the chunks deleted. When the deletion fails the source
-    /// may be watched and indexed again; its manifest is kept.
+    /// back. The removal is recorded on disk first, so a saved Library list
+    /// that still names the source never brings it back, in this run or the
+    /// next; a removal that cannot be recorded does not start. Returns the
+    /// chunks deleted. When the deletion fails the source may be watched and
+    /// indexed again; its manifest is kept.
     pub async fn remove_source(
         &self,
         rag: &RwLock<RAGEngine>,
@@ -139,10 +212,13 @@ impl FolderSyncState {
     ) -> Result<usize, String> {
         {
             let mut watched = self.watched.lock().unwrap_or_else(|e| e.into_inner());
-            self.removed
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(source_id.to_string());
+            let mut removed = self.removed.lock().unwrap_or_else(|e| e.into_inner());
+            if removed.insert(source_id.to_string()) {
+                if let Err(error) = save_removed(&self.removed_file, &removed) {
+                    removed.remove(source_id);
+                    return Err(format!("The removal could not be recorded: {error}"));
+                }
+            }
             // Dropping the watcher ends the source's sync task.
             watched.remove(source_id);
         }
@@ -160,10 +236,13 @@ impl FolderSyncState {
                 Ok(deleted)
             }
             Err(error) => {
-                self.removed
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(source_id);
+                {
+                    let mut removed = self.removed.lock().unwrap_or_else(|e| e.into_inner());
+                    removed.remove(source_id);
+                    if let Err(e) = save_removed(&self.removed_file, &removed) {
+                        tracing::warn!(source_id, error = %e, "removed sources not updated");
+                    }
+                }
                 indexing.restore_source(source_id);
                 Err(error)
             }
@@ -444,6 +523,13 @@ fn watch(app: &AppHandle, source: &FolderSourceRef) -> Result<Watched, String> {
     })
 }
 
+/// The sources removed from the Library (in this run or before), for the
+/// Library to drop from a saved list that still names them.
+#[tauri::command]
+pub async fn removed_library_sources(app: AppHandle) -> Result<Vec<String>, String> {
+    Ok(app.state::<FolderSyncState>().removed_ids())
+}
+
 /// The Library's folder sources: watch and sync these, stop watching the
 /// rest (a removed source's manifest is deleted). Paths that are single
 /// files are not watched; each is brought to the current index format.
@@ -700,6 +786,40 @@ mod tests {
             .contains(&source.id));
         // Its index runs cannot start again.
         assert!(indexing.begin_run(&source.id).is_none());
+    }
+
+    /// A removal is kept on disk: after a restart, a saved Library list that
+    /// still names the source does not bring it back. It is not watched, its
+    /// index runs are refused, and the Library is told it was removed.
+    #[tokio::test]
+    async fn a_removal_outlives_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let rag =
+            RwLock::new(crate::agent_tools::testing::engine_with_search_models(dir.path()).await);
+        {
+            let state = FolderSyncState::new(dir.path().join("sync"));
+            state
+                .remove_source(&rag, &IndexingState::default(), "folder-papers", None)
+                .await
+                .unwrap();
+        }
+        // The next run.
+        let state = FolderSyncState::new(dir.path().join("sync"));
+        assert_eq!(state.removed_ids(), ["folder-papers"]);
+        assert!(state
+            .removed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains("folder-papers"));
+        let indexing = IndexingState::default();
+        for id in state.removed_ids() {
+            indexing.mark_removed(&id);
+        }
+        assert!(
+            indexing.begin_run("folder-papers").is_none(),
+            "not indexed again"
+        );
+        assert!(indexing.begin_run("folder-other").is_some());
     }
 
     /// The removal waits for the sync that holds the turn, so that sync

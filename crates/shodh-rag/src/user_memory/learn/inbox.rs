@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use super::decide::{DecidedBy, Decision};
 use super::sensitivity::SensitiveReason;
-use super::{day_key, LearnCaps, LearnError, LearnResult};
+use super::{day_key, normalise_text, LearnCaps, LearnError, LearnResult};
 use crate::audit::{open_shared_connection, AuditKey};
 use crate::statements::{PutOutcome, Scope};
 use crate::user_memory::MemoryContent;
@@ -727,111 +727,89 @@ impl Inbox {
         caps: &LearnCaps,
         now: DateTime<Utc>,
     ) -> LearnResult<Option<Proposal>> {
-        self.insert_checked(new, Some(caps), now)
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let since = ts(now - Duration::days(REJECTION_MEMORY_DAYS));
+        let duplicate: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM memory_proposals WHERE fingerprint = ?1 AND (
+                status IN ('pending', 'accepted', 'learned', 'failed')
+                OR (status IN ('rejected', 'undone') AND decided_at >= ?2)))",
+            params![new.fingerprint, since],
+            |r| r.get(0),
+        )?;
+        if duplicate {
+            return Ok(None);
+        }
+        let made: u32 = tx
+            .query_row(
+                "SELECT proposals FROM memory_learn_usage WHERE day = ?1",
+                params![day_key(now)],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        if made >= caps.max_proposals_per_day {
+            return Err(LearnError::BudgetExhausted(format!(
+                "{} suggestions per day",
+                caps.max_proposals_per_day
+            )));
+        }
+        let proposal = write_proposal(&tx, new, now)?;
+        tx.commit()?;
+        Ok(Some(proposal))
     }
 
-    /// Stores a suggestion the user asked for in their own words ("Remember that ..."):
-    /// suppressed only when the same one is already waiting or applied. Neither an earlier
-    /// rejection (the user asks again) nor today's suggestion cap (a cap on what the model
-    /// suggests) holds it back; it is counted in today's suggestions.
+    /// Stores a suggestion the user asked for in their own words ("Remember that ..."),
+    /// unless the same note is already waiting or saved, or the user rejected or undid it
+    /// in the last [`REJECTION_MEMORY_DAYS`] days: the same fingerprint, or a remembered
+    /// text that reads the same ([`same_note`]; a suggestion of the learner included).
+    /// Today's suggestion cap (a cap on what the model suggests) does not hold it back; it
+    /// is counted in today's suggestions.
     pub fn insert_requested(
         &self,
         new: NewProposal,
         now: DateTime<Utc>,
-    ) -> LearnResult<Option<Proposal>> {
-        self.insert_checked(new, None, now)
-    }
-
-    /// [`Self::insert`]; with `caps` `None`, the user's own request
-    /// ([`Self::insert_requested`]).
-    fn insert_checked(
-        &self,
-        new: NewProposal,
-        caps: Option<&LearnCaps>,
-        now: DateTime<Utc>,
-    ) -> LearnResult<Option<Proposal>> {
+    ) -> LearnResult<RequestedOutcome> {
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let duplicate: bool = match caps {
-            Some(_) => tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM memory_proposals WHERE fingerprint = ?1 AND (
-                    status IN ('pending', 'accepted', 'learned', 'failed')
-                    OR (status IN ('rejected', 'undone') AND decided_at >= ?2)))",
-                params![
-                    new.fingerprint,
-                    ts(now - Duration::days(REJECTION_MEMORY_DAYS))
-                ],
-                |r| r.get(0),
-            )?,
-            // The user's request: only what is waiting or applied suppresses it.
-            None => tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM memory_proposals WHERE fingerprint = ?1
-                    AND status IN ('pending', 'accepted', 'learned', 'failed'))",
-                params![new.fingerprint],
-                |r| r.get(0),
-            )?,
-        };
-        if duplicate {
-            return Ok(None);
-        }
-        let day = day_key(now);
-        if let Some(caps) = caps {
-            let made: u32 = tx
-                .query_row(
-                    "SELECT proposals FROM memory_learn_usage WHERE day = ?1",
-                    params![day],
-                    |r| r.get(0),
-                )
-                .optional()?
-                .unwrap_or(0);
-            if made >= caps.max_proposals_per_day {
-                return Err(LearnError::BudgetExhausted(format!(
-                    "{} suggestions per day",
-                    caps.max_proposals_per_day
-                )));
-            }
-        }
-        let id = format!("sug-{}", uuid::Uuid::new_v4());
-        let payload =
-            serde_json::to_string(&new.action).map_err(|e| LearnError::Database(e.to_string()))?;
-        let sensitive = serde_json::to_string(&new.sensitive)
-            .map_err(|e| LearnError::Database(e.to_string()))?;
-        tx.execute(
-            "INSERT INTO memory_proposals(id, kind, origin, status, fingerprint, scope,
-                conversation_id, turn_id, payload_json, confidence, sensitive_json, created_at)
-             VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                id,
-                new.action.kind().as_str(),
-                new.origin.as_str(),
-                new.fingerprint,
-                new.scope.as_key(),
-                new.conversation_id,
-                new.turn_id,
-                payload,
-                new.confidence.clamp(0.0, 1.0),
-                sensitive,
-                ts(now),
-            ],
+        let kept: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM memory_proposals WHERE fingerprint = ?1
+                AND status IN ('pending', 'accepted', 'learned', 'failed'))",
+            params![new.fingerprint],
+            |r| r.get(0),
         )?;
-        bump(&tx, &day, "proposals", 1)?;
+        if kept {
+            return Ok(RequestedOutcome::AlreadyKept);
+        }
+        let text = match &new.action {
+            ProposalAction::Remember { text, .. } => text.clone(),
+            _ => String::new(),
+        };
+        let since = ts(now - Duration::days(REJECTION_MEMORY_DAYS));
+        let declined = {
+            let mut stmt = tx.prepare(
+                "SELECT fingerprint, payload_json FROM memory_proposals
+                 WHERE kind = 'remember' AND status IN ('rejected', 'undone') AND decided_at >= ?1",
+            )?;
+            let rows = stmt
+                .query_map(params![since], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows.iter().any(|(fingerprint, payload)| {
+                *fingerprint == new.fingerprint
+                    || serde_json::from_str::<serde_json::Value>(payload)
+                        .ok()
+                        .and_then(|v| v["text"].as_str().map(|t| same_note(t, &text)))
+                        .unwrap_or(false)
+            })
+        };
+        if declined {
+            return Ok(RequestedOutcome::Declined);
+        }
+        let proposal = write_proposal(&tx, new, now)?;
         tx.commit()?;
-        Ok(Some(Proposal {
-            id,
-            origin: new.origin,
-            status: ProposalStatus::Pending,
-            fingerprint: new.fingerprint,
-            scope: new.scope,
-            conversation_id: new.conversation_id,
-            turn_id: new.turn_id,
-            action: new.action,
-            confidence: new.confidence.clamp(0.0, 1.0),
-            sensitive: new.sensitive,
-            outcome: None,
-            error: None,
-            created_at: now,
-            decided_at: None,
-        }))
+        Ok(RequestedOutcome::Filed(Box::new(proposal)))
     }
 
     /// One suggestion.
@@ -1177,6 +1155,82 @@ impl Inbox {
             params![ts(now)],
         )?)
     }
+}
+
+/// What filing the user's own request to remember something did.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RequestedOutcome {
+    /// Stored, waiting for the user.
+    Filed(Box<Proposal>),
+    /// The same note is already waiting or saved.
+    AlreadyKept,
+    /// The user rejected or undid the same note recently: it is not offered again.
+    Declined,
+}
+
+/// Whether two remembered texts say the same: compared case-folded, with whitespace
+/// collapsed and without the closing punctuation or quotes a sentence may carry.
+pub fn same_note(a: &str, b: &str) -> bool {
+    let key = |text: &str| {
+        normalise_text(text)
+            .trim_matches(|c: char| {
+                matches!(
+                    c,
+                    '.' | '!' | ';' | ',' | '"' | '\'' | '\u{201c}' | '\u{201d}'
+                ) || c.is_whitespace()
+            })
+            .to_string()
+    };
+    let a = key(a);
+    !a.is_empty() && a == key(b)
+}
+
+/// Stores `new` as a waiting suggestion and counts it in today's suggestions.
+fn write_proposal(
+    tx: &rusqlite::Transaction<'_>,
+    new: NewProposal,
+    now: DateTime<Utc>,
+) -> LearnResult<Proposal> {
+    let id = format!("sug-{}", uuid::Uuid::new_v4());
+    let payload =
+        serde_json::to_string(&new.action).map_err(|e| LearnError::Database(e.to_string()))?;
+    let sensitive =
+        serde_json::to_string(&new.sensitive).map_err(|e| LearnError::Database(e.to_string()))?;
+    tx.execute(
+        "INSERT INTO memory_proposals(id, kind, origin, status, fingerprint, scope,
+            conversation_id, turn_id, payload_json, confidence, sensitive_json, created_at)
+         VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            id,
+            new.action.kind().as_str(),
+            new.origin.as_str(),
+            new.fingerprint,
+            new.scope.as_key(),
+            new.conversation_id,
+            new.turn_id,
+            payload,
+            new.confidence.clamp(0.0, 1.0),
+            sensitive,
+            ts(now),
+        ],
+    )?;
+    bump(tx, &day_key(now), "proposals", 1)?;
+    Ok(Proposal {
+        id,
+        origin: new.origin,
+        status: ProposalStatus::Pending,
+        fingerprint: new.fingerprint,
+        scope: new.scope,
+        conversation_id: new.conversation_id,
+        turn_id: new.turn_id,
+        action: new.action,
+        confidence: new.confidence.clamp(0.0, 1.0),
+        sensitive: new.sensitive,
+        outcome: None,
+        error: None,
+        created_at: now,
+        decided_at: None,
+    })
 }
 
 /// Adds `n` to one usage column of `day`. `column` is one of a fixed set.

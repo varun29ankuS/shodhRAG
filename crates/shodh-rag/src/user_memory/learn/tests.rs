@@ -1434,11 +1434,18 @@ fn learning_makes_ten_model_calls_a_day_by_default() {
 }
 
 impl Env {
-    fn file_request(&self, text: &str) -> Option<ProposalView> {
+    fn file_request(&self, text: &str) -> RequestedOutcome {
         let request = memory_request(text).expect("a request to remember");
         self.learner
             .file_user_note(&request, "c1", "r1", self.f.store.now(), Scope::Global)
             .unwrap()
+    }
+
+    fn filed(&self, text: &str) -> ProposalView {
+        match self.file_request(text) {
+            RequestedOutcome::Filed(proposal) => ProposalView::from(*proposal),
+            other => panic!("not filed: {other:?}"),
+        }
     }
 }
 
@@ -1447,7 +1454,7 @@ async fn a_request_to_remember_becomes_a_note_suggestion_without_a_model() {
     let e = env().await;
     // Not learning: filed whatever the mode, and never applied automatically.
     e.set(|p| p.mode = LearnMode::Off);
-    let view = e.file_request(THESIS_TURN).unwrap();
+    let view = e.filed(THESIS_TURN);
     assert_eq!(e.model.calls(), 0);
     assert_eq!(view.status, ProposalStatus::Pending);
     let ProposalAction::Remember {
@@ -1470,7 +1477,7 @@ async fn a_request_to_remember_becomes_a_note_suggestion_without_a_model() {
     assert_eq!(source, "conversation://c1/turn/r1");
     assert!((view.confidence - 1.0).abs() < 1e-9);
     // Asked again while it waits: the same suggestion, not a second one.
-    assert!(e.file_request(THESIS_TURN).is_none());
+    assert_eq!(e.file_request(THESIS_TURN), RequestedOutcome::AlreadyKept);
 
     // The learner's note of the same words is the same suggestion.
     e.set(|p| p.mode = LearnMode::Auto);
@@ -1507,25 +1514,74 @@ async fn a_request_to_remember_becomes_a_note_suggestion_without_a_model() {
 }
 
 #[tokio::test]
-async fn a_rejected_request_can_be_asked_again_and_batch_accepted_as_the_users() {
+async fn a_note_the_user_rejected_is_not_offered_again() {
     let e = env().await;
-    let first = e.file_request("Note: I review papers on Fridays").unwrap();
+    let first = e.filed("Note: I review papers on Fridays");
     e.learner.reject(&first.id).unwrap();
-    // The user asks again: an explicit request is not held back by the earlier rejection.
-    let again = e
-        .file_request("Remember that I review papers on Fridays")
+    // Asked again in other words around the same note: not offered again.
+    assert_eq!(
+        e.file_request("Remember that I review papers on Fridays."),
+        RequestedOutcome::Declined
+    );
+    assert_eq!(e.pending().len(), 0);
+
+    // A note of the learner the user rejected is the same note.
+    e.model.answer(json!({"memories": [
+        {"turn": "T1", "class": "Note", "properties": {"noteText": "I grade exams on Mondays"},
+         "confidence": 0.9, "evidence": "I grade exams on Mondays"}
+    ]}));
+    let report = e.learn("By the way, I grade exams on Mondays").await;
+    e.learner.reject(&report.proposed[0]).unwrap();
+    assert_eq!(
+        e.file_request("Keep in mind that  i grade exams on Mondays!"),
+        RequestedOutcome::Declined
+    );
+
+    // Undone counts as declined too; another note is filed.
+    let other = e.filed("Remember that I use DiskANN");
+    let accepted = e
+        .learner
+        .accept(&other.id, None, &Actor::ui())
+        .await
         .unwrap();
-    assert_ne!(again.id, first.id);
+    assert!(accepted.undoable);
+    e.learner.undo(&other.id, &Actor::ui()).await.unwrap();
+    assert_eq!(
+        e.file_request("Remember that I use DiskANN."),
+        RequestedOutcome::Declined
+    );
+}
+
+#[tokio::test]
+async fn a_requested_note_is_batch_accepted_as_the_users() {
+    let e = env().await;
+    let view = e.filed("Remember that I review papers on Fridays");
     let results = e
         .learner
-        .accept_many(std::slice::from_ref(&again.id), &Actor::ui())
+        .accept_many(std::slice::from_ref(&view.id), &Actor::ui())
         .await;
-    let view = results[0].1.as_ref().unwrap();
+    let accepted = results[0].1.as_ref().unwrap();
     let memory = e
         .service
-        .get(view.outcome.as_ref().unwrap().memory_id.as_deref().unwrap())
+        .get(
+            accepted
+                .outcome
+                .as_ref()
+                .unwrap()
+                .memory_id
+                .as_deref()
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(memory.extractor, "user");
     assert_eq!(memory.text, "I review papers on Fridays");
+}
+
+#[test]
+fn notes_are_the_same_whatever_their_case_spacing_or_closing_punctuation() {
+    assert!(inbox::same_note("I use DiskANN.", "  i use  diskann"));
+    assert!(inbox::same_note("\u{201c}Call me V\u{201d}", "call me v!"));
+    assert!(!inbox::same_note("I use DiskANN", "I use SPANN"));
+    assert!(!inbox::same_note(".", ""));
 }

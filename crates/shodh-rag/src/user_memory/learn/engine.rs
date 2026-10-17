@@ -14,7 +14,7 @@ use super::decide::{self, DecidedBy, Decision, DecisionRecord, Deterministic, Ju
 use super::extract::{self, Candidate, SourceText, TurnInput, MAX_SOURCE_CHARS};
 use super::inbox::{
     AppliedOutcome, Inbox, NewProposal, Proposal, ProposalAction, ProposalOrigin, ProposalStatus,
-    ProposalView, PutOutcomeView, Rejection, StatusEvent, Undo, UsageCounter,
+    ProposalView, PutOutcomeView, Rejection, RequestedOutcome, StatusEvent, Undo, UsageCounter,
 };
 use super::{explicit, sensitivity};
 use super::{
@@ -393,9 +393,10 @@ impl Learner {
     /// [`explicit::memory_request`] on their message of turn `turn_id`) as a note
     /// suggestion, without a model. It is the user's own words, so it is stored with
     /// extractor `user`, and only when the user accepts it. Asking is not learning: it is
-    /// filed whatever the learning mode, is never applied automatically, and neither the
-    /// daily caps nor an earlier rejection of the same words hold it back. Returns the
-    /// suggestion, or `None` when the same note is already waiting or saved.
+    /// filed whatever the learning mode, is never applied automatically, and the daily caps
+    /// do not hold it back. A note the user already rejected (or undid) is not offered
+    /// again, whether they asked for it or the learner suggested it
+    /// ([`Inbox::insert_requested`]).
     pub fn file_user_note(
         &self,
         request: &explicit::MemoryRequest,
@@ -403,7 +404,7 @@ impl Learner {
         turn_id: &str,
         at: DateTime<Utc>,
         scope: Scope,
-    ) -> LearnResult<Option<ProposalView>> {
+    ) -> LearnResult<RequestedOutcome> {
         let content = MemoryContent::Note {
             text: request.note.clone(),
         };
@@ -441,10 +442,7 @@ impl Learner {
             confidence: 1.0,
             sensitive,
         };
-        Ok(self
-            .inbox
-            .insert_requested(new, self.now())?
-            .map(ProposalView::from))
+        self.inbox.insert_requested(new, self.now())
     }
 
     /// Stores a suggestion and applies it automatically when eligible.

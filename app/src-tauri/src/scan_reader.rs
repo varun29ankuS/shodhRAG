@@ -303,6 +303,21 @@ async fn queue_legacy_scans(app: &AppHandle, rag: &AsyncRwLock<ComprehensiveRAG>
     }
 }
 
+/// A reported file's metadata, naming `owner` (the source whose chunks
+/// the file has now, when it is indexed) as its source, so it is read again
+/// for that source. An owner of no source (`""`) names none.
+fn with_current_owner(metadata: &mut HashMap<String, String>, owner: Option<&String>) {
+    match owner {
+        Some(owner) if owner.is_empty() => {
+            metadata.remove("space_id");
+        }
+        Some(owner) => {
+            metadata.insert("space_id".to_string(), owner.clone());
+        }
+        None => {}
+    }
+}
+
 async fn reread(app: AppHandle, rag: Arc<AsyncRwLock<ComprehensiveRAG>>, announce: bool) {
     queue_legacy_scans(&app, &rag).await;
     let files = app.state::<ScanReaderState>().take_files().await;
@@ -315,22 +330,29 @@ async fn reread(app: AppHandle, rag: Arc<AsyncRwLock<ComprehensiveRAG>>, announc
     }
     crate::inbox_commands::post(&app, progress_item(InboxStatus::Working, files.len())).await;
 
-    let indexed: BTreeSet<String> = match rag.read().await.document_sources().await {
-        Ok(rows) => rows.into_iter().map(|row| row.source).collect(),
+    // Each indexed file's owner now: a folder may have adopted a file since
+    // it was reported, which then belongs to that folder, not the source it
+    // was reported with.
+    let owners: HashMap<String, String> = match rag.read().await.document_sources().await {
+        Ok(rows) => rows
+            .into_iter()
+            .map(|row| (row.source, row.space_id))
+            .collect(),
         Err(e) => {
             tracing::warn!(error = %format!("{e:#}"), "indexed files not listed");
-            BTreeSet::new()
+            HashMap::new()
         }
     };
     let folders = app.state::<FolderSyncState>();
     let mut to_sync = BTreeSet::new();
     let mut read_again = 0usize;
-    for (path, metadata) in files {
+    for (path, mut metadata) in files {
         let file = PathBuf::from(&path);
         if !file.is_file() {
             continue;
         }
         let key = normalize_source_path(&file);
+        with_current_owner(&mut metadata, owners.get(&key));
         if let Some(source_id) = metadata.get("space_id") {
             if folders.forget_file(source_id, &key).await {
                 to_sync.insert(source_id.clone());
@@ -338,7 +360,7 @@ async fn reread(app: AppHandle, rag: Arc<AsyncRwLock<ComprehensiveRAG>>, announc
                 continue;
             }
         }
-        if !indexed.contains(&key) {
+        if !owners.contains_key(&key) {
             continue;
         }
         match shodh_rag::indexing::index_file(&rag, &file, metadata).await {
@@ -417,6 +439,29 @@ mod tests {
         assert_eq!(files["c:/docs/old-scan.pdf"]["space_id"], "s1");
         assert!(!again.has_files().await);
         assert!(again.legacy_checked().await, "recording keeps the check");
+    }
+
+    #[test]
+    fn a_scan_is_read_again_for_the_source_that_owns_it_now() {
+        let reported = || {
+            HashMap::from([
+                ("space_id".to_string(), "folder-old".to_string()),
+                ("title".to_string(), "lease-scan".to_string()),
+            ])
+        };
+        // Adopted by another folder since it was reported.
+        let mut adopted = reported();
+        with_current_owner(&mut adopted, Some(&"folder-new".to_string()));
+        assert_eq!(adopted["space_id"], "folder-new");
+        assert_eq!(adopted["title"], "lease-scan");
+        // Owned by no source now.
+        let mut unowned = reported();
+        with_current_owner(&mut unowned, Some(&String::new()));
+        assert!(!unowned.contains_key("space_id"));
+        // Not indexed: left as reported.
+        let mut gone = reported();
+        with_current_owner(&mut gone, None);
+        assert_eq!(gone, reported());
     }
 
     #[test]

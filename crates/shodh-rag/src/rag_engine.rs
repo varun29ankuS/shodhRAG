@@ -830,6 +830,77 @@ fn legacy_source_spellings(path: &Path, canonical: &str) -> Vec<String> {
     out
 }
 
+/// The owners (`space_id`) of files added in chats start with this: such
+/// files belong to no Library folder, so removing a folder never removes
+/// them, and to where they were added ([`chat_uploads_source`]), so a
+/// workspace's chats see only their own.
+pub const CHAT_UPLOADS_PREFIX: &str = "chat-uploads:";
+
+/// The owner of files added in a chat outside every workspace (the main Ask).
+pub const CHAT_UPLOADS_MAIN: &str = "chat-uploads:main";
+
+/// The owner an earlier build of this change gave every chat upload; such
+/// files are the main Ask's ([`RAGEngine::hand_over_chat_uploads`]).
+#[cfg(test)]
+const LEGACY_CHAT_UPLOADS: &str = "chat-uploads";
+
+/// The owner of a file added in a chat of `workspace` (`None`: the main
+/// Ask): `chat-uploads:<workspace id>`, or [`CHAT_UPLOADS_MAIN`]. `None` for
+/// a workspace id that cannot be one (empty, too long, a character other
+/// than letters, digits, `-` and `_`, or `main`, which names the main Ask).
+pub fn chat_uploads_source(workspace: Option<&str>) -> Option<String> {
+    let Some(id) = workspace else {
+        return Some(CHAT_UPLOADS_MAIN.to_string());
+    };
+    let plain = !id.is_empty()
+        && id.len() <= 200
+        && id != "main"
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    plain.then(|| format!("{CHAT_UPLOADS_PREFIX}{id}"))
+}
+
+/// Whether `space_id` owns files added in chats rather than being a source
+/// of the Library: such an owner is never removed or indexed as a folder.
+pub fn is_chat_uploads(space_id: &str) -> bool {
+    space_id == "chat-uploads" || space_id.starts_with(CHAT_UPLOADS_PREFIX)
+}
+
+/// Whether chunk metadata (`metadata_json`) is that of a file added in a
+/// chat: only the chat upload records `uploaded_at`.
+fn added_in_chat(metadata_json: &str) -> bool {
+    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(metadata_json)
+        .is_ok_and(|metadata| metadata.contains_key("uploaded_at"))
+}
+
+/// The spellings under which an indexer may have stored the file or folder
+/// `path` ([`normalize_source_path`] and [`legacy_source_spellings`]),
+/// without a trailing separator.
+fn source_spellings(path: &Path) -> Vec<String> {
+    let canonical = normalize_source_path(path);
+    let mut spellings = vec![canonical.clone()];
+    spellings.extend(legacy_source_spellings(path, &canonical));
+    spellings
+        .into_iter()
+        .map(|s| s.trim_end_matches(['/', '\\']).to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Whether the stored `source` is one of `spellings` (a file) or lies under
+/// one of them (a folder), across a separator: `c:/research/papers` holds
+/// `c:/research/papers/a.pdf`, never `c:/research/papers 2024/a.pdf`. Plain
+/// string comparison, so no character in a path acts as a wildcard.
+fn lies_under(source: &str, spellings: &[String]) -> bool {
+    spellings
+        .iter()
+        .any(|folder| match source.strip_prefix(folder.as_str()) {
+            Some(rest) => rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\'),
+            None => false,
+        })
+}
+
 /// Human-readable page label (`"3"` or `"3-5"`) from chunk metadata written by
 /// [`insert_page_metadata`]. Returns `None` for unpaged chunks.
 pub fn page_numbers_from_metadata(meta: &HashMap<String, String>) -> Option<String> {
@@ -935,9 +1006,9 @@ enum EmbedderSource {
 }
 
 impl SearchModels {
-    /// Models over a test embedder, without a reranker.
-    #[cfg(test)]
-    pub(crate) fn from_embedder(embeddings: Arc<dyn EmbeddingModel>) -> Self {
+    /// Models over an embedder that is already loaded (the app's tests use
+    /// a deterministic one), without a reranker or OCR model.
+    pub fn from_embedder(embeddings: Arc<dyn EmbeddingModel>) -> Self {
         Self {
             embeddings: EmbedderSource::Loaded(embeddings),
             reranker_dir: None,
@@ -2055,16 +2126,124 @@ impl RAGEngine {
         }
     }
 
-    /// Delete all documents whose source starts with the given folder path.
-    /// Normalizes the prefix and uses starts_with matching so that a folder
-    /// path matches all files indexed under it.
-    pub async fn delete_by_source_prefix(&mut self, folder: &str) -> Result<usize> {
-        let normalized = normalize_source_path(Path::new(folder));
-        self.forget_cached_scans(|row| row.source.starts_with(&normalized))
-            .await;
-        let deleted = self.store.delete_by_source_prefix(&normalized).await?;
-        self.text_search.delete_by_source_prefix(&normalized)?;
+    /// Deletes the Library source `space_id` from the index: every chunk it
+    /// owns and, under `path` (the source's folder, or its file), the chunks
+    /// that no source owns because they were indexed before chunks recorded
+    /// their source (an empty `space_id`), except those under `keep` (the
+    /// folders of the other Library sources). Files added in a chat
+    /// (`uploaded_at` in their metadata) stay: older versions gave them the
+    /// id of the Library source selected at the time, and those are handed
+    /// to [`CHAT_UPLOADS_MAIN`] instead of deleted (they were added before
+    /// workspaces owned their uploads, and nothing records the chat). The
+    /// chunks of every other source stay too: a folder whose path merely
+    /// starts with `path` ("Papers 2024" for "Papers"), or a source listed
+    /// inside it.
+    ///
+    /// Everything is read before anything changes, so a failure while
+    /// reading leaves the index as it was. Returns the chunks deleted.
+    pub async fn delete_library_source(
+        &mut self,
+        space_id: &str,
+        path: Option<&str>,
+        keep: &[String],
+    ) -> Result<usize> {
+        if space_id.trim().is_empty() {
+            anyhow::bail!("a Library source is removed by its id, and none was given");
+        }
+        if is_chat_uploads(space_id) {
+            anyhow::bail!("files added in chats are not a Library source");
+        }
+        let predicate = format!("space_id = '{}'", space_id.replace('\'', "''"));
+        let uploads: std::collections::BTreeSet<String> = self
+            .store
+            .list_chunks(Some(&predicate), 1_000_000)
+            .await?
+            .into_iter()
+            .filter(|chunk| added_in_chat(&chunk.metadata_json))
+            .map(|chunk| chunk.source)
+            .collect();
+        let unowned = match path.map(str::trim).filter(|p| !p.is_empty()) {
+            Some(path) => self.unowned_under(Path::new(path), keep, space_id).await?,
+            None => Vec::new(),
+        };
+        for source in &uploads {
+            self.move_source_to_space(source, space_id, CHAT_UPLOADS_MAIN)
+                .await?;
+        }
+        let mut deleted = self.delete_by_space_id(space_id).await?;
+        deleted += self.delete_chunks(&unowned).await?;
+        Ok(deleted)
+    }
+
+    /// The chunks no source owns of the file `path` or of the files under
+    /// the folder `path` ([`lies_under`]), except files added in a chat,
+    /// files under any of `keep`, and files a source other than `removing`
+    /// has chunks of (a listed single-file source, say, whose path is known
+    /// only from its chunks). Matched by plain string comparison: no `LIKE`
+    /// pattern is involved.
+    async fn unowned_under(
+        &self,
+        path: &Path,
+        keep: &[String],
+        removing: &str,
+    ) -> Result<Vec<crate::storage::SearchHit>> {
+        let spellings = source_spellings(path);
+        let kept: Vec<Vec<String>> = keep
+            .iter()
+            .map(|folder| source_spellings(Path::new(folder)))
+            .collect();
+        let owned_elsewhere: std::collections::HashSet<String> = self
+            .store
+            .document_sources()
+            .await?
+            .into_iter()
+            .filter(|row| !row.space_id.is_empty() && row.space_id != removing)
+            .map(|row| row.source)
+            .collect();
+        Ok(self
+            .store
+            .list_chunks(Some("space_id = '' OR space_id IS NULL"), 1_000_000)
+            .await?
+            .into_iter()
+            .filter(|chunk| {
+                lies_under(&chunk.source, &spellings)
+                    && !kept.iter().any(|k| lies_under(&chunk.source, k))
+                    && !owned_elsewhere.contains(&chunk.source)
+                    && !added_in_chat(&chunk.metadata_json)
+            })
+            .collect())
+    }
+
+    /// Deletes `chunks` by id from LanceDB and the keyword index, with their
+    /// files' OCR cache entries. Returns the chunks deleted.
+    async fn delete_chunks(&mut self, chunks: &[crate::storage::SearchHit]) -> Result<usize> {
+        if chunks.is_empty() {
+            return Ok(0);
+        }
+        let sources: std::collections::BTreeSet<&str> =
+            chunks.iter().map(|chunk| chunk.source.as_str()).collect();
+        for source in sources {
+            self.ocr_cache.remove(source);
+        }
+        for chunk in chunks {
+            self.text_search.delete_by_id(&chunk.id)?;
+        }
         self.text_search.commit()?;
+        let mut deleted = 0;
+        for batch in chunks.chunks(500) {
+            let ids: Vec<String> = batch
+                .iter()
+                .map(|chunk| format!("'{}'", chunk.id.replace('\'', "''")))
+                .collect();
+            deleted += self
+                .store
+                .delete_where(&format!("id IN ({})", ids.join(", ")))
+                .await?;
+        }
+        tracing::info!(
+            deleted,
+            "Deleted chunks without a source under a removed Library source"
+        );
         Ok(deleted)
     }
 
@@ -2116,6 +2295,65 @@ impl RAGEngine {
             chunks = moved,
             "indexed file given to another source"
         );
+        Ok(moved)
+    }
+
+    /// Gives every file of the space `from` to the space `to`
+    /// ([`Self::move_source_to_space`], one file at a time). Returns the
+    /// chunks moved.
+    pub async fn move_space(&mut self, from: &str, to: &str) -> Result<u64> {
+        let sources: std::collections::BTreeSet<String> = self
+            .store
+            .document_sources()
+            .await?
+            .into_iter()
+            .filter(|row| row.space_id == from)
+            .map(|row| row.source)
+            .collect();
+        let mut moved = 0;
+        for source in &sources {
+            moved += self.move_source_to_space(source, from, to).await?;
+        }
+        Ok(moved)
+    }
+
+    /// Gives every file added in a chat that is not owned where it was added
+    /// to the main Ask ([`CHAT_UPLOADS_MAIN`]), once per run, before a folder
+    /// sync could take it for one of its own: files older versions filed
+    /// under the Library source selected at the time (or under no source),
+    /// those an earlier build filed under a single `chat-uploads` owner, and,
+    /// when `workspaces` (the workspaces that exist) is known, those of a
+    /// workspace that was deleted. Nothing records the chat an older upload
+    /// came from, so the main Ask is where it can still be found. Only the
+    /// chat upload records `uploaded_at`. Returns the chunks moved.
+    pub async fn hand_over_chat_uploads(
+        &mut self,
+        workspaces: Option<&std::collections::HashSet<String>>,
+    ) -> Result<u64> {
+        // `_` matches itself too: the filter only narrows what is read; the
+        // metadata is checked exactly below.
+        let candidates = self
+            .store
+            .list_chunks(Some("metadata_json LIKE '%uploaded_at%'"), 1_000_000)
+            .await?;
+        let strays: std::collections::BTreeSet<(String, String)> = candidates
+            .into_iter()
+            .filter(|chunk| added_in_chat(&chunk.metadata_json))
+            .filter(
+                |chunk| match chunk.space_id.strip_prefix(CHAT_UPLOADS_PREFIX) {
+                    Some("main") => false,
+                    Some(workspace) => workspaces.is_some_and(|live| !live.contains(workspace)),
+                    None => true,
+                },
+            )
+            .map(|chunk| (chunk.source, chunk.space_id))
+            .collect();
+        let mut moved = 0;
+        for (source, owner) in &strays {
+            moved += self
+                .move_source_to_space(source, owner, CHAT_UPLOADS_MAIN)
+                .await?;
+        }
         Ok(moved)
     }
 
@@ -3096,6 +3334,282 @@ Language models trained on long documents reach lower perplexity.
         "Lessor: Saffron Estates Pvt. Ltd. Lessee: Tidewater Logistics Pvt. Ltd.\n\n\
                          # Rent\n\n\
                          Monthly rent is INR 4,85,000, payable by the 5th day of each month.\n";
+
+    /// Removing a Library source deletes what it owns and, under its folder,
+    /// only what no source owns: never a neighbour whose path starts the same
+    /// ("Papers 2024" for "Papers"), a source listed inside it, or a file
+    /// added in a chat.
+    #[tokio::test]
+    async fn removing_a_source_deletes_only_what_it_owns() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let papers = dir.path().join("Papers");
+        let later = dir.path().join("Papers 2024");
+        std::fs::create_dir_all(papers.join("nested")).unwrap();
+        std::fs::create_dir_all(&later).unwrap();
+        let owned = |id: &str| HashMap::from([("space_id".to_string(), id.to_string())]);
+        let chat = HashMap::from([(
+            "uploaded_at".to_string(),
+            "2026-10-01T09:00:00Z".to_string(),
+        )]);
+        // Added in a chat by an older version, which gave it the id of the
+        // Library source selected then.
+        let tagged_chat = HashMap::from([
+            (
+                "uploaded_at".to_string(),
+                "2026-10-01T09:00:00Z".to_string(),
+            ),
+            ("space_id".to_string(), "papers".to_string()),
+        ]);
+        let uploads = dir.path().join("uploads");
+        std::fs::create_dir_all(&uploads).unwrap();
+        let files = [
+            (papers.join("own.md"), "zebra", owned("papers")),
+            (later.join("later.md"), "giraffe", owned("later")),
+            (
+                papers.join("nested").join("nested.md"),
+                "pelican",
+                owned("nested"),
+            ),
+            (papers.join("chat.md"), "walrus", chat),
+            (papers.join("legacy.md"), "otter", HashMap::new()),
+            (later.join("legacy.md"), "lynx", HashMap::new()),
+            (uploads.join("tagged.md"), "heron", tagged_chat),
+        ];
+        for (path, word, metadata) in &files {
+            let text = format!(
+                "# Notes\n\nThe {word} was seen near the river at dawn. The {word} \
+                 returned the next morning, and the field notes describe the {word} at length.\n"
+            );
+            std::fs::write(path, text).unwrap();
+            engine
+                .add_document_from_file(path, metadata.clone())
+                .await
+                .unwrap();
+        }
+        let names = |rows: Vec<crate::storage::DocumentSourceRow>| {
+            let mut names: Vec<String> = rows
+                .into_iter()
+                .map(|row| {
+                    let parent = Path::new(&row.source)
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .map(|n| n.to_string_lossy().to_lowercase())
+                        .unwrap_or_default();
+                    let name = Path::new(&row.source)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_lowercase())
+                        .unwrap_or_default();
+                    format!("{parent}/{name}")
+                })
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(names(engine.document_sources().await.unwrap()).len(), 7);
+
+        let papers_path = papers.display().to_string();
+        let deleted = engine
+            .delete_library_source("papers", Some(papers_path.as_str()), &[])
+            .await
+            .unwrap();
+        assert!(deleted >= 2, "its own file and the legacy file under it");
+        assert_eq!(
+            names(engine.document_sources().await.unwrap()),
+            [
+                "nested/nested.md",
+                "papers 2024/later.md",
+                "papers 2024/legacy.md",
+                "papers/chat.md",
+                "uploads/tagged.md",
+            ]
+        );
+        // The upload the older version tagged with the folder is the chats' now.
+        let tagged = normalize_source_path(&uploads.join("tagged.md"));
+        assert!(engine
+            .document_sources()
+            .await
+            .unwrap()
+            .iter()
+            .any(|row| row.source == tagged && row.space_id == CHAT_UPLOADS_MAIN));
+        // The keyword index keeps exactly the same files.
+        for (word, kept) in [
+            ("zebra", false),
+            ("otter", false),
+            ("giraffe", true),
+            ("pelican", true),
+            ("walrus", true),
+            ("lynx", true),
+            ("heron", true),
+        ] {
+            let hits = engine.text_search.search(word, 5).unwrap();
+            assert_eq!(!hits.is_empty(), kept, "{word}");
+        }
+        // A source is removed by its id: none, none removed.
+        let later_path = later.display().to_string();
+        assert!(engine
+            .delete_library_source(" ", Some(later_path.as_str()), &[])
+            .await
+            .is_err());
+    }
+
+    #[test]
+    fn chat_uploads_are_owned_by_where_they_were_added() {
+        assert_eq!(
+            chat_uploads_source(None).as_deref(),
+            Some(CHAT_UPLOADS_MAIN)
+        );
+        assert_eq!(
+            chat_uploads_source(Some("ws-1a2b")).as_deref(),
+            Some("chat-uploads:ws-1a2b")
+        );
+        for bad in ["", "main", "ws'1", "ws\"1", "ws/1", "ws 1"] {
+            assert_eq!(chat_uploads_source(Some(bad)), None, "{bad:?}");
+        }
+        assert!(is_chat_uploads(CHAT_UPLOADS_MAIN));
+        assert!(is_chat_uploads("chat-uploads:ws-1a2b"));
+        assert!(is_chat_uploads("chat-uploads"));
+        assert!(!is_chat_uploads("folder-chat-uploads"));
+    }
+
+    /// Uploads not owned where they were added go to the main Ask: filed
+    /// under a folder or under no source by older versions, under the single
+    /// owner of an earlier build, or under a workspace that was deleted. A
+    /// live workspace's uploads stay, and so do folder files.
+    #[tokio::test]
+    async fn stray_chat_uploads_are_handed_to_the_main_ask() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let uploaded = (
+            "uploaded_at".to_string(),
+            "2026-10-01T09:00:00Z".to_string(),
+        );
+        for (name, owner, upload) in [
+            ("folder-tagged.md", "folder-papers", true),
+            ("untagged.md", "", true),
+            ("legacy.md", LEGACY_CHAT_UPLOADS, true),
+            ("deleted.md", "chat-uploads:ws-gone", true),
+            ("live.md", "chat-uploads:ws-live", true),
+            ("main.md", CHAT_UPLOADS_MAIN, true),
+            ("paper.md", "folder-papers", false),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(
+                &path,
+                format!("# {name}\n\nThe {name} notes describe the river, the bridge and the mill at dawn.\n"),
+            )
+            .unwrap();
+            let mut metadata = HashMap::from([("space_id".to_string(), owner.to_string())]);
+            if upload {
+                metadata.insert(uploaded.0.clone(), uploaded.1.clone());
+            }
+            engine
+                .add_document_from_file(&path, metadata)
+                .await
+                .unwrap();
+        }
+        let owners = |rows: Vec<crate::storage::DocumentSourceRow>| {
+            let mut owners: Vec<(String, String)> = rows
+                .into_iter()
+                .map(|row| {
+                    let name = Path::new(&row.source)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    (name, row.space_id)
+                })
+                .collect();
+            owners.sort();
+            owners
+        };
+        let live = std::collections::HashSet::from(["ws-live".to_string()]);
+        assert!(engine.hand_over_chat_uploads(Some(&live)).await.unwrap() >= 4);
+        let main = CHAT_UPLOADS_MAIN.to_string();
+        assert_eq!(
+            owners(engine.document_sources().await.unwrap()),
+            [
+                ("deleted.md".to_string(), main.clone()),
+                ("folder-tagged.md".to_string(), main.clone()),
+                ("legacy.md".to_string(), main.clone()),
+                ("live.md".to_string(), "chat-uploads:ws-live".to_string()),
+                ("main.md".to_string(), main.clone()),
+                ("paper.md".to_string(), "folder-papers".to_string()),
+                ("untagged.md".to_string(), main.clone()),
+            ]
+        );
+        // Nothing left to hand over; with the workspaces unknown, no
+        // workspace's uploads are touched.
+        assert_eq!(engine.hand_over_chat_uploads(Some(&live)).await.unwrap(), 0);
+        assert_eq!(engine.hand_over_chat_uploads(None).await.unwrap(), 0);
+    }
+
+    /// Unowned chunks under another listed source's folder are that source's
+    /// business: removing a folder that contains it leaves them.
+    #[tokio::test]
+    async fn unowned_files_under_another_listed_folder_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let research = dir.path().join("Research");
+        std::fs::create_dir_all(research.join("Papers")).unwrap();
+        for (path, word) in [
+            (research.join("notes.md"), "otter"),
+            (research.join("Papers").join("paper.md"), "pelican"),
+        ] {
+            std::fs::write(
+                &path,
+                format!("# Notes\n\nThe {word} was seen near the river at dawn. The {word} returned the next morning, and the notes describe the {word}.\n"),
+            )
+            .unwrap();
+            engine
+                .add_document_from_file(&path, HashMap::new())
+                .await
+                .unwrap();
+        }
+        let papers = research.join("Papers").display().to_string();
+        let research_path = research.display().to_string();
+        engine
+            .delete_library_source("research", Some(research_path.as_str()), &[papers])
+            .await
+            .unwrap();
+        let left: Vec<String> = engine
+            .document_sources()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.source)
+            .collect();
+        assert_eq!(left.len(), 1, "{left:?}");
+        assert!(left[0].ends_with("paper.md"), "{left:?}");
+        assert!(!engine.text_search.search("pelican", 5).unwrap().is_empty());
+        assert!(engine.text_search.search("otter", 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn unowned_files_match_a_folder_only_across_a_separator() {
+        let papers = source_spellings(Path::new("/research/papers/"));
+        assert!(
+            papers.contains(&"/research/papers".to_string()),
+            "{papers:?}"
+        );
+        assert!(lies_under("/research/papers", &papers), "the folder itself");
+        assert!(lies_under("/research/papers/a.pdf", &papers));
+        assert!(lies_under("/research/papers/deep/b.pdf", &papers));
+        assert!(!lies_under("/research/papers 2024/a.pdf", &papers));
+        assert!(!lies_under("/research/papersx.pdf", &papers));
+        // Backslash spellings of older indexers, across their separator.
+        let legacy = vec![r"C:\Research\Papers".to_string()];
+        assert!(lies_under(r"C:\Research\Papers\a.pdf", &legacy));
+        assert!(!lies_under(r"C:\Research\Papers 2024\a.pdf", &legacy));
+        // No character is a wildcard.
+        let odd = vec!["/data/50%_o'brien".to_string()];
+        assert!(lies_under("/data/50%_o'brien/a.pdf", &odd));
+        assert!(!lies_under("/data/50xyo'brien/a.pdf", &odd));
+        assert!(added_in_chat(
+            r#"{"uploaded_at":"2026-10-01T09:00:00Z","space_id":""}"#
+        ));
+        assert!(!added_in_chat(r#"{"title":"uploaded_at"}"#));
+        assert!(!added_in_chat("not json"));
+    }
 
     /// Every chunk records the format and the context it was indexed with;
     /// the context holds the document's opening, the stored text does not.

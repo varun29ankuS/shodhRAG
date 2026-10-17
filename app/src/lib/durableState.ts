@@ -28,6 +28,20 @@ export function reconcileSources(
   stored: StoredRead,
   local: LibrarySource[],
   changedSinceStart: boolean,
+  removed: readonly string[] = [],
+): { sources: LibrarySource[]; save: boolean } {
+  const picked = pickSources(stored, local, changedSinceStart);
+  // Sources the backend removed (`removed_library_sources`) never come back
+  // from a list saved before the removal; the list is saved without them.
+  const gone = new Set(removed);
+  if (gone.size === 0 || !picked.sources.some(s => gone.has(s.id))) return picked;
+  return { sources: picked.sources.filter(s => !gone.has(s.id)), save: true };
+}
+
+function pickSources(
+  stored: StoredRead,
+  local: LibrarySource[],
+  changedSinceStart: boolean,
 ): { sources: LibrarySource[]; save: boolean } {
   // A source added or indexed while the copy was read wins over it.
   if (changedSinceStart) return { sources: local, save: true };

@@ -699,6 +699,31 @@ fn plan_search(scope: &RunScope, model: &SourceResolution) -> SearchPlan {
     plan
 }
 
+/// Whether `set` holds none of the scope's own sources: nothing, or only the
+/// owners of the files added in chats, which every limited scope searches.
+fn has_no_sources(set: &SourceSet) -> bool {
+    set.source_paths.is_empty()
+        && set
+            .space_ids
+            .iter()
+            .all(|id| crate::rag_engine::is_chat_uploads(id))
+}
+
+/// Source ids as the model is told them: the owners of files added in chats
+/// are named for what they hold, not by their internal ids.
+fn describe_sources(ids: &[String]) -> String {
+    let uploads = |id: &String| crate::rag_engine::is_chat_uploads(id);
+    let mut named: Vec<&str> = ids
+        .iter()
+        .filter(|id| !uploads(id))
+        .map(String::as_str)
+        .collect();
+    if ids.iter().any(uploads) {
+        named.push("files added in chats");
+    }
+    named.join(", ")
+}
+
 /// What the model is told about the limit the results were searched under.
 fn limit_note(
     scope: &RunScope,
@@ -715,7 +740,7 @@ fn limit_note(
             scoped_files.join(", ")
         ));
     } else if scope.restricted && plan.model_sources.is_empty() && plan.model_files.is_empty() {
-        if set.is_empty() && scope.snippets.is_empty() {
+        if has_no_sources(set) && scope.snippets.is_empty() {
             notes.push(match &scope.workspace_name {
                 Some(name) => format!(
                     "The workspace \"{name}\" has no searchable sources yet (none added, or none \
@@ -742,7 +767,7 @@ fn limit_note(
     } else if plan.use_scope_files && !scope.source_ids.is_empty() {
         notes.push(format!(
             "The user limited this answer to sources {}.",
-            scope.source_ids.join(", ")
+            describe_sources(&scope.source_ids)
         ));
     } else if plan.use_scope_files && !scope.files.is_empty() {
         notes.push(format!(
@@ -1347,6 +1372,37 @@ mod tests {
             folders: vec!["C:/docs/thesis".into()],
             ..RunScope::default()
         }
+    }
+
+    #[test]
+    fn files_added_in_chats_are_named_and_are_not_a_workspace_source() {
+        let only_uploads = SourceSet {
+            space_ids: vec!["chat-uploads:ws-1".into()],
+            source_paths: Vec::new(),
+        };
+        assert!(has_no_sources(&only_uploads));
+        assert!(!has_no_sources(&SourceSet {
+            space_ids: vec!["space-a".into(), "chat-uploads:ws-1".into()],
+            source_paths: Vec::new(),
+        }));
+        // A workspace with no sources of its own is told so, uploads or not.
+        let scope = workspace_scope(&["chat-uploads:ws-1"], &[]);
+        let plan = plan_search(&scope, &ids(&[]));
+        let note = limit_note(&scope, &plan, &only_uploads, &[], &[]).unwrap();
+        assert!(note.contains("has no searchable sources yet"), "{note}");
+        // Internal ids never reach the model.
+        let limited = RunScope {
+            source_ids: vec!["space-a".into(), "chat-uploads:main".into()],
+            ..RunScope::default()
+        };
+        let plan = plan_search(&limited, &ids(&[]));
+        let set = SourceSet {
+            space_ids: plan.space_ids.clone(),
+            source_paths: Vec::new(),
+        };
+        let note = limit_note(&limited, &plan, &set, &[], &[]).unwrap();
+        assert!(note.contains("space-a, files added in chats"), "{note}");
+        assert!(!note.contains("chat-uploads"), "{note}");
     }
 
     #[test]

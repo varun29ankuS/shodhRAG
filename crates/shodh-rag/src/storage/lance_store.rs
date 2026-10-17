@@ -251,19 +251,12 @@ impl LanceStore {
         Ok(count_before - count_after)
     }
 
-    /// Delete all chunks whose source starts with the given prefix.
-    /// Used for folder-level deletion where individual files are stored with
-    /// their full path as the source.
-    pub async fn delete_by_source_prefix(&self, prefix: &str) -> Result<usize> {
+    /// Delete every chunk `predicate` (a LanceDB SQL filter) selects.
+    /// Returns the chunks deleted.
+    pub async fn delete_where(&self, predicate: &str) -> Result<usize> {
         let table = self.db.open_table(&self.table_name).execute().await?;
         let count_before = table.count_rows(None).await.unwrap_or(0);
-        let escaped = prefix
-            .replace('\'', "''")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-        let predicate = format!("source LIKE '{}%'", escaped);
-        tracing::info!("delete_by_source_prefix predicate: {}", predicate);
-        table.delete(&predicate).await?;
+        table.delete(predicate).await?;
         self.compact_table(&table).await;
         let count_after = table.count_rows(None).await.unwrap_or(0);
         Ok(count_before - count_after)
@@ -610,6 +603,15 @@ impl LanceStore {
 
         Ok(all_hits)
     }
+}
+
+/// `text` for a LanceDB SQL `LIKE` pattern: the wildcards (`%`, `_`) and the
+/// escape character (backslash, the default escape of LanceDB's SQL filters)
+/// match themselves. Quotes are not escaped here.
+pub(crate) fn like_escape(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 /// One indexed document as listed by [`LanceStore::document_sources`].

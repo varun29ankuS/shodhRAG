@@ -186,13 +186,15 @@ export function applyFolderSync(source: LibrarySource, outcome: FolderSyncOutcom
 
 export interface IndexingOutcome {
   filesProcessed: number;
+  /** Files already indexed and unchanged, not indexed again (adopted from another source). */
+  filesUnchanged: number;
   totalChunks: number;
   failures: FileFailure[];
 }
 
 /** Normalise the result of `link_folder_enhanced` / `index_single_file` (snake_case `IndexingResult`). */
 export function readIndexingResult(result: unknown): IndexingOutcome {
-  if (!isRecord(result)) return { filesProcessed: 0, totalChunks: 0, failures: [] };
+  if (!isRecord(result)) return { filesProcessed: 0, filesUnchanged: 0, totalChunks: 0, failures: [] };
   const num = (...keys: string[]) => {
     for (const key of keys) {
       const v = result[key];
@@ -209,9 +211,27 @@ export function readIndexingResult(result: unknown): IndexingOutcome {
   }
   return {
     filesProcessed: num('files_processed', 'filesProcessed', 'file_count', 'fileCount'),
+    filesUnchanged: num('files_unchanged', 'filesUnchanged'),
     totalChunks: num('total_chunks', 'totalChunks'),
     failures,
   };
+}
+
+/** The files of a source after an index run: those indexed now and those already indexed. */
+export function indexedFileCount(outcome: IndexingOutcome): number {
+  return outcome.filesProcessed + outcome.filesUnchanged;
+}
+
+/**
+ * The notice after an index run: "Indexed 3 files", "12 files already
+ * indexed" when nothing needed indexing, "Indexed 3 files · 9 already indexed".
+ */
+export function indexedNotice(outcome: IndexingOutcome): string {
+  const files = (n: number) => `${n.toLocaleString()} file${n === 1 ? '' : 's'}`;
+  const { filesProcessed: processed, filesUnchanged: unchanged } = outcome;
+  if (unchanged === 0) return `Indexed ${files(processed)}`;
+  if (processed === 0) return `${files(unchanged)} already indexed`;
+  return `Indexed ${files(processed)} · ${unchanged.toLocaleString()} already indexed`;
 }
 
 /** Progress of a running index, clamped to 0–100. */

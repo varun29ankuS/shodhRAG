@@ -7,6 +7,8 @@ import assert from 'node:assert/strict';
 import {
   applyFolderSync,
   groupSourcesByKind,
+  indexedFileCount,
+  indexedNotice,
   parseStoredSources,
   progressPercent,
   readIndexingResult,
@@ -92,13 +94,26 @@ test('reads snake_case indexing results with failures', () => {
       failures: [{ file: 'C:\\a.pdf', reason: 'Encrypted' }],
       duration: 12,
     }),
-    { filesProcessed: 41, totalChunks: 900, failures: [{ file: 'C:\\a.pdf', reason: 'Encrypted' }] },
+    { filesProcessed: 41, filesUnchanged: 0, totalChunks: 900, failures: [{ file: 'C:\\a.pdf', reason: 'Encrypted' }] },
   );
+});
+
+test('files already indexed count toward the source and its notice', () => {
+  const adopted = readIndexingResult({ files_processed: 0, files_unchanged: 12, total_chunks: 0, failed_files: [], failures: [], duration: 40 });
+  assert.equal(adopted.filesUnchanged, 12);
+  assert.equal(indexedFileCount(adopted), 12);
+  assert.equal(indexedNotice(adopted), '12 files already indexed');
+  const mixed = readIndexingResult({ files_processed: 1, files_unchanged: 11 });
+  assert.equal(indexedFileCount(mixed), 12);
+  assert.equal(indexedNotice(mixed), 'Indexed 1 file · 11 already indexed');
+  assert.equal(indexedNotice(readIndexingResult({ files_processed: 3 })), 'Indexed 3 files');
+  assert.equal(indexedNotice(readIndexingResult({ files_processed: 0 })), 'Indexed 0 files');
+  assert.equal(indexedNotice(readIndexingResult({ files_unchanged: 1 })), '1 file already indexed');
 });
 
 test('falls back to failed_files paths and tolerates junk', () => {
   assert.deepEqual(readIndexingResult({ files_processed: 1, failed_files: ['x.pdf', 3, ''] }).failures, [{ file: 'x.pdf', reason: '' }]);
-  assert.deepEqual(readIndexingResult(null), { filesProcessed: 0, totalChunks: 0, failures: [] });
+  assert.deepEqual(readIndexingResult(null), { filesProcessed: 0, filesUnchanged: 0, totalChunks: 0, failures: [] });
   assert.equal(readIndexingResult({ filesProcessed: 7 }).filesProcessed, 7);
 });
 

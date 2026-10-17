@@ -62,7 +62,7 @@ function writeDurable(key: DurableKey, value: unknown): Promise<void> {
 }
 
 // Core components
-import { applyFolderSync, parseStoredSources, readIndexingResult, scannedPagesStep, serializeSources, SOURCES_STORAGE_KEY, syncedFolders, withPathCase } from './features/library/sources';
+import { applyFolderSync, indexedFileCount, indexedNotice, parseStoredSources, readIndexingResult, scannedPagesStep, serializeSources, SOURCES_STORAGE_KEY, syncedFolders, withPathCase } from './features/library/sources';
 import { explainFailure } from './features/library/indexingAdvice';
 import type { FolderSyncOutcome, LibrarySource } from './features/library/sources';
 import { addableFolders, indexedFilePaths, librarySourcesChip, nativePath, NOT_ADDED_REASON, reconcileSources, searchedSources } from './features/library/reconcile';
@@ -186,7 +186,7 @@ function AppSplitView() {
   // Latest sources and indexing actions for listeners registered once (drag and drop).
   const sourcesRef = useRef<Source[]>(sources);
   sourcesRef.current = sources;
-  const indexSourceRef = useRef<((source: Source, kind: 'folder' | 'file') => Promise<void>) | null>(null);
+  const indexSourceRef = useRef<((source: Source, kind: 'folder' | 'file', adopt?: boolean) => Promise<void>) | null>(null);
   const indexingBusyRef = useRef<(() => boolean) | null>(null);
   // Text placed in the Ask composer by another view ("Ask about this file").
   const [askDraft, setAskDraft] = useState<{ text: string; seq: number } | null>(null);
@@ -880,8 +880,9 @@ function AppSplitView() {
                     selected: true,
                   };
                   if (!known) setSources(prev => [...prev, source]);
-                  // Sequential: progress events carry no source id.
-                  await indexSourceRef.current?.(source, isDirectory ? 'folder' : 'file');
+                  // Sequential: progress events carry no source id. A folder
+                  // added by dropping it adopts its indexed files, as when picked.
+                  await indexSourceRef.current?.(source, isDirectory ? 'folder' : 'file', !known);
                 }
               }
             } catch (error) {
@@ -1182,8 +1183,12 @@ function AppSplitView() {
    * Index `source.path` into `source.id` and record the outcome on the
    * source: file count, completion time and per-file failures, or the error.
    * Re-indexing is idempotent (each file's previous chunks are replaced).
+   * `adopt` (a folder being added): files of the folder already indexed
+   * under a source the Library no longer lists, unchanged, are taken over
+   * instead of indexed again. Indexing a source again leaves it off, so
+   * every file is indexed.
    */
-  const indexSource = async (source: Source, kind: 'folder' | 'file' = 'folder') => {
+  const indexSource = async (source: Source, kind: 'folder' | 'file' = 'folder', adopt = false) => {
     setCurrentlyIndexing(source.id);
     setSources(prev => prev.map(s => s.id === source.id
       ? { ...s, status: 'indexing' as const, progress: 0, processedCount: 0, currentFile: undefined, currentStep: undefined, lastError: undefined }
@@ -1196,14 +1201,14 @@ function AppSplitView() {
             spaceId: source.id,
             // Nested struct fields are snake_case. An empty file_types list
             // means every type the indexer supports.
-            options: { skip_indexed: false, watch_changes: false, process_subdirs: true, priority: 'normal', file_types: [] },
+            options: { skip_indexed: adopt, watch_changes: false, process_subdirs: true, priority: 'normal', file_types: [] },
           });
       const outcome = readIndexingResult(raw);
       setSources(prev => prev.map(s => s.id === source.id
         ? {
             ...s,
             status: 'ready' as const,
-            fileCount: outcome.filesProcessed,
+            fileCount: indexedFileCount(outcome),
             indexedAt: new Date().toISOString(),
             failures: outcome.failures.length > 0 ? outcome.failures : undefined,
             progress: undefined,
@@ -1214,7 +1219,7 @@ function AppSplitView() {
         : s));
       await updateStats();
       const failed = outcome.failures.length;
-      notify.success(`Indexed ${outcome.filesProcessed.toLocaleString()} file${outcome.filesProcessed === 1 ? '' : 's'}`, {
+      notify.success(indexedNotice(outcome), {
         description: failed > 0 ? `${source.name} · ${failed} could not be indexed` : source.name,
       });
     } catch (error) {
@@ -1285,7 +1290,7 @@ function AppSplitView() {
       selected: true,
     };
     setSources(prev => [...prev, newSource]);
-    await indexSource(newSource, 'folder');
+    await indexSource(newSource, 'folder', true);
   };
 
   /**

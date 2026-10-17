@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { ESC_LOCAL_SELECTOR, escapeStaysLocal } from '../src/lib/escapeScope.ts';
+import { ESC_LOCAL_SELECTOR, escapeStaysLocal, insideOtherDialog, instructionsEscape } from '../src/lib/escapeScope.ts';
 
 interface Node {
   id: string;
@@ -47,14 +47,38 @@ test('the PDF viewer marks itself while snipping and handles snip Esc before a p
   assert.match(findBar, /if \(e\.key !== 'Escape'\) return;\s+e\.preventDefault\(\);\s+closeFind\(\);/);
 });
 
-test('Esc in the Instructions popover or on its button closes it, marked handled; an edit cancels first', () => {
-  const app = readFileSync(new URL('../src/App-SplitView.tsx', import.meta.url), 'utf8');
-  const start = app.indexOf('ref={instructionsButtonRef}');
-  const wrapper = app.slice(app.lastIndexOf('<div', start), start);
-  assert.match(wrapper, /if \(!showSystemPromptEditor \|\| e\.key !== 'Escape' \|\| e\.isDefaultPrevented\(\)\) return;\s+e\.preventDefault\(\);/);
-  const popover = app.slice(start, app.indexOf('Clear all', start));
-  // The edit field cancels itself and marks Esc handled before the popover sees it.
-  assert.match(popover, /if \(e\.key === 'Escape'\) \{\s+\/\/[^\n]*\n\s+e\.preventDefault\(\);\s+setEditingInstructionIdx\(null\);/);
-  // Focus starts inside the popover, so Esc reaches it on every webview.
-  assert.match(popover, /aria-label="New instruction"[\s\S]{0,200}autoFocus/);
+const esc = (over: Partial<Parameters<typeof instructionsEscape>[0]> = {}) =>
+  instructionsEscape({ key: 'Escape', handled: false, editing: false, inOtherDialog: false, ...over });
+
+test('Esc while the Instructions popover is open cancels an edit first, then closes it', () => {
+  assert.equal(esc({ editing: true }), 'cancel-edit');
+  assert.equal(esc(), 'close');
+});
+
+test('the popover leaves other keys, handled keys and keys of a dialog on top alone', () => {
+  assert.equal(esc({ key: 'Enter' }), 'ignore');
+  assert.equal(esc({ handled: true }), 'ignore');
+  assert.equal(esc({ inOtherDialog: true, editing: true }), 'ignore');
+});
+
+/** A target inside (or outside) a `[role="dialog"]`, for `insideOtherDialog`. */
+const inDialog = (id: string, dialog: boolean) => ({
+  id,
+  local: false,
+  closest: (selector: string) => {
+    assert.equal(selector, '[role="dialog"]');
+    return dialog ? {} : null;
+  },
+});
+
+test('Esc in a dialog over the preview belongs to that dialog, not the preview', () => {
+  const feedbackField = inDialog('feedback', true);
+  const previewButton = inDialog('preview', true);
+  const page = inDialog('page', false);
+  const preview = panel(previewButton);
+  assert.equal(insideOtherDialog(feedbackField, preview), true);
+  assert.equal(insideOtherDialog(previewButton, preview), false, 'the preview is a dialog itself');
+  assert.equal(insideOtherDialog(page, preview), false);
+  assert.equal(insideOtherDialog(null, preview), false);
+  assert.equal(insideOtherDialog(feedbackField, null), true);
 });

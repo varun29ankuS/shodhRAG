@@ -102,6 +102,7 @@ import { TableModelPrompt } from './features/setup/TableModelPrompt';
 import { AskView } from './features/ask/AskView';
 import { failureNotice, imageNotice, readImageText } from './features/ask/imageNotice';
 import type { ImageOrigin } from './features/ask/imageNotice';
+import { insideOtherDialog, instructionsEscape } from './lib/escapeScope';
 import { composerAttachments } from './features/ask/imageAttachments';
 import { endsRun, withIndexingProgress } from './features/library/indexingProgress';
 import type { IndexingProgressPayload } from './features/library/indexingProgress';
@@ -491,8 +492,44 @@ function AppSplitView() {
   const [newInstructionText, setNewInstructionText] = useState('');
   const [editingInstructionIdx, setEditingInstructionIdx] = useState<number | null>(null);
   const [editingInstructionText, setEditingInstructionText] = useState('');
-  // Focus returns to the Instructions button when its popover closes.
+  // Focus returns to the Instructions button when its popover closes, and to the
+  // new-instruction field when a row's control it was on goes away (Save, Cancel,
+  // Remove, Clear all), so it never falls to the page body.
   const instructionsButtonRef = useRef<HTMLButtonElement>(null);
+  const newInstructionInputRef = useRef<HTMLInputElement>(null);
+  const instructionsPopoverRef = useRef<HTMLDivElement>(null);
+  const focusNewInstruction = () => {
+    requestAnimationFrame(() => newInstructionInputRef.current?.focus());
+  };
+  // Esc while the popover is open, wherever focus is (even on the page body after a
+  // row was removed): cancels an edit, else closes the popover, and is marked handled
+  // so a running answer is never interrupted (features/ask/AskView's Esc). Capture
+  // phase, before any other handler sees the key.
+  useEffect(() => {
+    if (!showSystemPromptEditor) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const action = instructionsEscape({
+        key: e.key,
+        handled: e.defaultPrevented,
+        editing: editingInstructionIdx !== null,
+        inOtherDialog: insideOtherDialog<Element>(e.target instanceof Element ? e.target : null, instructionsPopoverRef.current),
+      });
+      if (action === 'ignore') return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (action === 'cancel-edit') {
+        setEditingInstructionIdx(null);
+        setEditingInstructionText('');
+        focusNewInstruction();
+        return;
+      }
+      setShowSystemPromptEditor(false);
+      setEditingInstructionIdx(null);
+      instructionsButtonRef.current?.focus();
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [showSystemPromptEditor, editingInstructionIdx]);
 
   // Derive the system prompt from the active conversation
   const spaceSystemPrompt = activeConversation?.systemPrompt || '';
@@ -1481,19 +1518,7 @@ function AppSplitView() {
               />
             )}
             {activeTab === 'ask' && activeConversationId && (
-              <div
-                className="relative"
-                // Esc closes the popover, from its fields or from the Instructions
-                // button (an edit in progress cancels itself first), and is marked
-                // handled, so it never stops a running answer.
-                onKeyDown={e => {
-                  if (!showSystemPromptEditor || e.key !== 'Escape' || e.isDefaultPrevented()) return;
-                  e.preventDefault();
-                  setShowSystemPromptEditor(false);
-                  setEditingInstructionIdx(null);
-                  instructionsButtonRef.current?.focus();
-                }}
-              >
+              <div className="relative">
                 <button
                   ref={instructionsButtonRef}
                   type="button"
@@ -1518,6 +1543,7 @@ function AppSplitView() {
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => { setShowSystemPromptEditor(false); setEditingInstructionIdx(null); }} />
                     <div
+                      ref={instructionsPopoverRef}
                       role="dialog"
                       aria-label="Custom instructions"
                       className="absolute right-0 top-8 z-50 w-96 rounded-lg border shadow-xl"
@@ -1566,13 +1592,11 @@ function AppSplitView() {
                                       type="text"
                                       value={editingInstructionText}
                                       onChange={e => setEditingInstructionText(e.target.value)}
+                                      // Esc (cancel the edit) is handled by the popover's window listener.
                                       onKeyDown={e => {
-                                        if (e.key === 'Enter') commitEditInstruction();
-                                        if (e.key === 'Escape') {
-                                          // Cancels the edit only: not the popover, not a running answer.
-                                          e.preventDefault();
-                                          setEditingInstructionIdx(null);
-                                          setEditingInstructionText('');
+                                        if (e.key === 'Enter') {
+                                          commitEditInstruction();
+                                          focusNewInstruction();
                                         }
                                       }}
                                       aria-label="Edit instruction"
@@ -1582,7 +1606,7 @@ function AppSplitView() {
                                     />
                                     <button
                                       type="button"
-                                      onClick={commitEditInstruction}
+                                      onClick={() => { commitEditInstruction(); focusNewInstruction(); }}
                                       className="shrink-0 p-0.5 rounded"
                                       title="Save"
                                       aria-label="Save instruction"
@@ -1591,7 +1615,7 @@ function AppSplitView() {
                                     </button>
                                     <button
                                       type="button"
-                                      onClick={() => { setEditingInstructionIdx(null); setEditingInstructionText(''); }}
+                                      onClick={() => { setEditingInstructionIdx(null); setEditingInstructionText(''); focusNewInstruction(); }}
                                       className="shrink-0 p-0.5 rounded"
                                       title="Cancel (Esc)"
                                       aria-label="Cancel editing"
@@ -1617,7 +1641,7 @@ function AppSplitView() {
                                       </button>
                                       <button
                                         type="button"
-                                        onClick={() => { removeInstruction(idx); notify.success('Instruction removed'); }}
+                                        onClick={() => { removeInstruction(idx); notify.success('Instruction removed'); focusNewInstruction(); }}
                                         className="p-0.5 rounded transition-colors"
                                         style={{ color: colors.error }}
                                         title="Remove"
@@ -1638,13 +1662,15 @@ function AppSplitView() {
                       <div className="px-3 py-2 border-t" style={{ borderColor: colors.border }}>
                         <div className="flex items-center gap-1.5">
                           <input
+                            ref={newInstructionInputRef}
                             type="text"
                             value={newInstructionText}
                             onChange={e => setNewInstructionText(e.target.value)}
                             onKeyDown={e => { if (e.key === 'Enter') addInstruction(); }}
                             placeholder="Add an instruction..."
                             aria-label="New instruction"
-                            // Focus moves into the popover as it opens, so Esc reaches it.
+                            // Focus starts here as the popover opens, and comes back here
+                            // after Save, Cancel, Remove or Clear all (focusNewInstruction).
                             autoFocus
                             className="flex-1 text-[11px] rounded-md border px-2 py-1.5 outline-none"
                             style={{
@@ -1667,9 +1693,11 @@ function AppSplitView() {
                         </div>
                         {instructionsList.length > 0 && (
                           <button
+                            type="button"
                             onClick={() => {
                               saveInstructions([]);
                               notify.success('All instructions cleared');
+                              focusNewInstruction();
                             }}
                             className="text-[10px] mt-1.5 transition-colors"
                             style={{ color: colors.error }}

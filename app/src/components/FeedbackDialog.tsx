@@ -131,6 +131,8 @@ export function FeedbackDialog({ isOpen, onClose, type = 'feedback' }: FeedbackD
   // going; Tab stays inside it.
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Escape') {
+      // A control inside that already handled Esc keeps it.
+      if (e.isDefaultPrevented()) return;
       e.preventDefault();
       e.stopPropagation();
       close();

@@ -20,3 +20,35 @@ export function escapeStaysLocal<T extends ClosestTarget>(target: T | null, cont
   if (!target || !container || !container.contains(target)) return false;
   return target.closest(ESC_LOCAL_SELECTOR) !== null;
 }
+
+/**
+ * Whether Esc on `target` belongs to another dialog than `container`: the target is
+ * outside it and inside some `[role="dialog"]` (the feedback dialog, the Instructions
+ * popover, the palette, over the source preview). That dialog closes, not this one.
+ */
+export function insideOtherDialog<T extends ClosestTarget>(target: T | null, container: Container<T> | null): boolean {
+  if (!target) return false;
+  if (container && container.contains(target)) return false;
+  return target.closest('[role="dialog"]') !== null;
+}
+
+export type InstructionsEscapeAction = 'ignore' | 'cancel-edit' | 'close';
+
+export interface InstructionsEscapeInput {
+  key: string;
+  /** Something before marked the key handled. */
+  handled: boolean;
+  /** An instruction is being edited. */
+  editing: boolean;
+  /** The key is in another dialog on top (see `insideOtherDialog`). */
+  inOtherDialog: boolean;
+}
+
+/**
+ * What Esc does while the Instructions popover is open, wherever focus is: it cancels an
+ * edit first, else closes the popover. Keys another dialog or handler owns are left alone.
+ */
+export function instructionsEscape(input: InstructionsEscapeInput): InstructionsEscapeAction {
+  if (input.key !== 'Escape' || input.handled || input.inOtherDialog) return 'ignore';
+  return input.editing ? 'cancel-edit' : 'close';
+}

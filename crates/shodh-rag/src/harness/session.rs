@@ -843,7 +843,8 @@ impl Inner {
             self.calls_in_run.store(0, Ordering::SeqCst);
             lock(&self.tools_ok_in_run).clear();
             self.passages_in_run.reset();
-            self.passages_in_run.seed(&scope.carried);
+            self.passages_in_run
+                .seed(&scope.carried, scope.carried_through);
             self.plan_in_run.reset();
             let question = scope
                 .question

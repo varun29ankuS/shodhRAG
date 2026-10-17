@@ -628,6 +628,153 @@ fn wants_neighbor_expansion(meta: &HashMap<String, String>) -> bool {
     !meta.contains_key("unit_kind")
 }
 
+/// Metadata key of a result widened with its neighbouring chunks: where the
+/// chunk that matched and each neighbour lie in its snippet ([`SnippetParts`],
+/// as JSON). Readers that cut the snippet use it to keep the matched chunk.
+pub const SNIPPET_PARTS_KEY: &str = "snippet_parts";
+
+/// A neighbouring chunk joined to a result's snippet: its byte range in the
+/// snippet and the pages it covers (`None` for an unpaged chunk).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NeighborPart {
+    pub start: usize,
+    pub end: usize,
+    #[serde(default)]
+    pub pages: Option<(u32, u32)>,
+}
+
+/// The parts of a snippet widened with neighbours, as byte ranges in it: the
+/// chunk that matched, and the neighbours before and after it in reading order.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct SnippetParts {
+    pub matched: (usize, usize),
+    pub before: Vec<NeighborPart>,
+    pub after: Vec<NeighborPart>,
+}
+
+impl SnippetParts {
+    /// The parts `meta` records for `snippet`, when they describe it: every
+    /// range on char boundaries inside it, in reading order, none overlapping.
+    /// `None` for a snippet that was not widened.
+    pub fn of(snippet: &str, meta: &HashMap<String, String>) -> Option<Self> {
+        let parts: Self = serde_json::from_str(meta.get(SNIPPET_PARTS_KEY)?).ok()?;
+        let ranges = parts
+            .before
+            .iter()
+            .map(|p| (p.start, p.end))
+            .chain(std::iter::once(parts.matched))
+            .chain(parts.after.iter().map(|p| (p.start, p.end)));
+        let mut reached = 0;
+        for (start, end) in ranges {
+            if start < reached
+                || end < start
+                || end > snippet.len()
+                || !snippet.is_char_boundary(start)
+                || !snippet.is_char_boundary(end)
+            {
+                return None;
+            }
+            reached = end;
+        }
+        Some(parts)
+    }
+}
+
+/// The pages a chunk covers, from the metadata written at indexing time
+/// (`page_start`/`page_end`, else `page`), lowest first. `None` for an
+/// unpaged chunk.
+pub fn page_range_from_metadata(meta: &HashMap<String, String>) -> Option<(u32, u32)> {
+    let read = |key: &str| meta.get(key).and_then(|v| v.trim().parse::<u32>().ok());
+    match (read("page_start"), read("page_end")) {
+        (Some(start), Some(end)) => Some((start.min(end), start.max(end))),
+        (Some(one), None) | (None, Some(one)) => Some((one, one)),
+        (None, None) => read("page").map(|p| (p, p)),
+    }
+}
+
+/// Appends `piece` to `text`, a line break after what is there, and returns
+/// the byte range it took.
+fn push_part(text: &mut String, piece: &str) -> (usize, usize) {
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    let start = text.len();
+    text.push_str(piece);
+    (start, text.len())
+}
+
+/// Appends `piece`, the text of neighbour `hit` or part of it, to `text`
+/// ([`push_part`]) and returns its part.
+fn push_neighbor(text: &mut String, piece: &str, hit: &crate::storage::SearchHit) -> NeighborPart {
+    let (start, end) = push_part(text, piece);
+    let pages = serde_json::from_str::<HashMap<String, String>>(&hit.metadata_json)
+        .ok()
+        .and_then(|meta| page_range_from_metadata(&meta));
+    NeighborPart { start, end, pages }
+}
+
+/// Shortest repeat of one chunk's end at the next one's start that is taken
+/// for the window overlap, in characters: a shorter one ("the", a number) is
+/// as likely a coincidence of two different sentences.
+const MIN_OVERLAP_CHARS: usize = 12;
+
+/// Length in bytes of the longest end of `first` that `second` starts with
+/// (sliding windows repeat up to `chunk_overlap` bytes of a chunk at the start
+/// of the next), when it is at least [`MIN_OVERLAP_CHARS`] long; else 0. On a
+/// char boundary of both.
+fn overlap_len(first: &str, second: &str) -> usize {
+    let longest = first.len().min(second.len());
+    (1..=longest)
+        .rev()
+        .filter(|&len| second.is_char_boundary(len))
+        .find(|&len| first.ends_with(&second[..len]))
+        .filter(|&len| second[..len].chars().count() >= MIN_OVERLAP_CHARS)
+        .unwrap_or(0)
+}
+
+/// `core`, the text of chunk `chunk_index`, with the `neighbors` of the same
+/// document joined around it in reading order, one line break apart, and
+/// where each part lies in the joined text. Text a neighbour repeats of the
+/// piece next to it (the windows' overlap) is left out of the neighbour.
+fn join_neighbors(
+    core: &str,
+    chunk_index: u32,
+    neighbors: &[crate::storage::SearchHit],
+) -> (String, SnippetParts) {
+    let mut ordered: Vec<&crate::storage::SearchHit> = neighbors
+        .iter()
+        .filter(|hit| hit.chunk_index != chunk_index)
+        .collect();
+    ordered.sort_by_key(|hit| hit.chunk_index);
+    let before: Vec<&crate::storage::SearchHit> = ordered
+        .iter()
+        .copied()
+        .filter(|hit| hit.chunk_index < chunk_index)
+        .collect();
+    let after: Vec<&crate::storage::SearchHit> = ordered
+        .iter()
+        .copied()
+        .filter(|hit| hit.chunk_index > chunk_index)
+        .collect();
+    let mut text = String::new();
+    let mut parts = SnippetParts::default();
+    for (i, hit) in before.iter().enumerate() {
+        let next = before.get(i + 1).map_or(core, |h| h.text.as_str());
+        let piece = &hit.text[..hit.text.len() - overlap_len(&hit.text, next)];
+        parts.before.push(push_neighbor(&mut text, piece, hit));
+    }
+    parts.matched = push_part(&mut text, core);
+    for (i, hit) in after.iter().enumerate() {
+        let previous = match i {
+            0 => core,
+            _ => after[i - 1].text.as_str(),
+        };
+        let piece = &hit.text[overlap_len(previous, &hit.text)..];
+        parts.after.push(push_neighbor(&mut text, piece, hit));
+    }
+    (text, parts)
+}
+
 /// Whether a chunk is one bibliography entry.
 fn is_reference_entry(meta: &HashMap<String, String>) -> bool {
     meta.get("unit_kind").map(String::as_str) == Some("reference_entry")
@@ -1817,8 +1964,10 @@ impl RAGEngine {
 
     /// Expand top-k results with neighboring chunks from the same document.
     /// For each result, fetches ±window adjacent chunks by chunk_index and
-    /// concatenates them in reading order (prev + current + next). Structure
-    /// chunks are left as they are (see [`wants_neighbor_expansion`]).
+    /// concatenates them in reading order (prev + current + next), recording
+    /// where each part lies under [`SNIPPET_PARTS_KEY`] so a reader that cuts
+    /// the snippet keeps the chunk that matched. Structure chunks are left as
+    /// they are (see [`wants_neighbor_expansion`]).
     async fn expand_with_neighbors(&self, results: &mut [ComprehensiveResult], window: u32) {
         for result in results.iter_mut() {
             if !wants_neighbor_expansion(&result.metadata) {
@@ -1836,35 +1985,19 @@ impl RAGEngine {
 
             match self.store.get_neighbors(&doc_id, chunk_index, window).await {
                 Ok(neighbors) if !neighbors.is_empty() => {
-                    let mut before = String::new();
-                    let mut after = String::new();
-
-                    for neighbor in &neighbors {
-                        if neighbor.chunk_index < chunk_index {
-                            if !before.is_empty() {
-                                before.push('\n');
-                            }
-                            before.push_str(&neighbor.text);
-                        } else if neighbor.chunk_index > chunk_index {
-                            if !after.is_empty() {
-                                after.push('\n');
-                            }
-                            after.push_str(&neighbor.text);
+                    let (expanded, parts) =
+                        join_neighbors(&result.snippet, chunk_index, &neighbors);
+                    // Without its parts a cut would keep the snippet's start, the
+                    // chunk before the match: the result stays unexpanded then.
+                    match serde_json::to_string(&parts) {
+                        Ok(json) => {
+                            result.metadata.insert(SNIPPET_PARTS_KEY.to_string(), json);
+                            result.snippet = expanded;
+                        }
+                        Err(e) => {
+                            tracing::debug!("Neighbor expansion failed for doc {}: {}", doc_id, e);
                         }
                     }
-
-                    let mut expanded = String::new();
-                    if !before.is_empty() {
-                        expanded.push_str(&before);
-                        expanded.push('\n');
-                    }
-                    expanded.push_str(&result.snippet);
-                    if !after.is_empty() {
-                        expanded.push('\n');
-                        expanded.push_str(&after);
-                    }
-
-                    result.snippet = expanded;
                 }
                 Ok(_) => {} // No neighbors found
                 Err(e) => {
@@ -3439,5 +3572,170 @@ mod lazy_embedder_tests {
             !engine.has_search_models(),
             "a model that cannot load offers setup again"
         );
+    }
+}
+
+#[cfg(test)]
+mod neighbor_expansion_tests {
+    use super::*;
+    use crate::storage::SearchHit;
+
+    fn hit(chunk_index: u32, text: &str, page: Option<usize>) -> SearchHit {
+        let mut meta = HashMap::new();
+        insert_page_metadata(&mut meta, page);
+        SearchHit {
+            id: format!("c{chunk_index}"),
+            doc_id: "d1".to_string(),
+            chunk_index,
+            text: text.to_string(),
+            title: "notes.txt".to_string(),
+            source: "c:/notes.txt".to_string(),
+            heading: String::new(),
+            space_id: "s1".to_string(),
+            metadata_json: serde_json::to_string(&meta).unwrap(),
+            citation_json: "{}".to_string(),
+            score: 0.0,
+        }
+    }
+
+    fn parts_meta(parts: &SnippetParts) -> HashMap<String, String> {
+        let mut meta = HashMap::new();
+        meta.insert(
+            SNIPPET_PARTS_KEY.to_string(),
+            serde_json::to_string(parts).unwrap(),
+        );
+        meta
+    }
+
+    #[test]
+    fn the_matched_chunk_and_its_neighbours_are_recorded_where_they_lie() {
+        // Given out of order, as a store may return them; the chunk itself is skipped.
+        let neighbors = [
+            hit(8, "The ferry leaves at dawn.", Some(5)),
+            hit(7, "duplicate of the core", Some(4)),
+            hit(6, "東京の港は朝に開く。", Some(3)),
+        ];
+        let core = "The lighthouse keeper saw a comet.";
+        let (text, parts) = join_neighbors(core, 7, &neighbors);
+        assert_eq!(
+            text,
+            "東京の港は朝に開く。\nThe lighthouse keeper saw a comet.\nThe ferry leaves at dawn."
+        );
+        assert_eq!(&text[parts.matched.0..parts.matched.1], core);
+        assert_eq!(parts.before.len(), 1);
+        assert_eq!(parts.after.len(), 1);
+        let before = parts.before[0];
+        assert_eq!(&text[before.start..before.end], "東京の港は朝に開く。");
+        assert_eq!(before.pages, Some((3, 3)));
+        let after = parts.after[0];
+        assert_eq!(&text[after.start..after.end], "The ferry leaves at dawn.");
+        assert_eq!(after.pages, Some((5, 5)));
+        // The record survives the metadata it travels in.
+        assert_eq!(SnippetParts::of(&text, &parts_meta(&parts)), Some(parts));
+
+        // The first chunk has nothing before it; an unpaged neighbour has no pages.
+        let (text, parts) = join_neighbors(core, 0, &[hit(1, "Next chunk.", None)]);
+        assert_eq!(parts.matched, (0, core.len()));
+        assert!(parts.before.is_empty());
+        assert_eq!(parts.after[0].pages, None);
+        assert_eq!(
+            &text[parts.after[0].start..parts.after[0].end],
+            "Next chunk."
+        );
+    }
+
+    #[test]
+    fn the_windows_overlap_is_not_repeated() {
+        let core = "東京の港は朝に開く。The lighthouse keeper saw a comet over the cliffs.";
+        // The chunk before ends with the core's start, the chunk after starts with its end.
+        let before = format!("Spring tide tables. {}", &core[..40]);
+        let after = format!("{} The ferry leaves at dawn.", &core[core.len() - 20..]);
+        let (text, parts) = join_neighbors(core, 5, &[hit(4, &before, None), hit(6, &after, None)]);
+        assert_eq!(
+            &text[parts.before[0].start..parts.before[0].end],
+            "Spring tide tables. "
+        );
+        assert_eq!(&text[parts.matched.0..parts.matched.1], core);
+        assert_eq!(
+            &text[parts.after[0].start..parts.after[0].end],
+            " The ferry leaves at dawn."
+        );
+        assert_eq!(text.matches("lighthouse").count(), 1);
+        assert_eq!(text.matches("cliffs").count(), 1);
+
+        // A short coincidence is not an overlap.
+        assert_eq!(overlap_len("It was the", "the cat sat"), 0);
+        // In bytes, on char boundaries; a whole neighbour can be the overlap.
+        assert_eq!(
+            overlap_len(
+                "東京の港は朝に開く。東京の港",
+                "東京の港は朝に開く。東京の港は"
+            ),
+            42
+        );
+        assert_eq!(
+            overlap_len(
+                "x 東京の港は朝に開く。東京の港",
+                "東京の港は朝に開く。東京の港 y"
+            ),
+            42
+        );
+        let (text, parts) = join_neighbors(core, 5, &[hit(4, &core[..40], None)]);
+        assert_eq!(parts.before[0].start, parts.before[0].end);
+        assert_eq!(text, core);
+        assert_eq!(SnippetParts::of(&text, &parts_meta(&parts)), Some(parts));
+    }
+
+    #[test]
+    fn parts_that_do_not_describe_the_snippet_are_ignored() {
+        let snippet = "東京\nabc";
+        let at = |matched: (usize, usize)| SnippetParts {
+            matched,
+            ..SnippetParts::default()
+        };
+        assert!(SnippetParts::of(snippet, &HashMap::new()).is_none());
+        assert!(SnippetParts::of(snippet, &parts_meta(&at((7, 10)))).is_some());
+        // Inside a character, past the end, reversed.
+        assert!(SnippetParts::of(snippet, &parts_meta(&at((1, 10)))).is_none());
+        assert!(SnippetParts::of(snippet, &parts_meta(&at((7, 11)))).is_none());
+        assert!(SnippetParts::of(snippet, &parts_meta(&at((8, 7)))).is_none());
+        // A neighbour overlapping the matched chunk.
+        let overlapping = SnippetParts {
+            matched: (3, 10),
+            before: vec![NeighborPart {
+                start: 0,
+                end: 6,
+                pages: None,
+            }],
+            after: Vec::new(),
+        };
+        assert!(SnippetParts::of(snippet, &parts_meta(&overlapping)).is_none());
+        let mut garbled = HashMap::new();
+        garbled.insert(SNIPPET_PARTS_KEY.to_string(), "{not json".to_string());
+        assert!(SnippetParts::of(snippet, &garbled).is_none());
+    }
+
+    #[test]
+    fn page_ranges_come_from_the_chunk_metadata() {
+        let meta = |pairs: &[(&str, &str)]| -> HashMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        assert_eq!(
+            page_range_from_metadata(&meta(&[("page_start", "4"), ("page_end", "2")])),
+            Some((2, 4))
+        );
+        assert_eq!(
+            page_range_from_metadata(&meta(&[("page_end", "6")])),
+            Some((6, 6))
+        );
+        assert_eq!(
+            page_range_from_metadata(&meta(&[("page", " 9 ")])),
+            Some((9, 9))
+        );
+        assert_eq!(page_range_from_metadata(&meta(&[("page", "x")])), None);
+        assert_eq!(page_range_from_metadata(&HashMap::new()), None);
     }
 }

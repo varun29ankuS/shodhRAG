@@ -78,8 +78,11 @@ const box = (name: BoxName): Box => {
  */
 const CHIPS: Box = { x: 0.4083, y: 0.4865, w: 0.0604, h: 0.0277 };
 
-/** The app window: centred under the brand mark, with the caption band below it. */
-const WIN = { x: 240, y: 128, w: 1440, h: 810 };
+/** The app window, on the right; the narration column is on the left. */
+const WIN = { x: 700, y: 225, w: 1120, h: 630 };
+
+/** The narration column. */
+const COLUMN = { x: 120, w: 500 };
 
 /** A shot: what the camera frames, in footage fractions (whole app = the full frame). */
 type Shot = Box;
@@ -203,16 +206,16 @@ export const Act1: React.FC<{ look: LookName }> = ({ look: lookName }) => {
       <div
         style={{
           position: "absolute",
-          left: WIN.x,
-          top: mix(1140, WIN.y, rise),
+          left: mix(2400, WIN.x, rise),
+          top: WIN.y,
           width: WIN.w,
           height: WIN.h,
           borderRadius: 18,
           overflow: "hidden",
           background: "#fff",
           boxShadow: look.shadow,
-          transform: `rotateX(${(1 - rise) * 22}deg)`,
-          transformOrigin: "50% 0%",
+          transform: `rotateY(${(1 - rise) * -24}deg)`,
+          transformOrigin: "100% 50%",
         }}
       >
         <div style={{ position: "absolute", inset: 0, transformOrigin: "50% 50%", transform: `translate(${cam.tx}px, ${cam.ty}px) scale(${cam.scale})` }}>
@@ -246,9 +249,15 @@ export const Act1: React.FC<{ look: LookName }> = ({ look: lookName }) => {
       </div>
 
       {caption ? (
-        <div style={{ position: "absolute", left: WIN.x, top: WIN.y + WIN.h + 34, display: "flex", alignItems: "center", gap: 22, fontFamily: font.sans, color: look.text, opacity: cIn, transform: `translateY(${(1 - cIn) * 12}px)` }}>
-          <div style={{ width: 52, height: 52, borderRadius: 26, background: look.accent, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26, fontWeight: 760 }}>{captionIndex + 1}</div>
-          <div style={{ fontSize: 40, fontWeight: 560, letterSpacing: "-0.02em" }}>{caption.text}</div>
+        <div style={{ position: "absolute", left: COLUMN.x, top: 0, bottom: 0, width: COLUMN.w, display: "flex", flexDirection: "column", justifyContent: "center", fontFamily: font.sans, color: look.text }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 18, marginBottom: 30, opacity: cIn, transform: `translateY(${(1 - cIn) * 14}px)` }}>
+            <div style={{ width: 58, height: 58, borderRadius: 29, background: look.accent, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, fontWeight: 760 }}>{captionIndex + 1}</div>
+            <div style={{ height: 2, width: 64, background: look.accent, opacity: 0.5 }} />
+            <div style={{ fontSize: 22, fontWeight: 650, letterSpacing: "0.2em", textTransform: "uppercase", color: look.sub }}>{`Step ${captionIndex + 1} of ${CAPTIONS.length}`}</div>
+          </div>
+          <div style={{ overflow: "hidden", paddingBottom: 8 }}>
+            <div style={{ fontSize: 54, fontWeight: 700, lineHeight: 1.14, letterSpacing: "-0.03em", transform: `translateY(${(1 - cIn) * 40}px)`, opacity: cIn }}>{caption.text}</div>
+          </div>
         </div>
       ) : null}
 

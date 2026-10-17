@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { Bell, Check, ExternalLink, Inbox as InboxIcon, X } from 'lucide-react';
@@ -7,6 +7,7 @@ import { notify } from '../../lib/notify';
 import { removeWithUndo, undoLast } from '../../lib/undoToast';
 import { relativeTime } from '../../utils/time';
 import { acceptSuggestion, errorText, rejectSuggestion } from '../memory/api';
+import { pendingRejections } from '../memory/rejecting';
 import { parseTarget, publishTarget } from '../agent/navigation';
 import { announceApproval } from './approvalBus';
 import { normalizeViewTab } from '../../lib/viewTabs';
@@ -81,7 +82,17 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
     };
   }, [load]);
 
-  const visible = useMemo(() => items.filter(i => !hidden.has(i.id)), [items, hidden]);
+  // Suggestions being rejected in Settings → Memory are hidden here too.
+  const rejecting = useSyncExternalStore(pendingRejections.subscribe, pendingRejections.get);
+  const visible = useMemo(
+    () =>
+      items.filter(i => {
+        if (hidden.has(i.id)) return false;
+        const suggestionId = i.kind === 'memory' ? str(i.data.suggestionId) : null;
+        return !(suggestionId && rejecting.has(suggestionId));
+      }),
+    [items, hidden, rejecting],
+  );
   const waiting = waitingCount(visible);
   const current = visible[selected] ?? null;
 
@@ -175,13 +186,22 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
     }
     if (action !== 'dismiss') return;
     const suggestionId = item.kind === 'memory' ? str(item.data.suggestionId) : null;
+    // A dismissed suggestion is still pending until the undo window ends: Settings →
+    // Memory's batch accept leaves it out meanwhile (shared ids).
+    const rejection = suggestionId ? pendingRejections.around(suggestionId, () => rejectSuggestion(suggestionId)) : null;
     removeWithUndo({
       message: item.kind === 'memory' ? 'Suggestion dismissed' : 'Removed from the Inbox',
       description: item.title,
-      hide: () => hide(item.id, true),
-      restore: () => hide(item.id, false),
+      hide: () => {
+        hide(item.id, true);
+        rejection?.hide();
+      },
+      restore: () => {
+        hide(item.id, false);
+        rejection?.restore();
+      },
       commit: async () => {
-        if (suggestionId) await rejectSuggestion(suggestionId);
+        if (rejection) await rejection.commit();
         else await invoke('inbox_dismiss', { id: item.id });
         await load();
         hide(item.id, false);

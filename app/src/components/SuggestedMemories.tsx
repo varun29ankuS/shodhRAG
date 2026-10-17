@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useState } from 'react';
+import React, { useCallback, useEffect, useId, useState, useSyncExternalStore } from 'react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { Check, Pencil, RotateCcw, ShieldAlert, Square, X } from 'lucide-react';
 import { cn } from '../lib/utils';
@@ -26,7 +26,8 @@ import {
 } from '../features/memory/suggestions';
 import type { LearnStatus, Suggestion } from '../features/memory/suggestions';
 import { invalidSummary } from '../features/memory/learnUsage';
-import { batchAcceptable, markRejecting, pruneRejecting, withoutRejecting } from '../features/memory/batchAccept';
+import { batchAcceptable, withoutRejecting } from '../features/memory/batchAccept';
+import { pendingRejections } from '../features/memory/rejecting';
 import { formatDate, propertyLabel } from '../features/memory/model';
 import { countOf } from '../lib/plural';
 
@@ -241,8 +242,6 @@ interface SuggestionItemProps {
   onOpenConversation: (id: string) => void;
   /** Its rejection waits out the undo window: hidden, and never in a batch accept. */
   rejecting: boolean;
-  /** The rejection started (true) or was undone or failed (false). */
-  onRejecting: (id: string, on: boolean) => void;
 }
 
 function SuggestionItem({
@@ -252,7 +251,6 @@ function SuggestionItem({
   conversationTitle,
   onOpenConversation,
   rejecting,
-  onRejecting,
 }: SuggestionItemProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Record<string, string>>({});
@@ -263,15 +261,13 @@ function SuggestionItem({
   const sensitive = sensitiveLabel(suggestion.sensitive);
   const conversation = suggestion.conversationId;
 
-  // Hidden at once and rejected when the undo window ends; Undo leaves it pending. The
-  // list keeps it out of "Accept N non-sensitive" meanwhile: it is still pending until then.
+  // Hidden at once and rejected when the undo window ends; Undo leaves it pending. Until
+  // then it is kept out of "Accept N non-sensitive" here and in the Inbox (shared ids).
   const reject = () =>
     removeWithUndo({
       message: 'Suggestion rejected',
       description: suggestionText(suggestion),
-      hide: () => onRejecting(suggestion.id, true),
-      restore: () => onRejecting(suggestion.id, false),
-      commit: () => rejectSuggestion(suggestion.id),
+      ...pendingRejections.around(suggestion.id, () => rejectSuggestion(suggestion.id)),
       onError: err => notify.error('The suggestion was not rejected', { description: errorText(err) }),
     });
 
@@ -429,16 +425,9 @@ export default function SuggestedMemories({
   const [decided, setDecided] = useState<Suggestion[]>([]);
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  // Suggestions whose rejection waits out its undo window (still pending in the backend).
-  const [rejecting, setRejecting] = useState<ReadonlySet<string>>(() => new Set());
-  const onRejecting = useCallback((id: string, on: boolean) => {
-    setRejecting(current => markRejecting(current, id, on));
-  }, []);
-
-  // A rejection carried out (the suggestion no longer waits) is done with.
-  useEffect(() => {
-    setRejecting(current => pruneRejecting(current, pending));
-  }, [pending]);
+  // Suggestions whose rejection waits out its undo window, here or in the Inbox (still
+  // pending in the backend).
+  const rejecting = useSyncExternalStore(pendingRejections.subscribe, pendingRejections.get);
 
   const refresh = useCallback(async () => {
     try {
@@ -534,7 +523,6 @@ export default function SuggestedMemories({
                 conversationTitle={conversationTitle}
                 onOpenConversation={onOpenConversation}
                 rejecting={rejecting.has(s.id)}
-                onRejecting={onRejecting}
               />
             ))}
           </ul>
@@ -556,7 +544,6 @@ export default function SuggestedMemories({
                 conversationTitle={conversationTitle}
                 onOpenConversation={onOpenConversation}
                 rejecting={rejecting.has(s.id)}
-                onRejecting={onRejecting}
               />
             ))}
           </ul>

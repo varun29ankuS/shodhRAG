@@ -1,9 +1,9 @@
 /**
  * "Accept N non-sensitive" in Settings → Memory. A suggestion the user rejects is hidden at
  * once and rejected only when its undo window ends (`lib/undoQueue.ts`); until then it is
- * still pending in the backend. The list therefore keeps the ids being rejected, and they
- * are left out of the batch and of the counts, so a declined memory is never saved by the
- * batch accept. Pure and import-free, so Node's strip-types runner tests it
+ * still pending in the backend. The ids being rejected (from Settings or the Inbox,
+ * `rejecting.ts`) are left out of the batch and of the counts, so a declined memory is
+ * never saved by the batch accept. Pure and import-free, so Node's strip-types runner tests it
  * (`app/tests/batchAccept.test.ts`).
  */
 
@@ -34,16 +34,4 @@ export function markRejecting(rejecting: ReadonlySet<string>, id: string, on: bo
   if (on) next.add(id);
   else next.delete(id);
   return next;
-}
-
-/**
- * `rejecting` without the ids no longer waiting (their rejection was carried out and the
- * list reloaded); the same set when nothing changes. Ids still waiting stay excluded until
- * then, even after the rejection was sent.
- */
-export function pruneRejecting(rejecting: ReadonlySet<string>, waiting: readonly { id: string }[]): ReadonlySet<string> {
-  if (rejecting.size === 0) return rejecting;
-  const ids = new Set(waiting.map(s => s.id));
-  const kept = [...rejecting].filter(id => ids.has(id));
-  return kept.length === rejecting.size ? rejecting : new Set(kept);
 }

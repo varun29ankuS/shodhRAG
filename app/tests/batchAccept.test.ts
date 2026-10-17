@@ -6,7 +6,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { UNDO_WINDOW_MS, UndoQueue } from '../src/lib/undoQueue.ts';
-import { batchAcceptable, markRejecting, pruneRejecting, withoutRejecting } from '../src/features/memory/batchAccept.ts';
+import { batchAcceptable, withoutRejecting } from '../src/features/memory/batchAccept.ts';
+import { RejectingStore } from '../src/features/memory/rejecting.ts';
 
 interface Item {
   id: string;
@@ -43,78 +44,97 @@ function manualTimers() {
   };
 }
 
-/** The list as Settings → Memory keeps it: what the backend says waits, and the ids being rejected. */
-function memoryList(pendingIds: Item[]) {
-  const state = { pending: pendingIds, rejecting: new Set<string>() as ReadonlySet<string> };
+/**
+ * Settings → Memory's list and the Inbox over one store of ids being rejected: what the
+ * backend says waits, and what each surface rejects through its undo queue.
+ */
+function memoryApp(pending: Item[]) {
+  const store = new RejectingStore();
+  const state = { pending };
   const rejectedInBackend: string[] = [];
+  const reject = (queue: UndoQueue, id: string, fails = false) =>
+    queue.schedule({
+      ...store.around(id, async () => {
+        if (fails) throw new Error('the database is locked');
+        rejectedInBackend.push(id);
+      }),
+    });
   return {
-    state,
+    store,
     rejectedInBackend,
-    reject(queue: UndoQueue, id: string, fails = false) {
-      return queue.schedule({
-        hide: () => { state.rejecting = markRejecting(state.rejecting, id, true); },
-        restore: () => { state.rejecting = markRejecting(state.rejecting, id, false); },
-        commit: async () => {
-          if (fails) throw new Error('the database is locked');
-          rejectedInBackend.push(id);
-        },
-      });
-    },
+    /** Reject in Settings → Memory. */
+    rejectInSettings: reject,
+    /** Dismiss in the Inbox (another surface, the same store). */
+    dismissInInbox: reject,
     /** The list reloads from the backend. */
     reload() {
       state.pending = state.pending.filter(s => !rejectedInBackend.includes(s.id));
-      state.rejecting = pruneRejecting(state.rejecting, state.pending);
     },
-    batch: () => batchAcceptable(state.pending, state.rejecting).map(s => s.id),
-    shown: () => withoutRejecting(state.pending, state.rejecting).map(s => s.id),
+    batch: () => batchAcceptable(state.pending, store.get()).map(s => s.id),
+    shown: () => withoutRejecting(state.pending, store.get()).map(s => s.id),
   };
 }
 
 test('a suggestion rejected within its undo window is left out of the batch and the count', async () => {
   const clock = manualTimers();
   const queue = new UndoQueue(clock.timers);
-  const list = memoryList([item('a'), item('b'), item('c'), item('s', ['health'])]);
-  assert.deepEqual(list.batch(), ['a', 'b', 'c']);
+  const app = memoryApp([item('a'), item('b'), item('c'), item('s', ['health'])]);
+  assert.deepEqual(app.batch(), ['a', 'b', 'c']);
 
-  list.reject(queue, 'a');
+  app.rejectInSettings(queue, 'a');
   // Still pending in the backend for the whole undo window.
   await clock.advance(UNDO_WINDOW_MS - 1);
-  assert.deepEqual(list.rejectedInBackend, []);
-  assert.deepEqual(list.batch(), ['b', 'c'], 'the declined memory is not accepted with the others');
-  assert.deepEqual(list.shown(), ['b', 'c', 's']);
+  assert.deepEqual(app.rejectedInBackend, []);
+  assert.deepEqual(app.batch(), ['b', 'c'], 'the declined memory is not accepted with the others');
+  assert.deepEqual(app.shown(), ['b', 'c', 's']);
 
-  // The rejection is carried out; until the list reloads it stays excluded.
+  // The rejection is carried out; the list reloads without it.
   await clock.advance(1);
-  assert.deepEqual(list.rejectedInBackend, ['a']);
-  assert.deepEqual(list.batch(), ['b', 'c']);
-  list.reload();
-  assert.deepEqual(list.batch(), ['b', 'c']);
-  assert.equal(list.state.rejecting.size, 0);
+  assert.deepEqual(app.rejectedInBackend, ['a']);
+  app.reload();
+  assert.deepEqual(app.batch(), ['b', 'c']);
+  assert.equal(app.store.get().size, 0);
+});
+
+test('a suggestion dismissed in the Inbox is left out of the batch in Settings', async () => {
+  const clock = manualTimers();
+  const inboxQueue = new UndoQueue(clock.timers);
+  const app = memoryApp([item('a'), item('b'), item('c')]);
+  let changes = 0;
+  const unsubscribe = app.store.subscribe(() => { changes++; });
+  app.dismissInInbox(inboxQueue, 'b');
+  assert.equal(changes, 1, 'Settings is told at once');
+  assert.deepEqual(app.batch(), ['a', 'c']);
+  assert.deepEqual(app.shown(), ['a', 'c']);
+  await clock.advance(UNDO_WINDOW_MS);
+  app.reload();
+  assert.deepEqual(app.batch(), ['a', 'c']);
+  unsubscribe();
 });
 
 test('Undo, or a rejection that fails, puts the suggestion back in the batch', async () => {
   const clock = manualTimers();
   const queue = new UndoQueue(clock.timers);
-  const list = memoryList([item('a'), item('b')]);
+  const app = memoryApp([item('a'), item('b')]);
 
-  const pending = list.reject(queue, 'a');
-  assert.deepEqual(list.batch(), ['b']);
+  const pending = app.rejectInSettings(queue, 'a');
+  assert.deepEqual(app.batch(), ['b']);
   assert.equal(queue.undo(pending), true);
-  assert.deepEqual(list.batch(), ['a', 'b']);
+  assert.deepEqual(app.batch(), ['a', 'b']);
 
-  list.reject(queue, 'b', true);
-  assert.deepEqual(list.batch(), ['a']);
+  app.dismissInInbox(queue, 'b', true);
+  assert.deepEqual(app.batch(), ['a']);
   await clock.advance(UNDO_WINDOW_MS);
-  assert.deepEqual(list.rejectedInBackend, []);
-  assert.deepEqual(list.batch(), ['a', 'b'], 'not rejected, so it is pending again');
+  assert.deepEqual(app.rejectedInBackend, []);
+  assert.deepEqual(app.batch(), ['a', 'b'], 'not rejected, so it is pending again');
 });
 
 test('a reload while the rejection waits keeps it excluded', () => {
   const clock = manualTimers();
   const queue = new UndoQueue(clock.timers);
-  const list = memoryList([item('a'), item('b')]);
-  list.reject(queue, 'a');
-  list.reload();
-  assert.deepEqual(list.batch(), ['b']);
-  assert.deepEqual(list.shown(), ['b']);
+  const app = memoryApp([item('a'), item('b')]);
+  app.rejectInSettings(queue, 'a');
+  app.reload();
+  assert.deepEqual(app.batch(), ['b']);
+  assert.deepEqual(app.shown(), ['b']);
 });

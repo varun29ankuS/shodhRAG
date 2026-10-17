@@ -74,6 +74,11 @@ pub struct IndexingResult {
     /// Per-file failure reasons, in the same order as `failed_files`.
     #[serde(default)]
     pub failures: Vec<FileFailure>,
+    /// Files that were already indexed, unchanged, and were not indexed
+    /// again (adopted from another source, see [`index_folder_adopting`]).
+    /// Not counted in `files_processed`.
+    #[serde(default)]
+    pub files_unchanged: usize,
     pub duration: u64,
 }
 
@@ -84,6 +89,7 @@ impl IndexingResult {
             total_chunks: 0,
             failed_files: Vec::new(),
             failures: Vec::new(),
+            files_unchanged: 0,
             duration,
         }
     }
@@ -220,11 +226,14 @@ pub async fn index_single_file(
         total_chunks: chunks_created,
         failed_files: Vec::new(),
         failures: Vec::new(),
+        files_unchanged: 0,
         duration,
     })
 }
 
 /// Batch-index a folder into a space with pause/resume/cancel support.
+/// Every file is indexed; `options.skip_indexed` needs the folder manifests
+/// ([`index_folder_adopting`]).
 pub async fn index_folder(
     folder_path: &str,
     space_id: &str,
@@ -232,6 +241,36 @@ pub async fn index_folder(
     rag: &RwLock<RAGEngine>,
     indexing_state: &IndexingState,
     emitter: Option<&dyn EventEmitter>,
+) -> Result<IndexingResult, String> {
+    index_folder_adopting(
+        folder_path,
+        space_id,
+        options,
+        rag,
+        indexing_state,
+        emitter,
+        None,
+    )
+    .await
+}
+
+/// [`index_folder`] for a Library folder source, given its folder manifests
+/// (`adoption`). With `options.skip_indexed`, the files of the folder that
+/// are already indexed under another source, unchanged and in the current
+/// index format, are adopted instead of indexed again
+/// ([`crate::folder_sync::adopt_indexed`]): they keep their chunks, become
+/// this source's, and are counted in `files_unchanged`. The source's
+/// manifest is then kept as the other files are indexed, so its first sync
+/// starts from it. Without `skip_indexed` (indexing a source again, which
+/// is forced) every file is indexed and no manifest is touched.
+pub async fn index_folder_adopting(
+    folder_path: &str,
+    space_id: &str,
+    options: &IndexingOptions,
+    rag: &RwLock<RAGEngine>,
+    indexing_state: &IndexingState,
+    emitter: Option<&dyn EventEmitter>,
+    adoption: Option<crate::folder_sync::Adoption<'_>>,
 ) -> Result<IndexingResult, String> {
     // Without the embedding model every file would be parsed and then fail.
     if !rag.read().await.has_search_models() {
@@ -298,6 +337,43 @@ pub async fn index_folder(
         ));
     }
 
+    // Files already indexed under another source are adopted, not indexed
+    // again. Adoption that cannot run (the index unreadable) adopts nothing:
+    // every file is indexed, as without it.
+    let mut adopted = match adoption.filter(|_| options.skip_indexed) {
+        Some(adoption) => {
+            match crate::folder_sync::adopt_indexed(
+                &path,
+                space_id,
+                &files_to_process,
+                adoption,
+                rag,
+            )
+            .await
+            {
+                Ok(adopted) => Some(adopted),
+                Err(error) => {
+                    tracing::warn!(space_id, %error, "indexed files not adopted; indexing every file");
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+    let files_unchanged = adopted.as_ref().map_or(0, |a| a.keys.len());
+    if files_unchanged > 0 {
+        // Below 100: the run is not finished until the last event.
+        emit_progress(
+            emitter,
+            space_id,
+            "",
+            files_unchanged,
+            total_files,
+            (files_unchanged as f32 / total_files as f32 * 100.0).min(99.9),
+            &format!("{files_unchanged} of {total_files} already indexed"),
+        );
+    }
+
     let mut files_processed = 0;
     let mut total_chunks = 0;
     let mut failures: Vec<FileFailure> = Vec::new();
@@ -316,6 +392,13 @@ pub async fn index_folder(
             break;
         }
 
+        let key = crate::rag_engine::normalize_source_path(file_path);
+        if adopted.as_ref().is_some_and(|a| a.keys.contains(&key)) {
+            continue;
+        }
+        // Files done: indexed now, or adopted.
+        let done = files_processed + files_unchanged;
+
         // Throttled progress update
         if last_progress_time.elapsed() > Duration::from_millis(100) {
             let elapsed = start_time.elapsed().as_secs_f32();
@@ -325,7 +408,7 @@ pub async fn index_folder(
                 0.0
             };
             let eta = if speed > 0.0 {
-                (total_files - files_processed) as f32 / speed
+                (total_files - done) as f32 / speed
             } else {
                 0.0
             };
@@ -339,9 +422,9 @@ pub async fn index_folder(
                 emitter,
                 space_id,
                 current_file,
-                files_processed,
+                done,
                 total_files,
-                (files_processed as f32 / total_files as f32) * 100.0,
+                (done as f32 / total_files as f32) * 100.0,
                 &format!("Processing file {} of {}", index + 1, total_files),
             );
 
@@ -353,7 +436,6 @@ pub async fn index_folder(
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
-        let done = files_processed;
         let on_page = |page: usize, pages: usize| {
             let read = (page - 1) as f32 / pages.max(1) as f32;
             emit_scanned_page(
@@ -380,13 +462,24 @@ pub async fn index_folder(
             }
         };
 
+        let file = file_path.to_string_lossy().to_string();
+        // The stamp from before indexing: a change made meanwhile is seen
+        // by the source's next sync.
+        if let Some(adopted) = adopted.as_mut() {
+            if let Some((_, stamp)) = adopted.on_disk.get(&key) {
+                let failure = process_result.as_ref().err().map(|reason| FileFailure {
+                    file: file.clone(),
+                    reason: reason.clone(),
+                });
+                adopted.manifest.record(key, *stamp, failure);
+            }
+        }
         match process_result {
             Ok(chunks) => {
                 files_processed += 1;
                 total_chunks += chunks;
             }
             Err(reason) => {
-                let file = file_path.to_string_lossy().to_string();
                 tracing::warn!(file = %file, reason = %reason, "Failed to index file");
                 failures.push(FileFailure { file, reason });
             }
@@ -397,7 +490,7 @@ pub async fn index_folder(
         emitter,
         space_id,
         "Completed",
-        files_processed,
+        files_processed + files_unchanged,
         total_files,
         100.0,
         "Indexing complete",
@@ -407,6 +500,7 @@ pub async fn index_folder(
         tracing::warn!(
             failed = failures.len(),
             processed = files_processed,
+            unchanged = files_unchanged,
             total = total_files,
             "Folder indexing finished with failures"
         );
@@ -417,6 +511,7 @@ pub async fn index_folder(
         total_chunks,
         failed_files: failures.iter().map(|f| f.file.clone()).collect(),
         failures,
+        files_unchanged,
         duration: start_time.elapsed().as_millis() as u64,
     })
 }
@@ -725,6 +820,7 @@ mod tests {
                 file: "a.xlsx".to_string(),
                 reason: "Failed to process file: failed to open spreadsheet a.xlsx".to_string(),
             }],
+            files_unchanged: 3,
             duration: 10,
         };
         let json = serde_json::to_value(&result).expect("serializable");
@@ -732,12 +828,14 @@ mod tests {
         assert!(json["failures"][0]["reason"]
             .as_str()
             .is_some_and(|r| r.contains("failed to open spreadsheet")));
+        assert_eq!(json["files_unchanged"], 3);
 
         let legacy: IndexingResult = serde_json::from_str(
             r#"{"files_processed":0,"total_chunks":0,"failed_files":[],"duration":0}"#,
         )
         .expect("legacy payload deserializes");
         assert!(legacy.failures.is_empty());
+        assert_eq!(legacy.files_unchanged, 0);
     }
 
     #[test]

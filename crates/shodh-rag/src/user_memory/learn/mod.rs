@@ -7,8 +7,10 @@
 //!    references only) are sent with the ontology slice for that text
 //!    ([`shodh_ontology::Ontology::slice_for`] + `render_prompt`). The model answers in a
 //!    strict JSON schema; every candidate must quote its evidence verbatim from the user's
-//!    text and validate against the ontology. Invalid candidates are dropped and counted,
-//!    never coerced.
+//!    text and validate against the ontology. Invalid candidates are dropped, counted and
+//!    their reasons kept for the user to read; the one repair is that the user named as
+//!    the subject of a class that cannot take a person (a note, a preference) is dropped as
+//!    subject, not the memory.
 //! 2. **Decide** ([`decide`]): ADD / NOOP / SUPERSEDE / UPDATE against similar existing
 //!    memories — deterministically first ([`shodh_ontology::Ontology::supersedes`], exact
 //!    duplicates); the model only judges the ambiguous rest, and only when the user lets

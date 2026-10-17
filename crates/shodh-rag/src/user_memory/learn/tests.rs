@@ -1176,3 +1176,68 @@ fn global_suggestion_fingerprints_are_unchanged_by_workspaces() {
     assert_ne!(a, b);
     assert_ne!(a, remember_fingerprint(&Scope::Global, "Person", "x"));
 }
+
+/// The user's message of conversation `conv-1792237439764-hh9jji`, whose one extraction
+/// of the day was dropped as invalid.
+const THESIS_TURN: &str = "Remember that I'm writing my thesis on disk-based vector search, and memory cost matters most to me.";
+
+#[tokio::test]
+async fn the_user_as_subject_of_a_note_is_dropped_as_subject_and_the_note_kept() {
+    let e = env().await;
+    e.model.answer(json!({"memories": [
+        {"turn": "T1", "class": "Note", "subject": "person:self",
+         "properties": {"noteText": "I'm writing my thesis on disk-based vector search"},
+         "confidence": 0.9, "evidence": "I'm writing my thesis on disk-based vector search"}
+    ]}));
+    let report = e.learn(THESIS_TURN).await;
+    assert!(report.dropped.is_empty(), "{report:?}");
+    assert_eq!(report.proposed.len(), 1, "{report:?}");
+    let usage = e.learner.inbox().usage(e.f.store.now()).unwrap();
+    assert_eq!(usage.invalid, 0);
+    let proposal = e.learner.inbox().get(&report.proposed[0]).unwrap();
+    let ProposalAction::Remember { content, .. } = &proposal.action else {
+        panic!("not a remember suggestion");
+    };
+    let MemoryContent::Fact { class, subject, .. } = content else {
+        panic!("not a typed fact: {content:?}");
+    };
+    assert_eq!(class, "Note");
+    assert!(subject.is_none(), "{subject:?}");
+
+    // The prompt no longer shows an example the validator rejects: the user is a subject
+    // of Person facts only, and the example's class is one the slice offers.
+    let prompt = e.model.last_prompt();
+    assert!(
+        prompt.contains("is \"person:self\" only for class Person"),
+        "{prompt}"
+    );
+    assert!(
+        !prompt.contains("\"subject\": \"person:self\" or null"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("\"subject\": null, \"properties\""),
+        "{prompt}"
+    );
+}
+
+#[tokio::test]
+async fn the_user_stays_the_subject_of_a_person_fact() {
+    let e = env().await;
+    e.model
+        .answer(json!({"memories": [lives_in("pune", "I moved to Pune", 0.9)]}));
+    let report = e.learn("I moved to Pune last month.").await;
+    assert_eq!(report.proposed.len(), 1, "{report:?}");
+    let proposal = e.learner.inbox().get(&report.proposed[0]).unwrap();
+    let ProposalAction::Remember {
+        content: MemoryContent::Fact { subject, .. },
+        ..
+    } = &proposal.action
+    else {
+        panic!("not a typed fact");
+    };
+    assert_eq!(
+        subject.as_ref().map(|s| s.id.as_str()),
+        Some(SELF_ENTITY_ID)
+    );
+}

@@ -20,9 +20,10 @@
 //!   no retrieved passage covers get targeted searches. At most
 //!   [`MAX_COVERAGE_ROUNDS`] extra rounds, and only while the answer's tool
 //!   budget has calls left.
-//! * **retrieve**: an answer that cites passages, or says the user has no
-//!   such documents, although no tool of the answer searched the user's
-//!   documents ([`RETRIEVAL_TOOLS`]). The system prompt asks the model to
+//! * **retrieve** (same setting as repair): an answer that cites passages,
+//!   or refuses for lack of documents, although it had no sources of its own
+//!   ([`Retrieval::sourced`]: no search, [`RETRIEVAL_TOOLS`], succeeded and
+//!   no tool handed it passages). The system prompt asks the model to
 //!   search first, but nothing made it: a model that skipped the search
 //!   cited `[1][2]` that no source had, and the repair turn that asked it to
 //!   use "only passage numbers you were given" (none) turned the answer
@@ -35,7 +36,7 @@
 //! Repair and coverage can share one turn; a retrieve turn is on its own
 //! (the answer it replaces had no passages to repair or cover against). The
 //! decision is a pure function of the checks, the rounds so far, the
-//! remaining budget and whether the documents were searched.
+//! remaining budget and whether the answer had sources of its own.
 
 use std::collections::HashSet;
 
@@ -81,8 +82,12 @@ pub struct Rounds {
 /// What the answer's run knows about searching the user's documents.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Retrieval {
-    /// A retrieval tool succeeded in the run ([`searched`]).
-    pub searched: bool,
+    /// The answer had sources of its own: a retrieval tool succeeded in the
+    /// run ([`searched`], which also counts a search that found nothing), or
+    /// a tool of the run handed out passages (a web search, a fetched page,
+    /// an opened document, a paper or figure tool). Passages carried into a
+    /// side discussion do not count: they are what the run started with.
+    pub sourced: bool,
     /// `search_documents` is registered and the profile allows it, so the
     /// session can search for the question itself (and the model can be
     /// told to). False in Code mode.
@@ -178,7 +183,8 @@ fn without_sources(check: &ClaimCheck) -> bool {
 ///
 /// `auto_repair` is the user's setting; `calls_left` is the answer's
 /// remaining tool budget (zero when follow-up turns are off); `retrieval`
-/// says whether the run searched the documents and whether it can.
+/// says whether the answer had sources of its own and whether the session
+/// can search the documents.
 pub fn decide(
     checks: &[ClaimCheck],
     needs: &[NeedCheck],
@@ -187,8 +193,10 @@ pub fn decide(
     calls_left: u32,
     retrieval: Retrieval,
 ) -> Next {
-    if retrieval.available
-        && !retrieval.searched
+    // A follow-up turn like a repair, so under the same setting.
+    if auto_repair
+        && retrieval.available
+        && !retrieval.sourced
         && rounds.retrieve < MAX_RETRIEVE_ROUNDS
         && calls_left > 0
     {
@@ -263,18 +271,18 @@ pub fn decide(
                 reason_text(check)
             ));
         }
-        // Citations of an answer that searched nothing point to no passage:
+        // Citations of an answer that had no sources point to no passage:
         // "use only the numbers you were given" (none) would leave removing
         // every statement, a refusal, as the only compliant answer.
         let unretrieved = retrieval.available
-            && !retrieval.searched
+            && !retrieval.sourced
             && repair
                 .iter()
                 .any(|&i| checks[i].outcome == ClaimOutcome::InvalidCitation);
         if unretrieved && calls_left > 0 {
             prompt.push_str(&format!(
-                "No search of the user's documents succeeded in this answer, so no passage \
-                 backs these citations yet. Call {SEARCH_DOCUMENTS} now with the user's \
+                "No search or other tool gave this answer passages, so no passage backs \
+                 these citations yet. Call {SEARCH_DOCUMENTS} now with the user's \
                  question, then cite for each statement the passage of its result that \
                  supports it, or correct the statement to what the passages say; cite only \
                  the passage numbers the search returns. If it finds nothing, say plainly \
@@ -358,6 +366,15 @@ pub fn retrieve_prompt(result: &RetrieveResult, earlier: bool, limited_to: Optio
                  instead of answering it from elsewhere."
             ));
         }
+        // The earlier passages still stand: the answer is kept on them.
+        RetrieveResult::Empty if earlier => {
+            prompt.push_str(&format!(
+                " The app searched {searched} for the question and no new passage matched. \
+                 Write the answer only from the passages you were given earlier in this \
+                 answer, citing only their numbers, and say plainly which part of the \
+                 question they do not cover."
+            ));
+        }
         RetrieveResult::Empty => {
             let uncovered = match limited_to {
                 Some(limit) => format!(
@@ -374,11 +391,18 @@ pub fn retrieve_prompt(result: &RetrieveResult, earlier: bool, limited_to: Optio
             ));
         }
         RetrieveResult::Failed { error } => {
+            let otherwise = if earlier {
+                "answer from its result and the passages you were given earlier in this \
+                 answer, citing only their numbers. If it finds nothing, answer from the \
+                 earlier passages alone and say plainly which part of the question they do \
+                 not cover."
+            } else {
+                "answer only from its result, citing only the passage numbers it returns. If \
+                 it finds nothing, say plainly that the documents do not cover the question."
+            };
             prompt.push_str(&format!(
                 " The app tried to search {searched} for the question, but the search failed \
-                 ({}). Call {SEARCH_DOCUMENTS} now with the user's question and answer only \
-                 from its result, citing only the passage numbers it returns. If it finds \
-                 nothing, say plainly that the documents do not cover the question.",
+                 ({}). Call {SEARCH_DOCUMENTS} now with the user's question and {otherwise}",
                 truncate_chars(error, 300)
             ));
         }
@@ -407,7 +431,7 @@ mod tests {
     /// A run where the session cannot search the documents (the decisions
     /// before retrieval existed).
     const NO_SEARCH: Retrieval = Retrieval {
-        searched: false,
+        sourced: false,
         available: false,
     };
 
@@ -539,7 +563,7 @@ mod tests {
                 assert!(prompt.contains("complete revised answer"));
                 assert!(prompt.contains("no apology"));
             }
-            Next::Finish => panic!("expected a repair turn"),
+            other => panic!("expected a repair turn, got {other:?}"),
         }
         let after = Rounds {
             repair: 1,
@@ -586,7 +610,7 @@ mod tests {
                     assert!(prompt.contains("need 2"));
                     assert!(prompt.contains("5 tool calls left"));
                 }
-                Next::Finish => panic!("round {coverage} should search again"),
+                other => panic!("round {coverage} should search again, got {other:?}"),
             }
         }
         assert_eq!(
@@ -632,11 +656,11 @@ mod tests {
     }
 
     const NOT_SEARCHED: Retrieval = Retrieval {
-        searched: false,
+        sourced: false,
         available: true,
     };
     const SEARCHED: Retrieval = Retrieval {
-        searched: true,
+        sourced: true,
         available: true,
     };
 
@@ -667,12 +691,10 @@ mod tests {
                 flagged: vec![0, 1]
             }
         );
-        // Not a setting of repair: it is the answer's missing search.
+        // Automatic follow-ups off: no search and no turn, as for repair.
         assert_eq!(
             decide(&checks, &[], Rounds::default(), false, 10, NOT_SEARCHED),
-            Next::Retrieve {
-                flagged: vec![0, 1]
-            }
+            Next::Finish
         );
         // After a search the same citations are repaired as usual.
         match decide(&checks, &[], Rounds::default(), true, 10, SEARCHED) {
@@ -826,6 +848,32 @@ mod tests {
         );
         assert!(failed.contains("index locked"), "{failed}");
         assert!(failed.contains("Call search_documents now"));
+    }
+
+    #[test]
+    fn with_earlier_passages_a_search_that_adds_nothing_keeps_them() {
+        let empty = retrieve_prompt(&RetrieveResult::Empty, true, None);
+        assert!(empty.contains("no new passage matched"), "{empty}");
+        assert!(empty.contains("only from the passages you were given earlier"));
+        assert!(empty.contains("citing only their numbers"));
+        assert!(empty.contains("which part of the question they do not cover"));
+        assert!(!empty.contains("cite no passage numbers"), "{empty}");
+        assert!(!empty.contains("do not cover the question"), "{empty}");
+
+        let failed = retrieve_prompt(
+            &RetrieveResult::Failed {
+                error: "Search failed: index locked".into(),
+            },
+            true,
+            None,
+        );
+        assert!(failed.contains("Call search_documents now"), "{failed}");
+        assert!(failed.contains("the passages you were given earlier in this answer"));
+        assert!(failed.contains("answer from the earlier passages alone"));
+        assert!(
+            !failed.contains("documents do not cover the question"),
+            "{failed}"
+        );
     }
 
     #[test]

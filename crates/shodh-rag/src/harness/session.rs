@@ -178,6 +178,9 @@ struct GroundingRun {
     /// The user's question ([`RunScope::question`], else the sent message):
     /// what the check searches the documents for when the answer did not.
     question: String,
+    /// Citation numbers the run started with (passages carried into a side
+    /// discussion): numbers above it were handed out by tools of this run.
+    seeded: u32,
     rounds: Rounds,
     /// Follow-up turns so far (the next report's round).
     round: u32,
@@ -846,6 +849,7 @@ impl Inner {
             *lock(&self.grounding_run) = GroundingRun {
                 run_id: run_id.clone(),
                 question,
+                seeded: self.passages_in_run.issued(),
                 ..GroundingRun::default()
             };
             *lock(&self.scope) = Arc::new(scope);
@@ -1015,8 +1019,16 @@ impl Inner {
         } else {
             0
         };
+        // The answer had sources of its own when a search succeeded (even
+        // one that found nothing) or when any tool of the run handed out
+        // passages: a web search, a fetched page, an opened document, a
+        // paper or figure tool. Counting numbers beyond the seeded ones
+        // covers every tool that numbers passages, including app tools,
+        // without a list to keep in step with the registry; the carried
+        // passages of a side discussion are not counted.
+        let seeded = lock(&self.grounding_run).seeded;
         let retrieval = Retrieval {
-            searched: followup::searched(&tools_ok),
+            sourced: followup::searched(&tools_ok) || self.passages_in_run.issued() > seeded,
             available: self.can_search_documents(),
         };
         let next = followup::decide(
@@ -1152,8 +1164,11 @@ impl Inner {
         // Under the state lock, as for any follow-up: the round is counted
         // (so a turn checked later is never this round again, and the
         // search is never made twice) and announced before anything of the
-        // turn reaches the transcript.
-        {
+        // turn reaches the transcript. The search is started and registered
+        // among the in-flight calls under the same lock, so a stop can never
+        // fall between the check and the registration and leave a search no
+        // run owns (it would number passages in the next run).
+        let (task, issued_before, limited_to) = {
             let mut state = lock(&self.state);
             if !state.still_held(&held.run_id, held.generation) {
                 return;
@@ -1164,7 +1179,7 @@ impl Inner {
                 g.round_start = held.messages.len();
                 g.rounds.retrieve += 1;
             }
-            tracing::info!(target: "shodh::grounding", run_id = %held.run_id, round = round + 1, flagged, "answer did not search; searching the documents for the question");
+            tracing::info!(target: "shodh::grounding", run_id = %held.run_id, round = round + 1, flagged, "answer had no sources; searching the documents for the question");
             self.emit(AgentEvent::Grounding {
                 run_id: held.run_id.clone(),
                 report,
@@ -1179,30 +1194,30 @@ impl Inner {
             if let Some(event) = state.open_step(&step_id, SEARCH_DOCUMENTS, &args, now_ms()) {
                 self.emit(event);
             }
-        }
 
-        let call_index = self.calls_in_run.fetch_add(1, Ordering::SeqCst) + 1;
-        let issued_before = self.passages_in_run.issued();
-        let scope = Arc::clone(&lock(&self.scope));
-        // What a search that finds nothing did not cover: the answer's limit,
-        // never the whole library when the answer is limited.
-        let limited_to = (!scope.is_empty()).then(|| match &scope.workspace_name {
-            Some(name) if scope.restricted => format!("the sources of the workspace \"{name}\""),
-            _ => "the sources this answer is limited to".to_string(),
-        });
-        let ctx = ToolContext::new(held.run_id.clone(), step_id.clone(), self.events.clone())
-            .with_run_passages(Arc::clone(&self.passages_in_run))
-            .with_run_plan(Arc::clone(&self.plan_in_run))
-            .with_scope(scope)
-            .with_audit(self.audit.clone());
-        let call = ToolCall {
-            tool: SEARCH_DOCUMENTS.to_string(),
-            args,
-            call_index,
-        };
-        // Among the in-flight calls, so stopping the answer (or the run
-        // ending) cancels the search.
-        let task = {
+            let call_index = self.calls_in_run.fetch_add(1, Ordering::SeqCst) + 1;
+            let issued_before = self.passages_in_run.issued();
+            let scope = Arc::clone(&lock(&self.scope));
+            // What a search that finds nothing did not cover: the answer's
+            // limit, never the whole library when the answer is limited.
+            let limited_to = (!scope.is_empty()).then(|| match &scope.workspace_name {
+                Some(name) if scope.restricted => {
+                    format!("the sources of the workspace \"{name}\"")
+                }
+                _ => "the sources this answer is limited to".to_string(),
+            });
+            let ctx = ToolContext::new(held.run_id.clone(), step_id.clone(), self.events.clone())
+                .with_run_passages(Arc::clone(&self.passages_in_run))
+                .with_run_plan(Arc::clone(&self.plan_in_run))
+                .with_scope(scope)
+                .with_audit(self.audit.clone());
+            let call = ToolCall {
+                tool: SEARCH_DOCUMENTS.to_string(),
+                args,
+                call_index,
+            };
+            // Lock order state -> inflight; nothing takes the state lock
+            // while holding inflight.
             let mut inflight = lock(&self.inflight);
             let inner = Arc::clone(self);
             let handle = tokio::spawn(async move {
@@ -1212,7 +1227,7 @@ impl Inner {
                     .await
             });
             inflight.insert(step_id.clone(), (step_id.clone(), handle.abort_handle()));
-            handle
+            (handle, issued_before, limited_to)
         };
         let joined = task.await;
         lock(&self.inflight).remove(&step_id);
@@ -1257,13 +1272,14 @@ impl Inner {
         ) {
             self.emit(event);
         }
-        // The search belongs to this run even when the user steered it
-        // meanwhile: a later "the documents do not cover it" stands on it.
-        if outcome.ok && state.active_run_id() == Some(held.run_id.as_str()) {
-            lock(&self.tools_ok_in_run).insert(SEARCH_DOCUMENTS.to_string());
-        }
         if !state.resume_held(&held.run_id, held.generation, &prompt_id) {
             return;
+        }
+        // Only once its passages go to the model (not when the user stopped
+        // or steered the run meanwhile) does the run count as searched: a
+        // later "the documents do not cover it" then stands on this search.
+        if outcome.ok {
+            lock(&self.tools_ok_in_run).insert(SEARCH_DOCUMENTS.to_string());
         }
         let sent = self.send(OutboundFrame::Prompt {
             id: prompt_id,
@@ -2312,6 +2328,23 @@ mod tests {
         Arc<Mutex<Vec<String>>>,
         String,
     ) {
+        research_run_with(passage, question, GroundingConfig::lexical(), &[])
+    }
+
+    /// [`research_run`] with `config` and, besides `search_documents`, a
+    /// [`Numbered`] tool under each of `numbering`.
+    fn research_run_with(
+        passage: Option<&'static str>,
+        question: &str,
+        config: GroundingConfig,
+        numbering: &[&'static str],
+    ) -> (
+        Arc<Inner>,
+        mpsc::UnboundedReceiver<AgentEvent>,
+        mpsc::UnboundedReceiver<OutboundFrame>,
+        Arc<Mutex<Vec<String>>>,
+        String,
+    ) {
         let queries = Arc::new(Mutex::new(Vec::new()));
         let mut registry = ToolRegistry::new();
         registry
@@ -2320,8 +2353,10 @@ mod tests {
                 queries: Arc::clone(&queries),
             }))
             .unwrap();
-        let (inner, events, mut out) =
-            offline_session_with(Some(GroundingConfig::lexical()), None, registry);
+        for &name in numbering {
+            registry.register(Arc::new(Numbered { name })).unwrap();
+        }
+        let (inner, events, mut out) = offline_session_with(Some(config), None, registry);
         inner
             .start_run(
                 &format!("[Memories the user saved]\nprefers short answers\n\n{question}"),
@@ -2334,6 +2369,55 @@ mod tests {
             .unwrap();
         let (first_prompt, _) = sent_prompt(&mut out);
         (inner, events, out, queries, first_prompt)
+    }
+
+    /// A tool other than a search that numbers what it shows the model, as
+    /// `web_search`, `fetch_url` and `open_document` do.
+    struct Numbered {
+        name: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::harness::tools::HostTool for Numbered {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn label(&self) -> &str {
+            self.name
+        }
+        fn label_template(&self) -> &str {
+            "Reading"
+        }
+        fn description(&self) -> &str {
+            "Shows the model a numbered passage."
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false})
+        }
+        fn tier(&self) -> RiskTier {
+            RiskTier::Read
+        }
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            ctx: &crate::harness::tools::ToolContext,
+        ) -> Result<crate::harness::tools::ToolOutput, crate::harness::tools::ToolError> {
+            let n = ctx.reserve_passages(1);
+            ctx.record_passage(CitedPassage {
+                n,
+                file: "SPANN overview".into(),
+                path: "https://example.org/spann".into(),
+                page: None,
+                web: true,
+                text: "SPANN keeps the posting list centroids in memory.".into(),
+                checkable: true,
+            });
+            Ok(crate::harness::tools::ToolOutput {
+                text_for_model: format!("[{n}] SPANN keeps the posting list centroids in memory."),
+                summary_for_ui: "1 passage".into(),
+                detail: None,
+            })
+        }
     }
 
     const SPANN_QUESTION: &str =
@@ -2519,6 +2603,87 @@ mod tests {
         let (_, message) = sent_prompt(&mut out);
         assert!(message.contains("Use only passage numbers you were given"));
         assert_eq!(lock(&queries).len(), 1, "only the model's search");
+    }
+
+    #[tokio::test]
+    async fn an_answer_with_web_or_opened_passages_is_repaired_not_searched_again() {
+        for tool in ["web_search", "open_document"] {
+            let (inner, mut events, mut out, queries, first_prompt) = research_run_with(
+                Some("SPANN keeps the posting list centroids in memory."),
+                SPANN_QUESTION,
+                GroundingConfig::lexical(),
+                &[tool],
+            );
+            feed(
+                &inner,
+                &format!(
+                    r#"{{"type":"host_tool_call","id":"h1","toolCallId":"t1","toolName":"{tool}","arguments":{{}}}}"#
+                ),
+            );
+            assert!(
+                matches!(
+                    next_frame(&mut out).await,
+                    OutboundFrame::HostToolResult {
+                        is_error: false,
+                        ..
+                    }
+                ),
+                "{tool}"
+            );
+            // One bad number next to the passage the tool gave.
+            say(
+                &inner,
+                "m1",
+                "SPANN keeps the posting list centroids in memory [7].",
+            );
+            complete(&inner, &first_prompt);
+            let round0 = events_until(&mut events, |e| {
+                matches!(e, AgentEvent::RevisionStarted { .. })
+            })
+            .await;
+            assert!(
+                matches!(
+                    round0.last(),
+                    Some(AgentEvent::RevisionStarted {
+                        reason: RevisionReason::Repair,
+                        ..
+                    })
+                ),
+                "{tool}: {:?}",
+                round0.last()
+            );
+            let (_, message) = sent_prompt(&mut out);
+            assert!(
+                message.contains("Use only passage numbers you were given"),
+                "{tool}: {message}"
+            );
+            assert!(lock(&queries).is_empty(), "{tool}: no document search");
+        }
+    }
+
+    #[tokio::test]
+    async fn with_automatic_follow_ups_off_the_documents_are_not_searched() {
+        let off = GroundingConfig {
+            auto_repair: Arc::new(|| false),
+            ..GroundingConfig::lexical()
+        };
+        let (inner, mut events, mut out, queries, first_prompt) = research_run_with(
+            Some("FreshDiskANN keeps a compressed graph in memory."),
+            SPANN_QUESTION,
+            off,
+            &[],
+        );
+        say(&inner, "m1", "FreshDiskANN keeps the graph on SSD [1].");
+        complete(&inner, &first_prompt);
+        let all = events_until(&mut events, |e| matches!(e, AgentEvent::RunFinished { .. })).await;
+        assert!(!all
+            .iter()
+            .any(|e| matches!(e, AgentEvent::RevisionStarted { .. })));
+        assert!(!all
+            .iter()
+            .any(|e| matches!(e, AgentEvent::StepStarted { .. })));
+        assert!(out.try_recv().is_err(), "no follow-up prompt");
+        assert!(lock(&queries).is_empty());
     }
 
     #[tokio::test]

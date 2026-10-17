@@ -1392,3 +1392,43 @@ async fn rejection_reasons_are_kept_for_two_weeks() {
         .unwrap();
     assert!(!rejection_rows(&e)[1].3.contains("hunter2"));
 }
+
+#[tokio::test]
+async fn a_fact_without_cue_words_reaches_the_model_and_its_preference_is_kept() {
+    let e = env().await;
+    let text =
+        "I'm writing my thesis on disk-based vector search, and memory cost matters most to me.";
+    e.model.answer(json!({"memories": [
+        {"turn": "T1", "class": "Preference", "subject": "person:self",
+         "properties": {"preferenceTopic": "vector search", "preferenceValue": "memory cost matters most"},
+         "confidence": 0.85, "evidence": "memory cost matters most to me"}
+    ]}));
+    let report = e.learn(text).await;
+    assert_eq!(e.model.calls(), 1, "the keyword gate no longer skips it");
+    assert!(report.dropped.is_empty(), "{report:?}");
+    assert_eq!(report.proposed.len(), 1, "{report:?}");
+    let prompt = e.model.last_prompt();
+    for class in extract::PERSONAL_CLASSES {
+        assert!(
+            prompt.contains(&format!("\n{class}")),
+            "{class} offered: {prompt}"
+        );
+    }
+
+    // A question about the documents still costs nothing.
+    let calls = e.model.calls();
+    let report = e
+        .learn("How do FreshDiskANN and SPANN keep search fast while the index grows?")
+        .await;
+    assert_eq!(e.model.calls(), calls);
+    assert_eq!(
+        report.skipped.as_deref(),
+        Some("nothing the user said was about themselves")
+    );
+}
+
+#[test]
+fn learning_makes_ten_model_calls_a_day_by_default() {
+    assert_eq!(LearnCaps::default().max_calls_per_day, 10);
+    assert_eq!(DEFAULT_CALLS_PER_DAY, 10);
+}

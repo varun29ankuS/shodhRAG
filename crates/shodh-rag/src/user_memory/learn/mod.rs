@@ -2,7 +2,8 @@
 //! user's policy (Settings → Memory → "Learn from conversations": off / ask / automatic).
 //!
 //! The pipeline, every step bounded in size and cost:
-//! 1. **Extract** ([`extract`]): after a turn completes, the user's own words (never tool
+//! 1. **Extract** ([`extract`]): after a turn completes in which the user said something
+//!    about themselves ([`extract::worth_learning`]), the user's own words (never tool
 //!    results, retrieved passages or web pages — assistant text is context for resolving
 //!    references only) are sent with the ontology slice for that text
 //!    ([`shodh_ontology::Ontology::slice_for`] + `render_prompt`). The model answers in a
@@ -90,14 +91,19 @@ pub struct LearnCaps {
 }
 
 impl Default for LearnCaps {
+    /// Ten model calls a day: free model tiers allow about 50 requests a day for
+    /// everything the user does, and every turn about the user may now be learned from.
     fn default() -> Self {
         Self {
-            max_calls_per_day: 60,
+            max_calls_per_day: DEFAULT_CALLS_PER_DAY,
             max_input_chars_per_day: 400_000,
             max_proposals_per_day: 40,
         }
     }
 }
+
+/// Default of [`LearnCaps::max_calls_per_day`].
+pub const DEFAULT_CALLS_PER_DAY: u32 = 10;
 
 /// Upper bounds the user may set for [`LearnCaps`].
 pub const MAX_CALLS_PER_DAY_LIMIT: u32 = 1_000;

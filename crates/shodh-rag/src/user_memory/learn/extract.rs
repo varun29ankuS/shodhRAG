@@ -108,49 +108,205 @@ pub fn learnable(ontology: &Ontology, class: &str) -> bool {
 
 /// The ontology slice for `text`, limited to learnable classes, plus `Person` (facts about
 /// the user — where they live, where they work — are cued by the value's class, not by
-/// the person). `None` when nothing learnable is cued: no model call is made.
+/// the person). `None` when nothing learnable is cued. Consolidation uses it for episodes;
+/// learning from a turn uses [`slice_for_turns`], which never depends on cue words.
 pub fn slice_for_learning<'a>(ontology: &'a Ontology, text: &str) -> Option<OntologySlice<'a>> {
     let mut slice = ontology.slice_for(text);
     slice.matches.retain(|m| learnable(ontology, &m.class));
     if slice.matches.is_empty() {
         return None;
     }
-    let matched: BTreeSet<String> = slice.matches.iter().map(|m| m.class.clone()).collect();
+    Some(with_classes(ontology, slice, &["Person"]))
+}
+
+/// Classes every turn is offered, whatever words it uses: facts about the user, their
+/// preferences, what they work on, and the free-text note. "I'm writing my thesis on
+/// disk-based vector search, and memory cost matters most to me" names none of the
+/// ontology's cue terms, yet holds a project and a preference.
+pub const PERSONAL_CLASSES: [&str; 4] = ["Person", "Preference", "Project", "Note"];
+
+/// The ontology slice for the user's text of some turns: the learnable classes its words
+/// cue, plus [`PERSONAL_CLASSES`]. Which turns are worth a model call at all is decided by
+/// [`worth_learning`], not by cue words.
+pub fn slice_for_turns<'a>(ontology: &'a Ontology, text: &str) -> OntologySlice<'a> {
+    let mut slice = ontology.slice_for(text);
+    slice.matches.retain(|m| learnable(ontology, &m.class));
+    with_classes(ontology, slice, &PERSONAL_CLASSES)
+}
+
+/// `slice` limited to its learnable matched classes, with `always` matched too (each with
+/// its ancestors), and the properties of every matched class.
+fn with_classes<'a>(
+    ontology: &'a Ontology,
+    mut slice: OntologySlice<'a>,
+    always: &[&str],
+) -> OntologySlice<'a> {
+    let mut matched: BTreeSet<String> = slice.matches.iter().map(|m| m.class.clone()).collect();
     slice
         .classes
         .retain(|c| c.role != SliceRole::Matched || matched.contains(&c.class.id));
-    let mut matched_now = matched.clone();
-    if !matched.contains("Person") {
-        if let Some(person) = ontology.class("Person") {
-            match slice.classes.iter_mut().find(|c| c.class.id == "Person") {
-                Some(entry) => entry.role = SliceRole::Matched,
-                None => slice.classes.push(SliceClass {
-                    class: person,
-                    role: SliceRole::Matched,
-                }),
-            }
-            matched_now.insert("Person".to_string());
-            for ancestor in ontology.ancestors("Person").into_iter().skip(1) {
-                if !slice.classes.iter().any(|c| c.class.id == ancestor.id) {
-                    slice.classes.push(SliceClass {
-                        class: ancestor,
-                        role: SliceRole::Ancestor,
-                    });
-                }
+    for &id in always {
+        if matched.contains(id) || !learnable(ontology, id) {
+            continue;
+        }
+        let Some(class) = ontology.class(id) else {
+            continue;
+        };
+        match slice.classes.iter_mut().find(|c| c.class.id == id) {
+            Some(entry) => entry.role = SliceRole::Matched,
+            None => slice.classes.push(SliceClass {
+                class,
+                role: SliceRole::Matched,
+            }),
+        }
+        matched.insert(id.to_string());
+        for ancestor in ontology.ancestors(id).into_iter().skip(1) {
+            if !slice.classes.iter().any(|c| c.class.id == ancestor.id) {
+                slice.classes.push(SliceClass {
+                    class: ancestor,
+                    role: SliceRole::Ancestor,
+                });
             }
         }
     }
     let keep: Vec<&shodh_ontology::Property> = ontology
         .properties()
         .iter()
-        .filter(|p| {
-            matched_now
-                .iter()
-                .any(|class| ontology.applies_to(p, class))
-        })
+        .filter(|p| matched.iter().any(|class| ontology.applies_to(p, class)))
         .collect();
     slice.properties = keep;
-    Some(slice)
+    slice
+}
+
+/// Words of the speaker: a sentence with one of them is about the user.
+const FIRST_PERSON: [&str; 18] = [
+    "i",
+    "i'm",
+    "i've",
+    "i'd",
+    "i'll",
+    "me",
+    "my",
+    "mine",
+    "myself",
+    "we",
+    "we're",
+    "we've",
+    "we'd",
+    "we'll",
+    "us",
+    "our",
+    "ours",
+    "ourselves",
+];
+
+/// Words of a request to keep something, or of a standing instruction ("Note: the launch
+/// moved to June", "Always answer in British English").
+const KEEP_WORDS: [&str; 7] = [
+    "remember",
+    "note",
+    "always",
+    "never",
+    "prefer",
+    "prefers",
+    "preferred",
+];
+
+/// Phrases of a request to keep something, or of a standing instruction.
+const KEEP_PHRASES: [&str; 6] = [
+    "keep in mind",
+    "don't forget",
+    "do not forget",
+    "from now on",
+    "jot down",
+    "call me",
+];
+
+/// "my papers", "our library": the user's documents, not a fact about the user.
+const LIBRARY_NOUNS: [&str; 16] = [
+    "paper",
+    "papers",
+    "document",
+    "documents",
+    "doc",
+    "docs",
+    "file",
+    "files",
+    "library",
+    "source",
+    "sources",
+    "pdf",
+    "pdfs",
+    "folder",
+    "folders",
+    "uploads",
+];
+
+/// "show me", "help us": a request to the assistant, not a fact about the user.
+const REQUEST_VERBS: [&str; 16] = [
+    "show", "tell", "give", "help", "let", "find", "get", "send", "explain", "teach", "draw",
+    "list", "bring", "fetch", "make", "write",
+];
+
+/// Lower-case words of `text`, with typographic apostrophes made plain.
+fn words(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .replace(['\u{2019}', '\u{2018}'], "'")
+        .split(|c: char| !(c.is_alphanumeric() || c == '\''))
+        .map(|w| w.trim_matches('\''))
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whether one sentence's words are about the user or ask to keep something.
+fn personal(words: &[String]) -> bool {
+    let first_person = words.iter().enumerate().any(|(i, word)| {
+        if !FIRST_PERSON.contains(&word.as_str()) {
+            return false;
+        }
+        let next = words.get(i + 1).map(String::as_str);
+        let previous = i
+            .checked_sub(1)
+            .and_then(|p| words.get(p))
+            .map(String::as_str);
+        let library = matches!(word.as_str(), "my" | "our")
+            && next.is_some_and(|n| LIBRARY_NOUNS.contains(&n));
+        let request = matches!(word.as_str(), "me" | "us")
+            && previous.is_some_and(|p| REQUEST_VERBS.contains(&p));
+        !library && !request
+    });
+    if first_person || words.iter().any(|w| KEEP_WORDS.contains(&w.as_str())) {
+        return true;
+    }
+    let joined = format!(" {} ", words.join(" "));
+    KEEP_PHRASES
+        .iter()
+        .any(|phrase| joined.contains(&format!(" {phrase} ")))
+}
+
+/// Whether a turn may hold something to remember, so it is worth a model call: some
+/// sentence that is not a question speaks in the first person ("I", "my", "we" — but not
+/// "my papers" or "show me") or asks to keep something ("remember", "note", "always",
+/// "from now on", ...). A question about the documents ("What does section 4 of the
+/// guide say?") is not. This looks at who is speaking, not at the topic: any subject
+/// passes, unlike the ontology's cue terms, which a real fact rarely uses.
+pub fn worth_learning(text: &str) -> bool {
+    if words(text).len() < 2 {
+        return false;
+    }
+    let mut sentence = String::new();
+    for c in text.chars() {
+        if matches!(c, '.' | '!' | '?' | '\n') {
+            if c != '?' && personal(&words(&sentence)) {
+                return true;
+            }
+            sentence.clear();
+        } else {
+            sentence.push(c);
+        }
+    }
+    personal(&words(&sentence))
 }
 
 /// Whether `class` may have the user (`person:self`, a Person) as its subject: the same
@@ -498,6 +654,62 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.candidates.len(), 1);
         assert_eq!(parsed.malformed, 2);
+    }
+
+    #[test]
+    fn turns_about_the_user_are_worth_a_call_and_document_questions_are_not() {
+        for text in [
+            "I'm writing my thesis on disk-based vector search, and memory cost matters most to me.",
+            "I prefer tea",
+            "My manager is Asha.",
+            "We moved the lab to Pune.",
+            "Note: the Apollo launch is planned for June",
+            "Always answer in British English.",
+            "From now on, cite the page numbers.",
+            "Keep in mind the deadline is Friday",
+            "What does SPANN do? I care about memory cost.",
+            "I\u{2019}m vegan",
+        ] {
+            assert!(worth_learning(text), "{text}");
+        }
+        for text in [
+            "What does section 4 of the guide say?",
+            "How do FreshDiskANN and SPANN keep search fast while the index grows?",
+            "In my papers, draw a diagram of how SPANN partitions vectors",
+            "Show me the figure on page 3",
+            "Compare the recall of DiskANN and SPANN in our library.",
+            "Do I have any tasks today?",
+            "thanks",
+            "",
+        ] {
+            assert!(!worth_learning(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn every_turn_is_offered_the_personal_classes_whatever_its_words() {
+        let ontology = crate::statements::testing::ontology();
+        // No cue term of the ontology: the keyword gate skipped this turn.
+        let text = "I'm writing my thesis on disk-based vector search, and memory cost matters most to me.";
+        assert!(slice_for_learning(&ontology, text).is_none());
+        let slice = slice_for_turns(&ontology, text);
+        let matched = slice.matched_classes();
+        for class in PERSONAL_CLASSES {
+            assert!(matched.contains(&class), "{class} in {matched:?}");
+        }
+        assert!(slice.properties.iter().any(|p| p.id == "worksOn"));
+        assert!(slice.properties.iter().any(|p| p.id == "noteText"));
+        // Cued classes are still offered, document classes never.
+        let slice = slice_for_turns(
+            &ontology,
+            "We decided to go with DiskANN. Invoice 42 is attached.",
+        );
+        let matched = slice.matched_classes();
+        assert!(matched.contains(&"Decision"), "{matched:?}");
+        assert!(
+            !matched.contains(&"Invoice") && !matched.contains(&"Document"),
+            "{matched:?}"
+        );
     }
 
     #[test]

@@ -183,12 +183,18 @@ impl Learner {
         if policy.mode == LearnMode::Off {
             return Err(LearnError::Disabled);
         }
-        // Newest turns first within the size bound, whole turns only, then in order.
+        // Newest turns first within the size bound, whole turns only, then in order. A
+        // turn with nothing about the user (a question about the documents) is not sent.
         let mut sources: Vec<SourceText> = Vec::new();
         let mut size = 0;
+        let mut wrote = false;
         for (i, turn) in turns.iter().enumerate().rev() {
             let source = SourceText::from_turn(i, turn);
             if source.text.is_empty() {
+                continue;
+            }
+            wrote = true;
+            if !extract::worth_learning(&source.text) {
                 continue;
             }
             let len = source.text.chars().count();
@@ -200,7 +206,14 @@ impl Learner {
         }
         sources.reverse();
         if sources.is_empty() {
-            report.skipped = Some("nothing the user wrote".to_string());
+            report.skipped = Some(
+                if wrote {
+                    "nothing the user said was about themselves"
+                } else {
+                    "nothing the user wrote"
+                }
+                .to_string(),
+            );
             return Ok(report);
         }
         let ontology = self.service.store().ontology();
@@ -209,10 +222,7 @@ impl Learner {
             .map(|s| s.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
-        let Some(slice) = extract::slice_for_learning(ontology, &joined) else {
-            report.skipped = Some("nothing memorable was mentioned".to_string());
-            return Ok(report);
-        };
+        let slice = extract::slice_for_turns(ontology, &joined);
         let slice_classes: BTreeSet<String> = slice
             .matched_classes()
             .into_iter()

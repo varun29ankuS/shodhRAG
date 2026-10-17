@@ -181,6 +181,8 @@ struct GroundingRun {
     /// Citation numbers the run started with (passages carried into a side
     /// discussion): numbers above it were handed out by tools of this run.
     seeded: u32,
+    /// The message only asked to remember something ([`RunScope::memory_instruction`]).
+    memory_only: bool,
     rounds: Rounds,
     /// Follow-up turns so far (the next report's round).
     round: u32,
@@ -850,6 +852,7 @@ impl Inner {
                 run_id: run_id.clone(),
                 question,
                 seeded: self.passages_in_run.issued(),
+                memory_only: scope.memory_instruction,
                 ..GroundingRun::default()
             };
             *lock(&self.scope) = Arc::new(scope);
@@ -1026,16 +1029,21 @@ impl Inner {
         // covers every tool that numbers passages, including app tools,
         // without a list to keep in step with the registry; the carried
         // passages of a side discussion are not counted.
-        let seeded = lock(&self.grounding_run).seeded;
+        let (seeded, memory_only) = {
+            let g = lock(&self.grounding_run);
+            (g.seeded, g.memory_only)
+        };
         let retrieval = Retrieval {
             sourced: followup::searched(&tools_ok) || self.passages_in_run.issued() > seeded,
             available: self.can_search_documents(),
         };
+        // A request to remember has no question for the documents: its acknowledgement is
+        // never sent back to search them or to repair claims about them.
         let next = followup::decide(
             &answer_checks,
             &need_checks,
             rounds,
-            auto_repair,
+            auto_repair && !memory_only,
             calls_left,
             retrieval,
         );
@@ -2532,6 +2540,61 @@ mod tests {
         ));
         assert!(out.try_recv().is_err(), "no further prompt");
         assert_eq!(lock(&queries).len(), 1, "one search");
+    }
+
+    #[tokio::test]
+    async fn an_acknowledged_request_to_remember_is_not_searched_for() {
+        let queries = Arc::new(Mutex::new(Vec::new()));
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(OnePaper {
+                passage: Some("FreshDiskANN keeps a compressed graph in memory."),
+                queries: Arc::clone(&queries),
+            }))
+            .unwrap();
+        let (inner, mut events, mut out) =
+            offline_session_with(Some(GroundingConfig::lexical()), None, registry);
+        let text = "Remember that I'm writing my thesis on disk-based vector search.";
+        inner
+            .start_run(
+                text,
+                Some("run-1".into()),
+                RunScope {
+                    memory_instruction: true,
+                    ..RunScope::default()
+                },
+            )
+            .unwrap();
+        let (first_prompt, _) = sent_prompt(&mut out);
+        // An acknowledgement that would be sent back to search in an ordinary answer:
+        // a citation no source has, and a refusal about the documents.
+        say(
+            &inner,
+            "m1",
+            "Noted: your thesis is on disk-based vector search [1]. Your documents do not \
+             cover your thesis.",
+        );
+        complete(&inner, &first_prompt);
+        let events =
+            events_until(&mut events, |e| matches!(e, AgentEvent::RunFinished { .. })).await;
+        assert!(
+            !events.iter().any(|e| matches!(
+                e,
+                AgentEvent::RevisionStarted {
+                    reason: RevisionReason::Retrieve,
+                    ..
+                }
+            )),
+            "{events:?}"
+        );
+        assert!(lock(&queries).is_empty(), "the documents were not searched");
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::RunFinished {
+                status: RunStatus::Completed,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]

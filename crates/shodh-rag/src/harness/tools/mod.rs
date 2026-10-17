@@ -252,6 +252,11 @@ pub struct RunScope {
     /// the documents with it when an answer skipped the search. `None`: the
     /// sent message is the question.
     pub question: Option<String>,
+    /// The message only asked to remember something, which the app already filed: there is
+    /// no question about the documents, so an answer that did not search is never sent
+    /// back to search them (the retrieve follow-up). A message that also asks a question
+    /// is not one: its question goes in [`Self::question`] and the usual rules apply.
+    pub memory_instruction: bool,
 }
 
 /// A snippet an answer may use: the region of a page the user saved.

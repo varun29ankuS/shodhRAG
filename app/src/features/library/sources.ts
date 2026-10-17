@@ -33,6 +33,17 @@ export interface LibrarySource {
   lastError?: string;
   /** Why the folder could not be kept in sync (this session only). */
   syncError?: string;
+  /**
+   * While a sync reads and chunks again the files indexed under an older
+   * chunker version: how many of them are done (this session only).
+   */
+  syncProgress?: SyncProgress;
+}
+
+/** How far a sync is through the files it chunks again. */
+export interface SyncProgress {
+  done: number;
+  total: number;
 }
 
 export const SOURCES_STORAGE_KEY = 'indexedSources';
@@ -119,7 +130,7 @@ export function withPathCase(source: LibrarySource, resolved: string): LibrarySo
 /** The persisted form: live progress and sync fields are not stored. */
 export function serializeSources(sources: readonly LibrarySource[]): string {
   return JSON.stringify(
-    sources.map(({ progress: _p, currentFile: _c, processedCount: _n, currentStep: _t, syncError: _s, ...rest }) => rest),
+    sources.map(({ progress: _p, currentFile: _c, processedCount: _n, currentStep: _t, syncError: _s, syncProgress: _g, ...rest }) => rest),
   );
 }
 
@@ -178,7 +189,7 @@ export function applyFolderSync(source: LibrarySource, outcome: FolderSyncOutcom
   if (error && typeof outcome.files !== 'number') return { ...source, syncError: error };
   const failures = toFailures(outcome.failures);
   const changed = (outcome.indexed ?? 0) + (outcome.removed ?? 0) > 0;
-  const { syncError: _s, failures: _f, ...rest } = source;
+  const { syncError: _s, failures: _f, syncProgress: _g, ...rest } = source;
   return {
     ...rest,
     fileCount: Math.max(0, (outcome.files ?? source.fileCount) - failures.length),
@@ -186,6 +197,31 @@ export function applyFolderSync(source: LibrarySource, outcome: FolderSyncOutcom
     ...(failures.length > 0 ? { failures } : {}),
     ...(error ? { syncError: error } : {}),
   };
+}
+
+/** The `folder-sync-progress` event: a sync's way through the files it chunks again. */
+export interface FolderSyncProgress {
+  sourceId: string;
+  done?: unknown;
+  total?: unknown;
+}
+
+/**
+ * A ready source while its sync reads and chunks again the files indexed
+ * under an older chunker version: how many are done. Progress that does not
+ * read as counts is ignored; the sync's outcome (`applyFolderSync`) clears it.
+ */
+export function applyFolderSyncProgress(source: LibrarySource, progress: FolderSyncProgress): LibrarySource {
+  if (source.id !== progress.sourceId || source.status !== 'ready') return source;
+  const { done, total } = progress;
+  if (typeof done !== 'number' || typeof total !== 'number') return source;
+  if (!Number.isInteger(done) || !Number.isInteger(total) || total < 1 || done < 0 || done > total) return source;
+  return { ...source, syncProgress: { done, total } };
+}
+
+/** "Updating index for improved text extraction · 120 of 400". */
+export function syncProgressLine(progress: SyncProgress): string {
+  return `Updating index for improved text extraction · ${progress.done.toLocaleString('en-US')} of ${progress.total.toLocaleString('en-US')}`;
 }
 
 /**

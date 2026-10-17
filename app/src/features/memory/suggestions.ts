@@ -320,10 +320,8 @@ export function contentFromSuggestionEdit(s: Suggestion, draft: Record<string, s
   return { kind: 'fact', class: content.class, subject: content.subject ? { id: content.subject.id } : null, properties };
 }
 
-/** Pending suggestions that can be accepted together (not sensitive). */
-export function batchAcceptable(suggestions: readonly Suggestion[]): Suggestion[] {
-  return suggestions.filter(s => s.status === 'pending' && s.sensitive.length === 0);
-}
+/** Pending suggestions that can be accepted together (not sensitive, not being rejected). */
+export { batchAcceptable } from './batchAccept.ts';
 
 export interface LearnStatus {
   mode: LearnMode;

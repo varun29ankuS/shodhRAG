@@ -18,7 +18,6 @@ import {
   undoSuggestion,
 } from '../features/memory/api';
 import {
-  batchAcceptable,
   contentFromSuggestionEdit,
   describeDecision,
   editableSuggestionFields,
@@ -27,6 +26,7 @@ import {
 } from '../features/memory/suggestions';
 import type { LearnStatus, Suggestion } from '../features/memory/suggestions';
 import { invalidSummary } from '../features/memory/learnUsage';
+import { batchAcceptable, markRejecting, pruneRejecting, withoutRejecting } from '../features/memory/batchAccept';
 import { formatDate, propertyLabel } from '../features/memory/model';
 import { countOf } from '../lib/plural';
 
@@ -239,9 +239,21 @@ interface SuggestionItemProps {
   run: (action: () => Promise<void>, failure: string) => Promise<void>;
   conversationTitle: (id: string) => string | undefined;
   onOpenConversation: (id: string) => void;
+  /** Its rejection waits out the undo window: hidden, and never in a batch accept. */
+  rejecting: boolean;
+  /** The rejection started (true) or was undone or failed (false). */
+  onRejecting: (id: string, on: boolean) => void;
 }
 
-function SuggestionItem({ suggestion, busy, run, conversationTitle, onOpenConversation }: SuggestionItemProps) {
+function SuggestionItem({
+  suggestion,
+  busy,
+  run,
+  conversationTitle,
+  onOpenConversation,
+  rejecting,
+  onRejecting,
+}: SuggestionItemProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const formId = useId();
@@ -250,15 +262,15 @@ function SuggestionItem({ suggestion, busy, run, conversationTitle, onOpenConver
   const pending = suggestion.status === 'pending' || suggestion.status === 'failed';
   const sensitive = sensitiveLabel(suggestion.sensitive);
   const conversation = suggestion.conversationId;
-  const [hidden, setHidden] = useState(false);
 
-  // Hidden at once and rejected when the undo window ends; Undo leaves it pending.
+  // Hidden at once and rejected when the undo window ends; Undo leaves it pending. The
+  // list keeps it out of "Accept N non-sensitive" meanwhile: it is still pending until then.
   const reject = () =>
     removeWithUndo({
       message: 'Suggestion rejected',
       description: suggestionText(suggestion),
-      hide: () => setHidden(true),
-      restore: () => setHidden(false),
+      hide: () => onRejecting(suggestion.id, true),
+      restore: () => onRejecting(suggestion.id, false),
       commit: () => rejectSuggestion(suggestion.id),
       onError: err => notify.error('The suggestion was not rejected', { description: errorText(err) }),
     });
@@ -270,7 +282,7 @@ function SuggestionItem({ suggestion, busy, run, conversationTitle, onOpenConver
       notify.success('Memory saved', { description: suggestionText(suggestion) });
     }, 'The suggestion was not accepted');
 
-  if (hidden) return null;
+  if (rejecting) return null;
 
   return (
     <li className="py-3 flex flex-col gap-1.5">
@@ -417,6 +429,16 @@ export default function SuggestedMemories({
   const [decided, setDecided] = useState<Suggestion[]>([]);
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Suggestions whose rejection waits out its undo window (still pending in the backend).
+  const [rejecting, setRejecting] = useState<ReadonlySet<string>>(() => new Set());
+  const onRejecting = useCallback((id: string, on: boolean) => {
+    setRejecting(current => markRejecting(current, id, on));
+  }, []);
+
+  // A rejection carried out (the suggestion no longer waits) is done with.
+  useEffect(() => {
+    setRejecting(current => pruneRejecting(current, pending));
+  }, [pending]);
 
   const refresh = useCallback(async () => {
     try {
@@ -457,7 +479,8 @@ export default function SuggestedMemories({
     }
   };
 
-  const batch = batchAcceptable(pending);
+  const shown = withoutRejecting(pending, rejecting);
+  const batch = batchAcceptable(pending, rejecting);
 
   return (
     <div className="flex flex-col gap-5">
@@ -477,11 +500,11 @@ export default function SuggestedMemories({
         </p>
       )}
 
-      {pending.length > 0 && (
+      {shown.length > 0 && (
         <section aria-labelledby="suggested-memories-heading" className="flex flex-col">
           <div className="flex items-center justify-between gap-2">
             <h3 id="suggested-memories-heading" className="m-0 text-[13px] font-bold text-shodh-text-secondary">
-              Suggested memories <span className="font-normal text-shodh-text-muted">({pending.length})</span>
+              Suggested memories <span className="font-normal text-shodh-text-muted">({shown.length})</span>
             </h3>
             {batch.length > 1 && (
               <button
@@ -502,7 +525,7 @@ export default function SuggestedMemories({
             )}
           </div>
           <ul className="m-0 p-0 list-none divide-y divide-shodh-border-subtle">
-            {pending.map(s => (
+            {shown.map(s => (
               <SuggestionItem
                 key={s.id}
                 suggestion={s}
@@ -510,6 +533,8 @@ export default function SuggestedMemories({
                 run={run}
                 conversationTitle={conversationTitle}
                 onOpenConversation={onOpenConversation}
+                rejecting={rejecting.has(s.id)}
+                onRejecting={onRejecting}
               />
             ))}
           </ul>
@@ -530,6 +555,8 @@ export default function SuggestedMemories({
                 run={run}
                 conversationTitle={conversationTitle}
                 onOpenConversation={onOpenConversation}
+                rejecting={rejecting.has(s.id)}
+                onRejecting={onRejecting}
               />
             ))}
           </ul>

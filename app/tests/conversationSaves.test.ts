@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ConversationSaves, quitRequestId, updateRecord } from '../src/hooks/conversationSaves.ts';
+import { ConversationSaves, FailureLatch, loadFailureNotice, quitRequestId, updateRecord } from '../src/hooks/conversationSaves.ts';
 
 interface Conv {
   id: string;
@@ -182,4 +182,53 @@ test('updateRecord calls the change once and returns the record it put in the li
   const missing = updateRecord(list, 'nope', c => c);
   assert.equal(missing.updated, null);
   assert.equal(missing.list, list);
+});
+
+test('pause drops waiting saves and refuses later ones, so nothing overwrites an unreadable store', async () => {
+  const h = harness();
+  h.saves.save({ id: 'c1', rev: 'waiting' });
+  assert.equal(h.saves.paused, false);
+  h.saves.pause();
+  assert.equal(h.saves.paused, true);
+  h.fireTimers();
+  h.saves.save({ id: 'c1', rev: 'later' }, undefined, true);
+  await h.saves.write({ id: 'c2', rev: 'direct' });
+  h.saves.flush();
+  await h.saves.drain();
+  await h.settle();
+  assert.deepEqual(h.started, [], 'nothing reaches the store');
+  assert.deepEqual(h.errors, []);
+});
+
+test('a successful write is reported, so a failure notice can be shown again later', async () => {
+  const written: string[] = [];
+  const saves = new ConversationSaves<Conv>({
+    write: async () => {},
+    schedule: () => () => {},
+    onError: () => {},
+    onWritten: conv => written.push(conv.rev),
+    delayMs: 500,
+  });
+  await saves.write({ id: 'c1', rev: 'a' });
+  assert.deepEqual(written, ['a']);
+});
+
+test('a store that keeps refusing saves is reported once until a save succeeds', () => {
+  const latch = new FailureLatch();
+  assert.equal(latch.fail(), true);
+  assert.equal(latch.fail(), false);
+  assert.equal(latch.fail(), false);
+  latch.succeed();
+  assert.equal(latch.fail(), true);
+});
+
+test('the load failure notice says what happened, that saving is paused, and where the file is', () => {
+  const notice = loadFailureNotice('The saved conversations could not be read: C:/Users/me/AppData/Roaming/shodh/conversations.json could not be read (the file is empty) and its backup could not be used either (there is no backup)');
+  const text = notice.paragraphs.join(' ');
+  assert.match(notice.title, /could not be loaded/);
+  assert.match(text, /Saving is paused/);
+  assert.match(text, /nothing you do now overwrites/);
+  assert.match(text, /conversations\.json/);
+  assert.match(loadFailureNotice(new Error('disk gone')).paragraphs.join(' '), /Details: disk gone/);
+  assert.match(loadFailureNotice(undefined).paragraphs.join(' '), /No details/);
 });

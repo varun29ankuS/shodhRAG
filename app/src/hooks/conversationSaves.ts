@@ -41,6 +41,8 @@ export interface SaveDeps<C extends { id: string }> {
   schedule: (run: () => void, ms: number) => () => void;
   /** A write failed. */
   onError: (conv: C, error: unknown) => void;
+  /** A write succeeded. */
+  onWritten?: (conv: C) => void;
   delayMs: number;
 }
 
@@ -54,9 +56,26 @@ export class ConversationSaves<C extends { id: string }> {
   private readonly deps: SaveDeps<C>;
   private readonly pending = new Map<string, Pending<C>>();
   private readonly inFlight = new Map<string, Promise<void>>();
+  private stopped = false;
 
   constructor(deps: SaveDeps<C>) {
     this.deps = deps;
+  }
+
+  /**
+   * Stop saving: waiting saves are dropped and later ones are refused. Used
+   * when the saved conversations could not be loaded, so nothing written
+   * now can overwrite the file the user's history is still in. Writes
+   * already in flight finish (the backend refuses them too).
+   */
+  pause(): void {
+    this.stopped = true;
+    for (const id of [...this.pending.keys()]) this.drop(id);
+  }
+
+  /** Saving was paused ({@link pause}). */
+  get paused(): boolean {
+    return this.stopped;
   }
 
   /**
@@ -65,6 +84,7 @@ export class ConversationSaves<C extends { id: string }> {
    * only if this save is the one written and it succeeds.
    */
   save(conv: C, onSaved?: () => void, immediate = false): void {
+    if (this.stopped) return;
     this.drop(conv.id);
     if (immediate) {
       void this.write(conv, onSaved);
@@ -101,10 +121,14 @@ export class ConversationSaves<C extends { id: string }> {
    * they were made. Never rejects.
    */
   write(conv: C, onSaved?: () => void): Promise<void> {
+    if (this.stopped) return Promise.resolve();
     const previous = this.inFlight.get(conv.id) ?? Promise.resolve();
     const next = previous
       .then(() => this.deps.write(conv))
-      .then(() => onSaved?.())
+      .then(() => {
+        this.deps.onWritten?.(conv);
+        onSaved?.();
+      })
       .catch(error => this.deps.onError(conv, error));
     this.inFlight.set(conv.id, next);
     void next.then(() => {
@@ -119,4 +143,50 @@ export class ConversationSaves<C extends { id: string }> {
     p.cancel();
     this.pending.delete(id);
   }
+}
+
+/**
+ * Whether a failed save is shown: the first failure after a success (or the
+ * first ever), so a store that keeps refusing is reported once, not on
+ * every save every 500 ms; a save that succeeds re-arms it.
+ */
+export class FailureLatch {
+  private failing = false;
+
+  /** A save failed; true when the user should be told. */
+  fail(): boolean {
+    if (this.failing) return false;
+    this.failing = true;
+    return true;
+  }
+
+  /** A save succeeded. */
+  succeed(): void {
+    this.failing = false;
+  }
+}
+
+/** The blocking notice shown when the saved conversations cannot be loaded. */
+export interface LoadFailureNotice {
+  title: string;
+  paragraphs: string[];
+}
+
+/**
+ * What to tell the user when `load_conversations` fails, in plain words:
+ * what happened, that saving is paused so nothing is overwritten, and where
+ * the file is (the backend's message names it).
+ */
+export function loadFailureNotice(error: unknown): LoadFailureNotice {
+  const detail = (error instanceof Error ? error.message : String(error ?? '')).trim();
+  return {
+    title: 'Your saved conversations could not be loaded',
+    paragraphs: [
+      'Shodh could not read the file that holds your conversations, or its backup copy.',
+      'Saving is paused, so nothing you do now overwrites that file: your history may still be in it. '
+        + 'New messages in this session are not saved.',
+      detail.length > 0 ? `Details: ${detail}` : 'No details were given.',
+      'To get your conversations back, quit Shodh, restore the file from a backup (or move it away to start fresh), and open Shodh again.',
+    ],
+  };
 }

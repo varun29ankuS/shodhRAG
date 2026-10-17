@@ -606,3 +606,30 @@ export function citationCorrection(rewrite: CitationRewrite, conversationId: str
     },
   };
 }
+
+/** How a "Cite N instead" ended. */
+export type CorrectionOutcome =
+  /** Recorded in the audit log, then applied and saved. */
+  | 'applied'
+  /** The claim is no longer in the answer as it was checked: nothing to change. */
+  | 'stale'
+  /** The audit log refused or could not take the record: nothing was changed. */
+  | 'not_recorded';
+
+/** The notice for a correction that could not be recorded. */
+export const CORRECTION_NOT_RECORDED = 'Could not record this correction in Activity, so nothing was changed.';
+
+/**
+ * Audit first: the correction is applied (and saved) only once the audit log has taken its
+ * record, so the answer never changes without a record of who changed it. A failed record
+ * applies nothing.
+ */
+export async function applyAuditedCorrection(record: () => Promise<unknown>, apply: () => void): Promise<CorrectionOutcome> {
+  try {
+    await record();
+  } catch {
+    return 'not_recorded';
+  }
+  apply();
+  return 'applied';
+}

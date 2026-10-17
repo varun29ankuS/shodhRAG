@@ -1,4 +1,4 @@
-import React, { useCallback, useId, useMemo, useRef, useSyncExternalStore } from 'react';
+import React, { useCallback, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { firstUseStore } from '../../lib/firstUse';
 import type { FirstUseHint } from '../../lib/firstUse';
 import { AlertTriangle, ChevronRight, CircleCheck, CircleHelp, Pencil, ShieldCheck } from 'lucide-react';
@@ -30,10 +30,10 @@ function hitLabel(hit: SearchHit): string {
 }
 
 /**
- * Callback of "Cite N instead": rewrite this claim's citation to the passage that supports it.
- * True when the answer was changed.
+ * Callback of "Cite N instead": record, then rewrite, this claim's citation to the passage that
+ * supports it. Resolves true when the answer was changed.
  */
-export type CiteInstead = (check: ClaimCheck) => boolean;
+export type CiteInstead = (check: ClaimCheck) => Promise<boolean>;
 
 /** Attribute of a working citation pill, holding its number (`data-cite` in `MessageContentRenderer`). */
 const CITE_PILL_ATTR = 'data-cite';
@@ -96,17 +96,25 @@ export function CorrectionNote({ check }: { check: ClaimCheck }) {
  * the app never rewrites a citation by itself.
  */
 function CiteInsteadButton({ check, onCiteInstead, className }: { check: ClaimCheck; onCiteInstead?: CiteInstead; className: string }) {
+  const [pending, setPending] = useState(false);
   const n = onCiteInstead ? citeInsteadOffer(check) : null;
   if (n === null || !onCiteInstead) return null;
   const cited = check.cited.map(c => `[${c}]`).join('');
   const act = () => {
-    // The change re-renders the answer within this click; the pill is there on the next frame.
-    if (onCiteInstead(check)) requestAnimationFrame(() => focusCorrectedClaim(check, n));
+    if (pending) return;
+    setPending(true);
+    void onCiteInstead(check).then(changed => {
+      // A change unmounts this button; the pill is there on the next frame.
+      if (changed) requestAnimationFrame(() => focusCorrectedClaim(check, n));
+      else setPending(false);
+    });
   };
   return (
     <button
       type="button"
       data-answer-ui=""
+      disabled={pending}
+      aria-busy={pending}
       onClick={act}
       aria-label={`Cite ${n} instead of ${check.cited.join(', ')} for this statement`}
       title={`Change this statement's citation from ${cited} to [${n}]`}

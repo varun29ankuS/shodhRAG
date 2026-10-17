@@ -11,7 +11,7 @@ import { passageHits } from '../agent/citations';
 import { PlanPanel } from '../agent/PlanPanel';
 import { answerText, pendingApproval, isLive } from '../agent/reducer';
 import type { ClaimCheck } from '../agent/events';
-import { citationCorrection, citeSuggested } from '../agent/grounding';
+import { CORRECTION_NOT_RECORDED, applyAuditedCorrection, citationCorrection, citeSuggested } from '../agent/grounding';
 import { recordCitationCorrection } from '../audit/api';
 import type { TranscriptState } from '../agent/reducer';
 import { RuntimeCard } from '../agent/RuntimeCard';
@@ -349,7 +349,7 @@ interface AssistantMessageProps {
   onOpenSettings: () => void;
   onOpenThread: (messageId: string, thread: FocusThread, trigger: HTMLElement) => void;
   /** "Cite N instead" on a miscited claim of this answer. */
-  onCiteInstead: (messageId: string, check: ClaimCheck) => boolean;
+  onCiteInstead: (messageId: string, check: ClaimCheck) => Promise<boolean>;
 }
 
 /** How long an answer reached with "Go to message" stays highlighted. */
@@ -877,7 +877,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   // ref so the callback stays the same while answers stream (every answer is memoised on it).
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
-  const citeInstead = useCallback((messageId: string, check: ClaimCheck): boolean => {
+  const citeInstead = useCallback(async (messageId: string, check: ClaimCheck): Promise<boolean> => {
     const owner = messagesRef.current.find(m => m.id === messageId);
     const rewrite = owner?.transcript && !isLive(owner.transcript) ? citeSuggested(owner.transcript, check) : null;
     const conversationId = session.activeConversationId;
@@ -885,10 +885,15 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
       notify.error('This citation could not be changed', { description: 'The statement is no longer in the answer as it was checked.' });
       return false;
     }
-    updateMessage(owner.id, { content: answerText(rewrite.transcript), transcript: rewrite.transcript });
-    recordCitationCorrection(citationCorrection(rewrite, conversationId)).catch(error => {
-      console.error('Citation correction not audited:', error);
-    });
+    // Audit first: the answer changes only once Activity has the record.
+    const outcome = await applyAuditedCorrection(
+      () => recordCitationCorrection(citationCorrection(rewrite, conversationId)),
+      () => updateMessage(owner.id, { content: answerText(rewrite.transcript), transcript: rewrite.transcript }),
+    );
+    if (outcome !== 'applied') {
+      notify.error(CORRECTION_NOT_RECORDED);
+      return false;
+    }
     // The flag and its button are gone; say what changed (toasts are a live region).
     notify.success(`Now cites passage ${check.suggested}`);
     return true;

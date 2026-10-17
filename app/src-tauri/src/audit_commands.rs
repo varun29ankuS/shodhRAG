@@ -264,14 +264,17 @@ fn citation_correction_record(c: &CitationCorrection) -> Result<AuditRecord, Str
 }
 
 /// Record a citation the user corrected in an answer (`CitationCorrection`).
+/// Waits until the event is written: the app changes the answer only after
+/// this succeeds, so a correction never goes unrecorded.
 #[tauri::command]
 pub async fn audit_record_citation_correction(
     correction: CitationCorrection,
     audit: State<'_, AuditState>,
 ) -> Result<(), String> {
     let record = citation_correction_record(&correction)?;
-    tracing::info!(target: "shodh::audit", event = "citation_corrected", from = ?correction.from, to = correction.to, "citation corrected by the user");
-    audit.record(record);
+    let log = audit.require()?;
+    let id = blocking(move || log.append(record).map_err(|e| e.to_string())).await?;
+    tracing::info!(target: "shodh::audit", event = "citation_corrected", id, from = ?correction.from, to = correction.to, "citation corrected by the user");
     Ok(())
 }
 

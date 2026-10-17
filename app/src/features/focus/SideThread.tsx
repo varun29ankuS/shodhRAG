@@ -8,6 +8,7 @@ import { passageHits } from '../agent/citations';
 import { fromPersisted, pendingApproval } from '../agent/reducer';
 import type { TranscriptState } from '../agent/reducer';
 import type { ClaimCheck } from '../agent/events';
+import { CORRECTION_NOT_RECORDED } from '../agent/grounding';
 import { Transcript } from '../agent/Transcript';
 import { useChatSession } from '../ask/ChatSessionContext';
 import { MessageContentRenderer } from '../ask/MessageContentRenderer';
@@ -115,13 +116,13 @@ const AnswerTurn = React.memo(function AnswerTurn({
   onRuntimeInstalled: () => void;
   onOpenSettings: () => void;
   /** "Cite N instead" on a miscited claim of a stored answer. */
-  onCiteInstead?: (turnId: string, check: ClaimCheck) => boolean;
+  onCiteInstead?: (turnId: string, check: ClaimCheck) => Promise<boolean>;
 }) {
   const shown = useMemo(() => (transcript ? withoutFollowups(transcript) : null), [transcript]);
   const hits = useMemo(() => (shown ? passageHits(shown.passages) : []), [shown]);
   const open = useCallback((hit: SearchHit) => onOpenCitation(hit), [onOpenCitation]);
   const citeInstead = useCallback(
-    (check: ClaimCheck): boolean => (turnId && onCiteInstead ? onCiteInstead(turnId, check) : false),
+    (check: ClaimCheck): Promise<boolean> => (turnId && onCiteInstead ? onCiteInstead(turnId, check) : Promise.resolve(false)),
     [turnId, onCiteInstead],
   );
   if (!shown) {
@@ -367,14 +368,16 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
   focusRef.current = focus;
   const openRef = useRef(open);
   openRef.current = open;
-  const citeInstead = useCallback((turnId: string, check: ClaimCheck): boolean => {
+  const citeInstead = useCallback(async (turnId: string, check: ClaimCheck): Promise<boolean> => {
     const api = focusRef.current;
     const n = check.suggested;
-    if (api && api.citeInstead(openRef.current, turnId, check)) {
+    const outcome = api ? await api.citeInstead(openRef.current, turnId, check) : 'stale';
+    if (outcome === 'applied') {
       notify.success(`Now cites passage ${n}`);
       return true;
     }
-    notify.error('This citation could not be changed', { description: 'The statement is no longer in the answer as it was checked.' });
+    if (outcome === 'not_recorded') notify.error(CORRECTION_NOT_RECORDED);
+    else notify.error('This citation could not be changed', { description: 'The statement is no longer in the answer as it was checked.' });
     return false;
   }, []);
 

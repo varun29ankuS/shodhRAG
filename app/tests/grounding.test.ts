@@ -14,6 +14,7 @@ import {
   checksForMessage,
   citeInAnchor,
   citeInsteadOffer,
+  applyAuditedCorrection,
   citationCorrection,
   citeSuggested,
   citedNumbersIn,
@@ -357,4 +358,27 @@ test('the audit record of a correction holds ids, numbers and counts, never text
   });
   const json = JSON.stringify(record);
   for (const words of ['SPANN', 'latency', 'posting', 'fee']) assert.ok(!json.includes(words), json);
+});
+
+test('a correction is applied only after the audit log has taken its record', async () => {
+  const order: string[] = [];
+  const applied = await applyAuditedCorrection(
+    async () => {
+      order.push('record');
+    },
+    () => order.push('apply'),
+  );
+  assert.equal(applied, 'applied');
+  assert.deepEqual(order, ['record', 'apply'], 'recorded first, then applied');
+
+  const refused: string[] = [];
+  const outcome = await applyAuditedCorrection(
+    async () => {
+      refused.push('record');
+      throw new Error('The audit log is unavailable');
+    },
+    () => refused.push('apply'),
+  );
+  assert.equal(outcome, 'not_recorded');
+  assert.deepEqual(refused, ['record'], 'a failed record changes nothing');
 });

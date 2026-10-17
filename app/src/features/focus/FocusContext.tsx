@@ -1,7 +1,8 @@
 import React, { Suspense, createContext, lazy, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { notify } from '../../lib/notify';
 import type { AgentEventEnvelope, ClaimCheck } from '../agent/events';
-import { citationCorrection, citeSuggested } from '../agent/grounding';
+import { applyAuditedCorrection, citationCorrection, citeSuggested } from '../agent/grounding';
+import type { CorrectionOutcome } from '../agent/grounding';
 import { recordCitationCorrection } from '../audit/api';
 import { answerText, fromPersisted, initialTranscript, isLive, reduceAll, toPersisted } from '../agent/reducer';
 import type { Passage, TranscriptAction, TranscriptState } from '../agent/reducer';
@@ -223,11 +224,11 @@ export interface FocusContextValue {
   /** Whether the answer at `place` is the newest one where it is shown (read on call, no re-render). */
   isLatestAnswer: (place: DiagramPlace) => boolean;
   /**
-   * "Cite N instead" on a miscited claim of a stored side answer: rewrites
-   * that answer's citation and saves the thread. False when the answer or
-   * the claim is no longer there as it was checked.
+   * "Cite N instead" on a miscited claim of a stored side answer: records the
+   * correction in the audit log, then rewrites that answer's citation and
+   * saves the thread (audit first: nothing changes without the record).
    */
-  citeInstead: (open: OpenFocus, turnId: string, check: ClaimCheck) => boolean;
+  citeInstead: (open: OpenFocus, turnId: string, check: ClaimCheck) => Promise<CorrectionOutcome>;
   /** Interrupt the side answer. */
   stop: () => void;
   /** Answer a pending approval of the side answer. */
@@ -1010,13 +1011,13 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     return true;
   }, [findThread, mutateThread]);
 
-  const citeInstead = useCallback((level: OpenFocus, turnId: string, check: ClaimCheck): boolean => {
+  const citeInstead = useCallback(async (level: OpenFocus, turnId: string, check: ClaimCheck): Promise<CorrectionOutcome> => {
     const thread = findThread(level.conversationId, level.parentMessageId, level.threadId);
     const turn = thread?.turns.find(t => t.id === turnId && t.role === 'assistant');
     const stored = turn?.transcript ? fromPersisted(turn.transcript) : null;
-    if (!thread || !turn || !stored || isLive(stored)) return false;
+    if (!thread || !turn || !stored || isLive(stored)) return 'stale';
     const rewrite = citeSuggested(stored, check);
-    if (!rewrite) return false;
+    if (!rewrite) return 'stale';
     const next = rewrite.transcript;
     // Stored as a finished answer is: the followups block stays out of the text.
     const changed: ThreadTurn = {
@@ -1024,11 +1025,11 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       content: splitFollowups(answerText(next)).body,
       transcript: toPersisted(next) as unknown as Record<string, unknown>,
     };
-    mutateThread(thread.anchor, thread.id, t => ({ ...t, turns: t.turns.map(x => (x.id === turnId ? changed : x)) }));
-    recordCitationCorrection(citationCorrection(rewrite, thread.anchor.conversationId)).catch(error => {
-      console.error('Citation correction not audited:', error);
-    });
-    return true;
+    // Audit first: the thread changes only once Activity has the record.
+    return applyAuditedCorrection(
+      () => recordCitationCorrection(citationCorrection(rewrite, thread.anchor.conversationId)),
+      () => mutateThread(thread.anchor, thread.id, t => ({ ...t, turns: t.turns.map(x => (x.id === turnId ? changed : x)) })),
+    );
   }, [findThread, mutateThread]);
 
   const closeFocus = useCallback(() => {

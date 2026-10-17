@@ -767,6 +767,12 @@ pub fn run() {
             let sessions = app_handle.state::<agent_session_commands::AgentSessions>();
             tauri::async_runtime::block_on(sessions.shutdown_all());
         }
+        // macOS: the Dock icon brings back a window closed to the tray.
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } => background::on_reopen(app_handle, has_visible_windows),
         _ => {}
     });
 }

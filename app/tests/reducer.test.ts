@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import type { AgentEvent, GroundingReport } from '../src/features/agent/events.ts';
 import {
   answerIncomplete,
+  showsGroundingChip,
   answerText,
   awaitingRetry,
   currentStep,
@@ -347,4 +348,21 @@ test('a run that fails mid-answer keeps its partial text, marked incomplete, not
     { type: 'run_finished', runId: RUN, status: 'error', durationMs: 5, error: 'x', providerError: null },
   ]);
   assert.equal(answerIncomplete(failedEmpty), false, 'no text, nothing to mark');
+});
+
+test('the grounding chip shows for a finished answer, never for a failed run', () => {
+  const done = reduceAll(initialTranscript(RUN, 1000), spikeRun());
+  assert.equal(showsGroundingChip(done), true);
+  const live = reduceAll(initialTranscript(RUN, 1000), spikeRun().slice(0, -1));
+  assert.equal(showsGroundingChip(live), false, 'not while the run is live');
+  // Round 1 was answered (and checked); the follow-up round failed.
+  const failed = reduceAll(initialTranscript(RUN, 1000), [
+    ...spikeRun().slice(0, -1),
+    { type: 'run_finished', runId: RUN, status: 'error', durationMs: 900, error: 'Provider returned error finish_reason', providerError: { kind: 'model_unavailable', status: null, retryAfterSecs: null } },
+  ]);
+  assert.equal(failed.status, 'error');
+  assert.equal(showsGroundingChip(failed), false);
+  const restored = fromPersisted(JSON.parse(JSON.stringify(toPersisted(failed))));
+  assert.ok(restored);
+  assert.equal(showsGroundingChip(restored), false, 'also once stored');
 });

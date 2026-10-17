@@ -700,6 +700,15 @@ export function answerIncomplete(state: TranscriptState): boolean {
   return state.status === 'error' && answerText(state).length > 0;
 }
 
+/**
+ * Whether the answer's grounding chip may show: only once the run is over,
+ * and never for a failed run (an earlier round's check would read as the
+ * check of an answer that did not finish).
+ */
+export function showsGroundingChip(state: TranscriptState): boolean {
+  return !isLive(state) && state.status !== 'error';
+}
+
 /** The step to show as "what the agent is doing now", if any. */
 export function currentStep(state: TranscriptState): TranscriptStep | null {
   let latest: TranscriptStep | null = null;

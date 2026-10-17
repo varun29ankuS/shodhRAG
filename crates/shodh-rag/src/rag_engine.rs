@@ -4096,7 +4096,7 @@ mod neighbor_expansion_tests {
 
     fn hit(chunk_index: u32, text: &str, page: Option<usize>) -> SearchHit {
         let mut meta = HashMap::new();
-        insert_page_metadata(&mut meta, page);
+        insert_page_metadata(&mut meta, page, None);
         SearchHit {
             id: format!("c{chunk_index}"),
             doc_id: "d1".to_string(),

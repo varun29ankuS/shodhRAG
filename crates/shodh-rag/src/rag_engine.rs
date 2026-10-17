@@ -300,9 +300,20 @@ pub const CHUNKER_VERSION_KEY: &str = "chunker_version";
 /// their file changes or the version is raised again.
 pub const CHUNKS_KEPT_FROM_KEY: &str = "chunks_kept_from";
 
-/// The file, in the data directory, that lists the chunks a commit replaced
-/// and has not removed yet ([`RAGEngine::commit_file`]).
+/// The file, in the data directory, that lists the replacements of files a
+/// commit began and has not finished ([`RAGEngine::commit_file`]).
 pub const REPLACED_CHUNKS_FILE: &str = "replaced_chunks.json";
+
+/// A replacement of a file's chunks in progress: written down before the new
+/// chunks are stored, dropped once the old ones are gone
+/// ([`RAGEngine::settle_replaced`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct Replacement {
+    /// The file (its index identity).
+    source: String,
+    /// The ids of the chunks it had before.
+    previous_ids: Vec<String>,
+}
 
 /// Chunk metadata key: the context the chunk was embedded and keyword-indexed
 /// with (see [`ContextualChunkResult::context`]).
@@ -1516,10 +1527,12 @@ impl RAGEngine {
     /// The new chunks are stored first; only then are the previous ones
     /// removed (by id, in LanceDB and the keyword index), so a failure or a
     /// quit at any point never leaves the file without chunks. A failure
-    /// while storing leaves the previous chunks as they were. The ids being
-    /// removed are written down first ([`REPLACED_CHUNKS_FILE`]): a quit or a
-    /// failure before they are gone leaves both copies until the next commit
-    /// or the next start removes them ([`Self::settle_replaced`]). Rows
+    /// while storing leaves the previous chunks as they were. The file and
+    /// its previous chunk ids are written down before anything is stored
+    /// ([`REPLACED_CHUNKS_FILE`]): a quit or a failure before the old chunks
+    /// are gone leaves both copies until the next commit or the next start
+    /// removes the old ones ([`Self::settle_replaced`]), or keeps them when
+    /// nothing new was stored. Rows
     /// written before paths were canonicalized may carry another spelling of
     /// the same file; they are replaced too, so nothing duplicates.
     pub async fn commit_file(&mut self, file: PreparedFile) -> Result<Vec<Uuid>> {
@@ -1531,17 +1544,40 @@ impl RAGEngine {
         for legacy in legacy_source_spellings(&file.path, &file.source) {
             previous.extend(self.chunk_ids_of(&legacy).await?);
         }
-        #[cfg(test)]
-        if self
-            .fail_next_store
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
-            anyhow::bail!("storing the chunks failed (injected)");
-        }
-        let ids = self.store_prepared(file.document).await?;
+        // Written down before anything is stored, so a quit or a failure at
+        // any later point is finished by `settle_replaced`.
+        let written = !previous.is_empty() && self.begin_replacement(&file.source, &previous);
+        let ids = match self.store_document(file.document).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                // Nothing was stored: the previous chunks are the file's still.
+                if written {
+                    self.end_replacement(&file.source);
+                }
+                return Err(e);
+            }
+        };
         let kept: std::collections::HashSet<String> = ids.iter().map(Uuid::to_string).collect();
         previous.retain(|id| !kept.contains(id));
-        self.remove_replaced(previous).await?;
+        let removed = if previous.is_empty() {
+            true
+        } else {
+            match self.delete_chunk_ids(&previous).await {
+                Ok(()) => true,
+                Err(e) if written => {
+                    tracing::warn!(
+                        error = %format!("{e:#}"),
+                        chunks = previous.len(),
+                        "replaced chunks not removed yet; they are removed at the next commit or start"
+                    );
+                    false
+                }
+                Err(e) => return Err(e.context("the replaced chunks could not be removed")),
+            }
+        };
+        if written && removed {
+            self.end_replacement(&file.source);
+        }
         tracing::info!(
             source = %file.source,
             chunks = ids.len(),
@@ -1702,20 +1738,19 @@ impl RAGEngine {
         })
     }
 
-    /// Remove every stored chunk for `source` from both LanceDB and Tantivy.
     /// The ids of the chunks stored under `source`.
     async fn chunk_ids_of(&self, source: &str) -> Result<Vec<String>> {
         self.store.ids_where(&source_predicate(source)).await
     }
 
-    /// Where the ids of chunks a commit replaced are written down until they
-    /// are removed ([`Self::commit_file`]).
+    /// Where the replacements in progress are written down until their old
+    /// chunks are removed ([`Self::commit_file`]).
     fn replaced_chunks_path(&self) -> std::path::PathBuf {
         self.config.data_dir.join(REPLACED_CHUNKS_FILE)
     }
 
-    /// The ids of replaced chunks written down and not removed yet.
-    fn replaced_chunks(&self) -> Result<Vec<String>> {
+    /// The replacements written down and not finished yet.
+    fn replaced_chunks(&self) -> Result<Vec<Replacement>> {
         match std::fs::read_to_string(self.replaced_chunks_path()) {
             Ok(text) => Ok(serde_json::from_str(&text)?),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
@@ -1723,52 +1758,11 @@ impl RAGEngine {
         }
     }
 
-    /// Removes the chunks `ids` (replaced by a commit) from LanceDB and the
-    /// keyword index, writing them down first so a quit or a failure part way
-    /// leaves them to [`Self::settle_replaced`]. Fails only when they could
-    /// neither be removed nor written down.
-    async fn remove_replaced(&mut self, ids: Vec<String>) -> Result<()> {
-        if ids.is_empty() {
-            return Ok(());
-        }
-        let mut pending = self.replaced_chunks().unwrap_or_else(|e| {
-            tracing::warn!(error = %format!("{e:#}"), "replaced chunks record unreadable");
-            Vec::new()
-        });
-        pending.extend(ids.iter().cloned());
-        let written = self.write_replaced(&pending);
-        if let Err(e) = &written {
-            tracing::warn!(error = %format!("{e:#}"), "replaced chunks not written down");
-        }
-        match self.delete_chunk_ids(&ids).await {
-            Ok(()) => {
-                let removed: std::collections::HashSet<&String> = ids.iter().collect();
-                let left: Vec<String> = pending
-                    .into_iter()
-                    .filter(|id| !removed.contains(id))
-                    .collect();
-                if let Err(e) = self.write_replaced(&left) {
-                    tracing::warn!(error = %format!("{e:#}"), "replaced chunks record not updated");
-                }
-                Ok(())
-            }
-            Err(e) if written.is_ok() => {
-                tracing::warn!(
-                    error = %format!("{e:#}"),
-                    chunks = ids.len(),
-                    "replaced chunks not removed yet; they are removed at the next commit or start"
-                );
-                Ok(())
-            }
-            Err(e) => Err(e.context("the replaced chunks could not be removed")),
-        }
-    }
-
-    /// Writes `ids` as the replaced chunks not removed yet (none: the record
-    /// goes): to a temporary file, renamed over the previous record.
-    fn write_replaced(&self, ids: &[String]) -> Result<()> {
+    /// Writes `replacements` as the replacements not finished yet (none: the
+    /// record goes): to a temporary file, renamed over the previous record.
+    fn write_replaced(&self, replacements: &[Replacement]) -> Result<()> {
         let path = self.replaced_chunks_path();
-        if ids.is_empty() {
+        if replacements.is_empty() {
             return match std::fs::remove_file(&path) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
                 _ => Ok(()),
@@ -1778,9 +1772,47 @@ impl RAGEngine {
             std::fs::create_dir_all(parent)?;
         }
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(ids)?)?;
+        std::fs::write(&tmp, serde_json::to_vec(replacements)?)?;
         std::fs::rename(&tmp, &path)?;
         Ok(())
+    }
+
+    /// Writes down that `source` is about to be replaced and that `previous`
+    /// are its chunks now, before anything is stored. Returns whether it was
+    /// written.
+    fn begin_replacement(&self, source: &str, previous: &[String]) -> bool {
+        let mut pending = self.replaced_chunks().unwrap_or_else(|e| {
+            tracing::warn!(error = %format!("{e:#}"), "replacements record unreadable");
+            Vec::new()
+        });
+        pending.retain(|r| r.source != source);
+        pending.push(Replacement {
+            source: source.to_string(),
+            previous_ids: previous.to_vec(),
+        });
+        match self.write_replaced(&pending) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "replacement not written down");
+                false
+            }
+        }
+    }
+
+    /// The replacement of `source` is finished (its old chunks are gone) or
+    /// was given up (nothing was stored): its record goes.
+    fn end_replacement(&self, source: &str) {
+        let ended = self.replaced_chunks().and_then(|mut pending| {
+            let before = pending.len();
+            pending.retain(|r| r.source != source);
+            if pending.len() == before {
+                return Ok(());
+            }
+            self.write_replaced(&pending)
+        });
+        if let Err(e) = ended {
+            tracing::warn!(error = %format!("{e:#}"), "replacements record not updated");
+        }
     }
 
     /// Removes the chunks `ids` from the keyword index and LanceDB. Ids that
@@ -1809,20 +1841,35 @@ impl RAGEngine {
         Ok(())
     }
 
-    /// Removes the chunks replaced by a commit that were written down and not
-    /// removed yet (a quit or a failure came first). Runs at the start of
-    /// every commit and when the engine opens. Returns how many were pending.
+    /// Finishes the replacements written down and not finished (a quit or a
+    /// failure came first). Where the source has chunks other than its
+    /// previous ones, the new ones were stored: the previous ones are
+    /// removed. Where it has none, nothing was stored: the previous ones are
+    /// its chunks still, and the record is dropped. Runs at the start of
+    /// every commit and when the engine opens. Returns the chunks removed.
     pub async fn settle_replaced(&mut self) -> Result<usize> {
         let pending = self.replaced_chunks()?;
         if pending.is_empty() {
             return Ok(0);
         }
-        self.delete_chunk_ids(&pending).await?;
+        let mut removed = 0;
+        for replacement in &pending {
+            let previous: std::collections::HashSet<&String> =
+                replacement.previous_ids.iter().collect();
+            let stored = self.chunk_ids_of(&replacement.source).await?;
+            if stored.iter().any(|id| !previous.contains(id)) {
+                self.delete_chunk_ids(&replacement.previous_ids).await?;
+                removed += replacement.previous_ids.len();
+            }
+        }
         self.write_replaced(&[])?;
-        tracing::info!(chunks = pending.len(), "replaced chunks removed");
-        Ok(pending.len())
+        if removed > 0 {
+            tracing::info!(chunks = removed, "replaced chunks removed");
+        }
+        Ok(removed)
     }
 
+    /// Remove every stored chunk for `source` from both LanceDB and Tantivy.
     async fn remove_source_chunks(&mut self, source: &str) -> Result<()> {
         if let Err(e) = self.store.delete_by_source(source).await {
             tracing::warn!(
@@ -1834,6 +1881,18 @@ impl RAGEngine {
         self.text_search.delete_by_source(source)?;
         self.text_search.commit()?;
         Ok(())
+    }
+
+    /// [`Self::store_prepared`] for a commit (tests can make it fail).
+    async fn store_document(&mut self, prepared: PreparedDocument) -> Result<Vec<Uuid>> {
+        #[cfg(test)]
+        if self
+            .fail_next_store
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            anyhow::bail!("storing the chunks failed (injected)");
+        }
+        self.store_prepared(prepared).await
     }
 
     /// Write prepared records to LanceDB and Tantivy.
@@ -4187,11 +4246,14 @@ Language models trained on long documents reach lower perplexity.
             both
         );
         assert_eq!(engine.text_search.count().unwrap(), both.len());
+        let pending = engine.replaced_chunks().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].source, normalize_source_path(&lease));
         assert_eq!(
-            engine
-                .replaced_chunks()
-                .unwrap()
-                .into_iter()
+            pending[0]
+                .previous_ids
+                .iter()
+                .cloned()
                 .collect::<std::collections::BTreeSet<_>>(),
             first
         );
@@ -4208,6 +4270,41 @@ Language models trained on long documents reach lower perplexity.
         assert_eq!(engine.text_search.count().unwrap(), second.len());
         assert!(!engine.replaced_chunks_path().exists());
         assert_eq!(engine.settle_replaced().await.unwrap(), 0);
+
+        // A quit after the intent was written but before anything was
+        // stored: the file still has only its previous chunks, which stay.
+        assert!(engine.begin_replacement(
+            &normalize_source_path(&lease),
+            &second.iter().cloned().collect::<Vec<_>>()
+        ));
+        assert_eq!(engine.settle_replaced().await.unwrap(), 0);
+        assert_eq!(
+            stored(engine.store.list_chunks(None, 100).await.unwrap()),
+            second
+        );
+        assert!(!engine.replaced_chunks_path().exists());
+
+        // A quit after the new chunks were stored, before the record of the
+        // removal: the intent written first removes the previous ones.
+        let prepared = engine
+            .file_preparer()
+            .unwrap()
+            .prepare(&lease, HashMap::new())
+            .unwrap();
+        let source = normalize_source_path(&lease);
+        let before: Vec<String> = second.iter().cloned().collect();
+        assert!(engine.begin_replacement(&source, &before));
+        let third = as_set(&engine.store_prepared(prepared.document).await.unwrap());
+        let both: std::collections::BTreeSet<String> = second.union(&third).cloned().collect();
+        assert_eq!(
+            stored(engine.store.list_chunks(None, 100).await.unwrap()),
+            both
+        );
+        assert_eq!(engine.settle_replaced().await.unwrap(), second.len());
+        assert_eq!(
+            stored(engine.store.list_chunks(None, 100).await.unwrap()),
+            third
+        );
     }
 
     /// The chunks of version 1 are marked from the start of their metadata:

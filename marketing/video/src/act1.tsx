@@ -13,14 +13,48 @@ import boxes from "../public/act1/boxes.json";
 import { barBeat, beatFrame } from "./beats";
 import { font } from "./theme";
 
-/** Pastel Shodh: apricot ground, dark warm text, the deep Shodh orange as the only accent. */
-export const PASTEL = {
-  ground: "radial-gradient(85% 75% at 50% 40%, #fff3ea 0%, #fddcc6 55%, #f7c3a1 100%)",
-  text: "#2a1409",
-  sub: "rgba(42,20,9,0.66)",
-  accent: "#c94d1c",
-  shadow: "0 50px 110px rgba(150,64,22,0.20), 0 14px 34px rgba(150,64,22,0.14)",
-} as const;
+/** A look for the act: ground, type and the one accent (the deep Shodh orange family). */
+export type Look = { ground: string; text: string; sub: string; accent: string; shadow: string };
+
+/** Pastel directions under review; `apricot` is the current one. */
+export const LOOKS = {
+  apricot: {
+    ground: "radial-gradient(85% 75% at 50% 40%, #fff3ea 0%, #fddcc6 55%, #f7c3a1 100%)",
+    text: "#2a1409",
+    sub: "rgba(42,20,9,0.66)",
+    accent: "#c94d1c",
+    shadow: "0 50px 110px rgba(150,64,22,0.20), 0 14px 34px rgba(150,64,22,0.14)",
+  },
+  cream: {
+    ground: "radial-gradient(85% 75% at 50% 38%, #fffaf5 0%, #fbede2 58%, #f3dac8 100%)",
+    text: "#2b1d16",
+    sub: "rgba(43,29,22,0.64)",
+    accent: "#d4582a",
+    shadow: "0 50px 110px rgba(120,70,40,0.16), 0 14px 34px rgba(120,70,40,0.10)",
+  },
+  blush: {
+    ground: "linear-gradient(135deg, #ffe9dc 0%, #fcd8cc 45%, #f5d2e2 100%)",
+    text: "#2a1420",
+    sub: "rgba(42,20,32,0.64)",
+    accent: "#cf4f22",
+    shadow: "0 50px 110px rgba(140,60,70,0.18), 0 14px 34px rgba(140,60,70,0.12)",
+  },
+  sorbet: {
+    ground: "radial-gradient(85% 75% at 50% 38%, #ffeedd 0%, #ffd3b0 55%, #ffbb8c 100%)",
+    text: "#3a1606",
+    sub: "rgba(58,22,6,0.66)",
+    accent: "#b9410f",
+    shadow: "0 50px 110px rgba(170,70,10,0.22), 0 14px 34px rgba(170,70,10,0.15)",
+  },
+  sand: {
+    ground: "radial-gradient(85% 75% at 50% 38%, #f8f3ed 0%, #efe5da 60%, #e5d6c6 100%)",
+    text: "#1c2030",
+    sub: "rgba(28,32,48,0.62)",
+    accent: "#e2622b",
+    shadow: "0 50px 110px rgba(60,50,40,0.18), 0 14px 34px rgba(60,50,40,0.12)",
+  },
+} satisfies Record<string, Look>;
+export type LookName = keyof typeof LOOKS;
 
 const clamp = { extrapolateLeft: "clamp", extrapolateRight: "clamp" } as const;
 const smooth = Easing.bezier(0.45, 0, 0.2, 1);
@@ -82,37 +116,37 @@ const CAPTIONS: { from: SceneName; text: string }[] = [
 ];
 
 /** A box drawn on over the footage, in window pixels from footage fractions. */
-const Outline: React.FC<{ b: Box; p: number; pad: number; radius: number; width: number }> = ({ b, p, pad: m, radius, width }) => {
+const Outline: React.FC<{ b: Box; p: number; pad: number; radius: number; width: number; color: string }> = ({ b, p, pad: m, radius, width, color }) => {
   const w = b.w * WIN.w + m * 2;
   const h = b.h * WIN.h + m * 2;
   return (
     <svg style={{ position: "absolute", left: b.x * WIN.w - m, top: b.y * WIN.h - m, overflow: "visible" }} width={w} height={h} aria-hidden="true">
-      <rect x={0} y={0} width={w} height={h} rx={radius} fill="none" stroke={PASTEL.accent} strokeWidth={width} pathLength={1} strokeDasharray={1} strokeDashoffset={1 - p} />
+      <rect x={0} y={0} width={w} height={h} rx={radius} fill="none" stroke={color} strokeWidth={width} pathLength={1} strokeDasharray={1} strokeDashoffset={1 - p} />
     </svg>
   );
 };
 
 const fill: React.CSSProperties = { position: "absolute", inset: 0, width: "100%", height: "100%" };
 
-/** The logo and name: large and centred at the open, then settled top left for the rest. */
-const Brand: React.FC<{ settle: number }> = ({ settle }) => {
-  const tile = mix(200, 76, settle);
-  const name = mix(150, 44, settle);
-  const width = tile + mix(28, 20, settle) + name * 2.95;
-  const left = mix(960 - width / 2, 64, settle);
-  const top = mix(300, 26, settle);
+/** The logo and name, no tile: large and centred at the open, then settled top left for the rest. */
+const Brand: React.FC<{ settle: number; look: Look }> = ({ settle, look }) => {
+  const mark = mix(300, 104, settle);
+  const name = mix(190, 60, settle);
+  const gap = mix(30, 16, settle);
+  const width = mark + gap + name * 2.95;
+  const left = mix(960 - width / 2, 52, settle);
+  const top = mix(250, 10, settle);
   return (
-    <div style={{ position: "absolute", left, top, display: "flex", alignItems: "center", gap: mix(28, 20, settle), fontFamily: font.sans, color: PASTEL.text }}>
-      <div style={{ width: tile, height: tile, borderRadius: tile * 0.26, background: "#ffffff", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 18px 40px rgba(150,64,22,0.20)" }}>
-        <Img src={staticFile("shodh-logo.svg")} style={{ width: tile * 0.76, height: tile * 0.76 }} />
-      </div>
-      <div style={{ fontSize: name, fontWeight: 780, letterSpacing: "-0.045em", lineHeight: 1 }}>Shodh</div>
+    <div style={{ position: "absolute", left, top, display: "flex", alignItems: "center", gap, fontFamily: font.sans, color: look.text }}>
+      <Img src={staticFile("shodh-logo.svg")} style={{ width: mark, height: mark }} />
+      <div style={{ fontSize: name, fontWeight: 790, letterSpacing: "-0.045em", lineHeight: 1 }}>Shodh</div>
     </div>
   );
 };
 
-export const Act1: React.FC = () => {
+export const Act1: React.FC<{ look: LookName }> = ({ look: lookName }) => {
   const frame = useCurrentFrame();
+  const look = LOOKS[lookName];
   const at = (s: SceneName) => (SCENE[s] === 0 ? 0 : bar(SCENE[s]));
   const F = { ask: at("ask"), search: at("search"), answer: at("answer"), cite: at("cite"), open: at("open"), passage: at("passage"), end: at("end") };
 
@@ -165,7 +199,7 @@ export const Act1: React.FC = () => {
   const cIn = ramp(frame, captionStart + 4, captionStart + 22, expo);
 
   return (
-    <AbsoluteFill style={{ background: PASTEL.ground, overflow: "hidden", perspective: 2400 }}>
+    <AbsoluteFill style={{ background: look.ground, overflow: "hidden", perspective: 2400 }}>
       <div
         style={{
           position: "absolute",
@@ -176,7 +210,7 @@ export const Act1: React.FC = () => {
           borderRadius: 18,
           overflow: "hidden",
           background: "#fff",
-          boxShadow: PASTEL.shadow,
+          boxShadow: look.shadow,
           transform: `rotateX(${(1 - rise) * 22}deg)`,
           transformOrigin: "50% 0%",
         }}
@@ -196,24 +230,24 @@ export const Act1: React.FC = () => {
             <OffthreadVideo src={staticFile("act1/click.mp4")} muted style={fill} />
             <Img src={staticFile("act1/hold-viewer.png")} style={{ ...fill, opacity: ramp(frame, F.open + 132, F.open + 142) }} />
           </Sequence>
-          {frame >= F.cite + 50 && frame < F.open + 20 ? <Outline b={CHIPS} p={ramp(frame, F.cite + 50, F.cite + 76, expo)} pad={5} radius={8} width={2.5} /> : null}
-          {frame >= F.passage + 74 ? <Outline b={pass} p={outline} pad={8} radius={8} width={3} /> : null}
+          {frame >= F.cite + 50 && frame < F.open + 20 ? <Outline b={CHIPS} p={ramp(frame, F.cite + 50, F.cite + 76, expo)} pad={5} radius={8} width={2.5} color={look.accent} /> : null}
+          {frame >= F.passage + 74 ? <Outline b={pass} p={outline} pad={8} radius={8} width={3} color={look.accent} /> : null}
           {frame >= F.passage + 100 ? (
-            <div style={{ position: "absolute", left: pass.x * WIN.w, top: pass.y * WIN.h - 42, padding: "6px 14px", borderRadius: 999, background: PASTEL.accent, color: "#fff", fontFamily: font.sans, fontSize: 15, fontWeight: 700, opacity: tag, transform: `translateY(${(1 - tag) * 8}px)` }}>
+            <div style={{ position: "absolute", left: pass.x * WIN.w, top: pass.y * WIN.h - 42, padding: "6px 14px", borderRadius: 999, background: look.accent, color: "#fff", fontFamily: font.sans, fontSize: 15, fontWeight: 700, opacity: tag, transform: `translateY(${(1 - tag) * 8}px)` }}>
               Cited passage · SPANN, page 2
             </div>
           ) : null}
         </div>
       </div>
 
-      <Brand settle={settle} />
-      <div style={{ position: "absolute", left: 0, right: 0, top: 560, textAlign: "center", fontFamily: font.sans, fontSize: 46, fontWeight: 520, letterSpacing: "-0.02em", color: PASTEL.sub, opacity: tagline, transform: `translateY(${(1 - tagline) * 14}px)` }}>
+      <Brand settle={settle} look={look} />
+      <div style={{ position: "absolute", left: 0, right: 0, top: 600, textAlign: "center", fontFamily: font.sans, fontSize: 46, fontWeight: 520, letterSpacing: "-0.02em", color: look.sub, opacity: tagline, transform: `translateY(${(1 - tagline) * 14}px)` }}>
         Answers from your own papers, with the source for every claim.
       </div>
 
       {caption ? (
-        <div style={{ position: "absolute", left: WIN.x, top: WIN.y + WIN.h + 34, display: "flex", alignItems: "center", gap: 22, fontFamily: font.sans, color: PASTEL.text, opacity: cIn, transform: `translateY(${(1 - cIn) * 12}px)` }}>
-          <div style={{ width: 52, height: 52, borderRadius: 26, background: PASTEL.accent, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26, fontWeight: 760 }}>{captionIndex + 1}</div>
+        <div style={{ position: "absolute", left: WIN.x, top: WIN.y + WIN.h + 34, display: "flex", alignItems: "center", gap: 22, fontFamily: font.sans, color: look.text, opacity: cIn, transform: `translateY(${(1 - cIn) * 12}px)` }}>
+          <div style={{ width: 52, height: 52, borderRadius: 26, background: look.accent, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26, fontWeight: 760 }}>{captionIndex + 1}</div>
           <div style={{ fontSize: 40, fontWeight: 560, letterSpacing: "-0.02em" }}>{caption.text}</div>
         </div>
       ) : null}

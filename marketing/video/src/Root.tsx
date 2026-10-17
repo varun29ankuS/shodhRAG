@@ -2,7 +2,7 @@ import React from "react";
 import { Composition } from "remotion";
 import "./fonts";
 import { LOOP_SHOTS, slots, type Slot } from "./cut";
-import { Act1 } from "./act1";
+import { Act1, LOOKS, type LookName } from "./act1";
 import { barBeat, beatFrame } from "./beats";
 import { LaunchVideo } from "./launch";
 import { FPS } from "./theme";
@@ -26,7 +26,9 @@ const ACT1_FRAMES = beatFrame(barBeat(23)) + 60;
 
 export const Root: React.FC = () => (
   <>
-    <Composition id="Act1" component={Act1} durationInFrames={ACT1_FRAMES} fps={FPS} width={1920} height={1080} />
+    {(Object.keys(LOOKS) as LookName[]).map((look) => (
+      <Composition key={look} id={`Act1-${look}`} component={Act1} durationInFrames={ACT1_FRAMES} fps={FPS} width={1920} height={1080} defaultProps={{ look }} />
+    ))}
     <Composition
       id="ShodhLaunch"
       component={LaunchVideo}

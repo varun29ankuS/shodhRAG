@@ -100,6 +100,8 @@ import { quickCreateWorkspace } from './features/tasks/quickCreate';
 import type { NewMenuItemId } from './lib/newMenu';
 import { TableModelPrompt } from './features/setup/TableModelPrompt';
 import { AskView } from './features/ask/AskView';
+import { failureNotice, imageNotice, readImageText } from './features/ask/imageNotice';
+import type { PastedImage } from './features/agent/AgentComposer';
 import { ChatActionsMenu } from './features/ask/ChatActionsMenu';
 import { useCommandPalette } from './hooks/useCommandPalette';
 import CommandPalette from './components/CommandPalette';
@@ -129,6 +131,19 @@ const debugLog = (...args: any[]) => { if (DEBUG) console.log(...args); };
 
 /** Unique id for OCR / indexing notices appended to the conversation. */
 const newNoticeId = () => `notice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+/** A pasted image file as a data URI (`process_image_from_base64` takes one). */
+function readFileAsDataUrl(file: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') resolve(reader.result);
+      else reject(new Error('The pasted image could not be read'));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('The pasted image could not be read'));
+    reader.readAsDataURL(file);
+  });
+}
 
 /** A Library source (see features/library/sources). */
 type Source = LibrarySource;
@@ -794,30 +809,7 @@ function AppSplitView() {
             filePath: selected
           });
           debugLog('[FILE PICKER] Got result:', result);
-
-          const extractedText = result.extractedText || result.extracted_text || '';
-          const wordCount = result.wordCount || result.word_count || 0;
-          const confidence = result.confidence || 0;
-          const imageData = result.imageData || result.image_data || '';
-
-          debugLog('[FILE PICKER] Adding message');
-          if (extractedText && wordCount > 0) {
-            appendMessage({
-              id: newNoticeId(),
-              role: 'assistant',
-              content: `📸 **[FILE PICKER] Image uploaded and processed successfully!**\n\n**Extracted Text (${wordCount} words, ${(confidence * 100).toFixed(0)}% confidence):**\n\n${extractedText}`,
-              timestamp: new Date().toISOString(),
-              image: imageData
-            });
-          } else {
-            appendMessage({
-              id: newNoticeId(),
-              role: 'assistant',
-              content: `📸 **[FILE PICKER] Image uploaded**\n\nNo text was detected in this image.`,
-              timestamp: new Date().toISOString(),
-              image: imageData
-            });
-          }
+          appendMessage(imageNotice(newNoticeId(), new Date().toISOString(), 'added', readImageText(result)));
         } catch (error) {
           console.error('Failed to process selected image:', error);
           notify.error('Image processing failed', { description: String(error) });
@@ -871,32 +863,10 @@ function AppSplitView() {
               // Process image files (OCR)
               if (imageFiles.length > 0) {
                 for (const imageFile of imageFiles) {
-                  const result = await invoke<any>('process_image_from_file', {
+                  const result = await invoke<unknown>('process_image_from_file', {
                     filePath: imageFile
                   });
-
-                  const extractedText = result.extractedText || result.extracted_text || '';
-                  const wordCount = result.wordCount || result.word_count || 0;
-                  const confidence = result.confidence || 0;
-                  const imageData = result.imageData || result.image_data || '';
-
-                  if (extractedText && wordCount > 0) {
-                    appendMessage({
-                      id: newNoticeId(),
-                      role: 'assistant',
-                      content: `📸 **Image processed successfully!**\n\n**Extracted Text (${wordCount} words, ${(confidence * 100).toFixed(0)}% confidence):**\n\n${extractedText}`,
-                      timestamp: new Date().toISOString(),
-                      image: imageData
-                    });
-                  } else {
-                    appendMessage({
-                      id: newNoticeId(),
-                      role: 'assistant',
-                      content: `📸 **Image dropped**\n\nNo text was detected in this image.`,
-                      timestamp: new Date().toISOString(),
-                      image: imageData
-                    });
-                  }
+                  appendMessage(imageNotice(newNoticeId(), new Date().toISOString(), 'dropped', readImageText(result)));
                 }
               }
 
@@ -933,12 +903,7 @@ function AppSplitView() {
               }
             } catch (error) {
               console.error('❌ Failed to process dropped files:', error);
-              appendMessage({
-                id: newNoticeId(),
-                role: 'assistant',
-                content: `❌ Failed to process dropped files: ${error}`,
-                timestamp: new Date().toISOString()
-              });
+              appendMessage(failureNotice(newNoticeId(), new Date().toISOString(), 'The dropped files could not be added', String(error)));
             }
           } else if (typeof dragEvent === 'object' && dragEvent.type === 'over') {
             // Drag is hovering over the window
@@ -959,84 +924,28 @@ function AppSplitView() {
     };
   }, []);
 
-  // Global Ctrl+V handler for image paste
-  useEffect(() => {
-    debugLog('🔧 Setting up global Ctrl+V handler...');
-
-    const handleGlobalPaste = async (e: KeyboardEvent) => {
-      debugLog('[CTRL+V] Key event:', e.key, e.ctrlKey, e.metaKey);
-      // Log all Ctrl/Cmd key combinations for debugging
-      if (e.ctrlKey || e.metaKey) {
-        debugLog(`🔑 Key pressed: ${e.key}, Ctrl: ${e.ctrlKey}, Meta: ${e.metaKey}`);
-      }
-
-      // Only trigger on Ctrl+V or Cmd+V
-      if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
-        debugLog('🌐 Global Ctrl+V detected - attempting clipboard read');
-
-        // Check if there's an image in clipboard first
-        let hasImage = false;
-
-        try {
-          // Read image from clipboard using native Windows API
-          const base64Data = await invoke<string | null>('read_clipboard_image');
-
-          if (base64Data) {
-            hasImage = true;
-            debugLog('✅ Image found in clipboard, processing...');
-
-            // Prevent default paste behavior when we have an image
-            e.preventDefault();
-
-            // Process the image with OCR
-            const result = await invoke<any>('process_image_from_base64', {
-              imageData: base64Data
-            });
-
-            debugLog('📊 OCR Result received:', result);
-            debugLog('📊 Full result object:', JSON.stringify(result, null, 2));
-
-            // Add message to chat showing what was extracted
-            // Note: The Rust struct uses camelCase due to #[serde(rename_all = "camelCase")]
-            // But we'll check both camelCase and snake_case for compatibility
-            const extractedText = result.extractedText || result.extracted_text || '';
-            const wordCount = result.wordCount || result.word_count || 0;
-            const confidence = result.confidence || 0;
-
-            if (extractedText && wordCount > 0) {
-              appendMessage({
-                id: newNoticeId(),
-                role: 'assistant',
-                content: `📸 **Image pasted and processed successfully!**\n\n**Extracted Text (${wordCount} words, ${(confidence * 100).toFixed(0)}% confidence):**\n\n${extractedText}`,
-                timestamp: new Date().toISOString(),
-                image: base64Data
-              });
-            } else {
-              appendMessage({
-                id: newNoticeId(),
-                role: 'assistant',
-                content: `📸 **Image pasted**\n\nNo text was detected in this image.`,
-                timestamp: new Date().toISOString(),
-                image: base64Data
-              });
-            }
-          } else {
-            debugLog('❌ No image in clipboard');
-          }
-        } catch (error) {
-          console.error('❌ Failed to process clipboard image:', error);
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleGlobalPaste, true);
-    debugLog('🌐 Global Ctrl+V listener attached');
-
-    return () => {
-      window.removeEventListener('keydown', handleGlobalPaste, true);
-      debugLog('🌐 Global Ctrl+V listener removed');
-    };
-  }, []);
+  // An image pasted into the Ask composer (AgentComposer decides during the
+  // paste event, so a text paste is never touched): its text is read and shown
+  // as a notice. One at a time: a held Ctrl+V repeats the paste.
+  const pasteInFlightRef = useRef(false);
+  const handlePasteImage = async (image: PastedImage) => {
+    if (pasteInFlightRef.current) return;
+    pasteInFlightRef.current = true;
+    try {
+      const imageData = image.kind === 'file'
+        ? await readFileAsDataUrl(image.file)
+        : await invoke<string | null>('read_clipboard_image');
+      // No image on the system clipboard either: nothing was pasted.
+      if (!imageData) return;
+      const result = await invoke<unknown>('process_image_from_base64', { imageData });
+      appendMessage(imageNotice(newNoticeId(), new Date().toISOString(), 'pasted', readImageText(result)));
+    } catch (error) {
+      console.error('Failed to process pasted image:', error);
+      notify.error('The pasted image could not be read', { description: String(error) });
+    } finally {
+      pasteInFlightRef.current = false;
+    }
+  };
 
   // Keyboard shortcut for Command Palette (Cmd+K / Ctrl+K)
   useEffect(() => {
@@ -1797,6 +1706,7 @@ function AppSplitView() {
               llmStatus={llmStatus}
               onNavigate={setActiveTab}
               onPickImage={handlePickImage}
+              onPasteImage={image => void handlePasteImage(image)}
               draftRequest={askDraft}
               onDraftApplied={clearAskDraft}
               isDraggingFile={isDraggingImage}

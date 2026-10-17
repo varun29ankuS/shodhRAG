@@ -120,10 +120,11 @@ fn rgba_to_png_data_uri(rgba: Vec<u8>, width: u32, height: u32) -> Result<String
 }
 
 /// The image on the system clipboard as a PNG data URI, or `None` when there
-/// is no image to process. Used by the global Ctrl+V image paste, which runs
-/// on every paste: copies from Excel, Word or a browser put a bitmap next to
-/// their text, so a clipboard that also holds text is treated as a text
-/// paste and left to the focused input.
+/// is no image to process. Used when a paste into the Ask composer carries
+/// neither text nor an image file the webview exposes. Copies from Excel,
+/// Word or a browser put a bitmap next to their text, so a clipboard that
+/// also holds text is treated as a text paste (the composer applies the
+/// same rule) and left to the input.
 #[tauri::command]
 pub async fn read_clipboard_image(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_clipboard_manager::ClipboardExt;

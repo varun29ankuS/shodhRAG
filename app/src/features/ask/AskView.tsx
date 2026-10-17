@@ -6,7 +6,7 @@ import { cn } from '../../lib/utils';
 import type { ViewTab } from '../../lib/viewTabs';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { AgentComposer } from '../agent/AgentComposer';
-import type { AgentComposerHandle } from '../agent/AgentComposer';
+import type { AgentComposerHandle, PastedImage } from '../agent/AgentComposer';
 import { passageHits } from '../agent/citations';
 import { PlanPanel } from '../agent/PlanPanel';
 import { answerText, pendingApproval, isLive } from '../agent/reducer';
@@ -115,6 +115,8 @@ export interface AskViewProps {
   onNavigate: (tab: ViewTab) => void;
   /** Pick an image whose text is extracted (OCR) and indexed. */
   onPickImage?: () => void;
+  /** An image was pasted into the composer: its text is read and shown as a notice. */
+  onPasteImage?: (image: PastedImage) => void;
   /** A file is being dragged over the window. */
   isDraggingFile?: boolean;
   dropHandlers?: Pick<React.HTMLAttributes<HTMLElement>, 'onDrop' | 'onDragOver' | 'onDragEnter' | 'onDragLeave'>;
@@ -579,7 +581,14 @@ const SideSummaryCard = React.memo(function SideSummaryCard({
 
 function SystemNotice({ message }: { message: ChatMessage }) {
   return (
-    <div className="mx-auto max-w-[560px] w-full rounded-xl border border-shodh-border-subtle bg-shodh-surface px-4 py-3 text-[13.5px]">
+    <div className="mx-auto max-w-[560px] w-full rounded-xl border border-shodh-border-subtle bg-shodh-surface px-4 py-3 text-[13.5px] flex flex-col gap-3">
+      {message.image && (
+        <img
+          src={message.image}
+          alt="Image you added"
+          className="max-w-full max-h-[400px] object-contain rounded-lg border border-shodh-border self-start"
+        />
+      )}
       <MessageContentRenderer content={message.content} hits={[]} onOpenCitation={() => undefined} />
     </div>
   );
@@ -590,7 +599,7 @@ function SystemNotice({ message }: { message: ChatMessage }) {
  * (centered 700px column) with a floating composer and a source preview
  * slide-over.
  */
-export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage, isDraggingFile = false, dropHandlers, draftRequest = null, onDraftApplied }: AskViewProps) {
+export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage, onPasteImage, isDraggingFile = false, dropHandlers, draftRequest = null, onDraftApplied }: AskViewProps) {
   const { theme } = useTheme();
   const session = useChatSession();
   const { messages, isStreaming, streamingConversationId, sideRun, send, retry, cancel, steer, approve, runtimeInstalled, setRuntimeInstalled, updateMessage } = session;
@@ -1087,6 +1096,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
           </button>
         )}
         onPickImage={onPickImage}
+        onPasteImage={onPasteImage}
         autoFocus={autoFocus}
       />
     </SnippetDropZone>

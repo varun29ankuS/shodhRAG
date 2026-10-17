@@ -2,6 +2,7 @@ import React, { forwardRef, useCallback, useImperativeHandle, useLayoutEffect, u
 import { ArrowUp, CornerDownRight, Folder, ImagePlus, Mic, MicOff, Square } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useVoiceInput } from '../ask/useVoiceInput';
+import { pasteDecision } from '../ask/imageNotice';
 
 /** The engine grows the field with its content (no per-keystroke measuring). */
 const NATIVE_FIELD_SIZING = typeof CSS !== 'undefined' && CSS.supports('field-sizing', 'content');
@@ -17,6 +18,9 @@ const MAX_COMPACT_HEIGHT = 120;
 export interface AgentComposerHandle {
   focus: () => void;
 }
+
+/** An image pasted into the composer: a file the webview exposes, or the system clipboard's bitmap. */
+export type PastedImage = { kind: 'file'; file: File } | { kind: 'clipboard' };
 
 interface AgentComposerProps {
   /** Distinguishes the Ask and dock inputs (label/description ids). */
@@ -51,6 +55,8 @@ interface AgentComposerProps {
   /** A control next to the scope chip (e.g. "Search all my library" in a workspace). */
   scopeAction?: React.ReactNode;
   onPickImage?: () => void;
+  /** An image (with no text) was pasted; the paste itself is cancelled. Text pastes are untouched. */
+  onPasteImage?: (image: PastedImage) => void;
   autoFocus?: boolean;
   /** Dense variant for the conversation dock: no chips, smaller type. */
   compact?: boolean;
@@ -83,6 +89,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     onOpenLibrary,
     scopeAction,
     onPickImage,
+    onPasteImage,
     autoFocus = false,
     compact = false,
     runningPlaceholder,
@@ -128,6 +135,16 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     }
   };
 
+  // Decided while the event runs, so the default paste can still be cancelled.
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (!onPasteImage) return;
+    const files = Array.from(e.clipboardData.files);
+    const decision = pasteDecision(e.clipboardData.getData('text/plain'), files.map(f => f.type));
+    if (decision.kind === 'text') return;
+    e.preventDefault();
+    onPasteImage(decision.kind === 'file' ? { kind: 'file', file: files[decision.index] } : { kind: 'clipboard' });
+  };
+
   const effectivePlaceholder = running
     ? approvalPending
       ? onApprove
@@ -169,6 +186,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
         value={value}
         onChange={e => onChange(e.target.value)}
         onKeyDown={handleKeyDown}
+        onPaste={handlePaste}
         placeholder={effectivePlaceholder}
         autoFocus={autoFocus}
         aria-describedby={blockedReason ? blockedId : undefined}

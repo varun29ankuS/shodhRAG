@@ -109,6 +109,8 @@ export interface AgentNavigation {
 
 export interface ChatSessionValue {
   conversations: ConversationsApi['conversations'];
+  /** The saved conversations were read: `conversations` is no longer loading. */
+  conversationsLoaded: ConversationsApi['loaded'];
   activeConversationId: ConversationsApi['activeConversationId'];
   activeConversation: ConversationsApi['activeConversation'];
   createConversation: ConversationsApi['createConversation'];
@@ -734,6 +736,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
 
   const value = useMemo<ChatSessionValue>(() => ({
     conversations: conv.conversations,
+    conversationsLoaded: conv.loaded,
     activeConversationId: conv.activeConversationId,
     activeConversation: conv.activeConversation,
     createConversation: conv.createConversation,

@@ -28,6 +28,7 @@ import type { Conversation } from '../../hooks/useConversations';
 import type { GroupableWorkspace } from '../../features/workspaces/model';
 import { ActivityTray } from './ActivityTray';
 import { ConversationHistory } from './ConversationHistory';
+import { requestArchivedWorkspaces } from '../../features/workspaces/archivedRequest';
 import { ConnectionStatusChip } from '../../features/connection/ConnectionStatusChip';
 import { countOf } from '../../lib/plural';
 import { MENU_ITEM, POPOVER, usePopover } from '../../hooks/usePopover';
@@ -57,6 +58,8 @@ interface SidebarProps {
   activeView: ViewTab;
   onNavigate: (view: ViewTab) => void;
   conversations: Conversation[];
+  /** The saved conversations were read (the chat list is not loading). */
+  conversationsLoaded: boolean;
   activeConversationId: string | null;
   onOpenConversation: (id: string) => void;
   onNewConversation: () => void;
@@ -138,6 +141,7 @@ export default function Sidebar({
   activeView,
   onNavigate,
   conversations,
+  conversationsLoaded,
   activeConversationId,
   onOpenConversation,
   onNewConversation,
@@ -388,6 +392,11 @@ export default function Sidebar({
       ) : (
         <ConversationHistory
           conversations={conversations}
+          loaded={conversationsLoaded}
+          onShowArchived={() => {
+            requestArchivedWorkspaces();
+            onNavigate('workspaces');
+          }}
           activeConversationId={activeConversationId}
           askActive={activeView === 'ask'}
           onOpen={onOpenConversation}

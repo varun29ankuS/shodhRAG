@@ -162,6 +162,7 @@ function AppSplitView() {
   // Conversations and the active chat session
   const {
     conversations,
+    conversationsLoaded,
     activeConversationId,
     activeConversation,
     createConversation,
@@ -1392,6 +1393,7 @@ function AppSplitView() {
         activeView={activeTab}
         onNavigate={setActiveTab}
         conversations={conversations}
+        conversationsLoaded={conversationsLoaded}
         activeConversationId={activeConversationId}
         onOpenConversation={(id: string) => { switchConversation(id); setActiveTab('ask'); }}
         onNewConversation={handleNewConversation}

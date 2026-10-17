@@ -8,6 +8,7 @@ import { CreateWorkspaceDialog } from './CreateWorkspaceDialog';
 import { orderTemplates, sortWorkspaces, sourceSummary, WORKSPACE_TABS } from './model';
 import type { WorkspaceListing, WorkspaceTab, WorkspaceTemplate } from './types';
 import { useWorkspaces } from './WorkspaceContext';
+import { SHOW_ARCHIVED_WORKSPACES, takeArchivedRequest } from './archivedRequest';
 import { WorkspaceIcon } from './WorkspaceIcon';
 import { WorkspacePage } from './WorkspacePage';
 import type { LibraryFolder } from './SourcesTab';
@@ -76,7 +77,17 @@ export default function WorkspacesView({
   const [tab, setTab] = useState<WorkspaceTab>('overview');
   const [creating, setCreating] = useState(false);
   const [createTemplate, setCreateTemplate] = useState<string | null>(null);
-  const [showArchived, setShowArchived] = useState(false);
+  // Also opened from the sidebar when every chat is in an archived workspace.
+  const [showArchived, setShowArchived] = useState(() => takeArchivedRequest());
+  useEffect(() => {
+    const show = () => {
+      if (!takeArchivedRequest()) return;
+      setSelected(null);
+      setShowArchived(true);
+    };
+    window.addEventListener(SHOW_ARCHIVED_WORKSPACES, show);
+    return () => window.removeEventListener(SHOW_ARCHIVED_WORKSPACES, show);
+  }, []);
   const archived = useMemo(() => sortWorkspaces(allWorkspaces.filter(w => w.archived)), [allWorkspaces]);
   const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
 

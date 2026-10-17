@@ -686,18 +686,39 @@ fn push_part(text: &mut String, piece: &str) -> (usize, usize) {
     (start, text.len())
 }
 
-/// Appends neighbour `hit` to `text` ([`push_part`]) and returns its part.
-fn push_neighbor(text: &mut String, hit: &crate::storage::SearchHit) -> NeighborPart {
-    let (start, end) = push_part(text, &hit.text);
+/// Appends `piece`, the text of neighbour `hit` or part of it, to `text`
+/// ([`push_part`]) and returns its part.
+fn push_neighbor(text: &mut String, piece: &str, hit: &crate::storage::SearchHit) -> NeighborPart {
+    let (start, end) = push_part(text, piece);
     let pages = serde_json::from_str::<HashMap<String, String>>(&hit.metadata_json)
         .ok()
         .and_then(|meta| page_range_from_metadata(&meta));
     NeighborPart { start, end, pages }
 }
 
+/// Shortest repeat of one chunk's end at the next one's start that is taken
+/// for the window overlap, in characters: a shorter one ("the", a number) is
+/// as likely a coincidence of two different sentences.
+const MIN_OVERLAP_CHARS: usize = 12;
+
+/// Length in bytes of the longest end of `first` that `second` starts with
+/// (sliding windows repeat up to `chunk_overlap` bytes of a chunk at the start
+/// of the next), when it is at least [`MIN_OVERLAP_CHARS`] long; else 0. On a
+/// char boundary of both.
+fn overlap_len(first: &str, second: &str) -> usize {
+    let longest = first.len().min(second.len());
+    (1..=longest)
+        .rev()
+        .filter(|&len| second.is_char_boundary(len))
+        .find(|&len| first.ends_with(&second[..len]))
+        .filter(|&len| second[..len].chars().count() >= MIN_OVERLAP_CHARS)
+        .unwrap_or(0)
+}
+
 /// `core`, the text of chunk `chunk_index`, with the `neighbors` of the same
 /// document joined around it in reading order, one line break apart, and
-/// where each part lies in the joined text.
+/// where each part lies in the joined text. Text a neighbour repeats of the
+/// piece next to it (the windows' overlap) is left out of the neighbour.
 fn join_neighbors(
     core: &str,
     chunk_index: u32,
@@ -708,14 +729,31 @@ fn join_neighbors(
         .filter(|hit| hit.chunk_index != chunk_index)
         .collect();
     ordered.sort_by_key(|hit| hit.chunk_index);
+    let before: Vec<&crate::storage::SearchHit> = ordered
+        .iter()
+        .copied()
+        .filter(|hit| hit.chunk_index < chunk_index)
+        .collect();
+    let after: Vec<&crate::storage::SearchHit> = ordered
+        .iter()
+        .copied()
+        .filter(|hit| hit.chunk_index > chunk_index)
+        .collect();
     let mut text = String::new();
     let mut parts = SnippetParts::default();
-    for &hit in ordered.iter().filter(|hit| hit.chunk_index < chunk_index) {
-        parts.before.push(push_neighbor(&mut text, hit));
+    for (i, hit) in before.iter().enumerate() {
+        let next = before.get(i + 1).map_or(core, |h| h.text.as_str());
+        let piece = &hit.text[..hit.text.len() - overlap_len(&hit.text, next)];
+        parts.before.push(push_neighbor(&mut text, piece, hit));
     }
     parts.matched = push_part(&mut text, core);
-    for &hit in ordered.iter().filter(|hit| hit.chunk_index > chunk_index) {
-        parts.after.push(push_neighbor(&mut text, hit));
+    for (i, hit) in after.iter().enumerate() {
+        let previous = match i {
+            0 => core,
+            _ => after[i - 1].text.as_str(),
+        };
+        let piece = &hit.text[overlap_len(previous, &hit.text)..];
+        parts.after.push(push_neighbor(&mut text, piece, hit));
     }
     (text, parts)
 }
@@ -3529,6 +3567,48 @@ mod neighbor_expansion_tests {
             &text[parts.after[0].start..parts.after[0].end],
             "Next chunk."
         );
+    }
+
+    #[test]
+    fn the_windows_overlap_is_not_repeated() {
+        let core = "東京の港は朝に開く。The lighthouse keeper saw a comet over the cliffs.";
+        // The chunk before ends with the core's start, the chunk after starts with its end.
+        let before = format!("Spring tide tables. {}", &core[..40]);
+        let after = format!("{} The ferry leaves at dawn.", &core[core.len() - 20..]);
+        let (text, parts) = join_neighbors(core, 5, &[hit(4, &before, None), hit(6, &after, None)]);
+        assert_eq!(
+            &text[parts.before[0].start..parts.before[0].end],
+            "Spring tide tables. "
+        );
+        assert_eq!(&text[parts.matched.0..parts.matched.1], core);
+        assert_eq!(
+            &text[parts.after[0].start..parts.after[0].end],
+            " The ferry leaves at dawn."
+        );
+        assert_eq!(text.matches("lighthouse").count(), 1);
+        assert_eq!(text.matches("cliffs").count(), 1);
+
+        // A short coincidence is not an overlap.
+        assert_eq!(overlap_len("It was the", "the cat sat"), 0);
+        // In bytes, on char boundaries; a whole neighbour can be the overlap.
+        assert_eq!(
+            overlap_len(
+                "東京の港は朝に開く。東京の港",
+                "東京の港は朝に開く。東京の港は"
+            ),
+            42
+        );
+        assert_eq!(
+            overlap_len(
+                "x 東京の港は朝に開く。東京の港",
+                "東京の港は朝に開く。東京の港 y"
+            ),
+            42
+        );
+        let (text, parts) = join_neighbors(core, 5, &[hit(4, &core[..40], None)]);
+        assert_eq!(parts.before[0].start, parts.before[0].end);
+        assert_eq!(text, core);
+        assert_eq!(SnippetParts::of(&text, &parts_meta(&parts)), Some(parts));
     }
 
     #[test]

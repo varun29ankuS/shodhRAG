@@ -111,7 +111,8 @@ export function canRetry(error: ProviderError): boolean {
 
 /** Whether another model could answer instead. */
 export function fallbackHelps(error: ProviderError): boolean {
-  return error.kind === 'rate_limited' || error.kind === 'quota_exhausted' || error.kind === 'model_unavailable';
+  // A timeout was "unavailable" (504) before it had its own kind; it keeps the fallback offer.
+  return error.kind === 'rate_limited' || error.kind === 'quota_exhausted' || error.kind === 'model_unavailable' || error.kind === 'timeout';
 }
 
 export type FallbackDecision =

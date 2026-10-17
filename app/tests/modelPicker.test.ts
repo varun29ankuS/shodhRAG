@@ -329,7 +329,8 @@ test('retry where trying again can help; no automatic retry for the new kinds', 
     assert.equal(canRetry(e(kind)), false, kind);
     assert.equal(fallbackHelps(e(kind)), false, kind);
   }
-  assert.equal(fallbackHelps(e('timeout')), false, 'no automatic fallback for a timeout');
+  assert.equal(fallbackHelps(e('timeout')), true, 'a timeout keeps the fallback offer 504 had');
+  assert.equal(fallbackDecision(e('timeout'), { model: { provider: 'anthropic', model: 'claude-haiku-4-5' }, name: 'Claude Haiku 4.5', automatic: false }, false), 'offer');
 });
 
 test('the upstream provider is read only when it is a short name', () => {

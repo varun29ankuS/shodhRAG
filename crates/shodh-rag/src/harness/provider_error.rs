@@ -52,13 +52,15 @@ pub struct ProviderError {
 }
 
 impl ProviderError {
-    /// Whether another model could answer instead (rate limit, quota, unavailable).
+    /// Whether another model could answer instead (rate limit, quota,
+    /// unavailable, or a provider too slow to answer).
     pub fn fallback_helps(&self) -> bool {
         matches!(
             self.kind,
             ProviderErrorKind::RateLimited
                 | ProviderErrorKind::QuotaExhausted
                 | ProviderErrorKind::ModelUnavailable
+                | ProviderErrorKind::Timeout
         )
     }
 }
@@ -646,6 +648,7 @@ mod tests {
         let e = classify(field, None, NOW_MS);
         assert_eq!(e.kind, ProviderErrorKind::Timeout);
         assert_eq!(e.status, None);
+        assert!(e.fallback_helps(), "another model may answer in time");
         assert_eq!(e.retry_after_secs, None);
         assert_eq!(
             kind(r#"408 {"error":{"message":"Request timed out","code":408}}"#),

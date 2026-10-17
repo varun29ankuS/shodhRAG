@@ -628,6 +628,7 @@ pub fn run() {
             // Document Upload commands
             document_upload_commands::upload_document_file,
             document_upload_commands::save_temp_file,
+            document_upload_commands::discard_upload,
             // Agent sessions (omp harness)
             agent_session_commands::agent_start,
             agent_session_commands::agent_send,

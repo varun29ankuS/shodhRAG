@@ -171,7 +171,9 @@ fn upload_file_name(file_name: &str) -> Result<&str, String> {
     {
         return refused();
     }
-    if name.trim_matches(|c| c == '.' || c == ' ').is_empty() {
+    // Windows drops trailing dots and spaces: "report.pdf." would be
+    // saved under another name than the one checked here.
+    if name.trim_matches(|c| c == '.' || c == ' ').is_empty() || name.ends_with('.') {
         return refused();
     }
     if Path::new(name).file_name().and_then(|n| n.to_str()) != Some(name) {
@@ -233,6 +235,103 @@ pub async fn save_temp_file(
         .ok_or_else(|| "The saved file's path is not valid text".to_string())
 }
 
+/// The upload folder holding `path` when `path` is exactly a file saved by
+/// [`store_upload`]: `<data_dir>/chat_uploads/<unique id>/<name>`, compared
+/// after resolving links and `..`. `Ok(None)` when it is no longer there;
+/// an error for any other path, which is never removed.
+fn upload_folder_of(data_dir: &Path, path: &Path) -> Result<Option<std::path::PathBuf>, String> {
+    let not_an_upload = || Err("Only a file dropped into a chat can be discarded.".to_string());
+    let uploads = match fs::canonicalize(data_dir.join(CHAT_UPLOADS_DIR)) {
+        Ok(dir) => dir,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("The upload folder could not be read: {e}")),
+    };
+    let file = match fs::canonicalize(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("The dropped file could not be read: {e}")),
+    };
+    let Some(folder) = file.parent() else {
+        return not_an_upload();
+    };
+    let unique = folder
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| uuid::Uuid::parse_str(n).is_ok());
+    if folder.parent() != Some(uploads.as_path()) || !unique || !file.is_file() {
+        return not_an_upload();
+    }
+    Ok(Some(folder.to_path_buf()))
+}
+
+/// Remove a file dropped into a chat whose indexing failed or was refused,
+/// with its upload folder, so it does not stay in the app data folder
+/// forever. Only a file under `chat_uploads/<unique id>/` is removed, and
+/// never one the index still holds (a failed indexing may have stored part
+/// of it, or the index cannot be asked right now): it is kept then.
+/// Returns whether it was removed.
+#[tauri::command]
+pub async fn discard_upload(
+    app: tauri::AppHandle,
+    state: State<'_, RagState>,
+    file_path: String,
+) -> Result<bool, String> {
+    let data_dir = crate::profile::app_data_dir(&app)
+        .map_err(|e| format!("The app data folder is unavailable: {e}"))?;
+    let requested = std::path::PathBuf::from(file_path.trim());
+    let Some(folder) = upload_folder_of(&data_dir, &requested)? else {
+        return Ok(false);
+    };
+    if !*state.rag_initialized.read().await {
+        return Ok(false);
+    }
+    let canonical = folder.join(requested.file_name().unwrap_or_default());
+    let indexed = {
+        let Ok(rag) = tokio::time::timeout(DISCARD_INDEX_WAIT, state.rag.read()).await else {
+            // Indexing holds the index: it cannot say the file is not in it.
+            return Ok(false);
+        };
+        let mut indexed = false;
+        for candidate in [
+            requested.clone(),
+            canonical,
+            without_verbatim_prefix(&folder, &requested),
+        ] {
+            match rag.is_indexed_source(&candidate).await {
+                Ok(false) => {}
+                Ok(true) | Err(_) => {
+                    indexed = true;
+                    break;
+                }
+            }
+        }
+        indexed
+    };
+    if indexed {
+        tracing::info!("A failed upload is kept: the index still holds it");
+        return Ok(false);
+    }
+    tokio::task::spawn_blocking(move || fs::remove_dir_all(&folder))
+        .await
+        .map_err(|e| format!("Removing the dropped file failed: {e}"))?
+        .map_err(|e| format!("The dropped file could not be removed: {e}"))?;
+    Ok(true)
+}
+
+/// Longest wait for the index before a discard gives up (and keeps the file).
+const DISCARD_INDEX_WAIT: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// `folder/<name of requested>` without Windows' `\\?\` prefix, the
+/// spelling the indexer may have recorded.
+fn without_verbatim_prefix(folder: &Path, requested: &Path) -> std::path::PathBuf {
+    let joined = folder.join(requested.file_name().unwrap_or_default());
+    let text = joined.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => std::path::PathBuf::from(rest),
+        None => joined,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,10 +369,59 @@ mod tests {
             "con.pdf",
             "Lpt1.txt",
             "NUL .pdf",
+            "report.pdf.",
+            "report.pdf. .",
         ] {
             assert!(upload_file_name(refused).is_err(), "{refused:?}");
         }
         assert!(upload_file_name(&"a".repeat(MAX_UPLOAD_NAME_LEN + 1)).is_err());
+    }
+
+    #[test]
+    fn only_a_saved_upload_can_be_discarded() {
+        let dir = tempfile::tempdir().unwrap();
+        let upload = store_upload(dir.path(), "paper.pdf", b"x").unwrap();
+        let folder = upload_folder_of(dir.path(), &upload).unwrap().unwrap();
+        assert_eq!(
+            fs::canonicalize(upload.parent().unwrap()).unwrap(),
+            folder,
+            "its own unique folder"
+        );
+
+        // Anything else is refused, never removed.
+        let settings = dir.path().join("app_settings.json");
+        fs::write(&settings, "{}").unwrap();
+        assert!(upload_folder_of(dir.path(), &settings).is_err());
+        let loose = dir.path().join(CHAT_UPLOADS_DIR).join("loose.pdf");
+        fs::write(&loose, "x").unwrap();
+        assert!(
+            upload_folder_of(dir.path(), &loose).is_err(),
+            "not in a unique folder"
+        );
+        let odd = dir.path().join(CHAT_UPLOADS_DIR).join("not-a-uuid");
+        fs::create_dir_all(&odd).unwrap();
+        fs::write(odd.join("a.pdf"), "x").unwrap();
+        assert!(upload_folder_of(dir.path(), &odd.join("a.pdf")).is_err());
+        let escape = upload
+            .parent()
+            .unwrap()
+            .join("..")
+            .join("..")
+            .join("app_settings.json");
+        assert!(
+            upload_folder_of(dir.path(), &escape).is_err(),
+            "resolved before the check"
+        );
+        assert!(
+            upload_folder_of(dir.path(), upload.parent().unwrap()).is_err(),
+            "a folder"
+        );
+        // Gone already: nothing to do.
+        assert_eq!(
+            upload_folder_of(dir.path(), &upload.with_file_name("gone.pdf")).unwrap(),
+            None
+        );
+        assert!(settings.exists() && loose.exists());
     }
 
     #[test]

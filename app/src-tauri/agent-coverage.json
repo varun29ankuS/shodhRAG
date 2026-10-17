@@ -205,6 +205,7 @@
     "clear_all_documents": { "excluded": "Deletes every indexed document; bulk destructive operations are user-only." },
     "reset_database": { "excluded": "Deletes the whole index; bulk destructive operations are user-only." },
     "upload_document_file": { "excluded": "Ingests a file the user picked or dropped in the UI; the assistant has no file picker, and fetches files with download_file instead." },
+    "discard_upload": { "excluded": "Removes a file the user dropped into a chat after its indexing failed, and only when the index does not hold it; cleaning up the user's own failed upload is part of the upload flow." },
     "save_temp_file": { "excluded": "Stores a file the user dropped into the window before indexing; part of the user's upload flow." },
     "read_clipboard_image": { "excluded": "Reads the user's clipboard on paste; the assistant has no clipboard access by design." },
     "process_image_from_base64": { "excluded": "OCR of an image the user pasted; part of the user's paste flow." },

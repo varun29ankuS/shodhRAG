@@ -142,7 +142,8 @@ struct Passage {
 }
 
 impl Passage {
-    /// The passage as shown to the UI: the model's fields plus `regions`.
+    /// The passage as shown to the UI: the model's fields plus `regions` and
+    /// `display_path`.
     fn detail_value(&self) -> Value {
         let mut value = serde_json::to_value(self).unwrap_or(Value::Null);
         if let Some(map) = value.as_object_mut() {

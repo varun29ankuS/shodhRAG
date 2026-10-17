@@ -286,6 +286,8 @@ pub fn flag_unverified_absence(
             match (existing, unbacked) {
                 (Some(mut check), Some(_)) => {
                     check.outcome = ClaimOutcome::UnverifiedAbsence;
+                    // A passage cannot back a claim of absence: no citation is offered.
+                    check.suggested = None;
                     out.push(check);
                 }
                 (Some(check), None) => out.push(check),

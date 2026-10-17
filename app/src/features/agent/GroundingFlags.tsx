@@ -42,7 +42,7 @@ function CiteInsteadButton({ check, onCiteInstead, className }: { check: ClaimCh
       type="button"
       data-answer-ui=""
       onClick={() => onCiteInstead(check)}
-      aria-label={`Cite passage ${n} instead of ${cited} for this statement`}
+      aria-label={`Cite ${n} instead of ${check.cited.join(', ')} for this statement`}
       title={`Change this statement's citation from ${cited} to [${n}]`}
       className={className}
     >

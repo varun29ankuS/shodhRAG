@@ -885,6 +885,8 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
       return;
     }
     updateMessage(owner.id, { content: answerText(next), transcript: next });
+    // The flag and its button are gone; say what changed (toasts are a live region).
+    notify.success(`Now cites passage ${check.suggested}`);
   }, [updateMessage]);
 
   const markRuntimeInstalled = useCallback(() => setRuntimeInstalled(true), [setRuntimeInstalled]);

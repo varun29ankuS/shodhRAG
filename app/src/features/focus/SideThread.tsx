@@ -363,11 +363,22 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
   }, [onDone]);
   const openThread = useCallback((threadId: string) => focus?.jumpToThread(threadId), [focus]);
   // "Cite N instead" on a stored answer of this discussion; the user acts, the app never does.
+  // Read through refs: the pop-out's context changes on every streamed frame, and a new
+  // callback would re-render every memoised answer of the discussion with it.
+  const focusRef = useRef(focus);
+  focusRef.current = focus;
+  const openRef = useRef(open);
+  openRef.current = open;
   const citeInstead = useCallback((turnId: string, check: ClaimCheck) => {
-    if (focus && !focus.citeInstead(open, turnId, check)) {
+    const api = focusRef.current;
+    if (!api) return;
+    const n = check.suggested;
+    if (api.citeInstead(openRef.current, turnId, check)) {
+      notify.success(`Now cites passage ${n}`);
+    } else {
       notify.error('This citation could not be changed', { description: 'The statement is no longer in the answer as it was checked.' });
     }
-  }, [focus, open]);
+  }, []);
 
   const contextNote = contextLabel(open.target, extras);
   const selection = extras.selection?.trim() || null;

@@ -22,16 +22,6 @@ export function isAnswerScope(kind: string | null | undefined): boolean {
 }
 
 /**
- * Whether a node is inside an answer's ask scope, the only place citation
- * pills and grounding flags appear (and so the only place `readableSelection`
- * is worth its cost).
- */
-export function inAnswerScope(node: Node | null): boolean {
-  const element = node instanceof Element ? node : node?.parentElement ?? null;
-  return isAnswerScope(element?.closest(`[${ASK_SCOPE_ATTR}]`)?.getAttribute(ASK_SCOPE_ATTR));
-}
-
-/**
  * Attribute on inline controls inside an answer whose text is not answer
  * text: citation pills, grounding flags, copy buttons. Quoted text leaves
  * them out.
@@ -83,7 +73,7 @@ export function readableText(node: ReadableNode): string {
 
 /**
  * Selected text as a reader sees it: `readableText` of the range's contents,
- * so pills and flags the selection crosses are never quoted or attached.
+ * so pills and flags the selection crosses are never quoted.
  * `Selection.toString()` would include them.
  */
 export function readableSelection(range: { cloneContents(): ReadableNode }): string {

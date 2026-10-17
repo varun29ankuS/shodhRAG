@@ -97,7 +97,7 @@ test('a long paragraph is windowed around a clean selection', () => {
   assert.ok(window.includes('SPANN lowers latency. More'), window);
 });
 
-test('a selection range reads through its cloned contents (Ask about this and the pop-out share it)', () => {
+test('a selection range reads through its cloned contents', () => {
   let clones = 0;
   const range = {
     cloneContents: () => {

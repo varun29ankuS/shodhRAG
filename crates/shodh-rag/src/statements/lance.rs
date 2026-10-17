@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use futures::TryStreamExt;
 use lancedb::index::scalar::FullTextSearchQuery;
 use lancedb::index::Index;
-use lancedb::query::{ExecutableQuery, QueryBase};
+use lancedb::query::{ExecutableQuery, QueryBase, Select};
 use lancedb::DistanceType;
 
 use super::{StatementError, StatementResult};
@@ -42,6 +42,30 @@ pub(crate) struct Row {
     pub forgotten_at: Option<i64>,
     pub created_at: i64,
 }
+
+/// Every column but the embedding: what [`rows`] decodes.
+const CONTENT_COLUMNS: &[&str] = &[
+    "id",
+    "class",
+    "subject",
+    "identity",
+    "scope",
+    "text",
+    "terms",
+    "statement_json",
+    "properties_json",
+    "provenance_json",
+    "extractor",
+    "source",
+    "ontology_source",
+    "ontology_version",
+    "valid_from",
+    "valid_to",
+    "superseded_by",
+    "expires_at",
+    "forgotten_at",
+    "created_at",
+];
 
 /// Microseconds since the epoch.
 pub(crate) fn micros(at: DateTime<Utc>) -> i64 {
@@ -249,6 +273,18 @@ impl StatementTable {
         limit: usize,
     ) -> StatementResult<Vec<Row>> {
         let mut query = self.table.query().limit(limit);
+        if let Some(predicate) = predicate {
+            query = query.only_if(predicate);
+        }
+        let batches: Vec<RecordBatch> = query.execute().await?.try_collect().await?;
+        Ok(rows(&batches)?.into_iter().map(|(row, _)| row).collect())
+    }
+
+    /// Every row matching `predicate`, however many, read in one query of one table
+    /// version. The embedding column is not read: callers of a full read need the
+    /// content, and the vectors would multiply its size.
+    pub(crate) async fn scan_all(&self, predicate: Option<&str>) -> StatementResult<Vec<Row>> {
+        let mut query = self.table.query().select(Select::columns(CONTENT_COLUMNS));
         if let Some(predicate) = predicate {
             query = query.only_if(predicate);
         }

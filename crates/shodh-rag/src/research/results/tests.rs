@@ -661,3 +661,101 @@ fn corpus_cells_give_exact_values_pages_and_boxes() {
         ]
     );
 }
+
+/// An accepted Result statement of the paper at `path`, as an extraction stores one.
+fn stored_result(service: &ResultService, path: &str, i: usize) -> Statement {
+    let mut paper = document_entity(path);
+    paper.class = Some("Paper".to_string());
+    let properties = BTreeMap::from([
+        (
+            "resultMethod".to_string(),
+            RawValue::Entity(EntityRef::typed(format!("method:m{i}"), "Method")),
+        ),
+        (
+            "resultDataset".to_string(),
+            RawValue::Entity(EntityRef::typed("dataset:cifar10", "Dataset")),
+        ),
+        (
+            "resultMetric".to_string(),
+            RawValue::Entity(EntityRef::typed("metric:accuracy", "Metric")),
+        ),
+        (
+            "resultValue".to_string(),
+            RawValue::text(format!("{}.5", 50 + i % 40)),
+        ),
+        ("reportedIn".to_string(), RawValue::Entity(paper)),
+        ("resultPage".to_string(), RawValue::Integer(1)),
+    ]);
+    Statement {
+        id: format!("res-other-{i}"),
+        class: RESULT_CLASS.to_string(),
+        subject: None,
+        properties,
+        ontology_version: service.version(),
+        valid_from: Some(t0()),
+        provenance: Some(Provenance {
+            source: canonical_file(path),
+            generation: 0,
+            page: Some(1),
+            span: None,
+            extractor: Extractor {
+                kind: ExtractorKind::Rule,
+                version: RULES_VERSION.to_string(),
+            },
+            confidence: 0.95,
+            extracted_at: t0(),
+        }),
+    }
+}
+
+/// More values than one capped read returns (5 000) are stored before the paper's own:
+/// its listing, its re-extraction and the comparisons still see every value.
+#[tokio::test]
+async fn a_paper_s_results_are_read_whatever_else_is_stored() {
+    let dir = tempfile::tempdir().unwrap();
+    let (service, _clock) = service(dir.path()).await;
+    let others: Vec<(Statement, Scope)> = (0..5_100)
+        .map(|i| {
+            let path = format!("C:/papers/other-{}.pdf", i % 40);
+            (stored_result(&service, &path, i), Scope::Global)
+        })
+        .collect();
+    service.store.append_independent(others).await.unwrap();
+    let path = "C:/papers/ann.pdf";
+    service
+        .extract_document(path, &ann_paper("95.30"), Scope::Global, None)
+        .await
+        .unwrap();
+    let listed = service.list(path).await.unwrap();
+    assert_eq!(listed.results.len(), 3);
+    assert_eq!(listed.review.len(), 1);
+
+    // A changed value replaces the old one: the re-extraction saw every old value.
+    service
+        .extract_document(path, &ann_paper("96.00"), Scope::Global, None)
+        .await
+        .unwrap();
+    let listed = service.list(path).await.unwrap();
+    let sift = canonical_id("dataset", "SIFT1M");
+    let hnsw: Vec<&str> = listed
+        .results
+        .iter()
+        .filter(|r| r.method == "HNSW" && r.dataset_id == sift)
+        .map(|r| r.value_text.as_str())
+        .collect();
+    assert_eq!(hnsw, vec!["96.00"]);
+    assert_eq!(listed.results.len(), 3);
+
+    let facets = service.facets(&[]).await.unwrap();
+    assert_eq!(facets.papers.len(), 41);
+    let comparison = service
+        .query(&ResultFilter {
+            metric: Some("recall@10".into()),
+            dataset: Some("SIFT1M".into()),
+            ..ResultFilter::default()
+        })
+        .await
+        .unwrap();
+    let methods: Vec<&str> = comparison.rows.iter().map(|r| r.method.as_str()).collect();
+    assert_eq!(methods, vec!["HNSW", "IVF-PQ"]);
+}

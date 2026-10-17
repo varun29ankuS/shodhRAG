@@ -666,6 +666,38 @@ fn legacy_source_spellings(path: &Path, canonical: &str) -> Vec<String> {
     out
 }
 
+/// The LanceDB filter for the chunks no source owns (an empty `space_id`)
+/// whose file is `path` or lies under the folder `path`, in any spelling an
+/// indexer stored it with ([`normalize_source_path`] and
+/// [`legacy_source_spellings`]). A folder matches only across a separator
+/// boundary: `c:/research/papers` selects `c:/research/papers/a.pdf`, never
+/// `c:/research/papers 2024/a.pdf`. Files added in a chat carry
+/// `uploaded_at` and are left out: they belong to no folder source.
+fn unowned_under_predicate(path: &Path) -> String {
+    use crate::storage::lance_store::like_escape;
+    let quote = |text: &str| format!("'{}'", text.replace('\'', "''"));
+    let canonical = normalize_source_path(path);
+    let mut spellings = vec![canonical.clone()];
+    spellings.extend(legacy_source_spellings(path, &canonical));
+    let mut matches = Vec::new();
+    for spelling in &spellings {
+        let folder = spelling.trim_end_matches(['/', '\\']);
+        if folder.is_empty() {
+            continue;
+        }
+        matches.push(format!("source = {}", quote(folder)));
+        for separator in ["/", "\\"] {
+            let pattern = format!("{}%", like_escape(&format!("{folder}{separator}")));
+            matches.push(format!("source LIKE {}", quote(&pattern)));
+        }
+    }
+    let chat_added = quote(&format!("%{}%", like_escape("\"uploaded_at\":")));
+    format!(
+        "(space_id = '' OR space_id IS NULL) AND ({}) AND metadata_json NOT LIKE {chat_added}",
+        matches.join(" OR ")
+    )
+}
+
 /// Human-readable page label (`"3"` or `"3-5"`) from chunk metadata written by
 /// [`insert_page_metadata`]. Returns `None` for unpaged chunks.
 pub fn page_numbers_from_metadata(meta: &HashMap<String, String>) -> Option<String> {
@@ -771,9 +803,9 @@ enum EmbedderSource {
 }
 
 impl SearchModels {
-    /// Models over a test embedder, without a reranker.
-    #[cfg(test)]
-    pub(crate) fn from_embedder(embeddings: Arc<dyn EmbeddingModel>) -> Self {
+    /// Models over an embedder that is already loaded (the app's tests use
+    /// a deterministic one), without a reranker or OCR model.
+    pub fn from_embedder(embeddings: Arc<dyn EmbeddingModel>) -> Self {
         Self {
             embeddings: EmbedderSource::Loaded(embeddings),
             reranker_dir: None,
@@ -1905,16 +1937,53 @@ impl RAGEngine {
         }
     }
 
-    /// Delete all documents whose source starts with the given folder path.
-    /// Normalizes the prefix and uses starts_with matching so that a folder
-    /// path matches all files indexed under it.
-    pub async fn delete_by_source_prefix(&mut self, folder: &str) -> Result<usize> {
-        let normalized = normalize_source_path(Path::new(folder));
-        self.forget_cached_scans(|row| row.source.starts_with(&normalized))
-            .await;
-        let deleted = self.store.delete_by_source_prefix(&normalized).await?;
-        self.text_search.delete_by_source_prefix(&normalized)?;
+    /// Deletes the Library source `space_id` from the index: every chunk it
+    /// owns and, under `path` (the source's folder, or its file), the chunks
+    /// that no source owns because they were indexed before chunks recorded
+    /// their source (an empty `space_id`). Files added in a chat
+    /// (`uploaded_at` in their metadata) own themselves and stay, as do the
+    /// chunks of every other source: a folder whose path merely starts with
+    /// `path` ("Papers 2024" for "Papers") or a source listed inside it.
+    /// Returns the chunks deleted.
+    pub async fn delete_library_source(
+        &mut self,
+        space_id: &str,
+        path: Option<&str>,
+    ) -> Result<usize> {
+        if space_id.trim().is_empty() {
+            anyhow::bail!("a Library source is removed by its id, and none was given");
+        }
+        let mut deleted = self.delete_by_space_id(space_id).await?;
+        if let Some(path) = path.map(str::trim).filter(|p| !p.is_empty()) {
+            deleted += self.delete_unowned_under(Path::new(path)).await?;
+        }
+        Ok(deleted)
+    }
+
+    /// Deletes the chunks no source owns of the file `path` or of the files
+    /// under the folder `path` ([`unowned_under_predicate`]), from LanceDB
+    /// and, by chunk id, from the keyword index (which records no owner).
+    async fn delete_unowned_under(&mut self, path: &Path) -> Result<usize> {
+        let predicate = unowned_under_predicate(path);
+        let chunks = self.store.list_chunks(Some(&predicate), 1_000_000).await?;
+        if chunks.is_empty() {
+            return Ok(0);
+        }
+        let sources: std::collections::BTreeSet<&str> =
+            chunks.iter().map(|chunk| chunk.source.as_str()).collect();
+        for source in sources {
+            self.ocr_cache.remove(source);
+        }
+        for chunk in &chunks {
+            self.text_search.delete_by_id(&chunk.id)?;
+        }
         self.text_search.commit()?;
+        let deleted = self.store.delete_where(&predicate).await?;
+        tracing::info!(
+            path = %path.display(),
+            deleted,
+            "Deleted chunks without a source under a removed Library source"
+        );
         Ok(deleted)
     }
 
@@ -2902,6 +2971,125 @@ Language models trained on long documents reach lower perplexity.
         "Lessor: Saffron Estates Pvt. Ltd. Lessee: Tidewater Logistics Pvt. Ltd.\n\n\
                          # Rent\n\n\
                          Monthly rent is INR 4,85,000, payable by the 5th day of each month.\n";
+
+    /// Removing a Library source deletes what it owns and, under its folder,
+    /// only what no source owns: never a neighbour whose path starts the same
+    /// ("Papers 2024" for "Papers"), a source listed inside it, or a file
+    /// added in a chat.
+    #[tokio::test]
+    async fn removing_a_source_deletes_only_what_it_owns() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let papers = dir.path().join("Papers");
+        let later = dir.path().join("Papers 2024");
+        std::fs::create_dir_all(papers.join("nested")).unwrap();
+        std::fs::create_dir_all(&later).unwrap();
+        let owned = |id: &str| HashMap::from([("space_id".to_string(), id.to_string())]);
+        let chat = HashMap::from([(
+            "uploaded_at".to_string(),
+            "2026-10-01T09:00:00Z".to_string(),
+        )]);
+        let files = [
+            (papers.join("own.md"), "zebra", owned("papers")),
+            (later.join("later.md"), "giraffe", owned("later")),
+            (
+                papers.join("nested").join("nested.md"),
+                "pelican",
+                owned("nested"),
+            ),
+            (papers.join("chat.md"), "walrus", chat),
+            (papers.join("legacy.md"), "otter", HashMap::new()),
+            (later.join("legacy.md"), "lynx", HashMap::new()),
+        ];
+        for (path, word, metadata) in &files {
+            let text = format!(
+                "# Notes\n\nThe {word} was seen near the river at dawn. The {word} \
+                 returned the next morning, and the field notes describe the {word} at length.\n"
+            );
+            std::fs::write(path, text).unwrap();
+            engine
+                .add_document_from_file(path, metadata.clone())
+                .await
+                .unwrap();
+        }
+        let names = |rows: Vec<crate::storage::DocumentSourceRow>| {
+            let mut names: Vec<String> = rows
+                .into_iter()
+                .map(|row| {
+                    let parent = Path::new(&row.source)
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .map(|n| n.to_string_lossy().to_lowercase())
+                        .unwrap_or_default();
+                    let name = Path::new(&row.source)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_lowercase())
+                        .unwrap_or_default();
+                    format!("{parent}/{name}")
+                })
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(names(engine.document_sources().await.unwrap()).len(), 6);
+
+        let deleted = engine
+            .delete_library_source("papers", Some(&papers.display().to_string()))
+            .await
+            .unwrap();
+        assert!(deleted >= 2, "its own file and the legacy file under it");
+        assert_eq!(
+            names(engine.document_sources().await.unwrap()),
+            [
+                "nested/nested.md",
+                "papers 2024/later.md",
+                "papers 2024/legacy.md",
+                "papers/chat.md",
+            ]
+        );
+        // The keyword index keeps exactly the same files.
+        for (word, kept) in [
+            ("zebra", false),
+            ("otter", false),
+            ("giraffe", true),
+            ("pelican", true),
+            ("walrus", true),
+            ("lynx", true),
+        ] {
+            let hits = engine.text_search.search(word, 5).unwrap();
+            assert_eq!(!hits.is_empty(), kept, "{word}");
+        }
+        // A source is removed by its id: none, none removed.
+        assert!(engine
+            .delete_library_source(" ", Some(&later.display().to_string()))
+            .await
+            .is_err());
+    }
+
+    #[test]
+    fn unowned_files_match_a_folder_only_across_a_separator() {
+        let predicate = unowned_under_predicate(Path::new("/research/papers"));
+        assert!(
+            predicate.contains("source = '/research/papers'"),
+            "{predicate}"
+        );
+        assert!(
+            predicate.contains("source LIKE '/research/papers/%'"),
+            "{predicate}"
+        );
+        assert!(
+            !predicate.contains("source LIKE '/research/papers%'"),
+            "{predicate}"
+        );
+        assert!(predicate.starts_with("(space_id = '' OR space_id IS NULL)"));
+        assert!(predicate.contains(r#"metadata_json NOT LIKE '%"uploaded\_at":%'"#));
+        // Wildcards and quotes in a folder name match themselves.
+        let odd = unowned_under_predicate(Path::new("/data/50%_o'brien"));
+        assert!(
+            odd.contains(r"source LIKE '/data/50\%\_o''brien/%'"),
+            "{odd}"
+        );
+    }
 
     /// Every chunk records the format and the context it was indexed with;
     /// the context holds the document's opening, the stored text does not.

@@ -14,7 +14,7 @@
 //! run, documents of an older format that no listed source owns (files added
 //! in a chat) are brought up to date too ([`upgrade_unowned`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -25,8 +25,10 @@ use shodh_rag::folder_sync::{
     is_temporary_file, sync_folder, upgrade_file_source, upgrade_unowned, ManifestStore, SyncReport,
 };
 use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus, NewInboxItem};
+use shodh_rag::indexing::IndexingState;
+use shodh_rag::RAGEngine;
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 
 use crate::background::BackgroundState;
 use crate::rag_commands::RagState;
@@ -74,6 +76,9 @@ pub struct FolderSyncState {
     /// Scans read without the scan reader were looked for in this run, once
     /// the Library's folders are watched (see [crate::scan_reader::reread_on_start]).
     scans_checked: std::sync::atomic::AtomicBool,
+    /// Sources removed from the Library in this run ([`Self::remove_source`]):
+    /// never watched again, even when a list that still names them arrives.
+    removed: Mutex<HashSet<String>>,
 }
 
 impl FolderSyncState {
@@ -84,6 +89,7 @@ impl FolderSyncState {
             running: tokio::sync::Mutex::new(()),
             unowned_checked: std::sync::atomic::AtomicBool::new(false),
             scans_checked: std::sync::atomic::AtomicBool::new(false),
+            removed: Mutex::new(HashSet::new()),
         }
     }
 
@@ -102,11 +108,66 @@ impl FolderSyncState {
         }
     }
 
-    /// Drops the manifest of `source_id`, a source removed from the Library.
-    /// Waits for a running sync, which would otherwise write it back.
+    /// Drops the manifest of `source_id`, a source the Library no longer
+    /// lists. Waits for a running sync, which would otherwise write it back;
+    /// a source listed and watched again meanwhile keeps its manifest.
     pub async fn forget_source(&self, source_id: &str) {
         let _turn = self.running.lock().await;
+        if self.watched_ids().contains(source_id) {
+            return;
+        }
         self.store.forget(source_id);
+    }
+
+    /// Removes the Library source `source_id` (the folder or file `path`):
+    /// the one way a source is removed, from the Library and by the agent.
+    ///
+    /// In order: the source stops being watched (its sync stops before its
+    /// next file) and is never watched again; its index runs stop before
+    /// their next file and are waited for; then, in the syncs' turn, its
+    /// chunks are deleted ([`RAGEngine::delete_library_source`], by source
+    /// id, never by path prefix) and its manifest with them. Nothing of the
+    /// source runs after that, so nothing writes its chunks or its manifest
+    /// back. Returns the chunks deleted. When the deletion fails the source
+    /// may be watched and indexed again; its manifest is kept.
+    pub async fn remove_source(
+        &self,
+        rag: &RwLock<RAGEngine>,
+        indexing: &IndexingState,
+        source_id: &str,
+        path: Option<&str>,
+    ) -> Result<usize, String> {
+        {
+            let mut watched = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+            self.removed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(source_id.to_string());
+            // Dropping the watcher ends the source's sync task.
+            watched.remove(source_id);
+        }
+        indexing.stop_source(source_id).await;
+        let _turn = self.running.lock().await;
+        let deleted = rag
+            .write()
+            .await
+            .delete_library_source(source_id, path)
+            .await
+            .map_err(|e| format!("Failed to delete the documents of the source: {e:#}"));
+        match deleted {
+            Ok(deleted) => {
+                self.store.forget(source_id);
+                Ok(deleted)
+            }
+            Err(error) => {
+                self.removed
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(source_id);
+                indexing.restore_source(source_id);
+                Err(error)
+            }
+        }
     }
 
     /// Where the folder manifests are kept.
@@ -135,6 +196,23 @@ impl FolderSyncState {
                 id: source_id.to_string(),
                 path: w.path.clone(),
             })
+    }
+
+    /// Watches `source` without a watcher task (tests).
+    #[cfg(test)]
+    pub(crate) fn watch_quietly(&self, source: &FolderSourceRef) {
+        let watcher =
+            notify::recommended_watcher(|_: notify::Result<Event>| {}).expect("a file watcher");
+        self.watched
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                source.id.clone(),
+                Watched {
+                    path: source.path.clone(),
+                    _watcher: watcher,
+                },
+            );
     }
 
     fn is_watched(&self, source: &FolderSourceRef) -> bool {
@@ -234,7 +312,11 @@ async fn sync_once(app: &AppHandle, source: &FolderSourceRef) {
         return;
     }
     let rag = app.state::<RagState>().rag.clone();
-    let result = sync_folder(&source.path, &source.id, &state.store, &rag, || false).await;
+    // A source removed or no longer listed meanwhile stops before its next file.
+    let result = sync_folder(&source.path, &source.id, &state.store, &rag, || {
+        !state.is_watched(source)
+    })
+    .await;
     if let Err(e) = &result {
         tracing::warn!(source_id = %source.id, error = %e, "folder sync failed");
     }
@@ -345,18 +427,24 @@ pub async fn sync_folder_sources(
         tauri::async_runtime::spawn(async move { upgrade_unowned_once(&app, owned).await });
     }
     let mut watched = state.watched.lock().unwrap_or_else(|e| e.into_inner());
+    let removed = state.removed.lock().unwrap_or_else(|e| e.into_inner());
     let stale: Vec<String> = watched
         .iter()
         .filter(|(id, w)| !sources.iter().any(|s| &s.id == *id && s.path == w.path))
         .map(|(id, _)| id.clone())
         .collect();
+    let mut unlisted = Vec::new();
     for id in stale {
         watched.remove(&id);
         if !sources.iter().any(|s| s.id == id) {
-            state.store.forget(&id);
+            unlisted.push(id);
         }
     }
     for source in sources {
+        // Removed: a list sent before the Library dropped it.
+        if removed.contains(&source.id) {
+            continue;
+        }
         if Path::new(&source.path).is_file() {
             let app = app.clone();
             tauri::async_runtime::spawn(async move { upgrade_file_once(&app, &source).await });
@@ -383,7 +471,15 @@ pub async fn sync_folder_sources(
             }
         }
     }
+    drop(removed);
     drop(watched);
+    // In the syncs' turn: a sync still running would write the manifest back.
+    for id in unlisted {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            app.state::<FolderSyncState>().forget_source(&id).await;
+        });
+    }
     // Once the folders are watched, so scans in them can go to their syncs.
     if !state
         .scans_checked
@@ -462,5 +558,113 @@ mod tests {
         let json = serde_json::to_value(&failed).unwrap();
         assert_eq!(json["error"], "D:/papers is not available");
         assert!(json.get("files").is_none());
+    }
+
+    fn file_count(rows: &[shodh_rag::storage::DocumentSourceRow], source_id: &str) -> usize {
+        rows.iter().filter(|row| row.space_id == source_id).count()
+    }
+
+    /// A source removed while its folder syncs: the sync stops before its
+    /// next file, and once the removal is done nothing of the source is left
+    /// (no chunks, no manifest, no watch) and nothing writes any back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_source_removed_during_its_sync_stops_and_leaves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let rag =
+            RwLock::new(crate::agent_tools::testing::engine_with_search_models(dir.path()).await);
+        let state = FolderSyncState::new(dir.path().join("sync"));
+        let indexing = IndexingState::default();
+        let folder = dir.path().join("papers");
+        std::fs::create_dir_all(&folder).unwrap();
+        for (name, text) in [
+            (
+                "a.txt",
+                "The lease notice period is sixty days for either party.",
+            ),
+            (
+                "b.txt",
+                "Visitors park on the street next to the courtyard.",
+            ),
+            ("c.txt", "Quiet hours begin at ten in the evening."),
+        ] {
+            std::fs::write(folder.join(name), text).unwrap();
+        }
+        let source = FolderSourceRef {
+            id: "folder-papers".into(),
+            path: folder.display().to_string(),
+        };
+        state.watch_quietly(&source);
+
+        // The sync asks before each file; the removal starts after the first,
+        // as `remove_source` begins: the source is no longer watched.
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let report = sync_folder(&source.path, &source.id, state.store(), &rag, || {
+            if asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                state
+                    .watched
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&source.id);
+            }
+            !state.is_watched(&source)
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            report.indexed, 1,
+            "stopped before the next file: {report:?}"
+        );
+        let rows = rag.read().await.document_sources().await.unwrap();
+        assert_eq!(file_count(&rows, &source.id), 1);
+
+        let deleted = state
+            .remove_source(&rag, &indexing, &source.id, Some(source.path.as_str()))
+            .await
+            .unwrap();
+        assert!(deleted > 0);
+        let rows = rag.read().await.document_sources().await.unwrap();
+        assert_eq!(file_count(&rows, &source.id), 0, "no chunks left");
+        assert!(
+            !dir.path().join("sync").join("folder-papers.json").exists(),
+            "no manifest left"
+        );
+        assert!(!state.watched_ids().contains(&source.id));
+        // A list that still names it (sent before the Library dropped it)
+        // does not bring it back.
+        assert!(state
+            .removed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&source.id));
+        // Its index runs cannot start again.
+        assert!(indexing.begin_run(&source.id).is_none());
+    }
+
+    /// The removal waits for the sync that holds the turn, so that sync
+    /// cannot write the manifest back after the removal deleted it.
+    #[tokio::test]
+    async fn a_removal_waits_for_the_running_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let rag =
+            RwLock::new(crate::agent_tools::testing::engine_with_search_models(dir.path()).await);
+        let state = FolderSyncState::new(dir.path().join("sync"));
+        let indexing = IndexingState::default();
+        let manifest = dir.path().join("sync").join("folder-papers.json");
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+
+        let turn = state.running.lock().await;
+        let removal = state.remove_source(&rag, &indexing, "folder-papers", None);
+        tokio::pin!(removal);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut removal)
+                .await
+                .is_err(),
+            "the removal cannot finish while a sync holds the turn"
+        );
+        // The sync saves its progress as it ends.
+        std::fs::write(&manifest, r#"{"folder":"papers","files":{}}"#).unwrap();
+        drop(turn);
+        removal.await.unwrap();
+        assert!(!manifest.exists(), "deleted after the sync, not before");
     }
 }

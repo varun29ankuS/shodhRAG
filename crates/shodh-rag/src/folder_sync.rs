@@ -796,7 +796,12 @@ pub async fn sync_folder(
             },
         )
     };
+    let mut stopped = false;
     for key in &plan.remove {
+        if stop() {
+            stopped = true;
+            break;
+        }
         let deleted = rag
             .write()
             .await
@@ -810,7 +815,7 @@ pub async fn sync_folder(
         save(&files, &failures)?;
     }
     for path in &plan.index {
-        if stop() {
+        if stopped || stop() {
             break;
         }
         let key = normalize_source_path(path);

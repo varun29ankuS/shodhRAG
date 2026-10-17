@@ -418,6 +418,25 @@ pub(crate) mod testing {
         source_id
     }
 
+    /// An engine over `dir` that can index: the deterministic [`WordEmbedder`]
+    /// stands in for the search models.
+    pub async fn engine_with_search_models(dir: &std::path::Path) -> RAGEngine {
+        let mut config = shodh_rag::config::RAGConfig {
+            data_dir: dir.join("index"),
+            ..shodh_rag::config::RAGConfig::default()
+        };
+        config.embedding.model_dir = dir.join("no-models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = WORD_DIM;
+        config.search.min_score_threshold = 0.0;
+        let mut rag = RAGEngine::new(config).await.unwrap();
+        rag.attach_search_models(shodh_rag::SearchModels::from_embedder(Arc::new(
+            WordEmbedder::default(),
+        )))
+        .unwrap();
+        rag
+    }
+
     /// The test host with another web client (in-process DNS and HTTP).
     pub fn with_web(t: &TestHost, web: SafeClient) -> Arc<AgentHost> {
         Arc::new(AgentHost {

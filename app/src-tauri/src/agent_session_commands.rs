@@ -726,15 +726,15 @@ fn carried_passages(passages: Vec<CarriedPassage>) -> CommandResult<(Vec<CitedPa
                 p.n
             )));
         }
-        if p.file.len() > 2048 || p.path.len() > 2048 {
-            return Err(AgentCommandError::invalid(
-                "A carried passage's source is too long",
-            ));
-        }
         // A passage left out keeps its number: the conversation still cites it.
         through = through.max(p.n);
         if full {
             continue;
+        }
+        if p.file.len() > 2048 || p.path.len() > 2048 {
+            return Err(AgentCommandError::invalid(
+                "A carried passage's source is too long",
+            ));
         }
         let text = truncate(p.text.trim(), MAX_CARRIED_PASSAGE_CHARS);
         if text.is_empty() || out.iter().any(|c| c.n == p.n) {

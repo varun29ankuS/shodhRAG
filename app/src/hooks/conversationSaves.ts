@@ -5,6 +5,35 @@
  * unit-tested directly with Node (`app/tests/conversationSaves.test.ts`).
  */
 
+/** Event the backend sends before the app exits (`shutdown.rs`); answered with `quit_ready`. */
+export const APP_QUITTING_EVENT = 'app-quitting';
+
+/** The request id of an `app-quitting` payload, or null when it is malformed. */
+export function quitRequestId(payload: unknown): number | null {
+  if (typeof payload !== 'object' || payload === null) return null;
+  const id = (payload as Record<string, unknown>).requestId;
+  return typeof id === 'number' && Number.isSafeInteger(id) && id >= 0 ? id : null;
+}
+
+/**
+ * Apply `change` to the record with `id`. Returns the new list and the
+ * changed record (null, and the list unchanged, when there is none), so the
+ * caller saves exactly the record it put in the list, outside any state
+ * updater.
+ */
+export function updateRecord<C extends { id: string }>(
+  list: C[],
+  id: string,
+  change: (record: C) => C,
+): { list: C[]; updated: C | null } {
+  const index = list.findIndex(c => c.id === id);
+  if (index < 0) return { list, updated: null };
+  const updated = change(list[index]);
+  const next = list.slice();
+  next[index] = updated;
+  return { list: next, updated };
+}
+
 export interface SaveDeps<C extends { id: string }> {
   /** Store the record (`save_conversation`). */
   write: (conv: C) => Promise<unknown>;
@@ -53,6 +82,17 @@ export class ConversationSaves<C extends { id: string }> {
     const waiting = [...this.pending.values()];
     for (const p of waiting) this.drop(p.conv.id);
     for (const p of waiting) void this.write(p.conv, p.onSaved);
+  }
+
+  /**
+   * Write every waiting save now and resolve once every write, earlier ones
+   * included, has finished (the app is quitting). Per-conversation order is
+   * kept: a flushed save still goes after the write of its conversation in
+   * flight. Never rejects.
+   */
+  async drain(): Promise<void> {
+    this.flush();
+    await Promise.all([...this.inFlight.values()]);
   }
 
   /**

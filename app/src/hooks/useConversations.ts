@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { notify } from '../lib/notify';
 import { removeWithUndo, restoreAt } from '../lib/undoToast';
 import { markStartup } from '../lib/startupTiming';
-import { ConversationSaves } from './conversationSaves';
+import { APP_QUITTING_EVENT, ConversationSaves, quitRequestId, updateRecord } from './conversationSaves';
 
 export interface ConversationMessage {
   id: string;
@@ -91,9 +91,15 @@ export function useConversations() {
     delayMs: 500,
   }));
   const loadedRef = useRef(false);
-  // The list as last rendered, for removals that need a record's place in it.
-  const latestConversations = useRef<Conversation[]>([]);
-  latestConversations.current = conversations;
+  // The list with every change made so far, rendered or not. Changes are
+  // computed from it and saved outside React's state updaters (an updater
+  // may run twice, or later), so a save writes exactly the record put in
+  // the list, once, at the moment it is made.
+  const listRef = useRef<Conversation[]>([]);
+  const setList = useCallback((next: Conversation[]) => {
+    listRef.current = next;
+    setConversations(next);
+  }, []);
 
   // The agent renamed or pinned a conversation (organize_conversation). The
   // backend saved it already; patch the in-memory copy so the next save of
@@ -104,7 +110,7 @@ export function useConversations() {
     listen<unknown>(CONVERSATION_UPDATED_EVENT, event => {
       const change = parseConversationChange(event.payload);
       if (!change) return;
-      setConversations(prev => prev.map(c => (c.id === change.conversationId
+      setList(listRef.current.map(c => (c.id === change.conversationId
         ? { ...c, title: change.title, pinned: change.pinned, updatedAt: change.updatedAt }
         : c)));
     })
@@ -117,7 +123,7 @@ export function useConversations() {
       disposed = true;
       if (unlisten) unlisten();
     };
-  }, []);
+  }, [setList]);
 
   // Load conversations on mount
   useEffect(() => {
@@ -128,7 +134,7 @@ export function useConversations() {
       .then((loaded) => {
         markStartup('conversations-loaded');
         if (loaded.length > 0) {
-          setConversations(loaded);
+          setList(loaded);
           setActiveConversationId(loaded[0].id);
         } else {
           const id = generateId();
@@ -141,7 +147,7 @@ export function useConversations() {
             updatedAt: now,
             pinned: false,
           };
-          setConversations([fresh]);
+          setList([fresh]);
           setActiveConversationId(id);
           invoke('save_conversation', { conversation: fresh }).catch(console.error);
         }
@@ -159,10 +165,10 @@ export function useConversations() {
           updatedAt: now,
           pinned: false,
         };
-        setConversations([fresh]);
+        setList([fresh]);
         setActiveConversationId(id);
       });
-  }, []);
+  }, [setList]);
 
   const activeConversation = conversations.find(c => c.id === activeConversationId) || null;
 
@@ -170,10 +176,10 @@ export function useConversations() {
   // answer), replacing a save still waiting for that conversation. `onSaved`
   // runs only if this save is the one that reaches the backend and succeeds.
   // Waiting saves are written when the provider unmounts (reload, hot
-  // update) or the page is hidden (also: closed to the tray) or unloaded, so
-  // a normal close does not drop a change made in the last 500 ms. A hard
-  // kill or the tray's Quit (`app.exit`) skips these hooks; a finished
-  // answer is saved immediately for that reason.
+  // update) or the page is hidden (also: closed to the tray) or unloaded, and
+  // before the app exits (`app-quitting`), so a change made in the last
+  // 500 ms is not dropped by a close or quit. A hard kill skips all of these;
+  // a finished answer is saved immediately for that reason.
   const scheduleSave = useCallback((conv: Conversation, onSaved?: () => void, immediate = false) => {
     saves.save(conv, onSaved, immediate);
   }, [saves]);
@@ -194,6 +200,30 @@ export function useConversations() {
     };
   }, [saves]);
 
+  // The app is about to exit (tray Quit, closing the window, installing an
+  // update): write every waiting save, wait for the writes, then let it go.
+  // The backend exits anyway after a bounded wait.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    listen<unknown>(APP_QUITTING_EVENT, event => {
+      const requestId = quitRequestId(event.payload);
+      if (requestId === null) return;
+      void saves.drain()
+        .then(() => invoke('quit_ready', { requestId }))
+        .catch(err => console.error('Failed to confirm the saves before quitting:', err));
+    })
+      .then(fn => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(err => console.error(`Failed to listen for ${APP_QUITTING_EVENT}:`, err));
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
+  }, [saves]);
+
   const createConversation = useCallback((opts?: { workspaceId?: string | null }): string => {
     const id = generateId();
     const now = new Date().toISOString();
@@ -206,11 +236,11 @@ export function useConversations() {
       pinned: false,
       ...(opts?.workspaceId ? { workspaceId: opts.workspaceId } : {}),
     };
-    setConversations(prev => [fresh, ...prev]);
+    setList([fresh, ...listRef.current]);
     setActiveConversationId(id);
     void saves.write(fresh);
     return id;
-  }, [saves]);
+  }, [saves, setList]);
 
   const switchConversation = useCallback((id: string) => {
     setActiveConversationId(id);
@@ -227,28 +257,27 @@ export function useConversations() {
       updater: (prev: ConversationMessage[]) => ConversationMessage[],
       options: { immediate?: boolean } = {},
     ) => {
-      setConversations(prev => {
-        return prev.map(conv => {
-          if (conv.id !== conversationId) return conv;
-          const newMessages = updater(conv.messages);
-          const updated = {
-            ...conv,
-            messages: newMessages,
-            updatedAt: new Date().toISOString(),
-          };
-          // Auto-title from first user message
-          if (conv.title === 'New Chat' && newMessages.length > 0) {
-            const firstUser = newMessages.find(m => m.role === 'user');
-            if (firstUser) {
-              updated.title = autoTitle(firstUser.content);
-            }
+      const { list, updated } = updateRecord(listRef.current, conversationId, conv => {
+        const newMessages = updater(conv.messages);
+        const next = {
+          ...conv,
+          messages: newMessages,
+          updatedAt: new Date().toISOString(),
+        };
+        // Auto-title from first user message
+        if (conv.title === 'New Chat' && newMessages.length > 0) {
+          const firstUser = newMessages.find(m => m.role === 'user');
+          if (firstUser) {
+            next.title = autoTitle(firstUser.content);
           }
-          scheduleSave(updated, undefined, options.immediate === true);
-          return updated;
-        });
+        }
+        return next;
       });
+      if (!updated) return;
+      setList(list);
+      scheduleSave(updated, undefined, options.immediate === true);
     },
-    [scheduleSave]
+    [scheduleSave, setList]
   );
 
   const updateActiveMessages = useCallback(
@@ -267,66 +296,59 @@ export function useConversations() {
   );
 
   const renameConversation = useCallback((id: string, title: string) => {
-    setConversations(prev =>
-      prev.map(c => (c.id === id ? { ...c, title, updatedAt: new Date().toISOString() } : c))
-    );
+    setList(listRef.current.map(c => (c.id === id ? { ...c, title, updatedAt: new Date().toISOString() } : c)));
     invoke('rename_conversation', { conversationId: id, newTitle: title }).catch(console.error);
     notify.success('Conversation renamed');
-  }, []);
+  }, [setList]);
 
   const deleteConversation = useCallback(
     (id: string) => {
-      const index = latestConversations.current.findIndex(c => c.id === id);
+      const index = listRef.current.findIndex(c => c.id === id);
       if (index < 0) return;
-      const conversation = latestConversations.current[index];
+      const conversation = listRef.current[index];
       const wasActive = id === activeConversationId;
       removeWithUndo({
         message: 'Conversation deleted',
         description: conversation.title !== 'New Chat' ? conversation.title : undefined,
         hide: () => {
-          setConversations(prev => {
-            const remaining = prev.filter(c => c.id !== id);
-            if (remaining.length === 0) {
-              const freshId = generateId();
-              const now = new Date().toISOString();
-              const fresh: Conversation = {
-                id: freshId,
-                title: 'New Chat',
-                messages: [],
-                createdAt: now,
-                updatedAt: now,
-                pinned: false,
-              };
-              setActiveConversationId(freshId);
-              invoke('save_conversation', { conversation: fresh }).catch(console.error);
-              return [fresh];
-            }
-            if (wasActive) setActiveConversationId(remaining[0].id);
-            return remaining;
-          });
+          const remaining = listRef.current.filter(c => c.id !== id);
+          if (remaining.length === 0) {
+            const freshId = generateId();
+            const now = new Date().toISOString();
+            const fresh: Conversation = {
+              id: freshId,
+              title: 'New Chat',
+              messages: [],
+              createdAt: now,
+              updatedAt: now,
+              pinned: false,
+            };
+            setList([fresh]);
+            setActiveConversationId(freshId);
+            void saves.write(fresh);
+            return;
+          }
+          setList(remaining);
+          if (wasActive) setActiveConversationId(remaining[0].id);
         },
         // The same record at the same place in the list; it was never deleted on disk.
         restore: () => {
-          setConversations(prev => restoreAt(prev, conversation, index));
+          setList(restoreAt(listRef.current, conversation, index));
           if (wasActive) setActiveConversationId(id);
         },
         commit: () => invoke('delete_conversation', { conversationId: id }),
         onError: err => notify.error('The conversation was not deleted', { description: String(err) }),
       });
     },
-    [activeConversationId]
+    [activeConversationId, saves, setList]
   );
 
   const updateConversationMeta = useCallback((id: string, meta: Partial<Pick<Conversation, 'workspaceId' | 'systemPrompt' | 'mode'>>) => {
-    setConversations(prev =>
-      prev.map(c => {
-        if (c.id !== id) return c;
-        const updated = { ...c, ...meta, updatedAt: new Date().toISOString() };
-        scheduleSave(updated);
-        return updated;
-      })
-    );
-  }, [scheduleSave]);
+    const { list, updated } = updateRecord(listRef.current, id, c => ({ ...c, ...meta, updatedAt: new Date().toISOString() }));
+    if (!updated) return;
+    setList(list);
+    scheduleSave(updated);
+  }, [scheduleSave, setList]);
 
   /**
    * Change a conversation's side threads that have no parent message. With
@@ -338,54 +360,47 @@ export function useConversations() {
     update: (prev: unknown[] | undefined) => unknown[],
     options: { touch?: boolean; onSaved?: () => void } = {},
   ) => {
-    setConversations(prev =>
-      prev.map(c => {
-        if (c.id !== id) return c;
-        const next = update(c.focusThreads);
-        const updated: Conversation = {
-          ...c,
-          focusThreads: next.length > 0 ? next : undefined,
-          ...(options.touch === false ? {} : { updatedAt: new Date().toISOString() }),
-        };
-        scheduleSave(updated, options.onSaved);
-        return updated;
-      })
-    );
-  }, [scheduleSave]);
+    const { list, updated } = updateRecord(listRef.current, id, c => {
+      const next = update(c.focusThreads);
+      return {
+        ...c,
+        focusThreads: next.length > 0 ? next : undefined,
+        ...(options.touch === false ? {} : { updatedAt: new Date().toISOString() }),
+      };
+    });
+    if (!updated) return;
+    setList(list);
+    scheduleSave(updated, options.onSaved);
+  }, [scheduleSave, setList]);
 
   /**
    * A workspace was deleted: its chats move to "No workspace". The backend already saved
    * that; the in-memory copies change so their next save keeps it.
    */
   const detachWorkspace = useCallback((workspaceId: string) => {
-    setConversations(prev =>
-      prev.map(c => {
-        if (c.workspaceId !== workspaceId) return c;
-        const { workspaceId: _removed, ...rest } = c;
-        return rest;
-      })
-    );
-  }, []);
+    setList(listRef.current.map(c => {
+      if (c.workspaceId !== workspaceId) return c;
+      const { workspaceId: _removed, ...rest } = c;
+      return rest;
+    }));
+  }, [setList]);
 
   const pinConversation = useCallback((id: string) => {
-    setConversations(prev =>
-      prev.map(c =>
-        c.id === id ? { ...c, pinned: !c.pinned, updatedAt: new Date().toISOString() } : c
-      )
-    );
-    const conv = conversations.find(c => c.id === id);
-    const newPinned = !(conv?.pinned ?? false);
+    const conv = listRef.current.find(c => c.id === id);
+    if (!conv) return;
+    const newPinned = !conv.pinned;
+    setList(listRef.current.map(c => (c.id === id ? { ...c, pinned: newPinned, updatedAt: new Date().toISOString() } : c)));
     invoke('pin_conversation', { conversationId: id, pinned: newPinned }).catch(console.error);
     notify.success(newPinned ? 'Conversation pinned' : 'Conversation unpinned');
-  }, [conversations]);
+  }, [setList]);
 
   const reorderConversations = useCallback((reordered: Conversation[]) => {
-    setConversations(reordered);
+    setList(reordered);
     // Persist the new order — save each conversation so the backend knows
     for (const conv of reordered) {
-      invoke('save_conversation', { conversation: conv }).catch(console.error);
+      void saves.write(conv);
     }
-  }, []);
+  }, [saves, setList]);
 
   return {
     conversations,

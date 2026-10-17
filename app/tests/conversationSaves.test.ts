@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ConversationSaves } from '../src/hooks/conversationSaves.ts';
+import { ConversationSaves, quitRequestId, updateRecord } from '../src/hooks/conversationSaves.ts';
 
 interface Conv {
   id: string;
@@ -126,4 +126,60 @@ test('flush writes every waiting save now, and only once', async () => {
   h.fireTimers();
   await h.settle();
   assert.deepEqual(h.started.sort(), ['a', 'b']);
+});
+
+test('drain writes every waiting save and resolves only after every write, in order per conversation', async () => {
+  const h = harness();
+  h.saves.save({ id: 'c1', rev: 'checkpoint' }, undefined, true);
+  h.saves.save({ id: 'c1', rev: 'edit' });
+  h.saves.save({ id: 'c2', rev: 'other' });
+  let drained = false;
+  const done = h.saves.drain().then(() => { drained = true; });
+  await h.settle();
+  assert.deepEqual(h.started, ['checkpoint', 'other'], 'the waiting c1 save queues behind its write in flight');
+  assert.equal(drained, false);
+  await h.finishNext();
+  assert.equal(drained, false, 'c1 still has the flushed save to write');
+  await h.finishNext();
+  assert.deepEqual(h.started, ['checkpoint', 'other', 'edit']);
+  assert.equal(drained, false);
+  await h.finishNext();
+  await done;
+  assert.equal(drained, true);
+  assert.deepEqual(h.written, ['checkpoint', 'other', 'edit']);
+  h.fireTimers();
+  await h.settle();
+  assert.equal(h.started.length, 3, 'flushed saves never write again when their timer was due');
+});
+
+test('drain with nothing to save resolves at once', async () => {
+  const h = harness();
+  await h.saves.drain();
+  assert.deepEqual(h.started, []);
+});
+
+test('quitRequestId reads the backend request id and rejects anything else', () => {
+  assert.equal(quitRequestId({ requestId: 7 }), 7);
+  assert.equal(quitRequestId({ requestId: 0 }), 0);
+  assert.equal(quitRequestId({ requestId: -1 }), null);
+  assert.equal(quitRequestId({ requestId: 1.5 }), null);
+  assert.equal(quitRequestId({ requestId: '7' }), null);
+  assert.equal(quitRequestId({}), null);
+  assert.equal(quitRequestId(null), null);
+});
+
+test('updateRecord calls the change once and returns the record it put in the list', () => {
+  const list: Conv[] = [{ id: 'c1', rev: 'a' }, { id: 'c2', rev: 'b' }];
+  let calls = 0;
+  const { list: next, updated } = updateRecord(list, 'c2', c => {
+    calls += 1;
+    return { ...c, rev: 'b2' };
+  });
+  assert.equal(calls, 1);
+  assert.deepEqual(next, [{ id: 'c1', rev: 'a' }, { id: 'c2', rev: 'b2' }]);
+  assert.equal(updated, next[1], 'the saved record is the one in the list');
+  assert.deepEqual(list[1], { id: 'c2', rev: 'b' }, 'the old list is not changed');
+  const missing = updateRecord(list, 'nope', c => c);
+  assert.equal(missing.updated, null);
+  assert.equal(missing.list, list);
 });

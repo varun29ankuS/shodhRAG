@@ -720,17 +720,24 @@ fn carried_passages(passages: Vec<CarriedPassage>) -> CommandResult<(Vec<CitedPa
     let mut through = 0u32;
     let mut full = false;
     for p in passages {
-        if p.n == 0 || p.n > MAX_CITATION_NUMBER {
+        let in_range = p.n != 0 && p.n <= MAX_CITATION_NUMBER;
+        if full {
+            // Past the limits a passage only keeps its number taken: the conversation
+            // still cites it. One with a number no run issues is dropped, not refused.
+            if in_range {
+                through = through.max(p.n);
+            } else {
+                tracing::warn!(target: "shodh::harness", n = p.n, "carried passage past the limits has an out-of-range citation number; dropped");
+            }
+            continue;
+        }
+        if !in_range {
             return Err(AgentCommandError::invalid(format!(
                 "Citation number {} is out of range",
                 p.n
             )));
         }
-        // A passage left out keeps its number: the conversation still cites it.
         through = through.max(p.n);
-        if full {
-            continue;
-        }
         if p.file.len() > 2048 || p.path.len() > 2048 {
             return Err(AgentCommandError::invalid(
                 "A carried passage's source is too long",
@@ -2914,12 +2921,13 @@ mod tests {
         let scope = numerous.validated().unwrap();
         assert_eq!(scope.carried.len(), MAX_CARRIED_PASSAGES);
         assert_eq!(scope.carried_through, 50);
-        // And are still checked.
-        let invalid = SendScope {
+        // One past the limits with a number no run issues is dropped, never refused,
+        // and the numbers around it stay taken.
+        let with_invalid = |bad: u32| SendScope {
             passages: Some(
                 (1..=50)
                     .map(|n| CarriedPassage {
-                        n: if n == 50 { 0 } else { n },
+                        n: if n == 45 { bad } else { n },
                         file: "a.pdf".into(),
                         path: "c:/a.pdf".into(),
                         page: None,
@@ -2930,7 +2938,24 @@ mod tests {
             ),
             ..SendScope::default()
         };
-        assert!(invalid.validated().is_err());
+        for bad in [0, MAX_CITATION_NUMBER + 1, u32::MAX] {
+            let scope = with_invalid(bad).validated().unwrap();
+            assert_eq!(scope.carried.len(), MAX_CARRIED_PASSAGES);
+            assert_eq!(scope.carried_through, 50, "{bad}");
+        }
+        // Within the limits it is still refused.
+        let kept_invalid = SendScope {
+            passages: Some(vec![CarriedPassage {
+                n: MAX_CITATION_NUMBER + 1,
+                file: "a.pdf".into(),
+                path: "c:/a.pdf".into(),
+                page: None,
+                text: "passage".into(),
+                web: false,
+            }]),
+            ..SendScope::default()
+        };
+        assert!(kept_invalid.validated().is_err());
     }
 
     #[test]

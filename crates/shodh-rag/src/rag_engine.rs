@@ -289,8 +289,16 @@ pub const INDEX_FORMAT_KEY: &str = "index_format";
 /// and C1 references handled; `.htm` files are indexed.
 pub const CHUNKER_VERSION: u32 = 2;
 
-/// Chunk metadata key: the [`CHUNKER_VERSION`] a chunk was made with.
+/// Chunk metadata key: the [`CHUNKER_VERSION`] a chunk was made with, or,
+/// for a chunk kept on purpose ([`CHUNKS_KEPT_FROM_KEY`]), the version it was
+/// last looked at under.
 pub const CHUNKER_VERSION_KEY: &str = "chunker_version";
+
+/// Chunk metadata key: on the chunks of a document kept from an older
+/// chunker on purpose ([`RAGEngine::keep_chunks_of_older_chunker`]), the
+/// [`CHUNKER_VERSION`] their text was made with. They are not re-read until
+/// their file changes or the version is raised again.
+pub const CHUNKS_KEPT_FROM_KEY: &str = "chunks_kept_from";
 
 /// Chunk metadata key: the context the chunk was embedded and keyword-indexed
 /// with (see [`ContextualChunkResult::context`]).
@@ -2588,6 +2596,93 @@ impl RAGEngine {
         self.upgrade_in_place_with(source, false).await
     }
 
+    /// Records the chunks of `source` that are of an older [`CHUNKER_VERSION`]
+    /// as kept on purpose (a scan that could be chunked again only by reading
+    /// it with OCR again): their version becomes the current one, so they are
+    /// no longer listed by [`Self::rechunk_sources`], and
+    /// [`CHUNKS_KEPT_FROM_KEY`] records the version their text was made with
+    /// (kept from an earlier keep when they have it). Only the metadata
+    /// changes: text, vectors and ids stay. Returns the chunks marked.
+    pub async fn keep_chunks_of_older_chunker(&mut self, source: &str) -> Result<u64> {
+        // serde_json writes keys without spaces and escapes a quote inside a
+        // value, so an entry appears verbatim and only as an entry, and a
+        // non-empty object starts with `{"` and nowhere else.
+        let quote = |text: &str| format!("'{}'", text.replace('\'', "''"));
+        let of_source = source_predicate(source);
+        let current = format!("\"{CHUNKER_VERSION_KEY}\":\"{CHUNKER_VERSION}\"");
+        let kept_marker = format!("%\"{CHUNKS_KEPT_FROM_KEY}\":\"%");
+        let version_one = format!(
+            "{{\"{CHUNKER_VERSION_KEY}\":\"{CHUNKER_VERSION}\",\"{CHUNKS_KEPT_FROM_KEY}\":\"1\","
+        );
+        // Version 1: no version entry at all.
+        let mut marked = self
+            .store
+            .update_metadata_where(
+                &format!(
+                    "{of_source} AND metadata_json NOT LIKE {} AND metadata_json LIKE {}",
+                    quote(&format!("%\"{CHUNKER_VERSION_KEY}\":\"%")),
+                    quote("{\"%"),
+                ),
+                &format!(
+                    "replace(metadata_json, {}, {})",
+                    quote("{\""),
+                    quote(&version_one)
+                ),
+            )
+            .await?;
+        for older in (1..CHUNKER_VERSION).skip(1) {
+            let entry = format!("\"{CHUNKER_VERSION_KEY}\":\"{older}\"");
+            let has_entry = format!(
+                "{of_source} AND metadata_json LIKE {}",
+                quote(&format!("%{entry}%"))
+            );
+            // Kept before: the version their text is from is recorded already.
+            marked += self
+                .store
+                .update_metadata_where(
+                    &format!("{has_entry} AND metadata_json LIKE {}", quote(&kept_marker)),
+                    &format!(
+                        "replace(metadata_json, {}, {})",
+                        quote(&entry),
+                        quote(&current)
+                    ),
+                )
+                .await?;
+            marked += self
+                .store
+                .update_metadata_where(
+                    &format!(
+                        "{has_entry} AND metadata_json NOT LIKE {}",
+                        quote(&kept_marker)
+                    ),
+                    &format!(
+                        "replace(metadata_json, {}, {})",
+                        quote(&entry),
+                        quote(&format!("{current},\"{CHUNKS_KEPT_FROM_KEY}\":\"{older}\""))
+                    ),
+                )
+                .await?;
+        }
+        tracing::info!(
+            source,
+            chunks = marked,
+            "chunks of an older chunker kept: re-chunking would read the file with OCR again"
+        );
+        Ok(marked)
+    }
+
+    /// The source (`space_id`) the chunks of `source` belong to, from its
+    /// first chunk; `None` when it has none.
+    pub async fn source_owner(&self, source: &str) -> Result<Option<String>> {
+        Ok(self
+            .store
+            .list_chunks(Some(&source_predicate(source)), 1)
+            .await?
+            .into_iter()
+            .next()
+            .map(|hit| hit.space_id))
+    }
+
     /// [`Self::upgrade_in_place`] for a document whose chunks of an older
     /// [`CHUNKER_VERSION`] are kept on purpose: a scan that could be chunked
     /// again only by reading it with OCR again (its reading is not in the OCR
@@ -3042,6 +3137,16 @@ impl RAGEngine {
         self.no_rechunk_chunks
             .store(false, std::sync::atomic::Ordering::Relaxed);
         self.commit_file(file).await
+    }
+}
+
+#[cfg(test)]
+impl RAGEngine {
+    /// Whether [`Self::rechunk_sources`] found nothing to re-chunk and skips
+    /// its scan over every chunk's metadata from now on.
+    pub(crate) fn rechunk_latched(&self) -> bool {
+        self.no_rechunk_chunks
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -3934,6 +4039,37 @@ Language models trained on long documents reach lower perplexity.
         assert!(kept.iter().all(|c| c.text.ends_with("(as chunked before)")));
         assert_eq!(engine.rechunk_sources().await.unwrap().len(), 1);
 
+        // Recorded as kept: no longer listed, so the scan over every chunk's
+        // metadata latches off; the text, ids and vectors stay.
+        let marked = engine.keep_chunks_of_older_chunker(&source).await.unwrap();
+        assert_eq!(marked as usize, kept.len());
+        assert!(engine.rechunk_sources().await.unwrap().is_empty());
+        assert!(engine.rechunk_latched());
+        let recorded = engine.store.list_chunks(None, 100).await.unwrap();
+        assert_eq!(texts(&recorded), texts(&before));
+        for chunk in &recorded {
+            let metadata: HashMap<String, String> =
+                serde_json::from_str(&chunk.metadata_json).unwrap();
+            assert_eq!(
+                metadata.get(CHUNKER_VERSION_KEY),
+                Some(&CHUNKER_VERSION.to_string())
+            );
+            assert_eq!(
+                metadata.get(CHUNKS_KEPT_FROM_KEY).map(String::as_str),
+                Some("1")
+            );
+            assert_eq!(
+                metadata.get(INDEX_FORMAT_KEY),
+                Some(&INDEX_FORMAT.to_string()),
+                "the rest of the metadata is kept"
+            );
+        }
+        assert_eq!(
+            engine.keep_chunks_of_older_chunker(&source).await.unwrap(),
+            0,
+            "nothing older is left to mark"
+        );
+
         // Indexed again from the file: the text of the chunker now.
         engine
             .add_document_from_file(&lease, HashMap::new())
@@ -3944,6 +4080,9 @@ Language models trained on long documents reach lower perplexity.
         assert!(fresh
             .iter()
             .all(|c| !c.text.contains("(as chunked before)")));
+        assert!(fresh
+            .iter()
+            .all(|c| !c.metadata_json.contains(CHUNKS_KEPT_FROM_KEY)));
     }
 
     /// No context names a file's folders: not for plain text (window chunks),

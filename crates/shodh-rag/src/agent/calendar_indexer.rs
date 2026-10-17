@@ -231,10 +231,12 @@ pub async fn deindex_event(rag: &mut RAGEngine, event_id: &str) -> Result<()> {
 /// searchable after a fresh index build. Items already indexed in the current
 /// format are left as they are: edits are indexed when they are made (see [`index_task`] and
 /// [`index_event`]), and re-embedding the whole calendar at every start
-/// would load the embedding model even when nothing is searched.
+/// would load the embedding model even when nothing is searched. The engine
+/// is held for writing for one item at a time, so searches and other
+/// indexing go on between items.
 /// Returns how many tasks and events were indexed.
 pub async fn index_missing(
-    rag: &mut RAGEngine,
+    rag: &tokio::sync::RwLock<RAGEngine>,
     tasks: &[TodoItem],
     events: &[CalendarEvent],
     space_id: &str,
@@ -242,19 +244,22 @@ pub async fn index_missing(
     // Items indexed in an older index format or chunker version count as
     // missing: indexing one again chunks it anew and replaces its chunks. One
     // that fails is logged, and the others go on.
-    let stale: std::collections::HashSet<String> = rag
-        .outdated_sources()
-        .await?
-        .into_iter()
-        .map(|row| row.source)
-        .collect();
-    let indexed: std::collections::HashSet<String> = rag
-        .document_sources()
-        .await?
-        .into_iter()
-        .map(|row| row.source)
-        .filter(|source| !stale.contains(source))
-        .collect();
+    let indexed: std::collections::HashSet<String> = {
+        let engine = rag.read().await;
+        let stale: std::collections::HashSet<String> = engine
+            .outdated_sources()
+            .await?
+            .into_iter()
+            .map(|row| row.source)
+            .collect();
+        engine
+            .document_sources()
+            .await?
+            .into_iter()
+            .map(|row| row.source)
+            .filter(|source| !stale.contains(source))
+            .collect()
+    };
     let mut tasks_indexed = 0usize;
     let mut events_indexed = 0usize;
 
@@ -262,7 +267,7 @@ pub async fn index_missing(
         .iter()
         .filter(|t| !indexed.contains(&format!("calendar://task/{}", t.id)))
     {
-        if let Err(e) = index_task(rag, task, space_id).await {
+        if let Err(e) = index_task(&mut *rag.write().await, task, space_id).await {
             tracing::warn!(task_id = %task.id, error = %e, "Failed to index a calendar task");
         } else {
             tasks_indexed += 1;
@@ -273,7 +278,7 @@ pub async fn index_missing(
         .iter()
         .filter(|e| !indexed.contains(&format!("calendar://event/{}", e.id)))
     {
-        if let Err(e) = index_event(rag, event, space_id).await {
+        if let Err(e) = index_event(&mut *rag.write().await, event, space_id).await {
             tracing::warn!(event_id = %event.id, error = %e, "Failed to index a calendar event");
         } else {
             events_indexed += 1;
@@ -341,10 +346,11 @@ mod tests {
             ))
             .unwrap();
         let embedded = || embedder.0.load(std::sync::atomic::Ordering::SeqCst);
+        let engine = tokio::sync::RwLock::new(engine);
 
         let first = [task("t1", "Renew the library card")];
         assert_eq!(
-            index_missing(&mut engine, &first, &[], "calendar")
+            index_missing(&engine, &first, &[], "calendar")
                 .await
                 .unwrap(),
             (1, 0)
@@ -354,7 +360,7 @@ mod tests {
 
         // The next start: nothing new, nothing embedded.
         assert_eq!(
-            index_missing(&mut engine, &first, &[], "calendar")
+            index_missing(&engine, &first, &[], "calendar")
                 .await
                 .unwrap(),
             (0, 0)
@@ -367,11 +373,14 @@ mod tests {
             task("t2", "Water the plants"),
         ];
         assert_eq!(
-            index_missing(&mut engine, &both, &[], "calendar")
+            index_missing(&engine, &both, &[], "calendar")
                 .await
                 .unwrap(),
             (1, 0)
         );
-        assert_eq!(engine.document_sources().await.unwrap().len(), 2);
+        assert_eq!(
+            engine.read().await.document_sources().await.unwrap().len(),
+            2
+        );
     }
 }

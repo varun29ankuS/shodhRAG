@@ -427,9 +427,9 @@ pub async fn reindex_all_calendar_data(app: &AppHandle) {
     let rag_events: Vec<_> = data.events.iter().map(to_rag_event).collect();
 
     tokio::spawn(async move {
-        let mut engine = rag.write().await;
+        // The engine is taken for one item at a time (see `index_missing`).
         match shodh_rag::agent::calendar_indexer::index_missing(
-            &mut engine,
+            &rag,
             &rag_tasks,
             &rag_events,
             "calendar",

@@ -407,12 +407,14 @@ pub async fn workspaces_delete(
     if removed {
         crate::mcp_commands::forget_workspace(&app, &workspace_id);
     }
-    let detached = detach_conversations(&dir, &workspace_id)?;
-    // Not fatal: the workspace is gone either way; its uploads stay searchable
-    // by an answer that searches everything.
+    let detached = detach_conversations(&dir, &workspace_id);
+    // Whatever happened to the chats: not fatal, the workspace is gone either
+    // way, and uploads left behind go to the main Ask at the next start (see
+    // `RAGEngine::hand_over_chat_uploads`).
     if let Err(message) = keep_workspace_uploads(&rag.rag, &workspace_id).await {
         tracing::warn!(workspace_id = %workspace_id, %message, "files added in the workspace's chats not moved");
     }
+    let detached = detached?;
     if removed || detached > 0 {
         broadcast_change(&app, Some(&workspace_id));
     }

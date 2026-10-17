@@ -1922,7 +1922,7 @@ function AppSplitView() {
       <TableModelPrompt />
 
       {/* Active conversation while another view is open */}
-      <ConversationDock activeTab={activeTab} onExpand={() => setActiveTab('ask')} />
+      <ConversationDock activeTab={activeTab} sources={sources} onExpand={() => setActiveTab('ask')} />
 
     </div>
   );

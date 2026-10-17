@@ -25,6 +25,9 @@ import { currentStep, isLive, pendingApproval } from '../../features/agent/reduc
 import { StatusLine } from '../../features/agent/StatusLine';
 import { Transcript } from '../../features/agent/Transcript';
 import { useChatSession } from '../../features/ask/ChatSessionContext';
+import { useDraft } from '../../features/ask/useDraft';
+import { useSendOptions } from '../../features/ask/useSendOptions';
+import type { OptionSource } from '../../features/ask/sendOptions';
 import type { ChatMessage } from '../../features/ask/types';
 
 const FOCUS_RING =
@@ -87,6 +90,8 @@ function activitySize(messages: readonly ChatMessage[]): number {
 
 interface ConversationDockProps {
   activeTab: ViewTab;
+  /** The Library's sources: replies search the included ones, as in Ask. */
+  sources: readonly OptionSource[];
   /** Return to the Ask view (full conversation). */
   onExpand: () => void;
 }
@@ -101,7 +106,7 @@ interface ConversationDockProps {
  * floats instead, kept below the page's toolbar, and collapses back to the
  * pill on Esc or a click outside. Layout rules live in `lib/dockMode`.
  */
-export function ConversationDock({ activeTab, onExpand }: ConversationDockProps) {
+export function ConversationDock({ activeTab, sources, onExpand }: ConversationDockProps) {
   const session = useChatSession();
   const { messages, isStreaming, navigation, steer, send, cancel, approve, setRuntimeInstalled, streamingConversationId, sideRun } = session;
   const [prefs, setPrefs] = useState<DockPrefs>(readPrefs);
@@ -110,7 +115,9 @@ export function ConversationDock({ activeTab, onExpand }: ConversationDockProps)
   const [dismissed, setDismissed] = useState(false);
   const [dragWidth, setDragWidth] = useState<number | null>(null);
   const [overlayTop, setOverlayTop] = useState(OVERLAY_TOOLBAR_RESERVE);
-  const [draft, setDraft] = useState('');
+  // The same draft as the Ask composer: "Open in Ask" keeps what was typed here.
+  const [draft, setDraft] = useDraft(session.activeConversationId);
+  const sendOptions = useSendOptions(sources);
   const [unreadBase, setUnreadBase] = useState<number | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
   const pillRef = useRef<HTMLButtonElement>(null);
@@ -303,7 +310,7 @@ export function ConversationDock({ activeTab, onExpand }: ConversationDockProps)
     const text = draft.trim();
     if (!text || isStreaming || busyElsewhere) return;
     setDraft('');
-    void send(text, { spaceId: null, spaceName: null });
+    void send(text, sendOptions);
   };
   const submitSteer = () => {
     const text = draft.trim();

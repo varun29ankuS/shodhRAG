@@ -29,6 +29,8 @@ import { FOCUS_OVERLAY_SELECTOR } from '../focus/focusDom';
 import type { SideSummaryRef } from '../focus/summary';
 import { UserText } from './UserText';
 import { useChatSession } from './ChatSessionContext';
+import { useDraft } from './useDraft';
+import { useSendOptions } from './useSendOptions';
 import type { FallbackRun } from './ChatSessionContext';
 import type { ProviderErrorActions } from '../modelPicker/ProviderErrorCard';
 import { MessageContentRenderer } from './MessageContentRenderer';
@@ -595,7 +597,8 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   const focus = useFocus();
   const wide = useMediaQuery(WIDE_LAYOUT_QUERY);
 
-  const [draft, setDraft] = useState('');
+  // Kept per conversation outside this view, which unmounts on every view switch.
+  const [draft, setDraft] = useDraft(session.activeConversationId);
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
   const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
   const previewTriggerRef = useRef<HTMLElement | null>(null);
@@ -626,19 +629,8 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     if (hasDraft) prewarm();
   }, [hasDraft, prewarm]);
 
-  const selectedSource = sources.find(s => s.selected) ?? null;
-  // "Include this source when answering in Ask": when only some sources
-  // are included, answers search just those.
-  const includedKey = sources.filter(s => s.selected).map(s => s.id).join(String.fromCharCode(31));
-  const sendOptions: SendOptions = useMemo(() => {
-    const included = includedKey ? includedKey.split(String.fromCharCode(31)) : [];
-    const limited = included.length > 0 && included.length < sources.length;
-    return {
-      spaceId: selectedSource?.id ?? null,
-      spaceName: selectedSource?.name ?? null,
-      sourceIds: limited ? included : [],
-    };
-  }, [selectedSource?.id, selectedSource?.name, includedKey, sources.length]);
+  // "Include this source when answering": the same options as the dock's replies.
+  const sendOptions: SendOptions = useSendOptions(sources);
 
   // Research or Code, per conversation (Code works in the workspace's code folder).
   const mode = session.activeConversation?.mode ?? 'research';
@@ -850,7 +842,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     void send(text, { ...sendOptions, searchAll: workspace !== null && searchAll });
     setSearchAll(false);
     composerRef.current?.focus();
-  }, [draft, isStreaming, busyElsewhere, send, sendOptions, workspace, searchAll]);
+  }, [draft, setDraft, isStreaming, busyElsewhere, send, sendOptions, workspace, searchAll]);
 
   const submitSteer = useCallback(() => {
     const text = draft.trim();
@@ -858,7 +850,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     setDraft('');
     steer(text);
     composerRef.current?.focus();
-  }, [draft, isStreaming, steer]);
+  }, [draft, setDraft, isStreaming, steer]);
 
   const approveWaiting = useCallback(() => {
     if (waitingStepId) approve(waitingStepId, true);
@@ -934,14 +926,14 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   const applyStarter = useCallback((prompt: string) => {
     setDraft(prompt);
     composerRef.current?.focus();
-  }, []);
+  }, [setDraft]);
 
   // A snippet (or other context) sent to the composer, e.g. "Add to chat":
   // appended to the draft, also when Ask mounts after the request.
   const insertContext = useCallback((text: string) => {
     setDraft(prev => appendToDraft(prev, text));
     requestAnimationFrame(() => composerRef.current?.focus());
-  }, []);
+  }, [setDraft]);
   useEffect(() => {
     const drain = () => {
       const pending = takePendingInserts();

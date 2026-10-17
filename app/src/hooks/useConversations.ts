@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { notify } from '../lib/notify';
 import { removeWithUndo, restoreAt } from '../lib/undoToast';
 import { markStartup } from '../lib/startupTiming';
+import { ConversationSaves } from './conversationSaves';
 
 export interface ConversationMessage {
   id: string;
@@ -77,9 +78,18 @@ function autoTitle(firstMessage: string): string {
 export function useConversations() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
-  // One debounce timer per conversation: a save for conversation A must not
-  // be cancelled by a save for conversation B scheduled within the window.
-  const saveTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // One debounce timer per conversation (a save for conversation A must not
+  // be cancelled by a save for conversation B scheduled within the window),
+  // and writes of one conversation in the order they were made.
+  const [saves] = useState(() => new ConversationSaves<Conversation>({
+    write: conversation => invoke('save_conversation', { conversation }),
+    schedule: (run, ms) => {
+      const timer = setTimeout(run, ms);
+      return () => clearTimeout(timer);
+    },
+    onError: (conversation, err) => console.error(`Failed to save conversation ${conversation.id}:`, err),
+    delayMs: 500,
+  }));
   const loadedRef = useRef(false);
   // The list as last rendered, for removals that need a record's place in it.
   const latestConversations = useRef<Conversation[]>([]);
@@ -156,45 +166,33 @@ export function useConversations() {
 
   const activeConversation = conversations.find(c => c.id === activeConversationId) || null;
 
-  // Debounced save, per conversation. `onSaved` runs only if this save is
-  // the one that reaches the backend and succeeds. Pending saves are flushed
-  // when the provider unmounts (reload, hot update) or the page is hidden, so
-  // a change made in the last 500 ms is never dropped.
-  const pendingSavesRef = useRef<Map<string, { conv: Conversation; onSaved?: () => void }>>(new Map());
-  const scheduleSave = useCallback((conv: Conversation, onSaved?: () => void) => {
-    const timers = saveTimersRef.current;
-    const existing = timers.get(conv.id);
-    if (existing) clearTimeout(existing);
-    pendingSavesRef.current.set(conv.id, { conv, onSaved });
-    timers.set(conv.id, setTimeout(() => {
-      timers.delete(conv.id);
-      pendingSavesRef.current.delete(conv.id);
-      invoke('save_conversation', { conversation: conv })
-        .then(() => onSaved?.())
-        .catch(console.error);
-    }, 500));
-  }, []);
+  // Debounced save, per conversation; `immediate` writes now (a finished
+  // answer), replacing a save still waiting for that conversation. `onSaved`
+  // runs only if this save is the one that reaches the backend and succeeds.
+  // Waiting saves are written when the provider unmounts (reload, hot
+  // update) or the page is hidden (also: closed to the tray) or unloaded, so
+  // a normal close does not drop a change made in the last 500 ms. A hard
+  // kill or the tray's Quit (`app.exit`) skips these hooks; a finished
+  // answer is saved immediately for that reason.
+  const scheduleSave = useCallback((conv: Conversation, onSaved?: () => void, immediate = false) => {
+    saves.save(conv, onSaved, immediate);
+  }, [saves]);
 
   useEffect(() => {
-    const timers = saveTimersRef.current;
-    const pending = pendingSavesRef.current;
-    const flush = () => {
-      for (const [id, { conv, onSaved }] of pending) {
-        const timer = timers.get(id);
-        if (timer) clearTimeout(timer);
-        timers.delete(id);
-        invoke('save_conversation', { conversation: conv })
-          .then(() => onSaved?.())
-          .catch(console.error);
-      }
-      pending.clear();
+    const flush = () => saves.flush();
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') saves.flush();
     };
     window.addEventListener('pagehide', flush);
+    window.addEventListener('beforeunload', flush);
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
       window.removeEventListener('pagehide', flush);
-      flush();
+      window.removeEventListener('beforeunload', flush);
+      document.removeEventListener('visibilitychange', onVisibility);
+      saves.flush();
     };
-  }, []);
+  }, [saves]);
 
   const createConversation = useCallback((opts?: { workspaceId?: string | null }): string => {
     const id = generateId();
@@ -210,9 +208,9 @@ export function useConversations() {
     };
     setConversations(prev => [fresh, ...prev]);
     setActiveConversationId(id);
-    invoke('save_conversation', { conversation: fresh }).catch(console.error);
+    void saves.write(fresh);
     return id;
-  }, []);
+  }, [saves]);
 
   const switchConversation = useCallback((id: string) => {
     setActiveConversationId(id);
@@ -224,7 +222,11 @@ export function useConversations() {
    * to the conversation it belongs to.
    */
   const updateConversationMessages = useCallback(
-    (conversationId: string, updater: (prev: ConversationMessage[]) => ConversationMessage[]) => {
+    (
+      conversationId: string,
+      updater: (prev: ConversationMessage[]) => ConversationMessage[],
+      options: { immediate?: boolean } = {},
+    ) => {
       setConversations(prev => {
         return prev.map(conv => {
           if (conv.id !== conversationId) return conv;
@@ -241,7 +243,7 @@ export function useConversations() {
               updated.title = autoTitle(firstUser.content);
             }
           }
-          scheduleSave(updated);
+          scheduleSave(updated, undefined, options.immediate === true);
           return updated;
         });
       });

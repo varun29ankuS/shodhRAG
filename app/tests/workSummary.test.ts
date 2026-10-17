@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { initialTranscript } from '../src/features/agent/reducer.ts';
 import type { TranscriptState } from '../src/features/agent/reducer.ts';
 import { workFold } from '../src/features/agent/workSummary.ts';
+import { revisionText } from '../src/features/agent/revisionText.ts';
 
 function transcript(over: Partial<TranscriptState>): TranscriptState {
   return { ...initialTranscript('run-1', 0), ...over };
@@ -82,4 +83,62 @@ test('a working note after the last answer text never becomes the answer', () =>
     interimIds: ['t0', 't2'],
   }));
   assert.equal(fold?.answerIndex, 2);
+});
+
+test('a finished run with a revision but no steps still folds its draft and revision row', () => {
+  const blocks: TranscriptState['blocks'] = [
+    { kind: 'text', id: 'draft', text: 'Draft answer [1][2].' },
+    { kind: 'revision', id: 'revision-1', round: 1, reason: 'repair', flagged: 3, missingNeeds: [] },
+    { kind: 'text', id: 'final', text: 'Revised answer.' },
+  ];
+  const groundings = [{
+    round: 1,
+    isFinal: true,
+    method: 'entailment' as const,
+    summary: { checked: 0, supported: 0, weak: 0, unsupported: 0, uncited: 0, invalid: 0, unchecked: 0, score: null },
+    claims: [],
+    needs: [],
+    messageIds: ['final'],
+    supersededMessageIds: ['draft'],
+  }];
+  const fold = workFold(transcript({ status: 'completed', durationMs: 9_000, blocks, groundings }));
+  assert.deepEqual(fold, { answerIndex: 2, label: 'Worked for 9s · re-checked 3 statements' });
+  assert.ok(!fold?.label.includes('0 steps'));
+  // Still running: the revision row stays open as live work.
+  assert.equal(workFold(transcript({ status: 'running', blocks, groundings })), null);
+});
+
+test('a revision before the answer adds its re-checked count to a run with steps', () => {
+  const blocks: TranscriptState['blocks'] = [
+    { kind: 'step', stepId: 's1' },
+    { kind: 'text', id: 'draft', text: 'Draft answer.' },
+    { kind: 'revision', id: 'revision-1', round: 1, reason: 'repair', flagged: 1, missingNeeds: [] },
+    { kind: 'text', id: 'final', text: 'Revised answer.' },
+  ];
+  const groundings = [{
+    round: 1,
+    isFinal: true,
+    method: 'entailment' as const,
+    summary: { checked: 0, supported: 0, weak: 0, unsupported: 0, uncited: 0, invalid: 0, unchecked: 0, score: null },
+    claims: [],
+    needs: [],
+    messageIds: ['final'],
+    supersededMessageIds: ['draft'],
+  }];
+  assert.equal(
+    workFold(transcript({ status: 'completed', durationMs: 4_000, blocks, groundings }))?.label,
+    'Worked for 4s · 1 step · re-checked 1 statement',
+  );
+});
+
+test('a revision row reads as live work while running and as a record once finished', () => {
+  assert.equal(revisionText('repair', 3, [], true), 'Re-checking 3 flagged statements against the sources');
+  assert.equal(revisionText('repair', 3, [], false), 'Re-checked 3 flagged statements against the sources');
+  assert.equal(revisionText('repair', 1, [], false), 'Re-checked 1 flagged statement against the sources');
+  assert.equal(revisionText('coverage', 0, ['the renewal clause'], true), 'Searching for a part no passage covered: the renewal clause');
+  assert.equal(revisionText('coverage', 0, ['a', 'b'], false), 'Searched for 2 parts no passage covered');
+  assert.equal(
+    revisionText('repair_and_coverage', 2, ['the renewal clause'], false),
+    'Re-checked 2 flagged statements against the sources; searched for a part no passage covered: the renewal clause',
+  );
 });

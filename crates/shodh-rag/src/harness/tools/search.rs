@@ -393,13 +393,17 @@ fn query_window(text: &str, max_chars: usize, terms: &HashSet<String>) -> String
         }
     }
     // The run of hits that fits in `room` with the most of them; the earliest wins a tie.
+    // Hits are in order and do not overlap, so the run's last hit only moves forward.
     let mut best: Option<(usize, usize, usize)> = None;
-    for (first, &(start, _)) in hits.iter().enumerate() {
-        let last = hits[first..]
-            .iter()
-            .rposition(|&(_, end)| end - start <= room)
-            .map(|i| first + i);
-        let Some(last) = last else { continue };
+    let mut last = 0;
+    for (first, &(start, end)) in hits.iter().enumerate() {
+        if end - start > room {
+            continue;
+        }
+        last = last.max(first);
+        while last + 1 < hits.len() && hits[last + 1].1 - start <= room {
+            last += 1;
+        }
         let count = last - first + 1;
         if best.is_none_or(|(_, _, c)| count > c) {
             best = Some((first, last, count));

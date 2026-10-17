@@ -154,7 +154,7 @@ export function ConversationHistory({
                     aria-controls={listId}
                     aria-label={`${group.workspace.name}, ${group.items.length} ${group.items.length === 1 ? 'chat' : 'chats'}`}
                     className={cn(
-                      'flex-1 min-w-0 flex items-center gap-1.5 h-7 pl-1.5 pr-2 rounded-md text-left text-[12px] font-medium text-shodh-text-secondary hover:bg-shodh-raised/60 hover:text-shodh-text transition-colors duration-micro',
+                      'flex-1 min-w-0 flex items-center gap-1.5 h-7 pl-1.5 pr-2 rounded-md text-left text-[12px] font-medium text-shodh-text-secondary hover:bg-shodh-raised-2/60 hover:text-shodh-text transition-colors duration-micro',
                       FOCUS_RING,
                     )}
                   >
@@ -388,7 +388,7 @@ function ConversationRow({
           aria-label={meta ? `${conversation.title}, ${meta}` : conversation.title}
           className={cn(
             'w-full flex flex-col gap-0.5 py-1.5 pl-3 pr-9 rounded-lg text-left transition-colors duration-micro',
-            isActive ? 'bg-shodh-raised text-shodh-text' : 'text-shodh-text-secondary hover:bg-shodh-raised/60 hover:text-shodh-text',
+            isActive ? 'bg-shodh-raised-2 text-shodh-text' : 'text-shodh-text-secondary hover:bg-shodh-raised-2/60 hover:text-shodh-text',
             FOCUS_RING
           )}
         >

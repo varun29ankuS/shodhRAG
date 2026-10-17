@@ -192,6 +192,39 @@ fn names_a_document(text: &str) -> bool {
     })
 }
 
+/// Question words: a note with one asks something ("Remember that I care about latency and
+/// how does DiskANN compare").
+const WH_WORDS: [&str; 9] = [
+    "what", "which", "how", "why", "where", "when", "who", "whom", "whose",
+];
+
+/// Whether `text` holds a question word.
+fn has_question_word(text: &str) -> bool {
+    // "what's new" holds "what".
+    words(text)
+        .iter()
+        .filter_map(|w| w.split('\'').next())
+        .any(|w| WH_WORDS.contains(&w))
+}
+
+/// Whether `text` goes on, after a `,` `;` `:` `—` `–` or a "so" or "but", with a clause
+/// that is not about the user ("I'm a beginner, so explain HNSW simply", "I hate jargon —
+/// keep it short"). "... vector search, and memory cost matters most to me" goes on about
+/// the user and is kept.
+fn has_other_clause(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let clauses: Vec<&str> = lower
+        .split([',', ';', ':', '\u{2014}', '\u{2013}'])
+        .flat_map(|part| part.split(" so "))
+        .flat_map(|part| part.split(" but "))
+        .collect();
+    clauses
+        .iter()
+        .skip(1)
+        .filter(|clause| !words(clause).is_empty())
+        .any(|clause| !worth_learning(clause))
+}
+
 /// Whether `text` refers back to the conversation ("the paper we discussed").
 fn recalls_the_conversation(text: &str) -> bool {
     let joined = format!(" {} ", words(text).join(" "));
@@ -318,7 +351,8 @@ pub fn memory_request(text: &str) -> Option<MemoryRequest> {
         || note.chars().count() > MAX_NOTE_CHARS
         || names_a_document(note)
         || recalls_the_conversation(note)
-        || (!standing && asks_the_assistant(note))
+        || (!standing
+            && (asks_the_assistant(note) || has_question_word(note) || has_other_clause(note)))
     {
         return None;
     }
@@ -493,6 +527,31 @@ mod tests {
         ] {
             assert_eq!(memory_request(text), None, "{text}");
         }
+    }
+
+    #[test]
+    fn a_note_that_goes_on_with_a_task_or_a_question_files_no_card() {
+        for text in [
+            "Remember that I'm a beginner, so explain HNSW simply",
+            "Remember that I'm a beginner so walk me through how HNSW search works",
+            "Remember I work on DiskANN \u{2014} what's new in FreshDiskANN",
+            "Remember that I care about latency and how does DiskANN compare on SSDs",
+            "Note that I'm reviewing for NeurIPS, which papers in my library cover graph indexes",
+            "Keep in mind that I only have 10 minutes, what are the key results",
+            "Don't forget that I hate jargon \u{2014} keep the explanation of IVF short",
+            "Remember that I want the answer in Hindi, what is product quantization",
+        ] {
+            assert_eq!(memory_request(text), None, "{text}");
+        }
+        // Going on about the user is kept.
+        assert!(memory_request(
+            "Remember that I'm writing my thesis on disk-based vector search, and memory cost matters most to me."
+        )
+        .is_some());
+        assert!(
+            memory_request("Remember that my advisor is Prof. R. K. Rao, and I use 3.5 GB.")
+                .is_some()
+        );
     }
 
     #[test]

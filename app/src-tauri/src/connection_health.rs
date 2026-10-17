@@ -453,11 +453,19 @@ fn key_in_use(llm: &LLMState, provider: ProviderId) -> Option<(String, KeyOrigin
     api_key_store::choose_key(saved, api_key_store::process_env_key(id))
 }
 
+/// Whether Local-only mode is on. Settings that cannot be read count as on
+/// (fail closed, like the research and web tools): a cloud provider is
+/// neither contacted nor shown as usable while the policy is unknown.
 fn local_only(app: &AppHandle) -> bool {
-    crate::profile::app_data_dir(app)
-        .ok()
-        .and_then(|dir| SettingsStore::in_dir(&dir).load().ok())
-        .is_some_and(|settings| settings.policy.local_only)
+    local_only_from(
+        crate::profile::app_data_dir(app)
+            .ok()
+            .and_then(|dir| SettingsStore::in_dir(&dir).load().ok()),
+    )
+}
+
+fn local_only_from(settings: Option<crate::app_settings::AppSettings>) -> bool {
+    settings.is_none_or(|settings| settings.policy.local_only)
 }
 
 /// The providers the top bar lists: the active model's first, then every
@@ -916,6 +924,16 @@ mod tests {
             NOW + 30,
         );
         assert_eq!(r, before);
+    }
+
+    #[test]
+    fn unreadable_settings_count_as_local_only() {
+        assert!(local_only_from(None), "fails closed");
+        let mut settings = crate::app_settings::AppSettings::default();
+        settings.policy.local_only = false;
+        assert!(!local_only_from(Some(settings.clone())));
+        settings.policy.local_only = true;
+        assert!(local_only_from(Some(settings)));
     }
 
     #[test]

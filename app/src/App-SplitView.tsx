@@ -1451,7 +1451,19 @@ function AppSplitView() {
               />
             )}
             {activeTab === 'ask' && activeConversationId && (
-              <div className="relative">
+              <div
+                className="relative"
+                // Esc closes the popover, from its fields or from the Instructions
+                // button (an edit in progress cancels itself first), and is marked
+                // handled, so it never stops a running answer.
+                onKeyDown={e => {
+                  if (!showSystemPromptEditor || e.key !== 'Escape' || e.isDefaultPrevented()) return;
+                  e.preventDefault();
+                  setShowSystemPromptEditor(false);
+                  setEditingInstructionIdx(null);
+                  instructionsButtonRef.current?.focus();
+                }}
+              >
                 <button
                   ref={instructionsButtonRef}
                   type="button"
@@ -1478,15 +1490,6 @@ function AppSplitView() {
                     <div
                       role="dialog"
                       aria-label="Custom instructions"
-                      // Esc closes the popover (an edit in progress cancels itself
-                      // first) and is marked handled, so it never stops a running answer.
-                      onKeyDown={e => {
-                        if (e.key !== 'Escape' || e.isDefaultPrevented()) return;
-                        e.preventDefault();
-                        setShowSystemPromptEditor(false);
-                        setEditingInstructionIdx(null);
-                        instructionsButtonRef.current?.focus();
-                      }}
                       className="absolute right-0 top-8 z-50 w-96 rounded-lg border shadow-xl"
                       style={{ backgroundColor: colors.bgSecondary, borderColor: colors.border }}
                     >
@@ -1611,6 +1614,8 @@ function AppSplitView() {
                             onKeyDown={e => { if (e.key === 'Enter') addInstruction(); }}
                             placeholder="Add an instruction..."
                             aria-label="New instruction"
+                            // Focus moves into the popover as it opens, so Esc reaches it.
+                            autoFocus
                             className="flex-1 text-[11px] rounded-md border px-2 py-1.5 outline-none"
                             style={{
                               backgroundColor: colors.inputBg,

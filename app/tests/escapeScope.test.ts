@@ -46,3 +46,15 @@ test('the PDF viewer marks itself while snipping and handles snip Esc before a p
   const findBar = source.slice(bar, source.indexOf('<label htmlFor={findInputId}', bar));
   assert.match(findBar, /if \(e\.key !== 'Escape'\) return;\s+e\.preventDefault\(\);\s+closeFind\(\);/);
 });
+
+test('Esc in the Instructions popover or on its button closes it, marked handled; an edit cancels first', () => {
+  const app = readFileSync(new URL('../src/App-SplitView.tsx', import.meta.url), 'utf8');
+  const start = app.indexOf('ref={instructionsButtonRef}');
+  const wrapper = app.slice(app.lastIndexOf('<div', start), start);
+  assert.match(wrapper, /if \(!showSystemPromptEditor \|\| e\.key !== 'Escape' \|\| e\.isDefaultPrevented\(\)\) return;\s+e\.preventDefault\(\);/);
+  const popover = app.slice(start, app.indexOf('Clear all', start));
+  // The edit field cancels itself and marks Esc handled before the popover sees it.
+  assert.match(popover, /if \(e\.key === 'Escape'\) \{\s+\/\/[^\n]*\n\s+e\.preventDefault\(\);\s+setEditingInstructionIdx\(null\);/);
+  // Focus starts inside the popover, so Esc reaches it on every webview.
+  assert.match(popover, /aria-label="New instruction"[\s\S]{0,200}autoFocus/);
+});

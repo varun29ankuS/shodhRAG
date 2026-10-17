@@ -719,10 +719,12 @@ export function toPersisted(state: TranscriptState): TranscriptState {
  * Form stored while the run is still live but its answer text is complete
  * (the check against its sources has started), so an app that is closed or
  * killed during the check keeps the answer. `fromPersisted` restores it as
- * interrupted before the check, with the text intact.
+ * interrupted before the check, with the text intact. Only a final grounding
+ * report is kept: an earlier round's report describes a draft, and shown
+ * next to "not checked" it would read as this answer's check.
  */
 export function toCheckpoint(state: TranscriptState): TranscriptState {
-  return { ...toPersisted(state), savedWhileChecking: true };
+  return { ...toPersisted(state), groundings: state.groundings.filter(g => g.isFinal), savedWhileChecking: true };
 }
 
 const STATUSES: readonly TranscriptStatus[] = ['starting', 'running', 'completed', 'aborted', 'error'];

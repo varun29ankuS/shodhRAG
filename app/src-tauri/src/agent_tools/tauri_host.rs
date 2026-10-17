@@ -97,13 +97,24 @@ impl HostEffects for TauriEffects {
             app.state::<BackgroundState>().wait_until_resumed().await;
             let rag = app.state::<RagState>().rag.clone();
             let emitter = TauriEventEmitter::new(app.clone());
-            let result = shodh_rag::indexing::index_single_file(
-                &job.path,
-                &job.source_id,
-                &rag,
-                Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
-            )
-            .await;
+            let indexing = app.state::<IndexingState>();
+            // Registered while it runs: removing the source waits for it, and
+            // a removed source is not indexed again.
+            let result = match indexing.begin_run(&job.source_id) {
+                Some(_run) => {
+                    shodh_rag::indexing::index_single_file(
+                        &job.path,
+                        &job.source_id,
+                        &rag,
+                        Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
+                    )
+                    .await
+                }
+                None => Err(format!(
+                    "{} was removed from the Library and is not indexed",
+                    job.path
+                )),
+            };
             if let Err(e) = &result {
                 tracing::warn!(target: "shodh::harness", path = %job.path, error = %e, "indexing a downloaded file failed");
             }
@@ -134,13 +145,12 @@ impl HostEffects for TauriEffects {
         &self,
         rag: &RwLock<RAGEngine>,
         source_id: &str,
-        folder: Option<&str>,
     ) -> Result<usize, String> {
         let indexing = self.app.state::<IndexingState>();
-        let deleted = self
-            .app
-            .state::<FolderSyncState>()
-            .remove_source(rag, &indexing, source_id, folder)
+        let folders = self.app.state::<FolderSyncState>();
+        let path = folders.library_path(source_id);
+        let deleted = folders
+            .remove_source(rag, &indexing, source_id, path.as_deref())
             .await?;
         self.emit_library(library_removed_payload(source_id));
         Ok(deleted)

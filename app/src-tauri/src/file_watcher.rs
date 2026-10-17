@@ -186,6 +186,11 @@ impl FolderSyncState {
             .collect()
     }
 
+    /// The folder the Library lists for `source_id`, while it is kept in sync.
+    pub fn library_path(&self, source_id: &str) -> Option<String> {
+        self.watched_source(source_id).map(|source| source.path)
+    }
+
     /// The watched folder of `source_id`.
     fn watched_source(&self, source_id: &str) -> Option<FolderSourceRef> {
         self.watched

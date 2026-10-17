@@ -26,6 +26,7 @@ pub struct UploadResult {
 #[tauri::command]
 pub async fn upload_document_file(
     state: State<'_, RagState>,
+    indexing_state: State<'_, shodh_rag::indexing::IndexingState>,
     file_path: String,
     space_id: Option<String>,
 ) -> Result<UploadResult, String> {
@@ -83,6 +84,20 @@ pub async fn upload_document_file(
         url: None,
         doi: None,
         page_numbers: None,
+    };
+
+    // Registered while it is indexed: removing the source it is added to
+    // waits for it, and a removed source gets no new file.
+    let _run = match space_id.as_deref() {
+        Some(sid) => match indexing_state.begin_run(sid) {
+            Some(run) => Some(run),
+            None => {
+                return Err(format!(
+                    "{file_name} was not added: its source was removed from the Library"
+                ))
+            }
+        },
+        None => None,
     };
 
     // Process the file

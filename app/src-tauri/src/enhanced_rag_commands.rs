@@ -155,16 +155,26 @@ pub async fn index_single_file(
     file_path: String,
     space_id: String,
     state: State<'_, RagState>,
+    indexing_state: State<'_, IndexingState>,
     audit: State<'_, AuditState>,
 ) -> Result<IndexingResult, String> {
     let emitter = TauriEventEmitter::new(app);
-    let result = shodh_rag::indexing::index_single_file(
-        &file_path,
-        &space_id,
-        &state.rag,
-        Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
-    )
-    .await;
+    // Registered while it runs: removing the source waits for it, and a
+    // removed source is not indexed again.
+    let result = match indexing_state.begin_run(&space_id) {
+        Some(_run) => {
+            shodh_rag::indexing::index_single_file(
+                &file_path,
+                &space_id,
+                &state.rag,
+                Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
+            )
+            .await
+        }
+        None => Err(format!(
+            "{file_path} was removed from the Library and is not indexed"
+        )),
+    };
     audit.record(AuditRecord::new(
         AuditEventType::SourceChange,
         source_change(

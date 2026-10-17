@@ -3033,8 +3033,9 @@ Language models trained on long documents reach lower perplexity.
         };
         assert_eq!(names(engine.document_sources().await.unwrap()).len(), 6);
 
+        let papers_path = papers.display().to_string();
         let deleted = engine
-            .delete_library_source("papers", Some(&papers.display().to_string()))
+            .delete_library_source("papers", Some(papers_path.as_str()))
             .await
             .unwrap();
         assert!(deleted >= 2, "its own file and the legacy file under it");
@@ -3060,8 +3061,9 @@ Language models trained on long documents reach lower perplexity.
             assert_eq!(!hits.is_empty(), kept, "{word}");
         }
         // A source is removed by its id: none, none removed.
+        let later_path = later.display().to_string();
         assert!(engine
-            .delete_library_source(" ", Some(&later.display().to_string()))
+            .delete_library_source(" ", Some(later_path.as_str()))
             .await
             .is_err());
     }

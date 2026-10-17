@@ -274,7 +274,7 @@ impl HostTool for RemoveSourceTool {
         let deleted = self
             .host
             .effects
-            .remove_source(&self.host.rag, source_id, source.folder.as_deref())
+            .remove_source(&self.host.rag, source_id)
             .await
             .map_err(|e| ToolError::Failed(format!("Removing the source failed: {e}")))?;
         let folder = source.folder.unwrap_or_else(|| source.source_id.clone());
@@ -415,7 +415,10 @@ mod tests {
         );
         assert!(t.effects.indexing_state.is_removed("folder-papers"));
         assert_eq!(
-            *t.effects.removed_sources.lock().unwrap(),
+            *t.effects
+                .removed_sources
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
             ["folder-papers"],
             "the Library is told"
         );

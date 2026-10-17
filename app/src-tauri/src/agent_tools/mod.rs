@@ -147,15 +147,17 @@ pub trait HostEffects: Send + Sync {
     fn index_file(&self, ctx: &ToolContext, job: FileIndexJob);
     /// Files or folders of a source changed on disk: refresh the Library.
     fn library_changed(&self, source_id: &str);
-    /// Remove the Library source `source_id` (the folder `folder`) as the
-    /// Library removes one ([`crate::file_watcher::FolderSyncState::remove_source`]:
-    /// its sync and index runs stopped, its chunks and manifest deleted) and
-    /// tell the Library, which drops its card. Returns the chunks deleted.
+    /// Remove the source `source_id` as the Library removes one
+    /// ([`crate::file_watcher::FolderSyncState::remove_source`]: its sync and
+    /// index runs stopped, its chunks and manifest deleted) and tell the
+    /// Library, which drops its card. Chunks without a source are removed
+    /// only under the folder the Library lists for it
+    /// ([`crate::file_watcher::FolderSyncState::library_path`]), never under
+    /// a folder inferred from its files. Returns the chunks deleted.
     async fn remove_source(
         &self,
         rag: &RwLock<RAGEngine>,
         source_id: &str,
-        folder: Option<&str>,
     ) -> Result<usize, String>;
     /// A gallery visual of `conversation_id` was revised or organised: refresh the gallery.
     fn visuals_changed(&self, conversation_id: &str);
@@ -349,11 +351,11 @@ pub(crate) mod testing {
             &self,
             rag: &RwLock<RAGEngine>,
             source_id: &str,
-            folder: Option<&str>,
         ) -> Result<usize, String> {
+            let path = self.folder_sync.library_path(source_id);
             let deleted = self
                 .folder_sync
-                .remove_source(rag, &self.indexing_state, source_id, folder)
+                .remove_source(rag, &self.indexing_state, source_id, path.as_deref())
                 .await?;
             self.removed_sources
                 .lock()

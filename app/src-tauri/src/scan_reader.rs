@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use shodh_rag::comprehensive_system::ComprehensiveRAG;
 use shodh_rag::inbox::{InboxKind, InboxStatus, NewInboxItem};
+use shodh_rag::indexing::IndexingState;
 use shodh_rag::rag_engine::{normalize_source_path, ScanReaderRequest};
 use tauri::{AppHandle, Manager};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -344,6 +345,7 @@ async fn reread(app: AppHandle, rag: Arc<AsyncRwLock<ComprehensiveRAG>>, announc
         }
     };
     let folders = app.state::<FolderSyncState>();
+    let indexing = app.state::<IndexingState>();
     let mut to_sync = BTreeSet::new();
     let mut read_again = 0usize;
     for (path, mut metadata) in files {
@@ -363,6 +365,15 @@ async fn reread(app: AppHandle, rag: Arc<AsyncRwLock<ComprehensiveRAG>>, announc
         if !owners.contains_key(&key) {
             continue;
         }
+        // Registered while it is read: removing its source waits for it, and
+        // a file of a removed source is not indexed again.
+        let _run = match metadata.get("space_id").filter(|id| !id.is_empty()) {
+            Some(source_id) => match indexing.begin_run(source_id) {
+                Some(run) => Some(run),
+                None => continue,
+            },
+            None => None,
+        };
         match shodh_rag::indexing::index_file(&rag, &file, metadata).await {
             Ok(_) => read_again += 1,
             Err(e) => tracing::warn!(file = %path, error = %e, "scan not read again"),

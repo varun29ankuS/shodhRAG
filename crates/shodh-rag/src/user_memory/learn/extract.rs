@@ -249,7 +249,7 @@ const REQUEST_VERBS: [&str; 16] = [
 ];
 
 /// Lower-case words of `text`, with typographic apostrophes made plain.
-fn words(text: &str) -> Vec<String> {
+pub(crate) fn words(text: &str) -> Vec<String> {
     text.to_lowercase()
         .replace(['\u{2019}', '\u{2018}'], "'")
         .split(|c: char| !(c.is_alphanumeric() || c == '\''))

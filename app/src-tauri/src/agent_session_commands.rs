@@ -790,27 +790,19 @@ pub(crate) fn scope_for_workspace(
 /// the request ([`crate::memory_learn::LearnState::file_memory_request`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MemoryTurn {
-    /// The message: in the main conversation, what the user asked after the request (the
-    /// request itself is handled); the whole message when nothing follows it, and a side
-    /// thread's composed message as it is.
-    pub body: String,
     /// One line in front of the message: what the app did, and what the model should do.
+    /// The message itself is always sent whole, so a request to the assistant in it keeps
+    /// its grounding.
     pub note: String,
-    /// What the answer is about besides the request, if anything (the answer check's
-    /// question).
-    pub question: Option<String>,
-    /// Nothing but the request: no question about the documents.
+    /// The message is nothing but a statement about the user to keep
+    /// ([`MemoryRequest::is_all_of_the_message`]): no question about the documents. When
+    /// in doubt it is not.
     pub memory_only: bool,
 }
 
-/// The message for the model after the app handled `request`, the request to remember
-/// something in `text` (a side thread's `text` is the composed message around it).
-pub(crate) fn memory_turn(
-    text: &str,
-    side_thread: bool,
-    request: &MemoryRequest,
-    handled: RequestHandled,
-) -> MemoryTurn {
+/// The note for the model after the app handled `request`, the request to remember
+/// something in the user's message.
+pub(crate) fn memory_turn(request: &MemoryRequest, handled: RequestHandled) -> MemoryTurn {
     let note = request
         .note
         .split_whitespace()
@@ -819,29 +811,18 @@ pub(crate) fn memory_turn(
     let done = match handled {
         RequestHandled::Filed | RequestHandled::AlreadyKept => format!(
             "Shodh has already saved what the user asked you to remember (\u{201c}{note}\u{201d}) \
-             as a memory suggestion for them to approve, so do not call remember and do not \
-             search the documents for it. Acknowledge it in one short sentence"
+             as a memory suggestion for them to approve, so do not call remember for it and do \
+             not search the documents for it. Acknowledge it in one short sentence"
         ),
         RequestHandled::Declined => format!(
             "The user asked you to remember \u{201c}{note}\u{201d}, which they declined to keep \
-             as a memory before, so it was not saved again: do not call remember and do not \
-             search the documents for it. Say so in one short sentence"
+             as a memory before, so it was not saved again: do not call remember for it and do \
+             not search the documents for it. Say so in one short sentence"
         ),
     };
-    let rest = request.rest.as_deref();
-    let note = match rest {
-        Some(_) => format!("{done}, then answer the user's message below."),
-        None => format!("{done}; the message asks nothing else."),
-    };
-    let body = match rest {
-        Some(rest) if !side_thread => rest.to_string(),
-        _ => text.to_string(),
-    };
     MemoryTurn {
-        body,
-        note,
-        question: rest.map(str::to_string),
-        memory_only: rest.is_none(),
+        note: format!("{done}, then answer anything else the message asks as usual."),
+        memory_only: request.is_all_of_the_message(),
     }
 }
 
@@ -1635,15 +1616,13 @@ pub async fn agent_send(
     let memory_turn = request
         .as_ref()
         .zip(handled)
-        .map(|(request, handled)| memory_turn(&text, entry.is_side(), request, handled));
+        .map(|(request, handled)| memory_turn(request, handled));
+    // The answer check's question stays the whole message (its referents included).
     if let Some(turn) = &memory_turn {
-        scope.question = turn.question.clone();
         scope.memory_instruction = turn.memory_only;
     }
     let message = compose_message(
-        memory_turn
-            .as_ref()
-            .map_or(text.as_str(), |t| t.body.as_str()),
+        &text,
         history.as_deref().filter(|_| replay),
         memories.as_deref(),
         workspace_block.as_deref(),
@@ -2761,27 +2740,20 @@ mod tests {
     fn a_filed_request_to_remember_is_announced_right_before_the_message() {
         let text = "Remember that I'm writing my thesis on disk-based vector search, and memory cost matters most to me.";
         let request = memory_request(text).unwrap();
-        let turn = memory_turn(text, false, &request, RequestHandled::Filed);
-        // Nothing but the request: the whole message, and no question for the documents.
-        assert_eq!(turn.body, text);
+        let turn = memory_turn(&request, RequestHandled::Filed);
+        // Nothing but a statement about the user: no question for the documents.
         assert!(turn.memory_only);
-        assert_eq!(turn.question, None);
         assert!(
             turn.note.contains("do not search the documents"),
             "{}",
             turn.note
         );
         assert!(turn.note.contains(&request.note), "{}", turn.note);
+        assert!(turn
+            .note
+            .ends_with("answer anything else the message asks as usual."));
         assert!(!turn.note.contains('\n'));
-        let message = compose_message(
-            &turn.body,
-            None,
-            Some("MEM"),
-            None,
-            false,
-            None,
-            Some(&turn.note),
-        );
+        let message = compose_message(text, None, Some("MEM"), None, false, None, Some(&turn.note));
         let memories = message.find("MEM").unwrap();
         let note = message.find(&turn.note).unwrap();
         let question = message.find(text).unwrap();
@@ -2794,26 +2766,54 @@ mod tests {
     }
 
     #[test]
-    fn the_question_after_a_request_to_remember_is_what_the_model_answers() {
-        let text = "Remember that I use DiskANN. Summarise the SPANN paper.";
-        let request = memory_request(text).unwrap();
-        let turn = memory_turn(text, false, &request, RequestHandled::Filed);
-        assert_eq!(turn.body, "Summarise the SPANN paper.");
-        assert_eq!(turn.question.as_deref(), Some("Summarise the SPANN paper."));
-        assert!(!turn.memory_only, "the usual rules apply to the question");
-        assert!(
-            turn.note.contains("\u{201c}I use DiskANN.\u{201d}"),
-            "{}",
-            turn.note
+    fn a_message_that_asks_for_more_than_the_note_keeps_its_grounding() {
+        // Anything besides a statement about the user: the whole message goes to the
+        // model, and its answer is checked (and searched for) as usual.
+        for (text, handled) in [
+            (
+                "Remember that I use DiskANN. Summarise the SPANN paper.",
+                RequestHandled::Filed,
+            ),
+            (
+                "Remember that I use DiskANN. What does SPANN do?",
+                RequestHandled::AlreadyKept,
+            ),
+            ("From now on, cite the page numbers.", RequestHandled::Filed),
+            (
+                "Always use British spelling when you answer",
+                RequestHandled::Filed,
+            ),
+            (
+                "Remember that the deadline is Friday.",
+                RequestHandled::Declined,
+            ),
+        ] {
+            let request = memory_request(text).unwrap();
+            let turn = memory_turn(&request, handled);
+            assert!(!turn.memory_only, "{text}");
+            assert!(!turn.note.contains("asks nothing else"), "{}", turn.note);
+            let message = compose_message(text, None, None, None, false, None, Some(&turn.note));
+            assert!(
+                message.ends_with(text),
+                "the whole message is sent: {message}"
+            );
+        }
+        // Mixed requests are not requests to remember at all: no card, no note.
+        for text in [
+            "Keep in mind the page limit and summarise section 4 of the SPANN paper",
+            "Don't forget the appendix when you summarise the paper",
+            "Please note that I'm a beginner and explain HNSW",
+            "Note: compare SPANN and DiskANN on recall",
+            "Going forward, summarise section 5",
+            "In future work section, list the open problems",
+            "Remember the paper we discussed. What were its findings?",
+        ] {
+            assert_eq!(memory_request(text), None, "{text}");
+        }
+        let declined = memory_turn(
+            &memory_request("Remember that I use DiskANN.").unwrap(),
+            RequestHandled::Declined,
         );
-        assert!(turn.note.ends_with("answer the user's message below."));
-        // A side thread keeps its composed message (the content it is about).
-        let composed = format!("This question is about \"Table 2\".\n\nQuestion: {text}");
-        let side = memory_turn(&composed, true, &request, RequestHandled::AlreadyKept);
-        assert_eq!(side.body, composed);
-        assert_eq!(side.question.as_deref(), Some("Summarise the SPANN paper."));
-        // Declined before: the model is told it was not saved again.
-        let declined = memory_turn(text, false, &request, RequestHandled::Declined);
         assert!(declined.note.contains("declined"), "{}", declined.note);
         assert!(declined.note.contains("do not call remember"));
     }
@@ -2822,7 +2822,7 @@ mod tests {
     fn a_turn_whose_request_to_remember_was_handled_is_not_learned_from() {
         let text = "Remember that I use DiskANN.";
         let request = memory_request(text).unwrap();
-        let turn = memory_turn(text, false, &request, RequestHandled::Filed);
+        let turn = memory_turn(&request, RequestHandled::Filed);
         assert_eq!(words_to_learn(Some(text), Some(&turn)), None);
         // Not handled (filing failed, or no request): learned from as usual.
         assert_eq!(words_to_learn(Some(text), None), Some(text));

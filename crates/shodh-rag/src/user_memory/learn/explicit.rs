@@ -7,8 +7,13 @@
 //! The matcher is anchored and deterministic: the message must *start* with the request
 //! (after an optional "please"). A request inside a question ("Can you summarise it?
 //! Remember to cite the pages."), a question about remembering ("Do you remember the
-//! paper...?", "Remember when we...?"), a one-off reminder ("Remember to cite...") and
-//! quoted text are not requests to keep something.
+//! paper...?", "Remember when we...?"), a one-off reminder ("Remember to cite..."), a
+//! pointer to something discussed ("Remember the paper we discussed"), quoted text, and a
+//! note that also asks the assistant to do something ("Keep in mind the page limit and
+//! summarise section 4", "Going forward, summarise section 5") are not requests to keep
+//! something: when in doubt, the message is an ordinary one, answered and checked as usual.
+
+use super::extract::{words, worth_learning};
 
 /// Most characters of a note (the `remember` tool's limit).
 pub const MAX_NOTE_CHARS: usize = 2_000;
@@ -21,8 +26,21 @@ pub struct MemoryRequest {
     /// The user's words it was taken from, request included ("Remember that I'm ...").
     pub evidence: String,
     /// What the message says after the note's sentence (a separate question or request),
-    /// if anything: it is what the answer is about.
+    /// if anything.
     pub rest: Option<String>,
+    /// A standing instruction ("From now on, ...") rather than something to keep about the
+    /// user.
+    pub standing: bool,
+}
+
+impl MemoryRequest {
+    /// Whether the message is nothing but this request: no other sentence, not an
+    /// instruction, and a statement about the user ([`worth_learning`]: in the first
+    /// person, or asking to keep something). Only then is there no question to answer from
+    /// the documents.
+    pub fn is_all_of_the_message(&self) -> bool {
+        self.rest.is_none() && !self.standing && worth_learning(&self.note)
+    }
 }
 
 /// Openings that ask to keep what follows; the opening itself is not part of the note.
@@ -46,8 +64,141 @@ const NOT_KEPT_AFTER: [&str; 11] = [
     "to", "when", "what", "how", "which", "who", "whom", "where", "why", "if", "whether",
 ];
 
-/// Openings of a standing instruction; the whole instruction is the note.
-const STANDING: [&str; 4] = ["from now on", "going forward", "in future", "in the future"];
+/// Openings of a standing instruction; the whole instruction is the note. `needs_comma`:
+/// only an instruction when a comma follows ("In future work, ..." is not one).
+const STANDING: [(&str, bool); 4] = [
+    ("from now on", false),
+    ("going forward", true),
+    ("in future", true),
+    ("in the future", true),
+];
+
+/// Words after "remember" that point at something discussed ("Remember the paper we
+/// discussed"), which is a question about it, not something to keep.
+const POINTERS: [&str; 7] = ["the", "this", "these", "those", "your", "our", "its"];
+
+/// Phrases of a reference back to the conversation ("the paper we discussed").
+const RECALLS: [&str; 7] = [
+    "we discussed",
+    "we talked about",
+    "you said",
+    "you mentioned",
+    "i mentioned",
+    "last time",
+    "earlier",
+];
+
+/// Verbs of a request to the assistant ("summarise section 4", "explain HNSW").
+const REQUEST_VERBS: [&str; 38] = [
+    "summarise",
+    "summarize",
+    "explain",
+    "compare",
+    "list",
+    "show",
+    "find",
+    "draw",
+    "write",
+    "describe",
+    "give",
+    "tell",
+    "cite",
+    "search",
+    "look",
+    "check",
+    "read",
+    "open",
+    "translate",
+    "plot",
+    "chart",
+    "analyse",
+    "analyze",
+    "review",
+    "outline",
+    "extract",
+    "calculate",
+    "compute",
+    "make",
+    "create",
+    "generate",
+    "answer",
+    "help",
+    "suggest",
+    "recommend",
+    "rewrite",
+    "fix",
+    "add",
+];
+
+/// Words that may come before a request at the start of a clause ("and then summarise").
+const CLAUSE_LINKS: [&str; 7] = ["and", "then", "also", "please", "now", "just", "but"];
+
+/// Words before a request verb that make it a request ("and explain", "when you summarise").
+const REQUEST_LEADS: [&str; 4] = ["and", "then", "please", "you"];
+
+/// Things in the user's documents ("the SPANN paper", "the appendix").
+const DOCUMENT_NOUNS: [&str; 9] = [
+    "paper",
+    "papers",
+    "pdf",
+    "pdfs",
+    "document",
+    "documents",
+    "appendix",
+    "abstract",
+    "article",
+];
+
+/// Parts of a document that are cited by number ("section 4", "page 12").
+const NUMBERED_PARTS: [&str; 9] = [
+    "section", "sections", "chapter", "page", "pages", "figure", "fig", "table", "equation",
+];
+
+/// Words before a document noun that make it a particular document ("the SPANN paper").
+const DEFINITE: [&str; 6] = ["the", "this", "that", "these", "those", "its"];
+
+/// Whether `text` asks the assistant to do something: a clause that starts with a request
+/// verb ("compare SPANN and DiskANN"), or a request verb after "and", "then", "please" or
+/// "you" ("... and explain HNSW", "... when you summarise the paper").
+fn asks_the_assistant(text: &str) -> bool {
+    text.split([',', ';', ':']).any(|clause| {
+        let words = words(clause);
+        let opens = words
+            .iter()
+            .find(|w| !CLAUSE_LINKS.contains(&w.as_str()))
+            .is_some_and(|w| REQUEST_VERBS.contains(&w.as_str()));
+        opens
+            || words.windows(2).any(|pair| {
+                REQUEST_LEADS.contains(&pair[0].as_str())
+                    && REQUEST_VERBS.contains(&pair[1].as_str())
+            })
+    })
+}
+
+/// Whether `text` names a particular document or a numbered part of one ("the SPANN
+/// paper", "section 4"): something the documents answer, not something to keep.
+fn names_a_document(text: &str) -> bool {
+    let words = words(text);
+    words.iter().enumerate().any(|(i, word)| {
+        let numbered = NUMBERED_PARTS.contains(&word.as_str())
+            && words
+                .get(i + 1)
+                .is_some_and(|n| n.starts_with(|c: char| c.is_ascii_digit()));
+        let definite = DOCUMENT_NOUNS.contains(&word.as_str())
+            && words[i.saturating_sub(2)..i]
+                .iter()
+                .any(|w| DEFINITE.contains(&w.as_str()));
+        numbered || definite
+    })
+}
+
+/// Whether `text` refers back to the conversation ("the paper we discussed").
+fn recalls_the_conversation(text: &str) -> bool {
+    let joined = format!(" {} ", words(text).join(" "));
+    RECALLS
+        .iter()
+        .any(|phrase| joined.contains(&format!(" {phrase} ")))
+}
 
 /// "Always ..." / "Never ..." is a standing instruction when it is about answers.
 const ABOUT_ANSWERS: [&str; 10] = [
@@ -155,10 +306,19 @@ pub fn memory_request(text: &str) -> Option<MemoryRequest> {
         return None;
     }
     let start = after(text, "please").map(skip_separators).unwrap_or(text);
-    let (note, rest) = keep_request(start).or_else(|| standing_instruction(start))?;
+    let (note, rest, standing) = match keep_request(start) {
+        Some((note, rest)) => (note, rest, false),
+        None => {
+            let (note, rest) = standing_instruction(start)?;
+            (note, rest, true)
+        }
+    };
     let note = note.trim_end();
     if note.chars().filter(|c| c.is_alphanumeric()).count() < 3
         || note.chars().count() > MAX_NOTE_CHARS
+        || names_a_document(note)
+        || recalls_the_conversation(note)
+        || (!standing && asks_the_assistant(note))
     {
         return None;
     }
@@ -168,6 +328,7 @@ pub fn memory_request(text: &str) -> Option<MemoryRequest> {
         note: note.to_string(),
         evidence: start[..note_end].trim().to_string(),
         rest: rest.map(str::to_string),
+        standing,
     })
 }
 
@@ -186,7 +347,11 @@ fn keep_request(text: &str) -> Option<(&str, Option<&str>)> {
         if needs_that && !that && !colon {
             return None;
         }
-        if !that && NOT_KEPT_AFTER.contains(&first_word(body).as_str()) {
+        let first = first_word(body);
+        if !that && NOT_KEPT_AFTER.contains(&first.as_str()) {
+            return None;
+        }
+        if opening == "remember" && !that && POINTERS.contains(&first.as_str()) {
             return None;
         }
         return first_sentence(body);
@@ -196,9 +361,9 @@ fn keep_request(text: &str) -> Option<(&str, Option<&str>)> {
 
 /// "From now on, ..." or "Always/Never ... when you answer": the whole instruction.
 fn standing_instruction(text: &str) -> Option<(&str, Option<&str>)> {
-    let standing = STANDING
-        .iter()
-        .any(|opening| after(text, opening).is_some());
+    let standing = STANDING.iter().any(|(opening, needs_comma)| {
+        after(text, opening).is_some_and(|rest| !needs_comma || rest.trim_start().starts_with(','))
+    });
     let about_answers = (after(text, "always").is_some() || after(text, "never").is_some()) && {
         let lower = text.to_lowercase();
         ABOUT_ANSWERS.iter().any(|marker| lower.contains(marker))
@@ -308,6 +473,42 @@ mod tests {
             "my advisor is Prof. R. K. Rao, and I use 3.5 GB."
         );
         assert_eq!(request.rest, None);
+    }
+
+    #[test]
+    fn a_note_that_also_asks_for_something_is_not_a_request_to_remember() {
+        for text in [
+            "Keep in mind the page limit and summarise section 4 of the SPANN paper",
+            "Don't forget the appendix when you summarise the paper",
+            "Please note that I'm a beginner and explain HNSW",
+            "Note: compare SPANN and DiskANN on recall",
+            "Going forward, summarise section 5",
+            "In future work section, list the open problems",
+            "In future work, list the open problems",
+            "Remember the paper we discussed. What were its findings?",
+            "Remember that the SPANN paper keeps centroids in memory",
+            "Remember that table 3 has the recall numbers",
+            "Keep in mind what you said earlier about recall",
+            "From now on, cite page numbers and summarise the SPANN paper",
+        ] {
+            assert_eq!(memory_request(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn only_a_statement_about_the_user_is_all_of_a_message() {
+        let all = |text: &str| memory_request(text).unwrap().is_all_of_the_message();
+        assert!(all(
+            "Remember that I'm writing my thesis on disk-based vector search, and memory cost matters most to me."
+        ));
+        assert!(all("Note: I review papers on Fridays"));
+        // Anything else and the message is answered (and checked) as usual.
+        assert!(!all(
+            "Remember that I use DiskANN. Summarise the SPANN paper."
+        ));
+        assert!(!all("From now on, cite the page numbers."));
+        assert!(!all("Always use British spelling when you answer"));
+        assert!(!all("Remember that the deadline is Friday."));
     }
 
     #[test]

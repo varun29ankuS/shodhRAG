@@ -50,7 +50,7 @@ export function DeeperChips({ lang, source }: { lang: string; source: string }) 
   if (marks.length === 0) return null;
   return (
     <div className="-mt-2 mb-4 flex flex-wrap items-center gap-1.5" role="group" aria-label="Go deeper">
-      <span className="text-[11.5px] text-shodh-text-muted">Go deeper:</span>
+      <span className="text-[11.5px] text-shodh-text-muted" data-answer-ui="">Go deeper:</span>
       {marks.map(mark => (
         <button
           key={`${mark.label}\n${mark.question}`}
@@ -67,8 +67,9 @@ export function DeeperChips({ lang, source }: { lang: string; source: string }) 
           }}
         >
           <Sparkles className="w-3 h-3 text-shodh-accent" aria-hidden="true" />
+          {/* The label is the block's own words; the suggested question is UI and never quoted. */}
           <span className="font-medium">{mark.label}</span>
-          <span className="text-shodh-text-muted truncate max-w-[260px]">{mark.question}</span>
+          <span className="text-shodh-text-muted truncate max-w-[260px]" data-answer-ui="">{mark.question}</span>
         </button>
       ))}
     </div>

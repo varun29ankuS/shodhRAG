@@ -390,7 +390,7 @@ function MessageContent({
         return (
           <div>
             <div className="flex items-center justify-between pl-3 pr-1.5 h-8 border-b border-shodh-border-subtle bg-shodh-raised">
-              <span className="font-mono text-[11px] uppercase tracking-wider text-shodh-text-muted">{match[1]}</span>
+              <span className="font-mono text-[11px] uppercase tracking-wider text-shodh-text-muted" data-answer-ui="">{match[1]}</span>
               <CodeCopyButton text={codeString} />
             </div>
             <CodeHighlight

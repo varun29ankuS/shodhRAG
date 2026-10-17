@@ -85,6 +85,7 @@ export function FocusFrame({ noun, getTarget, doubleClick = true, inline = false
       <button
         ref={buttonRef}
         type="button"
+        data-answer-ui=""
         onClick={e => open(e.currentTarget)}
         aria-label={`Expand ${noun}: zoom and ask about it`}
         title={doubleClick ? 'Expand (or double-click): zoom and ask about it' : 'Expand: zoom and ask about it'}

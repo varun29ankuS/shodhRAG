@@ -74,7 +74,14 @@ pub async fn link_folder_enhanced(
             indexing_outcome(&result),
         ),
     ));
+    // A run cut short because its source was removed did not index the folder.
+    let removed = indexing_state.is_removed(&space_id);
     let (status, title, detail) = match &result {
+        Ok(_) if removed => (
+            InboxStatus::Done,
+            format!("{name} was removed from the Library"),
+            "Indexing stopped when the folder was removed.".to_string(),
+        ),
         Ok(done) if done.failures.is_empty() => (
             InboxStatus::Done,
             format!("{name} is indexed"),

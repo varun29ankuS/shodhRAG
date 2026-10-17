@@ -676,7 +676,8 @@ pub const CHAT_UPLOADS_PREFIX: &str = "chat-uploads:";
 pub const CHAT_UPLOADS_MAIN: &str = "chat-uploads:main";
 
 /// The owner an earlier build of this change gave every chat upload; such
-/// files are the main Ask's ([`RAGEngine::adopt_legacy_chat_uploads`]).
+/// files are the main Ask's ([`RAGEngine::hand_over_chat_uploads`]).
+#[cfg(test)]
 const LEGACY_CHAT_UPLOADS: &str = "chat-uploads";
 
 /// The owner of a file added in a chat of `workspace` (`None`: the main
@@ -699,7 +700,7 @@ pub fn chat_uploads_source(workspace: Option<&str>) -> Option<String> {
 /// Whether `space_id` owns files added in chats rather than being a source
 /// of the Library: such an owner is never removed or indexed as a folder.
 pub fn is_chat_uploads(space_id: &str) -> bool {
-    space_id == LEGACY_CHAT_UPLOADS || space_id.starts_with(CHAT_UPLOADS_PREFIX)
+    space_id == "chat-uploads" || space_id.starts_with(CHAT_UPLOADS_PREFIX)
 }
 
 /// Whether chunk metadata (`metadata_json`) is that of a file added in a
@@ -1978,18 +1979,23 @@ impl RAGEngine {
     /// Deletes the Library source `space_id` from the index: every chunk it
     /// owns and, under `path` (the source's folder, or its file), the chunks
     /// that no source owns because they were indexed before chunks recorded
-    /// their source (an empty `space_id`). Files added in a chat
+    /// their source (an empty `space_id`), except those under `keep` (the
+    /// folders of the other Library sources). Files added in a chat
     /// (`uploaded_at` in their metadata) stay: older versions gave them the
-    /// id of the Library source selected at the time, and those are handed to
-    /// [`CHAT_UPLOADS_MAIN`] instead of deleted (they were added before
-    /// workspaces owned their uploads, and nothing records the chat). The chunks of every other
-    /// source stay too: a folder whose path merely starts with `path`
-    /// ("Papers 2024" for "Papers"), or a source listed inside it.
-    /// Returns the chunks deleted.
+    /// id of the Library source selected at the time, and those are handed
+    /// to [`CHAT_UPLOADS_MAIN`] instead of deleted (they were added before
+    /// workspaces owned their uploads, and nothing records the chat). The
+    /// chunks of every other source stay too: a folder whose path merely
+    /// starts with `path` ("Papers 2024" for "Papers"), or a source listed
+    /// inside it.
+    ///
+    /// Everything is read before anything changes, so a failure while
+    /// reading leaves the index as it was. Returns the chunks deleted.
     pub async fn delete_library_source(
         &mut self,
         space_id: &str,
         path: Option<&str>,
+        keep: &[String],
     ) -> Result<usize> {
         if space_id.trim().is_empty() {
             anyhow::bail!("a Library source is removed by its id, and none was given");
@@ -2006,33 +2012,49 @@ impl RAGEngine {
             .filter(|chunk| added_in_chat(&chunk.metadata_json))
             .map(|chunk| chunk.source)
             .collect();
+        let unowned = match path.map(str::trim).filter(|p| !p.is_empty()) {
+            Some(path) => self.unowned_under(Path::new(path), keep).await?,
+            None => Vec::new(),
+        };
         for source in &uploads {
             self.move_source_to_space(source, space_id, CHAT_UPLOADS_MAIN)
                 .await?;
         }
         let mut deleted = self.delete_by_space_id(space_id).await?;
-        if let Some(path) = path.map(str::trim).filter(|p| !p.is_empty()) {
-            deleted += self.delete_unowned_under(Path::new(path)).await?;
-        }
+        deleted += self.delete_chunks(&unowned).await?;
         Ok(deleted)
     }
 
-    /// Deletes the chunks no source owns of the file `path` or of the files
-    /// under the folder `path` ([`lies_under`]), except files added in a
-    /// chat, from LanceDB and, by chunk id, from the keyword index (which
-    /// records no owner). The chunks are matched here by plain string
-    /// comparison and deleted by id: no `LIKE` pattern is involved.
-    async fn delete_unowned_under(&mut self, path: &Path) -> Result<usize> {
+    /// The chunks no source owns of the file `path` or of the files under
+    /// the folder `path` ([`lies_under`]), except files added in a chat and
+    /// files under any of `keep`. Matched by plain string comparison: no
+    /// `LIKE` pattern is involved.
+    async fn unowned_under(
+        &self,
+        path: &Path,
+        keep: &[String],
+    ) -> Result<Vec<crate::storage::SearchHit>> {
         let spellings = source_spellings(path);
-        let chunks: Vec<crate::storage::SearchHit> = self
+        let kept: Vec<Vec<String>> = keep
+            .iter()
+            .map(|folder| source_spellings(Path::new(folder)))
+            .collect();
+        Ok(self
             .store
             .list_chunks(Some("space_id = '' OR space_id IS NULL"), 1_000_000)
             .await?
             .into_iter()
             .filter(|chunk| {
-                lies_under(&chunk.source, &spellings) && !added_in_chat(&chunk.metadata_json)
+                lies_under(&chunk.source, &spellings)
+                    && !kept.iter().any(|k| lies_under(&chunk.source, k))
+                    && !added_in_chat(&chunk.metadata_json)
             })
-            .collect();
+            .collect())
+    }
+
+    /// Deletes `chunks` by id from LanceDB and the keyword index, with their
+    /// files' OCR cache entries. Returns the chunks deleted.
+    async fn delete_chunks(&mut self, chunks: &[crate::storage::SearchHit]) -> Result<usize> {
         if chunks.is_empty() {
             return Ok(0);
         }
@@ -2041,7 +2063,7 @@ impl RAGEngine {
         for source in sources {
             self.ocr_cache.remove(source);
         }
-        for chunk in &chunks {
+        for chunk in chunks {
             self.text_search.delete_by_id(&chunk.id)?;
         }
         self.text_search.commit()?;
@@ -2057,7 +2079,6 @@ impl RAGEngine {
                 .await?;
         }
         tracing::info!(
-            path = %path.display(),
             deleted,
             "Deleted chunks without a source under a removed Library source"
         );
@@ -2134,12 +2155,44 @@ impl RAGEngine {
         Ok(moved)
     }
 
-    /// Files an earlier build filed under a single `chat-uploads` owner
-    /// become the main Ask's ([`CHAT_UPLOADS_MAIN`]): nothing records the chat
-    /// they were added in. Returns the chunks moved.
-    pub async fn adopt_legacy_chat_uploads(&mut self) -> Result<u64> {
-        self.move_space(LEGACY_CHAT_UPLOADS, CHAT_UPLOADS_MAIN)
-            .await
+    /// Gives every file added in a chat that is not owned where it was added
+    /// to the main Ask ([`CHAT_UPLOADS_MAIN`]), once per run, before a folder
+    /// sync could take it for one of its own: files older versions filed
+    /// under the Library source selected at the time (or under no source),
+    /// those an earlier build filed under a single `chat-uploads` owner, and,
+    /// when `workspaces` (the workspaces that exist) is known, those of a
+    /// workspace that was deleted. Nothing records the chat an older upload
+    /// came from, so the main Ask is where it can still be found. Only the
+    /// chat upload records `uploaded_at`. Returns the chunks moved.
+    pub async fn hand_over_chat_uploads(
+        &mut self,
+        workspaces: Option<&std::collections::HashSet<String>>,
+    ) -> Result<u64> {
+        // `_` matches itself too: the filter only narrows what is read; the
+        // metadata is checked exactly below.
+        let candidates = self
+            .store
+            .list_chunks(Some("metadata_json LIKE '%uploaded_at%'"), 1_000_000)
+            .await?;
+        let strays: std::collections::BTreeSet<(String, String)> = candidates
+            .into_iter()
+            .filter(|chunk| added_in_chat(&chunk.metadata_json))
+            .filter(
+                |chunk| match chunk.space_id.strip_prefix(CHAT_UPLOADS_PREFIX) {
+                    Some("main") => false,
+                    Some(workspace) => workspaces.is_some_and(|live| !live.contains(workspace)),
+                    None => true,
+                },
+            )
+            .map(|chunk| (chunk.source, chunk.space_id))
+            .collect();
+        let mut moved = 0;
+        for (source, owner) in &strays {
+            moved += self
+                .move_source_to_space(source, owner, CHAT_UPLOADS_MAIN)
+                .await?;
+        }
+        Ok(moved)
     }
 
     /// Compacts the chunk store: an update rewrites the rows it changes, so
@@ -3151,7 +3204,7 @@ Language models trained on long documents reach lower perplexity.
 
         let papers_path = papers.display().to_string();
         let deleted = engine
-            .delete_library_source("papers", Some(papers_path.as_str()))
+            .delete_library_source("papers", Some(papers_path.as_str()), &[])
             .await
             .unwrap();
         assert!(deleted >= 2, "its own file and the legacy file under it");
@@ -3189,7 +3242,7 @@ Language models trained on long documents reach lower perplexity.
         // A source is removed by its id: none, none removed.
         let later_path = later.display().to_string();
         assert!(engine
-            .delete_library_source(" ", Some(later_path.as_str()))
+            .delete_library_source(" ", Some(later_path.as_str()), &[])
             .await
             .is_err());
     }
@@ -3213,16 +3266,26 @@ Language models trained on long documents reach lower perplexity.
         assert!(!is_chat_uploads("folder-chat-uploads"));
     }
 
-    /// Uploads an earlier build filed under one owner become the main Ask's;
-    /// a workspace's uploads go there when the workspace is deleted.
+    /// Uploads not owned where they were added go to the main Ask: filed
+    /// under a folder or under no source by older versions, under the single
+    /// owner of an earlier build, or under a workspace that was deleted. A
+    /// live workspace's uploads stay, and so do folder files.
     #[tokio::test]
-    async fn chat_uploads_move_between_owners_whole() {
+    async fn stray_chat_uploads_are_handed_to_the_main_ask() {
         let dir = tempfile::tempdir().unwrap();
         let mut engine = test_engine(dir.path()).await;
-        for (name, owner) in [
-            ("one.md", LEGACY_CHAT_UPLOADS),
-            ("two.md", LEGACY_CHAT_UPLOADS),
-            ("three.md", "chat-uploads:ws-a"),
+        let uploaded = (
+            "uploaded_at".to_string(),
+            "2026-10-01T09:00:00Z".to_string(),
+        );
+        for (name, owner, upload) in [
+            ("folder-tagged.md", "folder-papers", true),
+            ("untagged.md", "", true),
+            ("legacy.md", LEGACY_CHAT_UPLOADS, true),
+            ("deleted.md", "chat-uploads:ws-gone", true),
+            ("live.md", "chat-uploads:ws-live", true),
+            ("main.md", CHAT_UPLOADS_MAIN, true),
+            ("paper.md", "folder-papers", false),
         ] {
             let path = dir.path().join(name);
             std::fs::write(
@@ -3230,40 +3293,89 @@ Language models trained on long documents reach lower perplexity.
                 format!("# {name}\n\nThe {name} notes describe the river, the bridge and the mill at dawn.\n"),
             )
             .unwrap();
+            let mut metadata = HashMap::from([("space_id".to_string(), owner.to_string())]);
+            if upload {
+                metadata.insert(uploaded.0.clone(), uploaded.1.clone());
+            }
             engine
-                .add_document_from_file(
-                    &path,
-                    HashMap::from([
-                        ("space_id".to_string(), owner.to_string()),
-                        (
-                            "uploaded_at".to_string(),
-                            "2026-10-01T09:00:00Z".to_string(),
-                        ),
-                    ]),
-                )
+                .add_document_from_file(&path, metadata)
                 .await
                 .unwrap();
         }
         let owners = |rows: Vec<crate::storage::DocumentSourceRow>| {
-            let mut owners: Vec<String> = rows.into_iter().map(|row| row.space_id).collect();
+            let mut owners: Vec<(String, String)> = rows
+                .into_iter()
+                .map(|row| {
+                    let name = Path::new(&row.source)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    (name, row.space_id)
+                })
+                .collect();
             owners.sort();
             owners
         };
-        assert!(engine.adopt_legacy_chat_uploads().await.unwrap() >= 2);
+        let live = std::collections::HashSet::from(["ws-live".to_string()]);
+        assert!(engine.hand_over_chat_uploads(Some(&live)).await.unwrap() >= 4);
+        let main = CHAT_UPLOADS_MAIN.to_string();
         assert_eq!(
             owners(engine.document_sources().await.unwrap()),
-            [CHAT_UPLOADS_MAIN, CHAT_UPLOADS_MAIN, "chat-uploads:ws-a"]
+            [
+                ("deleted.md".to_string(), main.clone()),
+                ("folder-tagged.md".to_string(), main.clone()),
+                ("legacy.md".to_string(), main.clone()),
+                ("live.md".to_string(), "chat-uploads:ws-live".to_string()),
+                ("main.md".to_string(), main.clone()),
+                ("paper.md".to_string(), "folder-papers".to_string()),
+                ("untagged.md".to_string(), main.clone()),
+            ]
         );
+        // Nothing left to hand over; with the workspaces unknown, no
+        // workspace's uploads are touched.
+        assert_eq!(engine.hand_over_chat_uploads(Some(&live)).await.unwrap(), 0);
+        assert_eq!(engine.hand_over_chat_uploads(None).await.unwrap(), 0);
+    }
+
+    /// Unowned chunks under another listed source's folder are that source's
+    /// business: removing a folder that contains it leaves them.
+    #[tokio::test]
+    async fn unowned_files_under_another_listed_folder_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let research = dir.path().join("Research");
+        std::fs::create_dir_all(research.join("Papers")).unwrap();
+        for (path, word) in [
+            (research.join("notes.md"), "otter"),
+            (research.join("Papers").join("paper.md"), "pelican"),
+        ] {
+            std::fs::write(
+                &path,
+                format!("# Notes\n\nThe {word} was seen near the river at dawn. The {word} returned the next morning, and the notes describe the {word}.\n"),
+            )
+            .unwrap();
+            engine
+                .add_document_from_file(&path, HashMap::new())
+                .await
+                .unwrap();
+        }
+        let papers = research.join("Papers").display().to_string();
+        let research_path = research.display().to_string();
         engine
-            .move_space("chat-uploads:ws-a", CHAT_UPLOADS_MAIN)
+            .delete_library_source("research", Some(research_path.as_str()), &[papers])
             .await
             .unwrap();
-        assert_eq!(
-            owners(engine.document_sources().await.unwrap()),
-            [CHAT_UPLOADS_MAIN; 3]
-        );
-        // Nothing left to adopt.
-        assert_eq!(engine.adopt_legacy_chat_uploads().await.unwrap(), 0);
+        let left: Vec<String> = engine
+            .document_sources()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.source)
+            .collect();
+        assert_eq!(left.len(), 1, "{left:?}");
+        assert!(left[0].ends_with("paper.md"), "{left:?}");
+        assert!(!engine.text_search.search("pelican", 5).unwrap().is_empty());
+        assert!(engine.text_search.search("otter", 5).unwrap().is_empty());
     }
 
     #[test]

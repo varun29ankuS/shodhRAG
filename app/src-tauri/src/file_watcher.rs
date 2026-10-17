@@ -82,6 +82,9 @@ pub struct FolderSyncState {
     removed: Mutex<HashSet<String>>,
     /// Where [`Self::removed`] is kept ([`REMOVED_SOURCES_FILE`]).
     removed_file: std::path::PathBuf,
+    /// The files added in chats were given to where they belong in this run
+    /// ([`Self::hand_over_uploads_in_turn`]).
+    uploads_handed_over: std::sync::atomic::AtomicBool,
 }
 
 /// The file, in the folder manifests' directory, that lists the sources
@@ -145,6 +148,7 @@ impl FolderSyncState {
             scans_checked: std::sync::atomic::AtomicBool::new(false),
             removed: Mutex::new(load_removed(&removed_file)),
             removed_file,
+            uploads_handed_over: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -192,17 +196,19 @@ impl FolderSyncState {
     /// Removes the Library source `source_id` (the folder or file `path`):
     /// the one way a source is removed, from the Library and by the agent.
     ///
-    /// In order: the source stops being watched (its sync stops before its
-    /// next file) and is never watched again; its index runs stop before
-    /// their next file and are waited for; then, in the syncs' turn, its
-    /// chunks are deleted ([`RAGEngine::delete_library_source`], by source
-    /// id, never by path prefix) and its manifest with them. Nothing of the
-    /// source runs after that, so nothing writes its chunks or its manifest
-    /// back. The removal is recorded on disk first, so a saved Library list
+    /// In order: the removal is recorded on disk, so a saved Library list
     /// that still names the source never brings it back, in this run or the
-    /// next; a removal that cannot be recorded does not start. Returns the
-    /// chunks deleted. When the deletion fails the source may be watched and
-    /// indexed again; its manifest is kept.
+    /// next (a removal that cannot be recorded does not start); the source
+    /// stops being watched (its sync stops before its next file) and is
+    /// never watched again; its index runs stop before their next file and
+    /// are waited for; then, in the syncs' turn, its chunks are deleted
+    /// ([`RAGEngine::delete_library_source`], by source id, never by path
+    /// prefix, sparing the folders of the other watched sources) and its
+    /// manifest with them. Nothing of the source runs after that, so nothing
+    /// writes its chunks or its manifest back. Returns the chunks deleted.
+    /// The owners of files added in chats are not Library sources and are
+    /// refused before anything happens. A failed deletion is undone as far
+    /// as it can be ([`Self::finish_removal`]).
     pub async fn remove_source(
         &self,
         rag: &RwLock<RAGEngine>,
@@ -210,41 +216,108 @@ impl FolderSyncState {
         source_id: &str,
         path: Option<&str>,
     ) -> Result<usize, String> {
-        {
-            let mut watched = self.watched.lock().unwrap_or_else(|e| e.into_inner());
-            let mut removed = self.removed.lock().unwrap_or_else(|e| e.into_inner());
-            if removed.insert(source_id.to_string()) {
-                if let Err(error) = save_removed(&self.removed_file, &removed) {
-                    removed.remove(source_id);
-                    return Err(format!("The removal could not be recorded: {error}"));
-                }
-            }
-            // Dropping the watcher ends the source's sync task.
-            watched.remove(source_id);
+        if shodh_rag::rag_engine::is_chat_uploads(source_id) {
+            return Err(format!(
+                "{source_id} holds files added in chats; it is not a Library source"
+            ));
         }
+        let (recorded_before, others) = self.begin_removal(source_id)?;
         indexing.stop_source(source_id).await;
         let _turn = self.running.lock().await;
         let deleted = rag
             .write()
             .await
-            .delete_library_source(source_id, path)
+            .delete_library_source(source_id, path, &others)
             .await
             .map_err(|e| format!("Failed to delete the documents of the source: {e:#}"));
-        match deleted {
-            Ok(deleted) => {
-                self.store.forget(source_id);
-                Ok(deleted)
+        self.finish_removal(indexing, source_id, recorded_before, deleted)
+    }
+
+    /// The first step of [`Self::remove_source`]: records the removal of
+    /// `source_id` and stops watching it. Returns whether an earlier removal
+    /// had already recorded it, and the folders of the other watched sources.
+    fn begin_removal(&self, source_id: &str) -> Result<(bool, Vec<String>), String> {
+        let mut watched = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+        let mut removed = self.removed.lock().unwrap_or_else(|e| e.into_inner());
+        let recorded_before = removed.contains(source_id);
+        if !recorded_before {
+            removed.insert(source_id.to_string());
+            if let Err(error) = save_removed(&self.removed_file, &removed) {
+                removed.remove(source_id);
+                return Err(format!("The removal could not be recorded: {error}"));
             }
-            Err(error) => {
-                {
-                    let mut removed = self.removed.lock().unwrap_or_else(|e| e.into_inner());
-                    removed.remove(source_id);
-                    if let Err(e) = save_removed(&self.removed_file, &removed) {
-                        tracing::warn!(source_id, error = %e, "removed sources not updated");
-                    }
+        }
+        // Dropping the watcher ends the source's sync task.
+        watched.remove(source_id);
+        let others = watched.values().map(|w| w.path.clone()).collect();
+        Ok((recorded_before, others))
+    }
+
+    /// The last step of [`Self::remove_source`], given how the deletion went.
+    ///
+    /// Either way the manifest goes: after a deletion that failed part way
+    /// (some chunks deleted, others not) it would still stamp the deleted
+    /// files as indexed and unchanged, and the source's syncs would never
+    /// index them again. Without it the next sync counts only the chunks that
+    /// are left (`known_from_index`), so the files that lost theirs are
+    /// indexed again. On failure the source may be watched and indexed again
+    /// (the Library restores its card), unless an earlier, completed removal
+    /// had recorded it: that record stays.
+    fn finish_removal(
+        &self,
+        indexing: &IndexingState,
+        source_id: &str,
+        recorded_before: bool,
+        deleted: Result<usize, String>,
+    ) -> Result<usize, String> {
+        self.store.forget(source_id);
+        if deleted.is_err() && !recorded_before {
+            {
+                let mut removed = self.removed.lock().unwrap_or_else(|e| e.into_inner());
+                removed.remove(source_id);
+                if let Err(e) = save_removed(&self.removed_file, &removed) {
+                    tracing::warn!(source_id, error = %e, "removed sources not updated");
                 }
-                indexing.restore_source(source_id);
-                Err(error)
+            }
+            indexing.restore_source(source_id);
+        }
+        deleted
+    }
+
+    /// Gives the files added in chats that are not owned where they were
+    /// added to the main Ask ([`RAGEngine::hand_over_chat_uploads`]), once
+    /// per run and before any folder sync: a sync of a folder without a
+    /// manifest would otherwise take an upload an older version filed under
+    /// it for one of its own files, find it missing from the folder and
+    /// delete it. The caller holds the syncs' turn. A handover that fails is
+    /// tried again before the next sync.
+    async fn hand_over_uploads_in_turn(&self, app: &AppHandle, rag: &RwLock<RAGEngine>) {
+        use std::sync::atomic::Ordering;
+        if self.uploads_handed_over.load(Ordering::SeqCst) {
+            return;
+        }
+        let workspaces = app
+            .state::<crate::workspace_commands::WorkspaceState>()
+            .run(|store| store.list(true))
+            .await
+            .map(|list| list.into_iter().map(|w| w.id).collect::<HashSet<String>>());
+        if let Err(e) = &workspaces {
+            tracing::warn!(error = %e.message, "workspaces unreadable; their chats' files stay where they are");
+        }
+        match rag
+            .write()
+            .await
+            .hand_over_chat_uploads(workspaces.as_ref().ok())
+            .await
+        {
+            Ok(moved) => {
+                self.uploads_handed_over.store(true, Ordering::SeqCst);
+                if moved > 0 {
+                    tracing::info!(chunks = moved, "files added in chats given to the main Ask");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "files added in chats not given to the main Ask");
             }
         }
     }
@@ -423,6 +496,7 @@ async fn sync_once(app: &AppHandle, source: &FolderSourceRef) {
         return;
     }
     let rag = app.state::<RagState>().rag.clone();
+    state.hand_over_uploads_in_turn(app, &rag).await;
     // A source removed or no longer listed meanwhile stops before its next file.
     let result = sync_folder(&source.path, &source.id, &state.store, &rag, || {
         !state.is_watched(source)
@@ -465,19 +539,17 @@ async fn upgrade_file_once(app: &AppHandle, source: &FolderSourceRef) {
 }
 
 /// Brings the documents of an older index format that none of `owned` (the
-/// Library's source ids) owns up to date, once the files an earlier build
-/// filed under one owner for every chat are the main Ask's. Takes its turn
-/// with the syncs.
+/// Library's source ids) owns up to date, once the files added in chats are
+/// where they belong ([`FolderSyncState::hand_over_uploads_in_turn`]). Takes
+/// its turn with the syncs.
 async fn upgrade_unowned_once(app: &AppHandle, owned: std::collections::BTreeSet<String>) {
     app.state::<BackgroundState>().wait_until_resumed().await;
     let state = app.state::<FolderSyncState>();
     let _turn = state.running.lock().await;
     let rag = app.state::<RagState>().rag.clone();
-    // Files an earlier build filed under one owner for every chat become the
-    // main Ask's, before they are brought up to date with the others.
-    if let Err(e) = rag.write().await.adopt_legacy_chat_uploads().await {
-        tracing::warn!(error = %format!("{e:#}"), "files added in chats not given to the main Ask");
-    }
+    // Files added in chats go where they belong before they are brought up
+    // to date with the others.
+    state.hand_over_uploads_in_turn(app, &rag).await;
     if let Err(e) = upgrade_unowned(&rag, &owned).await {
         tracing::warn!(error = %e, "documents outside the Library not brought up to date");
     }
@@ -827,6 +899,100 @@ mod tests {
             "not indexed again"
         );
         assert!(indexing.begin_run("folder-other").is_some());
+    }
+
+    /// A removal that fails after the source's chunks were partly deleted:
+    /// the card comes back (the source is not recorded as removed, its runs
+    /// may start), and its manifest is gone, so the next sync indexes again
+    /// the files that lost their chunks instead of taking them as current.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_removal_that_fails_part_way_leaves_a_source_that_heals() {
+        let dir = tempfile::tempdir().unwrap();
+        let rag =
+            RwLock::new(crate::agent_tools::testing::engine_with_search_models(dir.path()).await);
+        let state = FolderSyncState::new(dir.path().join("sync"));
+        let indexing = IndexingState::default();
+        let folder = dir.path().join("papers");
+        std::fs::create_dir_all(&folder).unwrap();
+        for (name, text) in [
+            (
+                "a.txt",
+                "The lease notice period is sixty days for either party.",
+            ),
+            (
+                "b.txt",
+                "Visitors park on the street next to the courtyard.",
+            ),
+        ] {
+            std::fs::write(folder.join(name), text).unwrap();
+        }
+        let source = FolderSourceRef {
+            id: "folder-papers".into(),
+            path: folder.display().to_string(),
+        };
+        state.watch_quietly(&source);
+        let first = sync_folder(&source.path, &source.id, state.store(), &rag, || false)
+            .await
+            .unwrap();
+        assert_eq!(first.indexed, 2);
+        assert!(state.store().has_manifest(&source.id));
+
+        // The removal's steps, with a failure injected after the chunks of
+        // the source were deleted (as when the unowned chunks then fail).
+        let (recorded_before, _) = state.begin_removal(&source.id).unwrap();
+        assert!(!recorded_before);
+        indexing.stop_source(&source.id).await;
+        rag.write()
+            .await
+            .delete_by_space_id(&source.id)
+            .await
+            .unwrap();
+        let failed = state.finish_removal(
+            &indexing,
+            &source.id,
+            recorded_before,
+            Err("injected failure".into()),
+        );
+        assert_eq!(failed, Err("injected failure".to_string()));
+        assert!(state.removed_ids().is_empty(), "the card comes back");
+        assert!(indexing.begin_run(&source.id).is_some());
+        assert!(!state.store().has_manifest(&source.id), "no stale stamps");
+
+        // Listed again: its next sync indexes the files whose chunks went.
+        state.watch_quietly(&source);
+        let healed = sync_folder(&source.path, &source.id, state.store(), &rag, || false)
+            .await
+            .unwrap();
+        assert_eq!(healed.indexed, 2, "{healed:?}");
+    }
+
+    /// A failed removal of a source an earlier removal completed keeps the
+    /// earlier record; the owners of chat uploads are refused at once.
+    #[tokio::test]
+    async fn a_failed_removal_keeps_an_earlier_record_and_chat_uploads_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let rag =
+            RwLock::new(crate::agent_tools::testing::engine_with_search_models(dir.path()).await);
+        let state = FolderSyncState::new(dir.path().join("sync"));
+        let indexing = IndexingState::default();
+        state
+            .remove_source(&rag, &indexing, "folder-old", None)
+            .await
+            .unwrap();
+        let (recorded_before, _) = state.begin_removal("folder-old").unwrap();
+        assert!(recorded_before);
+        let _ = state.finish_removal(&indexing, "folder-old", recorded_before, Err("x".into()));
+        assert_eq!(state.removed_ids(), ["folder-old"]);
+        assert!(indexing.begin_run("folder-old").is_none());
+
+        for owner in ["chat-uploads:main", "chat-uploads:ws-a"] {
+            assert!(state
+                .remove_source(&rag, &indexing, owner, None)
+                .await
+                .is_err());
+        }
+        assert_eq!(state.removed_ids(), ["folder-old"], "nothing recorded");
+        assert!(!indexing.is_removed("chat-uploads:main"));
     }
 
     /// The removal waits for the sync that holds the turn, so that sync

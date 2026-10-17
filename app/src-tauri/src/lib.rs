@@ -7,6 +7,7 @@ mod connect_commands;
 mod connection_health;
 mod database_commands;
 mod document_upload_commands;
+mod durable_file;
 mod enhanced_rag_commands;
 mod file_watcher;
 mod graph_commands;
@@ -31,6 +32,7 @@ mod shutdown;
 mod source_viewer_commands;
 mod space_manager;
 mod storage_commands;
+mod store_notices;
 mod table_model_commands;
 mod ui_state_commands;
 mod updater;
@@ -189,6 +191,9 @@ pub fn run() {
                 .build()?;
             }
             tracing::info!("Main window created");
+            // Notices about damaged data files reach the window from here on;
+            // earlier ones are listed by `store_notices`.
+            store_notices::attach(app.handle());
 
             // Get app data directory for persistent storage. Without it
             // nothing can be stored, so this is the one fatal setup error.
@@ -297,13 +302,20 @@ pub fn run() {
                 {
                     tracing::warn!("Environment key migration failed: {}", e);
                 }
+                // A key saved or removed while the store is read is not
+                // overwritten with the copy read before.
+                let since = llm_state
+                    .api_keys
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .generations();
                 match tokio::task::spawn_blocking(api_key_store::load_all).await {
                     Ok(stored) => {
                         let merged = llm_state
                             .api_keys
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
-                            .merge_missing(stored);
+                            .merge_missing(stored, &since);
                         if merged > 0 {
                             tracing::info!(
                                 "Loaded {} provider API key(s) from the OS credential store",
@@ -616,6 +628,7 @@ pub fn run() {
             // Document Upload commands
             document_upload_commands::upload_document_file,
             document_upload_commands::save_temp_file,
+            document_upload_commands::discard_upload,
             // Agent sessions (omp harness)
             agent_session_commands::agent_start,
             agent_session_commands::agent_send,
@@ -744,6 +757,8 @@ pub fn run() {
             background::set_agent_idle_minutes,
             background::set_start_with_windows,
             shutdown::quit_ready,
+            // Damaged data files (backup used, settings reset)
+            store_notices::store_notices,
         ])
         .build(tauri::generate_context!());
 
@@ -767,6 +782,12 @@ pub fn run() {
             let sessions = app_handle.state::<agent_session_commands::AgentSessions>();
             tauri::async_runtime::block_on(sessions.shutdown_all());
         }
+        // macOS: the Dock icon brings back a window closed to the tray.
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } => background::on_reopen(app_handle, has_visible_windows),
         _ => {}
     });
 }

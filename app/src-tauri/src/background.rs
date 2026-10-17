@@ -172,6 +172,22 @@ pub fn on_second_launch(app: &AppHandle, args: &[String]) {
     show_main(app);
 }
 
+/// macOS: the Dock icon (or Finder) opened Shodh while it runs. macOS hands
+/// that to the running process as a reopen, never as a second launch, so
+/// with the window closed to the tray this is the only way back to it.
+/// Nothing happens while a window is visible or the app is quitting.
+#[cfg(target_os = "macos")]
+pub fn on_reopen(app: &AppHandle, has_visible_windows: bool) {
+    let quitting = app
+        .state::<BackgroundState>()
+        .quitting
+        .load(Ordering::SeqCst);
+    if has_visible_windows || quitting {
+        return;
+    }
+    show_main(app);
+}
+
 /// Whether this launch came from the autostart entry.
 pub fn started_in_background() -> bool {
     std::env::args().any(|a| a == BACKGROUND_FLAG)

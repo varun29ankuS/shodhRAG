@@ -10,6 +10,7 @@ import { ThemeProvider, useTheme } from "./contexts/ThemeContext";
 import { SidebarProvider } from "./contexts/SidebarContext";
 import { SearchModelsProvider } from "./features/setup/SearchModelsContext";
 import ErrorBoundary from "./components/ErrorBoundary";
+import { StoreNoticeToasts } from "./components/StoreNoticeToasts";
 import { Toaster } from "sonner";
 import { MotionConfig } from "framer-motion";
 import { initErrorReporting } from "./lib/errorReporting";
@@ -77,6 +78,7 @@ if (path === '/print-view') {
                 <App />
               </SearchModelsProvider>
               <ThemedToaster />
+              <StoreNoticeToasts />
             </SidebarProvider>
           </ThemeProvider>
         </ErrorBoundary>

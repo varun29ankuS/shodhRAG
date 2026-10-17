@@ -1,6 +1,7 @@
 //! `search_documents`: hybrid search over the indexed documents.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -16,7 +17,9 @@ use super::{
 use crate::harness::events::RiskTier;
 use crate::harness::protocol::ToolLoadMode;
 use crate::harness::truncate_chars;
-use crate::rag_engine::page_numbers_from_metadata;
+use crate::rag_engine::{
+    normalize_source_path, on_disk_spelling, page_numbers_from_metadata, DISPLAY_PATH_KEY,
+};
 use crate::types::{ComprehensiveResult, MetadataFilter, SourceSet};
 use crate::RAGEngine;
 
@@ -131,14 +134,24 @@ struct Passage {
     /// sent in the step detail, never in the text the model reads.
     #[serde(skip)]
     regions: Option<Value>,
+    /// The file's path as the file system spells it, for the UI only (`path`
+    /// is the index's identity, lowercased on Windows): sent in the step
+    /// detail, never in the text the model reads.
+    #[serde(skip)]
+    display_path: Option<String>,
 }
 
 impl Passage {
     /// The passage as shown to the UI: the model's fields plus `regions`.
     fn detail_value(&self) -> Value {
         let mut value = serde_json::to_value(self).unwrap_or(Value::Null);
-        if let (Some(regions), Some(map)) = (&self.regions, value.as_object_mut()) {
-            map.insert("regions".to_string(), regions.clone());
+        if let Some(map) = value.as_object_mut() {
+            if let Some(regions) = &self.regions {
+                map.insert("regions".to_string(), regions.clone());
+            }
+            if let Some(display_path) = &self.display_path {
+                map.insert("display_path".to_string(), json!(display_path));
+            }
         }
         value
     }
@@ -152,8 +165,9 @@ fn passage_regions(result: &ComprehensiveResult) -> Option<Value> {
     Some(value)
 }
 
-/// What the user sees for a source: the file name for files, and the record's
-/// title for in-app records (`calendar://task/<id>` would otherwise show its id).
+/// What the user sees for a source: the file name for files, in the case the
+/// file has ([`original_case_name`]), and the record's title for in-app
+/// records (`calendar://task/<id>` would otherwise show its id).
 fn display_name(path: &str, result: &ComprehensiveResult) -> String {
     if let Some((scheme, rest)) = path.split_once("://") {
         let title = result
@@ -176,11 +190,91 @@ fn display_name(path: &str, result: &ComprehensiveResult) -> String {
             (k, None) => format!("{k} (untitled)"),
         };
     }
-    path.rsplit(['/', '\\'])
-        .next()
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| result.citation.title.clone())
+    match path.rsplit(['/', '\\']).next().filter(|s| !s.is_empty()) {
+        Some(name) => original_case_name(name, result),
+        None => result.citation.title.clone(),
+    }
+}
+
+/// The file name `name` (the last part of a source path, an identity
+/// lowercased on Windows: "spann - x.pdf") in the case the index also keeps
+/// it: the chunk's `filename`, else its title (the file's stem when a folder
+/// is indexed) with `name`'s extension, else `name`. A candidate is used only
+/// when it names the same file in another case, never another name (a PDF's
+/// own title). The frontend labels search results the same way
+/// (`originalCaseName` in `app/src/features/ask/searchResults.ts`).
+fn original_case_name(name: &str, result: &ComprehensiveResult) -> String {
+    let extension = name
+        .rfind('.')
+        .filter(|&dot| dot > 0)
+        .map_or("", |dot| &name[dot..]);
+    let titled = |title: &str| {
+        let title = title.trim();
+        (!title.is_empty()).then(|| format!("{title}{extension}"))
+    };
+    let key = name.to_lowercase();
+    result
+        .metadata
+        .get("filename")
+        .map(|f| f.trim().to_string())
+        .into_iter()
+        .chain(
+            result
+                .metadata
+                .get("title")
+                .and_then(|t| titled(t.as_str())),
+        )
+        .chain(titled(result.citation.title.as_str()))
+        .find(|candidate| !candidate.is_empty() && candidate.to_lowercase() == key)
+        .unwrap_or_else(|| name.to_string())
+}
+
+/// The chunk's stored [`DISPLAY_PATH_KEY`] when it spells `path`, the file
+/// the passage is from; `None` for in-app records.
+fn stored_display_path(path: &str, result: &ComprehensiveResult) -> Option<String> {
+    if path.is_empty() || path.contains("://") {
+        return None;
+    }
+    let identity = normalize_source_path(Path::new(path));
+    result
+        .metadata
+        .get(DISPLAY_PATH_KEY)
+        .filter(|d| normalize_source_path(Path::new(d.as_str())) == identity)
+        .cloned()
+}
+
+/// Fills the `display_path` of passages from files indexed before it was
+/// stored with their chunks, resolving each file once from disk. A file that
+/// cannot be resolved keeps none; the UI then shows `path`.
+async fn resolve_display_paths(passages: &mut [Passage]) {
+    let missing: BTreeSet<String> = passages
+        .iter()
+        .filter(|p| p.display_path.is_none() && !p.path.is_empty() && !p.path.contains("://"))
+        .map(|p| p.path.clone())
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    let resolved = tokio::task::spawn_blocking(move || {
+        missing
+            .into_iter()
+            .filter_map(|path| {
+                let display = on_disk_spelling(Path::new(&path))?;
+                Some((path, display))
+            })
+            .collect::<HashMap<String, String>>()
+    })
+    .await;
+    let resolved = match resolved {
+        Ok(resolved) => resolved,
+        Err(e) => {
+            tracing::warn!("resolving the passages' file paths was interrupted: {e}");
+            return;
+        }
+    };
+    for p in passages.iter_mut().filter(|p| p.display_path.is_none()) {
+        p.display_path = resolved.get(&p.path).cloned();
+    }
 }
 
 fn passage(n: u32, result: &ComprehensiveResult, max_chars: usize) -> Passage {
@@ -213,6 +307,7 @@ fn passage(n: u32, result: &ComprehensiveResult, max_chars: usize) -> Passage {
         score: result.score,
         text: truncate_chars(result.snippet.trim(), max_chars),
         regions: passage_regions(result),
+        display_path: stored_display_path(&path, result),
     }
 }
 
@@ -615,11 +710,12 @@ impl HostTool for SearchDocumentsTool {
         let count = u32::try_from(results.len()).unwrap_or(u32::MAX);
         let first = ctx.reserve_passages(count);
         let budget = passage_budget(results.len());
-        let passages: Vec<Passage> = results
+        let mut passages: Vec<Passage> = results
             .iter()
             .zip(first..)
             .map(|(r, n)| passage(n, r, budget))
             .collect();
+        resolve_display_paths(&mut passages).await;
         for p in &passages {
             ctx.record_passage(CitedPassage {
                 n: p.n,
@@ -773,6 +869,114 @@ mod tests {
         let for_ui = p.detail_value();
         assert_eq!(for_ui["regions"][0]["page"], 5);
         assert_eq!(for_ui["regions"][0]["x0"], 72.0);
+    }
+
+    fn file_result(source: &str, metadata: &[(&str, &str)], title: &str) -> ComprehensiveResult {
+        ComprehensiveResult {
+            id: Uuid::nil(),
+            score: 0.5,
+            metadata: metadata
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            citation: Citation {
+                title: title.into(),
+                source: source.into(),
+                ..Citation::default()
+            },
+            snippet: "Graph-based ANN search on disk.".into(),
+            source_index: "hybrid".into(),
+        }
+    }
+
+    /// Sources are identities, lowercased on Windows; a passage names its
+    /// file in the case the index also keeps (`filename`, else the title
+    /// with the file's extension), and never by a name of another file.
+    #[test]
+    fn passages_name_files_in_their_original_case() {
+        let source = "c:/research/papers/spann - billion-scale ann search.pdf";
+        let by_filename = file_result(
+            source,
+            &[
+                ("filename", "SPANN - Billion-scale ANN Search.pdf"),
+                ("title", "spann"),
+            ],
+            "",
+        );
+        assert_eq!(
+            passage(1, &by_filename, MAX_PASSAGE_CHARS).file,
+            "SPANN - Billion-scale ANN Search.pdf"
+        );
+
+        let by_title = file_result(
+            source,
+            &[("title", " SPANN - Billion-scale ANN Search ")],
+            "",
+        );
+        assert_eq!(
+            passage(1, &by_title, MAX_PASSAGE_CHARS).file,
+            "SPANN - Billion-scale ANN Search.pdf"
+        );
+
+        let by_citation = file_result(source, &[], "SPANN - Billion-scale ANN Search");
+        assert_eq!(
+            passage(1, &by_citation, MAX_PASSAGE_CHARS).file,
+            "SPANN - Billion-scale ANN Search.pdf"
+        );
+
+        // A PDF's own title names something else: the path's name is kept.
+        let other = file_result(
+            source,
+            &[
+                ("filename", "draft3.pdf"),
+                ("title", "Microsoft Word - draft3"),
+            ],
+            "Microsoft Word - draft3",
+        );
+        assert_eq!(
+            passage(1, &other, MAX_PASSAGE_CHARS).file,
+            "spann - billion-scale ann search.pdf"
+        );
+    }
+
+    /// A stored display path that names another file is never shown, and a
+    /// display path never reaches the text the model reads.
+    #[test]
+    fn display_paths_of_other_files_are_dropped_and_never_sent_to_the_model() {
+        let result = file_result(
+            "c:/research/papers/spann.pdf",
+            &[("display_path", "D:\\Elsewhere\\Other.pdf")],
+            "",
+        );
+        let p = passage(1, &result, MAX_PASSAGE_CHARS);
+        assert!(p.display_path.is_none());
+        assert!(p.detail_value().get("display_path").is_none());
+        assert!(serde_json::to_value(&p)
+            .unwrap()
+            .get("display_path")
+            .is_none());
+    }
+
+    /// On Windows a passage's path is the lowercase identity; the UI is sent
+    /// the stored spelling with the case on disk, the model is not.
+    #[cfg(windows)]
+    #[test]
+    fn passages_carry_the_stored_spelling_for_the_ui_only() {
+        let result = file_result(
+            "c:/research/papers/spann.pdf",
+            &[("display_path", "C:\\Research\\papers\\SPANN.pdf")],
+            "",
+        );
+        let p = passage(1, &result, MAX_PASSAGE_CHARS);
+        assert_eq!(p.path, "c:/research/papers/spann.pdf");
+        assert_eq!(
+            p.detail_value()["display_path"],
+            "C:\\Research\\papers\\SPANN.pdf"
+        );
+        assert!(serde_json::to_value(&p)
+            .unwrap()
+            .get("display_path")
+            .is_none());
     }
 
     #[test]

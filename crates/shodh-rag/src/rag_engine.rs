@@ -264,10 +264,33 @@ fn chunk_in_context(
 /// is stored (`context`) for the reranker and for rebuilding the keyword index.
 /// 3: contexts name a file by its name, never its folders ([`source_label`]),
 /// and carry only the names in the document's opening, on every chunk.
+///
+/// A change to the chunk text itself (what is read from a file and how it
+/// is cut) raises [`CHUNKER_VERSION`] instead: a chunk of an older format is
+/// brought up to date from its stored text where it can be
+/// ([`RAGEngine::upgrade_in_place`]), which a change of the text cannot be.
 pub const INDEX_FORMAT: u32 = 3;
 
 /// Chunk metadata key: the [`INDEX_FORMAT`] a chunk was indexed with.
 pub const INDEX_FORMAT_KEY: &str = "index_format";
+
+/// Version of how a file's text is read and cut into chunks (the parsers,
+/// [`TextChunker`] and [`StructureChunker`]). Stored with every chunk
+/// (`chunker_version`); chunks without it are version 1. Raise it whenever
+/// the chunk text made from the same file changes: files whose chunks are of
+/// an older version are read and chunked again in full
+/// ([`RAGEngine::rechunk_sources`]), never upgraded in place from their old
+/// text.
+///
+/// 1: the chunkers before the parsing fixes (labelled `structure-v1`).
+/// 2: chunking always makes progress and never drops short text, CJK or
+/// one-word units; a page too short for a chunk joins its neighbour; no
+/// redundant tail chunks; HTML is read on byte offsets with comments, CDATA
+/// and C1 references handled; `.htm` files are indexed.
+pub const CHUNKER_VERSION: u32 = 2;
+
+/// Chunk metadata key: the [`CHUNKER_VERSION`] a chunk was made with.
+pub const CHUNKER_VERSION_KEY: &str = "chunker_version";
 
 /// Chunk metadata key: the context the chunk was embedded and keyword-indexed
 /// with (see [`ContextualChunkResult::context`]).
@@ -328,6 +351,12 @@ fn current_format_excluded() -> String {
     format!("metadata_json NOT LIKE '%\"{INDEX_FORMAT_KEY}\":\"{INDEX_FORMAT}\"%'")
 }
 
+/// A LanceDB filter for the chunks not made with [`CHUNKER_VERSION`], matched
+/// as [`current_format_excluded`] matches the format.
+fn current_chunker_excluded() -> String {
+    format!("metadata_json NOT LIKE '%\"{CHUNKER_VERSION_KEY}\":\"{CHUNKER_VERSION}\"%'")
+}
+
 /// Embed chunks and build the storage records for one document without
 /// touching the stores. Fails (with nothing written) if embedding fails.
 fn prepare_chunks(
@@ -374,6 +403,7 @@ fn prepare_chunks(
 
         let mut per_chunk_meta = metadata.clone();
         per_chunk_meta.insert(INDEX_FORMAT_KEY.to_string(), INDEX_FORMAT.to_string());
+        per_chunk_meta.insert(CHUNKER_VERSION_KEY.to_string(), CHUNKER_VERSION.to_string());
         per_chunk_meta.insert(CHUNK_CONTEXT_KEY.to_string(), chunk.context.clone());
         if let Some(heading) = &chunk.heading {
             per_chunk_meta.insert("chunk_type".to_string(), heading.clone());
@@ -1164,6 +1194,8 @@ pub struct RAGEngine {
     source_ranker: Option<Arc<dyn crate::search::graph_fusion::SourceRanker>>,
     /// [`Self::stale_sources`] found every chunk in the current [`INDEX_FORMAT`].
     no_stale_chunks: Arc<std::sync::atomic::AtomicBool>,
+    /// [`Self::rechunk_sources`] found every chunk of the current [`CHUNKER_VERSION`].
+    no_rechunk_chunks: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl RAGEngine {
@@ -1241,6 +1273,7 @@ impl RAGEngine {
             scan_reader_queue: None,
             source_ranker: None,
             no_stale_chunks: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            no_rechunk_chunks: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         if let Some(models) = models {
             if let Err(e) = engine.attach_search_models(models) {
@@ -2479,6 +2512,44 @@ impl RAGEngine {
         Ok(stale)
     }
 
+    /// The indexed documents with chunks of an older [`CHUNKER_VERSION`]
+    /// than this build makes: their text was read or cut another way, so
+    /// each is read and chunked again in full by whatever indexed it (folder
+    /// sync, the Library's file sources, the calendar). An upgrade in place
+    /// cannot help them ([`Self::upgrade_in_place`]).
+    pub async fn rechunk_sources(&self) -> Result<Vec<crate::storage::DocumentSourceRow>> {
+        // Nothing writes an older version, so once none is left none comes back.
+        if self
+            .no_rechunk_chunks
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Ok(Vec::new());
+        }
+        let outdated = self
+            .store
+            .document_sources_where(Some(&current_chunker_excluded()))
+            .await?;
+        if outdated.is_empty() {
+            self.no_rechunk_chunks
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(outdated)
+    }
+
+    /// The indexed documents to index again: those of [`Self::stale_sources`]
+    /// and of [`Self::rechunk_sources`], each once.
+    pub async fn outdated_sources(&self) -> Result<Vec<crate::storage::DocumentSourceRow>> {
+        let mut rows = self.stale_sources().await?;
+        let mut seen: std::collections::HashSet<String> =
+            rows.iter().map(|row| row.doc_id.clone()).collect();
+        for row in self.rechunk_sources().await? {
+            if seen.insert(row.doc_id.clone()) {
+                rows.push(row);
+            }
+        }
+        Ok(rows)
+    }
+
     /// The indexed documents with chunks that name no OCR engine
     /// ([`crate::processing::parser::OCR_ENGINE_KEY`]): every document that
     /// was not read by OCR, and scans indexed before the engine was recorded.
@@ -2511,7 +2582,27 @@ impl RAGEngine {
     /// their OCR was cached are not read by OCR again. Possible for structure
     /// chunks only, whose context depends on nothing else; returns false,
     /// changing nothing, when a chunk is of another kind or there are none.
+    /// Also false when a chunk is of an older [`CHUNKER_VERSION`]: its text
+    /// is what the file is to be read and chunked again for, not kept.
     pub async fn upgrade_in_place(&mut self, source: &str) -> Result<bool> {
+        self.upgrade_in_place_with(source, false).await
+    }
+
+    /// [`Self::upgrade_in_place`] for a document whose chunks of an older
+    /// [`CHUNKER_VERSION`] are kept on purpose: a scan that could be chunked
+    /// again only by reading it with OCR again (its reading is not in the OCR
+    /// cache). Their contexts are brought to the current [`INDEX_FORMAT`];
+    /// their text and their chunker version stay as they are.
+    pub async fn upgrade_format_keeping_chunks(&mut self, source: &str) -> Result<bool> {
+        self.upgrade_in_place_with(source, true).await
+    }
+
+    async fn upgrade_in_place_with(
+        &mut self,
+        source: &str,
+        older_chunks_kept: bool,
+    ) -> Result<bool> {
+        let current_chunker = CHUNKER_VERSION.to_string();
         let embedder = self
             .embeddings
             .clone()
@@ -2543,6 +2634,9 @@ impl RAGEngine {
             for hit in document {
                 let meta: HashMap<String, String> = serde_json::from_str(&hit.metadata_json)
                     .with_context(|| format!("chunk {} has unreadable metadata", hit.id))?;
+                if !older_chunks_kept && meta.get(CHUNKER_VERSION_KEY) != Some(&current_chunker) {
+                    return Ok(false);
+                }
                 let section_path: Vec<String> = meta
                     .get("section_path")
                     .map(|path| path.split(" > ").map(str::to_string).collect())
@@ -2903,8 +2997,9 @@ impl RAGEngine {
 #[cfg(test)]
 impl RAGEngine {
     /// Stores `file` as a build of [`INDEX_FORMAT`] 1 did: chunks without a
-    /// format or a stored context, keyword-indexed with their text only.
-    /// For tests of the upgrade from an index made by an earlier version.
+    /// format or a stored context, keyword-indexed with their text only. The
+    /// chunker version is kept: for tests of an upgrade from an index made by
+    /// an earlier version whose chunk text needs no change, only the context.
     pub(crate) async fn commit_file_as_format_one(
         &mut self,
         mut file: PreparedFile,
@@ -2926,6 +3021,39 @@ impl RAGEngine {
         self.no_stale_chunks
             .store(false, std::sync::atomic::Ordering::Relaxed);
         self.commit_file(file).await
+    }
+
+    /// Stores `file` as a build before [`CHUNKER_VERSION`] 2 did: chunks
+    /// without a chunker version, in the current [`INDEX_FORMAT`], each with
+    /// the text `old_text` makes of the text chunked now (an earlier chunker
+    /// that lost part of it). For tests of the re-chunking of such an index.
+    pub(crate) async fn commit_file_as_chunker_one(
+        &mut self,
+        mut file: PreparedFile,
+        old_text: impl Fn(&str) -> String,
+    ) -> Result<Vec<Uuid>> {
+        for record in &mut file.document.records {
+            let mut metadata: HashMap<String, String> =
+                serde_json::from_str(&record.metadata_json)?;
+            metadata.remove(CHUNKER_VERSION_KEY);
+            record.metadata_json = serde_json::to_string(&metadata)?;
+            record.text = old_text(&record.text);
+        }
+        self.no_rechunk_chunks
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.commit_file(file).await
+    }
+}
+
+#[cfg(test)]
+impl PreparedFile {
+    /// The text of each chunk prepared, in order.
+    pub(crate) fn chunk_texts(&self) -> Vec<String> {
+        self.document
+            .records
+            .iter()
+            .map(|record| record.text.clone())
+            .collect()
     }
 }
 
@@ -3646,6 +3774,10 @@ Language models trained on long documents reach lower perplexity.
         let first = chunks.iter().find(|c| c.text.contains("Saffron")).unwrap();
         let metadata: HashMap<String, String> = serde_json::from_str(&first.metadata_json).unwrap();
         assert!(metadata[CHUNK_CONTEXT_KEY].starts_with("Document: \"lease\". Opening: Lessor:"));
+        assert_eq!(
+            metadata.get(CHUNKER_VERSION_KEY),
+            Some(&CHUNKER_VERSION.to_string())
+        );
         assert!(engine.stale_sources().await.unwrap().is_empty());
     }
 
@@ -3737,6 +3869,81 @@ Language models trained on long documents reach lower perplexity.
         assert_eq!(old_ids, new_ids);
         assert!(engine.stale_sources().await.unwrap().is_empty());
         assert!(!engine.upgrade_in_place("no such source").await.unwrap());
+    }
+
+    /// Chunks record the chunker version they were made with. Chunks of an
+    /// older version are listed for re-chunking and are never upgraded in
+    /// place (their text is what changed), unless kept on purpose: then only
+    /// their contexts change, and their text and version stay.
+    #[tokio::test]
+    async fn chunks_of_an_older_chunker_are_rechunked_never_upgraded_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let lease = dir.path().join("lease.md");
+        std::fs::write(&lease, LEASE).unwrap();
+        let source = normalize_source_path(&lease);
+        engine
+            .add_document_from_file(&lease, HashMap::new())
+            .await
+            .unwrap();
+        let chunks = engine.store.list_chunks(None, 100).await.unwrap();
+        assert!(!chunks.is_empty());
+        for chunk in &chunks {
+            let metadata: HashMap<String, String> =
+                serde_json::from_str(&chunk.metadata_json).unwrap();
+            assert_eq!(
+                metadata.get(CHUNKER_VERSION_KEY),
+                Some(&CHUNKER_VERSION.to_string())
+            );
+        }
+        assert!(engine.rechunk_sources().await.unwrap().is_empty());
+        assert!(engine.outdated_sources().await.unwrap().is_empty());
+
+        let prepared = engine
+            .file_preparer()
+            .unwrap()
+            .prepare(&lease, HashMap::new())
+            .unwrap();
+        engine
+            .commit_file_as_chunker_one(prepared, |text| format!("{text} (as chunked before)"))
+            .await
+            .unwrap();
+        let rechunk = engine.rechunk_sources().await.unwrap();
+        assert_eq!(rechunk.len(), 1);
+        assert_eq!(rechunk[0].source, source);
+        assert!(
+            engine.stale_sources().await.unwrap().is_empty(),
+            "the format is current"
+        );
+        assert_eq!(engine.outdated_sources().await.unwrap().len(), 1);
+        assert!(
+            !engine.upgrade_in_place(&source).await.unwrap(),
+            "never upgraded in place"
+        );
+
+        // Kept on purpose: the text and the version stay, the contexts move on.
+        let before = engine.store.list_chunks(None, 100).await.unwrap();
+        assert!(engine.upgrade_format_keeping_chunks(&source).await.unwrap());
+        let kept = engine.store.list_chunks(None, 100).await.unwrap();
+        let texts = |chunks: &[crate::storage::SearchHit]| -> Vec<String> {
+            let mut texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
+            texts.sort();
+            texts
+        };
+        assert_eq!(texts(&kept), texts(&before));
+        assert!(kept.iter().all(|c| c.text.ends_with("(as chunked before)")));
+        assert_eq!(engine.rechunk_sources().await.unwrap().len(), 1);
+
+        // Indexed again from the file: the text of the chunker now.
+        engine
+            .add_document_from_file(&lease, HashMap::new())
+            .await
+            .unwrap();
+        assert!(engine.rechunk_sources().await.unwrap().is_empty());
+        let fresh = engine.store.list_chunks(None, 100).await.unwrap();
+        assert!(fresh
+            .iter()
+            .all(|c| !c.text.contains("(as chunked before)")));
     }
 
     /// No context names a file's folders: not for plain text (window chunks),

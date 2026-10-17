@@ -225,7 +225,8 @@ pub async fn deindex_event(rag: &mut RAGEngine, event_id: &str) -> Result<()> {
 }
 
 /// Index the tasks and events that have no entry in the index yet, or one of
-/// an older index format ([`crate::rag_engine::INDEX_FORMAT`]). Run at
+/// an older index format ([`crate::rag_engine::INDEX_FORMAT`]) or chunker
+/// version ([`crate::rag_engine::CHUNKER_VERSION`]). Run at
 /// startup and after the search models are installed, so the calendar is
 /// searchable after a fresh index build. Items already indexed in the current
 /// format are left as they are: edits are indexed when they are made (see [`index_task`] and
@@ -238,10 +239,11 @@ pub async fn index_missing(
     events: &[CalendarEvent],
     space_id: &str,
 ) -> Result<(usize, usize)> {
-    // Items indexed in an older index format count as missing: indexing one
-    // again replaces its chunks.
+    // Items indexed in an older index format or chunker version count as
+    // missing: indexing one again chunks it anew and replaces its chunks. One
+    // that fails is logged, and the others go on.
     let stale: std::collections::HashSet<String> = rag
-        .stale_sources()
+        .outdated_sources()
         .await?
         .into_iter()
         .map(|row| row.source)

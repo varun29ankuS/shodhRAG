@@ -587,6 +587,7 @@ mod tests {
                 missing_numbers: vec![],
                 closest: None,
                 closest_score: None,
+                suggested: None,
             }],
             needs: vec![],
             message_ids: message_ids.iter().map(|s| s.to_string()).collect(),

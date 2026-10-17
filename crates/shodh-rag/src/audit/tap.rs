@@ -329,6 +329,7 @@ mod tests {
                 missing_numbers: vec![],
                 closest: None,
                 closest_score: None,
+                suggested: None,
             }],
             needs: vec![],
             message_ids: vec!["m2".into()],

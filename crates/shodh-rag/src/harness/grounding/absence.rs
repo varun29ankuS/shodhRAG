@@ -302,6 +302,7 @@ pub fn flag_unverified_absence(
                     missing_numbers: Vec::new(),
                     closest: None,
                     closest_score: None,
+                    suggested: None,
                 }),
                 (None, None) => {}
             }
@@ -486,6 +487,7 @@ mod tests {
                 missing_numbers: Vec::new(),
                 closest: None,
                 closest_score: None,
+                suggested: None,
             };
             let out = flag_unverified_absence(&messages, &searched, vec![supported.clone()]);
             assert_eq!(out, vec![supported], "{text}");
@@ -510,6 +512,7 @@ mod tests {
             missing_numbers: Vec::new(),
             closest: None,
             closest_score: None,
+            suggested: None,
         };
         let claims = split_claims(&messages[0].text);
         let anchors: Vec<String> = claims.iter().map(|c| c.anchor.clone()).collect();

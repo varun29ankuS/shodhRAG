@@ -152,6 +152,13 @@ pub struct ClaimCheck {
     /// For a flagged claim: the passage that comes closest to supporting it.
     pub closest: Option<u32>,
     pub closest_score: Option<f32>,
+    /// For an unsupported claim: a passage of the run that supports it at
+    /// the supported threshold although the cited ones do not (the answer
+    /// cited the wrong passage). The outcome stays unsupported; the
+    /// transcript offers to cite this passage instead. Absent in reports
+    /// saved before it existed.
+    #[serde(default)]
+    pub suggested: Option<u32>,
 }
 
 /// Counts over the checked claims of one answer.
@@ -649,6 +656,7 @@ mod tests {
                 missing_numbers: vec!["90".into()],
                 closest: Some(2),
                 closest_score: Some(0.41),
+                suggested: Some(2),
             }],
             needs: vec![NeedCheck {
                 id: "2".into(),
@@ -722,8 +730,26 @@ mod tests {
         assert_eq!(value["claims"][0]["kind"], "sentence");
         assert_eq!(value["method"], "entailment");
         assert_eq!(value["needs"][0]["state"], "missing");
+        // Optional in the TS mirror: reports saved before it existed lack it.
+        assert_eq!(value["claims"][0]["suggested"], 2);
+        assert!(
+            TS_CONTRACT.contains("suggested?:"),
+            "events.ts is missing report key suggested"
+        );
         let back: GroundingReport = serde_json::from_value(value).unwrap();
         assert_eq!(back, sample_report());
+    }
+
+    #[test]
+    fn claims_saved_before_the_suggested_passage_existed_still_load() {
+        let mut value = serde_json::to_value(sample_report()).unwrap();
+        value["claims"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("suggested");
+        let back: GroundingReport = serde_json::from_value(value).unwrap();
+        assert_eq!(back.claims[0].suggested, None);
+        assert_eq!(back.claims[0].closest, Some(2));
     }
 
     #[test]

@@ -19,11 +19,21 @@
           }
         },
         {
-          "at": 1,
-          "scale": 1.0,
+          "at": 0.18,
+          "scale": 1.85,
           "focus": {
-            "x": 0.4,
-            "y": 0.4,
+            "x": 0.465,
+            "y": 0.76,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 1,
+          "scale": 2.0,
+          "focus": {
+            "x": 0.46,
+            "y": 0.76,
             "w": 0.2,
             "h": 0.2
           }
@@ -31,7 +41,7 @@
       ]
     },
     "answer": {
-      "label": "The answer streams in with citation badges",
+      "label": "The answer streams in, cited and grounded",
       "files": [
         "clip.mp4"
       ],
@@ -39,20 +49,30 @@
       "keyframes": [
         {
           "at": 0,
-          "scale": 1.0,
+          "scale": 1.45,
           "focus": {
-            "x": 0.4,
-            "y": 0.4,
+            "x": 0.46,
+            "y": 0.22,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 0.6,
+          "scale": 1.6,
+          "focus": {
+            "x": 0.46,
+            "y": 0.2,
             "w": 0.2,
             "h": 0.2
           }
         },
         {
           "at": 1,
-          "scale": 1.0,
+          "scale": 2.0,
           "focus": {
             "x": 0.4,
-            "y": 0.4,
+            "y": 0.35,
             "w": 0.2,
             "h": 0.2
           }
@@ -68,20 +88,40 @@
       "keyframes": [
         {
           "at": 0,
-          "scale": 1.0,
+          "scale": 1.7,
           "focus": {
-            "x": 0.4,
-            "y": 0.4,
+            "x": 0.5,
+            "y": 0.3,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 0.3,
+          "scale": 1.7,
+          "focus": {
+            "x": 0.52,
+            "y": 0.3,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 0.5,
+          "scale": 1.6,
+          "focus": {
+            "x": 0.7,
+            "y": 0.5,
             "w": 0.2,
             "h": 0.2
           }
         },
         {
           "at": 1,
-          "scale": 1.0,
+          "scale": 2.0,
           "focus": {
-            "x": 0.4,
-            "y": 0.4,
+            "x": 0.7,
+            "y": 0.52,
             "w": 0.2,
             "h": 0.2
           }
@@ -89,7 +129,7 @@
       ]
     },
     "ground": {
-      "label": "A claim the source does not support is flagged",
+      "label": "Statements the source does not back are flagged",
       "files": [
         "clip.mp4"
       ],
@@ -97,20 +137,40 @@
       "keyframes": [
         {
           "at": 0,
-          "scale": 1.0,
+          "scale": 2.1,
           "focus": {
-            "x": 0.4,
-            "y": 0.4,
+            "x": 0.37,
+            "y": 0.48,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 0.45,
+          "scale": 2.2,
+          "focus": {
+            "x": 0.37,
+            "y": 0.49,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 0.62,
+          "scale": 1.5,
+          "focus": {
+            "x": 0.45,
+            "y": 0.52,
             "w": 0.2,
             "h": 0.2
           }
         },
         {
           "at": 1,
-          "scale": 1.0,
+          "scale": 1.75,
           "focus": {
-            "x": 0.4,
-            "y": 0.4,
+            "x": 0.46,
+            "y": 0.6,
             "w": 0.2,
             "h": 0.2
           }
@@ -118,7 +178,7 @@
       ]
     },
     "deeper": {
-      "label": "A go-deeper mark opens a side thread that answers it",
+      "label": "Select a phrase, ask about it beside the answer",
       "files": [
         "clip.mp4"
       ],
@@ -126,20 +186,40 @@
       "keyframes": [
         {
           "at": 0,
-          "scale": 1.0,
+          "scale": 1.9,
           "focus": {
-            "x": 0.4,
-            "y": 0.4,
+            "x": 0.5,
+            "y": 0.25,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 0.3,
+          "scale": 2.1,
+          "focus": {
+            "x": 0.52,
+            "y": 0.25,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 0.58,
+          "scale": 1.25,
+          "focus": {
+            "x": 0.45,
+            "y": 0.35,
             "w": 0.2,
             "h": 0.2
           }
         },
         {
           "at": 1,
-          "scale": 1.0,
+          "scale": 1.75,
           "focus": {
-            "x": 0.4,
-            "y": 0.4,
+            "x": 0.64,
+            "y": 0.18,
             "w": 0.2,
             "h": 0.2
           }
@@ -155,7 +235,37 @@
       "keyframes": [
         {
           "at": 0,
-          "scale": 1.0,
+          "scale": 2.2,
+          "focus": {
+            "x": 0.05,
+            "y": 0.0,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 0.24,
+          "scale": 2.2,
+          "focus": {
+            "x": 0.05,
+            "y": 0.0,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 0.36,
+          "scale": 1.8,
+          "focus": {
+            "x": 0.4,
+            "y": 0.4,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 0.8,
+          "scale": 1.9,
           "focus": {
             "x": 0.4,
             "y": 0.4,
@@ -165,10 +275,10 @@
         },
         {
           "at": 1,
-          "scale": 1.0,
+          "scale": 1.3,
           "focus": {
-            "x": 0.4,
-            "y": 0.4,
+            "x": 0.5,
+            "y": 0.5,
             "w": 0.2,
             "h": 0.2
           }
@@ -176,7 +286,7 @@
       ]
     },
     "library": {
-      "label": "The Library: the indexed papers, on this machine",
+      "label": "The Library: the papers folder, indexed on this machine",
       "files": [
         "clip.mp4"
       ],
@@ -184,20 +294,30 @@
       "keyframes": [
         {
           "at": 0,
-          "scale": 1.0,
+          "scale": 1.6,
           "focus": {
-            "x": 0.4,
-            "y": 0.4,
+            "x": 0.32,
+            "y": 0.04,
+            "w": 0.2,
+            "h": 0.2
+          }
+        },
+        {
+          "at": 0.45,
+          "scale": 1.9,
+          "focus": {
+            "x": 0.3,
+            "y": 0.1,
             "w": 0.2,
             "h": 0.2
           }
         },
         {
           "at": 1,
-          "scale": 1.0,
+          "scale": 2.1,
           "focus": {
-            "x": 0.4,
-            "y": 0.4,
+            "x": 0.26,
+            "y": 0.12,
             "w": 0.2,
             "h": 0.2
           }

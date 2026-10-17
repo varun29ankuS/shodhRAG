@@ -106,6 +106,7 @@ function CodeCopyButton({ text }: { text: string }) {
     <button
       type="button"
       onClick={handleCopy}
+      data-answer-ui=""
       aria-label={copied ? 'Code copied' : 'Copy code'}
       className={cn(
         'inline-flex items-center gap-1 h-6 px-1.5 rounded-md text-[11px] text-shodh-text-muted hover:bg-shodh-raised-2 hover:text-shodh-text transition-colors duration-micro',
@@ -307,7 +308,7 @@ function MessageContent({
       if (print) {
         parts.push(
           hit ? (
-            <a key={`cite-${index}-${number}`} href={`#${sourceAnchor(number)}`} className="print-cite">{`[${number}]`}</a>
+            <a key={`cite-${index}-${number}`} href={`#${sourceAnchor(number)}`} className="print-cite" data-answer-ui="">{`[${number}]`}</a>
           ) : (
             `[${number}]`
           ),
@@ -323,6 +324,7 @@ function MessageContent({
           <button
             key={`cite-${index}-${number}`}
             type="button"
+            data-answer-ui=""
             onClick={e => onOpenCitation(hit, e.currentTarget)}
             aria-label={`${isWeb ? 'Web source' : 'Source'} ${number}, ${sourceLabel(hit)}`}
             aria-pressed={isActive}
@@ -388,7 +390,7 @@ function MessageContent({
         return (
           <div>
             <div className="flex items-center justify-between pl-3 pr-1.5 h-8 border-b border-shodh-border-subtle bg-shodh-raised">
-              <span className="font-mono text-[11px] uppercase tracking-wider text-shodh-text-muted">{match[1]}</span>
+              <span className="font-mono text-[11px] uppercase tracking-wider text-shodh-text-muted" data-answer-ui="">{match[1]}</span>
               <CodeCopyButton text={codeString} />
             </div>
             <CodeHighlight

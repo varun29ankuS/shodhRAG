@@ -41,21 +41,35 @@ function parent(path: string): string {
   return slash < 0 ? '' : path.slice(0, slash);
 }
 
-export function reconcileSources(
-  folders: readonly { path: string }[],
-  indexedFiles: readonly string[],
-): Reconciliation {
-  // A blank path covers nothing; "/" normalises to "" and covers the POSIX root.
-  const covering = folders.filter(f => f.path.trim()).map(f => normalise(f.path).toLowerCase());
-  const seen = new Set<string>();
-  const unlisted: string[] = [];
+/** The folder keys (normalised, lowercase) of listed folders; a blank path covers nothing. */
+function folderKeys(folders: readonly { path: string }[]): string[] {
+  // "/" normalises to "" and covers the POSIX root.
+  return folders.filter(f => f.path.trim()).map(f => normalise(f.path).toLowerCase());
+}
+
+/**
+ * The indexed files that are files in a folder (no scheme records), each once:
+ * normalised, lowercase key to the normalised path, in index order.
+ */
+function indexedFileKeys(indexedFiles: readonly string[]): Map<string, string> {
+  const files = new Map<string, string>();
   for (const raw of indexedFiles) {
     if (!raw || SCHEME.test(raw)) continue;
     const path = normalise(raw);
     if (!path) continue;
     const key = path.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (!files.has(key)) files.set(key, path);
+  }
+  return files;
+}
+
+export function reconcileSources(
+  folders: readonly { path: string }[],
+  indexedFiles: readonly string[],
+): Reconciliation {
+  const covering = folderKeys(folders);
+  const unlisted: string[] = [];
+  for (const [key, path] of indexedFileKeys(indexedFiles)) {
     if (covering.some(folder => within(key, folder))) continue;
     unlisted.push(path);
   }
@@ -128,39 +142,82 @@ export function nativePath(folder: string, windows: boolean): string {
   return windows ? folder.replace(/\//g, '\\') : folder;
 }
 
+/** What answers search, as the sources chip and the Ask empty state read it. */
+export interface SearchedSources {
+  /** Folders listed in the Library. */
+  folders: number;
+  /** Folders included in Ask. */
+  included: number;
+  /** Answers search only the included folders: some are included, not all. */
+  limited: boolean;
+  /** Indexed files answers search; null while the index has not been listed. */
+  files: number | null;
+  /** Of `files`, those inside no listed folder (0 when limited: answers skip them). */
+  unlisted: number;
+  /**
+   * Whether there is anything to search: a listed folder (even one whose
+   * indexing failed, which the Library shows) or an indexed file.
+   */
+  hasSources: boolean;
+}
+
 /**
- * How many sources answers search: the included folders when only some are
- * included (answers then search just those), else every folder and every
- * indexed file outside them.
+ * What answers search, counted in files from the index list: every indexed
+ * file, or when only some folders are included, the files inside those.
+ * `indexedFiles` is null until `list_indexed_sources` has been read.
  */
-export function searchedSourceCount(folders: readonly { selected: boolean }[], unlistedFiles: number): number {
+export function searchedSources(
+  folders: readonly { path: string; selected: boolean }[],
+  indexedFiles: readonly string[] | null,
+): SearchedSources {
   const included = folders.filter(f => f.selected).length;
   const limited = included > 0 && included < folders.length;
-  return limited ? included : folders.length + unlistedFiles;
+  const covering = folderKeys(folders);
+  const includedFolders = folderKeys(folders.filter(f => f.selected));
+  const indexed = indexedFileKeys(indexedFiles ?? []);
+  let files = 0;
+  let unlisted = 0;
+  for (const key of indexed.keys()) {
+    if (limited) {
+      if (includedFolders.some(folder => within(key, folder))) files += 1;
+      continue;
+    }
+    files += 1;
+    if (!covering.some(folder => within(key, folder))) unlisted += 1;
+  }
+  return {
+    folders: folders.length,
+    included,
+    limited,
+    files: indexedFiles === null ? null : files,
+    unlisted,
+    hasSources: folders.length > 0 || indexed.size > 0,
+  };
 }
 
 /**
  * The sources chip of the top bar and of the composer (outside a
  * workspace), so the two always agree: what answers search, as
- * `searchedSourceCount` counts it.
+ * `searchedSources` counts it.
  */
-export function librarySourcesChip(
-  folders: readonly { selected: boolean }[],
-  unlistedFiles: number,
-): { label: string; title: string } {
-  const count = searchedSourceCount(folders, unlistedFiles);
-  if (count === 0) return { label: 'No sources yet', title: 'Add a folder in Library' };
-  const included = folders.filter(f => f.selected).length;
-  if (included > 0 && included < folders.length) {
+export function librarySourcesChip(searched: SearchedSources): { label: string; title: string } {
+  if (!searched.hasSources) return { label: 'No sources yet', title: 'Add a folder in Library' };
+  if (searched.limited) {
+    const files = searched.files === null ? '' : ` (${countOf(searched.files, 'indexed file')})`;
+    const count = searched.files === null ? '' : ` · ${countOf(searched.files, 'file')}`;
     return {
-      label: `${included.toLocaleString()} of ${countOf(folders.length, 'folder')}`,
-      title: `Answers search only the ${countOf(included, 'folder')} included in Ask. Manage sources in Library.`,
+      label: `${searched.included.toLocaleString()} of ${countOf(searched.folders, 'folder')}${count}`,
+      title: `Answers search only the ${countOf(searched.included, 'folder')} included in Ask${files}. Manage sources in Library.`,
     };
   }
+  if (searched.files === null) {
+    return { label: 'All sources', title: 'Answers search everything you have indexed. Manage sources in Library.' };
+  }
+  const unlisted = searched.unlisted > 0
+    ? ` ${countOf(searched.unlisted, 'file')} ${searched.unlisted === 1 ? 'is' : 'are'} in no folder listed in Library.`
+    : '';
   return {
-    label: `All sources · ${count.toLocaleString()}`,
-    title: unlistedFiles > 0
-      ? `Answers search everything you have indexed: ${folders.length > 0 ? `${countOf(folders.length, 'folder')} and ` : ''}${countOf(unlistedFiles, 'indexed file')} in no folder. Manage sources in Library.`
-      : 'Answers search everything you have indexed. Manage sources in Library.',
+    label: `All sources · ${countOf(searched.files, 'file')}`,
+    title: `Answers search the ${countOf(searched.files, 'file')} you have indexed.${unlisted} Manage sources in Library.`,
   };
 }

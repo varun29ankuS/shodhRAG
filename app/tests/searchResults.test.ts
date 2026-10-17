@@ -7,7 +7,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appRecordKind, recordLabel, sourceLabel, toSearchHits } from '../src/features/ask/searchResults.ts';
+import { appRecordKind, originalCaseName, recordLabel, sourceLabel, toSearchHits } from '../src/features/ask/searchResults.ts';
 
 const TASK = 'calendar://task/ae887fee-eaa5-4c05-b53d-9b3e9905edef';
 
@@ -45,4 +45,32 @@ test('web sources are labelled by title, falling back to the site', async () => 
   assert.equal(webHost('not a url'), 'not a url');
   assert.equal(sourceLabel({ sourceFile: 'https://doi.org/10.1/x', fileName: 'Diffusing Blame' }), 'Diffusing Blame');
   assert.equal(sourceLabel({ sourceFile: 'https://www.example.com/a?b=1', fileName: '' }), 'example.com');
+});
+
+const SPANN = 'c:/research/papers/spann - billion-scale ann search.pdf';
+
+test('file labels keep the original case the index stores, not the lowercased path', () => {
+  assert.equal(sourceLabel({ sourceFile: SPANN, fileName: 'SPANN - Billion-Scale ANN Search.pdf' }), 'SPANN - Billion-Scale ANN Search');
+  // Without an original-case name the path's own spelling stays.
+  assert.equal(sourceLabel({ sourceFile: SPANN, fileName: 'spann - billion-scale ann search.pdf' }), 'spann - billion-scale ann search');
+  assert.equal(sourceLabel({ sourceFile: SPANN, fileName: '' }), 'spann - billion-scale ann search');
+  // A name for some other file never replaces the path's.
+  assert.equal(sourceLabel({ sourceFile: SPANN, fileName: 'DiskANN.pdf' }), 'spann - billion-scale ann search');
+});
+
+test('the original-case name is the first candidate naming the same file', () => {
+  assert.equal(originalCaseName(SPANN, [null, 'Other.pdf', ' SPANN - Billion-Scale ANN Search.pdf ']), 'SPANN - Billion-Scale ANN Search.pdf');
+  assert.equal(originalCaseName('C:\\Docs\\a.pdf', []), 'a.pdf');
+});
+
+test('search results take the file name from the stored filename, else the title', () => {
+  const [byFilename] = toSearchHits([{ sourceFile: SPANN, text: 'x', metadata: { filename: 'SPANN - Billion-Scale ANN Search.pdf' } }]);
+  assert.equal(byFilename.fileName, 'SPANN - Billion-Scale ANN Search.pdf');
+  assert.equal(sourceLabel(byFilename), 'SPANN - Billion-Scale ANN Search');
+  const [byTitle] = toSearchHits([{ sourceFile: SPANN, text: 'x', citation: { title: 'SPANN - Billion-Scale ANN Search' } }]);
+  assert.equal(byTitle.fileName, 'SPANN - Billion-Scale ANN Search.pdf');
+  // A title that is not the file's name (a PDF's own title) leaves the name alone.
+  const [paperTitle] = toSearchHits([{ sourceFile: SPANN, text: 'x', citation: { title: 'Highly-efficient Billion-scale Search' } }]);
+  assert.equal(paperTitle.fileName, 'spann - billion-scale ann search.pdf');
+  assert.equal(paperTitle.title, 'Highly-efficient Billion-scale Search');
 });

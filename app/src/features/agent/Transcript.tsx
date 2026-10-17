@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { ChevronRight, CornerDownRight, RefreshCw, Settings2 } from 'lucide-react';
+import { ChevronRight, CornerDownRight, ListChecks, RefreshCw, Settings2 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { MessageContentRenderer } from '../ask/MessageContentRenderer';
 import type { SearchHit } from '../ask/types';
@@ -9,7 +9,8 @@ import { Spinner, StepLine } from './StepLine';
 import { currentStep, interimBlocks, isLive, notAnswerBlocks, supersededBlocks } from './reducer';
 import type { TranscriptBlock, TranscriptState } from './reducer';
 import { workFold } from './workSummary';
-import type { GroundingReport, RevisionReason } from './events';
+import { revisionText } from './revisionText';
+import type { GroundingReport } from './events';
 import { answerReport, checksForMessage } from './grounding';
 import { GroundingChip } from './GroundingFlags';
 import { ProviderErrorCard } from '../modelPicker/ProviderErrorCard';
@@ -55,22 +56,13 @@ function ActivityRow({ text, compact }: { text: string; compact: boolean }) {
   );
 }
 
-/** What a follow-up turn is doing, in words. */
-function revisionText(reason: RevisionReason, flagged: number, missingNeeds: readonly string[]): string {
-  const fix = `Re-checking ${flagged} flagged ${flagged === 1 ? 'statement' : 'statements'} against the sources`;
-  const search = missingNeeds.length === 1
-    ? `Searching for a part no passage covered: ${missingNeeds[0]}`
-    : `Searching for ${missingNeeds.length} parts no passage covered`;
-  if (reason === 'repair') return fix;
-  if (reason === 'coverage') return search;
-  return `${fix}; ${search.charAt(0).toLowerCase()}${search.slice(1)}`;
-}
-
-function RevisionRow({ block, compact }: { block: Extract<TranscriptBlock, { kind: 'revision' }>; compact: boolean }) {
+/** A follow-up turn: a live row while it runs, a static record once the run is over. */
+function RevisionRow({ block, compact, live }: { block: Extract<TranscriptBlock, { kind: 'revision' }>; compact: boolean; live: boolean }) {
+  const Icon = live ? RefreshCw : ListChecks;
   return (
     <p className={cn('ask-rise flex items-start gap-2 text-shodh-text-muted', compact ? 'text-[12px]' : 'text-[12.5px]')}>
-      <RefreshCw className="w-3.5 h-3.5 mt-[3px] shrink-0 text-shodh-accent-text" aria-hidden="true" />
-      <span className="min-w-0 break-words">{revisionText(block.reason, block.flagged, block.missingNeeds)}</span>
+      <Icon className={cn('w-3.5 h-3.5 mt-[3px] shrink-0', live ? 'text-shodh-accent-text' : 'text-shodh-text-muted')} aria-hidden="true" />
+      <span className="min-w-0 break-words">{revisionText(block.reason, block.flagged, block.missingNeeds, live)}</span>
     </p>
   );
 }
@@ -166,7 +158,7 @@ export function Transcript({
                   </p>
                 );
               }
-              if (block.kind === 'revision') return <RevisionRow key={block.id} block={block} compact />;
+              if (block.kind === 'revision') return <RevisionRow key={block.id} block={block} compact live={live} />;
               return (
                 <TextBlock
                   key={block.id}
@@ -209,7 +201,7 @@ export function Transcript({
             </p>
           );
         }
-        if (block.kind === 'revision') return <RevisionRow key={block.id} block={block} compact={compact} />;
+        if (block.kind === 'revision') return <RevisionRow key={block.id} block={block} compact={compact} live={live} />;
         if (!excluded.has(block.id)) textSeen += 1;
         const isFinal = !excluded.has(block.id) && textSeen === textBlocks;
         return (

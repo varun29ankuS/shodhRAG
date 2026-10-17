@@ -2,14 +2,11 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { MessageSquareText } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { FOCUS_OVERLAY_SELECTOR } from './focusDom';
+import { ASK_SCOPE_ATTR, FOCUS_OVERLAY_SELECTOR, isAnswerScope, readableSelection, readableText } from './focusDom';
 import { notifyDepthLimit, useFocus } from './FocusContext';
 import type { DrillResult } from './FocusContext';
 import { MAX_SELECTED_CHARS, selectionTarget } from './targets';
 import { createFrameSlot } from './frameSlot';
-
-/** Attribute marking where selected text can be asked about. */
-export const ASK_SCOPE_ATTR = 'data-ask-scope';
 
 /** Blocks whose text is the "surrounding paragraph" of a selection in an answer. */
 const BLOCK_SELECTOR = 'p, li, td, th, blockquote, h1, h2, h3, h4, h5, h6, pre, dd, dt, figcaption';
@@ -30,11 +27,13 @@ interface Pending {
 const CONTEXT_WINDOW = 4_000;
 
 /**
- * The block's text near the selection, bounded so a huge block (a whole
- * text file) is never processed on every selection change.
+ * A block's text near the selection, bounded so a huge block (a whole
+ * text file) is never processed on every selection change. `full` is the
+ * block's text: `readableText` in an answer (no citation pills, grounding
+ * flags or screen-reader text), native `textContent` in a document, which
+ * has none of those.
  */
-function nearText(block: Element, selected: string): string {
-  const full = block.textContent ?? '';
+function nearText(full: string, selected: string): string {
   if (full.length <= CONTEXT_WINDOW * 2) return full;
   const probe = selected.trim().slice(0, 120);
   const at = probe ? full.indexOf(probe) : -1;
@@ -78,10 +77,14 @@ function readSelection(focus: NonNullable<ReturnType<typeof useFocus>>): Omit<Pe
     if (result === 'depth') notifyDepthLimit();
   };
 
-  if (kind === 'answer' || kind === 'thread') {
+  if (isAnswerScope(kind)) {
+    // The selection as the reader sees it: pills and flags it crosses are not
+    // quoted, and it still matches the paragraph's text below.
+    const text = readableSelection(range).slice(0, MAX_SELECTED_CHARS * 2);
+    if (text.replace(/\s+/g, ' ').trim().length < 2) return null;
     const block = common?.closest<HTMLElement>(BLOCK_SELECTOR);
-    const context = nearText(block && scope.contains(block) ? block : scope, raw);
-    const target = selectionTarget({ text: raw, context, origin: 'answer' });
+    const context = nearText(readableText(block && scope.contains(block) ? block : scope), text);
+    const target = selectionTarget({ text, context, origin: 'answer' });
     if (!target) return null;
     if (kind === 'answer') {
       const conversationId = scope.dataset.conversationId;
@@ -104,7 +107,7 @@ function readSelection(focus: NonNullable<ReturnType<typeof useFocus>>): Omit<Pe
     const block = pageEl ?? common?.closest<HTMLElement>(BLOCK_SELECTOR) ?? scope;
     const target = selectionTarget({
       text: raw,
-      context: nearText(block, raw),
+      context: nearText(block.textContent ?? '', raw),
       origin: 'document',
       document: { sourceFile, fileName: scope.dataset.fileName ?? '', page },
     });

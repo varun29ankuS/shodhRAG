@@ -17,7 +17,10 @@ function seconds(ms: number): string {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
 }
 
-/** Null when nothing should fold: still running, failed, or no steps before the answer. */
+/**
+ * Null when nothing should fold: still running, failed, or no work before the answer
+ * (no tool step and no follow-up revision).
+ */
 export function workFold(transcript: TranscriptState): WorkFold | null {
   if (transcript.status !== 'completed') return null;
   const blocks = transcript.blocks;
@@ -35,13 +38,14 @@ export function workFold(transcript: TranscriptState): WorkFold | null {
   if (answerIndex <= 0) return null;
   const folded = blocks.slice(0, answerIndex);
   const stepCount = folded.filter(b => b.kind === 'step').length;
-  if (stepCount === 0) return null;
+  const revisions = folded.filter(b => b.kind === 'revision');
+  if (stepCount === 0 && revisions.length === 0) return null;
 
   const sources = new Set(transcript.passages.map(p => p.path)).size;
-  const parts = [
-    transcript.durationMs !== null ? `Worked for ${seconds(transcript.durationMs)}` : 'Worked',
-    `${stepCount} ${stepCount === 1 ? 'step' : 'steps'}`,
-  ];
+  const rechecked = revisions.reduce((sum, b) => sum + (b.kind === 'revision' ? b.flagged : 0), 0);
+  const parts = [transcript.durationMs !== null ? `Worked for ${seconds(transcript.durationMs)}` : 'Worked'];
+  if (stepCount > 0) parts.push(`${stepCount} ${stepCount === 1 ? 'step' : 'steps'}`);
   if (sources > 0) parts.push(`${sources} ${sources === 1 ? 'source' : 'sources'}`);
+  if (rechecked > 0) parts.push(`re-checked ${rechecked} ${rechecked === 1 ? 'statement' : 'statements'}`);
   return { answerIndex, label: parts.join(' · ') };
 }

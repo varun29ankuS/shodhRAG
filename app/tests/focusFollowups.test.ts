@@ -71,3 +71,72 @@ test('the instruction shows the exact block shape', () => {
   // The instruction itself, echoed back, parses as a valid block.
   assert.deepEqual(splitFollowups(`x\n${FOLLOWUPS_INSTRUCTION.split('\n').slice(1).join('\n')}`).followups, ['…']);
 });
+
+test('a labelled ```json block of questions is read as follow-ups', () => {
+  const text = 'Answer.\n\nFollow-ups:\n```json\n["What is a posting list in SPANN?","How does SPANN balance clusters?"]\n```';
+  assert.deepEqual(splitFollowups(text), {
+    body: 'Answer.',
+    followups: ['What is a posting list in SPANN?', 'How does SPANN balance clusters?'],
+  });
+  for (const label of ['**Follow-ups:**', 'follow-up questions:', '__Follow-up questions__:', 'Followups']) {
+    assert.equal(stripFollowups(`Answer.\n\n${label}\n\`\`\`json\n["Show an example"]\n\`\`\`\n`), 'Answer.', label);
+  }
+});
+
+test('an untagged final block of questions is read as follow-ups', () => {
+  const { body, followups } = splitFollowups('Answer.\n\n```\n["Why C2?", "What about knots?"]\n```');
+  assert.equal(body, 'Answer.');
+  assert.deepEqual(followups, ['Why C2?', 'What about knots?']);
+});
+
+test('a label above a tagged block goes with it', () => {
+  const { body, followups } = splitFollowups('Answer.\n\nFollow-ups:\n```followups\n["Why?"]\n```');
+  assert.equal(body, 'Answer.');
+  assert.deepEqual(followups, ['Why?']);
+});
+
+test('json code in an answer is never taken for follow-ups', () => {
+  const middle = 'Use this config:\n```json\n["a?", "b?"]\n```\nThen restart.';
+  assert.deepEqual(splitFollowups(middle), { body: middle, followups: [] });
+  const notLast = 'Config:\n```json\n["a?"]\n```\n```python\nprint(1)\n```';
+  assert.deepEqual(splitFollowups(notLast), { body: notLast, followups: [] });
+  const objects = 'Follow-ups:\n```json\n[{"q": "Why?"}, {"q": "How?"}]\n```';
+  assert.deepEqual(splitFollowups(`Answer.\n\n${objects}`), { body: `Answer.\n\n${objects}`, followups: [] });
+  const tooMany = `Follow-ups:\n\`\`\`json\n${JSON.stringify(['a', 'b', 'c', 'd', 'e', 'f'])}\n\`\`\``;
+  assert.equal(stripFollowups(`Answer.\n${tooMany}`), `Answer.\n${tooMany}`);
+  const longItem = `Follow-ups:\n\`\`\`json\n${JSON.stringify(['x'.repeat(MAX_FOLLOWUP_CHARS + 1)])}\n\`\`\``;
+  assert.equal(stripFollowups(`Answer.\n${longItem}`), `Answer.\n${longItem}`);
+  // Without a follow-ups label, a final list of strings must all be questions.
+  const fields = 'The keys are:\n```json\n["id", "name"]\n```';
+  assert.deepEqual(splitFollowups(fields), { body: fields, followups: [] });
+  const other = 'Example:\n```ts\n["Why?"]\n```';
+  assert.deepEqual(splitFollowups(other), { body: other, followups: [] });
+});
+
+test('streaming: a labelled open ```json block is hidden, an unlabelled one stays', () => {
+  assert.equal(stripFollowups('Answer.\n\nFollow-ups:\n```json\n["Wh'), 'Answer.');
+  assert.equal(stripFollowups('Answer.\n\nFollow-ups:\n```js'), 'Answer.');
+  assert.equal(stripFollowups('Answer.\n```json\n["Wh'), 'Answer.\n```json\n["Wh');
+});
+
+test('heading and "suggested" label forms go with the block', () => {
+  const labels = [
+    '### Follow-up questions',
+    '## Follow-ups:',
+    '**Follow-ups**',
+    'Suggested follow-ups:',
+    '**Suggested follow-up questions:**',
+    'Suggested questions:',
+    '#### suggested questions',
+  ];
+  for (const label of labels) {
+    const { body, followups } = splitFollowups(`Answer.\n\n${label}\n\`\`\`json\n["Show an example"]\n\`\`\``);
+    assert.equal(body, 'Answer.', label);
+    assert.deepEqual(followups, ['Show an example'], label);
+  }
+  // Not labels: other headings, and "questions" alone, keep an unlabelled list of non-questions in place.
+  for (const label of ['### Questions', 'Open questions:', '### Follow the money']) {
+    const text = `Answer.\n\n${label}\n\`\`\`json\n["id", "name"]\n\`\`\``;
+    assert.equal(stripFollowups(text), text, label);
+  }
+});

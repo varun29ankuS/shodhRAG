@@ -4,6 +4,8 @@
  * used, and its size. Shown when hovering or focusing a chat in the sidebar.
  */
 
+import { stripFollowups } from '../features/focus/followups.ts';
+
 export interface PreviewMessage {
   role: string;
   content: string;
@@ -32,8 +34,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * math keeps its symbols, citation markers and markdown syntax are removed.
  */
 export function plainText(markdown: string): string {
-  return markdown
-    .replace(/```(?:mermaid|chart|followups|flowchart)[\s\S]*?```/gi, ' ')
+  // Follow-up blocks are removed by the same rules the side thread uses.
+  return stripFollowups(markdown)
+    .replace(/```(?:mermaid|chart|flowchart)[\s\S]*?```/gi, ' ')
     .replace(/```[\s\S]*?```/g, ' [code] ')
     .replace(/\$\$[\s\S]+?\$\$/g, ' [equation] ')
     .replace(/\\\[[\s\S]+?\\\]/g, ' [equation] ')

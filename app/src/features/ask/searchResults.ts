@@ -54,6 +54,23 @@ export function fileExtensionOf(path: string): string {
   return dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
 }
 
+/**
+ * The file name of `path` as the index spelled it. Source paths are identity
+ * keys, lowercased on Windows ("spann - billion-scale ann search.pdf"); the
+ * index also keeps the name in its original case (`filename`, `title`). The
+ * first candidate naming the same file in any case wins, else the path's own
+ * last segment: a candidate that names something else is never used.
+ */
+export function originalCaseName(path: string, candidates: readonly (string | null | undefined)[]): string {
+  const name = fileNameOf(path);
+  const key = name.toLowerCase();
+  for (const candidate of candidates) {
+    const text = candidate?.trim();
+    if (text && text.toLowerCase() === key) return text;
+  }
+  return name;
+}
+
 /** Name without extension, used for compact chips. */
 export function fileStemOf(path: string): string {
   const name = fileNameOf(path);
@@ -120,13 +137,32 @@ export function sourceLabel(hit: Pick<SearchHit, 'sourceFile' | 'fileName'>): st
   // Web sources: the page title the search returned, else the site.
   if (isWebUrl(hit.sourceFile)) return hit.fileName?.trim() || webHost(hit.sourceFile);
   const record = appRecordKind(hit.sourceFile);
-  if (!record) return fileStemOf(hit.sourceFile);
+  // The original-case name when the hit carries it ("SPANN - Billion-Scale ANN Search").
+  if (!record) return fileStemOf(originalCaseName(hit.sourceFile, [hit.fileName]));
   // Answers saved before records carried titles hold the bare id as the name.
   return hit.fileName && hit.fileName !== fileNameOf(hit.sourceFile) ? hit.fileName : recordLabel(record, null);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Original-case spellings of a result's file name the index stores: the
+ * chunk's `filename`, then its title (the file stem when indexed) with the
+ * path's extension.
+ */
+function fileNameCandidates(sourceFile: string, result: RawSearchResult, citationTitle: string | null): string[] {
+  const candidates: string[] = [];
+  const stored = result.metadata?.filename;
+  if (typeof stored === 'string') candidates.push(stored);
+  const name = fileNameOf(sourceFile);
+  const dot = name.lastIndexOf('.');
+  const extension = dot > 0 ? name.slice(dot) : '';
+  for (const title of [result.metadata?.title, citationTitle]) {
+    if (typeof title === 'string' && title.trim()) candidates.push(`${title.trim()}${extension}`);
+  }
+  return candidates;
 }
 
 /** Normalise raw search results. Index i becomes citation number i + 1. */
@@ -141,7 +177,7 @@ export function toSearchHits(raw: readonly unknown[] | undefined): SearchHit[] {
     const citation = isRecord(r.citation) ? r.citation : null;
     const record = appRecordKind(sourceFile);
     const citationTitle = citation && typeof citation.title === 'string' ? citation.title : null;
-    const fileName = record ? recordLabel(record, citationTitle) : fileNameOf(sourceFile);
+    const fileName = record ? recordLabel(record, citationTitle) : originalCaseName(sourceFile, fileNameCandidates(sourceFile, r, citationTitle));
     const text = typeof r.text === 'string' ? r.text : '';
     hits.push({
       number: index + 1,

@@ -65,7 +65,7 @@ function writeDurable(key: DurableKey, value: unknown): Promise<void> {
 import { applyFolderSync, parseStoredSources, readIndexingResult, scannedPagesStep, serializeSources, SOURCES_STORAGE_KEY, syncedFolders } from './features/library/sources';
 import { explainFailure } from './features/library/indexingAdvice';
 import type { FolderSyncOutcome, LibrarySource } from './features/library/sources';
-import { addableFolders, librarySourcesChip, nativePath, NOT_ADDED_REASON, reconcileSources } from './features/library/reconcile';
+import { addableFolders, librarySourcesChip, nativePath, NOT_ADDED_REASON, reconcileSources, searchedSources } from './features/library/reconcile';
 import type { FileNode } from './features/library/fileTree';
 import { errorMessage as searchErrorMessage } from './features/setup/searchModels';
 import Sidebar from './components/shell/Sidebar';
@@ -287,6 +287,16 @@ function AppSplitView() {
     [coveringKey, indexedFiles],
   );
   const unlistedCount = reconciliation.unlisted.length;
+  // What answers search, in indexed files (one value for the top bar and Ask).
+  // Keyed like `coveringKey`: each folder's inclusion and path.
+  const scopeKey = sources.map(s => `${s.selected ? '1' : '0'}${s.path}`).join('\u0000');
+  const searched = useMemo(
+    () => searchedSources(
+      scopeKey ? scopeKey.split('\u0000').map(entry => ({ selected: entry[0] === '1', path: entry.slice(1) })) : [],
+      indexedLoad === 'loaded' ? indexedFiles : null,
+    ),
+    [scopeKey, indexedFiles, indexedLoad],
+  );
   // The home folder: it and the folders holding it are never added for the user.
   const [homePath, setHomePath] = useState<string | null>(null);
   useEffect(() => {
@@ -1623,7 +1633,7 @@ function AppSplitView() {
               </div>
             )}
             {(() => {
-              const chip = librarySourcesChip(sources, unlistedCount);
+              const chip = librarySourcesChip(searched);
               return (
                 <Badge
                   variant="outline"
@@ -1667,7 +1677,7 @@ function AppSplitView() {
           {activeTab === 'ask' && (
             <AskView
               sources={sources}
-              unlistedFiles={unlistedCount}
+              searched={searched}
               llmStatus={llmStatus}
               onNavigate={setActiveTab}
               onPickImage={handlePickImage}

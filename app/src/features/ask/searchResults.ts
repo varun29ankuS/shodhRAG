@@ -71,6 +71,25 @@ export function originalCaseName(path: string, candidates: readonly (string | nu
   return name;
 }
 
+/** A path as the index compares it: forward slashes, no trailing slash, lowercase. */
+function pathIdentity(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+/**
+ * Whether `candidate` spells the file `path` names, in another case or
+ * with other separators ("C:\Research\SPANN.pdf" for "c:/research/spann.pdf").
+ * A spelling of another file is never used to show `path`.
+ */
+export function samePathSpelling(path: string, candidate: string | null | undefined): candidate is string {
+  return typeof candidate === 'string' && candidate.trim() !== '' && pathIdentity(candidate) === pathIdentity(path);
+}
+
+/** The path to show for a hit: the file system's spelling when known, else its identity. */
+export function shownPath(hit: Pick<SearchHit, 'sourceFile' | 'displayPath'>): string {
+  return samePathSpelling(hit.sourceFile, hit.displayPath) ? hit.displayPath : hit.sourceFile;
+}
+
 /** Name without extension, used for compact chips. */
 export function fileStemOf(path: string): string {
   const name = fileNameOf(path);
@@ -178,6 +197,8 @@ export function toSearchHits(raw: readonly unknown[] | undefined): SearchHit[] {
     const record = appRecordKind(sourceFile);
     const citationTitle = citation && typeof citation.title === 'string' ? citation.title : null;
     const fileName = record ? recordLabel(record, citationTitle) : originalCaseName(sourceFile, fileNameCandidates(sourceFile, r, citationTitle));
+    // The path as the file system spells it, stored with the chunk.
+    const displayPath = typeof r.metadata?.display_path === 'string' ? r.metadata.display_path : null;
     const text = typeof r.text === 'string' ? r.text : '';
     hits.push({
       number: index + 1,
@@ -193,6 +214,7 @@ export function toSearchHits(raw: readonly unknown[] | undefined): SearchHit[] {
       url: citation && typeof citation.url === 'string' && citation.url ? citation.url : null,
       section: typeof r.metadata?.section_path === 'string' && r.metadata.section_path.trim() ? r.metadata.section_path.trim() : null,
       regions: parseRegions(r.metadata?.bboxes ?? null),
+      ...(!record && samePathSpelling(sourceFile, displayPath) ? { displayPath } : {}),
     });
   });
   return hits;

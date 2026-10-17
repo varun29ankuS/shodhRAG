@@ -87,3 +87,15 @@ test('the transcript keeps passages of reads and searches in one numbering', () 
   const known = new Set(readsOnly.passages.map(p => p.n));
   for (const n of [4, 5]) assert.ok(known.has(n), `[${n}] resolves`);
 });
+
+test('a passage carries the file system spelling of its path when the step sends one', () => {
+  const [spelled, plain] = passagesFromDetail({
+    passages: [
+      { n: 1, file: 'SPANN.pdf', path: 'c:/research/spann.pdf', display_path: 'C:\\Research\\SPANN.pdf', score: 1, text: 'a' },
+      { n: 2, file: 'x.pdf', path: 'c:/research/x.pdf', score: 1, text: 'b' },
+    ],
+  });
+  assert.equal(spelled.path, 'c:/research/spann.pdf');
+  assert.equal(spelled.displayPath, 'C:\\Research\\SPANN.pdf');
+  assert.ok(!('displayPath' in plain));
+});

@@ -1183,10 +1183,17 @@ impl Inner {
 
         let call_index = self.calls_in_run.fetch_add(1, Ordering::SeqCst) + 1;
         let issued_before = self.passages_in_run.issued();
+        let scope = Arc::clone(&lock(&self.scope));
+        // What a search that finds nothing did not cover: the answer's limit,
+        // never the whole library when the answer is limited.
+        let limited_to = (!scope.is_empty()).then(|| match &scope.workspace_name {
+            Some(name) if scope.restricted => format!("the sources of the workspace \"{name}\""),
+            _ => "the sources this answer is limited to".to_string(),
+        });
         let ctx = ToolContext::new(held.run_id.clone(), step_id.clone(), self.events.clone())
             .with_run_passages(Arc::clone(&self.passages_in_run))
             .with_run_plan(Arc::clone(&self.plan_in_run))
-            .with_scope(Arc::clone(&lock(&self.scope)))
+            .with_scope(scope)
             .with_audit(self.audit.clone());
         let call = ToolCall {
             tool: SEARCH_DOCUMENTS.to_string(),
@@ -1235,7 +1242,7 @@ impl Inner {
         } else {
             RetrieveResult::Empty
         };
-        let prompt = followup::retrieve_prompt(&result, issued_before > 0);
+        let prompt = followup::retrieve_prompt(&result, issued_before > 0, limited_to.as_deref());
         let prompt_id = self.next_id("p");
         let mut state = lock(&self.state);
         if let Some(event) = state.close_step(

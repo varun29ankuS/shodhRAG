@@ -114,6 +114,8 @@ struct AbsencePattern {
     /// about a paper or a meeting record), so the claim must also address
     /// the user ("you", "your").
     needs_you: bool,
+    /// A refusal about the documents' content ([`is_document_refusal`]).
+    refusal: bool,
 }
 
 /// "You have no (open) tasks", "you don't have any events", "your task list
@@ -128,7 +130,7 @@ fn absence_patterns() -> &'static [AbsencePattern] {
             .map(regex::escape)
             .collect();
         let noun = format!(r"(?P<noun>{})\b", nouns.join("|"));
-        [
+        let user_data = [
             (
                 format!(
                     r"\byou(?:\s+currently|\s+still)?\s+(?:have|has|['’]ve\s+got|have\s+got)\s+(?:no|zero)\s+{GAP}{noun}"
@@ -169,39 +171,54 @@ fn absence_patterns() -> &'static [AbsencePattern] {
                 ),
                 true,
             ),
-            // The refusal a model gives about the documents in its own
-            // words, without having searched them: "I don't have any
-            // documents indexed that contain information about SPANN."
-            (
-                format!(
-                    r"\bI\s+(?:currently\s+)?(?:do\s+not|don['’]t|dont)\s+(?:currently\s+)?(?:have|see)\s+any\s+{GAP}(?P<noun>documents?|files?)\b"
-                ),
-                false,
+        ];
+        // The refusal a model gives about the documents in its own words,
+        // without having searched them. Addressed to the user or not, it
+        // says what their documents hold.
+        let refusals = [
+            // "I don't have any documents indexed that contain information
+            // about SPANN."
+            format!(
+                r"\bI\s+(?:currently\s+)?(?:do\s+not|don['’]t|dont)\s+(?:currently\s+)?(?:have|see)\s+any\s+{GAP}(?P<noun>documents?|files?)\b"
             ),
             // "I couldn't find any information about SPANN in your documents."
-            (
-                format!(
-                    r"\bI\s+(?:could\s+not|couldn['’]t|cannot|can\s+not|can['’]t|did\s+not|didn['’]t|was\s+unable\s+to|am\s+unable\s+to)\s+find\s+any(?:thing)?\b[^.;!?]{{0,160}}?\b(?:in|among|across|within)\s+your\s+{GAP}(?P<noun>documents|files|papers|sources|library)\b"
-                ),
-                false,
+            format!(
+                r"\bI\s+(?:could\s+not|couldn['’]t|cannot|can\s+not|can['’]t|did\s+not|didn['’]t|was\s+unable\s+to|am\s+unable\s+to)\s+find\s+any(?:thing)?\b[^.;!?]{{0,160}}?\b(?:in|among|across|within)\s+your\s+{GAP}(?P<noun>documents|files|papers|sources|library)\b"
             ),
-            // "There are no documents indexed that contain information
-            // about SPANN."
-            (
-                format!(
-                    r"\bno\s+{GAP}(?P<noun>documents|files)\s+(?:(?:are|were|have\s+been)\s+)?(?:indexed|found)\s+that\s+(?:contains?|mentions?|covers?|discuss(?:es)?|include)\b"
-                ),
-                false,
+            // "There are no documents indexed that contain information about
+            // SPANN."
+            format!(
+                r"\bno\s+{GAP}(?P<noun>documents|files)\s+(?:(?:are|were|have\s+been)\s+)?(?:indexed|found)\s+that\s+(?:contains?|mentions?|covers?|discuss(?:es)?|include)\b"
             ),
-        ]
-        .into_iter()
-        .filter_map(|(pattern, needs_you)| {
-            Regex::new(&format!("(?i){pattern}"))
-                .ok()
-                .map(|regex| AbsencePattern { regex, needs_you })
-        })
-        .collect()
+        ];
+        user_data
+            .into_iter()
+            .map(|(pattern, needs_you)| (pattern, needs_you, false))
+            .chain(refusals.into_iter().map(|pattern| (pattern, false, true)))
+            .filter_map(|(pattern, needs_you, refusal)| {
+                Regex::new(&format!("(?i){pattern}"))
+                    .ok()
+                    .map(|regex| AbsencePattern {
+                        regex,
+                        needs_you,
+                        refusal,
+                    })
+            })
+            .collect()
     })
+}
+
+/// Whether `claim` is a refusal about the user's documents in the model's
+/// own words ("I don't have any documents indexed that contain X", "I
+/// couldn't find any X in your documents"): a statement of what the
+/// documents contain, which a search of them answers. Claims that the user
+/// has no documents at all ("Nothing is indexed yet") are not refusals:
+/// listing the sources answers them.
+pub fn is_document_refusal(claim: &str) -> bool {
+    absence_patterns()
+        .iter()
+        .filter(|p| p.refusal)
+        .any(|p| p.regex.is_match(claim))
 }
 
 /// Whether a claim addresses the user ("you", "your").
@@ -359,6 +376,25 @@ mod tests {
         // After a search of the documents it is a statement about the result.
         let searched: HashSet<String> = ["search_documents".to_string()].into();
         assert!(flag_unverified_absence(&answer(refusal), &searched, Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn refusals_about_the_content_are_told_from_an_empty_library() {
+        for claim in [
+            "I don't have any documents indexed that contain information about SPANN.",
+            "I couldn't find any information about SPANN in your documents.",
+            "There are no documents indexed that contain information about SPANN.",
+        ] {
+            assert!(is_document_refusal(claim), "{claim}");
+        }
+        for claim in [
+            "Nothing is indexed yet.",
+            "You have no indexed documents.",
+            "You have no tasks.",
+            "The documents do not mention SPANN.",
+        ] {
+            assert!(!is_document_refusal(claim), "{claim}");
+        }
     }
 
     #[test]

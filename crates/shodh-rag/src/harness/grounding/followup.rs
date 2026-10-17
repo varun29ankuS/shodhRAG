@@ -39,7 +39,7 @@
 
 use std::collections::HashSet;
 
-use super::absence::{absence_domain, INDEXED_DOCUMENTS};
+use super::absence::{absence_domain, is_document_refusal};
 use crate::harness::events::{ClaimCheck, ClaimOutcome, CoverageState, NeedCheck, RevisionReason};
 use crate::harness::tools::search::SEARCH_DOCUMENTS;
 use crate::harness::truncate_chars;
@@ -155,16 +155,17 @@ fn reason_text(check: &ClaimCheck) -> String {
 
 /// Whether a checked claim shows that the answer took its content from
 /// somewhere other than a search: it cites a number no source has, or it
-/// says the user has no such documents without having looked. Uncited
-/// statements do not count: without passages they are not checked at all,
-/// and next to passages (web results, a side discussion's carried passages)
-/// they are flagged only, as for repair.
+/// refuses in its own words to answer from documents it did not search
+/// ([`is_document_refusal`]). Uncited statements do not count: without
+/// passages they are not checked at all, and next to passages (web results,
+/// a side discussion's carried passages) they are flagged only, as for
+/// repair.
 fn without_sources(check: &ClaimCheck) -> bool {
     match check.outcome {
         ClaimOutcome::InvalidCitation => true,
-        ClaimOutcome::UnverifiedAbsence => {
-            absence_domain(&check.text).is_some_and(|d| d.name == INDEXED_DOCUMENTS)
-        }
+        // A refusal about what the documents contain; "nothing is indexed"
+        // is repaired with list_sources instead.
+        ClaimOutcome::UnverifiedAbsence => is_document_refusal(&check.text),
         ClaimOutcome::Supported
         | ClaimOutcome::Weak
         | ClaimOutcome::Unsupported
@@ -329,8 +330,11 @@ pub enum RetrieveResult {
 /// The follow-up prompt after the session searched the documents for an
 /// answer that skipped the search. `earlier` is true when the run already
 /// had passages before the search (a side discussion's, or the web's): they
-/// keep their numbers and may still be cited.
-pub fn retrieve_prompt(result: &RetrieveResult, earlier: bool) -> String {
+/// keep their numbers and may still be cited. `limited_to` names what the
+/// search covered when the answer is limited to some sources (a workspace,
+/// files the user chose), so that "not covered" is said of those sources and
+/// never of the whole library; `None` when everything indexed was searched.
+pub fn retrieve_prompt(result: &RetrieveResult, earlier: bool, limited_to: Option<&str>) -> String {
     let mut prompt = String::from(
         "[Grounding check by the app, not the user] Your answer cites passages, or says what \
          the user's documents contain, but no search of the user's documents ran in this \
@@ -341,31 +345,40 @@ pub fn retrieve_prompt(result: &RetrieveResult, earlier: bool) -> String {
     } else {
         "these passages"
     };
+    let searched = limited_to.unwrap_or("the user's documents");
     match result {
         RetrieveResult::Found { text } => {
+            let uncovered = limited_to.unwrap_or("the documents");
             prompt.push_str(&format!(
-                " The app searched the user's documents for the question. The passages it \
-                 found, under the numbers to cite them with:\n\n{text}\n\nWrite the complete \
-                 answer to the question using only {allowed}. Cite every statement with the \
-                 number of the passage that supports it, and use no other numbers. Where they \
-                 do not cover a part of the question, say plainly that the documents do not \
-                 cover that part instead of answering it from elsewhere."
+                " The app searched {searched} for the question. The passages it found, under \
+                 the numbers to cite them with:\n\n{text}\n\nWrite the complete answer to the \
+                 question using only {allowed}. Cite every statement with the number of the \
+                 passage that supports it, and use no other numbers. Where they do not cover a \
+                 part of the question, say plainly that {uncovered} do not cover that part \
+                 instead of answering it from elsewhere."
             ));
         }
         RetrieveResult::Empty => {
-            prompt.push_str(
-                " The app searched the user's documents for the question and no passage \
-                 matched. Tell the user plainly that their documents do not cover the \
-                 question, and cite no passage numbers. If you add anything from general \
-                 knowledge, say clearly that it is not from their documents.",
-            );
+            let uncovered = match limited_to {
+                Some(limit) => format!(
+                    "{limit} do not cover the question (the rest of their library was not \
+                     searched)"
+                ),
+                None => "their documents do not cover the question".to_string(),
+            };
+            prompt.push_str(&format!(
+                " The app searched {searched} for the question and no passage matched. Tell \
+                 the user plainly that {uncovered}, and cite no passage numbers. If you add \
+                 anything from general knowledge, say clearly that it is not from their \
+                 documents."
+            ));
         }
         RetrieveResult::Failed { error } => {
             prompt.push_str(&format!(
-                " The app tried to search the user's documents for the question, but the \
-                 search failed ({}). Call {SEARCH_DOCUMENTS} now with the user's question and \
-                 answer only from its result, citing only the passage numbers it returns. If \
-                 it finds nothing, say plainly that the documents do not cover the question.",
+                " The app tried to search {searched} for the question, but the search failed \
+                 ({}). Call {SEARCH_DOCUMENTS} now with the user's question and answer only \
+                 from its result, citing only the passage numbers it returns. If it finds \
+                 nothing, say plainly that the documents do not cover the question.",
                 truncate_chars(error, 300)
             ));
         }
@@ -746,16 +759,23 @@ mod tests {
             Next::Finish
         );
         // A tasks answer has its own repair, with list_tasks.
-        let mut no_tasks = check(ClaimOutcome::UnverifiedAbsence);
-        no_tasks.text = "You have no tasks.".into();
-        no_tasks.cited = vec![];
-        assert!(matches!(
-            decide(&[no_tasks], &[], Rounds::default(), true, 10, NOT_SEARCHED),
-            Next::FollowUp {
-                reason: RevisionReason::Repair,
-                ..
-            }
-        ));
+        // A tasks answer, or one saying nothing is indexed, has its own
+        // repair, with the tool that lists that data.
+        for text in ["You have no tasks.", "Nothing is indexed yet."] {
+            let mut absent = check(ClaimOutcome::UnverifiedAbsence);
+            absent.text = text.into();
+            absent.cited = vec![];
+            assert!(
+                matches!(
+                    decide(&[absent], &[], Rounds::default(), true, 10, NOT_SEARCHED),
+                    Next::FollowUp {
+                        reason: RevisionReason::Repair,
+                        ..
+                    }
+                ),
+                "{text}"
+            );
+        }
         // The refusal of the reported answer, made without a search.
         let mut no_documents = check(ClaimOutcome::UnverifiedAbsence);
         no_documents.text =
@@ -782,16 +802,17 @@ mod tests {
                     .into(),
             },
             false,
+            None,
         );
         assert!(found.contains("FreshDiskANN keeps a small in-memory index."));
         assert!(found.contains("using only these passages."), "{found}");
         assert!(found.contains("say plainly that the documents do not cover that part"));
         assert!(found.contains("no apology"));
         assert!(!found.contains("Use only passage numbers you were given"));
-        let side = retrieve_prompt(&RetrieveResult::Found { text: "[]".into() }, true);
+        let side = retrieve_prompt(&RetrieveResult::Found { text: "[]".into() }, true, None);
         assert!(side.contains("passages you were given earlier in this answer"));
 
-        let empty = retrieve_prompt(&RetrieveResult::Empty, false);
+        let empty = retrieve_prompt(&RetrieveResult::Empty, false, None);
         assert!(empty.contains("no passage matched"), "{empty}");
         assert!(empty.contains("their documents do not cover the question"));
         assert!(empty.contains("cite no passage numbers"));
@@ -801,8 +822,26 @@ mod tests {
                 error: "Search failed: index locked".into(),
             },
             false,
+            None,
         );
         assert!(failed.contains("index locked"), "{failed}");
         assert!(failed.contains("Call search_documents now"));
+    }
+
+    #[test]
+    fn a_limited_search_says_what_it_searched() {
+        let thesis = Some("the sources of the workspace \"Thesis\"");
+        let empty = retrieve_prompt(&RetrieveResult::Empty, false, thesis);
+        assert!(
+            empty.contains("searched the sources of the workspace \"Thesis\" for the question"),
+            "{empty}"
+        );
+        assert!(empty.contains(
+            "the sources of the workspace \"Thesis\" do not cover the question (the rest of \
+             their library was not searched)"
+        ));
+        assert!(!empty.contains("their documents do not cover the question"));
+        let found = retrieve_prompt(&RetrieveResult::Found { text: "[]".into() }, false, thesis);
+        assert!(found.contains("the sources of the workspace \"Thesis\" do not cover that part"));
     }
 }

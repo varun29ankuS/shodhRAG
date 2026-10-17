@@ -465,12 +465,19 @@ async fn upgrade_file_once(app: &AppHandle, source: &FolderSourceRef) {
 }
 
 /// Brings the documents of an older index format that none of `owned` (the
-/// Library's source ids) owns up to date. Takes its turn with the syncs.
+/// Library's source ids) owns up to date, once the files an earlier build
+/// filed under one owner for every chat are the main Ask's. Takes its turn
+/// with the syncs.
 async fn upgrade_unowned_once(app: &AppHandle, owned: std::collections::BTreeSet<String>) {
     app.state::<BackgroundState>().wait_until_resumed().await;
     let state = app.state::<FolderSyncState>();
     let _turn = state.running.lock().await;
     let rag = app.state::<RagState>().rag.clone();
+    // Files an earlier build filed under one owner for every chat become the
+    // main Ask's, before they are brought up to date with the others.
+    if let Err(e) = rag.write().await.adopt_legacy_chat_uploads().await {
+        tracing::warn!(error = %format!("{e:#}"), "files added in chats not given to the main Ask");
+    }
     if let Err(e) = upgrade_unowned(&rag, &owned).await {
         tracing::warn!(error = %e, "documents outside the Library not brought up to date");
     }

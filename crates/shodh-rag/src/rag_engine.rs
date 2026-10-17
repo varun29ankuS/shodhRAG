@@ -666,9 +666,41 @@ fn legacy_source_spellings(path: &Path, canonical: &str) -> Vec<String> {
     out
 }
 
-/// The owner (`space_id`) of files added in a chat: they belong to no
-/// Library folder, so removing a folder never removes them.
-pub const CHAT_UPLOADS_SOURCE: &str = "chat-uploads";
+/// The owners (`space_id`) of files added in chats start with this: such
+/// files belong to no Library folder, so removing a folder never removes
+/// them, and to where they were added ([`chat_uploads_source`]), so a
+/// workspace's chats see only their own.
+pub const CHAT_UPLOADS_PREFIX: &str = "chat-uploads:";
+
+/// The owner of files added in a chat outside every workspace (the main Ask).
+pub const CHAT_UPLOADS_MAIN: &str = "chat-uploads:main";
+
+/// The owner an earlier build of this change gave every chat upload; such
+/// files are the main Ask's ([`RAGEngine::adopt_legacy_chat_uploads`]).
+const LEGACY_CHAT_UPLOADS: &str = "chat-uploads";
+
+/// The owner of a file added in a chat of `workspace` (`None`: the main
+/// Ask): `chat-uploads:<workspace id>`, or [`CHAT_UPLOADS_MAIN`]. `None` for
+/// a workspace id that cannot be one (empty, too long, a character other
+/// than letters, digits, `-` and `_`, or `main`, which names the main Ask).
+pub fn chat_uploads_source(workspace: Option<&str>) -> Option<String> {
+    let Some(id) = workspace else {
+        return Some(CHAT_UPLOADS_MAIN.to_string());
+    };
+    let plain = !id.is_empty()
+        && id.len() <= 200
+        && id != "main"
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    plain.then(|| format!("{CHAT_UPLOADS_PREFIX}{id}"))
+}
+
+/// Whether `space_id` owns files added in chats rather than being a source
+/// of the Library: such an owner is never removed or indexed as a folder.
+pub fn is_chat_uploads(space_id: &str) -> bool {
+    space_id == LEGACY_CHAT_UPLOADS || space_id.starts_with(CHAT_UPLOADS_PREFIX)
+}
 
 /// Whether chunk metadata (`metadata_json`) is that of a file added in a
 /// chat: only the chat upload records `uploaded_at`.
@@ -1949,7 +1981,8 @@ impl RAGEngine {
     /// their source (an empty `space_id`). Files added in a chat
     /// (`uploaded_at` in their metadata) stay: older versions gave them the
     /// id of the Library source selected at the time, and those are handed to
-    /// [`CHAT_UPLOADS_SOURCE`] instead of deleted. The chunks of every other
+    /// [`CHAT_UPLOADS_MAIN`] instead of deleted (they were added before
+    /// workspaces owned their uploads, and nothing records the chat). The chunks of every other
     /// source stay too: a folder whose path merely starts with `path`
     /// ("Papers 2024" for "Papers"), or a source listed inside it.
     /// Returns the chunks deleted.
@@ -1961,7 +1994,7 @@ impl RAGEngine {
         if space_id.trim().is_empty() {
             anyhow::bail!("a Library source is removed by its id, and none was given");
         }
-        if space_id == CHAT_UPLOADS_SOURCE {
+        if is_chat_uploads(space_id) {
             anyhow::bail!("files added in chats are not a Library source");
         }
         let predicate = format!("space_id = '{}'", space_id.replace('\'', "''"));
@@ -1974,7 +2007,7 @@ impl RAGEngine {
             .map(|chunk| chunk.source)
             .collect();
         for source in &uploads {
-            self.move_source_to_space(source, space_id, CHAT_UPLOADS_SOURCE)
+            self.move_source_to_space(source, space_id, CHAT_UPLOADS_MAIN)
                 .await?;
         }
         let mut deleted = self.delete_by_space_id(space_id).await?;
@@ -2080,6 +2113,33 @@ impl RAGEngine {
             "indexed file given to another source"
         );
         Ok(moved)
+    }
+
+    /// Gives every file of the space `from` to the space `to`
+    /// ([`Self::move_source_to_space`], one file at a time). Returns the
+    /// chunks moved.
+    pub async fn move_space(&mut self, from: &str, to: &str) -> Result<u64> {
+        let sources: std::collections::BTreeSet<String> = self
+            .store
+            .document_sources()
+            .await?
+            .into_iter()
+            .filter(|row| row.space_id == from)
+            .map(|row| row.source)
+            .collect();
+        let mut moved = 0;
+        for source in &sources {
+            moved += self.move_source_to_space(source, from, to).await?;
+        }
+        Ok(moved)
+    }
+
+    /// Files an earlier build filed under a single `chat-uploads` owner
+    /// become the main Ask's ([`CHAT_UPLOADS_MAIN`]): nothing records the chat
+    /// they were added in. Returns the chunks moved.
+    pub async fn adopt_legacy_chat_uploads(&mut self) -> Result<u64> {
+        self.move_space(LEGACY_CHAT_UPLOADS, CHAT_UPLOADS_MAIN)
+            .await
     }
 
     /// Compacts the chunk store: an update rewrites the rows it changes, so
@@ -3112,7 +3172,7 @@ Language models trained on long documents reach lower perplexity.
             .await
             .unwrap()
             .iter()
-            .any(|row| row.source == tagged && row.space_id == CHAT_UPLOADS_SOURCE));
+            .any(|row| row.source == tagged && row.space_id == CHAT_UPLOADS_MAIN));
         // The keyword index keeps exactly the same files.
         for (word, kept) in [
             ("zebra", false),
@@ -3132,6 +3192,78 @@ Language models trained on long documents reach lower perplexity.
             .delete_library_source(" ", Some(later_path.as_str()))
             .await
             .is_err());
+    }
+
+    #[test]
+    fn chat_uploads_are_owned_by_where_they_were_added() {
+        assert_eq!(
+            chat_uploads_source(None).as_deref(),
+            Some(CHAT_UPLOADS_MAIN)
+        );
+        assert_eq!(
+            chat_uploads_source(Some("ws-1a2b")).as_deref(),
+            Some("chat-uploads:ws-1a2b")
+        );
+        for bad in ["", "main", "ws'1", "ws\"1", "ws/1", "ws 1"] {
+            assert_eq!(chat_uploads_source(Some(bad)), None, "{bad:?}");
+        }
+        assert!(is_chat_uploads(CHAT_UPLOADS_MAIN));
+        assert!(is_chat_uploads("chat-uploads:ws-1a2b"));
+        assert!(is_chat_uploads("chat-uploads"));
+        assert!(!is_chat_uploads("folder-chat-uploads"));
+    }
+
+    /// Uploads an earlier build filed under one owner become the main Ask's;
+    /// a workspace's uploads go there when the workspace is deleted.
+    #[tokio::test]
+    async fn chat_uploads_move_between_owners_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        for (name, owner) in [
+            ("one.md", LEGACY_CHAT_UPLOADS),
+            ("two.md", LEGACY_CHAT_UPLOADS),
+            ("three.md", "chat-uploads:ws-a"),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(
+                &path,
+                format!("# {name}\n\nThe {name} notes describe the river, the bridge and the mill at dawn.\n"),
+            )
+            .unwrap();
+            engine
+                .add_document_from_file(
+                    &path,
+                    HashMap::from([
+                        ("space_id".to_string(), owner.to_string()),
+                        (
+                            "uploaded_at".to_string(),
+                            "2026-10-01T09:00:00Z".to_string(),
+                        ),
+                    ]),
+                )
+                .await
+                .unwrap();
+        }
+        let owners = |rows: Vec<crate::storage::DocumentSourceRow>| {
+            let mut owners: Vec<String> = rows.into_iter().map(|row| row.space_id).collect();
+            owners.sort();
+            owners
+        };
+        assert!(engine.adopt_legacy_chat_uploads().await.unwrap() >= 2);
+        assert_eq!(
+            owners(engine.document_sources().await.unwrap()),
+            [CHAT_UPLOADS_MAIN, CHAT_UPLOADS_MAIN, "chat-uploads:ws-a"]
+        );
+        engine
+            .move_space("chat-uploads:ws-a", CHAT_UPLOADS_MAIN)
+            .await
+            .unwrap();
+        assert_eq!(
+            owners(engine.document_sources().await.unwrap()),
+            [CHAT_UPLOADS_MAIN; 3]
+        );
+        // Nothing left to adopt.
+        assert_eq!(engine.adopt_legacy_chat_uploads().await.unwrap(), 0);
     }
 
     #[test]

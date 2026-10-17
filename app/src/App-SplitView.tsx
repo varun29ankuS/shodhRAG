@@ -721,8 +721,10 @@ function AppSplitView() {
         processingTimeMs: number;
         error?: string;
       }>('upload_document_file', {
-        // A file added in a chat belongs to the chats, not to a Library folder.
+        // A file added in a chat belongs to where it was added (the chat's
+        // workspace, or the main Ask), not to a Library folder.
         filePath,
+        workspaceId: activeConversation?.workspaceId ?? null,
       });
 
       // Update message with result

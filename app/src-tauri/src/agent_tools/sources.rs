@@ -67,11 +67,11 @@ async fn resolve_source(
 ) -> Result<SourceSummary, ToolError> {
     let source_id =
         str_arg(args, "source_id").ok_or_else(|| invalid(tool, "`source_id` is required"))?;
-    if source_id == shodh_rag::rag_engine::CHAT_UPLOADS_SOURCE {
-        return Err(ToolError::Forbidden(
-            "Source chat-uploads holds the files added in chats, not a Library folder; it              cannot be re-indexed or removed here"
-                .to_string(),
-        ));
+    if shodh_rag::rag_engine::is_chat_uploads(source_id) {
+        return Err(ToolError::Forbidden(format!(
+            "Source {source_id} holds files added in chats, not a Library folder; it cannot be \
+             re-indexed or removed here"
+        )));
     }
     let engine = host.rag.read().await;
     find_folder_source(&engine, source_id).await
@@ -436,11 +436,25 @@ mod tests {
         let remove = RemoveSourceTool {
             host: t.host.clone(),
         };
-        let args = json!({"source_id": shodh_rag::rag_engine::CHAT_UPLOADS_SOURCE});
-        assert!(matches!(
-            remove.preview(&args).await,
-            Err(ToolError::Forbidden(_))
-        ));
+        for owner in [
+            shodh_rag::rag_engine::CHAT_UPLOADS_MAIN,
+            "chat-uploads:ws-a",
+            "chat-uploads",
+        ] {
+            let args = json!({ "source_id": owner });
+            assert!(
+                matches!(remove.preview(&args).await, Err(ToolError::Forbidden(_))),
+                "{owner}"
+            );
+            let reindex = ReindexSourceTool {
+                host: t.host.clone(),
+            };
+            let (ctx, _rx) = testing::ctx();
+            assert!(matches!(
+                reindex.execute(args, &ctx).await,
+                Err(ToolError::Forbidden(_))
+            ));
+        }
         assert!(t
             .effects
             .removed_sources

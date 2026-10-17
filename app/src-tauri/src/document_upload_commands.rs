@@ -4,7 +4,7 @@
 use crate::rag_commands::RagState;
 use serde::{Deserialize, Serialize};
 use shodh_rag::comprehensive_system::Citation;
-use shodh_rag::rag_engine::CHAT_UPLOADS_SOURCE;
+use shodh_rag::rag_engine::chat_uploads_source;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
@@ -24,15 +24,21 @@ pub struct UploadResult {
 }
 
 /// Upload and index a document file (PDF, DOCX, XLSX, etc.) added in a
-/// chat. It belongs to the chats ([`CHAT_UPLOADS_SOURCE`]), not to a Library
-/// folder, so removing a folder never removes it; answers limited to
-/// sources or to a workspace search it too (see
-/// `agent_session_commands::SendScope::validated`).
+/// chat of `workspace_id` (`None`: the main Ask). It belongs to where it was
+/// added ([`chat_uploads_source`]), not to a Library folder, so removing a
+/// folder never removes it, and only that workspace's chats (or the main
+/// Ask) search it (see `agent_session_commands::scope_for_workspace`).
 #[tauri::command]
 pub async fn upload_document_file(
     state: State<'_, RagState>,
     file_path: String,
+    workspace_id: Option<String>,
 ) -> Result<UploadResult, String> {
+    let workspace_id = workspace_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
+    let owner = chat_uploads_source(workspace_id.as_deref())
+        .ok_or_else(|| "The chat's workspace id is not valid".to_string())?;
     let start_time = std::time::Instant::now();
 
     let path = Path::new(&file_path);
@@ -74,7 +80,7 @@ pub async fn upload_document_file(
     metadata.insert("file_size_mb".to_string(), format!("{:.2}", file_size));
     metadata.insert("uploaded_at".to_string(), chrono::Utc::now().to_rfc3339());
 
-    metadata.insert("space_id".to_string(), CHAT_UPLOADS_SOURCE.to_string());
+    metadata.insert("space_id".to_string(), owner);
 
     // Create citation
     let _citation = Citation {

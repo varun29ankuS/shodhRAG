@@ -113,10 +113,12 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
             tracing::info!(paused, "background work paused from the tray");
         }
         MENU_QUIT => {
-            app.state::<BackgroundState>()
-                .quitting
-                .store(true, Ordering::SeqCst);
-            app.exit(0);
+            let state = app.state::<BackgroundState>();
+            if state.quitting.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            // The window writes its waiting saves first (bounded wait).
+            crate::shutdown::quit_after_saves(app);
         }
         _ => {}
     }
@@ -175,8 +177,35 @@ pub fn started_in_background() -> bool {
     std::env::args().any(|a| a == BACKGROUND_FLAG)
 }
 
+/// Where closing the main window takes it: the tray (with the settings
+/// store and settings, to explain it the first time), or closed.
+fn close_to_tray(app: &AppHandle, state: &BackgroundState) -> Option<(SettingsStore, AppSettings)> {
+    if !state.tray_ready.load(Ordering::SeqCst) {
+        return None;
+    }
+    let store = match crate::profile::app_data_dir(app) {
+        Ok(dir) => SettingsStore::in_dir(&dir),
+        Err(e) => {
+            tracing::warn!(error = %e, "no app data directory; closing normally");
+            return None;
+        }
+    };
+    let settings = match store.load() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "settings unreadable; closing normally");
+            return None;
+        }
+    };
+    settings
+        .background
+        .close_to_tray
+        .then_some((store, settings))
+}
+
 /// Window events: closing the main window hides it to the tray when the
 /// setting is on. The first time, a notification explains where it went.
+/// Otherwise the window closes once its waiting saves are written.
 pub fn on_window_event(window: &Window, event: &WindowEvent) {
     let WindowEvent::CloseRequested { api, .. } = event else {
         return;
@@ -186,26 +215,15 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
     }
     let app = window.app_handle();
     let state = app.state::<BackgroundState>();
-    if state.quitting.load(Ordering::SeqCst) || !state.tray_ready.load(Ordering::SeqCst) {
+    // Quit already had the window write its saves.
+    if state.quitting.load(Ordering::SeqCst) {
         return;
     }
-    let store = match crate::profile::app_data_dir(app) {
-        Ok(dir) => SettingsStore::in_dir(&dir),
-        Err(e) => {
-            tracing::warn!(error = %e, "no app data directory; closing normally");
-            return;
-        }
-    };
-    let settings = match store.load() {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(error = %e, "settings unreadable; closing normally");
-            return;
-        }
-    };
-    if !settings.background.close_to_tray {
+    let Some((store, settings)) = close_to_tray(app, &state) else {
+        api.prevent_close();
+        crate::shutdown::close_after_saves(window);
         return;
-    }
+    };
     api.prevent_close();
     if let Err(e) = window.hide() {
         tracing::warn!(error = %e, "could not hide the main window");

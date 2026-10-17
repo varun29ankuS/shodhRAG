@@ -298,14 +298,21 @@ async fn download_and_install(
         }),
     ));
     // The installer replaces files the agent runtimes may hold open, and on
-    // Windows it ends this process without the normal exit path.
+    // Windows it ends this process without the normal exit path: the window
+    // writes its waiting saves first (bounded wait).
+    crate::shutdown::prepare_exit(app).await;
     app.state::<crate::agent_session_commands::AgentSessions>()
         .shutdown_all()
         .await;
-    tokio::task::spawn_blocking(move || update.install(bytes))
-        .await
-        .map_err(|e| format!("Installing the update failed: {e}"))?
-        .map_err(|e| format!("Installing the update failed: {e}"))
+    let installed = match tokio::task::spawn_blocking(move || update.install(bytes)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(format!("Installing the update failed: {e}")),
+        Err(e) => Err(format!("Installing the update failed: {e}")),
+    };
+    if installed.is_err() {
+        crate::shutdown::cancel_exit(app);
+    }
+    installed
 }
 
 #[cfg(test)]

@@ -150,7 +150,8 @@ impl FilePreparer {
         // chunked by unit: sections, tables with headers, theorems with their
         // proofs, single references. Form fields and relationships extracted
         // from PDFs, and spreadsheet tables, use the section chunker; other
-        // formats fall back to sliding windows.
+        // formats, and any document those chunkers find no unit in, fall
+        // back to sliding windows over its text.
         let chunk_started = std::time::Instant::now();
         let embedder = self.embeddings.as_ref();
         let count = |text: &str| {
@@ -159,9 +160,6 @@ impl FilePreparer {
                 .unwrap_or_else(|| crate::embeddings::estimate_tokens(text))
         };
         let structured = parsed.document.as_ref().filter(|d| !d.blocks.is_empty());
-        if structured.is_some() {
-            merged_metadata.insert("chunker".to_string(), STRUCTURE_CHUNKER_VERSION.to_string());
-        }
         let extension = path
             .extension()
             .and_then(|e| e.to_str())
@@ -182,7 +180,7 @@ impl FilePreparer {
                     label,
                 ));
             }
-            if chunks.is_empty() && parsed.document.is_none() {
+            if chunks.is_empty() {
                 chunks = self
                     .chunker
                     .chunk_with_context(&parsed.content, context, label);
@@ -190,6 +188,16 @@ impl FilePreparer {
             chunks
         };
         let mut chunks = chunk_in_context(&title, !tabular, &count, &chunk_all);
+        if chunks.is_empty() && !parsed.content.trim().is_empty() {
+            // Stored as it is, the file would replace its previous chunks
+            // with none and count as indexed.
+            anyhow::bail!("No chunks were made from the text of {}", path.display());
+        }
+        // Only structure chunks carry a layout; a document they found no
+        // unit in was chunked in windows.
+        if chunks.iter().any(|c| c.layout.is_some()) {
+            merged_metadata.insert("chunker".to_string(), STRUCTURE_CHUNKER_VERSION.to_string());
+        }
         for (index, chunk) in chunks.iter_mut().enumerate() {
             chunk.index = index;
         }
@@ -373,7 +381,7 @@ fn prepare_chunks(
         }
         match &chunk.layout {
             Some(layout) => insert_layout_metadata(&mut per_chunk_meta, layout),
-            None => insert_page_metadata(&mut per_chunk_meta, chunk.page),
+            None => insert_page_metadata(&mut per_chunk_meta, chunk.page, chunk.page_end),
         }
         // Extract structured fields (emails, phones, etc.) at ingest time
         for (k, v) in extract_structured_fields(&chunk.text) {
@@ -548,16 +556,25 @@ static RE_INVOICE_NO: LazyLock<Regex> = LazyLock::new(|| {
 /// Extract structured fields from chunk text using regex.
 /// Returns key-value pairs to merge into chunk metadata.
 /// This runs once at ingest time — zero cost at query time.
-/// Record a chunk's source page in its metadata. Paged chunks get `page`,
-/// `page_start` and `page_end` (a chunk is produced from exactly one page, so
-/// start and end are equal; the range keys let consumers treat merged/expanded
-/// results uniformly). Unpaged chunks get no page keys.
-fn insert_page_metadata(meta: &mut HashMap<String, String>, page: Option<usize>) {
+/// Record a chunk's source pages in its metadata. Paged chunks get `page`,
+/// `page_start` and `page_end`: equal for a chunk of one page, a range for a
+/// chunk whose text runs onto a later page (a short page merged with its
+/// neighbour, `page_end`); the range keys let consumers treat merged/expanded
+/// results uniformly. Unpaged chunks get no page keys.
+fn insert_page_metadata(
+    meta: &mut HashMap<String, String>,
+    page: Option<usize>,
+    page_end: Option<usize>,
+) {
     if let Some(page) = page {
-        let page = page.to_string();
-        meta.insert("page".to_string(), page.clone());
-        meta.insert("page_start".to_string(), page.clone());
-        meta.insert("page_end".to_string(), page);
+        let start = page.to_string();
+        let end = page_end
+            .filter(|&end| end > page)
+            .unwrap_or(page)
+            .to_string();
+        meta.insert("page".to_string(), start.clone());
+        meta.insert("page_start".to_string(), start);
+        meta.insert("page_end".to_string(), end);
     }
 }
 
@@ -609,6 +626,153 @@ pub const TABLE_INCOMPLETE_KEY: &str = "table_incomplete";
 /// cross headings and pages and merge adjacent references.
 fn wants_neighbor_expansion(meta: &HashMap<String, String>) -> bool {
     !meta.contains_key("unit_kind")
+}
+
+/// Metadata key of a result widened with its neighbouring chunks: where the
+/// chunk that matched and each neighbour lie in its snippet ([`SnippetParts`],
+/// as JSON). Readers that cut the snippet use it to keep the matched chunk.
+pub const SNIPPET_PARTS_KEY: &str = "snippet_parts";
+
+/// A neighbouring chunk joined to a result's snippet: its byte range in the
+/// snippet and the pages it covers (`None` for an unpaged chunk).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NeighborPart {
+    pub start: usize,
+    pub end: usize,
+    #[serde(default)]
+    pub pages: Option<(u32, u32)>,
+}
+
+/// The parts of a snippet widened with neighbours, as byte ranges in it: the
+/// chunk that matched, and the neighbours before and after it in reading order.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct SnippetParts {
+    pub matched: (usize, usize),
+    pub before: Vec<NeighborPart>,
+    pub after: Vec<NeighborPart>,
+}
+
+impl SnippetParts {
+    /// The parts `meta` records for `snippet`, when they describe it: every
+    /// range on char boundaries inside it, in reading order, none overlapping.
+    /// `None` for a snippet that was not widened.
+    pub fn of(snippet: &str, meta: &HashMap<String, String>) -> Option<Self> {
+        let parts: Self = serde_json::from_str(meta.get(SNIPPET_PARTS_KEY)?).ok()?;
+        let ranges = parts
+            .before
+            .iter()
+            .map(|p| (p.start, p.end))
+            .chain(std::iter::once(parts.matched))
+            .chain(parts.after.iter().map(|p| (p.start, p.end)));
+        let mut reached = 0;
+        for (start, end) in ranges {
+            if start < reached
+                || end < start
+                || end > snippet.len()
+                || !snippet.is_char_boundary(start)
+                || !snippet.is_char_boundary(end)
+            {
+                return None;
+            }
+            reached = end;
+        }
+        Some(parts)
+    }
+}
+
+/// The pages a chunk covers, from the metadata written at indexing time
+/// (`page_start`/`page_end`, else `page`), lowest first. `None` for an
+/// unpaged chunk.
+pub fn page_range_from_metadata(meta: &HashMap<String, String>) -> Option<(u32, u32)> {
+    let read = |key: &str| meta.get(key).and_then(|v| v.trim().parse::<u32>().ok());
+    match (read("page_start"), read("page_end")) {
+        (Some(start), Some(end)) => Some((start.min(end), start.max(end))),
+        (Some(one), None) | (None, Some(one)) => Some((one, one)),
+        (None, None) => read("page").map(|p| (p, p)),
+    }
+}
+
+/// Appends `piece` to `text`, a line break after what is there, and returns
+/// the byte range it took.
+fn push_part(text: &mut String, piece: &str) -> (usize, usize) {
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    let start = text.len();
+    text.push_str(piece);
+    (start, text.len())
+}
+
+/// Appends `piece`, the text of neighbour `hit` or part of it, to `text`
+/// ([`push_part`]) and returns its part.
+fn push_neighbor(text: &mut String, piece: &str, hit: &crate::storage::SearchHit) -> NeighborPart {
+    let (start, end) = push_part(text, piece);
+    let pages = serde_json::from_str::<HashMap<String, String>>(&hit.metadata_json)
+        .ok()
+        .and_then(|meta| page_range_from_metadata(&meta));
+    NeighborPart { start, end, pages }
+}
+
+/// Shortest repeat of one chunk's end at the next one's start that is taken
+/// for the window overlap, in characters: a shorter one ("the", a number) is
+/// as likely a coincidence of two different sentences.
+const MIN_OVERLAP_CHARS: usize = 12;
+
+/// Length in bytes of the longest end of `first` that `second` starts with
+/// (sliding windows repeat up to `chunk_overlap` bytes of a chunk at the start
+/// of the next), when it is at least [`MIN_OVERLAP_CHARS`] long; else 0. On a
+/// char boundary of both.
+fn overlap_len(first: &str, second: &str) -> usize {
+    let longest = first.len().min(second.len());
+    (1..=longest)
+        .rev()
+        .filter(|&len| second.is_char_boundary(len))
+        .find(|&len| first.ends_with(&second[..len]))
+        .filter(|&len| second[..len].chars().count() >= MIN_OVERLAP_CHARS)
+        .unwrap_or(0)
+}
+
+/// `core`, the text of chunk `chunk_index`, with the `neighbors` of the same
+/// document joined around it in reading order, one line break apart, and
+/// where each part lies in the joined text. Text a neighbour repeats of the
+/// piece next to it (the windows' overlap) is left out of the neighbour.
+fn join_neighbors(
+    core: &str,
+    chunk_index: u32,
+    neighbors: &[crate::storage::SearchHit],
+) -> (String, SnippetParts) {
+    let mut ordered: Vec<&crate::storage::SearchHit> = neighbors
+        .iter()
+        .filter(|hit| hit.chunk_index != chunk_index)
+        .collect();
+    ordered.sort_by_key(|hit| hit.chunk_index);
+    let before: Vec<&crate::storage::SearchHit> = ordered
+        .iter()
+        .copied()
+        .filter(|hit| hit.chunk_index < chunk_index)
+        .collect();
+    let after: Vec<&crate::storage::SearchHit> = ordered
+        .iter()
+        .copied()
+        .filter(|hit| hit.chunk_index > chunk_index)
+        .collect();
+    let mut text = String::new();
+    let mut parts = SnippetParts::default();
+    for (i, hit) in before.iter().enumerate() {
+        let next = before.get(i + 1).map_or(core, |h| h.text.as_str());
+        let piece = &hit.text[..hit.text.len() - overlap_len(&hit.text, next)];
+        parts.before.push(push_neighbor(&mut text, piece, hit));
+    }
+    parts.matched = push_part(&mut text, core);
+    for (i, hit) in after.iter().enumerate() {
+        let previous = match i {
+            0 => core,
+            _ => after[i - 1].text.as_str(),
+        };
+        let piece = &hit.text[overlap_len(previous, &hit.text)..];
+        parts.after.push(push_neighbor(&mut text, piece, hit));
+    }
+    (text, parts)
 }
 
 /// Whether a chunk is one bibliography entry.
@@ -664,6 +828,77 @@ fn legacy_source_spellings(path: &Path, canonical: &str) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+/// The owners (`space_id`) of files added in chats start with this: such
+/// files belong to no Library folder, so removing a folder never removes
+/// them, and to where they were added ([`chat_uploads_source`]), so a
+/// workspace's chats see only their own.
+pub const CHAT_UPLOADS_PREFIX: &str = "chat-uploads:";
+
+/// The owner of files added in a chat outside every workspace (the main Ask).
+pub const CHAT_UPLOADS_MAIN: &str = "chat-uploads:main";
+
+/// The owner an earlier build of this change gave every chat upload; such
+/// files are the main Ask's ([`RAGEngine::hand_over_chat_uploads`]).
+#[cfg(test)]
+const LEGACY_CHAT_UPLOADS: &str = "chat-uploads";
+
+/// The owner of a file added in a chat of `workspace` (`None`: the main
+/// Ask): `chat-uploads:<workspace id>`, or [`CHAT_UPLOADS_MAIN`]. `None` for
+/// a workspace id that cannot be one (empty, too long, a character other
+/// than letters, digits, `-` and `_`, or `main`, which names the main Ask).
+pub fn chat_uploads_source(workspace: Option<&str>) -> Option<String> {
+    let Some(id) = workspace else {
+        return Some(CHAT_UPLOADS_MAIN.to_string());
+    };
+    let plain = !id.is_empty()
+        && id.len() <= 200
+        && id != "main"
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    plain.then(|| format!("{CHAT_UPLOADS_PREFIX}{id}"))
+}
+
+/// Whether `space_id` owns files added in chats rather than being a source
+/// of the Library: such an owner is never removed or indexed as a folder.
+pub fn is_chat_uploads(space_id: &str) -> bool {
+    space_id == "chat-uploads" || space_id.starts_with(CHAT_UPLOADS_PREFIX)
+}
+
+/// Whether chunk metadata (`metadata_json`) is that of a file added in a
+/// chat: only the chat upload records `uploaded_at`.
+fn added_in_chat(metadata_json: &str) -> bool {
+    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(metadata_json)
+        .is_ok_and(|metadata| metadata.contains_key("uploaded_at"))
+}
+
+/// The spellings under which an indexer may have stored the file or folder
+/// `path` ([`normalize_source_path`] and [`legacy_source_spellings`]),
+/// without a trailing separator.
+fn source_spellings(path: &Path) -> Vec<String> {
+    let canonical = normalize_source_path(path);
+    let mut spellings = vec![canonical.clone()];
+    spellings.extend(legacy_source_spellings(path, &canonical));
+    spellings
+        .into_iter()
+        .map(|s| s.trim_end_matches(['/', '\\']).to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Whether the stored `source` is one of `spellings` (a file) or lies under
+/// one of them (a folder), across a separator: `c:/research/papers` holds
+/// `c:/research/papers/a.pdf`, never `c:/research/papers 2024/a.pdf`. Plain
+/// string comparison, so no character in a path acts as a wildcard.
+fn lies_under(source: &str, spellings: &[String]) -> bool {
+    spellings
+        .iter()
+        .any(|folder| match source.strip_prefix(folder.as_str()) {
+            Some(rest) => rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\'),
+            None => false,
+        })
 }
 
 /// Human-readable page label (`"3"` or `"3-5"`) from chunk metadata written by
@@ -771,9 +1006,9 @@ enum EmbedderSource {
 }
 
 impl SearchModels {
-    /// Models over a test embedder, without a reranker.
-    #[cfg(test)]
-    pub(crate) fn from_embedder(embeddings: Arc<dyn EmbeddingModel>) -> Self {
+    /// Models over an embedder that is already loaded (the app's tests use
+    /// a deterministic one), without a reranker or OCR model.
+    pub fn from_embedder(embeddings: Arc<dyn EmbeddingModel>) -> Self {
         Self {
             embeddings: EmbedderSource::Loaded(embeddings),
             reranker_dir: None,
@@ -1800,8 +2035,10 @@ impl RAGEngine {
 
     /// Expand top-k results with neighboring chunks from the same document.
     /// For each result, fetches ±window adjacent chunks by chunk_index and
-    /// concatenates them in reading order (prev + current + next). Structure
-    /// chunks are left as they are (see [`wants_neighbor_expansion`]).
+    /// concatenates them in reading order (prev + current + next), recording
+    /// where each part lies under [`SNIPPET_PARTS_KEY`] so a reader that cuts
+    /// the snippet keeps the chunk that matched. Structure chunks are left as
+    /// they are (see [`wants_neighbor_expansion`]).
     async fn expand_with_neighbors(&self, results: &mut [ComprehensiveResult], window: u32) {
         for result in results.iter_mut() {
             if !wants_neighbor_expansion(&result.metadata) {
@@ -1819,35 +2056,19 @@ impl RAGEngine {
 
             match self.store.get_neighbors(&doc_id, chunk_index, window).await {
                 Ok(neighbors) if !neighbors.is_empty() => {
-                    let mut before = String::new();
-                    let mut after = String::new();
-
-                    for neighbor in &neighbors {
-                        if neighbor.chunk_index < chunk_index {
-                            if !before.is_empty() {
-                                before.push('\n');
-                            }
-                            before.push_str(&neighbor.text);
-                        } else if neighbor.chunk_index > chunk_index {
-                            if !after.is_empty() {
-                                after.push('\n');
-                            }
-                            after.push_str(&neighbor.text);
+                    let (expanded, parts) =
+                        join_neighbors(&result.snippet, chunk_index, &neighbors);
+                    // Without its parts a cut would keep the snippet's start, the
+                    // chunk before the match: the result stays unexpanded then.
+                    match serde_json::to_string(&parts) {
+                        Ok(json) => {
+                            result.metadata.insert(SNIPPET_PARTS_KEY.to_string(), json);
+                            result.snippet = expanded;
+                        }
+                        Err(e) => {
+                            tracing::debug!("Neighbor expansion failed for doc {}: {}", doc_id, e);
                         }
                     }
-
-                    let mut expanded = String::new();
-                    if !before.is_empty() {
-                        expanded.push_str(&before);
-                        expanded.push('\n');
-                    }
-                    expanded.push_str(&result.snippet);
-                    if !after.is_empty() {
-                        expanded.push('\n');
-                        expanded.push_str(&after);
-                    }
-
-                    result.snippet = expanded;
                 }
                 Ok(_) => {} // No neighbors found
                 Err(e) => {
@@ -1905,16 +2126,124 @@ impl RAGEngine {
         }
     }
 
-    /// Delete all documents whose source starts with the given folder path.
-    /// Normalizes the prefix and uses starts_with matching so that a folder
-    /// path matches all files indexed under it.
-    pub async fn delete_by_source_prefix(&mut self, folder: &str) -> Result<usize> {
-        let normalized = normalize_source_path(Path::new(folder));
-        self.forget_cached_scans(|row| row.source.starts_with(&normalized))
-            .await;
-        let deleted = self.store.delete_by_source_prefix(&normalized).await?;
-        self.text_search.delete_by_source_prefix(&normalized)?;
+    /// Deletes the Library source `space_id` from the index: every chunk it
+    /// owns and, under `path` (the source's folder, or its file), the chunks
+    /// that no source owns because they were indexed before chunks recorded
+    /// their source (an empty `space_id`), except those under `keep` (the
+    /// folders of the other Library sources). Files added in a chat
+    /// (`uploaded_at` in their metadata) stay: older versions gave them the
+    /// id of the Library source selected at the time, and those are handed
+    /// to [`CHAT_UPLOADS_MAIN`] instead of deleted (they were added before
+    /// workspaces owned their uploads, and nothing records the chat). The
+    /// chunks of every other source stay too: a folder whose path merely
+    /// starts with `path` ("Papers 2024" for "Papers"), or a source listed
+    /// inside it.
+    ///
+    /// Everything is read before anything changes, so a failure while
+    /// reading leaves the index as it was. Returns the chunks deleted.
+    pub async fn delete_library_source(
+        &mut self,
+        space_id: &str,
+        path: Option<&str>,
+        keep: &[String],
+    ) -> Result<usize> {
+        if space_id.trim().is_empty() {
+            anyhow::bail!("a Library source is removed by its id, and none was given");
+        }
+        if is_chat_uploads(space_id) {
+            anyhow::bail!("files added in chats are not a Library source");
+        }
+        let predicate = format!("space_id = '{}'", space_id.replace('\'', "''"));
+        let uploads: std::collections::BTreeSet<String> = self
+            .store
+            .list_chunks(Some(&predicate), 1_000_000)
+            .await?
+            .into_iter()
+            .filter(|chunk| added_in_chat(&chunk.metadata_json))
+            .map(|chunk| chunk.source)
+            .collect();
+        let unowned = match path.map(str::trim).filter(|p| !p.is_empty()) {
+            Some(path) => self.unowned_under(Path::new(path), keep, space_id).await?,
+            None => Vec::new(),
+        };
+        for source in &uploads {
+            self.move_source_to_space(source, space_id, CHAT_UPLOADS_MAIN)
+                .await?;
+        }
+        let mut deleted = self.delete_by_space_id(space_id).await?;
+        deleted += self.delete_chunks(&unowned).await?;
+        Ok(deleted)
+    }
+
+    /// The chunks no source owns of the file `path` or of the files under
+    /// the folder `path` ([`lies_under`]), except files added in a chat,
+    /// files under any of `keep`, and files a source other than `removing`
+    /// has chunks of (a listed single-file source, say, whose path is known
+    /// only from its chunks). Matched by plain string comparison: no `LIKE`
+    /// pattern is involved.
+    async fn unowned_under(
+        &self,
+        path: &Path,
+        keep: &[String],
+        removing: &str,
+    ) -> Result<Vec<crate::storage::SearchHit>> {
+        let spellings = source_spellings(path);
+        let kept: Vec<Vec<String>> = keep
+            .iter()
+            .map(|folder| source_spellings(Path::new(folder)))
+            .collect();
+        let owned_elsewhere: std::collections::HashSet<String> = self
+            .store
+            .document_sources()
+            .await?
+            .into_iter()
+            .filter(|row| !row.space_id.is_empty() && row.space_id != removing)
+            .map(|row| row.source)
+            .collect();
+        Ok(self
+            .store
+            .list_chunks(Some("space_id = '' OR space_id IS NULL"), 1_000_000)
+            .await?
+            .into_iter()
+            .filter(|chunk| {
+                lies_under(&chunk.source, &spellings)
+                    && !kept.iter().any(|k| lies_under(&chunk.source, k))
+                    && !owned_elsewhere.contains(&chunk.source)
+                    && !added_in_chat(&chunk.metadata_json)
+            })
+            .collect())
+    }
+
+    /// Deletes `chunks` by id from LanceDB and the keyword index, with their
+    /// files' OCR cache entries. Returns the chunks deleted.
+    async fn delete_chunks(&mut self, chunks: &[crate::storage::SearchHit]) -> Result<usize> {
+        if chunks.is_empty() {
+            return Ok(0);
+        }
+        let sources: std::collections::BTreeSet<&str> =
+            chunks.iter().map(|chunk| chunk.source.as_str()).collect();
+        for source in sources {
+            self.ocr_cache.remove(source);
+        }
+        for chunk in chunks {
+            self.text_search.delete_by_id(&chunk.id)?;
+        }
         self.text_search.commit()?;
+        let mut deleted = 0;
+        for batch in chunks.chunks(500) {
+            let ids: Vec<String> = batch
+                .iter()
+                .map(|chunk| format!("'{}'", chunk.id.replace('\'', "''")))
+                .collect();
+            deleted += self
+                .store
+                .delete_where(&format!("id IN ({})", ids.join(", ")))
+                .await?;
+        }
+        tracing::info!(
+            deleted,
+            "Deleted chunks without a source under a removed Library source"
+        );
         Ok(deleted)
     }
 
@@ -1966,6 +2295,65 @@ impl RAGEngine {
             chunks = moved,
             "indexed file given to another source"
         );
+        Ok(moved)
+    }
+
+    /// Gives every file of the space `from` to the space `to`
+    /// ([`Self::move_source_to_space`], one file at a time). Returns the
+    /// chunks moved.
+    pub async fn move_space(&mut self, from: &str, to: &str) -> Result<u64> {
+        let sources: std::collections::BTreeSet<String> = self
+            .store
+            .document_sources()
+            .await?
+            .into_iter()
+            .filter(|row| row.space_id == from)
+            .map(|row| row.source)
+            .collect();
+        let mut moved = 0;
+        for source in &sources {
+            moved += self.move_source_to_space(source, from, to).await?;
+        }
+        Ok(moved)
+    }
+
+    /// Gives every file added in a chat that is not owned where it was added
+    /// to the main Ask ([`CHAT_UPLOADS_MAIN`]), once per run, before a folder
+    /// sync could take it for one of its own: files older versions filed
+    /// under the Library source selected at the time (or under no source),
+    /// those an earlier build filed under a single `chat-uploads` owner, and,
+    /// when `workspaces` (the workspaces that exist) is known, those of a
+    /// workspace that was deleted. Nothing records the chat an older upload
+    /// came from, so the main Ask is where it can still be found. Only the
+    /// chat upload records `uploaded_at`. Returns the chunks moved.
+    pub async fn hand_over_chat_uploads(
+        &mut self,
+        workspaces: Option<&std::collections::HashSet<String>>,
+    ) -> Result<u64> {
+        // `_` matches itself too: the filter only narrows what is read; the
+        // metadata is checked exactly below.
+        let candidates = self
+            .store
+            .list_chunks(Some("metadata_json LIKE '%uploaded_at%'"), 1_000_000)
+            .await?;
+        let strays: std::collections::BTreeSet<(String, String)> = candidates
+            .into_iter()
+            .filter(|chunk| added_in_chat(&chunk.metadata_json))
+            .filter(
+                |chunk| match chunk.space_id.strip_prefix(CHAT_UPLOADS_PREFIX) {
+                    Some("main") => false,
+                    Some(workspace) => workspaces.is_some_and(|live| !live.contains(workspace)),
+                    None => true,
+                },
+            )
+            .map(|chunk| (chunk.source, chunk.space_id))
+            .collect();
+        let mut moved = 0;
+        for (source, owner) in &strays {
+            moved += self
+                .move_source_to_space(source, owner, CHAT_UPLOADS_MAIN)
+                .await?;
+        }
         Ok(moved)
     }
 
@@ -2898,10 +3286,330 @@ Language models trained on long documents reach lower perplexity.
         engine
     }
 
+    /// A file with text is never indexed as no chunks: a short note is one
+    /// chunk, a CJK note is chunked by unit, and a note the structure chunker
+    /// finds no unit in (a heading alone) falls back to windows.
+    #[tokio::test]
+    async fn short_and_whitespace_free_files_are_indexed_with_their_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let cases = [
+            ("reply.txt", "Yes.\n", "Yes.", false),
+            (
+                "kaimono.md",
+                "# 買い物\n\n牛乳と卵を買う。\n",
+                "牛乳と卵を買う。",
+                true,
+            ),
+            ("list.md", "- Milk\n", "Milk", true),
+            ("heading.md", "# Shopping list\n", "Shopping list", false),
+        ];
+        for (name, content, _, _) in &cases {
+            let path = dir.path().join(name);
+            std::fs::write(&path, content).unwrap();
+            let ids = engine
+                .add_document_from_file(&path, HashMap::new())
+                .await
+                .unwrap();
+            assert_eq!(ids.len(), 1, "{name}");
+        }
+        let chunks = engine.store.list_chunks(None, 100).await.unwrap();
+        for (name, _, text, by_unit) in cases {
+            let chunk = chunks
+                .iter()
+                .find(|c| c.source.ends_with(name))
+                .unwrap_or_else(|| panic!("no chunk of {name}"));
+            assert!(chunk.text.contains(text), "{name}: {}", chunk.text);
+            let metadata: HashMap<String, String> =
+                serde_json::from_str(&chunk.metadata_json).unwrap();
+            assert_eq!(
+                metadata.get("chunker").map(String::as_str),
+                by_unit.then_some(STRUCTURE_CHUNKER_VERSION),
+                "{name}"
+            );
+        }
+    }
+
     const LEASE: &str =
         "Lessor: Saffron Estates Pvt. Ltd. Lessee: Tidewater Logistics Pvt. Ltd.\n\n\
                          # Rent\n\n\
                          Monthly rent is INR 4,85,000, payable by the 5th day of each month.\n";
+
+    /// Removing a Library source deletes what it owns and, under its folder,
+    /// only what no source owns: never a neighbour whose path starts the same
+    /// ("Papers 2024" for "Papers"), a source listed inside it, or a file
+    /// added in a chat.
+    #[tokio::test]
+    async fn removing_a_source_deletes_only_what_it_owns() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let papers = dir.path().join("Papers");
+        let later = dir.path().join("Papers 2024");
+        std::fs::create_dir_all(papers.join("nested")).unwrap();
+        std::fs::create_dir_all(&later).unwrap();
+        let owned = |id: &str| HashMap::from([("space_id".to_string(), id.to_string())]);
+        let chat = HashMap::from([(
+            "uploaded_at".to_string(),
+            "2026-10-01T09:00:00Z".to_string(),
+        )]);
+        // Added in a chat by an older version, which gave it the id of the
+        // Library source selected then.
+        let tagged_chat = HashMap::from([
+            (
+                "uploaded_at".to_string(),
+                "2026-10-01T09:00:00Z".to_string(),
+            ),
+            ("space_id".to_string(), "papers".to_string()),
+        ]);
+        let uploads = dir.path().join("uploads");
+        std::fs::create_dir_all(&uploads).unwrap();
+        let files = [
+            (papers.join("own.md"), "zebra", owned("papers")),
+            (later.join("later.md"), "giraffe", owned("later")),
+            (
+                papers.join("nested").join("nested.md"),
+                "pelican",
+                owned("nested"),
+            ),
+            (papers.join("chat.md"), "walrus", chat),
+            (papers.join("legacy.md"), "otter", HashMap::new()),
+            (later.join("legacy.md"), "lynx", HashMap::new()),
+            (uploads.join("tagged.md"), "heron", tagged_chat),
+        ];
+        for (path, word, metadata) in &files {
+            let text = format!(
+                "# Notes\n\nThe {word} was seen near the river at dawn. The {word} \
+                 returned the next morning, and the field notes describe the {word} at length.\n"
+            );
+            std::fs::write(path, text).unwrap();
+            engine
+                .add_document_from_file(path, metadata.clone())
+                .await
+                .unwrap();
+        }
+        let names = |rows: Vec<crate::storage::DocumentSourceRow>| {
+            let mut names: Vec<String> = rows
+                .into_iter()
+                .map(|row| {
+                    let parent = Path::new(&row.source)
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .map(|n| n.to_string_lossy().to_lowercase())
+                        .unwrap_or_default();
+                    let name = Path::new(&row.source)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_lowercase())
+                        .unwrap_or_default();
+                    format!("{parent}/{name}")
+                })
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(names(engine.document_sources().await.unwrap()).len(), 7);
+
+        let papers_path = papers.display().to_string();
+        let deleted = engine
+            .delete_library_source("papers", Some(papers_path.as_str()), &[])
+            .await
+            .unwrap();
+        assert!(deleted >= 2, "its own file and the legacy file under it");
+        assert_eq!(
+            names(engine.document_sources().await.unwrap()),
+            [
+                "nested/nested.md",
+                "papers 2024/later.md",
+                "papers 2024/legacy.md",
+                "papers/chat.md",
+                "uploads/tagged.md",
+            ]
+        );
+        // The upload the older version tagged with the folder is the chats' now.
+        let tagged = normalize_source_path(&uploads.join("tagged.md"));
+        assert!(engine
+            .document_sources()
+            .await
+            .unwrap()
+            .iter()
+            .any(|row| row.source == tagged && row.space_id == CHAT_UPLOADS_MAIN));
+        // The keyword index keeps exactly the same files.
+        for (word, kept) in [
+            ("zebra", false),
+            ("otter", false),
+            ("giraffe", true),
+            ("pelican", true),
+            ("walrus", true),
+            ("lynx", true),
+            ("heron", true),
+        ] {
+            let hits = engine.text_search.search(word, 5).unwrap();
+            assert_eq!(!hits.is_empty(), kept, "{word}");
+        }
+        // A source is removed by its id: none, none removed.
+        let later_path = later.display().to_string();
+        assert!(engine
+            .delete_library_source(" ", Some(later_path.as_str()), &[])
+            .await
+            .is_err());
+    }
+
+    #[test]
+    fn chat_uploads_are_owned_by_where_they_were_added() {
+        assert_eq!(
+            chat_uploads_source(None).as_deref(),
+            Some(CHAT_UPLOADS_MAIN)
+        );
+        assert_eq!(
+            chat_uploads_source(Some("ws-1a2b")).as_deref(),
+            Some("chat-uploads:ws-1a2b")
+        );
+        for bad in ["", "main", "ws'1", "ws\"1", "ws/1", "ws 1"] {
+            assert_eq!(chat_uploads_source(Some(bad)), None, "{bad:?}");
+        }
+        assert!(is_chat_uploads(CHAT_UPLOADS_MAIN));
+        assert!(is_chat_uploads("chat-uploads:ws-1a2b"));
+        assert!(is_chat_uploads("chat-uploads"));
+        assert!(!is_chat_uploads("folder-chat-uploads"));
+    }
+
+    /// Uploads not owned where they were added go to the main Ask: filed
+    /// under a folder or under no source by older versions, under the single
+    /// owner of an earlier build, or under a workspace that was deleted. A
+    /// live workspace's uploads stay, and so do folder files.
+    #[tokio::test]
+    async fn stray_chat_uploads_are_handed_to_the_main_ask() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let uploaded = (
+            "uploaded_at".to_string(),
+            "2026-10-01T09:00:00Z".to_string(),
+        );
+        for (name, owner, upload) in [
+            ("folder-tagged.md", "folder-papers", true),
+            ("untagged.md", "", true),
+            ("legacy.md", LEGACY_CHAT_UPLOADS, true),
+            ("deleted.md", "chat-uploads:ws-gone", true),
+            ("live.md", "chat-uploads:ws-live", true),
+            ("main.md", CHAT_UPLOADS_MAIN, true),
+            ("paper.md", "folder-papers", false),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(
+                &path,
+                format!("# {name}\n\nThe {name} notes describe the river, the bridge and the mill at dawn.\n"),
+            )
+            .unwrap();
+            let mut metadata = HashMap::from([("space_id".to_string(), owner.to_string())]);
+            if upload {
+                metadata.insert(uploaded.0.clone(), uploaded.1.clone());
+            }
+            engine
+                .add_document_from_file(&path, metadata)
+                .await
+                .unwrap();
+        }
+        let owners = |rows: Vec<crate::storage::DocumentSourceRow>| {
+            let mut owners: Vec<(String, String)> = rows
+                .into_iter()
+                .map(|row| {
+                    let name = Path::new(&row.source)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    (name, row.space_id)
+                })
+                .collect();
+            owners.sort();
+            owners
+        };
+        let live = std::collections::HashSet::from(["ws-live".to_string()]);
+        assert!(engine.hand_over_chat_uploads(Some(&live)).await.unwrap() >= 4);
+        let main = CHAT_UPLOADS_MAIN.to_string();
+        assert_eq!(
+            owners(engine.document_sources().await.unwrap()),
+            [
+                ("deleted.md".to_string(), main.clone()),
+                ("folder-tagged.md".to_string(), main.clone()),
+                ("legacy.md".to_string(), main.clone()),
+                ("live.md".to_string(), "chat-uploads:ws-live".to_string()),
+                ("main.md".to_string(), main.clone()),
+                ("paper.md".to_string(), "folder-papers".to_string()),
+                ("untagged.md".to_string(), main.clone()),
+            ]
+        );
+        // Nothing left to hand over; with the workspaces unknown, no
+        // workspace's uploads are touched.
+        assert_eq!(engine.hand_over_chat_uploads(Some(&live)).await.unwrap(), 0);
+        assert_eq!(engine.hand_over_chat_uploads(None).await.unwrap(), 0);
+    }
+
+    /// Unowned chunks under another listed source's folder are that source's
+    /// business: removing a folder that contains it leaves them.
+    #[tokio::test]
+    async fn unowned_files_under_another_listed_folder_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let research = dir.path().join("Research");
+        std::fs::create_dir_all(research.join("Papers")).unwrap();
+        for (path, word) in [
+            (research.join("notes.md"), "otter"),
+            (research.join("Papers").join("paper.md"), "pelican"),
+        ] {
+            std::fs::write(
+                &path,
+                format!("# Notes\n\nThe {word} was seen near the river at dawn. The {word} returned the next morning, and the notes describe the {word}.\n"),
+            )
+            .unwrap();
+            engine
+                .add_document_from_file(&path, HashMap::new())
+                .await
+                .unwrap();
+        }
+        let papers = research.join("Papers").display().to_string();
+        let research_path = research.display().to_string();
+        engine
+            .delete_library_source("research", Some(research_path.as_str()), &[papers])
+            .await
+            .unwrap();
+        let left: Vec<String> = engine
+            .document_sources()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.source)
+            .collect();
+        assert_eq!(left.len(), 1, "{left:?}");
+        assert!(left[0].ends_with("paper.md"), "{left:?}");
+        assert!(!engine.text_search.search("pelican", 5).unwrap().is_empty());
+        assert!(engine.text_search.search("otter", 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn unowned_files_match_a_folder_only_across_a_separator() {
+        let papers = source_spellings(Path::new("/research/papers/"));
+        assert!(
+            papers.contains(&"/research/papers".to_string()),
+            "{papers:?}"
+        );
+        assert!(lies_under("/research/papers", &papers), "the folder itself");
+        assert!(lies_under("/research/papers/a.pdf", &papers));
+        assert!(lies_under("/research/papers/deep/b.pdf", &papers));
+        assert!(!lies_under("/research/papers 2024/a.pdf", &papers));
+        assert!(!lies_under("/research/papersx.pdf", &papers));
+        // Backslash spellings of older indexers, across their separator.
+        let legacy = vec![r"C:\Research\Papers".to_string()];
+        assert!(lies_under(r"C:\Research\Papers\a.pdf", &legacy));
+        assert!(!lies_under(r"C:\Research\Papers 2024\a.pdf", &legacy));
+        // No character is a wildcard.
+        let odd = vec!["/data/50%_o'brien".to_string()];
+        assert!(lies_under("/data/50%_o'brien/a.pdf", &odd));
+        assert!(!lies_under("/data/50xyo'brien/a.pdf", &odd));
+        assert!(added_in_chat(
+            r#"{"uploaded_at":"2026-10-01T09:00:00Z","space_id":""}"#
+        ));
+        assert!(!added_in_chat(r#"{"title":"uploaded_at"}"#));
+        assert!(!added_in_chat("not json"));
+    }
 
     /// Every chunk records the format and the context it was indexed with;
     /// the context holds the document's opening, the stored text does not.
@@ -3193,7 +3901,7 @@ Language models trained on long documents reach lower perplexity.
     #[test]
     fn paged_chunk_metadata_round_trips_to_page_label() {
         let mut meta = HashMap::new();
-        insert_page_metadata(&mut meta, Some(7));
+        insert_page_metadata(&mut meta, Some(7), None);
         assert_eq!(meta.get("page").map(String::as_str), Some("7"));
         assert_eq!(meta.get("page_start").map(String::as_str), Some("7"));
         assert_eq!(meta.get("page_end").map(String::as_str), Some("7"));
@@ -3201,9 +3909,23 @@ Language models trained on long documents reach lower perplexity.
     }
 
     #[test]
+    fn a_chunk_running_onto_a_later_page_records_the_range() {
+        let mut meta = HashMap::new();
+        insert_page_metadata(&mut meta, Some(2), Some(3));
+        assert_eq!(meta.get("page").map(String::as_str), Some("2"));
+        assert_eq!(meta.get("page_start").map(String::as_str), Some("2"));
+        assert_eq!(meta.get("page_end").map(String::as_str), Some("3"));
+        assert_eq!(page_numbers_from_metadata(&meta).as_deref(), Some("2-3"));
+        // An end before the start is no range.
+        let mut meta = HashMap::new();
+        insert_page_metadata(&mut meta, Some(4), Some(1));
+        assert_eq!(page_numbers_from_metadata(&meta).as_deref(), Some("4"));
+    }
+
+    #[test]
     fn unpaged_chunk_has_no_page_label() {
         let mut meta = HashMap::new();
-        insert_page_metadata(&mut meta, None);
+        insert_page_metadata(&mut meta, None, None);
         assert!(meta.is_empty());
         assert_eq!(page_numbers_from_metadata(&meta), None);
     }
@@ -3364,5 +4086,170 @@ mod lazy_embedder_tests {
             !engine.has_search_models(),
             "a model that cannot load offers setup again"
         );
+    }
+}
+
+#[cfg(test)]
+mod neighbor_expansion_tests {
+    use super::*;
+    use crate::storage::SearchHit;
+
+    fn hit(chunk_index: u32, text: &str, page: Option<usize>) -> SearchHit {
+        let mut meta = HashMap::new();
+        insert_page_metadata(&mut meta, page, None);
+        SearchHit {
+            id: format!("c{chunk_index}"),
+            doc_id: "d1".to_string(),
+            chunk_index,
+            text: text.to_string(),
+            title: "notes.txt".to_string(),
+            source: "c:/notes.txt".to_string(),
+            heading: String::new(),
+            space_id: "s1".to_string(),
+            metadata_json: serde_json::to_string(&meta).unwrap(),
+            citation_json: "{}".to_string(),
+            score: 0.0,
+        }
+    }
+
+    fn parts_meta(parts: &SnippetParts) -> HashMap<String, String> {
+        let mut meta = HashMap::new();
+        meta.insert(
+            SNIPPET_PARTS_KEY.to_string(),
+            serde_json::to_string(parts).unwrap(),
+        );
+        meta
+    }
+
+    #[test]
+    fn the_matched_chunk_and_its_neighbours_are_recorded_where_they_lie() {
+        // Given out of order, as a store may return them; the chunk itself is skipped.
+        let neighbors = [
+            hit(8, "The ferry leaves at dawn.", Some(5)),
+            hit(7, "duplicate of the core", Some(4)),
+            hit(6, "東京の港は朝に開く。", Some(3)),
+        ];
+        let core = "The lighthouse keeper saw a comet.";
+        let (text, parts) = join_neighbors(core, 7, &neighbors);
+        assert_eq!(
+            text,
+            "東京の港は朝に開く。\nThe lighthouse keeper saw a comet.\nThe ferry leaves at dawn."
+        );
+        assert_eq!(&text[parts.matched.0..parts.matched.1], core);
+        assert_eq!(parts.before.len(), 1);
+        assert_eq!(parts.after.len(), 1);
+        let before = parts.before[0];
+        assert_eq!(&text[before.start..before.end], "東京の港は朝に開く。");
+        assert_eq!(before.pages, Some((3, 3)));
+        let after = parts.after[0];
+        assert_eq!(&text[after.start..after.end], "The ferry leaves at dawn.");
+        assert_eq!(after.pages, Some((5, 5)));
+        // The record survives the metadata it travels in.
+        assert_eq!(SnippetParts::of(&text, &parts_meta(&parts)), Some(parts));
+
+        // The first chunk has nothing before it; an unpaged neighbour has no pages.
+        let (text, parts) = join_neighbors(core, 0, &[hit(1, "Next chunk.", None)]);
+        assert_eq!(parts.matched, (0, core.len()));
+        assert!(parts.before.is_empty());
+        assert_eq!(parts.after[0].pages, None);
+        assert_eq!(
+            &text[parts.after[0].start..parts.after[0].end],
+            "Next chunk."
+        );
+    }
+
+    #[test]
+    fn the_windows_overlap_is_not_repeated() {
+        let core = "東京の港は朝に開く。The lighthouse keeper saw a comet over the cliffs.";
+        // The chunk before ends with the core's start, the chunk after starts with its end.
+        let before = format!("Spring tide tables. {}", &core[..40]);
+        let after = format!("{} The ferry leaves at dawn.", &core[core.len() - 20..]);
+        let (text, parts) = join_neighbors(core, 5, &[hit(4, &before, None), hit(6, &after, None)]);
+        assert_eq!(
+            &text[parts.before[0].start..parts.before[0].end],
+            "Spring tide tables. "
+        );
+        assert_eq!(&text[parts.matched.0..parts.matched.1], core);
+        assert_eq!(
+            &text[parts.after[0].start..parts.after[0].end],
+            " The ferry leaves at dawn."
+        );
+        assert_eq!(text.matches("lighthouse").count(), 1);
+        assert_eq!(text.matches("cliffs").count(), 1);
+
+        // A short coincidence is not an overlap.
+        assert_eq!(overlap_len("It was the", "the cat sat"), 0);
+        // In bytes, on char boundaries; a whole neighbour can be the overlap.
+        assert_eq!(
+            overlap_len(
+                "東京の港は朝に開く。東京の港",
+                "東京の港は朝に開く。東京の港は"
+            ),
+            42
+        );
+        assert_eq!(
+            overlap_len(
+                "x 東京の港は朝に開く。東京の港",
+                "東京の港は朝に開く。東京の港 y"
+            ),
+            42
+        );
+        let (text, parts) = join_neighbors(core, 5, &[hit(4, &core[..40], None)]);
+        assert_eq!(parts.before[0].start, parts.before[0].end);
+        assert_eq!(text, core);
+        assert_eq!(SnippetParts::of(&text, &parts_meta(&parts)), Some(parts));
+    }
+
+    #[test]
+    fn parts_that_do_not_describe_the_snippet_are_ignored() {
+        let snippet = "東京\nabc";
+        let at = |matched: (usize, usize)| SnippetParts {
+            matched,
+            ..SnippetParts::default()
+        };
+        assert!(SnippetParts::of(snippet, &HashMap::new()).is_none());
+        assert!(SnippetParts::of(snippet, &parts_meta(&at((7, 10)))).is_some());
+        // Inside a character, past the end, reversed.
+        assert!(SnippetParts::of(snippet, &parts_meta(&at((1, 10)))).is_none());
+        assert!(SnippetParts::of(snippet, &parts_meta(&at((7, 11)))).is_none());
+        assert!(SnippetParts::of(snippet, &parts_meta(&at((8, 7)))).is_none());
+        // A neighbour overlapping the matched chunk.
+        let overlapping = SnippetParts {
+            matched: (3, 10),
+            before: vec![NeighborPart {
+                start: 0,
+                end: 6,
+                pages: None,
+            }],
+            after: Vec::new(),
+        };
+        assert!(SnippetParts::of(snippet, &parts_meta(&overlapping)).is_none());
+        let mut garbled = HashMap::new();
+        garbled.insert(SNIPPET_PARTS_KEY.to_string(), "{not json".to_string());
+        assert!(SnippetParts::of(snippet, &garbled).is_none());
+    }
+
+    #[test]
+    fn page_ranges_come_from_the_chunk_metadata() {
+        let meta = |pairs: &[(&str, &str)]| -> HashMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        assert_eq!(
+            page_range_from_metadata(&meta(&[("page_start", "4"), ("page_end", "2")])),
+            Some((2, 4))
+        );
+        assert_eq!(
+            page_range_from_metadata(&meta(&[("page_end", "6")])),
+            Some((6, 6))
+        );
+        assert_eq!(
+            page_range_from_metadata(&meta(&[("page", " 9 ")])),
+            Some((9, 9))
+        );
+        assert_eq!(page_range_from_metadata(&meta(&[("page", "x")])), None);
+        assert_eq!(page_range_from_metadata(&HashMap::new()), None);
     }
 }

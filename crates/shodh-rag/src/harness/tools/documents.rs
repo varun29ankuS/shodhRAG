@@ -688,7 +688,23 @@ impl HostTool for OpenDocumentTool {
             ));
         }
         if !ctx.scope().allows_path(&source) {
-            return Err(ToolError::Forbidden(ctx.scope().outside_message(&source)));
+            // A file of a source the scope searches (a workspace's chat
+            // uploads, which live outside its folders) is found by search, so
+            // it can be opened too.
+            let owners: Vec<String> = self
+                .rag
+                .read()
+                .await
+                .document_sources()
+                .await
+                .map_err(|e| ToolError::Failed(format!("Could not read the index: {e}")))?
+                .into_iter()
+                .filter(|row| row.source == source)
+                .map(|row| row.space_id)
+                .collect();
+            if !may_open(ctx.scope(), &source, &owners) {
+                return Err(ToolError::Forbidden(ctx.scope().outside_message(&source)));
+            }
         }
 
         let path = source.clone();
@@ -719,6 +735,13 @@ impl HostTool for OpenDocumentTool {
         }
         Ok(cite_read(&read, &source, display.as_deref(), ctx))
     }
+}
+
+/// Whether an answer limited to `scope` may open the indexed file `source`,
+/// whose chunks belong to `owners`: a file of its files or folders, or of a
+/// source it searches.
+fn may_open(scope: &super::RunScope, source: &str, owners: &[String]) -> bool {
+    scope.allows_path(source) || owners.iter().any(|owner| scope.allows_source(owner))
 }
 
 #[cfg(test)]
@@ -778,6 +801,78 @@ mod tests {
     fn ctx() -> ToolContext {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         ToolContext::new("run", "step", tx)
+    }
+
+    fn workspace(id: &str) -> super::super::RunScope {
+        super::super::RunScope {
+            source_ids: vec!["space-a".into(), format!("chat-uploads:{id}")],
+            workspace: Some(id.into()),
+            workspace_name: Some(id.into()),
+            restricted: true,
+            folders: vec!["C:/docs/thesis".into()],
+            ..super::super::RunScope::default()
+        }
+    }
+
+    #[test]
+    fn a_workspace_opens_its_own_uploads_and_no_other() {
+        let upload = "c:/temp/kalki_uploads/notes.pdf";
+        let mine = vec!["chat-uploads:ws-a".to_string()];
+        assert!(may_open(&workspace("ws-a"), upload, &mine));
+        assert!(!may_open(&workspace("ws-b"), upload, &mine));
+        assert!(!may_open(
+            &workspace("ws-a"),
+            upload,
+            &["chat-uploads:main".to_string()]
+        ));
+        // Its folders' files, as before.
+        assert!(may_open(&workspace("ws-b"), "C:/docs/thesis/a.pdf", &[]));
+    }
+
+    /// End to end: search finds a workspace's upload, and opening it works.
+    #[tokio::test]
+    async fn open_document_reads_the_workspaces_upload() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.path().join("data");
+        config.embedding.model_dir = dir.path().join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        let mut engine = RAGEngine::new(config).await.unwrap();
+        engine
+            .attach_search_models(crate::rag_engine::SearchModels::from_embedder(Arc::new(
+                crate::statements::testing::WordEmbedder::default(),
+            )))
+            .unwrap();
+        let file = dir.path().join("notes.md");
+        std::fs::write(
+            &file,
+            "# Notes\n\nThe heron was seen near the river at dawn. The heron returned the next morning, and the field notes describe the heron, the reeds and the mill at length.\n",
+        )
+        .unwrap();
+        engine
+            .add_document_from_file(
+                &file,
+                std::collections::HashMap::from([
+                    ("space_id".to_string(), "chat-uploads:ws-a".to_string()),
+                    (
+                        "uploaded_at".to_string(),
+                        "2026-10-01T09:00:00Z".to_string(),
+                    ),
+                ]),
+            )
+            .await
+            .unwrap();
+        let tool = OpenDocumentTool::new(Arc::new(RwLock::new(engine)));
+        let path = file.display().to_string();
+        let in_a = ctx().with_scope(Arc::new(workspace("ws-a")));
+        let out = tool.execute(json!({ "path": path }), &in_a).await.unwrap();
+        assert!(out.text_for_model.contains("heron"));
+        let in_b = ctx().with_scope(Arc::new(workspace("ws-b")));
+        assert!(matches!(
+            tool.execute(json!({ "path": path }), &in_b).await,
+            Err(ToolError::Forbidden(_))
+        ));
     }
 
     fn open(

@@ -413,14 +413,49 @@ fn build_units(blocks: &[Block]) -> Vec<Unit> {
             }
         }
     }
-    units.retain(|u| !unit_is_empty(u, blocks));
-    units
+    drop_empty_units(units, blocks)
 }
 
+/// The units with text, in order. A dropped unit's heading goes to the next
+/// unit of its section when that unit has none of its own, so the heading
+/// still opens the section's text.
+fn drop_empty_units(units: Vec<Unit>, blocks: &[Block]) -> Vec<Unit> {
+    let mut kept: Vec<Unit> = Vec::with_capacity(units.len());
+    let mut orphan: Option<(String, Vec<String>)> = None;
+    for mut unit in units {
+        if unit_is_empty(&unit, blocks) {
+            if let Some(heading) = unit.heading.take() {
+                orphan = Some((heading, unit.section_path));
+            }
+            continue;
+        }
+        if let Some((heading, section_path)) = orphan.take() {
+            if unit.heading.is_none() && unit.section_path == section_path {
+                unit.heading = Some(heading);
+            }
+        }
+        kept.push(unit);
+    }
+    kept
+}
+
+/// A unit with fewer than two letters or digits in all its blocks: rules,
+/// stray symbols, a lone bullet. Counted in characters, not words, so a line
+/// of CJK text (no spaces) or a one-word list item is not empty.
 fn unit_is_empty(unit: &Unit, blocks: &[Block]) -> bool {
-    unit.blocks
+    let letters: usize = unit
+        .blocks
         .iter()
-        .all(|&i| blocks[i].render().split_whitespace().count() < 2)
+        .map(|&i| {
+            blocks[i]
+                .render()
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .take(2)
+                .count()
+        })
+        .sum();
+    letters < 2
 }
 
 /// Text that continues the sentence of a preceding display equation.
@@ -714,13 +749,17 @@ fn split_sentences(text: &str) -> Vec<&str> {
             continue;
         }
         let end = pos + c.len_utf8();
+        // The word ends the sentence: it starts after the last whitespace
+        // character, which may be several bytes long (U+00A0, U+3000).
         let word_start = text[start..end]
-            .rfind(char::is_whitespace)
-            .map(|w| start + w + 1)
+            .char_indices()
+            .rev()
+            .find(|(_, ch)| ch.is_whitespace())
+            .map(|(w, ch)| start + w + ch.len_utf8())
             .unwrap_or(start);
         let word = &text[word_start..end];
         if ABBREVIATIONS.contains(&word)
-            || (word.len() == 2 && word.starts_with(|ch: char| ch.is_uppercase()))
+            || (word.chars().count() == 2 && word.starts_with(|ch: char| ch.is_uppercase()))
         {
             continue;
         }
@@ -768,6 +807,7 @@ fn push_chunk(
         start_offset: 0,
         end_offset: text.len(),
         page: layout.page_start.map(|p| p as usize),
+        page_end: None,
         text,
         layout: Some(ChunkLayout {
             unit: kind.name(),
@@ -1238,5 +1278,84 @@ mod tests {
             assert_eq!(UnitKind::from_name(kind.name()), Some(kind));
         }
         assert_eq!(unit_context(&context, &[], "window"), None);
+    }
+
+    fn chunk_markdown(source: &str) -> Vec<ContextualChunkResult> {
+        let d = crate::processing::text_structure::parse_markdown(source);
+        StructureChunker::new(300).chunk(&d, &DocumentContext::titled("note"), &words)
+    }
+
+    /// Emptiness is counted in characters: a CJK line has no spaces, and a
+    /// one-word list item or reply is still text.
+    #[test]
+    fn whitespace_free_and_one_word_units_are_kept() {
+        for (source, text) in [
+            ("牛乳と卵を買う。\n", "牛乳と卵を買う。"),
+            ("- Milk\n", "Milk"),
+            ("Yes.\n", "Yes."),
+        ] {
+            let chunks = chunk_markdown(source);
+            assert_eq!(chunks.len(), 1, "{source:?}");
+            assert_eq!(chunks[0].text, text);
+        }
+
+        let chunks = chunk_markdown("# 買い物\n\n牛乳と卵を買う。\n\n- Milk\n\nYes.\n");
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text, "買い物\n\n牛乳と卵を買う。\n\nMilk\n\nYes.");
+    }
+
+    /// A unit without text is dropped; its heading opens the next unit of
+    /// its section, never one of another section.
+    #[test]
+    fn a_dropped_unit_hands_its_heading_to_the_next_unit_of_its_section() {
+        let d = doc(vec![
+            block(BlockKind::Heading { level: 1 }, "Notes", 1),
+            block(BlockKind::Paragraph, "* * *", 1),
+            block(BlockKind::Paragraph, "Rent is due monthly.", 1),
+            block(BlockKind::Heading { level: 1 }, "Appendix", 2),
+            block(BlockKind::Paragraph, "—", 2),
+            block(BlockKind::Heading { level: 1 }, "Terms", 2),
+            block(BlockKind::Paragraph, "Either party may end it.", 2),
+        ]);
+        let chunks = StructureChunker::new(300).chunk(&d, &DocumentContext::titled("Doc"), &words);
+        let texts: Vec<&str> = chunks.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "Notes\n\nRent is due monthly.",
+                "Terms\n\nEither party may end it."
+            ]
+        );
+    }
+
+    /// The word before a sentence end starts after the last whitespace
+    /// character, however many bytes that character takes.
+    #[test]
+    fn sentences_split_after_multibyte_whitespace() {
+        for ws in ['\u{a0}', '\u{202f}', '\u{2009}', '\u{3000}'] {
+            let text = format!("Es gilt gemäß §{ws}12. Der Vertrag endet.");
+            let first = format!("Es gilt gemäß §{ws}12.");
+            assert_eq!(
+                split_sentences(&text),
+                vec![first.as_str(), "Der Vertrag endet."],
+                "{ws:?}"
+            );
+        }
+        let french = "Le prix est de 10\u{202f}000\u{a0}€. Le contrat suit.";
+        assert_eq!(
+            split_sentences(french),
+            vec!["Le prix est de 10\u{202f}000\u{a0}€.", "Le contrat suit."]
+        );
+
+        // Through a paragraph long enough to be split at sentences.
+        let long = format!(
+            "{} Gemäß §\u{a0}12. {}",
+            sentence(60, "a"),
+            sentence(60, "b")
+        );
+        let d = doc(vec![block(BlockKind::Paragraph, &long, 1)]);
+        let chunks = StructureChunker::new(64).chunk(&d, &DocumentContext::titled("Doc"), &words);
+        assert!(chunks.len() >= 2);
+        assert!(chunks.iter().any(|c| c.text.contains("Gemäß §\u{a0}12.")));
     }
 }

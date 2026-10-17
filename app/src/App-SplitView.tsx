@@ -46,6 +46,17 @@ async function readDurable(key: DurableKey): Promise<StoredRead> {
   }
 }
 
+/** The sources the backend removed from the Library (in this run or before); none when unreadable. */
+async function readRemovedSources(): Promise<string[]> {
+  try {
+    const ids = await invoke<unknown>('removed_library_sources');
+    return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [];
+  } catch (error) {
+    console.error('The removed sources could not be read:', error);
+    return [];
+  }
+}
+
 /** The last save of each durable UI state, so saves reach the disk in the order they were made. */
 const durableWrites = new Map<DurableKey, Promise<void>>();
 
@@ -62,9 +73,9 @@ function writeDurable(key: DurableKey, value: unknown): Promise<void> {
 }
 
 // Core components
-import { applyFolderSync, indexedFileCount, indexedNotice, parseStoredSources, readIndexingResult, scannedPagesStep, serializeSources, SOURCES_STORAGE_KEY, syncedFolders, withPathCase } from './features/library/sources';
+import { applyFolderSync, applyLibraryChange, indexedFileCount, indexedNotice, removedSourceIds, parseStoredSources, readIndexingResult, scannedPagesStep, serializeSources, SOURCES_STORAGE_KEY, syncedFolders, withPathCase } from './features/library/sources';
 import { explainFailure } from './features/library/indexingAdvice';
-import type { FolderSyncOutcome, LibrarySource } from './features/library/sources';
+import type { FolderSyncOutcome, LibraryChange, LibrarySource } from './features/library/sources';
 import { addableFolders, indexedFilePaths, librarySourcesChip, nativePath, NOT_ADDED_REASON, reconcileSources, searchedSources } from './features/library/reconcile';
 import type { FileNode } from './features/library/fileTree';
 import { errorMessage as searchErrorMessage } from './features/setup/searchModels';
@@ -235,11 +246,11 @@ function AppSplitView() {
   }, []);
   useEffect(() => {
     let cancelled = false;
-    void readDurable('library_sources').then(stored => {
+    void Promise.all([readDurable('library_sources'), readRemovedSources()]).then(([stored, removed]) => {
       if (cancelled) return;
       const local = sourcesRef.current;
       const changed = serializeSources(local) !== startSourcesRef.current;
-      const { sources: restored, save } = reconcileStoredSources(stored, local, changed);
+      const { sources: restored, save } = reconcileStoredSources(stored, local, changed, removed);
       sourcesRestoredRef.current = true;
       if (save) saveSourcesDurably(restored);
       else savedSourcesRef.current = serializeSources(restored);
@@ -305,6 +316,27 @@ function AppSplitView() {
       setIndexedLoad('failed');
     }
   }, []);
+  // The agent indexed or removed files of a source: read the indexed files
+  // again; a removed source's card goes (the backend stopped and deleted it).
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    listen<LibraryChange>('library-changed', event => {
+      const removed = removedSourceIds(event.payload);
+      if (removed.length > 0) {
+        setSources(prev => applyLibraryChange(prev, event.payload));
+        setCurrentlyIndexing(current => (current && removed.includes(current) ? null : current));
+      }
+      void refreshIndexedFiles();
+    }).then(fn => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [refreshIndexedFiles]);
   // Folders removed from the list whose files leave the index when the undo
   // window ends: until then they still cover those files.
   const [removingPaths, setRemovingPaths] = useState<string[]>([]);
@@ -697,8 +729,10 @@ function AppSplitView() {
         processingTimeMs: number;
         error?: string;
       }>('upload_document_file', {
+        // A file added in a chat belongs to where it was added (the chat's
+        // workspace, or the main Ask), not to a Library folder.
         filePath,
-        spaceId: sources.find(s => s.selected)?.id || null
+        workspaceId: activeConversation?.workspaceId ?? null,
       });
 
       // Update message with result

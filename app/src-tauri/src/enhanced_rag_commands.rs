@@ -74,7 +74,14 @@ pub async fn link_folder_enhanced(
             indexing_outcome(&result),
         ),
     ));
+    // A run cut short because its source was removed did not index the folder.
+    let removed = indexing_state.is_removed(&space_id);
     let (status, title, detail) = match &result {
+        Ok(_) if removed => (
+            InboxStatus::Done,
+            format!("{name} was removed from the Library"),
+            "Indexing stopped when the folder was removed.".to_string(),
+        ),
         Ok(done) if done.failures.is_empty() => (
             InboxStatus::Done,
             format!("{name} is indexed"),
@@ -155,16 +162,26 @@ pub async fn index_single_file(
     file_path: String,
     space_id: String,
     state: State<'_, RagState>,
+    indexing_state: State<'_, IndexingState>,
     audit: State<'_, AuditState>,
 ) -> Result<IndexingResult, String> {
     let emitter = TauriEventEmitter::new(app);
-    let result = shodh_rag::indexing::index_single_file(
-        &file_path,
-        &space_id,
-        &state.rag,
-        Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
-    )
-    .await;
+    // Registered while it runs: removing the source waits for it, and a
+    // removed source is not indexed again.
+    let result = match indexing_state.begin_run_at(&space_id, &file_path) {
+        Some(_run) => {
+            shodh_rag::indexing::index_single_file(
+                &file_path,
+                &space_id,
+                &state.rag,
+                Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
+            )
+            .await
+        }
+        None => Err(format!(
+            "{file_path} was removed from the Library and is not indexed"
+        )),
+    };
     audit.record(AuditRecord::new(
         AuditEventType::SourceChange,
         source_change(

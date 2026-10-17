@@ -20,6 +20,7 @@ use super::{
     StatementQuery, StatementResult, StoredStatement,
 };
 use crate::embeddings::EmbeddingModel;
+use crate::storage::lance_store::like_escape;
 
 /// Name of the LanceDB table.
 pub const STATEMENTS_TABLE: &str = "statements";
@@ -1149,14 +1150,6 @@ impl StatementStore {
                 .any(|v| v.to_string() == filter.equals)
         })
     }
-}
-
-/// Escapes `LIKE` wildcards (`%`, `_`) and the escape character (backslash, the default
-/// escape of LanceDB's SQL filters, as in `LanceStore::delete_by_source_prefix`).
-fn like_escape(text: &str) -> String {
-    text.replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
 }
 
 /// Rows current at `at`: started, not superseded, not expired.

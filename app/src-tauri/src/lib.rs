@@ -464,10 +464,15 @@ pub fn run() {
                 initialization_lock: Arc::new(tokio::sync::Mutex::new(())),
             });
 
-            app.manage(IndexingState::default());
-            app.manage(file_watcher::FolderSyncState::new(
-                app_data_dir.join("folder_sync"),
-            ));
+            // Sources removed from the Library in an earlier run are never
+            // indexed or watched again.
+            let folder_sync = file_watcher::FolderSyncState::new(app_data_dir.join("folder_sync"));
+            let indexing_state = IndexingState::default();
+            for source_id in folder_sync.removed_ids() {
+                indexing_state.mark_removed(&source_id);
+            }
+            app.manage(indexing_state);
+            app.manage(folder_sync);
             // Task reminders: native notifications while the app runs.
             app.manage(reminders::ReminderState::default());
             reminders::spawn(app.handle().clone());
@@ -574,6 +579,7 @@ pub fn run() {
             rag_commands::jump_to_source,
             // File watcher commands
             file_watcher::sync_folder_sources,
+            file_watcher::removed_library_sources,
             // LLM commands
             llm_commands::get_llm_info,
             llm_commands::set_api_key,

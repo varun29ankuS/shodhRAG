@@ -4,6 +4,7 @@
 use crate::rag_commands::RagState;
 use serde::{Deserialize, Serialize};
 use shodh_rag::comprehensive_system::Citation;
+use shodh_rag::rag_engine::chat_uploads_source;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
@@ -22,13 +23,22 @@ pub struct UploadResult {
     pub error: Option<String>,
 }
 
-/// Upload and index a document file (PDF, DOCX, XLSX, etc.)
+/// Upload and index a document file (PDF, DOCX, XLSX, etc.) added in a
+/// chat of `workspace_id` (`None`: the main Ask). It belongs to where it was
+/// added ([`chat_uploads_source`]), not to a Library folder, so removing a
+/// folder never removes it, and only that workspace's chats (or the main
+/// Ask) search it (see `agent_session_commands::scope_for_workspace`).
 #[tauri::command]
 pub async fn upload_document_file(
     state: State<'_, RagState>,
     file_path: String,
-    space_id: Option<String>,
+    workspace_id: Option<String>,
 ) -> Result<UploadResult, String> {
+    let workspace_id = workspace_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
+    let owner = chat_uploads_source(workspace_id.as_deref())
+        .ok_or_else(|| "The chat's workspace id is not valid".to_string())?;
     let start_time = std::time::Instant::now();
 
     let path = Path::new(&file_path);
@@ -70,9 +80,7 @@ pub async fn upload_document_file(
     metadata.insert("file_size_mb".to_string(), format!("{:.2}", file_size));
     metadata.insert("uploaded_at".to_string(), chrono::Utc::now().to_rfc3339());
 
-    if let Some(sid) = space_id.clone() {
-        metadata.insert("space_id".to_string(), sid);
-    }
+    metadata.insert("space_id".to_string(), owner);
 
     // Create citation
     let _citation = Citation {
@@ -98,16 +106,6 @@ pub async fn upload_document_file(
                 chunk_ids.len(),
                 processing_time
             );
-
-            // Update space activity if provided
-            if let Some(sid) = space_id {
-                if let Ok(space_manager) = state.space_manager.lock() {
-                    // Add document to space (uses first chunk ID as document ID)
-                    if let Some(first_chunk) = chunk_ids.first() {
-                        let _ = space_manager.add_document_to_space(&sid, first_chunk.to_string());
-                    }
-                }
-            }
 
             Ok(UploadResult {
                 success: true,

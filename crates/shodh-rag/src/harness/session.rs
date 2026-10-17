@@ -1039,17 +1039,22 @@ impl Inner {
             let g = lock(&self.grounding_run);
             (g.seeded, g.memory_only)
         };
+        // A request to remember answered with an acknowledgement alone has no question for
+        // the documents: that answer is not sent back to search them. Repair and every
+        // other follow-up run as usual (an acknowledgement has no claims to repair).
+        let acknowledged = memory_only && {
+            let answer: Vec<&str> = messages.iter().map(|m| m.text.as_str()).collect();
+            followup::is_acknowledgement(&answer.join(" "), calls_used)
+        };
         let retrieval = Retrieval {
             sourced: followup::searched(&tools_ok) || self.passages_in_run.issued() > seeded,
-            available: self.can_search_documents(),
+            available: self.can_search_documents() && !acknowledged,
         };
-        // A request to remember has no question for the documents: its acknowledgement is
-        // never sent back to search them or to repair claims about them.
         let next = followup::decide(
             &answer_checks,
             &need_checks,
             rounds,
-            auto_repair && !memory_only,
+            auto_repair,
             calls_left,
             retrieval,
         );
@@ -2601,8 +2606,17 @@ mod tests {
         assert_eq!(lock(&queries).len(), 1, "one search");
     }
 
-    #[tokio::test]
-    async fn an_acknowledged_request_to_remember_is_not_searched_for() {
+    /// A run of `text` that only asked to remember something (`memory_instruction`), over
+    /// a library with one passage; returns the run's parts and the search queries made.
+    fn memory_run(
+        text: &str,
+    ) -> (
+        Arc<Inner>,
+        mpsc::UnboundedReceiver<AgentEvent>,
+        mpsc::UnboundedReceiver<OutboundFrame>,
+        Arc<Mutex<Vec<String>>>,
+        String,
+    ) {
         let queries = Arc::new(Mutex::new(Vec::new()));
         let mut registry = ToolRegistry::new();
         registry
@@ -2611,9 +2625,8 @@ mod tests {
                 queries: Arc::clone(&queries),
             }))
             .unwrap();
-        let (inner, mut events, mut out) =
+        let (inner, events, mut out) =
             offline_session_with(Some(GroundingConfig::lexical()), None, registry);
-        let text = "Remember that I'm writing my thesis on disk-based vector search.";
         inner
             .start_run(
                 text,
@@ -2625,35 +2638,90 @@ mod tests {
             )
             .unwrap();
         let (first_prompt, _) = sent_prompt(&mut out);
-        // An acknowledgement that would be sent back to search in an ordinary answer:
-        // a citation no source has, and a refusal about the documents.
+        (inner, events, out, queries, first_prompt)
+    }
+
+    #[tokio::test]
+    async fn an_acknowledged_request_to_remember_is_not_searched_for() {
+        let (inner, mut events, mut out, queries, first_prompt) =
+            memory_run("Remember that I use DiskANN");
+        // An acknowledgement that an ordinary answer would be searched for: it says the
+        // documents do not have something, without having searched them.
         say(
             &inner,
             "m1",
-            "Noted: your thesis is on disk-based vector search [1]. Your documents do not \
-             cover your thesis.",
+            "Noted, I'll remember that you use DiskANN. I couldn't find any information about \
+             DiskANN in your documents.",
         );
         complete(&inner, &first_prompt);
-        let events =
-            events_until(&mut events, |e| matches!(e, AgentEvent::RunFinished { .. })).await;
+        let seen = events_until(&mut events, |e| {
+            matches!(
+                e,
+                AgentEvent::RevisionStarted { .. } | AgentEvent::RunFinished { .. }
+            )
+        })
+        .await;
         assert!(
-            !events.iter().any(|e| matches!(
+            !seen.iter().any(|e| matches!(
                 e,
                 AgentEvent::RevisionStarted {
                     reason: RevisionReason::Retrieve,
                     ..
                 }
             )),
-            "{events:?}"
+            "no forced search: {seen:?}"
         );
         assert!(lock(&queries).is_empty(), "the documents were not searched");
+        // Repair still runs: the refusal is sent back to be checked, as in any answer.
+        assert!(
+            seen.iter().any(|e| matches!(
+                e,
+                AgentEvent::RevisionStarted {
+                    reason: RevisionReason::Repair,
+                    ..
+                }
+            )),
+            "{seen:?}"
+        );
         assert!(matches!(
-            events.last(),
-            Some(AgentEvent::RunFinished {
-                status: RunStatus::Completed,
-                ..
-            })
+            next_frame(&mut out).await,
+            OutboundFrame::Prompt { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn a_substantive_answer_to_a_request_to_remember_gets_the_usual_follow_ups() {
+        let (inner, mut events, _out, queries, first_prompt) =
+            memory_run("Remember that I use DiskANN");
+        // More than an acknowledgement: it cites a passage it never had.
+        say(
+            &inner,
+            "m1",
+            "Noted. FreshDiskANN keeps the graph on SSD [1], which suits your DiskANN work.",
+        );
+        complete(&inner, &first_prompt);
+        let seen = events_until(&mut events, |e| {
+            matches!(
+                e,
+                AgentEvent::RevisionStarted { .. } | AgentEvent::RunFinished { .. }
+            )
+        })
+        .await;
+        assert!(
+            seen.iter().any(|e| matches!(
+                e,
+                AgentEvent::RevisionStarted {
+                    reason: RevisionReason::Retrieve,
+                    ..
+                }
+            )),
+            "{seen:?}"
+        );
+        events_until(&mut events, |e| {
+            matches!(e, AgentEvent::StepFinished { .. })
+        })
+        .await;
+        assert_eq!(lock(&queries).len(), 1, "the documents were searched");
     }
 
     #[tokio::test]

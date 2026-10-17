@@ -252,10 +252,10 @@ pub struct RunScope {
     /// the documents with it when an answer skipped the search. `None`: the
     /// sent message is the question.
     pub question: Option<String>,
-    /// The message only asked to remember something, which the app already filed: there is
-    /// no question about the documents, so an answer that did not search is never sent
-    /// back to search them (the retrieve follow-up). A message that also asks a question
-    /// is not one: its question goes in [`Self::question`] and the usual rules apply.
+    /// The message only asked to remember something, which the app already filed. Every
+    /// follow-up runs as usual, except that an answer that is only an acknowledgement
+    /// ([`crate::harness::grounding::followup::is_acknowledgement`]) is not sent back to
+    /// search the documents.
     pub memory_instruction: bool,
 }
 

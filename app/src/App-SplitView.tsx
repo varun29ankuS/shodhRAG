@@ -101,6 +101,7 @@ import type { NewMenuItemId } from './lib/newMenu';
 import { TableModelPrompt } from './features/setup/TableModelPrompt';
 import { AskView } from './features/ask/AskView';
 import { failureNotice, imageNotice, readImageText } from './features/ask/imageNotice';
+import { isIndexableDocument, legacyOfficeNotice, legacyOfficeTarget, sortDroppedPaths } from './features/library/dropFiles';
 import type { PastedImage } from './features/agent/AgentComposer';
 import { ChatActionsMenu } from './features/ask/ChatActionsMenu';
 import { useCommandPalette } from './hooks/useCommandPalette';
@@ -699,12 +700,13 @@ function AppSplitView() {
     if (files.length === 0) return;
 
     const file = files[0];
-    const extension = file.name.split('.').pop()?.toLowerCase();
 
-    // Check if it's a document file (PDF, Word, Excel)
-    const documentExtensions = ['pdf', 'docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt', 'txt', 'md'];
-    if (extension && documentExtensions.includes(extension)) {
+    // The documents the indexer reads (features/library/dropFiles); old
+    // .doc/.ppt files are named with what to do.
+    if (isIndexableDocument(file.name)) {
       await handleDocumentUpload(file);
+    } else if (legacyOfficeTarget(file.name)) {
+      notify.error('Old Office files are not indexed', { description: legacyOfficeNotice([file.name]) });
     }
     // If it's an image, Tauri event listener will handle it
   };
@@ -852,30 +854,24 @@ function AppSplitView() {
             lastProcessedImageTimeRef.current = now;
 
             try {
-              // Separate images from documents/folders
-              const imageFiles = files.filter((path: string) =>
-                /\.(png|jpg|jpeg|gif|bmp|webp)$/i.test(path)
-              );
-              const documentFiles = files.filter((path: string) =>
-                /\.(pdf|docx?|txt|md|html|json|csv|xlsx?)$/i.test(path)
-              );
+              // Images are read (OCR); old .doc/.ppt files are named with what
+              // to do; documents, folders and other files go to the Library
+              // (features/library/dropFiles).
+              const dropped = sortDroppedPaths(files);
 
-              // Process image files (OCR)
-              if (imageFiles.length > 0) {
-                for (const imageFile of imageFiles) {
-                  const result = await invoke<unknown>('process_image_from_file', {
-                    filePath: imageFile
-                  });
-                  appendMessage(imageNotice(newNoticeId(), new Date().toISOString(), 'dropped', readImageText(result)));
-                }
+              for (const imageFile of dropped.images) {
+                const result = await invoke<unknown>('process_image_from_file', {
+                  filePath: imageFile
+                });
+                appendMessage(imageNotice(newNoticeId(), new Date().toISOString(), 'dropped', readImageText(result)));
               }
 
-              // Process document files or folders
-              if (documentFiles.length > 0 || (files.length > 0 && imageFiles.length === 0 && documentFiles.length === 0)) {
-                // Treat all non-image files as documents or folders to be indexed
-                const pathsToIndex = documentFiles.length > 0 ? documentFiles : files;
+              if (dropped.legacy.length > 0) {
+                notify.error('Old Office files are not indexed', { description: legacyOfficeNotice(dropped.legacy) });
+              }
 
-                for (const path of pathsToIndex) {
+              if (dropped.library.length > 0) {
+                for (const path of dropped.library) {
                   if (indexingBusyRef.current?.()) break;
                   let isDirectory = false;
                   try {

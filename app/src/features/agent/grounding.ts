@@ -258,3 +258,75 @@ export function methodLabel(method: GroundingReport['method']): string {
       return 'checked by word overlap and numbers only (search models not installed)';
   }
 }
+
+/**
+ * Where each claim's anchor is in `content`, in reading order (never by offset: Rust byte
+ * offsets and JavaScript indexes differ); null for a claim whose anchor is not in it.
+ */
+function anchorOffsets(content: string, checks: readonly ClaimCheck[]): Array<number | null> {
+  let cursor = 0;
+  return checks.map(check => {
+    if (check.anchor.length === 0) return null;
+    let at = content.indexOf(check.anchor, cursor);
+    if (at < 0) at = content.indexOf(check.anchor);
+    if (at < 0) return null;
+    cursor = at + check.anchor.length;
+    return at;
+  });
+}
+
+/** A marker's span widened over the spaces before it, so "latency [3]." reads "latency.". */
+function withLeadingSpace(text: string, start: number, end: number): [number, number] {
+  let from = start;
+  while (from > 0 && (text[from - 1] === ' ' || text[from - 1] === '\t')) from--;
+  return [from, end];
+}
+
+/** `text` without the character ranges `cuts` (any order; a range inside an earlier one is skipped). */
+function cutRanges(text: string, cuts: ReadonlyArray<[number, number]>): string {
+  const sorted = [...cuts].sort((a, b) => a[0] - b[0]);
+  let out = '';
+  let last = 0;
+  for (const [from, to] of sorted) {
+    if (from < last) continue;
+    out += text.slice(last, from);
+    last = to;
+  }
+  return out + text.slice(last);
+}
+
+/** Outcomes whose citation markers are not passed on as context. */
+function citesWrongly(outcome: ClaimOutcome): boolean {
+  return outcome === 'unsupported' || outcome === 'invalid_citation';
+}
+
+/**
+ * An answer as context for a later question (the outer levels of a nested side question):
+ * the citation markers of claims the check found unsupported by what they cite, or citing a
+ * passage that does not exist, are removed, so a wrong citation is not handed on as if it
+ * were right; the model then picks the passage from the ones it is given. Supported, partly
+ * supported and unchecked claims keep their markers. Only markers inside a flagged claim's
+ * own text are removed: a citation it inherited belongs to a neighbouring claim.
+ */
+export function withoutFlaggedCitations(content: string, report: GroundingReport | null): string {
+  if (!report || report.claims.length === 0) return content;
+  const offsets = anchorOffsets(content, report.claims);
+  const cuts: Array<[number, number]> = [];
+  report.claims.forEach((check, i) => {
+    const at = offsets[i];
+    if (at === null || !citesWrongly(check.outcome)) return;
+    for (const m of parseCitationMarkers(check.anchor)) cuts.push(withLeadingSpace(content, at + m.start, at + m.end));
+  });
+  return cuts.length > 0 ? cutRanges(content, cuts) : content;
+}
+
+/** The report that describes a stored answer (a side answer's persisted transcript), or null. */
+export function storedAnswerReport(transcript: unknown): GroundingReport | null {
+  if (typeof transcript !== 'object' || transcript === null) return null;
+  const groundings = (transcript as { groundings?: unknown }).groundings;
+  if (!Array.isArray(groundings)) return null;
+  const reports = groundings.filter(
+    (r): r is GroundingReport => typeof r === 'object' && r !== null && Array.isArray((r as GroundingReport).claims),
+  );
+  return answerReport(reports);
+}

@@ -79,3 +79,11 @@ test("a side run seeded with the carried passages resolves the side answer's cit
   const numbers = new Set(state.passages.map(p => p.n));
   for (const n of [21, 28, 12, 29]) assert.ok(numbers.has(n), `[${n}] has its passage`);
 });
+
+test('a sparse set of parent numbers reaches the backend unchanged', () => {
+  // The reported answer cited passages 1, 2, 3, 7 and 8 of its run.
+  const spann = [1, 2, 3, 7, 8].map(n => passage(n, 'spann.pdf', `SPANN passage ${n}`));
+  const carried = carriedPassages([{ text: 'Closure [1][2]. Index [3]. Recall [7]. Conclusion [8].', passages: spann }]);
+  assert.deepEqual(toWire(carried).map(p => p.n), [1, 2, 3, 7, 8]);
+  assert.deepEqual(toWire(carried).map(p => p.text), spann.map(p => p.text), 'each number keeps its own passage');
+});

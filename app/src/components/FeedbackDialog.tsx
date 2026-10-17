@@ -245,13 +245,12 @@ export function FeedbackDialog({ isOpen, onClose, type = 'feedback' }: FeedbackD
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="p-6 space-y-6">
-              <div className="flex gap-3" role="radiogroup" aria-label="Kind of report">
+              <div className="flex gap-3" role="group" aria-label="Kind of report">
                 {(['bug', 'feedback', 'feature'] as const).map((t) => (
                   <button
                     key={t}
                     type="button"
-                    role="radio"
-                    aria-checked={feedbackType === t}
+                    aria-pressed={feedbackType === t}
                     onClick={() => setFeedbackType(t)}
                     className={`flex-1 py-2 px-4 rounded-lg border-2 transition-all text-sm font-medium ${focusRing}`}
                     style={{

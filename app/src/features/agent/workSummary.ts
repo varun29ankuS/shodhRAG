@@ -42,7 +42,12 @@ export function workFold(transcript: TranscriptState): WorkFold | null {
   if (stepCount === 0 && revisions.length === 0) return null;
 
   const sources = new Set(transcript.passages.map(p => p.path)).size;
-  const rechecked = revisions.reduce((sum, b) => sum + (b.kind === 'revision' ? b.flagged : 0), 0);
+  // A retrieve revision searched the documents (its search is one of the steps); it re-checked
+  // nothing.
+  const rechecked = revisions.reduce(
+    (sum, b) => sum + (b.kind === 'revision' && b.reason !== 'retrieve' ? b.flagged : 0),
+    0,
+  );
   const parts = [transcript.durationMs !== null ? `Worked for ${seconds(transcript.durationMs)}` : 'Worked'];
   if (stepCount > 0) parts.push(`${stepCount} ${stepCount === 1 ? 'step' : 'steps'}`);
   if (sources > 0) parts.push(`${sources} ${sources === 1 ? 'source' : 'sources'}`);

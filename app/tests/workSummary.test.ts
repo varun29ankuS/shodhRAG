@@ -141,4 +141,27 @@ test('a revision row reads as live work while running and as a record once finis
     revisionText('repair_and_coverage', 2, ['the renewal clause'], false),
     'Re-checked 2 flagged statements against the sources; searched for a part no passage covered: the renewal clause',
   );
+  assert.equal(revisionText('retrieve', 3, [], true), 'Searching your documents for the question');
+  assert.equal(revisionText('retrieve', 3, [], false), 'Searched your documents for the question');
+});
+
+test('the search the app made for an answer is a step, not re-checked statements', () => {
+  const blocks: TranscriptState['blocks'] = [
+    { kind: 'text', id: 'draft', text: 'FreshDiskANN keeps the graph on SSD [1][2].' },
+    { kind: 'revision', id: 'revision-1', round: 1, reason: 'retrieve', flagged: 3, missingNeeds: [] },
+    { kind: 'step', stepId: 'run-1-check-search-4' },
+    { kind: 'text', id: 'final', text: 'FreshDiskANN keeps a compressed graph in memory [1].' },
+  ];
+  const groundings = [{
+    round: 1,
+    isFinal: true,
+    method: 'entailment' as const,
+    summary: { checked: 1, supported: 1, weak: 0, unsupported: 0, uncited: 0, invalid: 0, unchecked: 0, score: 1 },
+    claims: [],
+    needs: [],
+    messageIds: ['final'],
+    supersededMessageIds: ['draft'],
+  }];
+  const fold = workFold(transcript({ status: 'completed', durationMs: 6_000, blocks, groundings }));
+  assert.deepEqual(fold, { answerIndex: 3, label: 'Worked for 6s · 1 step' });
 });

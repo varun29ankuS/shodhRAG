@@ -172,7 +172,7 @@ impl Learner {
                 let detail = format!("the model stopped at its {max_tokens}-token limit");
                 self.log_rejections(
                     &model.model_id(),
-                    &[Rejection::new(TRUNCATED, detail, partial.as_str()).about(turn)],
+                    &[Rejection::with_app_detail(TRUNCATED, detail, partial.as_str()).about(turn)],
                 );
                 return Err(LearnError::Truncated(partial));
             }
@@ -583,7 +583,10 @@ impl Learner {
             let detail = "not a decision on one of the memories shown";
             self.log_rejections(
                 &model.model_id(),
-                &[Rejection::new(INVALID_JUDGEMENT, detail, answer.as_str()).about(turn)],
+                &[
+                    Rejection::with_app_detail(INVALID_JUDGEMENT, detail, answer.as_str())
+                        .about(turn),
+                ],
             );
             return Ok(decide::undecided());
         };

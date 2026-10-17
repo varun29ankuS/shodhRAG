@@ -54,22 +54,39 @@ pub struct Rejection {
     /// Reason code (`invalid_json`, `truncated`, `malformed`, `ungrounded`, an ontology
     /// violation code such as `subject_class_mismatch`, ...).
     pub code: String,
-    /// What exactly was wrong (a parser or validation message).
+    /// What exactly was wrong (a parser or validation message). It may quote the model's
+    /// answer, so it is checked like the excerpt, unless the app wrote all of it.
     pub detail: String,
     /// The part of the answer it is about (masked and cut before it is stored).
     pub excerpt: String,
     /// The turn it was learned from, when known.
     pub turn_id: Option<String>,
+    /// `detail` is the app's own text, quoting nothing of the answer ("the model stopped
+    /// at its 4000-token limit"): only keys and bearer tokens are masked in it.
+    pub app_detail: bool,
 }
 
 impl Rejection {
-    /// A rejection of `excerpt` for `code`.
+    /// A rejection of `excerpt` for `code`; `detail` may quote the model's answer.
     pub fn new(code: &str, detail: impl Into<String>, excerpt: impl Into<String>) -> Self {
         Self {
             code: code.to_string(),
             detail: detail.into(),
             excerpt: excerpt.into(),
             turn_id: None,
+            app_detail: false,
+        }
+    }
+
+    /// A rejection whose `detail` the app wrote whole, quoting nothing of the answer.
+    pub fn with_app_detail(
+        code: &str,
+        detail: impl Into<String>,
+        excerpt: impl Into<String>,
+    ) -> Self {
+        Self {
+            app_detail: true,
+            ..Self::new(code, detail, excerpt)
         }
     }
 
@@ -1156,7 +1173,11 @@ impl Inbox {
                     rejection.turn_id,
                     crate::harness::truncate_chars(model, 200),
                     crate::harness::truncate_chars(&rejection.code, 64),
-                    safe_cut(&rejection.detail, MAX_DETAIL_BYTES),
+                    if rejection.app_detail {
+                        safe_cut(&rejection.detail, MAX_DETAIL_BYTES)
+                    } else {
+                        masked(&rejection.detail, MAX_DETAIL_BYTES)
+                    },
                     masked(&rejection.excerpt, MAX_EXCERPT_BYTES),
                     at,
                 ],

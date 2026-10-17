@@ -167,7 +167,7 @@ impl Learner {
                 .count(super::inbox::UsageCounter::Invalid, 1, self.now())?;
             self.log_rejections(
                 &model.model_id(),
-                &[Rejection::new(
+                &[Rejection::with_app_detail(
                     "invalid_revision",
                     "not the {\"revisions\": [...]} shape",
                     answer.as_str(),

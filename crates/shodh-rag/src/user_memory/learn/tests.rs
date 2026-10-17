@@ -1679,7 +1679,7 @@ async fn the_apps_own_detail_is_kept_and_old_reasons_go_without_a_new_one() {
     inbox
         .record_rejections(
             "m",
-            &[Rejection::new(
+            &[Rejection::with_app_detail(
                 "truncated",
                 "the model stopped at its 4000-token limit",
                 "{\"memories\": [",
@@ -1692,4 +1692,23 @@ async fn the_apps_own_detail_is_kept_and_old_reasons_go_without_a_new_one() {
     // Reading today's reasons forgets the old one, though nothing new was rejected.
     assert!(inbox.rejections_today(now).unwrap().is_empty());
     assert!(rejection_rows(&e).is_empty());
+}
+
+#[tokio::test]
+async fn a_detail_that_quotes_the_answer_is_checked_like_the_answer() {
+    let e = env().await;
+    e.learner
+        .inbox()
+        .record_rejections(
+            "m",
+            &[Rejection::new(
+                "invalid_subject",
+                "subject `my password is hunter2` is not an id like `place:pune`",
+                "{}",
+            )],
+            e.f.store.now(),
+        )
+        .unwrap();
+    let rows = rejection_rows(&e);
+    assert!(!rows[0].2.contains("hunter2"), "{rows:?}");
 }

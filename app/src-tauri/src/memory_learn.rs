@@ -696,6 +696,9 @@ impl LearnState {
                         );
                     }
                     Err(e) => {
+                        if matches!(e, LearnError::Model(_)) {
+                            crate::notifications::learning_failed(&state.inner.app);
+                        }
                         tracing::info!(target: "shodh::memory", error = %e, "memory consolidation skipped")
                     }
                 }

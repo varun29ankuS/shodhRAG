@@ -197,13 +197,16 @@ impl ManifestStore {
         serde_json::from_str(&text).ok()
     }
 
-    /// Every readable manifest in the store, by [`Self::file_id`]. A
-    /// manifest being saved (`.json.tmp`) is not one yet.
-    fn load_all(&self) -> BTreeMap<String, Manifest> {
-        let Ok(entries) = std::fs::read_dir(&self.dir) else {
-            return BTreeMap::new();
+    /// Every readable manifest in the store, by [`Self::file_id`]; none when
+    /// the store's directory does not exist yet. A manifest being saved
+    /// (`.json.tmp`) is not one yet.
+    fn load_all(&self) -> Result<BTreeMap<String, Manifest>, String> {
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+            Err(e) => return Err(format!("Reading {} failed: {e}", self.dir.display())),
         };
-        entries
+        Ok(entries
             .filter_map(Result::ok)
             .filter_map(|entry| {
                 let path = entry.path();
@@ -214,7 +217,16 @@ impl ManifestStore {
                 let text = std::fs::read_to_string(&path).ok()?;
                 Some((id, serde_json::from_str(&text).ok()?))
             })
-            .collect()
+            .collect())
+    }
+
+    /// Whether `source_id` has no manifest at all: its file is absent (not
+    /// merely unreadable or damaged).
+    fn has_none(&self, source_id: &str) -> bool {
+        matches!(
+            std::fs::metadata(self.path(source_id)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound
+        )
     }
 
     fn save(&self, source_id: &str, manifest: &ManifestRef<'_>) -> Result<(), String> {
@@ -326,18 +338,22 @@ pub(crate) struct FolderManifest<'a> {
 }
 
 impl FolderManifest<'_> {
-    /// The file `key` was indexed (or failed to index, `failure`) as it
-    /// was at `stamp`, taken before indexing it.
+    /// The file `key` was indexed as it was at `stamp`, taken before
+    /// indexing it, or failed to index (`failure`). A failed file is
+    /// recorded without a stamp, so the source's first sync tries it again
+    /// (it may have been locked or still being written), as when the folder
+    /// had no manifest; that sync stamps it if it fails again.
     pub(crate) fn record(&mut self, key: String, stamp: FileStamp, failure: Option<FileFailure>) {
         match failure {
             Some(failure) => {
-                self.failures.insert(key.clone(), failure);
+                self.files.remove(&key);
+                self.failures.insert(key, failure);
             }
             None => {
                 self.failures.remove(&key);
+                self.files.insert(key, stamp);
             }
         }
-        self.files.insert(key, stamp);
         self.save();
     }
 
@@ -373,17 +389,19 @@ pub(crate) struct Adopted<'a> {
 /// came at or after that one, and the file has not changed since, so they
 /// are the file's current content. A donor without a manifest was indexed
 /// in full before manifests existed: its indexed files are taken as current,
-/// as [`known_from_index`] takes them.
+/// as [`known_from_index`] takes them. A donor whose manifest is there but
+/// unreadable gives no such evidence.
 fn indexed_as_on_disk(
     key: &str,
     stamp: FileStamp,
     donor: &str,
     manifests: &BTreeMap<String, Manifest>,
+    store: &ManifestStore,
 ) -> bool {
     manifests
         .values()
         .any(|m| m.files.get(key) == Some(&stamp) && !m.failures.contains_key(key))
-        || !manifests.contains_key(&ManifestStore::file_id(donor))
+        || store.has_none(donor)
 }
 
 /// Gives the folder source `source_id` (the folder `root`) the files of
@@ -428,7 +446,7 @@ pub(crate) async fn adopt_indexed<'a>(
     for row in rows {
         owners.entry(row.source).or_default().insert(row.space_id);
     }
-    let mut manifests = adoption.store.load_all();
+    let mut manifests = adoption.store.load_all()?;
 
     let mut adopted: BTreeMap<String, FileStamp> = BTreeMap::new();
     for (key, (_, stamp)) in &on_disk {
@@ -444,7 +462,7 @@ pub(crate) async fn adopt_indexed<'a>(
         if donor == source_id
             || adoption.listed.contains(donor)
             || stale.contains(key)
-            || !indexed_as_on_disk(key, *stamp, donor, &manifests)
+            || !indexed_as_on_disk(key, *stamp, donor, &manifests, adoption.store)
         {
             continue;
         }

@@ -196,6 +196,7 @@
     "index_single_file": { "excluded": "Indexes a file the user dropped or uploaded; the assistant indexes whole folders with add_folder and its downloads automatically." },
     "sync_folder_sources": { "excluded": "Tells the backend which Library folders to keep in sync; syncing then runs on its own, and the assistant adds, re-indexes and removes folders with add_folder, reindex_source and remove_source." },
     "check_path_type": { "excluded": "Drag-and-drop helper deciding whether a dropped path is a file or folder; add_folder validates paths itself." },
+    "resolve_path_case": { "excluded": "Startup helper that restores the on-disk letter case of the Library's saved folder paths; it changes no source and the assistant names paths as the index lists them." },
     "optimize_storage": { "excluded": "Whole-index maintenance; bulk index operations are user-only." },
     "cleanup_orphaned_documents": { "excluded": "Bulk deletion across the whole index; the assistant removes single sources with remove_source, with approval." },
     "clear_all_documents": { "excluded": "Deletes every indexed document; bulk destructive operations are user-only." },

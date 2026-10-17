@@ -1,6 +1,8 @@
 //! Database management commands for clearing and resetting data
 
 use crate::rag_commands::RagState;
+use shodh_rag::rag_engine::{normalize_source_path, on_disk_spelling};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use tauri::State;
@@ -190,36 +192,95 @@ fn get_dir_size(path: &Path) -> u64 {
     size
 }
 
-/// List all distinct indexed source files from the vector store.
-/// Returns (doc_id, title, source_path) for each unique document.
+/// List all distinct indexed source files from the vector store: each
+/// document's id, title, identity (`source`) and the path to show for it
+/// (`display_path`).
 #[tauri::command]
 pub async fn list_indexed_sources(
     state: State<'_, RagState>,
 ) -> Result<Vec<IndexedSourceInfo>, String> {
-    let rag_guard = state.rag.read().await;
-    let docs = rag_guard
-        .get_document_info()
+    let (docs, stored) = {
+        let rag_guard = state.rag.read().await;
+        let docs = rag_guard
+            .get_document_info()
+            .await
+            .map_err(|e| format!("Failed to list sources: {}", e))?;
+        let stored = rag_guard
+            .document_display_paths()
+            .await
+            .map_err(|e| format!("Failed to list sources: {}", e))?;
+        (docs, stored)
+    };
+
+    // Documents indexed before their display path was stored are resolved
+    // from disk, once per file, off the async runtime.
+    let sources = tokio::task::spawn_blocking(move || indexed_source_infos(docs, &stored))
         .await
         .map_err(|e| format!("Failed to list sources: {}", e))?;
 
-    let sources: Vec<IndexedSourceInfo> = docs
-        .into_iter()
-        .map(|(doc_id, title, source)| IndexedSourceInfo {
-            doc_id,
-            title,
-            source,
-        })
-        .collect();
-
     tracing::info!("Listed {} indexed sources", sources.len());
     Ok(sources)
+}
+
+/// The listed documents with the path each is shown under: the stored
+/// display path when it spells the document's identity, else the file's
+/// spelling on disk ([`on_disk_spelling`]), else the identity itself (a file
+/// that is gone, or an in-app record such as `calendar://task/<id>`).
+fn indexed_source_infos(
+    docs: Vec<(String, String, String)>,
+    stored: &HashMap<String, String>,
+) -> Vec<IndexedSourceInfo> {
+    let mut resolved: HashMap<String, String> = HashMap::new();
+    docs.into_iter()
+        .map(|(doc_id, title, source)| {
+            let display_path = stored
+                .get(&doc_id)
+                .filter(|d| normalize_source_path(Path::new(d.as_str())) == source)
+                .cloned()
+                .unwrap_or_else(|| {
+                    if source.contains("://") {
+                        return source.clone();
+                    }
+                    resolved
+                        .entry(source.clone())
+                        .or_insert_with(|| {
+                            on_disk_spelling(Path::new(&source)).unwrap_or_else(|| source.clone())
+                        })
+                        .clone()
+                });
+            IndexedSourceInfo {
+                doc_id,
+                title,
+                source,
+                display_path,
+            }
+        })
+        .collect()
 }
 
 #[derive(serde::Serialize)]
 pub struct IndexedSourceInfo {
     pub doc_id: String,
     pub title: String,
+    /// The file's identity in the index (lowercased on Windows).
     pub source: String,
+    /// The path to show: the file system's spelling of `source`.
+    pub display_path: String,
+}
+
+/// `path` with the letter case the file system gives it (Windows), for paths
+/// saved in a lowercased spelling; any other difference (a short name
+/// expanded, a junction followed) is never applied, so the path keeps its
+/// identity. Returns `path` unchanged when it cannot be resolved, and on
+/// other systems, whose paths keep their case.
+#[tauri::command]
+pub async fn resolve_path_case(path: String) -> Result<String, String> {
+    if !cfg!(windows) || path.trim().is_empty() {
+        return Ok(path);
+    }
+    tokio::task::spawn_blocking(move || on_disk_spelling(Path::new(&path)).unwrap_or(path))
+        .await
+        .map_err(|e| format!("Resolving the path was interrupted: {}", e))
 }
 
 /// Clear every document from the index (audited).
@@ -256,4 +317,64 @@ pub async fn reset_database(
         source_change("reset", ChangeOrigin::Ui, None, None, outcome),
     ));
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn doc(id: &str, source: &str) -> (String, String, String) {
+        (id.to_string(), "Title".to_string(), source.to_string())
+    }
+
+    /// A stored display path is used only when it spells the document's
+    /// identity; records and files that cannot be resolved show the identity.
+    #[test]
+    fn listed_sources_show_a_stored_spelling_only_of_the_same_file() {
+        let stored = HashMap::from([
+            ("other".to_string(), "D:/Elsewhere/Other.md".to_string()),
+            ("task".to_string(), "D:/Elsewhere/Task.md".to_string()),
+        ]);
+        let infos = indexed_source_infos(
+            vec![
+                doc("other", "/no/such/folder/a.md"),
+                doc("task", "calendar://task/1"),
+            ],
+            &stored,
+        );
+        assert_eq!(infos[0].source, "/no/such/folder/a.md");
+        assert_eq!(infos[0].display_path, "/no/such/folder/a.md");
+        assert_eq!(infos[1].display_path, "calendar://task/1");
+        let json = serde_json::to_value(&infos[1]).unwrap();
+        assert_eq!(json["display_path"], "calendar://task/1");
+        assert_eq!(json["doc_id"], "task");
+    }
+
+    /// On Windows a document listed under its lowercase identity is shown with
+    /// the case its folders and name have on disk: stored, or resolved from
+    /// the file for documents indexed before it was stored.
+    #[cfg(windows)]
+    #[test]
+    fn listed_sources_show_the_case_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = shodh_rag::rag_engine::canonical_path(&fs::canonicalize(dir.path()).unwrap());
+        let file = root.join("Research").join("Papers").join("SPANN - X.pdf");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, b"%PDF-1.4").unwrap();
+        let spelled = file.display().to_string();
+        let identity = normalize_source_path(&file);
+
+        let resolved = indexed_source_infos(vec![doc("old", &identity)], &HashMap::new());
+        assert_eq!(resolved[0].source, identity);
+        assert_eq!(resolved[0].display_path, spelled);
+
+        // A stored spelling is shown as stored, without reading the disk.
+        let stored = HashMap::from([("new".to_string(), spelled.to_uppercase())]);
+        let kept = indexed_source_infos(vec![doc("new", &identity)], &stored);
+        assert_eq!(kept[0].display_path, spelled.to_uppercase());
+
+        let gone = format!("{identity}.gone");
+        let missing = indexed_source_infos(vec![doc("gone", &gone)], &HashMap::new());
+        assert_eq!(missing[0].display_path, gone);
+    }
 }

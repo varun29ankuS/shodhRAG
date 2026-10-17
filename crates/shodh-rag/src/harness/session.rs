@@ -1273,6 +1273,12 @@ impl Inner {
             self.emit(event);
         }
         if !state.resume_held(&held.run_id, held.generation, &prompt_id) {
+            // Stopped or steered meanwhile: the model never saw this search's
+            // passages, so they must not make a later turn count as sourced.
+            let mut g = lock(&self.grounding_run);
+            if g.run_id == held.run_id {
+                g.seeded = g.seeded.max(self.passages_in_run.issued());
+            }
             return;
         }
         // Only once its passages go to the model (not when the user stopped
@@ -2659,6 +2665,127 @@ mod tests {
             );
             assert!(lock(&queries).is_empty(), "{tool}: no document search");
         }
+    }
+
+    /// `search_documents` that finds one passage once `release` is notified.
+    struct HeldSearch {
+        release: Arc<Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::harness::tools::HostTool for HeldSearch {
+        fn name(&self) -> &str {
+            SEARCH_DOCUMENTS
+        }
+        fn label(&self) -> &str {
+            "Search documents"
+        }
+        fn label_template(&self) -> &str {
+            "Searching {query}"
+        }
+        fn description(&self) -> &str {
+            "Search the user's indexed documents."
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {"query": {"type": "string", "minLength": 1}},
+                "required": ["query"],
+                "additionalProperties": false
+            })
+        }
+        fn tier(&self) -> RiskTier {
+            RiskTier::Read
+        }
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            ctx: &crate::harness::tools::ToolContext,
+        ) -> Result<crate::harness::tools::ToolOutput, crate::harness::tools::ToolError> {
+            self.release.notified().await;
+            let n = ctx.reserve_passages(1);
+            ctx.record_passage(CitedPassage {
+                n,
+                file: "spann.pdf".into(),
+                path: "c:/papers/spann.pdf".into(),
+                page: Some("2".into()),
+                web: false,
+                text: "SPANN keeps the posting list centroids in memory.".into(),
+                checkable: true,
+            });
+            Ok(crate::harness::tools::ToolOutput {
+                text_for_model: format!(
+                    "[{{\"n\": {n}, \"text\": \"SPANN keeps the posting list centroids in memory.\"}}]"
+                ),
+                summary_for_ui: "1 passage from 1 file".into(),
+                detail: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn passages_of_a_search_the_user_steered_past_do_not_count_as_sources() {
+        let release = Arc::new(Notify::new());
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(HeldSearch {
+                release: Arc::clone(&release),
+            }))
+            .unwrap();
+        let (inner, mut events, mut out) =
+            offline_session_with(Some(GroundingConfig::lexical()), None, registry);
+        inner
+            .start_run(SPANN_QUESTION, Some("run-1".into()), RunScope::default())
+            .unwrap();
+        let (first_prompt, _) = sent_prompt(&mut out);
+        say(&inner, "m1", "SPANN keeps centroids in memory [1].");
+        complete(&inner, &first_prompt);
+        // The app's search has started and waits.
+        events_until(
+            &mut events,
+            |e| matches!(e, AgentEvent::StepStarted { tool, .. } if tool == SEARCH_DOCUMENTS),
+        )
+        .await;
+        // The user steers the held run (as `steer` does), then the search ends.
+        assert!(lock(&inner.state).attach_prompt("p-steer"));
+        release.notify_one();
+        events_until(&mut events, |e| {
+            matches!(e, AgentEvent::StepFinished { .. })
+        })
+        .await;
+        assert!(out.try_recv().is_err(), "the retrieve prompt is not sent");
+        assert!(
+            !lock(&inner.tools_ok_in_run).contains(SEARCH_DOCUMENTS),
+            "the model never saw the search"
+        );
+
+        // The steered turn cites a number nothing gave it.
+        say(
+            &inner,
+            "m2",
+            "SPANN keeps the posting list centroids in memory [9].",
+        );
+        complete(&inner, "p-steer");
+        let round = events_until(&mut events, |e| {
+            matches!(e, AgentEvent::RevisionStarted { .. })
+        })
+        .await;
+        assert!(matches!(
+            round.last(),
+            Some(AgentEvent::RevisionStarted {
+                reason: RevisionReason::Repair,
+                ..
+            })
+        ));
+        let message = match next_frame(&mut out).await {
+            OutboundFrame::Prompt { message, .. } => message,
+            other => panic!("expected the repair prompt, got {other:?}"),
+        };
+        assert!(
+            !message.contains("Use only passage numbers you were given"),
+            "{message}"
+        );
+        assert!(message.contains("Call search_documents now"), "{message}");
     }
 
     #[tokio::test]

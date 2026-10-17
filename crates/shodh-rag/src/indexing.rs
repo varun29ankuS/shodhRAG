@@ -107,8 +107,9 @@ pub struct IndexingState {
     /// Sources removed from the Library: their runs stop before their next
     /// file and none of theirs starts again. Never cleared by [`Self::reset`].
     removed: Mutex<HashSet<String>>,
-    /// The runs in progress, counted by source.
-    runs: tokio::sync::watch::Sender<HashMap<String, usize>>,
+    /// The runs in progress by source, each with the folder or file it
+    /// indexes when it said so ([`Self::begin_run_at`]).
+    runs: tokio::sync::watch::Sender<HashMap<String, Vec<Option<String>>>>,
 }
 
 impl Default for IndexingState {
@@ -128,14 +129,17 @@ impl Default for IndexingState {
 pub struct IndexingRun<'a> {
     state: &'a IndexingState,
     source_id: String,
+    path: Option<String>,
 }
 
 impl Drop for IndexingRun<'_> {
     fn drop(&mut self) {
         self.state.runs.send_modify(|runs| {
-            if let Some(count) = runs.get_mut(&self.source_id) {
-                *count -= 1;
-                if *count == 0 {
+            if let Some(paths) = runs.get_mut(&self.source_id) {
+                if let Some(at) = paths.iter().position(|p| *p == self.path) {
+                    paths.remove(at);
+                }
+                if paths.is_empty() {
                     runs.remove(&self.source_id);
                 }
             }
@@ -172,6 +176,16 @@ impl IndexingState {
     /// Registers a run of `source_id` until the returned guard is dropped;
     /// `None` when the source was removed (the run must not start).
     pub fn begin_run(&self, source_id: &str) -> Option<IndexingRun<'_>> {
+        self.register(source_id, None)
+    }
+
+    /// [`Self::begin_run`] for a run that indexes the folder (or file)
+    /// `path`, which [`Self::running_paths`] reports while it lasts.
+    pub fn begin_run_at(&self, source_id: &str, path: &str) -> Option<IndexingRun<'_>> {
+        self.register(source_id, Some(path.to_string()))
+    }
+
+    fn register(&self, source_id: &str, path: Option<String>) -> Option<IndexingRun<'_>> {
         // Checked and registered under the same lock as `stop_source`
         // records a removal, so a removal waits for every run it can miss.
         let removed = self.removed.lock().unwrap_or_else(|e| e.into_inner());
@@ -179,13 +193,31 @@ impl IndexingState {
             return None;
         }
         self.runs.send_modify(|runs| {
-            *runs.entry(source_id.to_string()).or_insert(0) += 1;
+            runs.entry(source_id.to_string())
+                .or_default()
+                .push(path.clone());
         });
         drop(removed);
         Some(IndexingRun {
             state: self,
             source_id: source_id.to_string(),
+            path,
         })
+    }
+
+    /// The folders (or files) being indexed now, with their sources, for the
+    /// runs that said which ([`Self::begin_run_at`]).
+    pub fn running_paths(&self) -> Vec<(String, String)> {
+        self.runs
+            .borrow()
+            .iter()
+            .flat_map(|(source_id, paths)| {
+                paths
+                    .iter()
+                    .flatten()
+                    .map(move |path| (source_id.clone(), path.clone()))
+            })
+            .collect()
     }
 
     /// Whether `source_id` was removed from the Library.
@@ -388,7 +420,7 @@ pub async fn index_folder_adopting(
 
     // Registered while it runs, so removing its source stops it and waits
     // for it (see `IndexingState::stop_source`).
-    let Some(_run) = indexing_state.begin_run(space_id) else {
+    let Some(_run) = indexing_state.begin_run_at(space_id, &path.display().to_string()) else {
         return Err(format!(
             "{folder_path} was removed from the Library and is not indexed"
         ));
@@ -1070,8 +1102,12 @@ mod tests {
     #[tokio::test]
     async fn stopping_a_source_waits_for_its_runs_and_spares_the_others() {
         let state = IndexingState::default();
-        let run = state.begin_run("papers").expect("a run");
+        let run = state.begin_run_at("papers", "C:/papers").expect("a run");
         let other = state.begin_run("notes").expect("another source's run");
+        assert_eq!(
+            state.running_paths(),
+            [("papers".to_string(), "C:/papers".to_string())]
+        );
         let stop = state.stop_source("papers");
         tokio::pin!(stop);
         assert!(
@@ -1085,6 +1121,7 @@ mod tests {
         assert!(!state.is_cancelled(), "nothing else is cancelled");
         drop(run);
         stop.await;
+        assert!(state.running_paths().is_empty());
         assert!(state.begin_run("papers").is_none(), "no run starts again");
         drop(other);
         state.restore_source("papers");

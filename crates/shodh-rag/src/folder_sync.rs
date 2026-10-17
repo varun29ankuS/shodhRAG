@@ -337,6 +337,24 @@ impl ManifestStore {
         Ok(true)
     }
 
+    /// The folders of the sources that have a manifest, except `except`'s:
+    /// folders the Library lists, whether kept in sync now or not.
+    pub fn listed_folders(&self, except: &str) -> Vec<String> {
+        let skip = Self::file_id(except);
+        match self.load_all() {
+            Ok(manifests) => manifests
+                .into_iter()
+                .filter(|(id, _)| *id != skip)
+                .map(|(_, manifest)| manifest.folder)
+                .filter(|folder| !folder.is_empty())
+                .collect(),
+            Err(error) => {
+                tracing::warn!(%error, "folder manifests unreadable");
+                Vec::new()
+            }
+        }
+    }
+
     /// Whether `source_id` has a manifest.
     pub fn has_manifest(&self, source_id: &str) -> bool {
         self.path(source_id).is_file()

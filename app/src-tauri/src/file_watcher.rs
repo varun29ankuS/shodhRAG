@@ -221,9 +221,10 @@ impl FolderSyncState {
                 "{source_id} holds files added in chats; it is not a Library source"
             ));
         }
-        let (recorded_before, others) = self.begin_removal(source_id)?;
+        let recorded_before = self.begin_removal(source_id)?;
         indexing.stop_source(source_id).await;
         let _turn = self.running.lock().await;
+        let others = self.other_folders(indexing, source_id);
         let deleted = rag
             .write()
             .await
@@ -233,10 +234,34 @@ impl FolderSyncState {
         self.finish_removal(indexing, source_id, recorded_before, deleted)
     }
 
+    /// The folders of every source but `source_id` the backend knows the
+    /// Library lists: those watched, those with a manifest (listed but not
+    /// kept in sync now: being indexed, or in error), and those being
+    /// indexed now. A removal leaves the unowned chunks under them.
+    fn other_folders(&self, indexing: &IndexingState, source_id: &str) -> Vec<String> {
+        let mut folders: std::collections::BTreeSet<String> = self
+            .watched
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(id, _)| id.as_str() != source_id)
+            .map(|(_, w)| w.path.clone())
+            .collect();
+        folders.extend(self.store.listed_folders(source_id));
+        folders.extend(
+            indexing
+                .running_paths()
+                .into_iter()
+                .filter(|(id, _)| id != source_id)
+                .map(|(_, path)| path),
+        );
+        folders.into_iter().collect()
+    }
+
     /// The first step of [`Self::remove_source`]: records the removal of
     /// `source_id` and stops watching it. Returns whether an earlier removal
-    /// had already recorded it, and the folders of the other watched sources.
-    fn begin_removal(&self, source_id: &str) -> Result<(bool, Vec<String>), String> {
+    /// had already recorded it.
+    fn begin_removal(&self, source_id: &str) -> Result<bool, String> {
         let mut watched = self.watched.lock().unwrap_or_else(|e| e.into_inner());
         let mut removed = self.removed.lock().unwrap_or_else(|e| e.into_inner());
         let recorded_before = removed.contains(source_id);
@@ -249,8 +274,7 @@ impl FolderSyncState {
         }
         // Dropping the watcher ends the source's sync task.
         watched.remove(source_id);
-        let others = watched.values().map(|w| w.path.clone()).collect();
-        Ok((recorded_before, others))
+        Ok(recorded_before)
     }
 
     /// The last step of [`Self::remove_source`], given how the deletion went.
@@ -939,7 +963,7 @@ mod tests {
 
         // The removal's steps, with a failure injected after the chunks of
         // the source were deleted (as when the unowned chunks then fail).
-        let (recorded_before, _) = state.begin_removal(&source.id).unwrap();
+        let recorded_before = state.begin_removal(&source.id).unwrap();
         assert!(!recorded_before);
         indexing.stop_source(&source.id).await;
         rag.write()
@@ -979,7 +1003,7 @@ mod tests {
             .remove_source(&rag, &indexing, "folder-old", None)
             .await
             .unwrap();
-        let (recorded_before, _) = state.begin_removal("folder-old").unwrap();
+        let recorded_before = state.begin_removal("folder-old").unwrap();
         assert!(recorded_before);
         let _ = state.finish_removal(&indexing, "folder-old", recorded_before, Err("x".into()));
         assert_eq!(state.removed_ids(), ["folder-old"]);
@@ -993,6 +1017,77 @@ mod tests {
         }
         assert_eq!(state.removed_ids(), ["folder-old"], "nothing recorded");
         assert!(!indexing.is_removed("chat-uploads:main"));
+    }
+
+    /// Removing a folder leaves the unowned chunks of every nested folder the
+    /// Library lists, kept in sync or not: one being indexed now, one with a
+    /// manifest that is not watched.
+    #[tokio::test]
+    async fn a_removal_spares_listed_folders_that_are_not_watched() {
+        let dir = tempfile::tempdir().unwrap();
+        let rag =
+            RwLock::new(crate::agent_tools::testing::engine_with_search_models(dir.path()).await);
+        let state = FolderSyncState::new(dir.path().join("sync"));
+        let indexing = IndexingState::default();
+        let research = dir.path().join("Research");
+        let indexing_now = research.join("Papers");
+        let with_manifest = research.join("Theses");
+        for folder in [&research, &indexing_now, &with_manifest] {
+            std::fs::create_dir_all(folder).unwrap();
+            let file = folder.join("notes.md");
+            std::fs::write(
+                &file,
+                "# Notes\n\nThe heron was seen near the river at dawn. The heron returned the next morning, and the notes describe the heron at length.\n",
+            )
+            .unwrap();
+            // Indexed before chunks recorded their source.
+            rag.write()
+                .await
+                .add_document_from_file(&file, HashMap::new())
+                .await
+                .unwrap();
+        }
+        let _papers_run = indexing
+            .begin_run_at("folder-papers", &indexing_now.display().to_string())
+            .unwrap();
+        std::fs::create_dir_all(dir.path().join("sync")).unwrap();
+        std::fs::write(
+            dir.path().join("sync").join("folder-theses.json"),
+            serde_json::json!({ "folder": with_manifest.display().to_string(), "files": {} })
+                .to_string(),
+        )
+        .unwrap();
+
+        state
+            .remove_source(
+                &rag,
+                &indexing,
+                "folder-research",
+                Some(research.display().to_string().as_str()),
+            )
+            .await
+            .unwrap();
+        let mut left: Vec<String> = rag
+            .read()
+            .await
+            .document_sources()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| {
+                std::path::Path::new(&row.source)
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().to_lowercase())
+                    .unwrap_or_default()
+            })
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            ["papers", "theses"],
+            "only Research's own legacy file went"
+        );
     }
 
     /// The removal waits for the sync that holds the turn, so that sync

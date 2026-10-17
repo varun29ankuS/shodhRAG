@@ -150,7 +150,8 @@ impl FilePreparer {
         // chunked by unit: sections, tables with headers, theorems with their
         // proofs, single references. Form fields and relationships extracted
         // from PDFs, and spreadsheet tables, use the section chunker; other
-        // formats fall back to sliding windows.
+        // formats, and any document those chunkers find no unit in, fall
+        // back to sliding windows over its text.
         let chunk_started = std::time::Instant::now();
         let embedder = self.embeddings.as_ref();
         let count = |text: &str| {
@@ -159,9 +160,6 @@ impl FilePreparer {
                 .unwrap_or_else(|| crate::embeddings::estimate_tokens(text))
         };
         let structured = parsed.document.as_ref().filter(|d| !d.blocks.is_empty());
-        if structured.is_some() {
-            merged_metadata.insert("chunker".to_string(), STRUCTURE_CHUNKER_VERSION.to_string());
-        }
         let extension = path
             .extension()
             .and_then(|e| e.to_str())
@@ -182,7 +180,7 @@ impl FilePreparer {
                     label,
                 ));
             }
-            if chunks.is_empty() && parsed.document.is_none() {
+            if chunks.is_empty() {
                 chunks = self
                     .chunker
                     .chunk_with_context(&parsed.content, context, label);
@@ -190,6 +188,16 @@ impl FilePreparer {
             chunks
         };
         let mut chunks = chunk_in_context(&title, !tabular, &count, &chunk_all);
+        if chunks.is_empty() && !parsed.content.trim().is_empty() {
+            // Stored as it is, the file would replace its previous chunks
+            // with none and count as indexed.
+            anyhow::bail!("No chunks were made from the text of {}", path.display());
+        }
+        // Only structure chunks carry a layout; a document they found no
+        // unit in was chunked in windows.
+        if chunks.iter().any(|c| c.layout.is_some()) {
+            merged_metadata.insert("chunker".to_string(), STRUCTURE_CHUNKER_VERSION.to_string());
+        }
         for (index, chunk) in chunks.iter_mut().enumerate() {
             chunk.index = index;
         }
@@ -373,7 +381,7 @@ fn prepare_chunks(
         }
         match &chunk.layout {
             Some(layout) => insert_layout_metadata(&mut per_chunk_meta, layout),
-            None => insert_page_metadata(&mut per_chunk_meta, chunk.page),
+            None => insert_page_metadata(&mut per_chunk_meta, chunk.page, chunk.page_end),
         }
         // Extract structured fields (emails, phones, etc.) at ingest time
         for (k, v) in extract_structured_fields(&chunk.text) {
@@ -548,16 +556,25 @@ static RE_INVOICE_NO: LazyLock<Regex> = LazyLock::new(|| {
 /// Extract structured fields from chunk text using regex.
 /// Returns key-value pairs to merge into chunk metadata.
 /// This runs once at ingest time — zero cost at query time.
-/// Record a chunk's source page in its metadata. Paged chunks get `page`,
-/// `page_start` and `page_end` (a chunk is produced from exactly one page, so
-/// start and end are equal; the range keys let consumers treat merged/expanded
-/// results uniformly). Unpaged chunks get no page keys.
-fn insert_page_metadata(meta: &mut HashMap<String, String>, page: Option<usize>) {
+/// Record a chunk's source pages in its metadata. Paged chunks get `page`,
+/// `page_start` and `page_end`: equal for a chunk of one page, a range for a
+/// chunk whose text runs onto a later page (a short page merged with its
+/// neighbour, `page_end`); the range keys let consumers treat merged/expanded
+/// results uniformly. Unpaged chunks get no page keys.
+fn insert_page_metadata(
+    meta: &mut HashMap<String, String>,
+    page: Option<usize>,
+    page_end: Option<usize>,
+) {
     if let Some(page) = page {
-        let page = page.to_string();
-        meta.insert("page".to_string(), page.clone());
-        meta.insert("page_start".to_string(), page.clone());
-        meta.insert("page_end".to_string(), page);
+        let start = page.to_string();
+        let end = page_end
+            .filter(|&end| end > page)
+            .unwrap_or(page)
+            .to_string();
+        meta.insert("page".to_string(), start.clone());
+        meta.insert("page_start".to_string(), start);
+        meta.insert("page_end".to_string(), end);
     }
 }
 
@@ -2898,6 +2915,50 @@ Language models trained on long documents reach lower perplexity.
         engine
     }
 
+    /// A file with text is never indexed as no chunks: a short note is one
+    /// chunk, a CJK note is chunked by unit, and a note the structure chunker
+    /// finds no unit in (a heading alone) falls back to windows.
+    #[tokio::test]
+    async fn short_and_whitespace_free_files_are_indexed_with_their_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let cases = [
+            ("reply.txt", "Yes.\n", "Yes.", false),
+            (
+                "kaimono.md",
+                "# 買い物\n\n牛乳と卵を買う。\n",
+                "牛乳と卵を買う。",
+                true,
+            ),
+            ("list.md", "- Milk\n", "Milk", true),
+            ("heading.md", "# Shopping list\n", "Shopping list", false),
+        ];
+        for (name, content, _, _) in &cases {
+            let path = dir.path().join(name);
+            std::fs::write(&path, content).unwrap();
+            let ids = engine
+                .add_document_from_file(&path, HashMap::new())
+                .await
+                .unwrap();
+            assert_eq!(ids.len(), 1, "{name}");
+        }
+        let chunks = engine.store.list_chunks(None, 100).await.unwrap();
+        for (name, _, text, by_unit) in cases {
+            let chunk = chunks
+                .iter()
+                .find(|c| c.source.ends_with(name))
+                .unwrap_or_else(|| panic!("no chunk of {name}"));
+            assert!(chunk.text.contains(text), "{name}: {}", chunk.text);
+            let metadata: HashMap<String, String> =
+                serde_json::from_str(&chunk.metadata_json).unwrap();
+            assert_eq!(
+                metadata.get("chunker").map(String::as_str),
+                by_unit.then_some(STRUCTURE_CHUNKER_VERSION),
+                "{name}"
+            );
+        }
+    }
+
     const LEASE: &str =
         "Lessor: Saffron Estates Pvt. Ltd. Lessee: Tidewater Logistics Pvt. Ltd.\n\n\
                          # Rent\n\n\
@@ -3193,7 +3254,7 @@ Language models trained on long documents reach lower perplexity.
     #[test]
     fn paged_chunk_metadata_round_trips_to_page_label() {
         let mut meta = HashMap::new();
-        insert_page_metadata(&mut meta, Some(7));
+        insert_page_metadata(&mut meta, Some(7), None);
         assert_eq!(meta.get("page").map(String::as_str), Some("7"));
         assert_eq!(meta.get("page_start").map(String::as_str), Some("7"));
         assert_eq!(meta.get("page_end").map(String::as_str), Some("7"));
@@ -3201,9 +3262,23 @@ Language models trained on long documents reach lower perplexity.
     }
 
     #[test]
+    fn a_chunk_running_onto_a_later_page_records_the_range() {
+        let mut meta = HashMap::new();
+        insert_page_metadata(&mut meta, Some(2), Some(3));
+        assert_eq!(meta.get("page").map(String::as_str), Some("2"));
+        assert_eq!(meta.get("page_start").map(String::as_str), Some("2"));
+        assert_eq!(meta.get("page_end").map(String::as_str), Some("3"));
+        assert_eq!(page_numbers_from_metadata(&meta).as_deref(), Some("2-3"));
+        // An end before the start is no range.
+        let mut meta = HashMap::new();
+        insert_page_metadata(&mut meta, Some(4), Some(1));
+        assert_eq!(page_numbers_from_metadata(&meta).as_deref(), Some("4"));
+    }
+
+    #[test]
     fn unpaged_chunk_has_no_page_label() {
         let mut meta = HashMap::new();
-        insert_page_metadata(&mut meta, None);
+        insert_page_metadata(&mut meta, None, None);
         assert!(meta.is_empty());
         assert_eq!(page_numbers_from_metadata(&meta), None);
     }

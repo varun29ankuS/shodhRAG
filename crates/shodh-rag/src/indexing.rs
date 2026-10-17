@@ -522,7 +522,7 @@ pub async fn index_folder_adopting(
 /// index. Shared with the app so allow-lists are never duplicated.
 pub const SUPPORTED_FILE_EXTENSIONS: &[&str] = &[
     // Documents
-    "txt", "md", "pdf", "html", "json", "docx", "pptx", "rst", "tex", // Tabular
+    "txt", "md", "pdf", "html", "htm", "json", "docx", "pptx", "rst", "tex", // Tabular
     "csv", "tsv", "xlsx", "xls", "xlsm", "xlsb", "ods", // Code
     "rs", "py", "js", "ts", "jsx", "tsx", "java", "cpp", "c", "h", "hpp", "cs", "go", "rb", "php",
     "swift", "kt", "scala", "r", "sh", "bash", "zsh", "ps1", "bat", "cmd", // Web
@@ -762,6 +762,13 @@ mod tests {
             assert!(is_supported_file_type(ext), "{} should be supported", ext);
         }
         assert!(!is_supported_file_type("exe"));
+    }
+
+    /// The parser reads `.htm` as HTML; indexing takes it too.
+    #[test]
+    fn both_html_extensions_are_supported() {
+        assert!(is_supported_file_type("html"));
+        assert!(is_supported_file_type("htm"));
     }
 
     fn options(file_types: &[&str]) -> IndexingOptions {

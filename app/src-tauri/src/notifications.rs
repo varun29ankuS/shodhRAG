@@ -45,7 +45,7 @@
 //! **Automations** (and any later sender) call [`notify`] with a category,
 //! a title and a body; the gating above applies.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -53,6 +53,7 @@ use serde_json::json;
 use shodh_rag::audit::{AuditEventType, AuditRecord};
 use shodh_rag::harness::{AgentEvent, RunStatus};
 use shodh_rag::inbox::{InboxKind, InboxStatus, NewInboxItem};
+use shodh_rag::indexing::IndexingResult;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
@@ -315,6 +316,7 @@ pub struct NotificationState {
     prefs: Mutex<NotificationPrefs>,
     work: Mutex<WorkBatch>,
     problems: Mutex<ProblemGate>,
+    indexing: Mutex<IndexingMemory>,
 }
 
 impl NotificationState {
@@ -323,6 +325,7 @@ impl NotificationState {
             prefs: Mutex::new(prefs),
             work: Mutex::new(WorkBatch::default()),
             problems: Mutex::new(ProblemGate::default()),
+            indexing: Mutex::new(IndexingMemory::default()),
         }
     }
 
@@ -514,10 +517,13 @@ pub fn app_notice(app: &AppHandle, title: &str, body: &str) {
 
 // ── Senders' outcomes ────────────────────────────────────────────
 
-/// What an Inbox item that was just posted announces, if anything. Only a
-/// folder's indexing or sync that ended: done is finished work, failed a
-/// problem (titled by the item, which names the folder; its detail can be
-/// an error message, so it is only used for counts of a success).
+/// What an Inbox item that was just posted announces, if anything, before
+/// [`IndexingMemory`] decides whether it is routine. Only a folder's indexing
+/// or sync that ended: done is finished work, failed a problem. A failure's
+/// body names the folder (`data.folder` of a sync's item) and never uses the
+/// item's detail, which can carry an error message; an item without a folder
+/// name (indexing the user started) is named by its title, which the app
+/// writes from the folder's name.
 pub fn inbox_outcome(item: &NewInboxItem) -> Option<Outcome> {
     if item.kind != InboxKind::Indexing {
         return None;
@@ -541,14 +547,159 @@ pub fn inbox_outcome(item: &NewInboxItem) -> Option<Outcome> {
                 summary,
             }))
         }
-        InboxStatus::Failed => Some(Outcome::Problem {
-            source: item.id.clone(),
+        InboxStatus::Failed => {
+            let folder = item
+                .data
+                .get("folder")
+                .and_then(|f| f.as_str())
+                .map(one_line)
+                .filter(|f| !f.is_empty());
+            let body = match folder {
+                Some(folder) => {
+                    format!("{folder}: some files could not be read. The Inbox has the details.")
+                }
+                None => format!("{}. The Inbox has the details.", one_line(&item.title)),
+            };
+            Some(Outcome::Problem {
+                source: item.id.clone(),
+                notice: Notice {
+                    title: "Indexing problem".to_string(),
+                    body,
+                },
+            })
+        }
+        InboxStatus::Working | InboxStatus::NeedsYou => None,
+    }
+}
+
+/// Whether an Inbox item is a routine watcher sync (`data.announce: false`).
+fn is_routine(item: &NewInboxItem) -> bool {
+    item.data.get("announce").and_then(|a| a.as_bool()) == Some(false)
+}
+
+/// What the folders' indexing told the user so far, so routine syncs stay
+/// quiet. Indexing the user started is always announced. A watcher sync is
+/// announced only while it is the first sync after the folder started to be
+/// watched ([`first_sync`]); after that its successes are silent (the Inbox
+/// has them) and its failure is announced only when the folder's previous
+/// outcome was not already a failure ([`ProblemGate`] stays a backstop).
+#[derive(Debug, Default)]
+pub struct IndexingMemory {
+    first_syncs: HashSet<String>,
+    failed: HashSet<String>,
+}
+
+impl IndexingMemory {
+    /// The first sync of the folder with Inbox id `key` is running.
+    pub fn begin_first_sync(&mut self, key: &str) {
+        self.first_syncs.insert(key.to_string());
+    }
+
+    /// That first sync ended.
+    pub fn end_first_sync(&mut self, key: &str) {
+        self.first_syncs.remove(key);
+    }
+
+    /// What `item` announces, remembering its outcome.
+    pub fn outcome(&mut self, item: &NewInboxItem) -> Option<Outcome> {
+        let outcome = inbox_outcome(item)?;
+        let failed = item.status == InboxStatus::Failed;
+        let was_failed = if failed {
+            !self.failed.insert(item.id.clone())
+        } else {
+            self.failed.remove(&item.id);
+            false
+        };
+        let routine = is_routine(item) && !self.first_syncs.contains(&item.id);
+        match (routine, failed) {
+            (false, _) => Some(outcome),
+            (true, true) if !was_failed => Some(outcome),
+            (true, _) => None,
+        }
+    }
+}
+
+/// Marks the first sync of the folder source `source_id` after it started to
+/// be watched (it was added, or Shodh started): its outcome is announced like
+/// indexing the user started. Ends when the guard is dropped.
+pub fn first_sync(app: &AppHandle, source_id: &str) -> FirstSync {
+    let key = format!("indexing:{source_id}");
+    if let Some(state) = app.try_state::<NotificationState>() {
+        state
+            .indexing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .begin_first_sync(&key);
+    }
+    FirstSync {
+        app: app.clone(),
+        key,
+    }
+}
+
+/// See [`first_sync`].
+pub struct FirstSync {
+    app: AppHandle,
+    key: String,
+}
+
+impl Drop for FirstSync {
+    fn drop(&mut self) {
+        if let Some(state) = self.app.try_state::<NotificationState>() {
+            state
+                .indexing
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .end_first_sync(&self.key);
+        }
+    }
+}
+
+/// What indexing the assistant started announces (it has no Inbox item):
+/// `source` keys it, `path` is the folder or file, named by its last part.
+pub fn indexing_result_outcome(
+    source: String,
+    path: &str,
+    result: &Result<IndexingResult, String>,
+) -> Outcome {
+    let name = std::path::Path::new(path)
+        .file_name()
+        .map(|n| one_line(&n.to_string_lossy()))
+        .unwrap_or_else(|| one_line(path));
+    match result {
+        Ok(done) if done.failures.is_empty() => {
+            let count = match done.files_processed {
+                1 => "1 file indexed".to_string(),
+                n => format!("{n} files indexed"),
+            };
+            Outcome::Finished(WorkDone {
+                source,
+                kind: WorkKind::Indexing,
+                notice: Notice {
+                    title: "Indexing finished".to_string(),
+                    body: format!("{name} · {count}"),
+                },
+                summary: name,
+            })
+        }
+        Ok(done) => Outcome::Problem {
+            source,
             notice: Notice {
                 title: "Indexing problem".to_string(),
-                body: format!("{}. The Inbox has the details.", one_line(&item.title)),
+                body: format!(
+                    "{name}: {} indexed, {} could not be read.",
+                    done.files_processed,
+                    done.failures.len()
+                ),
             },
-        }),
-        InboxStatus::Working | InboxStatus::NeedsYou => None,
+        },
+        Err(_) => Outcome::Problem {
+            source,
+            notice: Notice {
+                title: "Indexing problem".to_string(),
+                body: format!("{name} was not indexed."),
+            },
+        },
     }
 }
 
@@ -569,7 +720,18 @@ pub fn announce(app: &AppHandle, outcome: Outcome) {
 
 /// Called by [`crate::inbox_commands::post`] for every item it saves.
 pub fn on_inbox_item(app: &AppHandle, item: &NewInboxItem) {
-    if let Some(outcome) = inbox_outcome(item) {
+    if item.kind != InboxKind::Indexing {
+        return;
+    }
+    let Some(state) = app.try_state::<NotificationState>() else {
+        return;
+    };
+    let outcome = state
+        .indexing
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .outcome(item);
+    if let Some(outcome) = outcome {
         announce(app, outcome);
     }
 }
@@ -718,13 +880,14 @@ pub fn memory_suggestions(app: &AppHandle, waiting: usize) {
     notify(app, Category::MemorySuggestions, "Memory suggestions", body);
 }
 
-/// The learning model could not be used for the app's own work.
+/// The learning model could not be used for the app's own work (learning
+/// from a conversation, or the daily consolidation of memories).
 pub fn learning_failed(app: &AppHandle) {
     problem(
         app,
         "memory-learning",
-        "Learning from a conversation failed",
-        "The learning model could not be reached. Shodh tries again after your next answer.",
+        "Learning memories failed",
+        "The learning model could not be reached. Shodh tries again later.",
     );
 }
 
@@ -1102,6 +1265,114 @@ mod tests {
         let mut tables = item(InboxStatus::Done, "Tables refined", None);
         tables.kind = InboxKind::Tables;
         assert_eq!(inbox_outcome(&tables), None);
+    }
+
+    fn sync_item(status: InboxStatus) -> NewInboxItem {
+        NewInboxItem {
+            id: "indexing:src-1".into(),
+            kind: InboxKind::Indexing,
+            status,
+            title: "Papers is up to date".into(),
+            detail: Some("C:\\secret\\a.pdf: denied".into()),
+            link: None,
+            data: json!({ "sourceId": "src-1", "announce": false, "folder": "Papers" }),
+        }
+    }
+
+    #[test]
+    fn routine_syncs_stay_quiet_and_the_first_sync_after_a_folder_is_watched_is_announced() {
+        let mut memory = IndexingMemory::default();
+        // A routine sync that indexed changes: the Inbox has it, no notification.
+        assert_eq!(memory.outcome(&sync_item(InboxStatus::Done)), None);
+        // The first sync after the folder started to be watched is announced.
+        memory.begin_first_sync("indexing:src-1");
+        assert!(matches!(
+            memory.outcome(&sync_item(InboxStatus::Done)),
+            Some(Outcome::Finished(_))
+        ));
+        memory.end_first_sync("indexing:src-1");
+        assert_eq!(memory.outcome(&sync_item(InboxStatus::Done)), None);
+        // Indexing the user started (no `announce: false`) is always announced.
+        let started = item(
+            InboxStatus::Done,
+            "Papers is indexed",
+            Some("3 files indexed"),
+        );
+        assert!(memory.outcome(&started).is_some());
+        assert!(memory.outcome(&started).is_some());
+    }
+
+    #[test]
+    fn a_failing_sync_is_announced_once_until_it_recovers() {
+        let mut memory = IndexingMemory::default();
+        let first = memory.outcome(&sync_item(InboxStatus::Failed));
+        let notice = match first {
+            Some(Outcome::Problem { notice, .. }) => notice,
+            other => panic!("a problem: {other:?}"),
+        };
+        assert_eq!(
+            notice.body,
+            "Papers: some files could not be read. The Inbox has the details."
+        );
+        assert!(!notice.body.contains("up to date"), "not the item's title");
+        assert!(!notice.body.contains("secret"), "not the item's detail");
+        // Still failing: quiet.
+        assert_eq!(memory.outcome(&sync_item(InboxStatus::Failed)), None);
+        assert_eq!(memory.outcome(&sync_item(InboxStatus::Failed)), None);
+        // It recovered (quietly), then failed again: announced again.
+        assert_eq!(memory.outcome(&sync_item(InboxStatus::Done)), None);
+        assert!(matches!(
+            memory.outcome(&sync_item(InboxStatus::Failed)),
+            Some(Outcome::Problem { .. })
+        ));
+        // Another folder's failure is its own.
+        let mut other = sync_item(InboxStatus::Failed);
+        other.id = "indexing:src-2".into();
+        assert!(memory.outcome(&other).is_some());
+        // A failure of indexing the user started is always announced.
+        let started = item(InboxStatus::Failed, "Papers was not indexed", Some("boom"));
+        assert!(memory.outcome(&started).is_some());
+        assert!(memory.outcome(&started).is_some());
+    }
+
+    #[test]
+    fn indexing_the_assistant_started_names_the_folder_and_counts() {
+        let done = |processed: usize, failures: usize| IndexingResult {
+            files_processed: processed,
+            failures: (0..failures)
+                .map(|i| shodh_rag::indexing::FileFailure {
+                    file: format!("f{i}"),
+                    reason: "x".into(),
+                })
+                .collect(),
+            total_chunks: 0,
+            failed_files: Vec::new(),
+            files_unchanged: 0,
+            duration: 0,
+        };
+        let finished =
+            indexing_result_outcome("indexing:s".into(), "C:/data/Papers", &Ok(done(12, 0)));
+        match finished {
+            Outcome::Finished(work) => {
+                assert_eq!(work.notice.body, "Papers · 12 files indexed");
+                assert_eq!(work.source, "indexing:s");
+            }
+            other => panic!("finished: {other:?}"),
+        }
+        match indexing_result_outcome("indexing:s".into(), "C:/data/Papers", &Ok(done(3, 2))) {
+            Outcome::Problem { notice, .. } => {
+                assert_eq!(notice.body, "Papers: 3 indexed, 2 could not be read.")
+            }
+            other => panic!("problem: {other:?}"),
+        }
+        match indexing_result_outcome(
+            "indexing:s".into(),
+            "C:/data/Papers",
+            &Err("C:/data/Papers/secret.pdf: denied".into()),
+        ) {
+            Outcome::Problem { notice, .. } => assert_eq!(notice.body, "Papers was not indexed."),
+            other => panic!("problem: {other:?}"),
+        }
     }
 
     #[test]

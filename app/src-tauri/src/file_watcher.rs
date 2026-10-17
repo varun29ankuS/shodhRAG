@@ -161,8 +161,12 @@ async fn keep_in_sync(
     source: FolderSourceRef,
     mut changes: mpsc::UnboundedReceiver<()>,
 ) {
+    // The first sync after the folder started to be watched (it was added, or
+    // Shodh started) is announced; later ones are routine (see notifications.rs).
+    let first = crate::notifications::first_sync(&app, &source.id);
+    sync_once(&app, &source).await;
+    drop(first);
     loop {
-        sync_once(&app, &source).await;
         if changes.recv().await.is_none() {
             return;
         }
@@ -173,6 +177,7 @@ async fn keep_in_sync(
                 Err(_) => break,
             }
         }
+        sync_once(&app, &source).await;
     }
 }
 
@@ -222,7 +227,8 @@ fn inbox_item(
             "library",
             Some(serde_json::json!({ "kind": "source", "sourceId": source.id })),
         )),
-        data: serde_json::json!({ "sourceId": source.id }),
+        // A watcher's sync: routine, announced only as notifications.rs decides.
+        data: serde_json::json!({ "sourceId": source.id, "announce": false, "folder": name }),
     })
 }
 

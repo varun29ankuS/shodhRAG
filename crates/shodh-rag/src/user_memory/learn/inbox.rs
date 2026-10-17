@@ -1,5 +1,6 @@
-//! The suggestions inbox (`memory_proposals` in `shodh.db`, schema version 4) and the
-//! learning model's daily usage.
+//! The suggestions inbox (`memory_proposals` in `shodh.db`, schema version 4), the
+//! learning model's daily usage and why its answers were not used
+//! (`memory_learn_rejections`, schema version 10).
 //!
 //! Status transitions ([`ProposalStatus::after`]):
 //!
@@ -30,6 +31,114 @@ use crate::user_memory::MemoryContent;
 
 /// How long a rejected (or undone) suggestion suppresses the same suggestion.
 pub const REJECTION_MEMORY_DAYS: i64 = 180;
+
+/// How long the reasons the learning model's answers were not used are kept.
+pub const REJECTION_LOG_DAYS: i64 = 14;
+/// Most bytes of the model's answer kept with one rejection.
+pub const MAX_EXCERPT_BYTES: usize = 2_048;
+/// Most bytes of a rejection's detail.
+const MAX_DETAIL_BYTES: usize = 500;
+/// Most rejections kept from one model answer.
+const MAX_REJECTIONS_PER_ANSWER: usize = 32;
+
+/// Why a model answer, or one memory in it, was not used.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rejection {
+    /// Reason code (`invalid_json`, `truncated`, `malformed`, `ungrounded`, an ontology
+    /// violation code such as `subject_class_mismatch`, ...).
+    pub code: String,
+    /// What exactly was wrong (a parser or validation message).
+    pub detail: String,
+    /// The part of the answer it is about (masked and cut before it is stored).
+    pub excerpt: String,
+    /// The turn it was learned from, when known.
+    pub turn_id: Option<String>,
+}
+
+impl Rejection {
+    /// A rejection of `excerpt` for `code`.
+    pub fn new(code: &str, detail: impl Into<String>, excerpt: impl Into<String>) -> Self {
+        Self {
+            code: code.to_string(),
+            detail: detail.into(),
+            excerpt: excerpt.into(),
+            turn_id: None,
+        }
+    }
+
+    /// The same rejection, about `turn_id` unless it already names a turn.
+    pub fn about(mut self, turn_id: Option<&str>) -> Self {
+        if self.turn_id.is_none() {
+            self.turn_id = turn_id.map(str::to_string);
+        }
+        self
+    }
+}
+
+/// How many answers or memories were not used today for one reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RejectionCount {
+    /// Reason code.
+    pub code: String,
+    /// The reason in plain words ([`rejection_reason`]).
+    pub reason: String,
+    /// How many.
+    pub count: u32,
+}
+
+/// A rejection code in plain words, for Settings → Memory ("1 invalid: subject did not
+/// fit the class").
+pub fn rejection_reason(code: &str) -> &'static str {
+    match code {
+        "invalid_json" => "the answer was not JSON in the expected shape",
+        "truncated" => "the answer was cut off at the length limit",
+        "malformed" => "a memory was not in the expected shape",
+        "ungrounded" => "it did not quote your words",
+        "outside_slice" => "a kind of memory Shodh did not ask for",
+        "invalid_confidence" => "its confidence was not between 0 and 1",
+        "invalid_subject" => "its subject was not a valid id",
+        "invalid_statement" => "the memory could not be built",
+        "subject_class_mismatch" => "subject did not fit the class",
+        "unknown_class" => "an unknown kind of memory",
+        "unknown_property" => "a field Shodh does not know",
+        "not_in_domain" => "a field that does not belong to that kind of memory",
+        "cardinality_exceeded" => "several values for a single-valued field",
+        "missing_required" => "a required field was missing",
+        "type_mismatch" => "a value of the wrong type",
+        "invalid_value" | "pattern_mismatch" => "a value in the wrong format",
+        "not_in_enum" => "a value outside the allowed choices",
+        "range_class_mismatch" => "a link to the wrong kind of thing",
+        "invalid_judgement" => "an unreadable decision about similar memories",
+        "invalid_revision" => "an unreadable revision of a memory",
+        "steps_mismatch" => "steps that do not follow what you did",
+        "missing_provenance" | "invalid_provenance" | "invalid_id" | "incompatible_version" => {
+            "an internal check failed"
+        }
+        _ => "another reason",
+    }
+}
+
+/// `text` fit to keep: anything shaped like a key or bearer token masked (as provider
+/// errors are), withheld whole when it looks like a password, secret or financial
+/// identifier, and cut to `max_bytes` on a character boundary.
+fn masked(text: &str, max_bytes: usize) -> String {
+    let sensitive = super::sensitivity::classify_text(text);
+    if sensitive.iter().any(|r| {
+        matches!(
+            r,
+            SensitiveReason::Credential | SensitiveReason::FinancialIdentifier
+        )
+    }) {
+        return "[withheld: it looks like a secret or a financial identifier]".to_string();
+    }
+    let safe = crate::harness::provider_error::safe_detail(text, None, max_bytes);
+    let mut end = safe.len().min(max_bytes);
+    while !safe.is_char_boundary(end) {
+        end -= 1;
+    }
+    safe[..end].to_string()
+}
 
 /// What a suggestion changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -934,6 +1043,65 @@ impl Inbox {
             day,
             ..Default::default()
         }))
+    }
+
+    /// Keeps why answers of `model`, or memories in them, were not used, and forgets
+    /// those older than [`REJECTION_LOG_DAYS`]. Excerpts are masked ([`masked`]).
+    pub fn record_rejections(
+        &self,
+        model: &str,
+        rejections: &[Rejection],
+        now: DateTime<Utc>,
+    ) -> LearnResult<()> {
+        if rejections.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "DELETE FROM memory_learn_rejections WHERE created_at < ?1",
+            params![ts(now - Duration::days(REJECTION_LOG_DAYS))],
+        )?;
+        let day = day_key(now);
+        let at = ts(now);
+        for rejection in rejections.iter().take(MAX_REJECTIONS_PER_ANSWER) {
+            tx.execute(
+                "INSERT INTO memory_learn_rejections(day, turn_id, model, code, detail,
+                    raw_excerpt, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    day,
+                    rejection.turn_id,
+                    crate::harness::truncate_chars(model, 200),
+                    crate::harness::truncate_chars(&rejection.code, 64),
+                    masked(&rejection.detail, MAX_DETAIL_BYTES),
+                    masked(&rejection.excerpt, MAX_EXCERPT_BYTES),
+                    at,
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Today's rejections by reason, most frequent first.
+    pub fn rejections_today(&self, now: DateTime<Utc>) -> LearnResult<Vec<RejectionCount>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT code, count(*) FROM memory_learn_rejections WHERE day = ?1
+             GROUP BY code ORDER BY count(*) DESC, code",
+        )?;
+        let rows = stmt
+            .query_map(params![day_key(now)], |r| {
+                let code: String = r.get(0)?;
+                Ok(RejectionCount {
+                    reason: rejection_reason(&code).to_string(),
+                    code,
+                    count: r.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// A small stored value (for example the last consolidation time).

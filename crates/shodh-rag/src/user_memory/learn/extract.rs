@@ -17,6 +17,7 @@ use shodh_ontology::{
     ValidStatement,
 };
 
+use super::inbox::Rejection;
 use super::sensitivity::{self, SensitiveReason};
 use super::{quotes, strip_fence, LearnError, LearnResult};
 use crate::statements::{render_text, Scope, SELF_ENTITY_ID};
@@ -231,6 +232,9 @@ pub struct RawCandidate {
     pub confidence: f64,
     /// Verbatim quote of the source text.
     pub evidence: String,
+    /// The item as the model wrote it, for the rejection log (never read from the answer).
+    #[serde(skip)]
+    pub excerpt: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -246,7 +250,14 @@ pub struct ParsedAnswer {
     pub candidates: Vec<RawCandidate>,
     /// Items that do not follow the schema.
     pub malformed: usize,
+    /// Why each malformed item was not used (code `malformed`).
+    pub rejections: Vec<Rejection>,
 }
+
+/// Reason code of an answer that is not the `{"memories": [...]}` envelope.
+pub const INVALID_JSON: &str = "invalid_json";
+/// Reason code of an item that does not follow the candidate schema.
+pub const MALFORMED: &str = "malformed";
 
 /// Parses the model's answer. The envelope must be exactly `{"memories": [...]}`; items
 /// that do not follow the candidate schema are counted, never repaired.
@@ -255,9 +266,18 @@ pub fn parse_answer(text: &str) -> LearnResult<ParsedAnswer> {
         .map_err(|e| LearnError::InvalidOutput(e.to_string()))?;
     let mut parsed = ParsedAnswer::default();
     for item in answer.memories.into_iter().take(MAX_CANDIDATES * 2) {
+        let excerpt = item.to_string();
         match serde_json::from_value::<RawCandidate>(item) {
-            Ok(candidate) => parsed.candidates.push(candidate),
-            Err(_) => parsed.malformed += 1,
+            Ok(mut candidate) => {
+                candidate.excerpt = excerpt;
+                parsed.candidates.push(candidate);
+            }
+            Err(e) => {
+                parsed.malformed += 1;
+                parsed
+                    .rejections
+                    .push(Rejection::new(MALFORMED, e.to_string(), excerpt));
+            }
         }
     }
     Ok(parsed)
@@ -292,11 +312,21 @@ pub struct Validated {
     /// Dropped candidates by reason (`ungrounded`, `outside_slice`, ontology violation
     /// codes such as `not_in_domain`, ...).
     pub dropped: BTreeMap<String, usize>,
+    /// Why each dropped candidate was not used (one per reason code of a candidate).
+    pub rejections: Vec<Rejection>,
 }
 
 impl Validated {
-    fn drop(&mut self, code: &str) {
+    fn drop(
+        &mut self,
+        code: &str,
+        detail: impl Into<String>,
+        raw: &RawCandidate,
+        turn: Option<&str>,
+    ) {
         *self.dropped.entry(code.to_string()).or_insert(0) += 1;
+        self.rejections
+            .push(Rejection::new(code, detail, raw.excerpt.clone()).about(turn));
     }
 
     /// Dropped candidates in total.
@@ -327,20 +357,25 @@ pub fn validate(
     let mut out = Validated::default();
     for candidate in raw.into_iter().take(MAX_CANDIDATES) {
         let Some(source) = sources.iter().find(|s| s.key == candidate.turn.trim()) else {
-            out.drop(UNGROUNDED);
+            let detail = format!("it cites `{}`, which is not a source", candidate.turn);
+            out.drop(UNGROUNDED, detail, &candidate, None);
             continue;
         };
+        let turn = Some(source.turn_id.as_str());
         if candidate.evidence.chars().count() > 400 || !quotes(&source.text, &candidate.evidence) {
-            out.drop(UNGROUNDED);
+            let detail = "its evidence is not a quote of the cited text";
+            out.drop(UNGROUNDED, detail, &candidate, turn);
             continue;
         }
         let class = candidate.class.trim().to_string();
         if !learnable(ontology, &class) || !slice_classes.contains(&class) {
-            out.drop("outside_slice");
+            let detail = format!("class `{class}` was not offered");
+            out.drop("outside_slice", detail, &candidate, turn);
             continue;
         }
         if !candidate.confidence.is_finite() || !(0.0..=1.0).contains(&candidate.confidence) {
-            out.drop("invalid_confidence");
+            let detail = format!("confidence {}", candidate.confidence);
+            out.drop("invalid_confidence", detail, &candidate, turn);
             continue;
         }
         let subject = match candidate.subject.as_deref().map(str::trim) {
@@ -357,15 +392,16 @@ pub fn validate(
                 Some(EntityRef::typed(SELF_ENTITY_ID, SELF_CLASS))
             }
             Some(id) if valid_entity_id(id) => Some(EntityRef::new(id)),
-            Some(_) => {
-                out.drop("invalid_subject");
+            Some(id) => {
+                let detail = format!("subject `{id}` is not an id like `place:pune`");
+                out.drop("invalid_subject", detail, &candidate, turn);
                 continue;
             }
         };
         let content = MemoryContent::Fact {
             class,
             subject,
-            properties: candidate.properties,
+            properties: candidate.properties.clone(),
             valid_from: Some(source.at),
         };
         let origin = Origin {
@@ -379,19 +415,24 @@ pub fn validate(
         };
         let statement = match service.build_statement_at(content.clone(), &origin, source.at) {
             Ok(statement) => statement,
-            Err(_) => {
-                out.drop("invalid_statement");
+            Err(e) => {
+                out.drop("invalid_statement", e.to_string(), &candidate, turn);
                 continue;
             }
         };
         let valid = match ontology.validate(&statement) {
             Ok(valid) => valid,
             Err(violations) => {
-                let mut codes: Vec<&str> = violations.iter().map(|v| v.code()).collect();
-                codes.sort_unstable();
-                codes.dedup();
-                for code in codes {
-                    out.drop(code);
+                // One drop per reason code, with every violation of that code.
+                let mut by_code: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+                for violation in &violations {
+                    by_code
+                        .entry(violation.code())
+                        .or_default()
+                        .push(violation.to_string());
+                }
+                for (code, details) in by_code {
+                    out.drop(code, details.join("; "), &candidate, turn);
                 }
                 continue;
             }

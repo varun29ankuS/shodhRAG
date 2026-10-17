@@ -1277,3 +1277,118 @@ async fn an_answer_cut_off_at_the_token_limit_is_refused_and_counted() {
     assert_eq!(usage.invalid, 1);
     assert!(usage.output_chars > 0);
 }
+
+/// Rows of `memory_learn_rejections`: (code, turn, detail, excerpt), oldest first.
+fn rejection_rows(e: &Env) -> Vec<(String, Option<String>, String, String)> {
+    let conn = rusqlite::Connection::open(e.f.dir.path().join("shodh.db")).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT code, turn_id, detail, raw_excerpt FROM memory_learn_rejections ORDER BY id",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    rows
+}
+
+#[tokio::test]
+async fn every_dropped_candidate_leaves_a_reason_the_user_can_read() {
+    let e = env().await;
+    e.model.answer(json!({"memories": [
+        lives_in("pune", "I moved to Pune", 0.9),
+        {"turn": "T1", "class": "Person", "subject": "person:self", "properties": {"livesIn": "Pune"}, "confidence": 0.9, "evidence": "I moved to Pune"},
+        coffee("espresso", "I love espresso", 0.9),
+        {"turn": "T1", "class": "Note"}
+    ]}));
+    e.learn("I moved to Pune last month.").await;
+    let rows = rejection_rows(&e);
+    let codes: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+    assert_eq!(
+        codes,
+        vec!["malformed", "type_mismatch", "ungrounded"],
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter().all(|r| r.1.as_deref() == Some("r1")),
+        "{rows:?}"
+    );
+    // The excerpt is the item as the model wrote it.
+    assert!(rows[1].3.contains("\"livesIn\":\"Pune\""), "{rows:?}");
+    assert!(rows[0].3.contains("\"class\":\"Note\""), "{rows:?}");
+    let today = e.learner.inbox().rejections_today(e.f.store.now()).unwrap();
+    let type_mismatch = today.iter().find(|r| r.code == "type_mismatch").unwrap();
+    assert_eq!(type_mismatch.count, 1);
+    assert_eq!(type_mismatch.reason, "a value of the wrong type");
+}
+
+#[tokio::test]
+async fn an_unreadable_answer_is_kept_masked_and_short() {
+    let e = env().await;
+    let key = "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX";
+    let answer = format!(
+        "Sure! Here are the memories (Authorization: Bearer abcdefgh12345678, {key}): {}",
+        "x".repeat(5_000)
+    );
+    e.model
+        .answers
+        .lock()
+        .unwrap()
+        .push_back(Scripted::Answer(answer));
+    let result = e
+        .learner
+        .learn_from_turns(&[e.turn("Note that I review papers on Fridays.")])
+        .await;
+    assert!(
+        matches!(result, Err(LearnError::InvalidOutput(_))),
+        "{result:?}"
+    );
+    let rows = rejection_rows(&e);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let (code, turn, _, excerpt) = &rows[0];
+    assert_eq!(code, "invalid_json");
+    assert_eq!(turn.as_deref(), Some("r1"));
+    assert!(
+        excerpt.len() <= inbox::MAX_EXCERPT_BYTES,
+        "{}",
+        excerpt.len()
+    );
+    assert!(
+        !excerpt.contains(key) && !excerpt.contains("abcdefgh12345678"),
+        "{excerpt}"
+    );
+    assert!(excerpt.contains("[REDACTED]"), "{excerpt}");
+}
+
+#[tokio::test]
+async fn rejection_reasons_are_kept_for_two_weeks() {
+    let e = env().await;
+    let inbox = e.learner.inbox();
+    let now = e.f.store.now();
+    let old = Rejection::new("truncated", "cut off", "{\"memories\": [");
+    inbox
+        .record_rejections(
+            "m",
+            &[old],
+            now - Duration::days(inbox::REJECTION_LOG_DAYS + 1),
+        )
+        .unwrap();
+    assert_eq!(rejection_rows(&e).len(), 1);
+    inbox
+        .record_rejections("m", &[Rejection::new("malformed", "x", "{}")], now)
+        .unwrap();
+    let rows = rejection_rows(&e);
+    assert_eq!(rows.len(), 1, "the old reason is forgotten: {rows:?}");
+    assert_eq!(rows[0].0, "malformed");
+    // Something that looks like a password is not kept at all.
+    inbox
+        .record_rejections(
+            "m",
+            &[Rejection::new("malformed", "x", "my password is hunter2")],
+            now,
+        )
+        .unwrap();
+    assert!(!rejection_rows(&e)[1].3.contains("hunter2"));
+}

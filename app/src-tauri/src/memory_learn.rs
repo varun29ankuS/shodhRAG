@@ -34,7 +34,7 @@ use shodh_rag::user_memory::learn::engine::ModelSource;
 use shodh_rag::user_memory::learn::extract::learned_scope;
 use shodh_rag::user_memory::learn::{
     ConsolidationReport, Inbox, LearnCaps, LearnError, LearnMode, LearnModel, LearnPolicy, Learner,
-    PolicySource, ProposalStatus, ProposalView, TurnInput, UsageToday,
+    PolicySource, ProposalStatus, ProposalView, RejectionCount, TurnInput, UsageToday,
 };
 use shodh_rag::user_memory::{Actor, MemoryContent};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -781,6 +781,8 @@ pub struct LearnStatus {
     pub pending: u32,
     /// Today's use.
     pub usage: UsageToday,
+    /// Why answers or memories were not used today, by reason, most frequent first.
+    pub rejections: Vec<RejectionCount>,
     /// The caps.
     pub caps: LearnCaps,
     /// The last consolidation.
@@ -804,6 +806,10 @@ pub async fn memory_learn_status(learn: State<'_, LearnState>) -> Result<LearnSt
         model: model.ok().map(|m| m.model_id()),
         pending: learner.inbox().pending_count().map_err(|e| e.to_string())?,
         usage: learner.inbox().usage(now).map_err(|e| e.to_string())?,
+        rejections: learner
+            .inbox()
+            .rejections_today(now)
+            .map_err(|e| e.to_string())?,
         caps: policy.caps,
         last_consolidation: learner.last_consolidation().map_err(|e| e.to_string())?,
     })

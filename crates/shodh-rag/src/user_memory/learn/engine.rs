@@ -14,7 +14,7 @@ use super::decide::{self, DecidedBy, Decision, DecisionRecord, Deterministic, Ju
 use super::extract::{self, Candidate, SourceText, TurnInput, MAX_SOURCE_CHARS};
 use super::inbox::{
     AppliedOutcome, Inbox, NewProposal, Proposal, ProposalAction, ProposalOrigin, ProposalStatus,
-    ProposalView, PutOutcomeView, StatusEvent, Undo, UsageCounter,
+    ProposalView, PutOutcomeView, Rejection, StatusEvent, Undo, UsageCounter,
 };
 use super::{
     normalise_text, LearnError, LearnMode, LearnModel, LearnPolicy, LearnResult, PolicySource,
@@ -62,6 +62,11 @@ pub struct ConsolidationReport {
     /// Candidates dropped, by reason.
     pub dropped: BTreeMap<String, usize>,
 }
+
+/// Reason code of an answer the model stopped at its token limit.
+pub const TRUNCATED: &str = "truncated";
+/// Reason code of a judgement that is not a decision on a memory shown.
+pub const INVALID_JUDGEMENT: &str = "invalid_judgement";
 
 /// The learning pipeline over one memory service.
 pub struct Learner {
@@ -125,12 +130,14 @@ impl Learner {
         self.models.model()
     }
 
-    /// Calls the model under the current policy and today's caps.
+    /// Calls the model under the current policy and today's caps. `turn` is the turn the
+    /// call learns from, if any (kept with a cut-off answer).
     pub(crate) async fn call_model(
         &self,
         model: &dyn LearnModel,
         prompt: &str,
         max_tokens: usize,
+        turn: Option<&str>,
     ) -> LearnResult<String> {
         let policy = self.policy();
         if policy.mode == LearnMode::Off {
@@ -145,6 +152,11 @@ impl Learner {
                 let now = self.now();
                 self.inbox.record_output(partial.chars().count(), now)?;
                 self.inbox.count(UsageCounter::Invalid, 1, now)?;
+                let detail = format!("the model stopped at its {max_tokens}-token limit");
+                self.log_rejections(
+                    &model.model_id(),
+                    &[Rejection::new(TRUNCATED, detail, partial.as_str()).about(turn)],
+                );
                 return Err(LearnError::Truncated(partial));
             }
             Err(e) => return Err(e),
@@ -152,6 +164,14 @@ impl Learner {
         self.inbox
             .record_output(answer.chars().count(), self.now())?;
         Ok(answer)
+    }
+
+    /// Keeps why answers of `model`, or memories in them, were not used (Settings →
+    /// Memory shows the reasons). Failing to keep them is logged, never fatal.
+    pub(crate) fn log_rejections(&self, model: &str, rejections: &[Rejection]) {
+        if let Err(e) = self.inbox.record_rejections(model, rejections, self.now()) {
+            tracing::warn!(target: "shodh::memory", error = %e, "why learning dropped an answer was not kept");
+        }
     }
 
     /// Learns from completed turns of one conversation: extracts candidates from the
@@ -201,13 +221,33 @@ impl Learner {
         let model = self.model().map_err(LearnError::ModelUnavailable)?;
         let today = self.now().format("%Y-%m-%d").to_string();
         let prompt = extract::extraction_prompt(&slice, &sources, &today);
+        // Rejections not about one cited turn are about the newest turn of the batch.
+        let newest = sources.last().map(|s| s.turn_id.clone());
+        let newest = newest.as_deref();
+        let model_id = model.model_id();
         let answer = self
-            .call_model(model.as_ref(), &prompt, extract::EXTRACTION_MAX_TOKENS)
+            .call_model(
+                model.as_ref(),
+                &prompt,
+                extract::EXTRACTION_MAX_TOKENS,
+                newest,
+            )
             .await?;
         let parsed = match extract::parse_answer(&answer) {
             Ok(parsed) => parsed,
             Err(e) => {
                 self.inbox.count(UsageCounter::Invalid, 1, self.now())?;
+                let detail = match &e {
+                    LearnError::InvalidOutput(detail) => detail.clone(),
+                    other => other.to_string(),
+                };
+                self.log_rejections(
+                    &model_id,
+                    &[
+                        Rejection::new(extract::INVALID_JSON, detail, answer.as_str())
+                            .about(newest),
+                    ],
+                );
                 return Err(e);
             }
         };
@@ -216,8 +256,15 @@ impl Learner {
             &slice_classes,
             parsed.candidates,
             &sources,
-            &model.model_id(),
+            &model_id,
         );
+        let rejections: Vec<Rejection> = parsed
+            .rejections
+            .into_iter()
+            .chain(validated.rejections.iter().cloned())
+            .map(|r| r.about(newest))
+            .collect();
+        self.log_rejections(&model_id, &rejections);
         if parsed.malformed > 0 {
             report
                 .dropped
@@ -406,8 +453,9 @@ impl Learner {
             .map(|(k, &i)| (k.clone(), neighbours[i].stored.text.clone()))
             .collect();
         let prompt = decide::judge_prompt(&candidate.text, &shown);
+        let turn = Some(candidate.source.turn_id.as_str());
         let answer = match self
-            .call_model(model.as_ref(), &prompt, decide::JUDGE_MAX_TOKENS)
+            .call_model(model.as_ref(), &prompt, decide::JUDGE_MAX_TOKENS, turn)
             .await
         {
             Ok(answer) => answer,
@@ -418,6 +466,11 @@ impl Learner {
         };
         let Some(judged) = decide::parse_judgement(&answer, &keys) else {
             self.inbox.count(UsageCounter::Invalid, 1, self.now())?;
+            let detail = "not a decision on one of the memories shown";
+            self.log_rejections(
+                &model.model_id(),
+                &[Rejection::new(INVALID_JUDGEMENT, detail, answer.as_str()).about(turn)],
+            );
             return Ok(decide::undecided());
         };
         let neighbour = match &judged {

@@ -16,7 +16,7 @@ use serde::Deserialize;
 use shodh_ontology::{RawValue, Value};
 
 use super::engine::{fingerprint, llm_origin, Learner};
-use super::inbox::{NewProposal, Proposal, ProposalAction, ProposalOrigin};
+use super::inbox::{NewProposal, Proposal, ProposalAction, ProposalOrigin, Rejection};
 use super::sensitivity;
 use super::{quotes, strip_fence, LearnError, LearnResult};
 use crate::statements::{render_text, StatementQuery, StoredStatement, SELF_ENTITY_ID};
@@ -146,8 +146,9 @@ impl Learner {
             .map(|(k, n)| (k.clone(), n.text.clone()))
             .collect();
         let prompt = evolve_prompt(&stored.text, &shown);
+        let turn = trigger.turn_id.as_deref();
         let answer = match self
-            .call_model(model.as_ref(), &prompt, EVOLVE_MAX_TOKENS)
+            .call_model(model.as_ref(), &prompt, EVOLVE_MAX_TOKENS, turn)
             .await
         {
             Ok(answer) => answer,
@@ -158,6 +159,15 @@ impl Learner {
         let Some(revisions) = parse_revisions(&answer) else {
             self.inbox
                 .count(super::inbox::UsageCounter::Invalid, 1, self.now())?;
+            self.log_rejections(
+                &model.model_id(),
+                &[Rejection::new(
+                    "invalid_revision",
+                    "not the {\"revisions\": [...]} shape",
+                    answer.as_str(),
+                )
+                .about(turn)],
+            );
             return Ok(proposed.len());
         };
         for revision in revisions {

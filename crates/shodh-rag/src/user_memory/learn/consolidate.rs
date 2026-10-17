@@ -21,7 +21,7 @@ use serde_json::Value as JsonValue;
 
 use super::engine::{fingerprint, ConsolidationReport, Learner};
 use super::extract::{self, SourceText};
-use super::inbox::{NewProposal, ProposalAction, ProposalOrigin, UsageCounter};
+use super::inbox::{NewProposal, ProposalAction, ProposalOrigin, Rejection, UsageCounter};
 use super::{normalise_text, LearnError, LearnMode, LearnResult};
 use crate::audit::{AuditEventType, AuditQuery};
 use crate::statements::{identity_tokens, Scope, StatementQuery, StoredStatement};
@@ -351,7 +351,7 @@ impl Learner {
             }
             let prompt = consolidation_prompt(&slice.render_prompt(), &sources);
             let answer = match self
-                .call_model(model.as_ref(), &prompt, CONSOLIDATE_MAX_TOKENS)
+                .call_model(model.as_ref(), &prompt, CONSOLIDATE_MAX_TOKENS, None)
                 .await
             {
                 Ok(answer) => answer,
@@ -359,9 +359,20 @@ impl Learner {
                 Err(LearnError::Truncated(_)) => continue,
                 Err(e) => return Err(e),
             };
-            let Ok(parsed) = extract::parse_answer(&answer) else {
-                self.inbox.count(UsageCounter::Invalid, 1, now)?;
-                continue;
+            let parsed = match extract::parse_answer(&answer) {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    self.inbox.count(UsageCounter::Invalid, 1, now)?;
+                    self.log_rejections(
+                        &model.model_id(),
+                        &[Rejection::new(
+                            extract::INVALID_JSON,
+                            e.to_string(),
+                            answer.as_str(),
+                        )],
+                    );
+                    continue;
+                }
             };
             let validated = extract::validate(
                 &self.service,
@@ -375,6 +386,7 @@ impl Learner {
             }
             self.inbox
                 .count(UsageCounter::Refused, validated.ungrounded(), now)?;
+            self.count_and_log_drops(&model.model_id(), &parsed.rejections, &validated, None)?;
             for candidate in validated.candidates {
                 self.propose_candidate(
                     &candidate,
@@ -474,7 +486,7 @@ impl Learner {
             };
             let prompt = procedure_prompt(&class.description, &source_text);
             let answer = match self
-                .call_model(model.as_ref(), &prompt, CONSOLIDATE_MAX_TOKENS)
+                .call_model(model.as_ref(), &prompt, CONSOLIDATE_MAX_TOKENS, None)
                 .await
             {
                 Ok(answer) => answer,
@@ -482,9 +494,20 @@ impl Learner {
                 Err(LearnError::Truncated(_)) => continue,
                 Err(e) => return Err(e),
             };
-            let Ok(parsed) = extract::parse_answer(&answer) else {
-                self.inbox.count(UsageCounter::Invalid, 1, now)?;
-                continue;
+            let parsed = match extract::parse_answer(&answer) {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    self.inbox.count(UsageCounter::Invalid, 1, now)?;
+                    self.log_rejections(
+                        &model.model_id(),
+                        &[Rejection::new(
+                            extract::INVALID_JSON,
+                            e.to_string(),
+                            answer.as_str(),
+                        )],
+                    );
+                    continue;
+                }
             };
             let validated = extract::validate(
                 &self.service,
@@ -496,6 +519,9 @@ impl Learner {
             for (code, n) in &validated.dropped {
                 *report.dropped.entry(code.clone()).or_insert(0) += n;
             }
+            self.inbox
+                .count(UsageCounter::Refused, validated.ungrounded(), now)?;
+            self.count_and_log_drops(&model.model_id(), &parsed.rejections, &validated, None)?;
             for candidate in validated.candidates {
                 // The steps must follow the sequence that worked, in order.
                 let steps = candidate
@@ -507,8 +533,14 @@ impl Learner {
                 if !follows(&steps, &sequence.tools) {
                     *report
                         .dropped
-                        .entry("steps_mismatch".to_string())
+                        .entry(STEPS_MISMATCH.to_string())
                         .or_insert(0) += 1;
+                    self.inbox.count(UsageCounter::Invalid, 1, now)?;
+                    let detail = format!("steps `{steps}` do not follow the tools used");
+                    self.log_rejections(
+                        &model.model_id(),
+                        &[Rejection::new(STEPS_MISMATCH, detail, steps.as_str())],
+                    );
                     continue;
                 }
                 self.propose_candidate(
@@ -522,6 +554,33 @@ impl Learner {
                 .await?;
             }
         }
+        Ok(())
+    }
+}
+
+/// Reason code of a procedure whose steps do not follow the tool sequence it came from.
+const STEPS_MISMATCH: &str = "steps_mismatch";
+
+impl Learner {
+    /// Counts the candidates of one answer dropped as invalid (malformed, or failing
+    /// validation for a reason other than not quoting the source) and keeps why.
+    fn count_and_log_drops(
+        &self,
+        model: &str,
+        malformed: &[Rejection],
+        validated: &extract::Validated,
+        turn: Option<&str>,
+    ) -> LearnResult<()> {
+        let invalid = validated.dropped_total() - validated.ungrounded() + malformed.len();
+        self.inbox
+            .count(UsageCounter::Invalid, invalid, self.now())?;
+        let rejections: Vec<Rejection> = malformed
+            .iter()
+            .chain(&validated.rejections)
+            .cloned()
+            .map(|r| r.about(turn))
+            .collect();
+        self.log_rejections(model, &rejections);
         Ok(())
     }
 }

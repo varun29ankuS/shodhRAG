@@ -47,8 +47,9 @@ pub use decide::{DecidedBy, Decision, ValueChange};
 pub use engine::{ConsolidationReport, Learner, TurnReport};
 pub use extract::TurnInput;
 pub use inbox::{
-    AppliedOutcome, Inbox, Proposal, ProposalAction, ProposalKind, ProposalOrigin, ProposalStatus,
-    ProposalView, StatusEvent, Undo, UsageToday,
+    rejection_reason, AppliedOutcome, Inbox, Proposal, ProposalAction, ProposalKind,
+    ProposalOrigin, ProposalStatus, ProposalView, Rejection, RejectionCount, StatusEvent, Undo,
+    UsageToday,
 };
 pub use sensitivity::SensitiveReason;
 

@@ -26,6 +26,7 @@ import {
   suggestionText,
 } from '../features/memory/suggestions';
 import type { LearnStatus, Suggestion } from '../features/memory/suggestions';
+import { invalidSummary } from '../features/memory/learnUsage';
 import { formatDate, propertyLabel } from '../features/memory/model';
 import { countOf } from '../lib/plural';
 
@@ -209,7 +210,7 @@ function LearningControls({ prefs, saving, onChange, status, onStopped }: Learni
           Today: {status.usage.llmCalls} of {status.caps.maxCallsPerDay} model calls, {status.usage.proposals} of{' '}
           {status.caps.maxProposalsPerDay} suggestions
           {status.usage.refused > 0 ? `, ${status.usage.refused} refused (not in your words)` : ''}
-          {status.usage.invalid > 0 ? `, ${status.usage.invalid} invalid dropped` : ''}.
+          {status.usage.invalid > 0 ? `, ${invalidSummary(status.usage.invalid, status.rejections)}` : ''}.
           {status.lastConsolidation ? ` Last review of memories ${formatDate(status.lastConsolidation)}.` : ''}
         </p>
       )}

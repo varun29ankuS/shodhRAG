@@ -12,7 +12,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
-import { barBeat, beatFrame, pulse } from "./beats";
+import { barBeat, beatFrame } from "./beats";
 import { FOOTAGE_SHOTS, type Slot } from "./cut";
 import { aspectOf, cameraAt, footageFor, mediaOf, type Media } from "./footage";
 import { Glyph } from "./glyphs";
@@ -36,12 +36,11 @@ const EXIT = 9;
 
 /**
  * Shodh orange, lit: a diagonal gradient, two slow drifting lights, a
- * vignette, a soft swell on every beat and a fine moving grain.
+ * vignette and a fine grain. Nothing on it moves to the beat.
  */
 const Ground: React.FC = () => {
   const frame = useCurrentFrame();
   const { width, height } = useVideoConfig();
-  const hit = pulse(frame, 12);
   const t = frame / 30;
   const a = { x: 0.28 + 0.06 * Math.sin(t * 0.35), y: 0.3 + 0.05 * Math.cos(t * 0.28) };
   const b = { x: 0.78 + 0.05 * Math.cos(t * 0.3), y: 0.72 + 0.06 * Math.sin(t * 0.33) };
@@ -57,16 +56,10 @@ const Ground: React.FC = () => {
           background: `radial-gradient(38% 48% at ${b.x * 100}% ${b.y * 100}%, rgba(255,150,90,0.30) 0%, rgba(255,150,90,0) 70%)`,
         }}
       />
-      <AbsoluteFill
-        style={{
-          background: "radial-gradient(70% 70% at 60% 50%, rgba(255,255,255,0.35) 0%, rgba(255,255,255,0) 65%)",
-          opacity: 0.16 * hit,
-        }}
-      />
       <AbsoluteFill style={{ background: "radial-gradient(120% 90% at 50% 45%, rgba(0,0,0,0) 55%, rgba(60,14,0,0.42) 100%)" }} />
-      <svg width={width} height={height} style={{ position: "absolute", inset: 0, mixBlendMode: "overlay", opacity: 0.22 }}>
+      <svg width={width} height={height} style={{ position: "absolute", inset: 0, mixBlendMode: "overlay", opacity: 0.14 }}>
         <filter id="grain">
-          <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves={2} seed={frame % 12} stitchTiles="stitch" />
+          <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves={2} seed={Math.floor(frame / 2) % 8} stitchTiles="stitch" />
           <feColorMatrix type="saturate" values="0" />
         </filter>
         <rect width="100%" height="100%" filter="url(#grain)" />

@@ -315,7 +315,7 @@ export default function TasksCalendar() {
     } else if (e.key === 'End') {
       e.preventDefault();
       select(addDays(selected, 6 - selected.getDay()), true);
-    } else if (e.key === 'Enter' || e.key === 'n') {
+    } else if (e.key === 'Enter' || (e.key === 'n' && !e.ctrlKey && !e.metaKey && !e.altKey)) {
       // Enter / N on a day: add something to it.
       e.preventDefault();
       composerRef.current?.focus();

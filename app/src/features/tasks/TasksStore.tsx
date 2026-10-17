@@ -33,6 +33,8 @@ export interface NewTaskInput {
   project?: string | null;
   /** The workspace the task belongs to. */
   workspaceId?: string | null;
+  /** Local `YYYY-MM-DDTHH:MM` (see `reminders.ts`). */
+  reminder?: string | null;
 }
 
 export interface NewEventInput {
@@ -226,6 +228,7 @@ export function TasksStoreProvider({ children, followAgent = true }: { children:
     if (input.priority) args.priority = input.priority;
     if (input.project?.trim()) args.project = input.project.trim();
     if (input.workspaceId) args.workspaceId = input.workspaceId;
+    if (input.reminder) args.reminder = input.reminder;
     try {
       const task = await invoke<TodoItem>('create_task', args);
       dispatch({ type: 'insertTask', task });

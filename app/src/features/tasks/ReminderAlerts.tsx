@@ -5,7 +5,7 @@ import { BellRing, Check, Clock, ExternalLink, History } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
-import { publishTarget } from '../agent/navigation';
+import { openInTasks } from './openInTasks';
 import { FOCUS_RING } from './fields';
 import { reminderLabel } from './reminders';
 
@@ -39,8 +39,7 @@ function errorText(err: unknown): string {
 
 /** Show the task in Tasks with its sheet open. */
 function openTask(taskId: string) {
-  publishTarget({ kind: 'calendar', date: null, taskId, eventId: null });
-  window.dispatchEvent(new CustomEvent('switchTab', { detail: 'tasks' }));
+  openInTasks({ taskId });
 }
 
 function ReminderToast({ id, reminder }: { id: string | number; reminder: DueReminder }) {

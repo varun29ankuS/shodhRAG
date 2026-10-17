@@ -219,7 +219,7 @@ export function Segmented({
   );
 }
 
-const DATE_INPUT = cn(
+export const DATE_INPUT = cn(
   'h-8 rounded-lg border border-shodh-border bg-shodh-surface px-2 text-[12.5px] text-shodh-text tabular-nums',
   'hover:border-shodh-border-strong focus:border-shodh-border-strong focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
   'disabled:opacity-50',

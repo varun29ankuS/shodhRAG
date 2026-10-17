@@ -6,7 +6,8 @@
 //! and compares: new and changed files are indexed (a file's previous chunks
 //! are replaced), files that are gone are removed with `delete_by_source`.
 //! A rename is a removal plus a new file. Files that failed keep their entry
-//! and their reason, so they are tried again only once they change.
+//! and their reason, so they are tried again only once they change, or once
+//! after this build reads and chunks files another way (below).
 //!
 //! A source indexed before it had a manifest is compared against the index
 //! instead: indexed files that still exist are taken as current.
@@ -20,6 +21,19 @@
 //! parsing, no OCR (scans indexed before OCR was cached included), refined
 //! tables kept, embedding only. Other files are read again; a scan read
 //! again comes from the OCR cache.
+//!
+//! The manifest also records the chunker version
+//! ([`crate::rag_engine::CHUNKER_VERSION`]) each file was last indexed (or
+//! tried) under. An unchanged file recorded under an older version (or
+//! none: indexed before versions were recorded) is read and chunked again in
+//! full, never upgraded in place: its chunks were cut from text read another
+//! way. That covers files whose chunks are of the older chunker, files an
+//! older chunker made no chunks of, and files that failed under it, which
+//! get this one more try. Each file's version is saved as it is done, so an
+//! interrupted sync goes on where it stopped. Its old chunks stay searchable
+//! until their replacement is stored. A scan whose OCR reading is not in the
+//! OCR cache is not read with OCR again to be re-chunked: its chunks are
+//! kept ([`RAGEngine::upgrade_format_keeping_chunks`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -30,13 +44,33 @@ use walkdir::WalkDir;
 
 use crate::embeddings::SearchModelsMissing;
 use crate::indexing::{is_supported_file_type, FileFailure};
-use crate::rag_engine::{canonical_path, normalize_source_path, RAGEngine};
+use crate::rag_engine::{canonical_path, normalize_source_path, RAGEngine, CHUNKER_VERSION};
 
 /// What a file looked like when it was last indexed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileStamp {
     pub modified_ms: u64,
     pub size: u64,
+}
+
+impl FileStamp {
+    /// The stamp of a file with metadata `meta`.
+    fn of(meta: &std::fs::Metadata) -> Self {
+        let modified_ms = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_millis() as u64);
+        Self {
+            modified_ms,
+            size: meta.len(),
+        }
+    }
+
+    /// The stamp of the file at `path` now; `None` when it cannot be read.
+    fn of_file(path: &Path) -> Option<Self> {
+        std::fs::metadata(path).ok().map(|meta| Self::of(&meta))
+    }
 }
 
 /// Files to index (on disk) and to remove (index identities).
@@ -49,8 +83,15 @@ pub struct SyncPlan {
 /// What one sync did.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SyncReport {
-    /// Files indexed (new or changed).
+    /// Files indexed (new or changed, or indexed again: see `rechunked`).
     pub indexed: usize,
+    /// Of `indexed`, unchanged files read and chunked again because they were
+    /// indexed under an older chunker version.
+    pub rechunked: usize,
+    /// Unchanged scans of an older chunker version whose chunks were kept:
+    /// re-chunking them would read them with OCR again (their reading is not
+    /// in the OCR cache).
+    pub scans_kept: usize,
     /// Files removed from the index.
     pub removed: usize,
     /// Indexable files in the folder now (with those kept in folders that
@@ -153,16 +194,7 @@ pub fn scan_folder_checked(folder: &Path) -> FolderScan {
         let key = normalize_source_path(&path);
         match entry.metadata() {
             Ok(meta) => {
-                let modified_ms = meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map_or(0, |d| d.as_millis() as u64);
-                let stamp = FileStamp {
-                    modified_ms,
-                    size: meta.len(),
-                };
-                scan.files.insert(key, (path, stamp));
+                scan.files.insert(key, (path, FileStamp::of(&meta)));
             }
             Err(error) => {
                 scan.unreadable.insert(
@@ -203,8 +235,8 @@ async fn scan_selected(
 }
 
 /// What to index and remove so the index matches `on_disk`, given the
-/// stamps the files had when they were last indexed and the files whose
-/// chunks are of an older index format (`stale`), which are indexed again.
+/// stamps the files had when they were last indexed and the files to index
+/// again although unchanged (`stale`: of an older index format or chunker).
 pub fn plan(
     known: &BTreeMap<String, FileStamp>,
     on_disk: &BTreeMap<String, (PathBuf, FileStamp)>,
@@ -242,6 +274,7 @@ struct ManifestRef<'a> {
     folder: &'a str,
     files: &'a BTreeMap<String, FileStamp>,
     failures: &'a BTreeMap<String, FileFailure>,
+    chunker_versions: &'a BTreeMap<String, u32>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -251,7 +284,37 @@ struct Manifest {
     /// Why files (by key) could not be indexed.
     #[serde(default)]
     failures: BTreeMap<String, FileFailure>,
+    /// The [`CHUNKER_VERSION`] each file (by key) was last indexed or tried
+    /// under, a failure included. A file without one was indexed before
+    /// versions were recorded (version 1).
+    #[serde(default)]
+    chunker_versions: BTreeMap<String, u32>,
 }
+
+impl Manifest {
+    fn borrowed(&self) -> ManifestRef<'_> {
+        ManifestRef {
+            folder: &self.folder,
+            files: &self.files,
+            failures: &self.failures,
+            chunker_versions: &self.chunker_versions,
+        }
+    }
+}
+
+/// A file outside the folder sources that could not be brought up to date
+/// ([`upgrade_file_source`], [`upgrade_unowned`]): it is not tried again
+/// until it changes or this build's [`CHUNKER_VERSION`] is raised.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct HealFailure {
+    stamp: FileStamp,
+    chunker_version: u32,
+    failure: FileFailure,
+}
+
+/// Where the [`HealFailure`]s are kept, in the manifests' directory. Not a
+/// manifest: manifests are `<id>.json` directly in the directory.
+const HEAL_FAILURES_FILE: &str = "heal/failures.json";
 
 /// Where folder manifests are kept.
 #[derive(Debug, Clone)]
@@ -326,15 +389,40 @@ impl ManifestStore {
         if !(had_stamp || had_failure) {
             return Ok(false);
         }
-        self.save(
-            source_id,
-            &ManifestRef {
-                folder: &manifest.folder,
-                files: &manifest.files,
-                failures: &manifest.failures,
-            },
-        )?;
+        manifest.chunker_versions.remove(key);
+        self.save(source_id, &manifest.borrowed())?;
         Ok(true)
+    }
+
+    /// The files outside the folder sources that could not be brought up to
+    /// date, by index identity; none when none was recorded. A record that
+    /// cannot be read is reported and read as none (the files are tried again).
+    fn load_heal_failures(&self) -> BTreeMap<String, HealFailure> {
+        let path = self.dir.join(HEAL_FAILURES_FILE);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|error| {
+                tracing::warn!(file = %path.display(), %error, "heal failures unreadable");
+                BTreeMap::new()
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(error) => {
+                tracing::warn!(file = %path.display(), %error, "heal failures unreadable");
+                BTreeMap::new()
+            }
+        }
+    }
+
+    /// Saves `failures` ([`Self::load_heal_failures`]): written to a temporary
+    /// file and renamed over the previous record.
+    fn save_heal_failures(&self, failures: &BTreeMap<String, HealFailure>) -> Result<(), String> {
+        let path = self.dir.join(HEAL_FAILURES_FILE);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let tmp = path.with_extension("json.tmp");
+        let text = serde_json::to_string(failures).map_err(|e| e.to_string())?;
+        std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
     }
 
     /// The folders of the sources that have a manifest, except `except`'s:
@@ -414,6 +502,23 @@ async fn stale_files(rag: &RwLock<RAGEngine>, source_id: &str) -> Result<BTreeSe
         .collect())
 }
 
+/// The files of `source_id` whose chunks are of an older chunker version.
+async fn rechunk_files(
+    rag: &RwLock<RAGEngine>,
+    source_id: &str,
+) -> Result<BTreeSet<String>, String> {
+    Ok(rag
+        .read()
+        .await
+        .rechunk_sources()
+        .await
+        .map_err(|e| format!("{e:#}"))?
+        .into_iter()
+        .filter(|row| row.space_id == source_id)
+        .map(|row| row.source)
+        .collect())
+}
+
 /// What a folder source being added needs to adopt the files of its folder
 /// that are already indexed ([`crate::indexing::index_folder_adopting`]).
 #[derive(Debug, Clone, Copy)]
@@ -433,6 +538,7 @@ pub(crate) struct FolderManifest<'a> {
     folder: String,
     files: BTreeMap<String, FileStamp>,
     failures: BTreeMap<String, FileFailure>,
+    chunker_versions: BTreeMap<String, u32>,
 }
 
 impl FolderManifest<'_> {
@@ -442,6 +548,7 @@ impl FolderManifest<'_> {
     /// (it may have been locked or still being written), as when the folder
     /// had no manifest; that sync stamps it if it fails again.
     pub(crate) fn record(&mut self, key: String, stamp: FileStamp, failure: Option<FileFailure>) {
+        self.chunker_versions.insert(key.clone(), CHUNKER_VERSION);
         match failure {
             Some(failure) => {
                 self.files.remove(&key);
@@ -464,6 +571,7 @@ impl FolderManifest<'_> {
                 folder: &self.folder,
                 files: &self.files,
                 failures: &self.failures,
+                chunker_versions: &self.chunker_versions,
             },
         );
         if let Err(error) = saved {
@@ -496,8 +604,9 @@ fn indexed_as_on_disk(key: &str, stamp: FileStamp, manifests: &BTreeMap<String, 
 
 /// Gives the folder source `source_id` (the folder `root`) the files of
 /// `selected` that are already indexed under another source, unchanged and
-/// in the current index format, instead of indexing them again (adding a
-/// folder whose files were indexed by a source the Library lost).
+/// in the current index format and chunker version, instead of indexing them
+/// again (adding a folder whose files were indexed by a source the Library
+/// lost).
 ///
 /// A file is adopted only when its chunks all belong to one other source,
 /// one not `adoption.listed`, and a folder manifest recorded it indexed as
@@ -524,7 +633,7 @@ pub(crate) async fn adopt_indexed<'a>(
             .await
             .map_err(|e| format!("{e:#}"))?;
         let stale: BTreeSet<String> = engine
-            .stale_sources()
+            .outdated_sources()
             .await
             .map_err(|e| format!("{e:#}"))?
             .into_iter()
@@ -588,16 +697,22 @@ pub(crate) async fn adopt_indexed<'a>(
 
     // Where the source's own manifest left off (a source being indexed
     // again), else what it owns in the index, now with the adopted files.
-    let (mut files, mut failures) = match manifests.remove(&ManifestStore::file_id(source_id)) {
-        Some(own) => (own.files, own.failures),
-        None => (
-            known_from_index(rag, source_id, &on_disk).await?,
-            BTreeMap::new(),
-        ),
-    };
+    // Files it owns without a recorded chunker version are looked at by its
+    // next sync, which reads again those whose chunks are of an older one.
+    let (mut files, mut failures, mut chunker_versions) =
+        match manifests.remove(&ManifestStore::file_id(source_id)) {
+            Some(own) => (own.files, own.failures, own.chunker_versions),
+            None => (
+                known_from_index(rag, source_id, &on_disk).await?,
+                BTreeMap::new(),
+                BTreeMap::new(),
+            ),
+        };
     for (key, stamp) in &adopted {
         files.insert(key.clone(), *stamp);
         failures.remove(key);
+        // Adopted only with chunks of the current chunker.
+        chunker_versions.insert(key.clone(), CHUNKER_VERSION);
     }
     let manifest = FolderManifest {
         store: adoption.store,
@@ -605,6 +720,7 @@ pub(crate) async fn adopt_indexed<'a>(
         folder: root.display().to_string(),
         files,
         failures,
+        chunker_versions,
     };
     manifest.save();
 
@@ -619,20 +735,17 @@ pub(crate) async fn adopt_indexed<'a>(
         if listed.contains(&id) {
             continue;
         }
-        let before = (other.files.len(), other.failures.len());
+        let sizes = |m: &Manifest| (m.files.len(), m.failures.len(), m.chunker_versions.len());
+        let before = sizes(&other);
         other.files.retain(|key, _| !adopted.contains_key(key));
         other.failures.retain(|key, _| !adopted.contains_key(key));
-        if (other.files.len(), other.failures.len()) == before {
+        other
+            .chunker_versions
+            .retain(|key, _| !adopted.contains_key(key));
+        if sizes(&other) == before {
             continue;
         }
-        let saved = adoption.store.save(
-            &id,
-            &ManifestRef {
-                folder: &other.folder,
-                files: &other.files,
-                failures: &other.failures,
-            },
-        );
+        let saved = adoption.store.save(&id, &other.borrowed());
         if let Err(error) = saved {
             tracing::warn!(source_id = %id, %error, "folder manifest not updated");
         }
@@ -663,14 +776,124 @@ async fn upgrade_unchanged_in_place(rag: &RwLock<RAGEngine>, key: &str) -> Resul
         .map_err(|e| format!("{e:#}"))
 }
 
+/// Whether reading the file at `path` now would read it with OCR again
+/// ([`crate::processing::parser::DocumentParser::needs_fresh_ocr`]), checked
+/// on a blocking thread (it may open the PDF).
+async fn needs_fresh_ocr(rag: &RwLock<RAGEngine>, path: &Path) -> Result<bool, String> {
+    let parser = rag.read().await.parser();
+    let file = path.to_path_buf();
+    tokio::task::spawn_blocking(move || parser.needs_fresh_ocr(&file))
+        .await
+        .map_err(|e| format!("Checking {} failed: {e}", path.display()))
+}
+
+/// How an unchanged, indexed file whose chunks are outdated was brought up
+/// to date without reading it ([`bring_up_to_date_unread`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unread {
+    /// Upgraded in place from its stored chunks (only its index format was older).
+    InPlace,
+    /// A scan whose chunks of an older chunker were kept: re-chunking it
+    /// would read it with OCR again. Its contexts were brought to the
+    /// current index format where its chunks allow it.
+    ScanKept,
+}
+
+/// Brings the unchanged, indexed file `path` (index identity `key`), whose
+/// chunks are of an older index format (`format_stale`) or chunker version
+/// (`rechunk`), up to date without reading it, where that is right: in place
+/// when only the format is older, or, for a scan to be chunked again whose
+/// OCR reading is not cached, by keeping its chunks rather than reading it
+/// with OCR again. `None`: the file is to be read and indexed again in full.
+async fn bring_up_to_date_unread(
+    rag: &RwLock<RAGEngine>,
+    key: &str,
+    path: &Path,
+    format_stale: bool,
+    rechunk: bool,
+) -> Result<Option<Unread>, String> {
+    if format_stale && upgrade_unchanged_in_place(rag, key).await? {
+        return Ok(Some(Unread::InPlace));
+    }
+    if !rechunk || !needs_fresh_ocr(rag, path).await? {
+        return Ok(None);
+    }
+    if format_stale {
+        rag.write()
+            .await
+            .upgrade_format_keeping_chunks(key)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+    }
+    tracing::info!(
+        source = key,
+        "scan kept as it was indexed: re-chunking it would read it with OCR again"
+    );
+    Ok(Some(Unread::ScanKept))
+}
+
+/// Whether the file `key`, stamped `stamp` now, could not be brought up to
+/// date under this build's chunker version and has not changed since: it is
+/// not tried again until it changes.
+fn failed_as_it_is(
+    failures: &BTreeMap<String, HealFailure>,
+    key: &str,
+    stamp: Option<FileStamp>,
+) -> bool {
+    failures
+        .get(key)
+        .is_some_and(|f| stamp == Some(f.stamp) && f.chunker_version >= CHUNKER_VERSION)
+}
+
+/// Records how bringing the file `key` (at `path`, stamped `stamp` before
+/// it was tried) up to date went, in `failures` and on disk. A file that
+/// cannot be stamped is not recorded: it is tried again next time. A record
+/// that cannot be saved costs a try, not correctness.
+fn record_heal_outcome(
+    store: &ManifestStore,
+    failures: &mut BTreeMap<String, HealFailure>,
+    key: &str,
+    path: &Path,
+    stamp: Option<FileStamp>,
+    outcome: Result<(), &str>,
+) {
+    let changed = match (outcome, stamp) {
+        (Ok(()), _) => failures.remove(key).is_some(),
+        (Err(reason), Some(stamp)) => {
+            failures.insert(
+                key.to_string(),
+                HealFailure {
+                    stamp,
+                    chunker_version: CHUNKER_VERSION,
+                    failure: FileFailure {
+                        file: path.display().to_string(),
+                        reason: reason.to_string(),
+                    },
+                },
+            );
+            true
+        }
+        (Err(_), None) => false,
+    };
+    if changed {
+        if let Err(error) = store.save_heal_failures(failures) {
+            tracing::warn!(%error, "heal failures not saved");
+        }
+    }
+}
+
 /// Index the Library source `source_id` that is the single file `path` again
-/// when its chunks are of an older index format (folder sources are brought
-/// up to date by [`sync_folder`]). Returns whether it was indexed. A file that
-/// is gone is left as it is: removing a source is the Library's decision.
+/// when its chunks are of an older index format or chunker version (folder
+/// sources are brought up to date by [`sync_folder`]). Returns whether it was
+/// indexed (in place included). A file that is gone is left as it is:
+/// removing a source is the Library's decision. A file that cannot be
+/// indexed again keeps its chunks and is recorded in `store`, so it is not
+/// tried again until it changes. The caller holds the syncs' turn.
 pub async fn upgrade_file_source(
     path: &str,
     source_id: &str,
     rag: &RwLock<RAGEngine>,
+    store: &ManifestStore,
 ) -> Result<bool, String> {
     if !rag.read().await.has_search_models() {
         return Err(SearchModelsMissing.to_string());
@@ -680,18 +903,41 @@ pub async fn upgrade_file_source(
         return Ok(false);
     }
     let key = normalize_source_path(&file);
-    if !stale_files(rag, source_id).await?.contains(&key) {
+    let format_stale = stale_files(rag, source_id).await?.contains(&key);
+    let rechunk = rechunk_files(rag, source_id).await?.contains(&key);
+    if !format_stale && !rechunk {
         return Ok(false);
     }
-    if !upgrade_unchanged_in_place(rag, &key).await? {
-        crate::indexing::index_single_file(path, source_id, rag, None).await?;
+    let mut failures = store.load_heal_failures();
+    let stamp = FileStamp::of_file(&file);
+    if failed_as_it_is(&failures, &key, stamp) {
+        return Ok(false);
     }
-    tracing::info!(
-        source_id,
-        path,
-        "file source indexed again in the current format"
+    let outcome = match bring_up_to_date_unread(rag, &key, &file, format_stale, rechunk).await {
+        Ok(Some(Unread::InPlace)) => Ok(true),
+        Ok(Some(Unread::ScanKept)) => Ok(false),
+        Ok(None) => crate::indexing::index_single_file(path, source_id, rag, None)
+            .await
+            .map(|_| true),
+        Err(reason) => Err(reason),
+    };
+    record_heal_outcome(
+        store,
+        &mut failures,
+        &key,
+        &file,
+        stamp,
+        outcome.as_ref().map(|_| ()).map_err(String::as_str),
     );
-    Ok(true)
+    let indexed = outcome?;
+    if indexed {
+        tracing::info!(
+            source_id,
+            path,
+            "file source indexed again in the current format"
+        );
+    }
+    Ok(indexed)
 }
 
 /// Chunk metadata a file was indexed with by its caller (not read from the
@@ -718,73 +964,163 @@ pub struct UpgradeReport {
     pub in_place: usize,
     /// Documents indexed again from their files.
     pub reindexed: usize,
-    /// Documents left in the older format: their chunks cannot be remade
-    /// without the file, and the file is gone. They stay searchable.
+    /// Scans of an older chunker version whose chunks were kept: re-chunking
+    /// them would read them with OCR again. They stay searchable.
+    pub scans_kept: usize,
+    /// Documents left as they are: their chunks cannot be remade without the
+    /// file, and the file is gone. They stay searchable.
     pub left: Vec<String>,
+    /// Files that could not be indexed again, this run or before and
+    /// unchanged since. They keep their chunks.
+    pub failed: Vec<FileFailure>,
 }
 
-/// Brings the documents of an older index format that no Library source
-/// owns up to date: files indexed outside the Library's sources, such as
-/// files added in a chat. `owned` are the Library's source ids (their files
-/// are upgraded by [`sync_folder`] and [`upgrade_file_source`]); calendar
-/// and other `scheme://` sources are upgraded by their own indexers. A
-/// document is upgraded in place where its chunks allow it (no parsing, no
-/// OCR, ids kept), else indexed again from its file with the metadata it was
-/// indexed with; one whose file is gone is left as it is and reported.
+/// How [`upgrade_unowned`] brought one document up to date.
+enum Upgraded {
+    InPlace,
+    Reindexed,
+    ScanKept,
+    Left,
+}
+
+/// Brings the document of `source` (indexed outside the Library's sources)
+/// up to date: from its stored chunks where they allow it, else from its file
+/// with the metadata it was indexed with.
+async fn upgrade_one_unowned(
+    rag: &RwLock<RAGEngine>,
+    source: &str,
+    format_stale: bool,
+    rechunk: bool,
+) -> Result<Upgraded, String> {
+    let path = Path::new(source);
+    match bring_up_to_date_unread(rag, source, path, format_stale, rechunk).await? {
+        Some(Unread::InPlace) => return Ok(Upgraded::InPlace),
+        Some(Unread::ScanKept) => return Ok(Upgraded::ScanKept),
+        None => {}
+    }
+    if !path.is_file() {
+        tracing::warn!(
+            source,
+            "indexed in an older format and its file is gone: left as it is"
+        );
+        return Ok(Upgraded::Left);
+    }
+    let metadata = rag
+        .read()
+        .await
+        .document_metadata(source)
+        .await
+        .map_err(|e| format!("{e:#}"))?
+        .into_iter()
+        .filter(|(key, _)| DOCUMENT_KEYS.contains(&key.as_str()))
+        .collect();
+    crate::indexing::index_file(rag, path, metadata).await?;
+    Ok(Upgraded::Reindexed)
+}
+
+/// Brings the documents of an older index format or chunker version that no
+/// Library source owns up to date: files indexed outside the Library's
+/// sources, such as files added in a chat. `owned` are the Library's source
+/// ids (their files are upgraded by [`sync_folder`] and
+/// [`upgrade_file_source`]); calendar and other `scheme://` sources are
+/// upgraded by their own indexers. A document of an older format only is
+/// upgraded in place where its chunks allow it (no parsing, no OCR, ids
+/// kept); others are indexed again from their file with the metadata they
+/// were indexed with. One whose file is gone is left as it is and reported.
+/// One that fails is reported and recorded in `store`, and the others go on;
+/// it is not tried again until it changes. The caller holds the syncs' turn.
 pub async fn upgrade_unowned(
     rag: &RwLock<RAGEngine>,
     owned: &BTreeSet<String>,
+    store: &ManifestStore,
 ) -> Result<UpgradeReport, String> {
     if !rag.read().await.has_search_models() {
         return Err(SearchModelsMissing.to_string());
     }
-    let rows = rag
-        .read()
-        .await
-        .stale_sources()
-        .await
-        .map_err(|e| format!("{e:#}"))?;
-    let mut report = UpgradeReport::default();
-    for row in rows {
-        if owned.contains(&row.space_id) || row.source.contains("://") {
-            continue;
-        }
-        let upgraded = rag
-            .write()
-            .await
-            .upgrade_in_place(&row.source)
+    let (stale, rechunk) = {
+        let engine = rag.read().await;
+        let stale = engine.stale_sources().await.map_err(|e| format!("{e:#}"))?;
+        let rechunk = engine
+            .rechunk_sources()
             .await
             .map_err(|e| format!("{e:#}"))?;
-        if upgraded {
-            report.in_place += 1;
+        (stale, rechunk)
+    };
+    let format_stale: BTreeSet<String> = stale.iter().map(|row| row.source.clone()).collect();
+    let to_rechunk: BTreeSet<String> = rechunk.iter().map(|row| row.source.clone()).collect();
+    let mut seen = BTreeSet::new();
+    let sources: Vec<String> = stale
+        .into_iter()
+        .chain(rechunk)
+        .filter(|row| !owned.contains(&row.space_id) && !row.source.contains("://"))
+        .map(|row| row.source)
+        .filter(|source| seen.insert(source.clone()))
+        .collect();
+    let mut failures = store.load_heal_failures();
+    let mut report = UpgradeReport::default();
+    for source in sources {
+        let path = PathBuf::from(&source);
+        let stamp = FileStamp::of_file(&path);
+        if failed_as_it_is(&failures, &source, stamp) {
+            if let Some(recorded) = failures.get(&source) {
+                report.failed.push(recorded.failure.clone());
+            }
             continue;
         }
-        let path = Path::new(&row.source);
-        if !path.is_file() {
-            tracing::warn!(
-                source = %row.source,
-                "indexed in an older format and its file is gone: left as it is"
-            );
-            report.left.push(row.source);
-            continue;
+        let outcome = upgrade_one_unowned(
+            rag,
+            &source,
+            format_stale.contains(&source),
+            to_rechunk.contains(&source),
+        )
+        .await;
+        record_heal_outcome(
+            store,
+            &mut failures,
+            &source,
+            &path,
+            stamp,
+            outcome.as_ref().map(|_| ()).map_err(String::as_str),
+        );
+        match outcome {
+            Ok(Upgraded::InPlace) => report.in_place += 1,
+            Ok(Upgraded::Reindexed) => report.reindexed += 1,
+            Ok(Upgraded::ScanKept) => report.scans_kept += 1,
+            Ok(Upgraded::Left) => report.left.push(source),
+            Err(reason) => {
+                tracing::warn!(
+                    source = %source,
+                    %reason,
+                    "document outside the Library not brought up to date; it keeps its chunks"
+                );
+                report.failed.push(FileFailure {
+                    file: path.display().to_string(),
+                    reason,
+                });
+            }
         }
-        let metadata = rag
-            .read()
-            .await
-            .document_metadata(&row.source)
-            .await
-            .map_err(|e| format!("{e:#}"))?
-            .into_iter()
-            .filter(|(key, _)| DOCUMENT_KEYS.contains(&key.as_str()))
-            .collect();
-        crate::indexing::index_file(rag, path, metadata).await?;
-        report.reindexed += 1;
     }
-    if report.in_place + report.reindexed + report.left.len() > 0 {
+    // Records of files that are gone are dropped with them.
+    let before = failures.len();
+    failures.retain(|key, _| Path::new(key).is_file());
+    if failures.len() != before {
+        if let Err(error) = store.save_heal_failures(&failures) {
+            tracing::warn!(%error, "heal failures not saved");
+        }
+    }
+    if report.in_place
+        + report.reindexed
+        + report.scans_kept
+        + report.left.len()
+        + report.failed.len()
+        > 0
+    {
         tracing::info!(
             in_place = report.in_place,
             reindexed = report.reindexed,
+            scans_kept = report.scans_kept,
             left = report.left.len(),
+            failed = report.failed.len(),
             "documents outside the Library's sources brought to the current index format"
         );
     }
@@ -862,19 +1198,44 @@ pub async fn sync_folder(
     rag: &RwLock<RAGEngine>,
     stop: impl Fn() -> bool,
 ) -> Result<SyncReport, String> {
-    sync_folder_scanned(folder, source_id, store, rag, stop, |root| {
+    sync_folder_with_progress(folder, source_id, store, rag, stop, |_, _| {}).await
+}
+
+/// [`sync_folder`], telling `progress` (files done, files in all) how far it
+/// is through the unchanged files it reads and chunks again for this build's
+/// chunker version: once before the first and after each. Not called when
+/// there are none.
+pub async fn sync_folder_with_progress(
+    folder: &str,
+    source_id: &str,
+    store: &ManifestStore,
+    rag: &RwLock<RAGEngine>,
+    stop: impl Fn() -> bool,
+    progress: impl Fn(usize, usize),
+) -> Result<SyncReport, String> {
+    sync_folder_scanned(folder, source_id, store, rag, stop, progress, |root| {
         scan_folder_checked(&root)
     })
     .await
 }
 
-/// [`sync_folder`] with the folder scanned by `scan` (on a blocking thread).
+/// How one file of a sync's plan went.
+enum Synced {
+    /// Indexed: read again, or upgraded in place.
+    Indexed,
+    /// A scan whose chunks were kept ([`Unread::ScanKept`]).
+    ScanKept,
+}
+
+/// [`sync_folder_with_progress`] with the folder scanned by `scan` (on a
+/// blocking thread).
 async fn sync_folder_scanned(
     folder: &str,
     source_id: &str,
     store: &ManifestStore,
     rag: &RwLock<RAGEngine>,
     stop: impl Fn() -> bool,
+    progress: impl Fn(usize, usize),
     scan: impl FnOnce(PathBuf) -> FolderScan + Send + 'static,
 ) -> Result<SyncReport, String> {
     if !rag.read().await.has_search_models() {
@@ -891,20 +1252,80 @@ async fn sync_folder_scanned(
     .await
     .map_err(|e| format!("Scanning {folder} failed: {e}"))?;
     let on_disk = &scanned.files;
-    let (known, mut failures) = match store.load(source_id) {
-        Some(manifest) => (manifest.files, manifest.failures),
+    let (known, mut failures, mut versions) = match store.load(source_id) {
+        Some(manifest) => (manifest.files, manifest.failures, manifest.chunker_versions),
         None => (
             known_from_index(rag, source_id, on_disk).await?,
             BTreeMap::new(),
+            BTreeMap::new(),
         ),
     };
-    let stale = stale_files(rag, source_id).await?;
-    let plan = plan_for_scan(&known, &scanned, &stale);
+    let unchanged_on_disk = |key: &String| {
+        known
+            .get(key)
+            .is_some_and(|stamp| on_disk.get(key).is_some_and(|(_, now)| now == stamp))
+    };
+
+    // Unchanged files last indexed (or tried) under an older chunker version:
+    // read and chunked again (`heal`) when their chunks are of an older
+    // chunker, when they have none (an older chunker made none, or they
+    // failed), or when they failed (this is their one more try). Those whose
+    // chunks are of this build's chunker already only get their version.
+    let older: Vec<String> = on_disk
+        .keys()
+        .filter(|key| unchanged_on_disk(*key))
+        .filter(|key| versions.get(*key).is_none_or(|v| *v < CHUNKER_VERSION))
+        .cloned()
+        .collect();
+    let mut heal: BTreeSet<String> = BTreeSet::new();
+    if !older.is_empty() {
+        let (with_chunks, rechunk) = {
+            let engine = rag.read().await;
+            let with_chunks: BTreeSet<String> = engine
+                .document_sources()
+                .await
+                .map_err(|e| format!("{e:#}"))?
+                .into_iter()
+                .map(|row| row.source)
+                .collect();
+            let rechunk: BTreeSet<String> = engine
+                .rechunk_sources()
+                .await
+                .map_err(|e| format!("{e:#}"))?
+                .into_iter()
+                .map(|row| row.source)
+                .collect();
+            (with_chunks, rechunk)
+        };
+        for key in older {
+            if failures.contains_key(&key) || !with_chunks.contains(&key) || rechunk.contains(&key)
+            {
+                heal.insert(key);
+            } else {
+                versions.insert(key, CHUNKER_VERSION);
+            }
+        }
+    }
+    // Files of an older index format, but not those that already failed to
+    // be indexed again under this chunker version and are unchanged since:
+    // they keep their chunks until they change.
+    let format_stale: BTreeSet<String> = stale_files(rag, source_id)
+        .await?
+        .into_iter()
+        .filter(|key| {
+            !(failures.contains_key(key)
+                && unchanged_on_disk(key)
+                && versions.get(key).is_some_and(|v| *v >= CHUNKER_VERSION))
+        })
+        .collect();
+    let redo: BTreeSet<String> = heal.union(&format_stale).cloned().collect();
+    let plan = plan_for_scan(&known, &scanned, &redo);
     // Kept: files on disk, and files in what could not be read.
     let kept = |key: &String| on_disk.contains_key(key) || scanned.is_unreadable(key);
     let mut files: BTreeMap<String, FileStamp> =
         known.into_iter().filter(|(key, _)| kept(key)).collect();
     failures.retain(|key, _| kept(key));
+    versions.retain(|key, _| kept(key));
     let unread: BTreeSet<&String> = files
         .keys()
         .chain(failures.keys())
@@ -919,13 +1340,16 @@ async fn sync_folder_scanned(
     let folder_name = root.display().to_string();
     // Progress is saved after every file, so a sync that is interrupted (the
     // app closed, a crash) resumes where it stopped instead of starting over.
-    let save = |files: &BTreeMap<String, FileStamp>, failures: &BTreeMap<String, FileFailure>| {
+    let save = |files: &BTreeMap<String, FileStamp>,
+                failures: &BTreeMap<String, FileFailure>,
+                versions: &BTreeMap<String, u32>| {
         store.save(
             source_id,
             &ManifestRef {
                 folder: &folder_name,
                 files,
                 failures,
+                chunker_versions: versions,
             },
         )
     };
@@ -945,7 +1369,12 @@ async fn sync_folder_scanned(
         if deleted > 0 {
             report.removed += 1;
         }
-        save(&files, &failures)?;
+        save(&files, &failures, &versions)?;
+    }
+    let heal_total = heal.len();
+    let mut heal_done = 0;
+    if heal_total > 0 && !stopped {
+        progress(heal_done, heal_total);
     }
     for path in &plan.index {
         if stopped || stop() {
@@ -957,20 +1386,31 @@ async fn sync_folder_scanned(
                 .get(&key)
                 .is_some_and(|(_, on_disk)| on_disk == stamp)
         });
-        let indexed = if unchanged && stale.contains(&key) {
-            match upgrade_unchanged_in_place(rag, &key).await {
-                Ok(true) => Ok(0),
-                Ok(false) => {
-                    crate::indexing::process_file_with_options(path, source_id, rag, None).await
-                }
-                Err(reason) => Err(reason),
-            }
+        let healing = heal.contains(&key);
+        // A failed file is read again in full: it has no chunks to keep.
+        let unread = if unchanged && !failures.contains_key(&key) {
+            bring_up_to_date_unread(rag, &key, path, format_stale.contains(&key), healing).await
         } else {
-            crate::indexing::process_file_with_options(path, source_id, rag, None).await
+            Ok(None)
         };
-        match indexed {
-            Ok(_) => {
+        let synced = match unread {
+            Ok(Some(Unread::InPlace)) => Ok(Synced::Indexed),
+            Ok(Some(Unread::ScanKept)) => Ok(Synced::ScanKept),
+            Ok(None) => crate::indexing::process_file_with_options(path, source_id, rag, None)
+                .await
+                .map(|_| Synced::Indexed),
+            Err(reason) => Err(reason),
+        };
+        match synced {
+            Ok(Synced::Indexed) => {
                 report.indexed += 1;
+                if healing {
+                    report.rechunked += 1;
+                }
+                failures.remove(&key);
+            }
+            Ok(Synced::ScanKept) => {
+                report.scans_kept += 1;
                 failures.remove(&key);
             }
             Err(reason) => {
@@ -978,18 +1418,26 @@ async fn sync_folder_scanned(
                 failures.insert(key.clone(), FileFailure { file, reason });
             }
         }
+        // Tried under this build's chunker: not tried again for it, unless it changes.
+        versions.insert(key.clone(), CHUNKER_VERSION);
         // The stamp from before indexing: a change made meanwhile is seen next time.
         if let Some((_, stamp)) = on_disk.get(&key) {
             files.insert(key, *stamp);
         }
-        save(&files, &failures)?;
+        save(&files, &failures, &versions)?;
+        if healing {
+            heal_done += 1;
+            progress(heal_done, heal_total);
+        }
     }
     report.failures = failures.values().cloned().collect();
-    save(&files, &failures)?;
-    if report.indexed + report.removed > 0 || !report.unreadable.is_empty() {
+    save(&files, &failures, &versions)?;
+    if report.indexed + report.removed + report.scans_kept > 0 || !report.unreadable.is_empty() {
         tracing::info!(
             source_id,
             indexed = report.indexed,
+            rechunked = report.rechunked,
+            scans_kept = report.scans_kept,
             removed = report.removed,
             failed = report.failures.len(),
             unreadable = report.unreadable.len(),
@@ -1167,6 +1615,7 @@ mod tests {
             &store,
             &rag,
             || false,
+            |_, _| {},
             unreadable_scan.clone(),
         )
         .await
@@ -1181,10 +1630,17 @@ mod tests {
         );
 
         // Kept in the manifest too: readable again and unchanged, nothing to do.
-        let again =
-            sync_folder_scanned(&folder_text, "s1", &store, &rag, || false, unreadable_scan)
-                .await
-                .expect("sync");
+        let again = sync_folder_scanned(
+            &folder_text,
+            "s1",
+            &store,
+            &rag,
+            || false,
+            |_, _| {},
+            unreadable_scan,
+        )
+        .await
+        .expect("sync");
         assert_eq!((again.indexed, again.removed), (0, 0));
         let readable = sync_folder(&folder_text, "s1", &store, &rag, || false)
             .await
@@ -1459,16 +1915,7 @@ mod tests {
                 size: 1,
             },
         );
-        store
-            .save(
-                "s1",
-                &ManifestRef {
-                    folder: &manifest.folder,
-                    files: &manifest.files,
-                    failures: &manifest.failures,
-                },
-            )
-            .expect("save");
+        store.save("s1", &manifest.borrowed()).expect("save");
         let again = sync_folder(&folder_text, "s1", &store, &rag, || false)
             .await
             .expect("sync");
@@ -1606,6 +2053,7 @@ mod tests {
                     folder: &folder_text,
                     files: &files,
                     failures: &BTreeMap::new(),
+                    chunker_versions: &BTreeMap::new(),
                 },
             )
             .expect("manifest");
@@ -1763,12 +2211,22 @@ mod tests {
         std::fs::write(&other, PASSAGE).expect("file");
         index_as_format_one(&rag, &other, "f2").await;
 
-        assert_eq!(upgrade_file_source(&path, "f1", &rag).await, Ok(true));
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        assert_eq!(
+            upgrade_file_source(&path, "f1", &rag, &store).await,
+            Ok(true)
+        );
         assert_eq!(stale_count(&rag).await, 1, "only f1 was indexed again");
         assert_eq!(indexed(&rag, "f1").await.len(), 1);
-        assert_eq!(upgrade_file_source(&path, "f1", &rag).await, Ok(false));
+        assert_eq!(
+            upgrade_file_source(&path, "f1", &rag, &store).await,
+            Ok(false)
+        );
         let gone = dir.path().join("gone.txt").display().to_string();
-        assert_eq!(upgrade_file_source(&gone, "f3", &rag).await, Ok(false));
+        assert_eq!(
+            upgrade_file_source(&gone, "f3", &rag, &store).await,
+            Ok(false)
+        );
     }
 
     /// Documents no Library source owns are upgraded in place where their
@@ -1799,7 +2257,8 @@ mod tests {
         std::fs::write(&owned, PASSAGE).expect("file");
         index_as_format_one(&rag, &owned, "lib1").await;
 
-        let report = upgrade_unowned(&rag, &BTreeSet::from(["lib1".to_string()]))
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let report = upgrade_unowned(&rag, &BTreeSet::from(["lib1".to_string()]), &store)
             .await
             .expect("upgrade");
         assert_eq!(
@@ -1808,6 +2267,7 @@ mod tests {
                 in_place: 1,
                 reindexed: 1,
                 left: vec![normalize_source_path(&canonical_path(&gone))],
+                ..UpgradeReport::default()
             }
         );
         let stale: BTreeSet<String> = rag
@@ -1826,6 +2286,416 @@ mod tests {
                 normalize_source_path(&canonical_path(&owned)),
             ])
         );
+    }
+
+    /// What an earlier chunker kept of a chunk's text: its first words.
+    fn lossy(text: &str) -> String {
+        let kept: Vec<&str> = text.split_whitespace().take(4).collect();
+        format!("{} [cut short]", kept.join(" "))
+    }
+
+    /// Indexes `path` into `source_id` as a build before chunker version 2
+    /// did: chunks without a chunker version, their text cut short.
+    async fn index_as_chunker_one(rag: &RwLock<RAGEngine>, path: &Path, source_id: &str) {
+        let metadata =
+            std::collections::HashMap::from([("space_id".to_string(), source_id.to_string())]);
+        let prepared = rag
+            .read()
+            .await
+            .file_preparer()
+            .expect("preparer")
+            .prepare(&canonical_path(path), metadata)
+            .expect("prepared");
+        rag.write()
+            .await
+            .commit_file_as_chunker_one(prepared, lossy)
+            .await
+            .expect("stored");
+    }
+
+    /// The chunk texts this build makes of `path`, sorted.
+    async fn fresh_texts(rag: &RwLock<RAGEngine>, path: &Path) -> Vec<String> {
+        let mut texts = rag
+            .read()
+            .await
+            .file_preparer()
+            .expect("preparer")
+            .prepare(&canonical_path(path), std::collections::HashMap::new())
+            .expect("prepared")
+            .chunk_texts();
+        texts.sort();
+        texts
+    }
+
+    /// The stored chunk texts of the file named `name`, sorted.
+    async fn stored_texts(rag: &RwLock<RAGEngine>, name: &str) -> Vec<String> {
+        let mut texts: Vec<String> = rag
+            .read()
+            .await
+            .list_documents_raw(None, 100_000)
+            .await
+            .expect("chunks")
+            .into_iter()
+            .filter(|hit| hit.source.rsplit('/').next() == Some(name))
+            .map(|hit| hit.text)
+            .collect();
+        texts.sort();
+        texts
+    }
+
+    async fn rechunk_count(rag: &RwLock<RAGEngine>) -> usize {
+        rag.read()
+            .await
+            .rechunk_sources()
+            .await
+            .expect("rechunk")
+            .len()
+    }
+
+    /// A library indexed by a build with an older chunker (a manifest without
+    /// chunker versions, chunks cut short, a short note it made no chunks
+    /// of) is read and chunked again in full, not re-embedded: the stored
+    /// text becomes what this build's chunker makes. A file already chunked
+    /// by this build keeps its chunks. The work goes one file at a time with
+    /// its progress reported, and resumes where it stopped after a restart.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_library_of_an_older_chunker_is_rechunked_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rag = engine(dir.path()).await;
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let folder = dir.path().join("library");
+        std::fs::create_dir_all(&folder).expect("folder");
+        std::fs::write(
+            folder.join("a.md"),
+            format!("# House rules\n\n{PASSAGE}\n\n## Parking\n\nVisitors park on the street; residents use the garage below the courtyard, and bicycles are kept in the shed.\n"),
+        )
+        .expect("file");
+        std::fs::write(folder.join("b.txt"), format!("b.txt: {PASSAGE}")).expect("file");
+        std::fs::write(folder.join("c.txt"), format!("c.txt: {PASSAGE}")).expect("file");
+        std::fs::write(folder.join("d.txt"), format!("d.txt: {PASSAGE}")).expect("file");
+        index_as_chunker_one(&rag, &folder.join("a.md"), "s1").await;
+        index_as_chunker_one(&rag, &folder.join("b.txt"), "s1").await;
+        // Chunked by this build already.
+        crate::indexing::process_file_with_options(
+            &canonical_path(&folder.join("c.txt")),
+            "s1",
+            &rag,
+            None,
+        )
+        .await
+        .expect("indexed");
+        // d.txt: recorded as indexed, but the older chunker made no chunks of it.
+        record_as_on_disk(&store, "s1", &folder);
+        let folder_text = folder.display().to_string();
+        assert_eq!(rechunk_count(&rag).await, 2);
+        assert!(stored_texts(&rag, "a.md").await[0].ends_with("[cut short]"));
+        let before = chunk_ids(&rag).await;
+
+        // Stopped after the first file (the app closed).
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let stop_after_one = || asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 1;
+        let reported = std::sync::Mutex::new(Vec::new());
+        let partial = sync_folder_with_progress(
+            &folder_text,
+            "s1",
+            &store,
+            &rag,
+            stop_after_one,
+            |done, total| reported.lock().expect("progress").push((done, total)),
+        )
+        .await
+        .expect("sync");
+        assert_eq!(
+            (partial.indexed, partial.rechunked, partial.failures.len()),
+            (1, 1, 0),
+            "{partial:?}"
+        );
+        assert_eq!(*reported.lock().expect("progress"), [(0, 3), (1, 3)]);
+        let versions = store.load("s1").expect("manifest").chunker_versions;
+        assert_eq!(
+            versions.values().filter(|v| **v == CHUNKER_VERSION).count(),
+            2,
+            "the file done and the file already current: {versions:?}"
+        );
+
+        // The next run goes on with the rest only.
+        let reported = std::sync::Mutex::new(Vec::new());
+        let rest = sync_folder_with_progress(
+            &folder_text,
+            "s1",
+            &store,
+            &rag,
+            || false,
+            |done, total| reported.lock().expect("progress").push((done, total)),
+        )
+        .await
+        .expect("sync");
+        assert_eq!((rest.indexed, rest.rechunked), (2, 2), "{rest:?}");
+        assert_eq!(
+            *reported.lock().expect("progress"),
+            [(0, 2), (1, 2), (2, 2)]
+        );
+        assert_eq!(rechunk_count(&rag).await, 0);
+        for name in ["a.md", "b.txt", "d.txt"] {
+            let stored = stored_texts(&rag, name).await;
+            assert!(!stored.is_empty(), "{name}");
+            assert_eq!(
+                stored,
+                fresh_texts(&rag, &folder.join(name)).await,
+                "{name} chunked again"
+            );
+        }
+        let after = chunk_ids(&rag).await;
+        assert_eq!(
+            after["c.txt"], before["c.txt"],
+            "a current file is untouched"
+        );
+        assert!(
+            after["a.md"].is_disjoint(&before["a.md"]),
+            "not upgraded in place"
+        );
+
+        let settled = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!((settled.indexed, settled.rechunked), (0, 0), "{settled:?}");
+        assert_eq!(chunk_ids(&rag).await, after);
+    }
+
+    /// A file that failed under an older chunker is tried once more under
+    /// this one; failing again, it is not tried again until it changes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failure_under_an_older_chunker_is_tried_once_more() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rag = engine(dir.path()).await;
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let folder = dir.path().join("docs");
+        std::fs::create_dir_all(&folder).expect("folder");
+        std::fs::write(folder.join("rules.txt"), PASSAGE).expect("file");
+        std::fs::write(folder.join("broken.pdf"), "not a pdf").expect("broken");
+        let folder_text = folder.display().to_string();
+        crate::indexing::process_file_with_options(
+            &canonical_path(&folder.join("rules.txt")),
+            "s1",
+            &rag,
+            None,
+        )
+        .await
+        .expect("indexed");
+        // As an older build saved it: the failure without a chunker version.
+        let broken_key = normalize_source_path(&canonical_path(&folder.join("broken.pdf")));
+        let mut manifest = Manifest {
+            folder: folder_text.clone(),
+            files: scan_folder(&canonical_path(&folder))
+                .into_iter()
+                .map(|(key, (_, stamp))| (key, stamp))
+                .collect(),
+            ..Manifest::default()
+        };
+        manifest.failures.insert(
+            broken_key.clone(),
+            FileFailure {
+                file: folder.join("broken.pdf").display().to_string(),
+                reason: "Panic: the old chunker looped".to_string(),
+            },
+        );
+        store.save("s1", &manifest.borrowed()).expect("manifest");
+
+        let retried = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!((retried.indexed, retried.failures.len()), (0, 1));
+        assert_ne!(
+            retried.failures[0].reason, "Panic: the old chunker looped",
+            "tried again under this chunker"
+        );
+        assert_eq!(
+            store.load("s1").expect("manifest").chunker_versions[&broken_key],
+            CHUNKER_VERSION
+        );
+
+        // Recorded under this chunker: a sync leaves it alone (its record
+        // stays as it is) until the file changes.
+        let mut manifest = store.load("s1").expect("manifest");
+        manifest
+            .failures
+            .get_mut(&broken_key)
+            .expect("failure")
+            .reason = "recorded".to_string();
+        store.save("s1", &manifest.borrowed()).expect("manifest");
+        let again = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!(again.indexed, 0);
+        assert_eq!(again.failures[0].reason, "recorded", "not tried again");
+        touch(&folder.join("broken.pdf"), "still not a pdf", 60);
+        let changed = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_ne!(
+            changed.failures[0].reason, "recorded",
+            "tried once it changed"
+        );
+    }
+
+    /// A scan of an older chunker whose OCR reading is not cached keeps its
+    /// chunks instead of being read with OCR again; a scan whose reading is
+    /// cached is chunked again from the cache. Nothing fails, and the kept
+    /// scan is not looked at again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_scan_is_rechunked_from_the_ocr_cache_or_kept() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // PP-OCRv6 only, and it is not installed: reading a scan with OCR
+        // would fail the file.
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.path().join("data");
+        config.embedding.model_dir = dir.path().join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        config.search.min_score_threshold = 0.0;
+        config.ocr.engine = crate::config::OcrEngineChoice::PpOcr;
+        let cache = crate::processing::ocr::cache::OcrCache::new(
+            config.data_dir.join(crate::rag_engine::OCR_CACHE_DIR),
+        );
+        let mut engine = RAGEngine::new(config).await.expect("engine");
+        engine
+            .attach_search_models(crate::rag_engine::SearchModels::from_embedder(Arc::new(
+                crate::statements::testing::WordEmbedder::default(),
+            )))
+            .expect("models");
+        let rag = Arc::new(RwLock::new(engine));
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let folder = dir.path().join("library");
+        std::fs::create_dir_all(&folder).expect("folder");
+        let corpus_scan = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../shodh-eval/data/scanned/corpus/contracts/lease-saffron-tidewater-scan.pdf");
+        let cached = folder.join("lease-scan.pdf");
+        let uncached = folder.join("msa-scan.pdf");
+        for (scan, text) in [
+            (&cached, "Monthly rent is INR 4,85,000, payable by the 5th day of each month, into the account the lessor names in writing."),
+            (&uncached, "The courts at Bengaluru have exclusive jurisdiction over any dispute arising out of or in connection with this agreement."),
+        ] {
+            std::fs::copy(&corpus_scan, scan).expect("scan");
+            cache
+                .put(&crate::processing::parser::tests::cached_scan(
+                    &canonical_path(scan),
+                    text,
+                ))
+                .expect("cached");
+            index_as_chunker_one(&rag, scan, "s1").await;
+        }
+        assert!(cache.remove(&normalize_source_path(&canonical_path(&uncached))));
+        record_as_on_disk(&store, "s1", &folder);
+        let folder_text = folder.display().to_string();
+        let kept_before = stored_texts(&rag, "msa-scan.pdf").await;
+
+        let synced = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!(
+            (
+                synced.indexed,
+                synced.rechunked,
+                synced.scans_kept,
+                synced.failures.len()
+            ),
+            (1, 1, 1, 0),
+            "{synced:?}"
+        );
+        assert_eq!(
+            stored_texts(&rag, "lease-scan.pdf").await,
+            fresh_texts(&rag, &cached).await,
+            "chunked again from the OCR cache"
+        );
+        assert_eq!(stored_texts(&rag, "msa-scan.pdf").await, kept_before);
+
+        let settled = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!(
+            (settled.indexed, settled.scans_kept, settled.failures.len()),
+            (0, 0, 0),
+            "{settled:?}"
+        );
+    }
+
+    /// A Word document holding `text` in one paragraph.
+    fn docx(text: &str) -> Vec<u8> {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("word/document.xml", options).expect("entry");
+        zip.write_all(
+            format!(
+                "<w:document><w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body></w:document>"
+            )
+            .as_bytes(),
+        )
+        .expect("xml");
+        zip.finish().expect("zip").into_inner()
+    }
+
+    /// Files added in chats are chunked again too. One that fails does not
+    /// stop the next: it is reported, keeps its chunks, and is not tried
+    /// again until it changes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failing_upload_does_not_stop_the_next() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rag = engine(dir.path()).await;
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let uploads = dir.path().join("chat_uploads");
+        std::fs::create_dir_all(&uploads).expect("folder");
+        let broken = uploads.join("report.docx");
+        std::fs::write(&broken, docx(PASSAGE)).expect("docx");
+        index_as_chunker_one(&rag, &broken, "chat-uploads:main").await;
+        std::fs::write(&broken, "not a docx: the archive is gone").expect("broken");
+        let good = uploads.join("rules.txt");
+        std::fs::write(&good, PASSAGE).expect("file");
+        index_as_chunker_one(&rag, &good, "chat-uploads:main").await;
+
+        let first = upgrade_unowned(&rag, &BTreeSet::new(), &store)
+            .await
+            .expect("upgrade");
+        assert_eq!((first.reindexed, first.failed.len()), (1, 1), "{first:?}");
+        assert!(first.failed[0].file.ends_with("report.docx"));
+        assert_eq!(
+            stored_texts(&rag, "rules.txt").await,
+            fresh_texts(&rag, &good).await
+        );
+        assert!(
+            stored_texts(&rag, "report.docx").await[0].ends_with("[cut short]"),
+            "it keeps its chunks"
+        );
+
+        // Not tried again while unchanged: its record is reported as it is.
+        let broken_key = normalize_source_path(&canonical_path(&broken));
+        let mut recorded = store.load_heal_failures();
+        recorded
+            .get_mut(&broken_key)
+            .expect("recorded")
+            .failure
+            .reason = "recorded".to_string();
+        store.save_heal_failures(&recorded).expect("saved");
+        let again = upgrade_unowned(&rag, &BTreeSet::new(), &store)
+            .await
+            .expect("upgrade");
+        assert_eq!(again.reindexed, 0);
+        assert_eq!(again.failed.len(), 1);
+        assert_eq!(again.failed[0].reason, "recorded", "not tried again");
+
+        // Changed: tried again, and indexed.
+        std::fs::write(
+            &broken,
+            docx(&format!("{PASSAGE} The gate is locked at night.")),
+        )
+        .expect("docx");
+        let fixed = upgrade_unowned(&rag, &BTreeSet::new(), &store)
+            .await
+            .expect("upgrade");
+        assert_eq!((fixed.reindexed, fixed.failed.len()), (1, 0), "{fixed:?}");
+        assert!(store.load_heal_failures().is_empty());
+        assert_eq!(rechunk_count(&rag).await, 0);
     }
 
     fn add_options(skip_indexed: bool) -> crate::indexing::IndexingOptions {
@@ -2026,6 +2896,7 @@ mod tests {
                     folder: &folder.display().to_string(),
                     files: &files,
                     failures: &BTreeMap::new(),
+                    chunker_versions: &BTreeMap::new(),
                 },
             )
             .expect("manifest");

@@ -6,13 +6,15 @@
 //! changes are debounced and the folder is synced again. The sync itself is
 //! [`shodh_rag::folder_sync::sync_folder`]; this module schedules it, one sync
 //! at a time and never while background work is paused, and reports each
-//! outcome to the Library as a [`FOLDER_SYNC_EVENT`].
+//! outcome to the Library as a [`FOLDER_SYNC_EVENT`]. While a sync reads and
+//! chunks again the files indexed under an older chunker version, it reports
+//! how far it is as [`FOLDER_SYNC_PROGRESS_EVENT`]s.
 //!
 //! Listed sources that are single files are not watched; each is indexed
-//! again once if it was indexed in an older index format
+//! again once if it was indexed in an older index format or chunker version
 //! ([`upgrade_file_source`]), as a folder's files are on its sync. Once per
-//! run, documents of an older format that no listed source owns (files added
-//! in a chat) are brought up to date too ([`upgrade_unowned`]).
+//! run, documents of an older format or chunker that no listed source owns
+//! (files added in a chat) are brought up to date too ([`upgrade_unowned`]).
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -22,7 +24,8 @@ use std::time::Duration;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use shodh_rag::folder_sync::{
-    is_temporary_file, sync_folder, upgrade_file_source, upgrade_unowned, ManifestStore, SyncReport,
+    is_temporary_file, sync_folder_with_progress, upgrade_file_source, upgrade_unowned,
+    ManifestStore, SyncReport,
 };
 use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus, NewInboxItem};
 use shodh_rag::indexing::{FileFailure, IndexingState};
@@ -40,6 +43,11 @@ const HANDOVER_PENDING: &str = "Not synced yet: the files added in chats could n
 
 /// Emitted after every sync of a folder source.
 pub const FOLDER_SYNC_EVENT: &str = "folder-sync";
+
+/// Emitted while a sync reads and chunks again the files of its folder that
+/// were indexed under an older chunker version: before the first and after
+/// each ([`FolderSyncProgress`]).
+pub const FOLDER_SYNC_PROGRESS_EVENT: &str = "folder-sync-progress";
 
 /// A folder is synced once its changes have stopped for this long.
 const QUIET: Duration = Duration::from_secs(2);
@@ -60,6 +68,15 @@ struct FolderSyncOutcome {
     #[serde(flatten)]
     report: Option<SyncReport>,
     error: Option<String>,
+}
+
+/// How far a sync is through the files it chunks again, for the source's card.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FolderSyncProgress<'a> {
+    source_id: &'a str,
+    done: usize,
+    total: usize,
 }
 
 struct Watched {
@@ -365,19 +382,26 @@ impl FolderSyncState {
     /// and the card says why, since a folder without a manifest could take
     /// an older upload for one of its own missing files and delete it. A
     /// source removed or no longer listed meanwhile stops before its next
-    /// file.
+    /// file. `progress` is told how far the sync is through the files it
+    /// chunks again (files done, files in all).
     async fn sync_in_turn(
         &self,
         rag: &RwLock<RAGEngine>,
         source: &FolderSourceRef,
         handed_over: bool,
+        progress: impl Fn(usize, usize),
     ) -> Result<SyncReport, String> {
         if !handed_over {
             return Err(HANDOVER_PENDING.to_string());
         }
-        sync_folder(&source.path, &source.id, &self.store, rag, || {
-            !self.is_watched(source)
-        })
+        sync_folder_with_progress(
+            &source.path,
+            &source.id,
+            &self.store,
+            rag,
+            || !self.is_watched(source),
+            progress,
+        )
         .await
     }
 
@@ -556,7 +580,19 @@ async fn sync_once(app: &AppHandle, source: &FolderSourceRef) {
     }
     let rag = app.state::<RagState>().rag.clone();
     let handed_over = state.hand_over_uploads_in_turn(app, &rag).await;
-    let result = state.sync_in_turn(&rag, source, handed_over).await;
+    let progress = |done: usize, total: usize| {
+        let payload = FolderSyncProgress {
+            source_id: &source.id,
+            done,
+            total,
+        };
+        if let Err(e) = app.emit(FOLDER_SYNC_PROGRESS_EVENT, &payload) {
+            tracing::warn!("Failed to emit {FOLDER_SYNC_PROGRESS_EVENT}: {e}");
+        }
+    };
+    let result = state
+        .sync_in_turn(&rag, source, handed_over, progress)
+        .await;
     if let Err(e) = &result {
         tracing::warn!(source_id = %source.id, error = %e, "folder sync failed");
     }
@@ -588,7 +624,7 @@ async fn upgrade_file_once(app: &AppHandle, source: &FolderSourceRef) {
     let state = app.state::<FolderSyncState>();
     let _turn = state.running.lock().await;
     let rag = app.state::<RagState>().rag.clone();
-    if let Err(e) = upgrade_file_source(&source.path, &source.id, &rag).await {
+    if let Err(e) = upgrade_file_source(&source.path, &source.id, &rag, state.store()).await {
         tracing::warn!(source_id = %source.id, error = %e, "file source not indexed again");
     }
 }
@@ -605,7 +641,7 @@ async fn upgrade_unowned_once(app: &AppHandle, owned: std::collections::BTreeSet
     // Files added in chats go where they belong before they are brought up
     // to date with the others.
     state.hand_over_uploads_in_turn(app, &rag).await;
-    if let Err(e) = upgrade_unowned(&rag, &owned).await {
+    if let Err(e) = upgrade_unowned(&rag, &owned, state.store()).await {
         tracing::warn!(error = %e, "documents outside the Library not brought up to date");
     }
 }
@@ -750,6 +786,7 @@ pub async fn sync_folder_sources(
 mod tests {
     use super::*;
     use notify::event::{CreateKind, ModifyKind, RemoveKind};
+    use shodh_rag::folder_sync::sync_folder;
     use std::path::PathBuf;
 
     fn event(kind: EventKind, paths: &[&str]) -> Event {
@@ -796,6 +833,7 @@ mod tests {
                 files: 5,
                 failures: Vec::new(),
                 unreadable: Vec::new(),
+                ..SyncReport::default()
             }),
             error: None,
         };
@@ -1166,7 +1204,7 @@ mod tests {
 
         // The handover failed: the sync is skipped, with a reason, and the
         // upload stays.
-        let skipped = state.sync_in_turn(&rag, &source, false).await;
+        let skipped = state.sync_in_turn(&rag, &source, false, |_, _| {}).await;
         assert_eq!(skipped, Err(HANDOVER_PENDING.to_string()));
         assert_eq!(
             owners(rag.read().await.document_sources().await.unwrap()),
@@ -1183,7 +1221,10 @@ mod tests {
             .hand_over_chat_uploads(None)
             .await
             .unwrap();
-        state.sync_in_turn(&rag, &source, true).await.unwrap();
+        state
+            .sync_in_turn(&rag, &source, true, |_, _| {})
+            .await
+            .unwrap();
         assert_eq!(
             owners(rag.read().await.document_sources().await.unwrap()),
             [shodh_rag::rag_engine::CHAT_UPLOADS_MAIN]

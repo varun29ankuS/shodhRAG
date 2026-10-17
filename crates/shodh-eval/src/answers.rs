@@ -749,6 +749,7 @@ mod tests {
             kind: ProviderErrorKind::RateLimited,
             status: Some(429),
             retry_after_secs: Some(12),
+            upstream: None,
         };
         c.observe(
             &AgentEvent::RunFinished {
@@ -771,6 +772,7 @@ mod tests {
             kind,
             status: None,
             retry_after_secs,
+            upstream: None,
         }
     }
 

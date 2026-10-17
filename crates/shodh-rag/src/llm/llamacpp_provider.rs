@@ -18,8 +18,10 @@ use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
 
+use super::failure::{CallContext, ProviderFailure};
 use super::streaming::TokenStream;
 use super::{GenerationConfig, LLMProvider, MemoryUsage, ProviderInfo};
+use crate::harness::provider_error::ProviderErrorKind;
 
 /// Information about the loaded model for metadata/info reporting.
 struct ModelInfo {
@@ -106,7 +108,7 @@ impl LlamaCppProvider {
         backend: &LlamaBackend,
         prompt: &str,
         config: &GenerationConfig,
-        token_sender: Option<mpsc::Sender<String>>,
+        token_sender: Option<mpsc::Sender<Result<String, ProviderFailure>>>,
     ) -> Result<String> {
         // Limit context to a reasonable size for inference (not the model's max)
         let n_ctx = 4096u32;
@@ -225,7 +227,7 @@ impl LlamaCppProvider {
 
                 // Send token if streaming
                 if let Some(ref sender) = token_sender {
-                    if sender.blocking_send(token_str).is_err() {
+                    if sender.blocking_send(Ok(token_str)).is_err() {
                         // Receiver dropped, stop generation
                         break;
                     }
@@ -351,11 +353,21 @@ impl LLMProvider for LlamaCppProvider {
         let prompt = prompt.to_string();
         let config = config.clone();
 
+        let name = self.info.name.clone();
         let (tx, rx) = mpsc::channel(256);
 
         tokio::task::spawn_blocking(move || {
-            if let Err(e) = Self::run_inference(&model, &backend, &prompt, &config, Some(tx)) {
-                tracing::error!("Streaming inference failed: {}", e);
+            if let Err(e) =
+                Self::run_inference(&model, &backend, &prompt, &config, Some(tx.clone()))
+            {
+                // The stream ends with the failure, not as a finished answer.
+                let failure = CallContext::new("llama.cpp", name, String::new()).failure(
+                    ProviderErrorKind::Other,
+                    None,
+                    &format!("{e:#}"),
+                );
+                failure.log();
+                let _ = tx.blocking_send(Err(failure));
             }
         });
 

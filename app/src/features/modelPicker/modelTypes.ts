@@ -170,12 +170,25 @@ export interface PickerView {
   providerOrder: ProviderId[];
 }
 
-export type ProviderErrorKind = 'rate_limited' | 'quota_exhausted' | 'model_unavailable' | 'auth' | 'other';
+export type ProviderErrorKind =
+  | 'rate_limited'
+  | 'quota_exhausted'
+  | 'model_unavailable'
+  | 'auth'
+  | 'timeout'
+  | 'network'
+  | 'invalid_request'
+  | 'context_too_long'
+  | 'content_filtered'
+  | 'empty_response'
+  | 'other';
 
 export interface ProviderError {
   kind: ProviderErrorKind;
   status: number | null;
   retryAfterSecs: number | null;
+  /** The provider behind a router that failed (OpenRouter's upstream), when named. */
+  upstream?: string | null;
 }
 
 export interface FallbackOffer {
@@ -251,13 +264,34 @@ export function readModelPrefs(value: unknown): ModelPrefs {
   };
 }
 
-const ERROR_KINDS: readonly ProviderErrorKind[] = ['rate_limited', 'quota_exhausted', 'model_unavailable', 'auth', 'other'];
+const ERROR_KINDS: readonly ProviderErrorKind[] = [
+  'rate_limited',
+  'quota_exhausted',
+  'model_unavailable',
+  'auth',
+  'timeout',
+  'network',
+  'invalid_request',
+  'context_too_long',
+  'content_filtered',
+  'empty_response',
+  'other',
+];
+
+/** Longest upstream provider name shown. */
+const MAX_UPSTREAM_CHARS = 64;
 
 /** A `providerError` from a `run_finished` event (or a stored transcript); null when absent or malformed. */
 export function readProviderError(value: unknown): ProviderError | null {
   if (!isRecord(value) || !(ERROR_KINDS as readonly unknown[]).includes(value.kind)) return null;
   const whole = (x: unknown) => (typeof x === 'number' && Number.isInteger(x) && x >= 0 ? x : null);
-  return { kind: value.kind as ProviderErrorKind, status: whole(value.status), retryAfterSecs: whole(value.retryAfterSecs) };
+  const upstream = typeof value.upstream === 'string' ? value.upstream.trim() : '';
+  return {
+    kind: value.kind as ProviderErrorKind,
+    status: whole(value.status),
+    retryAfterSecs: whole(value.retryAfterSecs),
+    ...(upstream && upstream.length <= MAX_UPSTREAM_CHARS ? { upstream } : {}),
+  };
 }
 
 const PICKER_CODES: readonly PickerErrorCode[] = [

@@ -287,7 +287,8 @@ function scopeOf(options: SendOptions | null, workspaceId: string | null): Answe
 function historyOf(messages: readonly ChatMessage[]): HistoryTurn[] {
   return messages
     .filter((m): m is ChatMessage & { role: 'user' | 'assistant' } => m.role === 'user' || m.role === 'assistant')
-    .filter(m => m.content.trim().length > 0 && isPersistable(m))
+    // A failed answer's partial text is not an answer the model gave.
+    .filter(m => m.content.trim().length > 0 && isPersistable(m) && m.transcript?.status !== 'error')
     .slice(-HISTORY_LIMIT)
     .map(m => ({ role: m.role, content: replayedContent(m) }));
 }

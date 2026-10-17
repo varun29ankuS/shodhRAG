@@ -392,7 +392,14 @@ impl Record {
                 });
             }
             // Not about the connection: the model, the request or the network.
-            ProviderErrorKind::ModelUnavailable | ProviderErrorKind::Other => {}
+            ProviderErrorKind::ModelUnavailable
+            | ProviderErrorKind::Timeout
+            | ProviderErrorKind::Network
+            | ProviderErrorKind::InvalidRequest
+            | ProviderErrorKind::ContextTooLong
+            | ProviderErrorKind::ContentFiltered
+            | ProviderErrorKind::EmptyResponse
+            | ProviderErrorKind::Other => {}
         }
     }
 }
@@ -795,6 +802,7 @@ mod tests {
             kind,
             status: Some(status),
             retry_after_secs: retry,
+            upstream: None,
         }
     }
 

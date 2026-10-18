@@ -26,7 +26,6 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use sha2::{Digest, Sha256};
 use shodh_ontology::{
     EntityRef, Extractor, Provenance, RawValue, Statement, Value as OntologyValue,
 };
@@ -429,8 +428,8 @@ impl MemoryService {
     /// 3. the table's old versions, which still hold the rows, are purged in the
     ///    background ([`StatementStore::schedule_purge`]).
     ///
-    /// Returns the forgotten ids. Audited as `memory_forget` with the ids and a hash of
-    /// the text, never the text. The conversation the memory came from is not changed.
+    /// Returns the forgotten ids. Audited as `memory_forget` with the ids, class, scope,
+    /// version count and text length, never the text. The conversation the memory came from is not changed.
     pub async fn forget(
         &self,
         id: &str,
@@ -482,10 +481,11 @@ impl MemoryService {
             json!({
                 "action": "forget",
                 "id": id,
+                "versions": forgotten.len(),
                 "ids": forgotten,
                 "class": target.statement.class,
                 "scope": target.scope.as_key(),
-                "text_sha256": text_hash(&target.text),
+                "text_chars": text_chars(&target.text),
                 "via": actor.via,
             }),
         );
@@ -493,7 +493,7 @@ impl MemoryService {
     }
 
     /// Whether the audit log still holds words of memory `id` (of any of its versions):
-    /// events written before memory events carried only a hash of the text. The forget
+    /// events written before memory events stopped carrying the text. The forget
     /// confirmation says so. `false` when writes are not audited.
     pub async fn audit_holds_words(&self, id: &str) -> MemoryResult<bool> {
         let Some(log) = self.audit.clone() else {
@@ -556,7 +556,7 @@ impl MemoryService {
                 "id": id,
                 "class": target.statement.class,
                 "scope": target.scope.as_key(),
-                "text_sha256": text_hash(&target.text),
+                "text_chars": text_chars(&target.text),
                 "via": actor.via,
             }),
         );
@@ -702,7 +702,7 @@ impl MemoryService {
                     "superseded": superseded,
                     "class": memory.as_ref().map(|m| m.class.clone()),
                     "scope": scope.as_key(),
-                    "text_sha256": memory.as_ref().map(|m| text_hash(&m.text)),
+                    "text_chars": memory.as_ref().map(|m| text_chars(&m.text)),
                     "source": origin.source,
                     "extractor": origin.extractor.label(),
                     "approval": match &origin.authority {
@@ -943,7 +943,7 @@ impl MemoryService {
             "id": target.id(),
             "class": target.statement.class,
             "scope": target.scope.as_key(),
-            "text_sha256": text_hash(&target.text),
+            "text_chars": text_chars(&target.text),
             "extractor": "llm",
             "via": actor.via,
         });
@@ -1117,10 +1117,10 @@ pub(crate) fn snippet(text: &str) -> String {
     crate::harness::truncate_chars(text, MAX_SNIPPET_CHARS)
 }
 
-/// SHA-256 of `text` (hex), what memory audit events record instead of a memory's words:
-/// it shows that two events concern the same text without saying what the text was.
-pub(crate) fn text_hash(text: &str) -> String {
-    hex::encode(Sha256::digest(text.as_bytes()))
+/// Length of `text` in characters: what memory audit events record of a memory's words
+/// (no hash: a short memory could be guessed from one).
+pub(crate) fn text_chars(text: &str) -> usize {
+    text.chars().count()
 }
 
 /// Whether `stored` is a memory (written by or for the user), not a statement extracted

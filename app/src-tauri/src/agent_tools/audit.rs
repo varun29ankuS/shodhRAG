@@ -114,7 +114,7 @@ pub(crate) fn summarize(row: &AuditRow) -> String {
         }
         "runtime_install" => format!("Agent runtime {} installed", s(p, "version")),
         "retention_checkpoint" => "Older events removed by retention".to_string(),
-        // Memory events carry ids and a hash of the text; only events written before that
+        // Memory events carry ids and the text's length; only events written before that
         // have the words.
         "memory_write" => format!(
             "Memory {} ({}) via {}{}",

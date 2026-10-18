@@ -1019,7 +1019,7 @@ impl Learner {
                     json!({
                         "action": "link",
                         "ids": [a, b],
-                        "reason_sha256": crate::user_memory::text_hash(reason),
+                        "reason_chars": crate::user_memory::text_chars(reason),
                         "extractor": "llm",
                         "authority": match authority { Authority::User => "user_approval", Authority::Policy => "learn_policy" },
                         "approval": proposal.id,

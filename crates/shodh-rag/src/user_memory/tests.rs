@@ -441,10 +441,12 @@ async fn forget_removes_every_version_and_is_audited() {
     for id in [&first.id, &second.id] {
         assert!(m.f.store.dynamics().get(id).unwrap().is_none());
     }
-    // The audit log records the writes and the forget by id and hash, never the words.
+    // The audit log records the writes and the forget by id, class and length, never
+    // the words, nor a hash a short memory could be guessed from.
+    assert_eq!(events[0]["versions"], 2, "{events:?}");
     assert_eq!(
-        events[0]["text_sha256"],
-        json!(text_hash(&second.text)),
+        events[0]["text_chars"],
+        json!(second.text.chars().count()),
         "{events:?}"
     );
     for event in m.events(&[]) {
@@ -498,9 +500,10 @@ async fn a_forgotten_memory_is_gone_from_the_table_and_its_history() {
         .await
         .unwrap();
     assert!(matches!(again.outcome, PutOutcome::Added { .. }));
-    // Every memory event names the memory by id and hash only.
+    // Every memory event names the memory by id and length only.
     for event in m.events(&[AuditEventType::MemoryWrite, AuditEventType::MemoryForget]) {
         assert!(event.get("text").is_none(), "{event}");
+        assert!(event.get("text_sha256").is_none(), "{event}");
         assert!(!event.to_string().contains("quokkapantry"), "{event}");
     }
 }

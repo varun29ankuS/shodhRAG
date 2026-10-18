@@ -716,9 +716,17 @@ impl LearnState {
                     );
                 }
                 self.notify(&learner);
+                crate::notifications::memory_suggestions(
+                    &self.inner.app,
+                    report.proposed.len().saturating_sub(report.learned.len()),
+                );
             }
             Err(LearnError::Disabled) => {}
             Err(e) => {
+                // The model call itself failed (not a limit or a missing model).
+                if matches!(e, LearnError::Model(_)) {
+                    crate::notifications::learning_failed(&self.inner.app);
+                }
                 tracing::info!(target: "shodh::memory", error = %e, "learning from a conversation was skipped")
             }
         }
@@ -761,8 +769,15 @@ impl LearnState {
                     Ok(report) => {
                         tracing::info!(target: "shodh::memory", proposed = report.proposed.len(), learned = report.learned.len(), "memory consolidation finished");
                         state.notify(&learner);
+                        crate::notifications::memory_suggestions(
+                            &state.inner.app,
+                            report.proposed.len().saturating_sub(report.learned.len()),
+                        );
                     }
                     Err(e) => {
+                        if matches!(e, LearnError::Model(_)) {
+                            crate::notifications::learning_failed(&state.inner.app);
+                        }
                         tracing::info!(target: "shodh::memory", error = %e, "memory consolidation skipped")
                     }
                 }

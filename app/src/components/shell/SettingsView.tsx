@@ -5,6 +5,7 @@ import SearchSettings from '../SearchSettings';
 import DataManagement from '../DataManagement';
 import PrivacySettings from '../PrivacySettings';
 import BackgroundSettings from '../BackgroundSettings';
+import NotificationSettings from '../NotificationSettings';
 import MemorySettings from '../MemorySettings';
 import AnswerCheckSettings from '../AnswerCheckSettings';
 import TableModelSettings from '../TableModelSettings';
@@ -13,7 +14,7 @@ import ToolsSettings from '../ToolsSettings';
 import { cn } from '../../lib/utils';
 import { useWorkspaces } from '../../features/workspaces/WorkspaceContext';
 
-export type SettingsSection = 'models' | 'search' | 'tools' | 'general' | 'privacy' | 'memory' | 'data';
+export type SettingsSection = 'models' | 'search' | 'tools' | 'general' | 'notifications' | 'privacy' | 'memory' | 'data';
 
 const SECTIONS: { id: SettingsSection; label: string; description: string }[] = [
   {
@@ -35,6 +36,11 @@ const SECTIONS: { id: SettingsSection; label: string; description: string }[] = 
     id: 'general',
     label: 'General',
     description: 'How Shodh runs when its window is closed, so task reminders keep ringing.',
+  },
+  {
+    id: 'notifications',
+    label: 'Notifications',
+    description: 'Which desktop notifications Shodh shows while you are in another window: reminders, approvals, finished work and problems.',
   },
   {
     id: 'privacy',
@@ -165,6 +171,8 @@ export default function SettingsView({
                 <ToolsSettings />
               ) : section === 'general' ? (
                 <BackgroundSettings />
+              ) : section === 'notifications' ? (
+                <NotificationSettings />
               ) : section === 'privacy' ? (
                 <PrivacySettings />
               ) : section === 'memory' ? (

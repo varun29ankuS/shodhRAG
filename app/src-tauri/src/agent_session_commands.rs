@@ -1561,6 +1561,9 @@ More tools, from the MCP servers and skills the user connected: {}.             
     let forward_conversation = parent_conversation_id
         .clone()
         .unwrap_or_else(|| conversation_id.clone());
+    // A finished answer of the conversation itself is announced when the window is not
+    // in front; a side thread's work (summaries, follow-ups) is not.
+    let forward_announces = parent_conversation_id.is_none();
     tauri::async_runtime::spawn(async move {
         // Builds each run's `answer` audit event from the stream.
         let mut tap = RunAuditTap::new();
@@ -1588,6 +1591,9 @@ More tools, from the MCP servers and skills the user connected: {}.             
                 &event,
             )
             .await;
+            if forward_announces {
+                crate::notifications::answer_finished(&forward_app, &forward_conversation, &event);
+            }
             let envelope = AgentEventEnvelope {
                 session_id: forward_id.clone(),
                 event,
@@ -1668,7 +1674,7 @@ async fn track_inbox(
         } => {
             let item =
                 inbox_commands::approval_item(session_id, conversation_id, step_id, label, tool);
-            inbox_commands::notify_if_unfocused(app, &item.title);
+            crate::notifications::approval_requested(app, conversation_id);
             inbox_commands::post(app, item).await;
         }
         AgentEvent::StepFinished {

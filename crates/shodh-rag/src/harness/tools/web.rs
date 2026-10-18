@@ -263,7 +263,7 @@ impl HostTool for WebSearchTool {
         Some(SessionGrant {
             key: format!("tool:{WEB_SEARCH}"),
             label: "Allow web search for this conversation".to_string(),
-            note: "Later searches in this conversation may quote your documents; they go to                    your search provider without asking."
+            note: "Later searches in this conversation may quote your documents; they go to your search provider without asking."
                 .to_string(),
         })
     }
@@ -513,7 +513,7 @@ impl HostTool for FetchUrlTool {
         Some(SessionGrant {
             key: format!("origin:{origin}"),
             note: format!(
-                "Later pages from {origin} in this conversation may carry text from your                  documents in their address; they are fetched without asking."
+                "Later pages from {origin} in this conversation may carry text from your documents in their address; they are fetched without asking."
             ),
             label: format!("Allow {origin} for this conversation"),
         })
@@ -666,7 +666,7 @@ impl HostTool for SearchPapersTool {
         Some(SessionGrant {
             key: format!("tool:{SEARCH_PAPERS}"),
             label: "Allow paper search for this conversation".to_string(),
-            note: "Later paper searches in this conversation may quote your documents; they go                    to the paper search services without asking."
+            note: "Later paper searches in this conversation may quote your documents; they go to the paper search services without asking."
                 .to_string(),
         })
     }

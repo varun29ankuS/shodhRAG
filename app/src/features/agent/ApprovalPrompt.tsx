@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useId, useRef } from 'react';
 import { ShieldAlert } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { StepApproval } from './reducer';
@@ -60,7 +60,7 @@ function previewRows(preview: unknown): Array<[string, string]> {
   if (isRecord(preview)) {
     return Object.entries(preview)
       // Shown as their own blocks: field changes and an instruction diff.
-      .filter(([k]) => k !== 'changes' && k !== 'instructionsDiff' && k !== 'diff' && k !== ALLOW_FOR_CONVERSATION)
+      .filter(([k]) => k !== 'changes' && k !== 'instructionsDiff' && k !== 'diff' && k !== ALLOW_FOR_CONVERSATION && k !== ALLOW_FOR_CONVERSATION_NOTE)
       .filter(([, v]) => v !== null && v !== undefined && v !== '' && v !== false)
       .map(([k, v]) => [humanKey(k), displayValue(v)]);
   }
@@ -70,6 +70,15 @@ function previewRows(preview: unknown): Array<[string, string]> {
 
 /** Preview key of the yes a prompt offers for the rest of the conversation (web tools only). */
 const ALLOW_FOR_CONVERSATION = 'allowForConversation';
+/** Preview key of what that yes lets happen without asking. */
+const ALLOW_FOR_CONVERSATION_NOTE = 'allowForConversationNote';
+
+/** What the conversation-wide yes lets happen, if the prompt says. */
+export function conversationAllowanceNote(preview: unknown): string | null {
+  if (!isRecord(preview)) return null;
+  const note = preview[ALLOW_FOR_CONVERSATION_NOTE];
+  return typeof note === 'string' && note.trim() !== '' ? note : null;
+}
 
 /** What the prompt offers to allow for the rest of the conversation, if anything. */
 export function conversationAllowance(preview: unknown): string | null {
@@ -106,6 +115,8 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
   const changes = previewChanges(approval.preview);
   const diff = isRecord(approval.preview) ? parseDiff(approval.preview.instructionsDiff) : null;
   const allowance = conversationAllowance(approval.preview);
+  const allowanceNote = conversationAllowanceNote(approval.preview);
+  const allowanceNoteId = useId();
 
   useEffect(() => {
     if (!pending) return;
@@ -195,6 +206,7 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
             type="button"
             onClick={() => onDecide(true, true)}
             title="Shodh will not ask again for this in this conversation. Closing the conversation ends it."
+            aria-describedby={allowanceNote ? allowanceNoteId : undefined}
             className={cn(
               'inline-flex items-center gap-2 h-8 px-3 rounded-lg text-[12.5px] font-medium text-shodh-text bg-shodh-raised-2 hover:bg-shodh-pressed transition-colors duration-micro',
               FOCUS_RING,
@@ -216,6 +228,9 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
           <kbd className="font-mono text-[10.5px] opacity-70">Esc</kbd>
         </button>
       </div>
+      {allowance && allowanceNote && !destructive && (
+        <p id={allowanceNoteId} className="text-[11.5px] text-shodh-text-muted">{allowanceNote}</p>
+      )}
     </div>
   );
 }

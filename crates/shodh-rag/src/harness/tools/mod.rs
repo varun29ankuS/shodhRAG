@@ -760,6 +760,8 @@ pub enum ApprovalError {
 pub struct SessionGrant {
     pub key: String,
     pub label: String,
+    /// What the yes lets happen without asking, shown next to it.
+    pub note: String,
 }
 
 /// Pending approvals keyed by step id. Resolved by the UI through
@@ -1261,6 +1263,10 @@ impl ToolRegistry {
                     map.insert(
                         "allowForConversation".to_string(),
                         Value::String(grant.label.clone()),
+                    );
+                    map.insert(
+                        "allowForConversationNote".to_string(),
+                        Value::String(grant.note.clone()),
                     );
                 }
                 approvals.offer(&ctx.step_id, grant.clone());
@@ -2292,6 +2298,7 @@ mod tests {
             Some(SessionGrant {
                 key: format!("origin:{origin}"),
                 label: format!("Allow {origin} for this conversation"),
+                note: format!("Later requests to {origin} go without asking."),
             })
         }
         async fn execute(&self, _args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
@@ -2331,10 +2338,16 @@ mod tests {
         // The first call asks and offers the origin; the user allows it.
         let (task, mut rx) = ask("https://a.example:443", gate.clone());
         match rx.recv().await {
-            Some(AgentEvent::ApprovalRequested { preview, .. }) => assert_eq!(
-                preview["allowForConversation"],
-                "Allow https://a.example:443 for this conversation"
-            ),
+            Some(AgentEvent::ApprovalRequested { preview, .. }) => {
+                assert_eq!(
+                    preview["allowForConversation"],
+                    "Allow https://a.example:443 for this conversation"
+                );
+                assert_eq!(
+                    preview["allowForConversationNote"],
+                    "Later requests to https://a.example:443 go without asking."
+                );
+            }
             other => panic!("expected a prompt, got {other:?}"),
         }
         let grant = gate.resolve_for_session("step-1").unwrap();

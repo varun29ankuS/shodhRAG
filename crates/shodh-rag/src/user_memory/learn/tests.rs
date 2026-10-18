@@ -1998,3 +1998,39 @@ async fn a_forgotten_suggestion_keeps_no_fingerprint_and_live_ones_still_suppres
         RequestedOutcome::Filed(_)
     ));
 }
+
+#[tokio::test]
+async fn approvals_that_named_a_memory_get_wordless_titles_once() {
+    let e = env().await;
+    let conn = rusqlite::Connection::open(e.f.dir.path().join("shodh.db")).unwrap();
+    let item = |id: &str, title: &str, tool: &str| {
+        conn.execute(
+            "INSERT INTO inbox_items(id, kind, status, title, detail, link_json, data_json,
+                created_at, updated_at)
+             VALUES (?1, 'approval', 'needs_you', ?2, ?3, NULL, '{}', 't', 't')",
+            rusqlite::params![
+                id,
+                title,
+                format!("The assistant waits for your approval ({tool}).")
+            ],
+        )
+        .unwrap();
+    };
+    item("a1", "Remember “my locker code is 4411”", "remember");
+    item("a2", "Forget “my locker code is 4411”", "forget");
+    item("a3", "Run `cargo test`", "run_command");
+    let done = e.service.maintain().await.unwrap();
+    assert_eq!(done.approvals_renamed, 2, "{done:?}");
+    let titles: Vec<String> = conn
+        .prepare("SELECT title FROM inbox_items ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        titles,
+        vec!["Remember this", "Forget a memory", "Run `cargo test`"]
+    );
+    assert_eq!(e.service.maintain().await.unwrap().approvals_renamed, 0);
+}

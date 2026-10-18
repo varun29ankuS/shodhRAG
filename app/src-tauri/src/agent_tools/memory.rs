@@ -49,9 +49,12 @@ pub const TAINT_WARNING: &str = "This answer has read documents or web pages. On
     this is something you told Shodh yourself, not text from those sources.";
 
 /// What forgetting leaves behind, in the forget approval prompt.
-pub const FORGET_NOTICE: &str = "The memory is erased with every version. The Activity log \
-    keeps a record that a memory was saved and forgotten, without its words. What was said in \
-    the conversation stays there and in its Activity entries.";
+pub const FORGET_NOTICE: &str = concat!(
+    "The memory is erased with every version. The Activity log keeps a record that a memory ",
+    "was saved and forgotten, without its words. Still kept: the conversation it came from, ",
+    "the user's questions in the Activity log, and Activity entries of tool calls and ",
+    "approvals from before this version, which may show the words."
+);
 
 /// Added to [`FORGET_NOTICE`] when audit events written before memory events stopped
 /// carrying words still show some of this memory's.

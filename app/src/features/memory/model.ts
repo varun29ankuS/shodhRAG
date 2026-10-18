@@ -313,6 +313,6 @@ export function forgetConfirmation(text: string, olderWords: boolean): string {
     `Forget “${text}”? Every earlier version of it is erased too, and suggestions about it lose its words.`,
     'The Activity log keeps a record that a memory was saved and forgotten, without its words' +
       (olderWords ? '; older entries may still show the words.' : '.'),
-    'What was said in the conversation stays there and in its Activity entries.',
+    'Still kept: the conversation it came from, your questions in the Activity log, and Activity entries of the assistant’s tool calls and approvals from before this version, which may show the words.',
   ].join(' ');
 }

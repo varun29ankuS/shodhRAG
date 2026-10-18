@@ -186,7 +186,8 @@ test('the forget confirmation says plainly what the Activity log keeps', () => {
   const now = forgetConfirmation('Locker code is on the fridge', false);
   assert.match(now, /^Forget “Locker code is on the fridge”\?/);
   assert.match(now, /keeps a record that a memory was saved and forgotten, without its words\./);
-  assert.match(now, /said in the conversation stays there and in its Activity entries/);
+  assert.match(now, /Still kept: the conversation it came from, your questions in the Activity log/);
+  assert.match(now, /tool calls and approvals from before this version/);
   assert.doesNotMatch(now, /older entries/);
   assert.match(forgetConfirmation('x', true), /without its words; older entries may still show the words\./);
 });

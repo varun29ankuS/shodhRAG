@@ -1501,6 +1501,35 @@ impl Inbox {
         Ok(changed)
     }
 
+    /// Gives the Inbox's approval items of the memory tools the wordless titles their
+    /// approval prompts now have ("Remember this", "Update a memory", "Forget a memory"):
+    /// items filed before named the memory in the title. An item's tool is read from the
+    /// detail the app writes for approvals ("The assistant waits for your approval
+    /// (<tool>)."). Returns how many changed.
+    pub fn clear_memory_approval_titles(&self) -> LearnResult<usize> {
+        let mut conn = self.lock();
+        // The pragma answers with its new value, so it is read, not executed.
+        conn.query_row("PRAGMA secure_delete = ON", [], |r| r.get::<_, i64>(0))?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut changed = 0;
+        for (tool, title) in [
+            ("remember", "Remember this"),
+            ("update_memory", "Update a memory"),
+            ("forget", "Forget a memory"),
+        ] {
+            changed += tx.execute(
+                "UPDATE inbox_items SET title = ?1
+                 WHERE kind = 'approval' AND detail = ?2 AND title <> ?1",
+                params![
+                    title,
+                    format!("The assistant waits for your approval ({tool}).")
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed)
+    }
+
     /// Rejects every waiting suggestion (the kill switch). Returns how many.
     pub fn reject_all_pending(&self, now: DateTime<Utc>) -> LearnResult<usize> {
         let conn = self.lock();

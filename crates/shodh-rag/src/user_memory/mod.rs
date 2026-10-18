@@ -260,6 +260,8 @@ pub struct Maintenance {
     pub legacy_erased: usize,
     /// Suggestions cleared of memories forgotten before suggestions were cleared (once).
     pub suggestions_cleared: usize,
+    /// Inbox approvals of the memory tools whose titles named a memory, renamed (once).
+    pub approvals_renamed: usize,
     /// Whether the statement table's history was purged.
     pub purged: bool,
 }
@@ -532,7 +534,7 @@ impl MemoryService {
         runtime.spawn(async move {
             match service.maintain().await {
                 Ok(done) => {
-                    tracing::info!(target: "shodh::memory", legacy_erased = done.legacy_erased, suggestions_cleared = done.suggestions_cleared, purged = done.purged, "memory maintenance done")
+                    tracing::info!(target: "shodh::memory", legacy_erased = done.legacy_erased, suggestions_cleared = done.suggestions_cleared, approvals_renamed = done.approvals_renamed, purged = done.purged, "memory maintenance done")
                 }
                 Err(e) => {
                     tracing::warn!(target: "shodh::memory", error = %e, "memory maintenance failed; the next start retries")
@@ -545,7 +547,8 @@ impl MemoryService {
     /// earlier version) left:
     /// 1. once: memories and snippets only soft-deleted by versions before forgetting
     ///    erased them are erased ([`StatementStore::erase_forgotten`]);
-    /// 2. once, with an inbox and an audit log: suggestions about memories forgotten before
+    /// 2. once, with an inbox: the Inbox's approval items of the memory tools get wordless
+    ///    titles, and (with an audit log) suggestions about memories forgotten before
     ///    suggestions were cleared lose their words. The ids come from the audit log's
     ///    `memory_forget` events (they always carried them); a forget whose event retention
     ///    removed is cleared when the user presses Undo on its suggestion instead;
@@ -574,20 +577,27 @@ impl MemoryService {
             let at = self.store.now().to_rfc3339();
             blocking(move || dynamics.set_state(LEGACY_ERASE_KEY, &at)).await?;
         }
-        if let (Some(inbox), Some(log)) = (self.inbox.clone(), self.audit.clone()) {
+        if let Some(inbox) = self.inbox.clone() {
+            let log = self.audit.clone();
             let now = self.store.now();
-            done.suggestions_cleared =
-                tokio::task::spawn_blocking(move || -> learn::LearnResult<usize> {
+            (done.suggestions_cleared, done.approvals_renamed) =
+                tokio::task::spawn_blocking(move || -> learn::LearnResult<(usize, usize)> {
                     if inbox.state(SUGGESTION_SWEEP_KEY)?.is_some() {
-                        return Ok(0);
+                        return Ok((0, 0));
                     }
-                    let forgotten = learn::ForgottenMemories {
-                        ids: forgotten_ids(&log)?,
-                        ..Default::default()
+                    let renamed = inbox.clear_memory_approval_titles()?;
+                    let cleared = match &log {
+                        Some(log) => {
+                            let forgotten = learn::ForgottenMemories {
+                                ids: forgotten_ids(log)?,
+                                ..Default::default()
+                            };
+                            inbox.forget_memories(&forgotten, now)?
+                        }
+                        None => 0,
                     };
-                    let cleared = inbox.forget_memories(&forgotten, now)?;
                     inbox.set_state(SUGGESTION_SWEEP_KEY, &now.to_rfc3339())?;
-                    Ok(cleared)
+                    Ok((cleared, renamed))
                 })
                 .await
                 .map_err(|e| MemoryError::Statement(StatementError::Task(e.to_string())))?

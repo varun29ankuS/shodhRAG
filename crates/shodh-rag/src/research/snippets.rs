@@ -562,18 +562,27 @@ impl SnippetService {
         .await
     }
 
-    /// Deletes a snippet: every version is forgotten and the image dropped when no
-    /// current snippet still shows it.
+    /// Deletes a snippet: every version is erased (its rows deleted from the statement
+    /// table, whose old versions are then purged in the background, see
+    /// [`StatementStore::erase`]) and the image dropped when no current snippet still
+    /// shows it. Snippets only soft-deleted by earlier versions of the app are erased
+    /// with it.
     pub async fn delete(&self, id: &str) -> ResearchResult<Snippet> {
         let current = self.current(id).await?;
         let snippet = snippet_from(&current)?;
         let image = text_of(&current.statement.properties, "snippetImage");
-        for version in self.store.history_ids(&current.statement.id).await? {
-            match self.store.forget(&version).await {
-                Ok(_) | Err(crate::statements::StatementError::NotFound(_)) => {}
-                Err(e) => return Err(e.into()),
+        let versions = self.store.history_ids(&current.statement.id).await?;
+        self.store.erase(&versions).await?;
+        match self.store.erase_forgotten(&[], &[SNIPPET_CLASS]).await {
+            Ok(0) => {}
+            Ok(n) => {
+                tracing::info!(target: "shodh::research", erased = n, "snippets deleted earlier were erased")
+            }
+            Err(e) => {
+                tracing::warn!(target: "shodh::research", error = %e, "snippets deleted earlier were not erased; the next delete retries")
             }
         }
+        self.store.schedule_purge();
         if let Some(uri) = image {
             let still_used = !self
                 .store
@@ -692,7 +701,9 @@ mod tests {
     use super::*;
     use crate::processing::document_model::{Block, PageInfo, StructuredDocument};
     use crate::research::db::tests::tiny_png;
-    use crate::statements::testing::{t0, FixedEmbedder, TestClock, WordEmbedder};
+    use crate::statements::testing::{
+        files_containing, t0, FixedEmbedder, TestClock, WordEmbedder,
+    };
     use crate::statements::DynamicsStore;
 
     async fn service(dir: &std::path::Path) -> SnippetService {
@@ -736,6 +747,47 @@ mod tests {
             scope: Scope::Workspace("source-1".into()),
             author: SnippetAuthor::User,
         }
+    }
+
+    #[tokio::test]
+    async fn a_deleted_snippet_leaves_no_trace_in_the_statement_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = TestClock::at(t0());
+        let service = service_with_clock(dir.path(), clock.clone()).await;
+        let created = service
+            .create(new_snippet(
+                "C:/papers/attention.pdf",
+                "The platypuswharf loss is the negative log likelihood",
+                None,
+            ))
+            .await
+            .unwrap();
+        clock.advance_days(1);
+        service
+            .update(
+                &created.id,
+                SnippetPatch {
+                    note: Some("platypuswharf again".into()),
+                    ..SnippetPatch::default()
+                },
+            )
+            .await
+            .unwrap();
+        let lance = dir.path().join("lance");
+        assert!(
+            !files_containing(&lance, "platypuswharf").is_empty(),
+            "control"
+        );
+
+        service.delete(&created.id).await.unwrap();
+        // The background purge may still be running; this one waits for it.
+        service.store.purge_history().await.unwrap();
+        let left = files_containing(&lance, "platypuswharf");
+        assert!(left.is_empty(), "still on disk in {left:?}");
+        assert!(matches!(
+            service.get(&created.id).await,
+            Err(ResearchError::NotFound(_))
+        ));
     }
 
     #[tokio::test]

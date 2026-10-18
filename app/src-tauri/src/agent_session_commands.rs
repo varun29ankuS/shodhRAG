@@ -371,6 +371,47 @@ impl Drop for StartingGuard<'_> {
     }
 }
 
+/// Emits the session counts when a start ends without emitting them although the live
+/// sessions changed under it: a failed start may already have replaced a stale session
+/// or evicted idle ones to make room, and the tray must not keep showing them. A start
+/// that emits the counts itself marks it [`emitted`](Self::emitted).
+struct CountsGuard<'a> {
+    app: &'a AppHandle,
+    sessions: &'a AgentSessions,
+    before: SessionCounts,
+    emitted: bool,
+}
+
+impl<'a> CountsGuard<'a> {
+    fn new(app: &'a AppHandle, sessions: &'a AgentSessions) -> Self {
+        Self {
+            app,
+            sessions,
+            before: sessions.counts(),
+            emitted: false,
+        }
+    }
+
+    /// The counts were emitted on the way out: nothing is left to do on drop.
+    fn emitted(&mut self) {
+        self.emitted = true;
+    }
+}
+
+impl Drop for CountsGuard<'_> {
+    fn drop(&mut self) {
+        if counts_need_emit(self.emitted, self.before, self.sessions.counts()) {
+            emit_counts(self.app, self.sessions);
+        }
+    }
+}
+
+/// Whether a start that ends with the live sessions at `now` must still emit them: it did
+/// not emit them itself and they are not what they were when it began.
+fn counts_need_emit(emitted: bool, before: SessionCounts, now: SessionCounts) -> bool {
+    !emitted && before != now
+}
+
 impl AgentSessions {
     fn entry(&self, session_id: &str) -> Result<Arc<SessionEntry>, AgentCommandError> {
         self.sessions
@@ -1365,6 +1406,9 @@ async fn start_attempt(
 
     let lock = sessions.start_lock(&conversation_id);
     let _guard = lock.lock().await;
+    // From here a start may stop sessions before it fails (a stale one it
+    // replaces, idle ones it evicts): the tray then still learns of it.
+    let mut counts = CountsGuard::new(&app, &sessions);
 
     let existing = sessions
         .by_conversation
@@ -1579,9 +1623,11 @@ async fn start_attempt(
             entry.session.shutdown().await;
         }
         emit_counts(&app, &sessions);
+        counts.emitted();
         return Ok(StartAttempt::KeyChanged(provider));
     }
     emit_counts(&app, &sessions);
+    counts.emitted();
     tracing::info!(
         target: "shodh::harness",
         session = %session_id,
@@ -2692,6 +2738,18 @@ mod tests {
             vec!["s1", "s3"]
         );
         assert!(sessions_of_provider(&live, ProviderId::Google).is_empty());
+    }
+
+    #[test]
+    fn a_failed_start_that_stopped_sessions_still_updates_the_tray() {
+        let counts = |main, side| SessionCounts { main, side };
+        // A stale session was replaced, or idle ones evicted, and the start failed.
+        assert!(counts_need_emit(false, counts(3, 1), counts(2, 1)));
+        assert!(counts_need_emit(false, counts(2, 2), counts(2, 0)));
+        // Nothing changed (a reused session, a busy one, a failure before any stop).
+        assert!(!counts_need_emit(false, counts(2, 1), counts(2, 1)));
+        // The start emitted the counts itself.
+        assert!(!counts_need_emit(true, counts(1, 0), counts(2, 0)));
     }
 
     #[test]

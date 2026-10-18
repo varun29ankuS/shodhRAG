@@ -10,8 +10,9 @@
 //! A stdio server starts with an empty environment plus the variables
 //! [`server_env`] passes on and its own configured ones, so provider keys
 //! and tokens in Shodh's environment never reach it. An HTTP server's
-//! redirects are not followed: the address the user configured (and the
-//! Local-only check made of it) is the only one contacted.
+//! redirects are followed only on its own scheme, host and port: the address
+//! the user configured (and the Local-only check made of it) is the only one
+//! contacted.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
@@ -72,6 +73,43 @@ const SERVER_USER_VARS: [&str; 21] = [
     "XDG_CACHE_HOME",
     "XDG_RUNTIME_DIR",
 ];
+
+/// Whether `url`'s host is this computer.
+pub fn is_loopback_url(url: &str) -> bool {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| {
+            host == "localhost"
+                || host == "[::1]"
+                || host == "::1"
+                || host
+                    .parse::<std::net::Ipv4Addr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        })
+}
+
+/// The redirect policy of an HTTP server's client: a redirect is followed
+/// (up to 5) only when it stays on the configured scheme, host and port, so
+/// the address the user configured (and Local-only mode checked) is the only
+/// one contacted. Any other redirect is answered as is, and the call fails
+/// naming where it pointed.
+fn same_origin_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let previous = attempt.previous();
+        let next = attempt.url();
+        let same = previous.first().is_some_and(|first| {
+            next.scheme() == first.scheme()
+                && next.host_str() == first.host_str()
+                && next.port_or_known_default() == first.port_or_known_default()
+        });
+        if same && previous.len() <= 5 {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
 
 /// The complete environment of a stdio server: the variables named by
 /// omp's allowlist and [`SERVER_USER_VARS`] that `parent` (Shodh's
@@ -136,6 +174,9 @@ pub struct ToolAnnotations {
     pub read_only_hint: Option<bool>,
     #[serde(default)]
     pub destructive_hint: Option<bool>,
+    /// False: the tool reaches nothing beyond the server itself.
+    #[serde(default)]
+    pub open_world_hint: Option<bool>,
 }
 
 impl ToolInfo {
@@ -145,6 +186,12 @@ impl ToolInfo {
             .as_ref()
             .and_then(|a| a.read_only_hint)
             .unwrap_or(false)
+    }
+
+    /// Whether the server says the tool reaches nothing outside itself
+    /// (`openWorldHint: false`; the specification's default is open).
+    pub fn closed_world(&self) -> bool {
+        self.annotations.as_ref().and_then(|a| a.open_world_hint) == Some(false)
     }
 
     /// Whether the server marks the tool as destructive (the default for a
@@ -346,7 +393,7 @@ impl McpClient {
                     .connect_timeout(Duration::from_secs(15))
                     // A redirect could lead to another computer than the one
                     // configured (and checked for Local-only mode).
-                    .redirect(reqwest::redirect::Policy::none())
+                    .redirect(same_origin_redirects())
                     .user_agent(concat!("shodh/", env!("CARGO_PKG_VERSION")))
                     .build()
                     .map_err(|e| McpError::Http(e.to_string()))?;
@@ -604,6 +651,19 @@ impl McpClient {
             *lock(&http.session) = Some(session.to_string());
         }
         let status = response.status();
+        if status.is_redirection() {
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("nowhere")
+                .to_string();
+            return Err(McpError::Http(self.redact(&format!(
+                "{} answered {status}, a redirect to {location} (another address than the \
+                 one configured), which Shodh does not follow",
+                http.url
+            ))));
+        }
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             return Err(McpError::Http(self.redact(&format!(

@@ -344,5 +344,48 @@ async fn http_servers_redirects_are_not_followed() {
     };
     let error = McpClient::connect(&transport).await.err().expect("refused");
     assert!(error.to_string().contains("307"), "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("http://127.0.0.1:{elsewhere_port}/mcp")),
+        "{error}"
+    );
     assert!(!reached.load(Ordering::SeqCst), "the redirect was followed");
+}
+
+#[tokio::test]
+async fn http_redirects_on_the_same_server_are_followed() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let (request, _, body) = read_http(&mut stream).await;
+            let response = if request.starts_with("POST /mcp ") {
+                http_response(
+                    "308 Permanent Redirect",
+                    "Location: /mcp/
+",
+                    "",
+                )
+            } else if body["method"] == "initialize" {
+                let json = json!({"jsonrpc": "2.0", "id": body["id"], "result": {
+                    "protocolVersion": "2025-03-26", "serverInfo": {"name": "web"}}});
+                http_response(
+                    "200 OK",
+                    "Content-Type: application/json
+",
+                    &json.to_string(),
+                )
+            } else {
+                http_response("202 Accepted", "", "")
+            };
+            let _ = stream.write_all(response.as_bytes()).await;
+        }
+    });
+    let transport = Transport::Http {
+        url: format!("http://127.0.0.1:{port}/mcp"),
+        headers: BTreeMap::new(),
+    };
+    let client = McpClient::connect(&transport).await;
+    assert!(client.is_ok(), "{:?}", client.err());
 }

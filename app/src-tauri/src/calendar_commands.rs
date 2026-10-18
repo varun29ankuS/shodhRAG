@@ -105,63 +105,65 @@ fn to_rag_event(event: &CalendarEvent) -> shodh_rag::agent::calendar::CalendarEv
     }
 }
 
-/// Re-index (or de-index) the changed record in the background.
+/// Keeps the writes of calendar index entries one at a time (see
+/// [`shodh_rag::agent::calendar_indexer::CalendarNow`]): the startup indexing
+/// and the indexing of each change take it, so an entry always ends as the
+/// calendar's latest version of its item.
+static CALENDAR_INDEX_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// The task `id` as `calendar` holds it now (`None`: gone).
+fn current_task(
+    calendar: &CalendarStore,
+    id: &str,
+) -> Result<Option<shodh_rag::agent::calendar::TodoItem>, String> {
+    let data = calendar.load().map_err(|e| e.to_string())?;
+    Ok(data.tasks.iter().find(|t| t.id == id).map(to_rag_task))
+}
+
+/// The event `id` as `calendar` holds it now (`None`: gone).
+fn current_event(
+    calendar: &CalendarStore,
+    id: &str,
+) -> Result<Option<shodh_rag::agent::calendar::CalendarEvent>, String> {
+    let data = calendar.load().map_err(|e| e.to_string())?;
+    Ok(data.events.iter().find(|e| e.id == id).map(to_rag_event))
+}
+
+/// Re-index (or de-index) the changed record in the background: as the
+/// calendar holds it when its turn comes, so changes indexed out of order,
+/// or during the startup indexing, still leave the latest version.
 pub(crate) fn spawn_reindex(app: &AppHandle, change: &CalendarChange) {
     let rag = app.state::<RagState>().rag.clone();
-    match change {
-        CalendarChange::TaskSaved(task) => {
-            let rag_task = to_rag_task(task);
-            tokio::spawn(async move {
-                let mut engine = rag.write().await;
-                if let Err(e) = shodh_rag::agent::calendar_indexer::index_task(
-                    &mut engine,
-                    &rag_task,
-                    "calendar",
-                )
-                .await
-                {
-                    tracing::warn!(task_id = %rag_task.id, error = %e, "Failed to index task in RAG");
-                }
-            });
+    let calendar = match store(app) {
+        Ok(calendar) => calendar,
+        Err(e) => {
+            tracing::warn!(error = %e, "calendar change not indexed: the calendar is unavailable");
+            return;
         }
-        CalendarChange::TaskRemoved(id) => {
-            let id = id.clone();
-            tokio::spawn(async move {
-                let mut engine = rag.write().await;
-                if let Err(e) =
-                    shodh_rag::agent::calendar_indexer::deindex_task(&mut engine, &id).await
-                {
-                    tracing::warn!(task_id = %id, error = %e, "Failed to deindex task from RAG");
-                }
-            });
+    };
+    let (id, is_task) = match change {
+        CalendarChange::TaskSaved(task) => (task.id.clone(), true),
+        CalendarChange::TaskRemoved(id) => (id.clone(), true),
+        CalendarChange::EventSaved(event) => (event.id.clone(), false),
+        CalendarChange::EventRemoved(id) => (id.clone(), false),
+    };
+    tokio::spawn(async move {
+        let task = |id: &str| current_task(&calendar, id);
+        let event = |id: &str| current_event(&calendar, id);
+        let now = shodh_rag::agent::calendar_indexer::CalendarNow {
+            lock: &CALENDAR_INDEX_LOCK,
+            task: &task,
+            event: &event,
+        };
+        let done = if is_task {
+            shodh_rag::agent::calendar_indexer::reconcile_task(&rag, &now, &id, "calendar").await
+        } else {
+            shodh_rag::agent::calendar_indexer::reconcile_event(&rag, &now, &id, "calendar").await
+        };
+        if let Err(e) = done {
+            tracing::warn!(id = %id, error = %e, "Failed to bring a calendar item's index entry up to date");
         }
-        CalendarChange::EventSaved(event) => {
-            let rag_event = to_rag_event(event);
-            tokio::spawn(async move {
-                let mut engine = rag.write().await;
-                if let Err(e) = shodh_rag::agent::calendar_indexer::index_event(
-                    &mut engine,
-                    &rag_event,
-                    "calendar",
-                )
-                .await
-                {
-                    tracing::warn!(event_id = %rag_event.id, error = %e, "Failed to index event in RAG");
-                }
-            });
-        }
-        CalendarChange::EventRemoved(id) => {
-            let id = id.clone();
-            tokio::spawn(async move {
-                let mut engine = rag.write().await;
-                if let Err(e) =
-                    shodh_rag::agent::calendar_indexer::deindex_event(&mut engine, &id).await
-                {
-                    tracing::warn!(event_id = %id, error = %e, "Failed to deindex event from RAG");
-                }
-            });
-        }
-    }
+    });
 }
 
 // ── Task Commands ────────────────────────────────────────────────
@@ -426,10 +428,26 @@ pub async fn reindex_all_calendar_data(app: &AppHandle) {
     let rag_tasks: Vec<_> = data.tasks.iter().map(to_rag_task).collect();
     let rag_events: Vec<_> = data.events.iter().map(to_rag_event).collect();
 
+    let calendar = match store(app) {
+        Ok(calendar) => calendar,
+        Err(e) => {
+            tracing::warn!(error = %e, "Could not read calendar data for reindexing");
+            return;
+        }
+    };
     tokio::spawn(async move {
-        let mut engine = rag.write().await;
+        // Each item is read again and written under the calendar index lock,
+        // with the engine taken for one item at a time (see `index_missing`).
+        let task = |id: &str| current_task(&calendar, id);
+        let event = |id: &str| current_event(&calendar, id);
+        let now = shodh_rag::agent::calendar_indexer::CalendarNow {
+            lock: &CALENDAR_INDEX_LOCK,
+            task: &task,
+            event: &event,
+        };
         match shodh_rag::agent::calendar_indexer::index_missing(
-            &mut engine,
+            &rag,
+            &now,
             &rag_tasks,
             &rag_events,
             "calendar",

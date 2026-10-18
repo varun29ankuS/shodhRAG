@@ -288,6 +288,7 @@ fn build_units(blocks: &[Block]) -> Vec<Unit> {
             .last()
             .is_some_and(|u| u.section_path == block.section_path);
         match &block.kind {
+            // Opens the first unit of text ([`open_with_title`]).
             BlockKind::Title => {}
             BlockKind::Heading { .. } => {
                 pending_heading = Some(block.text.trim().to_string()).filter(|t| !t.is_empty());
@@ -413,7 +414,30 @@ fn build_units(blocks: &[Block]) -> Vec<Unit> {
             }
         }
     }
-    drop_empty_units(units, blocks)
+    let mut units = drop_empty_units(units, blocks);
+    open_with_title(&mut units, blocks);
+    units
+}
+
+/// Puts the document's title ([`BlockKind::Title`]) at the start of its
+/// first unit of text, before that unit's heading, so the title is in what
+/// is embedded and keyword-indexed: a paper is found by its title.
+fn open_with_title(units: &mut [Unit], blocks: &[Block]) {
+    let Some(title) = blocks
+        .iter()
+        .filter(|b| matches!(b.kind, BlockKind::Title))
+        .map(|b| b.text.split_whitespace().collect::<Vec<_>>().join(" "))
+        .find(|t| !t.is_empty())
+    else {
+        return;
+    };
+    let Some(unit) = units.iter_mut().find(|u| u.kind == UnitKind::Flow) else {
+        return;
+    };
+    unit.heading = Some(match unit.heading.take() {
+        Some(heading) => format!("{title}\n\n{heading}"),
+        None => title,
+    });
 }
 
 /// The units with text, in order. A dropped unit's heading goes to the next
@@ -1357,5 +1381,41 @@ mod tests {
         let chunks = StructureChunker::new(64).chunk(&d, &DocumentContext::titled("Doc"), &words);
         assert!(chunks.len() >= 2);
         assert!(chunks.iter().any(|c| c.text.contains("Gemäß §\u{a0}12.")));
+    }
+
+    /// The title opens the first text unit, before its heading, and is in
+    /// no other chunk.
+    #[test]
+    fn the_title_opens_the_first_unit_of_text() {
+        let d = doc(vec![
+            block(BlockKind::Title, "Attention Is All\nYou Need", 1),
+            block(BlockKind::Heading { level: 1 }, "Abstract", 1),
+            block(
+                BlockKind::Paragraph,
+                "The dominant sequence transduction models are based on recurrent networks.",
+                1,
+            ),
+            block(BlockKind::Heading { level: 1 }, "1 Introduction", 1),
+            block(
+                BlockKind::Paragraph,
+                "Recurrent neural networks have been used.",
+                1,
+            ),
+        ]);
+        let chunks = StructureChunker::new(300).chunk(&d, &DocumentContext::titled("Doc"), &words);
+        assert!(
+            chunks[0]
+                .text
+                .starts_with("Attention Is All You Need\n\nAbstract\n\nThe dominant"),
+            "{}",
+            chunks[0].text
+        );
+        assert_eq!(
+            chunks
+                .iter()
+                .filter(|c| c.text.contains("Attention Is All You Need"))
+                .count(),
+            1
+        );
     }
 }

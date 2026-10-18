@@ -416,11 +416,8 @@ impl DocumentParser {
 
         let format = DocumentFormat::from_extension(&extension);
         // Use file stem (without extension) for a cleaner display title
-        let title = path
-            .file_stem()
-            .and_then(|n| n.to_str())
-            .unwrap_or("untitled")
-            .to_string();
+        let stem = path.file_stem().and_then(|n| n.to_str());
+        let mut title = stem.unwrap_or("untitled").to_string();
 
         let mut metadata = HashMap::new();
         metadata.insert("file_path".to_string(), path.display().to_string());
@@ -500,6 +497,13 @@ impl DocumentParser {
         if let Some(doc) = &document {
             if !doc.pages.is_empty() {
                 metadata.insert("page_count".to_string(), doc.pages.len().to_string());
+            }
+            // A file named by an id ("1706.03762v7.pdf") is titled by the
+            // title printed in it.
+            if let Some(printed) = document_title(doc) {
+                if stem.is_none_or(is_identifier_stem) {
+                    title = printed;
+                }
             }
         }
 
@@ -1169,6 +1173,39 @@ fn system_ocr_available() -> bool {
     {
         false
     }
+}
+
+/// The title printed in `doc`: its title block unless that reads as a
+/// heading, else the first line of its first page that reads as a title (as
+/// the citation graph reads it, [`crate::research::citations::identity`]).
+pub fn document_title(doc: &StructuredDocument) -> Option<String> {
+    crate::research::citations::identity::title_from_block(doc)
+}
+
+/// Whether a file name (its stem) is an identifier rather than a title: an
+/// arXiv id ("1706.03762v7"), a number or date ("20231015", "2023-10-15"),
+/// a hash or UUID, or a code such as "PMC1234567" or "IMG_0042": four
+/// digits or more and no run of more than three letters.
+pub fn is_identifier_stem(stem: &str) -> bool {
+    let stem = stem.trim();
+    if stem.is_empty() {
+        return true;
+    }
+    let digits = stem.chars().filter(|c| c.is_ascii_digit()).count();
+    let hash = stem.chars().filter(|c| *c != '-').count() >= 8
+        && digits > 0
+        && stem.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+    let mut longest_letters = 0;
+    let mut letters = 0;
+    for c in stem.chars() {
+        if c.is_alphabetic() {
+            letters += 1;
+            longest_letters = longest_letters.max(letters);
+        } else {
+            letters = 0;
+        }
+    }
+    hash || (digits >= 4 && longest_letters <= 3)
 }
 
 /// Pages shown in a list of pages before the rest are counted.
@@ -2581,6 +2618,54 @@ pub(crate) mod tests {
             "{pages:?}"
         );
         assert_eq!(pdf_extract_pages(&bytes, 3), None);
+    }
+
+    #[test]
+    fn file_names_that_are_ids_are_told_from_titles() {
+        for id in [
+            "1706.03762v7",
+            "2310.06825",
+            "20231015",
+            "2023-10-15",
+            "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+            "a3f9c2e1b4d5e6f7",
+            "PMC1234567",
+            "IMG_0042",
+            "",
+        ] {
+            assert!(is_identifier_stem(id), "{id:?}");
+        }
+        for title in [
+            "attention",
+            "report2023",
+            "My thesis draft",
+            "notes",
+            "Q3 results 2023",
+            "deadbeef",
+            "lease-scan",
+        ] {
+            assert!(!is_identifier_stem(title), "{title:?}");
+        }
+    }
+
+    /// A PDF named by its arXiv id is titled by the title printed on it; a
+    /// PDF with a name keeps it.
+    #[test]
+    fn a_pdf_named_by_an_id_is_titled_by_its_printed_title() {
+        use crate::processing::pdf_fixtures::{bold, build_pdf, column};
+        let mut page = vec![bold(72.0, 740.0, 18.0, "Attention Is All You Need")];
+        page.push(bold(72.0, 700.0, 12.0, "1 Introduction"));
+        page.extend(column(72.0, 684.0, "intro", 8));
+        let bytes = build_pdf(&[page], None);
+        let dir = tempfile::tempdir().unwrap();
+        let arxiv = dir.path().join("1706.03762v7.pdf");
+        std::fs::write(&arxiv, &bytes).unwrap();
+        let parsed = DocumentParser::new().parse_file(&arxiv).expect("parsed");
+        assert_eq!(parsed.title, "Attention Is All You Need");
+        let named = dir.path().join("transformer-paper.pdf");
+        std::fs::write(&named, &bytes).unwrap();
+        let parsed = DocumentParser::new().parse_file(&named).expect("parsed");
+        assert_eq!(parsed.title, "transformer-paper");
     }
 
     /// OCR that fails says why, instead of reporting a scan with no text.

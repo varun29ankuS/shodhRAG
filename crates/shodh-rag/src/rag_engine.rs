@@ -151,10 +151,14 @@ impl FilePreparer {
             source: source.clone(),
             ..Citation::default()
         };
-        let title = merged_metadata
-            .get("title")
-            .cloned()
-            .unwrap_or_else(|| parsed.title.clone());
+        // A title the caller gave is kept unless it is only the file's own
+        // name: the parser titles a file named by an id by the title
+        // printed in it ([`crate::processing::parser::is_identifier_stem`]).
+        let stem = path.file_stem().and_then(|s| s.to_str());
+        let title = match merged_metadata.get("title") {
+            Some(given) if Some(given.as_str()) != stem => given.clone(),
+            _ => parsed.title.clone(),
+        };
 
         // Documents parsed into semantic blocks (PDF, LaTeX, Markdown) are
         // chunked by unit: sections, tables with headers, theorems with their

@@ -942,7 +942,6 @@ mod tests {
         assert!(!is_supported_file_type("exe"));
     }
 
-    /// The parser reads `.htm` as HTML; indexing takes it too.
     #[test]
     fn refused_chat_uploads_are_not_queued_for_the_scan_reader() {
         let owned = |owner: &str| HashMap::from([("space_id".to_string(), owner.to_string())]);
@@ -954,6 +953,7 @@ mod tests {
         assert!(!queued_when_refused(&owned("chat-uploads:ws-1")));
     }
 
+    /// The parser reads `.htm` as HTML; indexing takes it too.
     #[test]
     fn both_html_extensions_are_supported() {
         assert!(is_supported_file_type("html"));

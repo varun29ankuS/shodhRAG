@@ -44,6 +44,17 @@ export async function forgetMemory(id: string): Promise<string[]> {
   return Array.isArray(ids) ? ids.filter((x): x is string => typeof x === 'string') : [];
 }
 
+/**
+ * Whether Activity log entries from before memory events stopped carrying words still
+ * show some of this memory's, for the forget confirmation.
+ */
+export async function forgetNotice(id: string): Promise<{ olderEntriesHaveWords: boolean }> {
+  const notice = await invoke<unknown>('memory_forget_notice', { id });
+  const older =
+    typeof notice === 'object' && notice !== null && (notice as { olderEntriesHaveWords?: unknown }).olderEntriesHaveWords;
+  return { olderEntriesHaveWords: older === true };
+}
+
 /** Write every memory (with history) as JSON to `path`. */
 export async function exportMemories(path: string): Promise<{ path: string; memories: number }> {
   return invoke<{ path: string; memories: number }>('memory_export', { path });

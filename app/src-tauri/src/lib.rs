@@ -688,6 +688,7 @@ pub fn run() {
             memory_commands::memory_update,
             memory_commands::memory_set_pinned,
             memory_commands::memory_forget,
+            memory_commands::memory_forget_notice,
             memory_commands::memory_export,
             memory_learn::memory_learn_status,
             memory_learn::memory_suggestions_list,

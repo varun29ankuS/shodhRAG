@@ -1177,7 +1177,7 @@ impl ToolRegistry {
             step_id = %ctx.step_id,
             tool = %call.tool,
             tier = ?tier,
-            args = %truncate_chars(&args.to_string(), 1_000),
+            args = %truncate_chars(&audit_payload::tool_args(&call.tool, &args).to_string(), 1_000),
             ok = outcome.ok,
             summary = %outcome.summary,
             duration_ms,

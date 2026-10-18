@@ -3,7 +3,7 @@
 use chrono::Duration;
 use shodh_ontology::{EntityRef, PropertyChange, RawValue};
 
-use super::testing::{fixture, note, preference, statement, t0};
+use super::testing::{files_containing, fixture, note, preference, statement, t0};
 use super::{PropertyFilter, PutIntent, PutOutcome, Scope, StatementError, StatementQuery};
 
 fn current(classes: &[&str]) -> StatementQuery {
@@ -774,4 +774,134 @@ impl super::testing::Fixture {
         use super::Clock;
         self.clock.now()
     }
+}
+
+#[tokio::test]
+async fn erased_statements_leave_no_trace_in_the_table_or_its_history() {
+    let f = fixture().await;
+    // A word no other text has, to look for in the files.
+    const WORD: &str = "zebracornflake";
+    f.store
+        .put(
+            note("n1", &format!("Locker code is {WORD} 4411"), t0()),
+            Scope::Global,
+            PutIntent::Auto,
+        )
+        .await
+        .unwrap();
+    f.store
+        .put(
+            note("n2", "The wifi password is on the fridge", t0()),
+            Scope::Global,
+            PutIntent::Auto,
+        )
+        .await
+        .unwrap();
+    let lance = f.dir.path().join("lance_data");
+    assert!(
+        !files_containing(&lance, WORD).is_empty(),
+        "control: the text is in the table's files"
+    );
+
+    let erased = f
+        .store
+        .erase(&["n1".to_string(), "unknown".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(erased, vec!["n1".to_string()]);
+    assert!(matches!(
+        f.store.get("n1").await,
+        Err(StatementError::NotFound(_))
+    ));
+    assert!(f.store.dynamics().get("n1").unwrap().is_none());
+    // Deleted from the current version, still in the files of the earlier ones.
+    assert!(!files_containing(&lance, WORD).is_empty());
+    assert!(f.store.table_versions().await.unwrap().len() > 1);
+
+    f.store.purge_history().await.unwrap();
+    assert_eq!(f.store.table_versions().await.unwrap().len(), 1);
+    let left = files_containing(&lance, WORD);
+    assert!(left.is_empty(), "still on disk in {left:?}");
+    // An earlier version can no longer be opened.
+    let db = lancedb::connect(lance.to_str().unwrap())
+        .execute()
+        .await
+        .unwrap();
+    let table = db.open_table("statements").execute().await.unwrap();
+    assert_eq!(table.list_versions().await.unwrap().len(), 1);
+    assert!(table.checkout(1).await.is_err());
+    // The rest is untouched and still searchable, by words and by vector.
+    assert_eq!(
+        f.store.get("n2").await.unwrap().text,
+        "The wifi password is on the fridge"
+    );
+    let hits = f
+        .store
+        .search("wifi password", &StatementQuery::default(), 5)
+        .await
+        .unwrap();
+    assert!(hits.iter().any(|h| h.stored.id() == "n2" && h.lexical));
+    // The id is free: the row is gone, not hidden.
+    f.store
+        .put(note("n1", "again", t0()), Scope::Global, PutIntent::Auto)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn statements_forgotten_before_are_erased_by_source_or_class() {
+    let f = fixture().await;
+    f.store
+        .put(
+            note("n1", "Old marmalade secret", t0()),
+            Scope::Global,
+            PutIntent::Auto,
+        )
+        .await
+        .unwrap();
+    f.store
+        .put(
+            note("n2", "Kept forgotten", t0()),
+            Scope::Global,
+            PutIntent::Auto,
+        )
+        .await
+        .unwrap();
+    f.store.forget("n1").await.unwrap();
+    f.store.forget("n2").await.unwrap();
+    // Neither the source nor the class matches: nothing is erased.
+    assert_eq!(
+        f.store
+            .erase_forgotten(&["settings://".to_string()], &["Snippet"])
+            .await
+            .unwrap(),
+        0
+    );
+    // Every note here came from a conversation.
+    assert_eq!(
+        f.store
+            .erase_forgotten(&["conversation://".to_string()], &[])
+            .await
+            .unwrap(),
+        2
+    );
+    f.store.purge_history().await.unwrap();
+    assert!(files_containing(&f.dir.path().join("lance_data"), "marmalade").is_empty());
+    // Current statements are never touched.
+    f.store
+        .put(
+            note("n3", "Current one", t0()),
+            Scope::Global,
+            PutIntent::Auto,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        f.store
+            .erase_forgotten(&["conversation://".to_string()], &[])
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(f.store.get("n3").await.is_ok());
 }

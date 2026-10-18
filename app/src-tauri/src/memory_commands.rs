@@ -17,6 +17,7 @@ use shodh_rag::statements::{
     DynamicsStore, EmbedderSource, Scope, StatementError, StatementResult, StatementStore,
     SystemClock,
 };
+use shodh_rag::user_memory::learn::Inbox;
 use shodh_rag::user_memory::{
     render_injection_counted, Actor, ListRequest, MemoryContent, MemoryError, MemoryRecord,
     MemoryService, Origin, RecallMode, RecallRequest, RememberOutcome, MAX_INJECTION_CHARS,
@@ -113,8 +114,13 @@ impl MemoryState {
                     "Memory needs the app database (shodh.db), which could not be opened; see the audit page."
                         .to_string()
                 })?;
-                let dynamics = tokio::task::spawn_blocking(move || {
-                    DynamicsStore::open(&db_path, key.as_ref())
+                // The inbox is opened with the memory, not only with learning: forgetting
+                // clears a memory's words from its suggestions even while learning is off.
+                let (dynamics, inbox) = tokio::task::spawn_blocking(move || {
+                    let dynamics =
+                        DynamicsStore::open(&db_path, key.as_ref()).map_err(|e| e.to_string())?;
+                    let inbox = Inbox::open(&db_path, key.as_ref()).map_err(|e| e.to_string())?;
+                    Ok::<_, String>((dynamics, inbox))
                 })
                 .await
                 .map_err(|e| format!("Opening memory failed: {e}"))?
@@ -131,11 +137,14 @@ impl MemoryState {
                 )
                 .await
                 .map_err(|e| format!("Opening memory failed: {e}"))?;
-                Ok(Arc::new(MemoryService::new(
-                    Arc::new(store),
-                    deps.audit.clone(),
-                    APP_VERSION,
-                )))
+                let service = Arc::new(
+                    MemoryService::new(Arc::new(store), deps.audit.clone(), APP_VERSION)
+                        .with_inbox(Arc::new(inbox)),
+                );
+                // Finishes what earlier runs left (erased rows still in the table's history,
+                // memories forgotten before forgetting erased everything), in the background.
+                service.start_maintenance();
+                Ok(service)
             })
             .await
             .cloned()
@@ -291,6 +300,27 @@ pub async fn memory_forget(
         .forget(&id, None, &Actor::ui())
         .await
         .map_err(error_text)
+}
+
+/// What the forget confirmation tells about the audit log.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForgetNotice {
+    /// Audit events written before memory events stopped carrying words still show some
+    /// of this memory's.
+    pub older_entries_have_words: bool,
+}
+
+/// What forgetting memory `id` leaves in the audit log, for the confirmation.
+#[tauri::command]
+pub async fn memory_forget_notice(
+    id: String,
+    memory: State<'_, MemoryState>,
+) -> Result<ForgetNotice, String> {
+    let service = memory.service().await?;
+    Ok(ForgetNotice {
+        older_entries_have_words: service.audit_holds_words(&id).await.map_err(error_text)?,
+    })
 }
 
 /// Where an export was written and how many memories it holds.

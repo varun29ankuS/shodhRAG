@@ -252,6 +252,7 @@ impl Learner {
                     model: model.model_id(),
                     at: *at,
                     source: source.clone(),
+                    trigger: Some(stored.id().to_string()),
                 },
                 confidence: revision.confidence,
                 sensitive: sensitivity::classify(ontology, &revised),

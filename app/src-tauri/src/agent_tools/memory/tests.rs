@@ -209,6 +209,15 @@ async fn an_approved_memory_carries_the_users_turn_as_provenance_and_is_audited(
     assert_eq!(writes.len(), 1);
     assert_eq!(writes[0]["approval"], "step-3");
     assert_eq!(writes[0]["via"], "agent");
+    // The tool call is audited with the class and property names, not the values.
+    let calls = h.events(AuditEventType::ToolCall);
+    let call = calls.iter().find(|c| c["tool"] == "remember").unwrap();
+    assert_eq!(call["args"]["class"], "Preference");
+    let call = call.to_string();
+    assert!(
+        !call.contains("11am") && !call.contains("Meeting time"),
+        "{call}"
+    );
 }
 
 #[tokio::test]
@@ -388,8 +397,30 @@ async fn recall_update_and_forget_respect_the_workspace() {
         )
         .await;
     assert!(outcome.ok, "{}", outcome.text_for_model);
-    assert_eq!(preview.unwrap()["versions"], 2);
+    let preview = preview.unwrap();
+    assert_eq!(preview["versions"], 2);
+    assert!(preview["memory"].as_str().unwrap().contains("10th"));
+    assert!(preview["notice"]
+        .as_str()
+        .unwrap()
+        .contains("without its words"));
     assert_eq!(h.events(AuditEventType::MemoryForget).len(), 1);
+    // Approval events (their labels are recorded), tool calls (their arguments are) and
+    // memory events hold no memory's words.
+    for kind in [
+        AuditEventType::Approval,
+        AuditEventType::ToolCall,
+        AuditEventType::MemoryWrite,
+        AuditEventType::MemoryForget,
+    ] {
+        for event in h.events(kind) {
+            let event = event.to_string();
+            assert!(
+                !event.contains("Invoices") && !event.contains("Priya"),
+                "{event}"
+            );
+        }
+    }
     let left = h
         .service()
         .await
@@ -400,6 +431,58 @@ async fn recall_update_and_forget_respect_the_workspace() {
         .await
         .unwrap();
     assert_eq!(left.len(), 1);
+}
+
+#[tokio::test]
+async fn update_memory_tells_nothing_about_a_memory_out_of_scope() {
+    let h = harness().await;
+    let (ctx, rx) = h.ctx("s1", Some("alpha"));
+    let (outcome, _) = h
+        .call(
+            "remember",
+            json!({"class": "Preference", "properties": {"preferenceTopic": "Tea", "preferenceValue": "green"}}),
+            ctx,
+            rx,
+            AgentProfile::assistant(),
+            true,
+        )
+        .await;
+    assert!(outcome.ok, "{}", outcome.text_for_model);
+    let alpha = h
+        .service()
+        .await
+        .list(&ListRequest::default())
+        .await
+        .unwrap()[0]
+        .id
+        .clone();
+    // A note's text for a typed fact would be refused naming the fact's class: from
+    // another workspace the memory is not found at all, before its class is looked at.
+    for args in [
+        json!({"id": alpha, "text": "Something else"}),
+        json!({"id": alpha, "properties": {"preferenceValue": "black"}}),
+    ] {
+        let (ctx, rx) = h.ctx("s2", Some("beta"));
+        let (outcome, preview) = h
+            .call("update_memory", args, ctx, rx, auto_approving(), true)
+            .await;
+        assert!(!outcome.ok);
+        assert!(preview.is_none(), "nothing to approve");
+        assert!(
+            outcome.text_for_model.contains("No memory with id"),
+            "{}",
+            outcome.text_for_model
+        );
+        assert!(
+            !outcome.text_for_model.contains("Preference"),
+            "{}",
+            outcome.text_for_model
+        );
+    }
+    assert_eq!(
+        h.service().await.get(&alpha).await.unwrap().values["preferenceValue"],
+        vec!["green"]
+    );
 }
 
 #[tokio::test]

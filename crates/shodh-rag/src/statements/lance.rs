@@ -12,6 +12,7 @@ use futures::TryStreamExt;
 use lancedb::index::scalar::FullTextSearchQuery;
 use lancedb::index::Index;
 use lancedb::query::{ExecutableQuery, QueryBase, Select};
+use lancedb::table::{CompactionOptions, Duration as LanceDuration, OptimizeAction};
 use lancedb::DistanceType;
 
 use super::{StatementError, StatementResult};
@@ -91,6 +92,21 @@ pub(crate) fn identity_like(token: &str) -> String {
 pub(crate) struct StatementTable {
     table: lancedb::Table,
     dimension: usize,
+    /// Reads hold it shared, [`StatementTable::purge_old_versions`] exclusively: pruning
+    /// deletes the files of earlier versions, which a read that started on one of them
+    /// may still be reading.
+    files: tokio::sync::RwLock<()>,
+}
+
+/// What [`StatementTable::purge_old_versions`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct PurgeStats {
+    /// Data fragments rewritten without their deleted rows.
+    pub fragments_rewritten: usize,
+    /// Earlier table versions removed.
+    pub versions_removed: u64,
+    /// Bytes of files removed.
+    pub bytes_removed: u64,
 }
 
 impl StatementTable {
@@ -117,7 +133,11 @@ impl StatementTable {
                 });
             }
         }
-        Ok(Self { table, dimension })
+        Ok(Self {
+            table,
+            dimension,
+            files: tokio::sync::RwLock::new(()),
+        })
     }
 
     pub(crate) fn dimension(&self) -> usize {
@@ -267,11 +287,112 @@ impl StatementTable {
         Ok(result.rows_updated)
     }
 
+    /// Deletes the rows matching `predicate`. Lance marks them deleted in a new version;
+    /// their bytes stay in the data files, and in every earlier version, until
+    /// [`StatementTable::purge_old_versions`].
+    pub(crate) async fn delete(&self, predicate: &str) -> StatementResult<()> {
+        self.table.delete(predicate).await?;
+        Ok(())
+    }
+
+    /// Removes deleted rows from disk. With LanceDB 0.26 (Lance 2.0) a delete only writes a
+    /// deletion vector: the row's bytes stay in its data file and every earlier version
+    /// still references them. This rewrites every fragment that has a deleted row (a
+    /// materialization threshold of 0, where the default of 10% would keep a row deleted
+    /// from a large fragment), rebuilds the full-text index from the rows left (it holds
+    /// the words of the rows it covers), then prunes every version but the current one, which
+    /// deletes the old data, deletion, index and transaction files. Afterwards no version
+    /// of the table holds the deleted rows and the table cannot be checked out at an
+    /// earlier version. `rows_deleted`: rows were deleted since the last purge (the
+    /// caller's persisted marker); the index is rebuilt then, or when a fragment was
+    /// rewritten. The caller must keep other writes out while it runs; reads wait only
+    /// while the old files are deleted.
+    pub(crate) async fn purge_old_versions(
+        &self,
+        rows_deleted: bool,
+    ) -> StatementResult<PurgeStats> {
+        // Compaction commits a new version and leaves the old files in place, so reads
+        // of the version before it keep working.
+        let compaction = self
+            .table
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions {
+                    materialize_deletions: true,
+                    materialize_deletions_threshold: 0.0,
+                    ..CompactionOptions::default()
+                },
+                remap_options: None,
+            })
+            .await?
+            .compaction;
+        let fragments_rewritten = compaction.map_or(0, |c| c.fragments_removed);
+        // A fragment whose rows were all deleted is dropped by the delete itself, so
+        // nothing is rewritten for it, but the index still holds its words.
+        if rows_deleted || fragments_rewritten > 0 {
+            self.rebuild_fts_index().await?;
+        }
+        // Files no manifest references may belong to a write in progress; the caller
+        // keeps writes out, so they are leftovers and deleted too.
+        let _files = self.files.write().await;
+        let prune = self
+            .table
+            .optimize(OptimizeAction::Prune {
+                older_than: Some(LanceDuration::zero()),
+                delete_unverified: Some(true),
+                error_if_tagged_old_versions: Some(false),
+            })
+            .await?
+            .prune;
+        Ok(PurgeStats {
+            fragments_rewritten,
+            versions_removed: prune.as_ref().map_or(0, |p| p.old_versions),
+            bytes_removed: prune.as_ref().map_or(0, |p| p.bytes_removed),
+        })
+    }
+
+    /// Rebuilds the full-text index on `terms` from the rows left, so no word of a deleted
+    /// row stays in the current index files (compaction's remap drops deleted rows from
+    /// it too; rebuilding does not depend on how it does). With no rows left the index is
+    /// dropped; the next append creates it again ([`StatementTable::insert_many`]).
+    async fn rebuild_fts_index(&self) -> StatementResult<()> {
+        let indices = self.table.list_indices().await?;
+        let Some(existing) = indices
+            .iter()
+            .find(|i| i.columns.iter().any(|c| c == "terms"))
+        else {
+            return Ok(());
+        };
+        if self.table.count_rows(None).await? == 0 {
+            self.table.drop_index(&existing.name).await?;
+            return Ok(());
+        }
+        self.table
+            .create_index(&["terms"], Index::FTS(Default::default()))
+            .replace(true)
+            .execute()
+            .await?;
+        Ok(())
+    }
+
+    /// Numbers of the table versions on disk, oldest first.
+    #[cfg(test)]
+    pub(crate) async fn versions(&self) -> StatementResult<Vec<u64>> {
+        let _files = self.files.read().await;
+        Ok(self
+            .table
+            .list_versions()
+            .await?
+            .into_iter()
+            .map(|v| v.version)
+            .collect())
+    }
+
     pub(crate) async fn scan(
         &self,
         predicate: Option<&str>,
         limit: usize,
     ) -> StatementResult<Vec<Row>> {
+        let _files = self.files.read().await;
         let mut query = self.table.query().limit(limit);
         if let Some(predicate) = predicate {
             query = query.only_if(predicate);
@@ -284,6 +405,7 @@ impl StatementTable {
     /// version. The embedding column is not read: callers of a full read need the
     /// content, and the vectors would multiply its size.
     pub(crate) async fn scan_all(&self, predicate: Option<&str>) -> StatementResult<Vec<Row>> {
+        let _files = self.files.read().await;
         let mut query = self.table.query().select(Select::columns(CONTENT_COLUMNS));
         if let Some(predicate) = predicate {
             query = query.only_if(predicate);
@@ -297,6 +419,7 @@ impl StatementTable {
         &self,
         predicate: &str,
     ) -> StatementResult<Vec<(String, String)>> {
+        let _files = self.files.read().await;
         let batches: Vec<RecordBatch> = self
             .table
             .query()
@@ -332,6 +455,7 @@ impl StatementTable {
     }
 
     async fn column_values(&self, column: &str, predicate: &str) -> StatementResult<Vec<String>> {
+        let _files = self.files.read().await;
         let batches: Vec<RecordBatch> = self
             .table
             .query()
@@ -375,6 +499,7 @@ impl StatementTable {
         predicate: Option<&str>,
         k: usize,
     ) -> StatementResult<Vec<(Row, f64)>> {
+        let _files = self.files.read().await;
         let mut query = self
             .table
             .query()
@@ -401,6 +526,7 @@ impl StatementTable {
         if text.trim().is_empty() {
             return Ok(Vec::new());
         }
+        let _files = self.files.read().await;
         let indices = self.table.list_indices().await?;
         if !indices
             .iter()

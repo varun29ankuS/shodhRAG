@@ -302,3 +302,17 @@ export function exportFileName(now: Date): string {
   const d = String(now.getDate()).padStart(2, '0');
   return `shodh-memories-${y}-${m}-${d}.json`;
 }
+
+/**
+ * The forget confirmation: what is erased and, plainly, what remains. `olderWords`: the
+ * Activity log has entries from before memory events stopped carrying words that still
+ * show some of this memory's (`memory_forget_notice`).
+ */
+export function forgetConfirmation(text: string, olderWords: boolean): string {
+  return [
+    `Forget “${text}”? Every earlier version of it is erased too, and suggestions about it lose its words.`,
+    'The Activity log keeps a record that a memory was saved and forgotten, without its words' +
+      (olderWords ? '; older entries may still show the words.' : '.'),
+    'Still kept: the conversation it came from, your questions in the Activity log, and Activity entries of the assistant’s tool calls and approvals from before this version, which may show the words.',
+  ].join(' ');
+}

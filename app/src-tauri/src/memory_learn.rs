@@ -478,17 +478,25 @@ impl LearnState {
             .learner
             .get_or_try_init(|| async {
                 let service = self.inner.memory.service().await?;
-                let (path, key) = self.inner.database.clone().ok_or_else(|| {
-                    "Learning needs the app database (shodh.db), which could not be opened."
-                        .to_string()
-                })?;
-                let inbox = tokio::task::spawn_blocking(move || Inbox::open(&path, key.as_ref()))
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .map_err(|e| e.to_string())?;
+                // The inbox forgetting clears, when the memory service has one.
+                let inbox = match service.inbox() {
+                    Some(inbox) => inbox.clone(),
+                    None => {
+                        let (path, key) = self.inner.database.clone().ok_or_else(|| {
+                            "Learning needs the app database (shodh.db), which could not be opened."
+                                .to_string()
+                        })?;
+                        let inbox =
+                            tokio::task::spawn_blocking(move || Inbox::open(&path, key.as_ref()))
+                                .await
+                                .map_err(|e| e.to_string())?
+                                .map_err(|e| e.to_string())?;
+                        Arc::new(inbox)
+                    }
+                };
                 Ok(Arc::new(Learner::new(
                     service,
-                    Arc::new(inbox),
+                    inbox,
                     Arc::new(SettingsPolicy(self.inner.data_dir.clone())),
                     self.inner.models.clone(),
                 )))

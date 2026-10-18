@@ -48,6 +48,18 @@ pub const MEMORY_CLASSES: [&str; 11] = [
 pub const TAINT_WARNING: &str = "This answer has read documents or web pages. Only approve if \
     this is something you told Shodh yourself, not text from those sources.";
 
+/// What forgetting leaves behind, in the forget approval prompt.
+pub const FORGET_NOTICE: &str = concat!(
+    "The memory is erased with every version. The Activity log keeps a record that a memory ",
+    "was saved and forgotten, without its words. Still kept: the conversation it came from, ",
+    "the user's questions in the Activity log, and Activity entries of tool calls and ",
+    "approvals from before this version, which may show the words."
+);
+
+/// Added to [`FORGET_NOTICE`] when audit events written before memory events stopped
+/// carrying words still show some of this memory's.
+pub const FORGET_OLDER_WORDS: &str = "Older Activity entries may still show the words.";
+
 const MAX_TEXT_CHARS: usize = 2_000;
 const MAX_RECALL: usize = 10;
 
@@ -235,17 +247,6 @@ fn preview_details(text: &str, scope: &Scope, ctx: &ToolContext, extra: Value) -
     details
 }
 
-/// At most 60 characters of `text`, for a prompt label.
-fn short(text: &str) -> String {
-    const MAX: usize = 60;
-    if text.chars().count() <= MAX {
-        return text.to_string();
-    }
-    let mut out: String = text.chars().take(MAX - 1).collect();
-    out.push('…');
-    out
-}
-
 fn describe(memory: &MemoryRecord) -> String {
     format!(
         "[{}] {} (id: {}, since {})",
@@ -310,7 +311,9 @@ impl HostTool for RememberTool {
             .preview(content, &origin(ctx))
             .map_err(|e| tool_error(tool, e))?;
         Ok(ApprovalPreview {
-            label: Some(format!("Remember “{}”", short(&text))),
+            // Approval labels are recorded in the audit log: they name no memory's words,
+            // which the prompt shows from the details (not recorded).
+            label: Some("Remember this".to_string()),
             details: preview_details(&text, &scope(ctx), ctx, json!({})),
         })
     }
@@ -489,14 +492,14 @@ impl HostTool for UpdateMemoryTool {
         let tool = app_tools::UPDATE_MEMORY;
         let id = str_arg(args, "id").ok_or_else(|| invalid(tool, "`id` is required"))?;
         let service = service(&self.host).await?;
-        let content = self.content(&service, tool, id, args).await?;
         let scope = scope(ctx);
+        let content = self.content(&service, tool, id, &scope, args).await?;
         let (before, after) = service
             .preview_update(id, content, true, Some(&scope), &origin(ctx))
             .await
             .map_err(|e| tool_error(tool, e))?;
         Ok(ApprovalPreview {
-            label: Some(format!("Update memory “{}”", short(&before.text))),
+            label: Some("Update a memory".to_string()),
             details: preview_details(
                 &after,
                 &before.scope,
@@ -509,8 +512,8 @@ impl HostTool for UpdateMemoryTool {
         let tool = app_tools::UPDATE_MEMORY;
         let id = str_arg(&args, "id").ok_or_else(|| invalid(tool, "`id` is required"))?;
         let service = service(&self.host).await?;
-        let content = self.content(&service, tool, id, &args).await?;
         let scope = scope(ctx);
+        let content = self.content(&service, tool, id, &scope, &args).await?;
         let outcome = service
             .update(id, content, true, Some(&scope), &origin(ctx), &actor(ctx))
             .await
@@ -520,15 +523,20 @@ impl HostTool for UpdateMemoryTool {
 }
 
 impl UpdateMemoryTool {
-    /// The edit as memory content of the target's own class.
+    /// The edit as memory content of the target's own class. A memory the run's scope
+    /// cannot see is not found, before anything about it (its class) is told.
     async fn content(
         &self,
         service: &MemoryService,
         tool: &str,
         id: &str,
+        scope: &Scope,
         args: &Value,
     ) -> Result<MemoryContent, ToolError> {
         let current = service.get(id).await.map_err(|e| tool_error(tool, e))?;
+        if !scope.visible().contains(&current.scope) {
+            return Err(tool_error(tool, MemoryError::NotFound(id.to_string())));
+        }
         match content(tool, args, false)? {
             MemoryContent::Note { text } if current.class == "Note" => {
                 Ok(MemoryContent::Note { text })
@@ -599,9 +607,24 @@ impl HostTool for ForgetTool {
             .await
             .map_err(|e| tool_error(tool, e))?
             .len();
+        // Unknown (the audit log could not be read): say what may be left.
+        let older_words = service.audit_holds_words(id).await.unwrap_or_else(|e| {
+            tracing::warn!(target: "shodh::memory", error = %e, "could not check the audit log for a memory's words");
+            true
+        });
+        let notice = if older_words {
+            format!("{FORGET_NOTICE} {FORGET_OLDER_WORDS}")
+        } else {
+            FORGET_NOTICE.to_string()
+        };
+        // The label names no words (see `RememberTool::preview_in`).
         Ok(ApprovalPreview {
-            label: Some(format!("Forget “{}”", short(&memory.text))),
-            details: json!({ "memory": memory.text, "versions": versions }),
+            label: Some(if versions == 1 {
+                "Forget a memory".to_string()
+            } else {
+                format!("Forget a memory ({versions} versions)")
+            }),
+            details: json!({ "memory": memory.text, "versions": versions, "notice": notice }),
         })
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {

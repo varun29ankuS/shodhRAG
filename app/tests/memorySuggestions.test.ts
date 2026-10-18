@@ -185,3 +185,30 @@ test('suggestions carry their scope; older builds sent none and were global', ()
   delete (old as Record<string, unknown>).scope;
   assert.equal(parseSuggestion(old)?.scope, 'global');
 });
+
+test('a suggestion whose memory was forgotten parses without its words and cannot be undone', () => {
+  // What the backend keeps after forgetting (`Inbox::forget_memories`): ids, class and the
+  // kind of decision, every text and value cleared.
+  const forgotten = parseSuggestion(
+    view(
+      { status: 'learned', undoable: true, forgotten: true, decidedAt: '2026-10-01T10:00:30Z' },
+      {
+        content: { kind: 'fact', class: 'Person', subject: null, properties: {}, valid_from: null },
+        text: '',
+        decision: {
+          kind: 'supersede',
+          target: 'mem-1',
+          changes: [{ property: 'livesIn', label: 'lives in', from: '', to: '' }],
+          explicit: false,
+        },
+        target_text: null,
+        evidence: '',
+      },
+    ),
+  );
+  assert.ok(forgotten);
+  assert.equal(forgotten.forgotten, true);
+  assert.equal(forgotten.undoable, false, 'nothing is left to undo');
+  assert.equal(suggestionText(forgotten), '');
+  assert.equal(parseSuggestion(view())?.forgotten, false, 'older builds send no flag');
+});

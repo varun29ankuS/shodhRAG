@@ -17,6 +17,7 @@ use shodh_rag::harness::tools::{
     HostTool, RegistryError, ToolContext, ToolError, ToolOutput, ToolRegistry,
 };
 use shodh_rag::harness::RiskTier;
+use shodh_rag::statements::Scope;
 
 use super::{invalid, limit_arg, str_arg, AgentHost};
 
@@ -55,8 +56,50 @@ fn bound(raw: &str, end_of_day: bool) -> Option<DateTime<Utc>> {
     Utc.from_local_datetime(&time).single()
 }
 
+/// The memory tools, whose approval labels may name a memory.
+const MEMORY_TOOLS: [&str; 3] = [
+    app_tools::REMEMBER,
+    app_tools::UPDATE_MEMORY,
+    app_tools::FORGET,
+];
+
+/// Events about memories: shown only when the memory's scope is visible to the run.
+const MEMORY_EVENTS: [AuditEventType; 3] = [
+    AuditEventType::MemoryWrite,
+    AuditEventType::MemoryForget,
+    AuditEventType::MemoryUse,
+];
+
+/// Most memory events read (newest first) to filter by scope.
+const MEMORY_SCAN: u32 = 1_000;
+
 fn s<'a>(payload: &'a Value, key: &str) -> &'a str {
     payload.get(key).and_then(Value::as_str).unwrap_or("")
+}
+
+/// The memory an event is about: its `id`, else its `ids` joined.
+fn memory_ids(payload: &Value) -> String {
+    match payload.get("id").and_then(Value::as_str) {
+        Some(id) => id.to_string(),
+        None => payload
+            .get("ids")
+            .and_then(Value::as_array)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default(),
+    }
+}
+
+/// ` (<class>)` when an event names a class, nothing otherwise.
+fn of_class(payload: &Value) -> String {
+    match payload.get("class").and_then(Value::as_str) {
+        Some(class) if !class.is_empty() => format!(" ({class})"),
+        _ => String::new(),
+    }
 }
 
 /// One line describing an audit event.
@@ -73,6 +116,14 @@ pub(crate) fn summarize(row: &AuditRow) -> String {
                 "failed"
             },
             s(p, "summary")
+        ),
+        // Labels of the memory tools' approvals named the memory before they stopped doing
+        // so: those are described by their tool only.
+        "approval" if MEMORY_TOOLS.contains(&s(p, "tool")) => format!(
+            "Approval for {} — {} ({})",
+            s(p, "tool"),
+            s(p, "decision"),
+            s(p, "who")
         ),
         "approval" => format!("{} — {} ({})", s(p, "label"), s(p, "decision"), s(p, "who")),
         "retrieval" => {
@@ -105,16 +156,26 @@ pub(crate) fn summarize(row: &AuditRow) -> String {
         }
         "runtime_install" => format!("Agent runtime {} installed", s(p, "version")),
         "retention_checkpoint" => "Older events removed by retention".to_string(),
+        // Memory events are described by action, class and ids, never by their words:
+        // events written before memory events stopped carrying the text still have it,
+        // and a forgotten memory's words must not reach the model from here.
         "memory_write" => format!(
-            "Memory {} ({}) via {}: {}",
+            "Memory {} {} ({}) via {}{}",
             s(p, "action"),
+            memory_ids(p),
             p.get("outcome")
                 .and_then(Value::as_str)
                 .unwrap_or("changed"),
             s(p, "via"),
-            s(p, "text")
+            of_class(p)
         ),
-        "memory_forget" => format!("Memory forgotten via {}: {}", s(p, "via"), s(p, "text")),
+        "memory_forget" => format!(
+            "Memory {} forgotten via {} ({} versions){}",
+            s(p, "id"),
+            s(p, "via"),
+            p.get("ids").and_then(Value::as_array).map_or(1, Vec::len),
+            of_class(p)
+        ),
         "memory_use" => {
             let count = p
                 .get("ids")
@@ -232,7 +293,7 @@ impl HostTool for AuditQueryTool {
         RiskTier::Read
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::AUDIT_QUERY;
         let from = match str_arg(&args, "from") {
             Some(raw) => Some(bound(raw, false).ok_or_else(|| {
@@ -268,23 +329,70 @@ impl HostTool for AuditQueryTool {
             offset: 0,
         };
         let log = self.log()?;
+        // Memories the run cannot see (another workspace's) must not show through their
+        // events: not their class, ids, or that they exist.
+        let visible: Vec<String> = Scope::for_workspace(ctx.scope().workspace.as_deref())
+            .visible()
+            .iter()
+            .map(Scope::as_key)
+            .collect();
         let (rows, total, by_type) = tokio::task::spawn_blocking(move || {
-            let rows = log.query(&query)?;
-            let total = log.count(&query)?;
-            let mut by_type = serde_json::Map::new();
             let kinds: Vec<AuditEventType> = if query.types.is_empty() {
                 AuditEventType::ALL.to_vec()
             } else {
                 query.types.clone()
             };
-            for kind in kinds {
-                let n = log.count(&AuditQuery {
-                    types: vec![kind],
+            let (memory, other): (Vec<AuditEventType>, Vec<AuditEventType>) =
+                kinds.into_iter().partition(|k| MEMORY_EVENTS.contains(k));
+            let mut rows: Vec<AuditRow> = Vec::new();
+            let mut total = 0u64;
+            let mut by_type = serde_json::Map::new();
+            if !other.is_empty() {
+                let others = AuditQuery {
+                    types: other.clone(),
                     ..query.clone()
-                })?;
-                if n > 0 {
-                    by_type.insert(kind.as_str().to_string(), json!(n));
+                };
+                rows = log.query(&others)?;
+                total += log.count(&others)?;
+                for kind in other {
+                    let n = log.count(&AuditQuery {
+                        types: vec![kind],
+                        ..query.clone()
+                    })?;
+                    if n > 0 {
+                        by_type.insert(kind.as_str().to_string(), json!(n));
+                    }
                 }
+            }
+            if !memory.is_empty() {
+                // Read and filtered by scope here (an event without one is not shown);
+                // counted from what was read, at most MEMORY_SCAN.
+                let seen: Vec<AuditRow> = log
+                    .query(&AuditQuery {
+                        types: memory,
+                        limit: Some(MEMORY_SCAN),
+                        offset: 0,
+                        ..query.clone()
+                    })?
+                    .into_iter()
+                    .filter(|row| {
+                        row.payload
+                            .get("scope")
+                            .and_then(Value::as_str)
+                            .is_some_and(|scope| visible.iter().any(|v| v == scope))
+                    })
+                    .collect();
+                total += u64::try_from(seen.len()).unwrap_or(u64::MAX);
+                let mut counts: std::collections::BTreeMap<String, u64> = Default::default();
+                for row in &seen {
+                    *counts.entry(row.event_type.clone()).or_default() += 1;
+                }
+                for (kind, n) in counts {
+                    by_type.insert(kind, json!(n));
+                }
+                rows.extend(seen);
+                rows.sort_by(|a, b| b.id.cmp(&a.id));
+                rows.truncate(limit);
             }
             Ok::<_, shodh_rag::audit::AuditError>((rows, total, by_type))
         })
@@ -328,6 +436,61 @@ mod tests {
     use super::super::testing;
     use super::*;
     use shodh_rag::audit::AuditRecord;
+
+    #[tokio::test]
+    async fn memory_events_of_memories_out_of_scope_and_memory_approval_labels_stay_out() {
+        let t = testing::host().await;
+        let log = t.host.audit.clone().unwrap();
+        for (id, scope, class) in [
+            ("mem-alpha", "workspace:alpha", "Person"),
+            ("mem-beta", "workspace:beta", "Project"),
+            ("mem-global", "global", "Note"),
+        ] {
+            log.append(AuditRecord::new(
+                AuditEventType::MemoryWrite,
+                json!({"action": "remember", "id": id, "outcome": "added", "class": class,
+                       "scope": scope, "via": "ui"}),
+            ))
+            .unwrap();
+        }
+        // Written before memory approval labels stopped naming the memory.
+        log.append(AuditRecord::new(
+            AuditEventType::Approval,
+            json!({"tool": "remember", "label": "Remember “my locker code is 4411”",
+                   "decision": "approved", "who": "local-owner"}),
+        ))
+        .unwrap();
+        let tool = AuditQueryTool {
+            host: t.host.clone(),
+        };
+        let (ctx, _rx) = testing::ctx();
+        let ctx = ctx.with_scope(Arc::new(shodh_rag::harness::tools::RunScope {
+            workspace: Some("beta".into()),
+            ..Default::default()
+        }));
+        let out = tool.execute(json!({}), &ctx).await.unwrap();
+        let text = out.text_for_model;
+        assert!(
+            !text.contains("mem-alpha") && !text.contains("Person"),
+            "{text}"
+        );
+        assert!(
+            text.contains("mem-beta") && text.contains("mem-global"),
+            "{text}"
+        );
+        assert!(!text.contains("locker"), "{text}");
+        assert!(text.contains("Approval for remember — approved"), "{text}");
+        let detail = out.detail.unwrap();
+        assert_eq!(detail["byType"]["memory_write"], 2, "{detail}");
+        assert_eq!(detail["total"], 3, "{detail}");
+        // A run outside any workspace sees global memories only.
+        let (global, _rx) = testing::ctx();
+        let only = tool
+            .execute(json!({"types": ["memory_write"]}), &global)
+            .await
+            .unwrap();
+        assert_eq!(only.detail.unwrap()["total"], 1);
+    }
 
     #[tokio::test]
     async fn filters_by_tool_type_and_time_and_summarizes() {
@@ -395,6 +558,28 @@ mod tests {
             hash: String::new(),
         };
         assert_eq!(summarize(&row).chars().count(), MAX_SUMMARY_CHARS);
+        // Memory events written before they stopped carrying words: the words stay out.
+        let forget = AuditRow {
+            event_type: "memory_forget".into(),
+            payload: json!({"id": "mem-1", "ids": ["mem-0", "mem-1"], "class": "Note",
+                            "text": "My locker code is 4411", "via": "ui"}),
+            ..row.clone()
+        };
+        assert_eq!(
+            summarize(&forget),
+            "Memory mem-1 forgotten via ui (2 versions) (Note)"
+        );
+        let write = AuditRow {
+            event_type: "memory_write".into(),
+            payload: json!({"action": "remember", "id": "mem-1", "outcome": "added",
+                            "class": "Note", "text": "My locker code is 4411", "via": "ui"}),
+            ..row.clone()
+        };
+        assert!(
+            !summarize(&write).contains("locker"),
+            "{}",
+            summarize(&write)
+        );
         let moved = AuditRow {
             event_type: "scope_change".into(),
             payload: json!({

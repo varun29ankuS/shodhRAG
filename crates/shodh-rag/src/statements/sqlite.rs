@@ -316,6 +316,66 @@ impl DynamicsStore {
             params![id],
         )?)
     }
+
+    /// A small stored value of the statement store (`statement_state`), if set.
+    pub fn state(&self, key: &str) -> StatementResult<Option<String>> {
+        let conn = self.lock();
+        Ok(conn
+            .query_row(
+                "SELECT value FROM statement_state WHERE key = ?1",
+                params![key],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Sets a small stored value of the statement store.
+    pub fn set_state(&self, key: &str, value: &str) -> StatementResult<()> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO statement_state(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Removes a stored value of the statement store.
+    pub fn clear_state(&self, key: &str) -> StatementResult<()> {
+        let conn = self.lock();
+        conn.execute("DELETE FROM statement_state WHERE key = ?1", params![key])?;
+        Ok(())
+    }
+
+    /// Deletes the dynamics (strength, use count, pin) and every link of statements `ids`
+    /// (they were erased), in one transaction. Deleted rows are zeroed in the database
+    /// file (`secure_delete`). Returns the dynamics rows deleted.
+    pub fn remove_statements(&self, ids: &[String]) -> StatementResult<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.lock();
+        // The pragma answers with its new value, so it is read, not executed.
+        conn.query_row("PRAGMA secure_delete = ON", [], |r| r.get::<_, i64>(0))?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut removed = 0;
+        for chunk in ids.chunks(LOOKUP_CHUNK) {
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            removed += tx.execute(
+                &format!("DELETE FROM statement_dynamics WHERE statement_id IN ({placeholders})"),
+                params_from_iter(chunk.iter()),
+            )?;
+            tx.execute(
+                &format!(
+                    "DELETE FROM statement_links
+                     WHERE from_id IN ({placeholders}) OR to_id IN ({placeholders})"
+                ),
+                params_from_iter(chunk.iter().chain(chunk.iter())),
+            )?;
+        }
+        tx.commit()?;
+        Ok(removed)
+    }
 }
 
 fn write_state(

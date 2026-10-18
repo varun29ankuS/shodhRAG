@@ -141,7 +141,45 @@ fn stored_args(args: &Value) -> Value {
     }
 }
 
-/// `tool_call` payload.
+/// Tool arguments without a memory's words, for what is logged or audited of a call.
+/// The memory tools (`remember`, `update_memory`, `forget`, `recall`) keep their ids,
+/// class, scope and limit; their text and query become character counts and their
+/// properties the property names only. Every other tool's arguments are returned as
+/// they are.
+pub fn tool_args(tool: &str, args: &Value) -> Value {
+    use crate::harness::profile::app_tools::{FORGET, RECALL, REMEMBER, UPDATE_MEMORY};
+    if ![REMEMBER, UPDATE_MEMORY, FORGET, RECALL].contains(&tool) {
+        return args.clone();
+    }
+    let Some(object) = args.as_object() else {
+        return json!({ "redacted": true });
+    };
+    let mut out = Map::new();
+    for (key, value) in object {
+        match (key.as_str(), value) {
+            ("id" | "class" | "scope" | "limit", _) => {
+                out.insert(key.clone(), value.clone());
+            }
+            ("text" | "query", Value::String(text)) => {
+                out.insert(format!("{key}_chars"), json!(text.chars().count()));
+            }
+            ("properties", Value::Object(properties)) => {
+                out.insert(
+                    "properties".to_string(),
+                    json!(properties.keys().collect::<Vec<_>>()),
+                );
+            }
+            // Anything else may hold words; only that it was given is kept.
+            _ => {
+                out.insert(key.clone(), json!("[redacted]"));
+            }
+        }
+    }
+    Value::Object(out)
+}
+
+/// `tool_call` payload. A memory tool's arguments are stored without the memory's words
+/// ([`tool_args`]).
 pub fn tool_call(
     tool: &str,
     tier: Option<RiskTier>,
@@ -153,7 +191,7 @@ pub fn tool_call(
     json!({
         "tool": tool,
         "tier": tier_str(tier),
-        "args": stored_args(args),
+        "args": stored_args(&tool_args(tool, args)),
         "ok": ok,
         "summary": summary,
         "duration_ms": duration_ms,
@@ -317,6 +355,37 @@ pub fn indexing_outcome<E: std::fmt::Display>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_tool_arguments_are_stored_without_the_words() {
+        let payload = tool_call(
+            "remember",
+            Some(RiskTier::Write),
+            &json!({"class": "Preference", "properties": {"preferenceTopic": "tea", "preferenceValue": "green"}}),
+            true,
+            "Remembered",
+            3,
+        );
+        let text = payload.to_string();
+        assert!(!text.contains("green") && !text.contains("tea\""), "{text}");
+        assert_eq!(payload["args"]["class"], "Preference");
+        assert_eq!(
+            payload["args"]["properties"],
+            json!(["preferenceTopic", "preferenceValue"])
+        );
+        let note = tool_args(
+            "update_memory",
+            &json!({"id": "mem-1", "text": "Locker code 4411"}),
+        );
+        assert_eq!(note, json!({"id": "mem-1", "text_chars": 16}));
+        assert_eq!(
+            tool_args("recall", &json!({"query": "my locker", "limit": 3})),
+            json!({"query_chars": 9, "limit": 3})
+        );
+        // Other tools are stored as given.
+        let search = json!({"query": "attention heads"});
+        assert_eq!(tool_args("search_documents", &search), search);
+    }
 
     #[test]
     fn model_switch_never_includes_the_key() {

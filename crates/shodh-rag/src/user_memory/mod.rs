@@ -20,7 +20,7 @@ mod recall;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -30,7 +30,9 @@ use shodh_ontology::{
     EntityRef, Extractor, Provenance, RawValue, Statement, Value as OntologyValue,
 };
 
-use crate::audit::{AuditEventType, AuditLog, AuditRecord, LOCAL_OWNER, MAX_SNIPPET_CHARS};
+use crate::audit::{
+    AuditEventType, AuditLog, AuditQuery, AuditRecord, LOCAL_OWNER, MAX_SNIPPET_CHARS,
+};
 use crate::statements::{
     DynamicsState, PutIntent, PutOutcome, Scope, StatementError, StatementQuery, StatementStore,
     StoredStatement, SELF_ENTITY_ID,
@@ -231,6 +233,8 @@ pub struct ListRequest {
 pub struct MemoryService {
     store: Arc<StatementStore>,
     audit: Option<Arc<AuditLog>>,
+    /// The suggestions inbox, cleared of a memory's words when it is forgotten.
+    inbox: Option<Arc<learn::Inbox>>,
     app_version: String,
 }
 
@@ -242,6 +246,26 @@ impl std::fmt::Debug for MemoryService {
 
 const DEFAULT_LIST_LIMIT: usize = 500;
 
+/// `statement_state` key: the one-time erase of memories and snippets only soft-deleted
+/// by versions before forgetting erased them ran.
+const LEGACY_ERASE_KEY: &str = "legacy_forgotten_erased";
+/// `memory_learn_state` key: the one-time clearing of suggestions about memories
+/// forgotten before forgetting cleared suggestions ran.
+const SUGGESTION_SWEEP_KEY: &str = "forgotten_suggestions_cleared";
+
+/// What [`MemoryService::maintain`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Maintenance {
+    /// Memories and snippets only soft-deleted before, erased now (once).
+    pub legacy_erased: usize,
+    /// Suggestions cleared of memories forgotten before suggestions were cleared (once).
+    pub suggestions_cleared: usize,
+    /// Inbox approvals of the memory tools whose titles named a memory, renamed (once).
+    pub approvals_renamed: usize,
+    /// Whether the statement table's history was purged.
+    pub purged: bool,
+}
+
 impl MemoryService {
     /// Memory over `store`, auditing to `audit` when given.
     pub fn new(
@@ -252,8 +276,21 @@ impl MemoryService {
         Self {
             store,
             audit,
+            inbox: None,
             app_version: app_version.to_string(),
         }
+    }
+
+    /// The same service, clearing a forgotten memory's words from `inbox`
+    /// ([`MemoryService::forget`]). The learner should share it ([`MemoryService::inbox`]).
+    pub fn with_inbox(mut self, inbox: Arc<learn::Inbox>) -> Self {
+        self.inbox = Some(inbox);
+        self
+    }
+
+    /// The suggestions inbox forgetting clears, if one was given.
+    pub fn inbox(&self) -> Option<&Arc<learn::Inbox>> {
+        self.inbox.as_ref()
     }
 
     /// The statement store.
@@ -400,8 +437,19 @@ impl MemoryService {
         Ok(crate::statements::render_text(ontology, &valid))
     }
 
-    /// Forgets memory `id` and every earlier or later version of the same fact (soft
-    /// delete; links removed). Returns the forgotten ids. Audited as `memory_forget`.
+    /// Forgets memory `id` and every earlier or later version of the same fact, erasing
+    /// it rather than hiding it, in an order that lets a failed forget be retried:
+    /// 1. suggestions that stored it or are about it lose its words and are marked
+    ///    forgotten, and the learning model's rejected answers of the turns it came from
+    ///    are deleted ([`learn::Inbox::forget_memories`], when an inbox was given);
+    /// 2. its dynamics and links are deleted and its rows deleted from the statement table
+    ///    ([`StatementStore::erase`]); memories only soft-forgotten before (by earlier
+    ///    versions of the app, or undone learned writes) are erased with it;
+    /// 3. the table's old versions, which still hold the rows, are purged in the
+    ///    background ([`StatementStore::schedule_purge`]).
+    ///
+    /// Returns the forgotten ids. Audited as `memory_forget` with the ids, class, scope,
+    /// version count and text length, never the text. The conversation the memory came from is not changed.
     pub async fn forget(
         &self,
         id: &str,
@@ -410,29 +458,192 @@ impl MemoryService {
     ) -> MemoryResult<Vec<String>> {
         let target = self.memory_statement(id).await?;
         self.check_visible(&target, visible_from)?;
-        let ids = self.store.history_ids(id).await?;
-        let mut forgotten = Vec::new();
-        for version in &ids {
-            match self.store.forget(version).await {
-                Ok(_) => forgotten.push(version.clone()),
-                Err(StatementError::NotFound(_)) => {}
-                Err(e) => return Err(e.into()),
+        // Only memories: a document's statement about the same thing is not the user's.
+        let versions: Vec<StoredStatement> = self
+            .store
+            .get_many(&self.store.history_ids(id).await?)
+            .await?
+            .into_iter()
+            .filter(is_memory)
+            .collect();
+        let ids: Vec<String> = versions.iter().map(|v| v.id().to_string()).collect();
+        let distinct = |values: Vec<String>| -> Vec<String> {
+            values
+                .into_iter()
+                .collect::<BTreeSet<String>>()
+                .into_iter()
+                .collect()
+        };
+        let forgotten_memories = learn::ForgottenMemories {
+            ids: ids.clone(),
+            turns: distinct(versions.iter().filter_map(turn_of).collect()),
+            sources: distinct(
+                versions
+                    .iter()
+                    .filter_map(|v| v.statement.provenance.as_ref().map(|p| p.source.clone()))
+                    .collect(),
+            ),
+        };
+        if let Some(inbox) = &self.inbox {
+            let (inbox, now) = (inbox.clone(), self.store.now());
+            tokio::task::spawn_blocking(move || inbox.forget_memories(&forgotten_memories, now))
+                .await
+                .map_err(|e| MemoryError::Statement(StatementError::Task(e.to_string())))?
+                .map_err(|e| MemoryError::Statement(StatementError::Sqlite(e.to_string())))?;
+        }
+        let forgotten = self.store.erase(&ids).await?;
+        match self
+            .store
+            .erase_forgotten(&memory_source_prefixes(), &[])
+            .await
+        {
+            Ok(0) => {}
+            Ok(n) => {
+                tracing::info!(target: "shodh::memory", erased = n, "memories forgotten earlier were erased")
+            }
+            Err(e) => {
+                tracing::warn!(target: "shodh::memory", error = %e, "memories forgotten earlier were not erased; the next forget retries")
             }
         }
+        self.store.schedule_purge();
         self.audit(
             actor,
             AuditEventType::MemoryForget,
             json!({
                 "action": "forget",
                 "id": id,
+                "versions": forgotten.len(),
                 "ids": forgotten,
                 "class": target.statement.class,
                 "scope": target.scope.as_key(),
-                "text": snippet(&target.text),
+                "text_chars": text_chars(&target.text),
                 "via": actor.via,
             }),
         );
         Ok(forgotten)
+    }
+
+    /// Starts [`MemoryService::maintain`] in the background (when the memory opens), so
+    /// nothing waits for it. Failures are logged; the next start tries again.
+    pub fn start_maintenance(self: &Arc<Self>) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(target: "shodh::memory", "no runtime: memory maintenance skipped");
+            return;
+        };
+        let service = Arc::clone(self);
+        runtime.spawn(async move {
+            match service.maintain().await {
+                Ok(done) => {
+                    tracing::info!(target: "shodh::memory", legacy_erased = done.legacy_erased, suggestions_cleared = done.suggestions_cleared, approvals_renamed = done.approvals_renamed, purged = done.purged, "memory maintenance done")
+                }
+                Err(e) => {
+                    tracing::warn!(target: "shodh::memory", error = %e, "memory maintenance failed; the next start retries")
+                }
+            }
+        });
+    }
+
+    /// The cleanups that finish what forgetting started, for data an earlier run (or an
+    /// earlier version) left:
+    /// 1. once: memories and snippets only soft-deleted by versions before forgetting
+    ///    erased them are erased ([`StatementStore::erase_forgotten`]);
+    /// 2. once, with an inbox: the Inbox's approval items of the memory tools get wordless
+    ///    titles, and (with an audit log) suggestions about memories forgotten before
+    ///    suggestions were cleared lose their words. The ids come from the audit log's
+    ///    `memory_forget` events (they always carried them); a forget whose event retention
+    ///    removed is cleared when the user presses Undo on its suggestion instead;
+    /// 3. the statement table's history is purged when an erase still waits for it (the
+    ///    marker [`StatementStore::purge_pending`], also set by a crash between an erase
+    ///    and its purge) or the one-time erase had not run before; otherwise nothing is
+    ///    compacted.
+    pub async fn maintain(&self) -> MemoryResult<Maintenance> {
+        let mut done = Maintenance::default();
+        let dynamics = self.store.dynamics().clone();
+        let legacy_ran = blocking({
+            let dynamics = dynamics.clone();
+            move || dynamics.state(LEGACY_ERASE_KEY)
+        })
+        .await?
+        .is_some();
+        if !legacy_ran {
+            done.legacy_erased = self
+                .store
+                .erase_forgotten(&memory_source_prefixes(), &[])
+                .await?
+                + self
+                    .store
+                    .erase_forgotten(&[], &[crate::research::snippets::SNIPPET_CLASS])
+                    .await?;
+            let at = self.store.now().to_rfc3339();
+            blocking(move || dynamics.set_state(LEGACY_ERASE_KEY, &at)).await?;
+        }
+        if let Some(inbox) = self.inbox.clone() {
+            let log = self.audit.clone();
+            let now = self.store.now();
+            (done.suggestions_cleared, done.approvals_renamed) =
+                tokio::task::spawn_blocking(move || -> learn::LearnResult<(usize, usize)> {
+                    if inbox.state(SUGGESTION_SWEEP_KEY)?.is_some() {
+                        return Ok((0, 0));
+                    }
+                    let renamed = inbox.clear_memory_approval_titles()?;
+                    let cleared = match &log {
+                        Some(log) => {
+                            let forgotten = learn::ForgottenMemories {
+                                ids: forgotten_ids(log)?,
+                                ..Default::default()
+                            };
+                            inbox.forget_memories(&forgotten, now)?
+                        }
+                        None => 0,
+                    };
+                    inbox.set_state(SUGGESTION_SWEEP_KEY, &now.to_rfc3339())?;
+                    Ok((cleared, renamed))
+                })
+                .await
+                .map_err(|e| MemoryError::Statement(StatementError::Task(e.to_string())))?
+                .map_err(|e| MemoryError::Statement(StatementError::Sqlite(e.to_string())))?;
+        }
+        if !legacy_ran || self.store.purge_pending()? {
+            self.store.purge_history().await?;
+            done.purged = true;
+        }
+        Ok(done)
+    }
+
+    /// Whether the audit log still holds words of memory `id` (of any of its versions):
+    /// events written before memory events stopped carrying the text. The forget
+    /// confirmation says so. `false` when writes are not audited.
+    pub async fn audit_holds_words(&self, id: &str) -> MemoryResult<bool> {
+        let Some(log) = self.audit.clone() else {
+            return Ok(false);
+        };
+        self.memory_statement(id).await?;
+        let ids = self.store.history_ids(id).await?;
+        tokio::task::spawn_blocking(move || -> Result<bool, crate::audit::AuditError> {
+            for version in &ids {
+                let rows = log.query(&AuditQuery {
+                    types: vec![AuditEventType::MemoryWrite, AuditEventType::MemoryForget],
+                    text: Some(version.clone()),
+                    limit: Some(1_000),
+                    ..Default::default()
+                })?;
+                let worded = rows.iter().any(|row| {
+                    ["text", "reason"].iter().any(|key| {
+                        row.payload
+                            .get(*key)
+                            .and_then(JsonValue::as_str)
+                            .is_some_and(|t| !t.trim().is_empty())
+                    })
+                });
+                if worded {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })
+        .await
+        .map_err(|e| MemoryError::Statement(StatementError::Task(e.to_string())))?
+        .map_err(|e| MemoryError::Statement(StatementError::Sqlite(e.to_string())))
     }
 
     /// Pins (exempts from decay) or unpins memory `id`. Audited as `memory_write`.
@@ -463,7 +674,7 @@ impl MemoryService {
                 "id": id,
                 "class": target.statement.class,
                 "scope": target.scope.as_key(),
-                "text": snippet(&target.text),
+                "text_chars": text_chars(&target.text),
                 "via": actor.via,
             }),
         );
@@ -609,7 +820,7 @@ impl MemoryService {
                     "superseded": superseded,
                     "class": memory.as_ref().map(|m| m.class.clone()),
                     "scope": scope.as_key(),
-                    "text": memory.as_ref().map(|m| snippet(&m.text)),
+                    "text_chars": memory.as_ref().map(|m| text_chars(&m.text)),
                     "source": origin.source,
                     "extractor": origin.extractor.label(),
                     "approval": match &origin.authority {
@@ -850,7 +1061,7 @@ impl MemoryService {
             "id": target.id(),
             "class": target.statement.class,
             "scope": target.scope.as_key(),
-            "text": snippet(&target.text),
+            "text_chars": text_chars(&target.text),
             "extractor": "llm",
             "via": actor.via,
         });
@@ -863,16 +1074,7 @@ impl MemoryService {
     /// A memory statement (not a document-derived statement) by id.
     pub(crate) async fn memory_statement(&self, id: &str) -> MemoryResult<StoredStatement> {
         let stored = self.store.get(id).await?;
-        let source = stored
-            .statement
-            .provenance
-            .as_ref()
-            .map(|p| p.source.as_str())
-            .unwrap_or("");
-        if memory_source_prefixes()
-            .iter()
-            .any(|p| source.starts_with(p.as_str()))
-        {
+        if is_memory(&stored) {
             Ok(stored)
         } else {
             Err(MemoryError::NotFound(id.to_string()))
@@ -1031,6 +1233,65 @@ fn normalise(value: &mut RawValue) {
 
 pub(crate) fn snippet(text: &str) -> String {
     crate::harness::truncate_chars(text, MAX_SNIPPET_CHARS)
+}
+
+/// Length of `text` in characters: what memory audit events record of a memory's words
+/// (no hash: a short memory could be guessed from one).
+pub(crate) fn text_chars(text: &str) -> usize {
+    text.chars().count()
+}
+
+/// Ids of every memory version a `memory_forget` event in `log` names.
+fn forgotten_ids(log: &AuditLog) -> Result<Vec<String>, crate::audit::AuditError> {
+    let mut ids = BTreeSet::new();
+    let mut offset = 0;
+    loop {
+        let rows = log.query(&AuditQuery {
+            types: vec![AuditEventType::MemoryForget],
+            limit: Some(1_000),
+            offset,
+            ..Default::default()
+        })?;
+        if rows.is_empty() {
+            break;
+        }
+        offset += u32::try_from(rows.len()).unwrap_or(u32::MAX);
+        for row in &rows {
+            let named = row.payload.get("ids").and_then(JsonValue::as_array);
+            ids.extend(
+                named
+                    .into_iter()
+                    .flatten()
+                    .chain(row.payload.get("id"))
+                    .filter_map(JsonValue::as_str)
+                    .map(str::to_string),
+            );
+        }
+    }
+    Ok(ids.into_iter().collect())
+}
+
+/// Whether `stored` is a memory (written by or for the user), not a statement extracted
+/// from a document.
+fn is_memory(stored: &StoredStatement) -> bool {
+    let source = stored
+        .statement
+        .provenance
+        .as_ref()
+        .map(|p| p.source.as_str())
+        .unwrap_or("");
+    memory_source_prefixes()
+        .iter()
+        .any(|p| source.starts_with(p.as_str()))
+}
+
+/// The run (turn) a memory came from, for one learned or approved in a conversation.
+fn turn_of(stored: &StoredStatement) -> Option<String> {
+    let source = &stored.statement.provenance.as_ref()?.source;
+    let (_, run) = source
+        .strip_prefix(CONVERSATION_SOURCE_PREFIX)?
+        .split_once("/turn/")?;
+    (!run.is_empty()).then(|| run.to_string())
 }
 
 /// Runs a short SQLite operation off the async executor.

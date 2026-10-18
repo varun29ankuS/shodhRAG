@@ -543,6 +543,38 @@ fn changes_are_classified_by_the_file_they_land_in() {
         change_target(root, &at(Some(root.join("tools").join("x.rs"))), true),
         ChangeTarget::Plain
     );
+    // A file git includes as configuration (relative to the git folder).
+    std::fs::write(
+        root.join("shared.gitconfig"),
+        "[core]
+",
+    )
+    .unwrap();
+    git_ok(
+        dir.path(),
+        &["config", "include.path", "../shared.gitconfig"],
+    );
+    git_ok(
+        dir.path(),
+        &[
+            "config",
+            "includeIf.onbranch:main.path",
+            "../branch.gitconfig",
+        ],
+    );
+    for included in ["shared.gitconfig", "branch.gitconfig"] {
+        assert!(
+            matches!(
+                change_target(root, &at(Some(root.join(included))), true),
+                ChangeTarget::RunsPrograms { .. }
+            ),
+            "{included}"
+        );
+    }
+    assert_eq!(
+        change_target(root, &at(Some(root.join("tools").join("y.rs"))), true),
+        ChangeTarget::Plain
+    );
     assert_eq!(
         change_target(root, &at(Some(root.join(".git").join("config"))), true),
         ChangeTarget::GitFolder

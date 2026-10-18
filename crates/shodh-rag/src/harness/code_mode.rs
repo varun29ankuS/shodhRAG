@@ -727,6 +727,16 @@ pub fn change_target(folder: &Path, request: &GuardRequest, in_repo: bool) -> Ch
             risk = Some(HOOKS_PATH_RISK);
         }
     }
+    if in_repo && risk.is_none() {
+        // A file git reads as configuration (`include.path`), or any file
+        // when git cannot list them.
+        let included = configured_includes(folder).map_or(true, |files| {
+            files.iter().any(|file| same_path(file, target))
+        });
+        if included {
+            risk = Some(INCLUDED_CONFIG_RISK);
+        }
+    }
     let untracked = in_repo && !matches!(git_takes_changes(folder, &relative), Ok(true));
     let ignore_rules = relative
         .file_name()
@@ -737,6 +747,67 @@ pub fn change_target(folder: &Path, request: &GuardRequest, in_repo: bool) -> Ch
         None if ignore_rules => ChangeTarget::IgnoreRules,
         None => ChangeTarget::Plain,
     }
+}
+
+const INCLUDED_CONFIG_RISK: &str =
+    "git reads this file as configuration (include.path), which can make git run programs.";
+
+/// Whether `a` and `b` name the same path (without case on Windows).
+fn same_path(a: &Path, b: &Path) -> bool {
+    let (a, b): (Vec<_>, Vec<_>) = (a.components().collect(), b.components().collect());
+    a.len() == b.len()
+        && a.iter().zip(&b).all(|(x, y)| {
+            if cfg!(windows) {
+                x.as_os_str()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&y.as_os_str().to_string_lossy())
+            } else {
+                x == y
+            }
+        })
+}
+
+/// The files git's configuration includes (`include.path` and
+/// `includeIf.<condition>.path` in any config scope, read without Shodh's
+/// overrides), each in every place it may name: as given when absolute,
+/// else relative to the git folder (a repository config's base), the work
+/// tree and `folder`; `~/` against the home folder.
+fn configured_includes(folder: &Path) -> Result<Vec<PathBuf>, String> {
+    let listed = config_values(folder, &["--get-regexp", r"^include(if)?\."])?;
+    let top = PathBuf::from(run_git(folder, &["rev-parse", "--show-toplevel"])?);
+    let git_dir = PathBuf::from(run_git(folder, &["rev-parse", "--absolute-git-dir"])?);
+    let home = dirs::home_dir();
+    let mut files = Vec::new();
+    for line in listed.lines() {
+        let Some((key, value)) = line.split_once(' ') else {
+            continue;
+        };
+        let value = value.trim();
+        if !key.ends_with(".path") || value.is_empty() {
+            continue;
+        }
+        let bases: Vec<PathBuf> = if let Some(rest) = value.strip_prefix("~/") {
+            home.iter().map(|h| h.join(rest)).collect()
+        } else if Path::new(value).is_absolute() {
+            vec![PathBuf::from(value)]
+        } else {
+            [&git_dir, &top, &folder.to_path_buf()]
+                .iter()
+                .map(|base| base.join(value))
+                .collect()
+        };
+        for file in bases {
+            // A file that does not exist yet: its folder resolved, its name kept.
+            let resolved = std::fs::canonicalize(&file).ok().or_else(|| {
+                let name = file.file_name()?;
+                std::fs::canonicalize(file.parent()?)
+                    .ok()
+                    .map(|dir| dir.join(name))
+            });
+            files.push(resolved.map(strip_verbatim).unwrap_or(file));
+        }
+    }
+    Ok(files)
 }
 
 /// The hooks folders the repository holding `folder` configures

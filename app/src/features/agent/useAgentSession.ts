@@ -190,8 +190,9 @@ export const agentApi = {
   ) => call<string>('agent_send', { sessionId, text, requestId, history, scope, textOrigin, typedText }),
   steer: (sessionId: string, text: string) => call<string>('agent_steer', { sessionId, text }),
   abort: (sessionId: string) => call<void>('agent_abort', { sessionId }),
-  approve: (sessionId: string, stepId: string, approved: boolean) =>
-    call<void>('agent_approve', { sessionId, stepId, approved }),
+  /** `forConversation`: also allow what the prompt offered for the rest of the session. */
+  approve: (sessionId: string, stepId: string, approved: boolean, forConversation = false) =>
+    call<void>('agent_approve', { sessionId, stepId, approved, forConversation }),
   /**
    * Stop the session of a conversation (a closed pop-out's side threads). Resolves
    * `false` when there was none or its answer is still running (it stops once idle).

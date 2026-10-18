@@ -90,9 +90,10 @@ pub struct RunPassages {
     cited: Mutex<BTreeMap<u32, CitedPassage>>,
     /// Text read with `open_document` this run, by file path, in order.
     opened: Mutex<Vec<(String, String)>>,
-    /// The session has had private content (a passage, opened document
-    /// text, or a message the app composed): kept across runs, since the
-    /// model's conversation keeps it ([`RunPassages::private_seen`]).
+    /// The session has had private content (a document passage, opened
+    /// document text, a private tool result or message): kept across runs,
+    /// since the model's conversation keeps it ([`RunPassages::private_seen`]).
+    /// Web passages are public and do not count.
     private: AtomicBool,
 }
 
@@ -115,7 +116,8 @@ impl RunPassages {
     }
 
     /// Whether this session has had private content in any run so far:
-    /// numbered passages, opened document text, or a run marked private.
+    /// passages that are not from the web, opened document text, carried
+    /// passages, or a run or tool result marked private.
     /// [`Self::reset`] keeps it: the model still has the earlier turns.
     pub fn private_seen(&self) -> bool {
         self.private.load(Ordering::SeqCst)
@@ -155,14 +157,13 @@ impl RunPassages {
 
     /// Reserve `count` consecutive numbers and return the first (1-based).
     pub fn reserve(&self, count: u32) -> u32 {
-        if count > 0 {
-            self.mark_private();
-        }
         self.issued.fetch_add(count, Ordering::SeqCst) + 1
     }
 
     pub fn record(&self, passage: CitedPassage) {
-        self.mark_private();
+        if !passage.web {
+            self.mark_private();
+        }
         self.lock().insert(passage.n, passage);
     }
 
@@ -171,6 +172,9 @@ impl RunPassages {
     /// (re-reading a span reuses its citation), else a new one. Atomic, so
     /// concurrent reads of one span never get two numbers.
     pub fn cite(&self, mut passage: CitedPassage) -> u32 {
+        if !passage.web {
+            self.mark_private();
+        }
         let mut cited = self.lock();
         if let Some(existing) = cited
             .values()
@@ -440,6 +444,13 @@ pub trait HostTool: Send + Sync {
     async fn must_confirm_in(&self, args: &Value, _ctx: &ToolContext) -> Result<bool, ToolError> {
         self.must_confirm(args).await
     }
+    /// The yes the user may give this call for the rest of the session
+    /// ([`ApprovalGate::resolve_for_session`]), offered only when the call
+    /// asks because of [`HostTool::must_confirm_in`] (never for a write or
+    /// destructive tier). `None` (the default): every call asks.
+    fn session_grant(&self, _args: &Value) -> Option<SessionGrant> {
+        None
+    }
     /// What the approval prompt shows. Runs after validation and before the
     /// prompt; an error fails the call without asking the user (e.g. an
     /// unknown id). Defaults to the arguments and the rendered label.
@@ -582,6 +593,11 @@ impl ToolContext {
     /// read documents or web pages, whose content may try to steer the model.
     pub fn passages_issued(&self) -> u32 {
         self.passages.issued()
+    }
+
+    /// Note that this call put private content in front of the model.
+    pub fn mark_private(&self) {
+        self.passages.mark_private();
     }
 
     /// Whether the session has had private content ([`RunPassages::private_seen`],
@@ -738,11 +754,24 @@ pub enum ApprovalError {
     NotPending(String),
 }
 
+/// A yes for the rest of one session, never saved: `key` names what it
+/// covers (a tool, or a web origin), `label` is what the approval card offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionGrant {
+    pub key: String,
+    pub label: String,
+}
+
 /// Pending approvals keyed by step id. Resolved by the UI through
-/// [`ApprovalGate::resolve`].
+/// [`ApprovalGate::resolve`] or [`ApprovalGate::resolve_for_session`]. One
+/// gate belongs to one session, so its session grants end with it.
 #[derive(Debug)]
 pub struct ApprovalGate {
     pending: Mutex<HashMap<String, oneshot::Sender<bool>>>,
+    /// The session grant each open prompt offers, by step id.
+    offered: Mutex<HashMap<String, SessionGrant>>,
+    /// Keys of the grants the user gave in this session.
+    granted: Mutex<std::collections::HashSet<String>>,
     timeout: Duration,
 }
 
@@ -761,6 +790,7 @@ struct PendingGuard<'a> {
 impl Drop for PendingGuard<'_> {
     fn drop(&mut self) {
         self.gate.lock().remove(&self.step_id);
+        self.gate.lock_offered().remove(&self.step_id);
     }
 }
 
@@ -768,12 +798,45 @@ impl ApprovalGate {
     pub fn new(timeout: Duration) -> Self {
         Self {
             pending: Mutex::new(HashMap::new()),
+            offered: Mutex::new(HashMap::new()),
+            granted: Mutex::new(std::collections::HashSet::new()),
             timeout,
         }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, oneshot::Sender<bool>>> {
         self.pending.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn lock_offered(&self) -> std::sync::MutexGuard<'_, HashMap<String, SessionGrant>> {
+        self.offered.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn lock_granted(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<String>> {
+        self.granted.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Offer `grant` on the prompt of `step_id` (shown as an extra choice).
+    pub fn offer(&self, step_id: &str, grant: SessionGrant) {
+        self.lock_offered().insert(step_id.to_string(), grant);
+    }
+
+    /// Whether the user gave the grant `key` in this session.
+    pub fn is_granted(&self, key: &str) -> bool {
+        self.lock_granted().contains(key)
+    }
+
+    /// Approve the pending `step_id` and grant what its prompt offered for
+    /// the rest of the session. Fails, granting nothing, when the step is not
+    /// pending or its prompt offered no grant. Returns the grant.
+    pub fn resolve_for_session(&self, step_id: &str) -> Result<SessionGrant, ApprovalError> {
+        let grant = self
+            .lock_offered()
+            .remove(step_id)
+            .ok_or_else(|| ApprovalError::NotPending(step_id.to_string()))?;
+        self.resolve(step_id, true)?;
+        self.lock_granted().insert(grant.key.clone());
+        Ok(grant)
     }
 
     /// Register a pending approval and wait for the decision.
@@ -1084,6 +1147,12 @@ impl ToolRegistry {
 
         interrupted.armed = false;
         drop(interrupted);
+        // What a tool returns (history, memories, files, calendar, sources,
+        // MCP servers...) is private unless it came from the public web;
+        // the web tools then ask before sending anything away.
+        if outcome.ok && !PUBLIC_RESULT_TOOLS.contains(&call.tool.as_str()) {
+            ctx.mark_private();
+        }
         ctx.audit(
             AuditEventType::ToolCall,
             audit_payload::tool_call(
@@ -1170,18 +1239,45 @@ impl ToolRegistry {
             RiskTier::Write => !profile.auto_approve_writes,
             RiskTier::Destructive => true,
         };
-        if needs_approval || tool.must_confirm_in(&args, ctx).await? {
+        let confirm = !needs_approval && tool.must_confirm_in(&args, ctx).await?;
+        let grant = if confirm {
+            tool.session_grant(&args)
+        } else {
+            None
+        };
+        if let Some(grant) = grant.as_ref().filter(|g| approvals.is_granted(&g.key)) {
+            ctx.audit(
+                AuditEventType::Approval,
+                serde_json::json!({
+                    "tool": name,
+                    "label": render_label(tool.label_template(), &args),
+                    "decision": "auto_approved",
+                    "who": SYSTEM_PRINCIPAL,
+                    "reason": format!("allowed for this conversation ({})", grant.label),
+                }),
+            );
+        } else if needs_approval || confirm {
             let preview = tool.preview_in(&args, ctx).await?;
             let label = preview
                 .label
                 .unwrap_or_else(|| render_label(tool.label_template(), &args));
+            let mut details = preview.details;
+            if let Some(grant) = &grant {
+                if let Some(map) = details.as_object_mut() {
+                    map.insert(
+                        "allowForConversation".to_string(),
+                        Value::String(grant.label.clone()),
+                    );
+                }
+                approvals.offer(&ctx.step_id, grant.clone());
+            }
             ctx.emit(AgentEvent::ApprovalRequested {
                 run_id: ctx.run_id.clone(),
                 step_id: ctx.step_id.clone(),
                 tool: name.to_string(),
                 label: label.clone(),
                 tier: tool.tier(),
-                preview: preview.details,
+                preview: details,
             });
             let mut abandoned = PendingApprovalGuard {
                 ctx,
@@ -1221,6 +1317,15 @@ impl ToolRegistry {
         tool.execute(args, ctx).await
     }
 }
+
+/// Tools whose results hold nothing private: the web tools (public pages and
+/// search results) and the task list (the model's own words).
+const PUBLIC_RESULT_TOOLS: [&str; 4] = [
+    web::WEB_SEARCH,
+    web::FETCH_URL,
+    web::SEARCH_PAPERS,
+    plan::UPDATE_PLAN,
+];
 
 /// Remove omp's top-level `i` (intent) argument before validation, so
 /// `additionalProperties: false` schemas accept calls that still carry it.
@@ -2144,6 +2249,158 @@ mod tests {
         gate.resolve("step-1", false).unwrap();
         assert!(!task.await.unwrap().ok);
         assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+
+    /// Asks for every call; offers a yes for the call's `origin`.
+    struct PerOrigin {
+        runs: Arc<AtomicU32>,
+    }
+
+    #[async_trait]
+    impl HostTool for PerOrigin {
+        fn name(&self) -> &'static str {
+            "per_origin"
+        }
+        fn label(&self) -> &'static str {
+            "Per origin"
+        }
+        fn label_template(&self) -> &'static str {
+            "Opening {origin}"
+        }
+        fn description(&self) -> &'static str {
+            "Test tool"
+        }
+        fn schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {"origin": {"type": "string"}},
+                "required": ["origin"],
+                "additionalProperties": false
+            })
+        }
+        fn tier(&self) -> RiskTier {
+            RiskTier::Read
+        }
+        async fn must_confirm(&self, _args: &Value) -> Result<bool, ToolError> {
+            Ok(true)
+        }
+        fn session_grant(&self, args: &Value) -> Option<SessionGrant> {
+            let origin = args["origin"].as_str()?;
+            Some(SessionGrant {
+                key: format!("origin:{origin}"),
+                label: format!("Allow {origin} for this conversation"),
+            })
+        }
+        async fn execute(&self, _args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolOutput {
+                text_for_model: "ok".into(),
+                summary_for_ui: "ok".into(),
+                detail: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_yes_for_the_conversation_covers_only_its_origin_and_session() {
+        let runs = Arc::new(AtomicU32::new(0));
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(PerOrigin { runs: runs.clone() }))
+            .unwrap();
+        let reg = Arc::new(reg);
+        let p = profile(&["per_origin"]);
+        let gate = Arc::new(ApprovalGate::default());
+        let ask = |origin: &'static str, gate: Arc<ApprovalGate>| {
+            let (reg, p) = (reg.clone(), p.clone());
+            let (ctx, rx) = ctx();
+            let task = tokio::spawn(async move {
+                reg.dispatch(
+                    call("per_origin", json!({"origin": origin})),
+                    &p,
+                    &gate,
+                    &ctx,
+                )
+                .await
+            });
+            (task, rx)
+        };
+
+        // The first call asks and offers the origin; the user allows it.
+        let (task, mut rx) = ask("https://a.example:443", gate.clone());
+        match rx.recv().await {
+            Some(AgentEvent::ApprovalRequested { preview, .. }) => assert_eq!(
+                preview["allowForConversation"],
+                "Allow https://a.example:443 for this conversation"
+            ),
+            other => panic!("expected a prompt, got {other:?}"),
+        }
+        let grant = gate.resolve_for_session("step-1").unwrap();
+        assert_eq!(grant.key, "origin:https://a.example:443");
+        assert!(task.await.unwrap().ok);
+
+        // The same origin now runs without a prompt.
+        let (task, mut rx) = ask("https://a.example:443", gate.clone());
+        assert!(task.await.unwrap().ok);
+        assert!(!matches!(
+            rx.try_recv(),
+            Ok(AgentEvent::ApprovalRequested { .. })
+        ));
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
+
+        // Another origin asks; a plain yes grants nothing.
+        let (task, mut rx) = ask("https://b.example:443", gate.clone());
+        assert!(matches!(
+            rx.recv().await,
+            Some(AgentEvent::ApprovalRequested { .. })
+        ));
+        gate.resolve("step-1", true).unwrap();
+        assert!(task.await.unwrap().ok);
+        assert!(!gate.is_granted("origin:https://b.example:443"));
+
+        // A new session (a new gate) asks again.
+        let fresh = Arc::new(ApprovalGate::default());
+        let (task, mut rx) = ask("https://a.example:443", fresh.clone());
+        assert!(matches!(
+            rx.recv().await,
+            Some(AgentEvent::ApprovalRequested { .. })
+        ));
+        fresh.resolve("step-1", false).unwrap();
+        assert!(!task.await.unwrap().ok);
+        // Nothing to grant for a step that offered nothing.
+        assert!(fresh.resolve_for_session("step-9").is_err());
+    }
+
+    #[tokio::test]
+    async fn private_tool_results_arm_the_web_gate_and_web_results_do_not() {
+        let runs = Arc::new(AtomicU32::new(0));
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(Guarded { runs: runs.clone() }))
+            .unwrap();
+        let (ctx, _rx) = ctx();
+        let p = profile(&["guarded"]);
+        // A web passage is public.
+        let n = ctx.reserve_passages(1);
+        ctx.record_passage(CitedPassage {
+            n,
+            file: "A page".into(),
+            path: "https://example.com/".into(),
+            page: None,
+            web: true,
+            text: "public".into(),
+            checkable: true,
+        });
+        assert!(!ctx.private_content());
+        // Any other tool's result (history, memory, files, an unknown tool) is not.
+        let out = reg
+            .dispatch(
+                call("guarded", json!({"target": "x"})),
+                &p,
+                &ApprovalGate::default(),
+                &ctx,
+            )
+            .await;
+        assert!(out.ok);
+        assert!(ctx.private_content());
     }
 
     #[test]

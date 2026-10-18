@@ -60,12 +60,22 @@ function previewRows(preview: unknown): Array<[string, string]> {
   if (isRecord(preview)) {
     return Object.entries(preview)
       // Shown as their own blocks: field changes and an instruction diff.
-      .filter(([k]) => k !== 'changes' && k !== 'instructionsDiff' && k !== 'diff')
+      .filter(([k]) => k !== 'changes' && k !== 'instructionsDiff' && k !== 'diff' && k !== ALLOW_FOR_CONVERSATION)
       .filter(([, v]) => v !== null && v !== undefined && v !== '' && v !== false)
       .map(([k, v]) => [humanKey(k), displayValue(v)]);
   }
   if (preview === null || preview === undefined) return [];
   return [['Details', displayValue(preview)]];
+}
+
+/** Preview key of the yes a prompt offers for the rest of the conversation (web tools only). */
+const ALLOW_FOR_CONVERSATION = 'allowForConversation';
+
+/** What the prompt offers to allow for the rest of the conversation, if anything. */
+export function conversationAllowance(preview: unknown): string | null {
+  if (!isRecord(preview)) return null;
+  const offer = preview[ALLOW_FOR_CONVERSATION];
+  return typeof offer === 'string' && offer.trim() !== '' ? offer : null;
 }
 
 function isTextEntry(element: Element | null): boolean {
@@ -76,7 +86,8 @@ function isTextEntry(element: Element | null): boolean {
 
 interface ApprovalPromptProps {
   approval: StepApproval;
-  onDecide: (approved: boolean) => void;
+  /** `forConversation`: the user chose the prompt's yes for the rest of the conversation. */
+  onDecide: (approved: boolean, forConversation?: boolean) => void;
   compact?: boolean;
 }
 
@@ -94,6 +105,7 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
   const rows = previewRows(approval.preview);
   const changes = previewChanges(approval.preview);
   const diff = isRecord(approval.preview) ? parseDiff(approval.preview.instructionsDiff) : null;
+  const allowance = conversationAllowance(approval.preview);
 
   useEffect(() => {
     if (!pending) return;
@@ -178,6 +190,19 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
           Approve
           {!destructive && <kbd className="font-mono text-[10.5px] opacity-80">Enter</kbd>}
         </button>
+        {allowance && !destructive && (
+          <button
+            type="button"
+            onClick={() => onDecide(true, true)}
+            title="Shodh will not ask again for this in this conversation. Closing the conversation ends it."
+            className={cn(
+              'inline-flex items-center gap-2 h-8 px-3 rounded-lg text-[12.5px] font-medium text-shodh-text bg-shodh-raised-2 hover:bg-shodh-pressed transition-colors duration-micro',
+              FOCUS_RING,
+            )}
+          >
+            {allowance}
+          </button>
+        )}
         <button
           ref={denyRef}
           type="button"

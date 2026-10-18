@@ -1598,6 +1598,12 @@ impl OmpSession {
             })
             .collect();
 
+        // A Code session reads the user's code with omp's own tools, which no
+        // passage records: it holds private content from the start.
+        let passages_in_run = Arc::new(RunPassages::new());
+        if code.is_some() {
+            passages_in_run.mark_private();
+        }
         let inner = Arc::new(Inner {
             session_id: launch.session_id.clone(),
             model: launch.model.model_arg.clone(),
@@ -1625,7 +1631,7 @@ impl OmpSession {
             inflight: Mutex::new(HashMap::new()),
             calls_in_run: AtomicU32::new(0),
             tools_ok_in_run: Mutex::new(HashSet::new()),
-            passages_in_run: Arc::new(RunPassages::new()),
+            passages_in_run,
             plan_in_run: Arc::new(RunPlan::new()),
             grounding,
             grounding_run: Mutex::new(GroundingRun::default()),
@@ -1920,6 +1926,31 @@ impl AgentHarness for OmpSession {
             .map_err(|_| HarnessError::NoPendingApproval(step_id.to_string()))?;
         tracing::info!(target: "shodh::audit", event = "approval", session = %self.inner.session_id, step_id, approved, "approval decision");
         Ok(())
+    }
+
+    fn approve_for_conversation(&self, step_id: &str) -> Result<String, HarnessError> {
+        let grant = self
+            .inner
+            .approvals
+            .resolve_for_session(step_id)
+            .map_err(|_| HarnessError::NoPendingApproval(step_id.to_string()))?;
+        let run_id = lock(&self.inner.state)
+            .active_run_id()
+            .map(str::to_string)
+            .unwrap_or_default();
+        self.inner.audit(
+            &run_id,
+            AuditEventType::Approval,
+            json!({
+                "step_id": step_id,
+                "decision": "allowed_for_conversation",
+                "grant": grant.label,
+                "key": grant.key,
+                "who": self.inner.principal(),
+            }),
+        );
+        tracing::info!(target: "shodh::audit", event = "approval", session = %self.inner.session_id, step_id, grant = %grant.key, "allowed for the conversation");
+        Ok(grant.label)
     }
 
     async fn shutdown(&self) {

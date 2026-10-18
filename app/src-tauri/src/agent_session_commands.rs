@@ -2055,18 +2055,25 @@ pub async fn agent_abort(
     Ok(session.abort().await?)
 }
 
-/// Approve or decline a pending write/destructive step.
+/// Approve or decline a pending write/destructive step. `for_conversation`
+/// approves it and gives the yes its prompt offered (`allowForConversation`)
+/// for the rest of the session; a prompt that offered none is not approved.
 #[tauri::command]
 pub async fn agent_approve(
     session_id: String,
     step_id: String,
     approved: bool,
+    for_conversation: Option<bool>,
     app: AppHandle,
     sessions: State<'_, AgentSessions>,
 ) -> CommandResult<()> {
     check_id("step id", &step_id)?;
     let session = sessions.get(&session_id)?;
-    session.approve(&step_id, approved)?;
+    if approved && for_conversation == Some(true) {
+        session.approve_for_conversation(&step_id)?;
+    } else {
+        session.approve(&step_id, approved)?;
+    }
     // Answered here (the chat or the Inbox): the Inbox item is done with.
     inbox_commands::resolve(&app, inbox_commands::approval_id(&session_id, &step_id)).await;
     Ok(())

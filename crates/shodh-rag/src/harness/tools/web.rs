@@ -33,8 +33,8 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use super::{
-    req_str, ApprovalPreview, CitedPassage, HostTool, ToolContext, ToolError, ToolOutput,
-    WEB_UNTRUSTED_NOTICE,
+    req_str, ApprovalPreview, CitedPassage, HostTool, SessionGrant, ToolContext, ToolError,
+    ToolOutput, WEB_UNTRUSTED_NOTICE,
 };
 use crate::harness::events::RiskTier;
 use crate::harness::truncate_chars;
@@ -135,6 +135,19 @@ pub fn query_needs_confirmation(query: &str, private: bool, user_words: Option<&
     }
     let wanted = words_key(query);
     wanted.is_empty() || !user_words.is_some_and(|words| words_key(words).contains(&wanted))
+}
+
+/// `url`'s origin as the approval card names it: scheme, host and port
+/// (`https://example.com:443`). `None` for anything but an http(s) URL with
+/// a host.
+pub fn url_origin(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = parsed.host_str().filter(|h| !h.is_empty())?;
+    let port = parsed.port_or_known_default()?;
+    Some(format!("{}://{host}:{port}", parsed.scheme()))
 }
 
 /// The prompt of a web call that sends `what` (a URL or query) away.
@@ -245,6 +258,12 @@ impl HostTool for WebSearchTool {
             ctx.private_content(),
             ctx.user_words(),
         ))
+    }
+    fn session_grant(&self, _args: &Value) -> Option<SessionGrant> {
+        Some(SessionGrant {
+            key: format!("tool:{WEB_SEARCH}"),
+            label: "Allow web search for this conversation".to_string(),
+        })
     }
     async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
         let query = req_str(args, "query", WEB_SEARCH)?;
@@ -486,6 +505,14 @@ impl HostTool for FetchUrlTool {
             ctx.user_words(),
         ))
     }
+    /// Only the exact origin of this URL, never fetching in general.
+    fn session_grant(&self, args: &Value) -> Option<SessionGrant> {
+        let origin = url_origin(args.get("url")?.as_str()?)?;
+        Some(SessionGrant {
+            key: format!("origin:{origin}"),
+            label: format!("Allow {origin} for this conversation"),
+        })
+    }
     async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
         let url = req_str(args, "url", FETCH_URL)?;
         Ok(send_preview(format!("Open {url}"), "url", url))
@@ -629,6 +656,12 @@ impl HostTool for SearchPapersTool {
             ctx.private_content(),
             ctx.user_words(),
         ))
+    }
+    fn session_grant(&self, _args: &Value) -> Option<SessionGrant> {
+        Some(SessionGrant {
+            key: format!("tool:{SEARCH_PAPERS}"),
+            label: "Allow paper search for this conversation".to_string(),
+        })
     }
     async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
         let query = req_str(args, "query", SEARCH_PAPERS)?;
@@ -1094,5 +1127,62 @@ mod tests {
         assert!(composed.private_content());
         assert_eq!(composed.user_words(), None);
         assert!(fetch.must_confirm_in(&leak, &composed).await.unwrap());
+    }
+
+    #[test]
+    fn a_fetch_grant_names_exactly_one_origin() {
+        assert_eq!(
+            url_origin("https://Example.com/a?b=1").as_deref(),
+            Some("https://example.com:443")
+        );
+        assert_eq!(
+            url_origin("http://example.com:8080/x").as_deref(),
+            Some("http://example.com:8080")
+        );
+        assert_eq!(url_origin("ftp://example.com/x"), None);
+        assert_eq!(url_origin("not a url"), None);
+        let fetch = FetchUrlTool::new(env(None), web_client());
+        let grant = fetch
+            .session_grant(&json!({"url": "https://example.com/article"}))
+            .unwrap();
+        assert_eq!(grant.key, "origin:https://example.com:443");
+        assert_eq!(
+            grant.label,
+            "Allow https://example.com:443 for this conversation"
+        );
+        let other = fetch
+            .session_grant(&json!({"url": "https://example.com.evil.net/"}))
+            .unwrap();
+        assert_ne!(other.key, grant.key);
+        let search = WebSearchTool::new(env(None), web_client());
+        let papers = SearchPapersTool::new(env(None), web_client());
+        assert_ne!(
+            search.session_grant(&json!({})).unwrap().key,
+            papers.session_grant(&json!({})).unwrap().key
+        );
+    }
+
+    #[test]
+    fn a_pure_web_chat_does_not_arm_the_gate() {
+        let (ctx, _rx) = ctx();
+        let first = ctx.reserve_passages(2);
+        for n in first..first + 2 {
+            ctx.record_passage(CitedPassage {
+                n,
+                file: "Result".into(),
+                path: format!("https://example.com/{n}"),
+                page: None,
+                web: true,
+                text: "public".into(),
+                checkable: true,
+            });
+        }
+        assert!(!ctx.private_content());
+        assert!(!fetch_needs_confirmation(
+            "https://other.example/",
+            ctx.private_content(),
+            &ctx.web_sources(),
+            None
+        ));
     }
 }

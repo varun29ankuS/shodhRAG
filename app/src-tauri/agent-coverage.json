@@ -79,6 +79,7 @@
     "memory_history": { "tool": "recall" },
     "memory_update": { "tool": "update_memory" },
     "memory_forget": { "tool": "forget" },
+    "memory_forget_notice": { "tool": "forget" },
     "memory_set_pinned": { "excluded": "Pinning exempts a memory from fading; which memories last indefinitely is the user's decision, not the assistant's." },
     "memory_export": { "excluded": "Exporting writes every memory about the user to a file of the user's choosing; the assistant must not copy that record elsewhere." },
     "memory_learn_status": { "excluded": "Learning status, model and costs are the user's view of what the assistant learns; the assistant does not manage its own learning." },

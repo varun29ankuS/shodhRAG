@@ -8,6 +8,7 @@ import {
   contentFromEdit,
   editableFields,
   exportFileName,
+  forgetConfirmation,
   groupByClass,
   matchesFilter,
   parseMemories,
@@ -179,4 +180,13 @@ test('app settings carry the memory switch, defaulting to on for older files', (
   assert.equal(parseAppSettings(base)?.memory.injectMemories, true);
   assert.equal(parseAppSettings({ ...base, memory: { injectMemories: false } })?.memory.injectMemories, false);
   assert.equal(parseAppSettings({ ...base, memory: { injectMemories: 'no' } }), null);
+});
+
+test('the forget confirmation says plainly what the Activity log keeps', () => {
+  const now = forgetConfirmation('Locker code is on the fridge', false);
+  assert.match(now, /^Forget “Locker code is on the fridge”\?/);
+  assert.match(now, /keeps a record that a memory was saved and forgotten, without its words\./);
+  assert.match(now, /said in the conversation stays there and in its Activity entries/);
+  assert.doesNotMatch(now, /older entries/);
+  assert.match(forgetConfirmation('x', true), /without its words; older entries may still show the words\./);
 });

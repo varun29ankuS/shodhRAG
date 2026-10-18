@@ -437,6 +437,72 @@ async fn forget_removes_every_version_and_is_audited() {
     let events = m.events(&[AuditEventType::MemoryForget]);
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["ids"].as_array().unwrap().len(), 2);
+    // Erased, not hidden: no dynamics, and the ids are free.
+    for id in [&first.id, &second.id] {
+        assert!(m.f.store.dynamics().get(id).unwrap().is_none());
+    }
+    // The audit log records the writes and the forget by id and hash, never the words.
+    assert_eq!(
+        events[0]["text_sha256"],
+        json!(text_hash(&second.text)),
+        "{events:?}"
+    );
+    for event in m.events(&[]) {
+        let payload = event.to_string();
+        assert!(
+            !payload.contains("oolong") && !payload.contains("green"),
+            "{payload}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_forgotten_memory_is_gone_from_the_table_and_its_history() {
+    let m = mem().await;
+    let origin = Origin::user_interface("t");
+    let id = m
+        .note("My locker code is quokkapantry 7", Scope::Global)
+        .await;
+    m.service.set_pinned(&id, true, &Actor::ui()).await.unwrap();
+    // A memory forgotten by an earlier version of the app: hidden, not erased.
+    let old = m.note("The old quokkapantry note", Scope::Global).await;
+    m.f.store.forget(&old).await.unwrap();
+    let lance = m.f.dir.path().join("lance_data");
+    assert!(!crate::statements::testing::files_containing(&lance, "quokkapantry").is_empty());
+
+    m.service.forget(&id, None, &Actor::ui()).await.unwrap();
+    // The background purge may still be running; this one waits for it.
+    m.f.store.purge_history().await.unwrap();
+    assert!(
+        crate::statements::testing::files_containing(&lance, "quokkapantry").is_empty(),
+        "the words are still in the table's files"
+    );
+    assert_eq!(m.f.store.table_versions().await.unwrap().len(), 1);
+    assert!(m.f.store.dynamics().get(&id).unwrap().is_none());
+    assert!(m.f.store.dynamics().get(&old).unwrap().is_none());
+    assert!(matches!(
+        m.service.get(&id).await,
+        Err(MemoryError::NotFound(_))
+    ));
+    // Remembering the same words again is a new memory.
+    let again = m
+        .service
+        .remember(
+            MemoryContent::Note {
+                text: "My locker code is quokkapantry 7".into(),
+            },
+            Scope::Global,
+            &origin,
+            &Actor::ui(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(again.outcome, PutOutcome::Added { .. }));
+    // Every memory event names the memory by id and hash only.
+    for event in m.events(&[AuditEventType::MemoryWrite, AuditEventType::MemoryForget]) {
+        assert!(event.get("text").is_none(), "{event}");
+        assert!(!event.to_string().contains("quokkapantry"), "{event}");
+    }
 }
 
 #[tokio::test]

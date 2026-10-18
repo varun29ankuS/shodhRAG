@@ -20,17 +20,20 @@ mod recall;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
+use sha2::{Digest, Sha256};
 use shodh_ontology::{
     EntityRef, Extractor, Provenance, RawValue, Statement, Value as OntologyValue,
 };
 
-use crate::audit::{AuditEventType, AuditLog, AuditRecord, LOCAL_OWNER, MAX_SNIPPET_CHARS};
+use crate::audit::{
+    AuditEventType, AuditLog, AuditQuery, AuditRecord, LOCAL_OWNER, MAX_SNIPPET_CHARS,
+};
 use crate::statements::{
     DynamicsState, PutIntent, PutOutcome, Scope, StatementError, StatementQuery, StatementStore,
     StoredStatement, SELF_ENTITY_ID,
@@ -231,6 +234,8 @@ pub struct ListRequest {
 pub struct MemoryService {
     store: Arc<StatementStore>,
     audit: Option<Arc<AuditLog>>,
+    /// The suggestions inbox, cleared of a memory's words when it is forgotten.
+    inbox: Option<Arc<learn::Inbox>>,
     app_version: String,
 }
 
@@ -252,8 +257,21 @@ impl MemoryService {
         Self {
             store,
             audit,
+            inbox: None,
             app_version: app_version.to_string(),
         }
+    }
+
+    /// The same service, clearing a forgotten memory's words from `inbox`
+    /// ([`MemoryService::forget`]). The learner should share it ([`MemoryService::inbox`]).
+    pub fn with_inbox(mut self, inbox: Arc<learn::Inbox>) -> Self {
+        self.inbox = Some(inbox);
+        self
+    }
+
+    /// The suggestions inbox forgetting clears, if one was given.
+    pub fn inbox(&self) -> Option<&Arc<learn::Inbox>> {
+        self.inbox.as_ref()
     }
 
     /// The statement store.
@@ -400,8 +418,19 @@ impl MemoryService {
         Ok(crate::statements::render_text(ontology, &valid))
     }
 
-    /// Forgets memory `id` and every earlier or later version of the same fact (soft
-    /// delete; links removed). Returns the forgotten ids. Audited as `memory_forget`.
+    /// Forgets memory `id` and every earlier or later version of the same fact, erasing
+    /// it rather than hiding it, in an order that lets a failed forget be retried:
+    /// 1. suggestions that stored it or are about it lose its words and are marked
+    ///    forgotten, and the learning model's rejected answers of the turns it came from
+    ///    are deleted ([`learn::Inbox::forget_memories`], when an inbox was given);
+    /// 2. its dynamics and links are deleted and its rows deleted from the statement table
+    ///    ([`StatementStore::erase`]); memories only soft-forgotten before (by earlier
+    ///    versions of the app, or undone learned writes) are erased with it;
+    /// 3. the table's old versions, which still hold the rows, are purged in the
+    ///    background ([`StatementStore::schedule_purge`]).
+    ///
+    /// Returns the forgotten ids. Audited as `memory_forget` with the ids and a hash of
+    /// the text, never the text. The conversation the memory came from is not changed.
     pub async fn forget(
         &self,
         id: &str,
@@ -410,15 +439,43 @@ impl MemoryService {
     ) -> MemoryResult<Vec<String>> {
         let target = self.memory_statement(id).await?;
         self.check_visible(&target, visible_from)?;
-        let ids = self.store.history_ids(id).await?;
-        let mut forgotten = Vec::new();
-        for version in &ids {
-            match self.store.forget(version).await {
-                Ok(_) => forgotten.push(version.clone()),
-                Err(StatementError::NotFound(_)) => {}
-                Err(e) => return Err(e.into()),
+        // Only memories: a document's statement about the same thing is not the user's.
+        let versions: Vec<StoredStatement> = self
+            .store
+            .get_many(&self.store.history_ids(id).await?)
+            .await?
+            .into_iter()
+            .filter(is_memory)
+            .collect();
+        let ids: Vec<String> = versions.iter().map(|v| v.id().to_string()).collect();
+        let turns: Vec<String> = versions
+            .iter()
+            .filter_map(turn_of)
+            .collect::<BTreeSet<String>>()
+            .into_iter()
+            .collect();
+        if let Some(inbox) = &self.inbox {
+            let (inbox, ids, now) = (inbox.clone(), ids.clone(), self.store.now());
+            tokio::task::spawn_blocking(move || inbox.forget_memories(&ids, &turns, now))
+                .await
+                .map_err(|e| MemoryError::Statement(StatementError::Task(e.to_string())))?
+                .map_err(|e| MemoryError::Statement(StatementError::Sqlite(e.to_string())))?;
+        }
+        let forgotten = self.store.erase(&ids).await?;
+        match self
+            .store
+            .erase_forgotten(&memory_source_prefixes(), &[])
+            .await
+        {
+            Ok(0) => {}
+            Ok(n) => {
+                tracing::info!(target: "shodh::memory", erased = n, "memories forgotten earlier were erased")
+            }
+            Err(e) => {
+                tracing::warn!(target: "shodh::memory", error = %e, "memories forgotten earlier were not erased; the next forget retries")
             }
         }
+        self.store.schedule_purge();
         self.audit(
             actor,
             AuditEventType::MemoryForget,
@@ -428,11 +485,47 @@ impl MemoryService {
                 "ids": forgotten,
                 "class": target.statement.class,
                 "scope": target.scope.as_key(),
-                "text": snippet(&target.text),
+                "text_sha256": text_hash(&target.text),
                 "via": actor.via,
             }),
         );
         Ok(forgotten)
+    }
+
+    /// Whether the audit log still holds words of memory `id` (of any of its versions):
+    /// events written before memory events carried only a hash of the text. The forget
+    /// confirmation says so. `false` when writes are not audited.
+    pub async fn audit_holds_words(&self, id: &str) -> MemoryResult<bool> {
+        let Some(log) = self.audit.clone() else {
+            return Ok(false);
+        };
+        self.memory_statement(id).await?;
+        let ids = self.store.history_ids(id).await?;
+        tokio::task::spawn_blocking(move || -> Result<bool, crate::audit::AuditError> {
+            for version in &ids {
+                let rows = log.query(&AuditQuery {
+                    types: vec![AuditEventType::MemoryWrite, AuditEventType::MemoryForget],
+                    text: Some(version.clone()),
+                    limit: Some(1_000),
+                    ..Default::default()
+                })?;
+                let worded = rows.iter().any(|row| {
+                    ["text", "reason"].iter().any(|key| {
+                        row.payload
+                            .get(*key)
+                            .and_then(JsonValue::as_str)
+                            .is_some_and(|t| !t.trim().is_empty())
+                    })
+                });
+                if worded {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })
+        .await
+        .map_err(|e| MemoryError::Statement(StatementError::Task(e.to_string())))?
+        .map_err(|e| MemoryError::Statement(StatementError::Sqlite(e.to_string())))
     }
 
     /// Pins (exempts from decay) or unpins memory `id`. Audited as `memory_write`.
@@ -463,7 +556,7 @@ impl MemoryService {
                 "id": id,
                 "class": target.statement.class,
                 "scope": target.scope.as_key(),
-                "text": snippet(&target.text),
+                "text_sha256": text_hash(&target.text),
                 "via": actor.via,
             }),
         );
@@ -609,7 +702,7 @@ impl MemoryService {
                     "superseded": superseded,
                     "class": memory.as_ref().map(|m| m.class.clone()),
                     "scope": scope.as_key(),
-                    "text": memory.as_ref().map(|m| snippet(&m.text)),
+                    "text_sha256": memory.as_ref().map(|m| text_hash(&m.text)),
                     "source": origin.source,
                     "extractor": origin.extractor.label(),
                     "approval": match &origin.authority {
@@ -850,7 +943,7 @@ impl MemoryService {
             "id": target.id(),
             "class": target.statement.class,
             "scope": target.scope.as_key(),
-            "text": snippet(&target.text),
+            "text_sha256": text_hash(&target.text),
             "extractor": "llm",
             "via": actor.via,
         });
@@ -863,16 +956,7 @@ impl MemoryService {
     /// A memory statement (not a document-derived statement) by id.
     pub(crate) async fn memory_statement(&self, id: &str) -> MemoryResult<StoredStatement> {
         let stored = self.store.get(id).await?;
-        let source = stored
-            .statement
-            .provenance
-            .as_ref()
-            .map(|p| p.source.as_str())
-            .unwrap_or("");
-        if memory_source_prefixes()
-            .iter()
-            .any(|p| source.starts_with(p.as_str()))
-        {
+        if is_memory(&stored) {
             Ok(stored)
         } else {
             Err(MemoryError::NotFound(id.to_string()))
@@ -1031,6 +1115,35 @@ fn normalise(value: &mut RawValue) {
 
 pub(crate) fn snippet(text: &str) -> String {
     crate::harness::truncate_chars(text, MAX_SNIPPET_CHARS)
+}
+
+/// SHA-256 of `text` (hex), what memory audit events record instead of a memory's words:
+/// it shows that two events concern the same text without saying what the text was.
+pub(crate) fn text_hash(text: &str) -> String {
+    hex::encode(Sha256::digest(text.as_bytes()))
+}
+
+/// Whether `stored` is a memory (written by or for the user), not a statement extracted
+/// from a document.
+fn is_memory(stored: &StoredStatement) -> bool {
+    let source = stored
+        .statement
+        .provenance
+        .as_ref()
+        .map(|p| p.source.as_str())
+        .unwrap_or("");
+    memory_source_prefixes()
+        .iter()
+        .any(|p| source.starts_with(p.as_str()))
+}
+
+/// The run (turn) a memory came from, for one learned or approved in a conversation.
+fn turn_of(stored: &StoredStatement) -> Option<String> {
+    let source = &stored.statement.provenance.as_ref()?.source;
+    let (_, run) = source
+        .strip_prefix(CONVERSATION_SOURCE_PREFIX)?
+        .split_once("/turn/")?;
+    (!run.is_empty()).then(|| run.to_string())
 }
 
 /// Runs a short SQLite operation off the async executor.

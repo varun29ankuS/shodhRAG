@@ -11,6 +11,7 @@ import {
   contentFromEdit,
   editableFields,
   exportFileName,
+  forgetConfirmation,
   formatDate,
   groupByClass,
   matchesFilter,
@@ -23,6 +24,7 @@ import {
   errorText,
   exportMemories,
   forgetMemory,
+  forgetNotice,
   listMemories,
   memoryHistory,
   setMemoryPinned,
@@ -121,10 +123,17 @@ function MemoryItem({ memory, busy, onChanged, setBusy, conversationTitle, onOpe
     }, memory.pinned ? 'The memory was not unpinned' : 'The memory was not pinned');
 
   const forget = async () => {
-    const confirmed = await ask(
-      `Forget “${memory.text}”? Every earlier version of it is forgotten too. This is recorded in the audit log.`,
-      { title: 'Forget memory', kind: 'warning', okLabel: 'Forget', cancelLabel: 'Keep' },
+    // Unknown (the audit log could not be read): say what may be left.
+    const olderWords = await forgetNotice(memory.id).then(
+      n => n.olderEntriesHaveWords,
+      () => true,
     );
+    const confirmed = await ask(forgetConfirmation(memory.text, olderWords), {
+      title: 'Forget memory',
+      kind: 'warning',
+      okLabel: 'Forget',
+      cancelLabel: 'Keep',
+    });
     if (!confirmed) return;
     await run(async () => {
       await forgetMemory(memory.id);

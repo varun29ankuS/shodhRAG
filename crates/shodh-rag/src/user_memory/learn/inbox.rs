@@ -15,11 +15,12 @@
 //! Every transition is a single `UPDATE ... WHERE status IN (...)` in an `IMMEDIATE`
 //! transaction, so a suggestion is applied at most once even when two windows accept it.
 
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
 use super::decide::{DecidedBy, Decision};
@@ -450,6 +451,109 @@ impl ProposalAction {
             ProposalAction::Archive { .. } => ProposalKind::Archive,
         }
     }
+
+    /// Ids of the memories it is about: its targets and the memory its decision names.
+    fn memory_ids(&self) -> Vec<&str> {
+        match self {
+            ProposalAction::Remember { decision, .. } => match decision {
+                Decision::Add => Vec::new(),
+                Decision::Noop { existing } => vec![existing.as_str()],
+                Decision::Extend { target }
+                | Decision::Supersede { target, .. }
+                | Decision::Update { target } => vec![target.as_str()],
+                Decision::Historical { current } => vec![current.as_str()],
+            },
+            ProposalAction::Revise { target, .. } | ProposalAction::Archive { target, .. } => {
+                vec![target.as_str()]
+            }
+            ProposalAction::Link { a, b, .. } => vec![a.as_str(), b.as_str()],
+            ProposalAction::Resolve { keep, retire, .. } => vec![keep.as_str(), retire.as_str()],
+        }
+    }
+
+    /// The same suggestion without any of the memory's words: texts, the quote, values,
+    /// reasons and the subject are cleared; ids, the class and the kind of decision stay
+    /// (so the stored suggestion still reads back).
+    fn redacted(&self) -> ProposalAction {
+        let mut action = self.clone();
+        match &mut action {
+            ProposalAction::Remember {
+                content,
+                text,
+                decision,
+                target_text,
+                evidence,
+                ..
+            } => {
+                let cleared = redacted_content(content);
+                *content = cleared;
+                text.clear();
+                *target_text = None;
+                evidence.clear();
+                if let Decision::Supersede { changes, .. } = decision {
+                    clear_changes(changes);
+                }
+            }
+            ProposalAction::Revise {
+                target_text,
+                content,
+                text,
+                reason,
+                ..
+            } => {
+                let cleared = redacted_content(content);
+                *content = cleared;
+                target_text.clear();
+                text.clear();
+                reason.clear();
+            }
+            ProposalAction::Link {
+                a_text,
+                b_text,
+                reason,
+                ..
+            } => {
+                a_text.clear();
+                b_text.clear();
+                reason.clear();
+            }
+            ProposalAction::Resolve {
+                keep_text,
+                retire_text,
+                changes,
+                ..
+            } => {
+                keep_text.clear();
+                retire_text.clear();
+                clear_changes(changes);
+            }
+            ProposalAction::Archive { text, .. } => text.clear(),
+        }
+        action
+    }
+}
+
+/// Memory content without its words: a note's text, a fact's values and subject.
+fn redacted_content(content: &MemoryContent) -> MemoryContent {
+    match content {
+        MemoryContent::Note { .. } => MemoryContent::Note {
+            text: String::new(),
+        },
+        MemoryContent::Fact { class, .. } => MemoryContent::Fact {
+            class: class.clone(),
+            subject: None,
+            properties: BTreeMap::new(),
+            valid_from: None,
+        },
+    }
+}
+
+/// Clears the old and new values of contradicting or replaced values.
+fn clear_changes(changes: &mut [super::ValueChange]) {
+    for change in changes {
+        change.from.clear();
+        change.to.clear();
+    }
 }
 
 /// How to undo an applied suggestion.
@@ -494,6 +598,30 @@ pub struct AppliedOutcome {
     pub put: Option<PutOutcomeView>,
     /// How to undo it; `None` when there is nothing to undo (a reinforcement).
     pub undo: Option<Undo>,
+}
+
+impl AppliedOutcome {
+    /// Ids of the memories it stored, superseded or would change on undo.
+    fn memory_ids(&self) -> Vec<&str> {
+        let mut ids: Vec<&str> = self.memory_id.iter().map(String::as_str).collect();
+        if let Some(put) = &self.put {
+            ids.extend(put.stored.as_deref());
+            ids.extend(put.superseded.iter().map(String::as_str));
+        }
+        match &self.undo {
+            Some(Undo::Revert { id }) | Some(Undo::Unarchive { id }) => ids.push(id.as_str()),
+            Some(Undo::Unretire { retire, keep }) => {
+                ids.push(retire.as_str());
+                ids.push(keep.as_str());
+            }
+            Some(Undo::RestoreLink { a, b, .. }) => {
+                ids.push(a.as_str());
+                ids.push(b.as_str());
+            }
+            None => {}
+        }
+        ids
+    }
 }
 
 /// [`PutOutcome`] as stored.
@@ -556,6 +684,9 @@ pub struct Proposal {
     pub created_at: DateTime<Utc>,
     /// Decided (accepted, rejected, learned, undone, stale).
     pub decided_at: Option<DateTime<Utc>>,
+    /// When the memory it stored or was about was forgotten; its texts are cleared then
+    /// ([`Inbox::forget_memories`]).
+    pub forgotten_at: Option<DateTime<Utc>>,
 }
 
 /// A suggestion as the UI shows it.
@@ -588,6 +719,9 @@ pub struct ProposalView {
     pub error: Option<String>,
     /// Whether it can be undone now.
     pub undoable: bool,
+    /// The memory it stored or was about was forgotten: its texts are cleared and there
+    /// is nothing to undo.
+    pub forgotten: bool,
     /// Created.
     pub created_at: DateTime<Utc>,
     /// Decided.
@@ -596,7 +730,9 @@ pub struct ProposalView {
 
 impl From<Proposal> for ProposalView {
     fn from(p: Proposal) -> Self {
-        let undoable = matches!(p.status, ProposalStatus::Accepted | ProposalStatus::Learned)
+        let forgotten = p.forgotten_at.is_some();
+        let undoable = !forgotten
+            && matches!(p.status, ProposalStatus::Accepted | ProposalStatus::Learned)
             && p.outcome.as_ref().is_some_and(|o| o.undo.is_some());
         Self {
             id: p.id,
@@ -612,6 +748,7 @@ impl From<Proposal> for ProposalView {
             outcome: p.outcome,
             error: p.error,
             undoable,
+            forgotten,
             created_at: p.created_at,
             decided_at: p.decided_at,
         }
@@ -675,7 +812,8 @@ fn json_err(e: serde_json::Error) -> rusqlite::Error {
 }
 
 const COLUMNS: &str = "id, origin, status, fingerprint, scope, conversation_id, turn_id, \
-    payload_json, confidence, sensitive_json, outcome_json, error, created_at, decided_at";
+    payload_json, confidence, sensitive_json, outcome_json, error, created_at, decided_at, \
+    forgotten_at";
 
 fn read_proposal(r: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
     let invalid = |what: &str| {
@@ -711,6 +849,10 @@ fn read_proposal(r: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
         created_at: parse_ts(&r.get::<_, String>(12)?)?,
         decided_at: r
             .get::<_, Option<String>>(13)?
+            .map(|t| parse_ts(&t))
+            .transpose()?,
+        forgotten_at: r
+            .get::<_, Option<String>>(14)?
             .map(|t| parse_ts(&t))
             .transpose()?,
     })
@@ -1236,6 +1378,83 @@ impl Inbox {
         Ok(())
     }
 
+    /// Forgets memories `ids` (every version of a forgotten memory) in the suggestions:
+    /// each suggestion that stored, superseded or is about one of them loses the memory's
+    /// words (texts, the quote "You said: ..." shows, values, reasons, the subject) and is
+    /// marked forgotten; waiting ones go stale, so they are neither shown nor applied. The rows stay (ids, class, the hashed fingerprint), so the same
+    /// suggestion is not made again. Why the learning model's answers about turns `turns`
+    /// (the turns the memories came from) were not used is deleted too: those excerpts may
+    /// quote the same words. Rejections without a turn are linked to no memory and stay
+    /// until they age out ([`REJECTION_LOG_DAYS`]). Deleted and overwritten content is
+    /// zeroed in the database file (`secure_delete`). Returns how many suggestions changed.
+    pub fn forget_memories(
+        &self,
+        ids: &[String],
+        turns: &[String],
+        now: DateTime<Utc>,
+    ) -> LearnResult<usize> {
+        if ids.is_empty() && turns.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.lock();
+        conn.execute_batch("PRAGMA secure_delete = ON;")?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut candidates: Vec<Proposal> = Vec::new();
+        {
+            let mut stmt = tx.prepare(&format!(
+                "SELECT {COLUMNS} FROM memory_proposals
+                 WHERE payload_json LIKE ?1 ESCAPE '!' OR outcome_json LIKE ?1 ESCAPE '!'"
+            ))?;
+            for id in ids {
+                let pattern = format!("%{}%", like_literal(id));
+                for proposal in stmt.query_map(params![pattern], read_proposal)? {
+                    let proposal = proposal?;
+                    if !candidates.iter().any(|c| c.id == proposal.id) {
+                        candidates.push(proposal);
+                    }
+                }
+            }
+        }
+        let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        let mut changed = 0;
+        for proposal in &candidates {
+            let about = proposal
+                .action
+                .memory_ids()
+                .into_iter()
+                .chain(proposal.outcome.iter().flat_map(AppliedOutcome::memory_ids))
+                .any(|id| wanted.contains(id));
+            if !about {
+                // The id only appears inside a text (a reason quoting it).
+                continue;
+            }
+            let payload = serde_json::to_string(&proposal.action.redacted())
+                .map_err(|e| LearnError::Database(e.to_string()))?;
+            let (status, decided_at) = match proposal.status {
+                ProposalStatus::Pending | ProposalStatus::Failed => {
+                    (ProposalStatus::Stale, Some(ts(now)))
+                }
+                other => (other, proposal.decided_at.map(ts)),
+            };
+            tx.execute(
+                "UPDATE memory_proposals SET payload_json = ?1, status = ?2, decided_at = ?3,
+                    error = NULL, forgotten_at = COALESCE(forgotten_at, ?4)
+                 WHERE id = ?5",
+                params![payload, status.as_str(), decided_at, ts(now), proposal.id],
+            )?;
+            changed += 1;
+        }
+        for chunk in turns.chunks(400) {
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            tx.execute(
+                &format!("DELETE FROM memory_learn_rejections WHERE turn_id IN ({placeholders})"),
+                params_from_iter(chunk.iter()),
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed)
+    }
+
     /// Rejects every waiting suggestion (the kill switch). Returns how many.
     pub fn reject_all_pending(&self, now: DateTime<Utc>) -> LearnResult<usize> {
         let conn = self.lock();
@@ -1245,6 +1464,18 @@ impl Inbox {
             params![ts(now)],
         )?)
     }
+}
+
+/// `text` as a literal in a `LIKE ... ESCAPE '!'` pattern.
+fn like_literal(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if matches!(c, '!' | '%' | '_') {
+            out.push('!');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Model calls the legacy import made so far.
@@ -1332,6 +1563,7 @@ fn write_proposal(
         error: None,
         created_at: now,
         decided_at: None,
+        forgotten_at: None,
     })
 }
 

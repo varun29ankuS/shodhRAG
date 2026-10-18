@@ -280,6 +280,18 @@ function SuggestionItem({
 
   if (rejecting) return null;
 
+  // Its words were erased with the memory: say so, and nothing else.
+  if (suggestion.forgotten) {
+    return (
+      <li className="py-3 flex flex-col gap-1">
+        <p className="m-0 text-[13.5px] text-shodh-text-muted">A memory you forgot</p>
+        <p className="m-0 text-[12px] text-shodh-text-muted">
+          Its words were erased when you forgot it, so there is nothing to undo · {formatDate(suggestion.createdAt)}
+        </p>
+      </li>
+    );
+  }
+
   return (
     <li className="py-3 flex flex-col gap-1.5">
       <p className="m-0 text-[13.5px] text-shodh-text break-words">{suggestionText(suggestion)}</p>
@@ -378,8 +390,12 @@ function SuggestionItem({
             className={ICON_BUTTON}
             onClick={() =>
               void run(async () => {
-                await undoSuggestion(suggestion.id);
-                notify.success('Undone');
+                const after = await undoSuggestion(suggestion.id);
+                if (after?.forgotten) {
+                  notify.info('Nothing to undo', { description: 'You forgot this memory, so its words are already erased.' });
+                } else {
+                  notify.success('Undone');
+                }
               }, 'It was not undone')
             }
             disabled={busy}

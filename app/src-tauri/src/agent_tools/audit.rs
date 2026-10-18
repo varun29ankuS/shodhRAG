@@ -59,6 +59,15 @@ fn s<'a>(payload: &'a Value, key: &str) -> &'a str {
     payload.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
+/// `: <text>` when an event has a text, nothing otherwise.
+fn worded(text: &str) -> String {
+    if text.trim().is_empty() {
+        String::new()
+    } else {
+        format!(": {text}")
+    }
+}
+
 /// One line describing an audit event.
 pub(crate) fn summarize(row: &AuditRow) -> String {
     let p = &row.payload;
@@ -105,16 +114,23 @@ pub(crate) fn summarize(row: &AuditRow) -> String {
         }
         "runtime_install" => format!("Agent runtime {} installed", s(p, "version")),
         "retention_checkpoint" => "Older events removed by retention".to_string(),
+        // Memory events carry ids and a hash of the text; only events written before that
+        // have the words.
         "memory_write" => format!(
-            "Memory {} ({}) via {}: {}",
+            "Memory {} ({}) via {}{}",
             s(p, "action"),
             p.get("outcome")
                 .and_then(Value::as_str)
                 .unwrap_or("changed"),
             s(p, "via"),
-            s(p, "text")
+            worded(s(p, "text"))
         ),
-        "memory_forget" => format!("Memory forgotten via {}: {}", s(p, "via"), s(p, "text")),
+        "memory_forget" => format!(
+            "Memory forgotten via {} ({} versions){}",
+            s(p, "via"),
+            p.get("ids").and_then(Value::as_array).map_or(1, Vec::len),
+            worded(s(p, "text"))
+        ),
         "memory_use" => {
             let count = p
                 .get("ids")

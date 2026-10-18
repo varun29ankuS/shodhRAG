@@ -98,12 +98,11 @@ async fn env() -> Env {
     let f = fixture().await;
     let db = f.dir.path().join("shodh.db");
     let audit = Arc::new(AuditLog::open(db.clone(), None).unwrap());
-    let service = Arc::new(MemoryService::new(
-        f.store.clone(),
-        Some(audit.clone()),
-        "test",
-    ));
     let inbox = Arc::new(Inbox::open(&db, None).unwrap());
+    // Forgetting clears a memory's words from the same inbox, as in the app.
+    let service = Arc::new(
+        MemoryService::new(f.store.clone(), Some(audit.clone()), "test").with_inbox(inbox.clone()),
+    );
     let model = Arc::new(ScriptedModel::default());
     let policy = Arc::new(Policy(Mutex::new(LearnPolicy::default())));
     let learner = Learner::new(
@@ -1711,4 +1710,128 @@ async fn a_detail_that_quotes_the_answer_is_checked_like_the_answer() {
         .unwrap();
     let rows = rejection_rows(&e);
     assert!(!rows[0].2.contains("hunter2"), "{rows:?}");
+}
+
+#[tokio::test]
+async fn forgetting_a_learned_memory_erases_its_words_from_the_suggestions() {
+    let e = env().await;
+    e.set(|p| p.mode = LearnMode::Auto);
+    e.model.answer(json!({"memories": [
+        coffee("dark roast", "I prefer dark roast coffee", 0.95),
+        // Not the user's words: dropped, and its reason kept for the turn.
+        coffee("espresso", "I love espresso", 0.9),
+    ]}));
+    let report = e.learn("I prefer dark roast coffee").await;
+    assert_eq!(report.learned.len(), 1, "{report:?}");
+    let learned = e.learner.inbox().get(&report.learned[0]).unwrap();
+    let memory = learned.outcome.as_ref().unwrap().memory_id.clone().unwrap();
+    let text = e.service.get(&memory).await.unwrap().text;
+    assert!(text.contains("dark roast"), "{text}");
+    // A waiting suggestion about the memory.
+    let archive = e
+        .learner
+        .inbox()
+        .insert(
+            inbox::NewProposal {
+                origin: ProposalOrigin::Consolidate,
+                fingerprint: "archive-test".to_string(),
+                scope: Scope::Global,
+                conversation_id: None,
+                turn_id: None,
+                action: ProposalAction::Archive {
+                    target: memory.clone(),
+                    text: text.clone(),
+                    strength: 0.1,
+                },
+                confidence: 1.0,
+                sensitive: Vec::new(),
+            },
+            &LearnCaps::default(),
+            e.f.store.now(),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(
+        rejection_rows(&e)
+            .iter()
+            .any(|r| r.1.as_deref() == Some("r1")),
+        "control: the turn left a reason"
+    );
+
+    e.service.forget(&memory, None, &Actor::ui()).await.unwrap();
+
+    // "Recently learned" keeps the entry, marked forgotten, without the words.
+    let after: ProposalView = e.learner.inbox().get(&learned.id).unwrap().into();
+    assert!(after.forgotten && !after.undoable);
+    assert_eq!(after.status, ProposalStatus::Learned);
+    let shown = serde_json::to_string(&after).unwrap();
+    assert!(!shown.contains("dark roast"), "{shown}");
+    // Undo says there is nothing to undo rather than failing.
+    let undone = e.learner.undo(&learned.id, &Actor::ui()).await.unwrap();
+    assert!(undone.forgotten);
+    assert_eq!(undone.status, ProposalStatus::Learned);
+    // The waiting suggestion is stale and wordless; the turn's reasons are gone.
+    let archive = e.learner.inbox().get(&archive.id).unwrap();
+    assert_eq!(archive.status, ProposalStatus::Stale);
+    assert!(archive.forgotten_at.is_some());
+    assert!(e.pending().is_empty());
+    assert!(rejection_rows(&e).is_empty(), "{:?}", rejection_rows(&e));
+    // Nothing in the suggestions table holds the words.
+    let conn = rusqlite::Connection::open(e.f.dir.path().join("shodh.db")).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT payload_json || IFNULL(outcome_json, '') || IFNULL(error, '')
+             FROM memory_proposals",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows.iter()
+            .all(|r| !r.contains("dark roast") && !r.contains("espresso")),
+        "{rows:?}"
+    );
+    // Nor do the memory audit events written for it.
+    e.memory_writes(); // Waits for every queued event.
+    let events = e.audit.query(&AuditQuery::default()).unwrap();
+    for event in events
+        .iter()
+        .filter(|r| r.event_type.starts_with("memory_"))
+    {
+        let payload = event.payload.to_string();
+        assert!(!payload.contains("dark roast"), "{payload}");
+    }
+}
+
+#[tokio::test]
+async fn undoing_a_suggestion_whose_memory_is_gone_marks_it_forgotten() {
+    let e = env().await;
+    e.set(|p| p.mode = LearnMode::Auto);
+    e.model
+        .answer(json!({"memories": [coffee("dark roast", "I prefer dark roast coffee", 0.95)]}));
+    let report = e.learn("I prefer dark roast coffee").await;
+    let learned = e.learner.inbox().get(&report.learned[0]).unwrap();
+    let memory = learned.outcome.as_ref().unwrap().memory_id.clone().unwrap();
+    // Forgotten without an inbox to clear (as before suggestions were cleared).
+    MemoryService::new(e.f.store.clone(), None, "test")
+        .forget(&memory, None, &Actor::ui())
+        .await
+        .unwrap();
+    assert!(e
+        .learner
+        .inbox()
+        .get(&learned.id)
+        .unwrap()
+        .forgotten_at
+        .is_none());
+    let undone = e.learner.undo(&learned.id, &Actor::ui()).await.unwrap();
+    assert!(undone.forgotten && !undone.undoable);
+    assert_eq!(undone.status, ProposalStatus::Learned);
+    assert!(!serde_json::to_string(&undone)
+        .unwrap()
+        .contains("dark roast"));
 }

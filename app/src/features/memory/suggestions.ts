@@ -70,6 +70,8 @@ export interface Suggestion {
   scope: string;
   error: string | null;
   undoable: boolean;
+  /** The memory it stored or was about was forgotten: its words are erased, nothing to undo. */
+  forgotten: boolean;
   createdAt: string;
   decidedAt: string | null;
 }
@@ -207,7 +209,8 @@ export function parseSuggestion(value: unknown): Suggestion | null {
     // Builds before workspaces did not send a scope: everything was global then.
     scope: str(v.scope) && v.scope.length > 0 ? v.scope : 'global',
     error: error ?? null,
-    undoable: v.undoable === true,
+    undoable: v.undoable === true && v.forgotten !== true,
+    forgotten: v.forgotten === true,
     createdAt: v.createdAt,
     decidedAt: decidedAt ?? null,
   };

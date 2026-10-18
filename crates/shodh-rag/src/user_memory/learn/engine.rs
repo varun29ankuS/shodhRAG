@@ -801,8 +801,15 @@ impl Learner {
         Ok(self.inbox.get(id)?.into())
     }
 
-    /// Undoes an accepted or learned suggestion.
+    /// Undoes an accepted or learned suggestion. When the memory it stored or changed was
+    /// forgotten there is nothing left to undo: the suggestion is returned as it is, with
+    /// `forgotten` set, so the caller can say so instead of reporting a failure. A memory
+    /// found missing only now (forgotten before suggestions were marked) marks it then.
     pub async fn undo(&self, id: &str, actor: &Actor) -> LearnResult<ProposalView> {
+        let current = self.inbox.get(id)?;
+        if current.forgotten_at.is_some() {
+            return Ok(current.into());
+        }
         let proposal = self.inbox.transition(id, StatusEvent::Undo, self.now())?;
         let Some(undo) = proposal.outcome.as_ref().and_then(|o| o.undo.clone()) else {
             self.inbox
@@ -843,6 +850,12 @@ impl Learner {
         .await;
         match result {
             Ok(()) => Ok(self.inbox.get(id)?.into()),
+            Err(LearnError::Memory(MemoryError::NotFound(missing))) => {
+                self.inbox
+                    .restore_status(id, ProposalStatus::Undone, proposal.status)?;
+                self.inbox.forget_memories(&[missing], &[], self.now())?;
+                Ok(self.inbox.get(id)?.into())
+            }
             Err(e) => {
                 self.inbox
                     .restore_status(id, ProposalStatus::Undone, proposal.status)?;
@@ -1006,7 +1019,7 @@ impl Learner {
                     json!({
                         "action": "link",
                         "ids": [a, b],
-                        "reason": crate::user_memory::snippet(reason),
+                        "reason_sha256": crate::user_memory::text_hash(reason),
                         "extractor": "llm",
                         "authority": match authority { Authority::User => "user_approval", Authority::Policy => "learn_policy" },
                         "approval": proposal.id,

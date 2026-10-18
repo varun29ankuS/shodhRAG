@@ -122,7 +122,7 @@ pub fn check_office_part(name: &str, size: u64) -> Result<(), TooLarge> {
 
 /// `bytes` in MB, whole when exact ("50 MB"), else to one decimal ("63.2 MB").
 fn megabytes(bytes: u64) -> String {
-    if bytes % MIB == 0 {
+    if bytes.is_multiple_of(MIB) {
         format!("{} MB", thousands(bytes / MIB))
     } else {
         format!("{:.1} MB", bytes as f64 / MIB as f64)
@@ -134,7 +134,7 @@ fn thousands(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, digit) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(digit);

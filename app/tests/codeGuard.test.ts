@@ -19,15 +19,15 @@ import guard, {
   hostTools,
   inGitFolder,
   isWithin,
-  pathParts,
+  pathReadings,
   pathProblem,
   toolCallProblem,
 } from '../../crates/shodh-rag/src/harness/code_guard.js';
 
 /** A code folder with `src/lib.rs`, next to a secret outside it. */
-function fixture() {
+function fixture(name = 'project') {
   const base = realpathSync.native(mkdtempSync(path.join(tmpdir(), 'shodh-guard-')));
-  const root = path.join(base, 'project');
+  const root = path.join(base, name);
   mkdirSync(path.join(root, 'src'), { recursive: true });
   writeFileSync(path.join(root, 'src', 'lib.rs'), 'fn a() {}');
   writeFileSync(path.join(base, 'secret.txt'), 'secret');
@@ -198,16 +198,60 @@ test('on Windows, /c/... names a drive as omp reads it', { skip: process.platfor
 test('every way omp may split a path list is checked', () => {
   const { root, cleanup } = fixture();
   try {
-    assert.deepEqual(pathParts('src, tests'), ['src', 'tests', 'src,']);
-    assert.deepEqual(pathParts('src/lib.rs'), []);
-    assert.ok(pathParts('a;b c,d').includes('c'));
-    for (const value of ['src, ../', 'src ../', 'src\t../secret.txt', 'src,"../secret.txt"', 'src;../']) {
-      assert.match(toolCallProblem(root, root, 'grep', { pattern: 'x', path: value }) ?? '', /outside|quotes/, value);
-      assert.match(toolCallProblem(root, root, 'glob', { path: value }) ?? '', /outside|quotes/, value);
+    // A list omp would split: every part of every split it may take.
+    assert.deepEqual(pathReadings(root, 'src, tests'), ['src', 'tests']);
+    assert.deepEqual(pathReadings(root, 'src/lib.rs'), ['src/lib.rs']);
+    for (const value of ['src, ../', 'src ../', 'src\t../secret.txt', 'src,"../secret.txt"', 'src;../', 'src @/etc']) {
+      assert.ok(toolCallProblem(root, root, 'grep', { pattern: 'x', path: value }), value);
+      assert.ok(toolCallProblem(root, root, 'glob', { path: value }), value);
     }
-    // read splits a ';' list when the whole text is not a file.
-    assert.match(toolCallProblem(root, root, 'read', { path: 'src/lib.rs;../secret.txt' }) ?? '', /outside/);
     assert.equal(toolCallProblem(root, root, 'grep', { pattern: 'fn', path: 'src, src/lib.rs' }), null);
+    // read, write and edit take one path; a read of a missing ';' list is refused.
+    assert.ok(toolCallProblem(root, root, 'read', { path: 'src/lib.rs;../secret.txt' }));
+    // omp's native glob may expand braces.
+    assert.match(toolCallProblem(root, root, 'glob', { path: 'src/{..,x}/../secret.txt' }) ?? '', /braces/);
+    assert.match(toolCallProblem(root, root, 'grep', { pattern: 'x', path: '{../..,src}' }) ?? '', /braces/);
+    assert.equal(toolCallProblem(root, root, 'glob', { path: 'src/**/*.{rs,ts}' }), null);
+  } finally {
+    cleanup();
+  }
+});
+
+test('a code folder whose path has spaces works with absolute paths', () => {
+  const { base, root, cleanup } = fixture('My Project');
+  try {
+    const lib = path.join(root, 'src', 'lib.rs');
+    assert.equal(toolCallProblem(root, root, 'read', { path: lib }), null);
+    assert.equal(toolCallProblem(root, root, 'write', { path: path.join(root, 'src', 'new file.rs'), content: 'x' }), null);
+    assert.equal(toolCallProblem(root, root, 'edit', { path: lib, old_string: 'a', new_string: 'b' }), null);
+    assert.equal(toolCallProblem(root, root, 'grep', { pattern: 'fn', path: path.join(root, 'src') }), null);
+    assert.equal(toolCallProblem(root, root, 'glob', { path: path.join(root, 'src') + '/**/*.rs' }), null);
+    assert.equal(toolCallProblem(root, root, 'bash', { command: 'ls', cwd: path.join(root, 'src') }), null);
+    assert.match(toolCallProblem(root, root, 'read', { path: path.join(base, 'secret.txt') }) ?? '', /outside/);
+  } finally {
+    cleanup();
+  }
+});
+
+test('a link that points nowhere is not written through', (t) => {
+  const { base, root, cleanup } = fixture();
+  try {
+    const link = path.join(root, 'src', 'notes');
+    const target = path.join(base, 'not-yet', 'x');
+    try {
+      symlinkSync(target, link, 'file');
+    } catch {
+      try {
+        // Windows without the symlink privilege: a junction to a missing folder.
+        symlinkSync(target, link, 'junction');
+      } catch {
+        t.skip('links cannot be created here');
+        return;
+      }
+    }
+    for (const p of ['src/notes', 'src/notes/deeper.txt']) {
+      assert.match(toolCallProblem(root, root, 'write', { path: p, content: 'x' }) ?? '', /outside|points nowhere/, p);
+    }
   } finally {
     cleanup();
   }

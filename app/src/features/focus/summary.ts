@@ -7,10 +7,11 @@
  */
 
 import { fenced } from './contextBlock.ts';
-import type { FocusThread } from './focusTypes.ts';
+import type { FocusThread, ThreadTurn } from './focusTypes.ts';
 import { stripFollowups } from './followups.ts';
-import { answerAsContext } from '../agent/grounding.ts';
-import { safeTruncate } from './markdownSafe.ts';
+import { answerAsContext, parseCitationMarkers } from '../agent/grounding.ts';
+import type { CitationMarker } from '../agent/grounding.ts';
+import { protectedSpans, safeTruncate } from './markdownSafe.ts';
 
 /** Characters of the discussion placed in one summary request (latest turns kept). */
 export const MAX_SUMMARY_SOURCE_CHARS = 9_000;
@@ -81,6 +82,96 @@ export function cleanSummary(text: string): string {
   return safeTruncate(stripFollowups(text).trim(), MAX_SUMMARY_CHARS);
 }
 
+/**
+ * The citation markers of `text` that are citations: outside code (`parseCitationMarkers`)
+ * and outside math and fences (`protectedSpans`), where `[1, 5]` is an interval or an index.
+ */
+function citationMarkers(text: string): CitationMarker[] {
+  const spans = protectedSpans(text);
+  return parseCitationMarkers(text).filter(m => !spans.some(s => m.start >= s.start && m.start < s.end));
+}
+
+/** How a passage is named in prose: its file, and its page when it has one; null when it has neither. */
+function passageName(passage: unknown): string | null {
+  if (typeof passage !== 'object' || passage === null) return null;
+  const { file, path, page } = passage as { file?: unknown; path?: unknown; page?: unknown };
+  const fromPath = typeof path === 'string' ? path.split(/[\\/]/).filter(Boolean).pop() ?? '' : '';
+  const name = (typeof file === 'string' && file.trim() ? file : fromPath).trim();
+  if (!name) return null;
+  const at = typeof page === 'string' || typeof page === 'number' ? String(page).trim() : '';
+  return at ? `${name}, p. ${at}` : name;
+}
+
+/**
+ * The passages the given answers were given (from their stored transcripts), by number, each
+ * with its name in prose. Passage numbers restart in every answer: a number two answers gave
+ * different passages names none (null), as does a passage without a file.
+ */
+export function heldPassages(turns: ReadonlyArray<Pick<ThreadTurn, 'role' | 'transcript'>>): Map<number, string | null> {
+  const held = new Map<number, string | null>();
+  for (const turn of turns) {
+    if (turn.role !== 'assistant') continue;
+    const passages = turn.transcript?.passages;
+    if (!Array.isArray(passages)) continue;
+    for (const passage of passages) {
+      const n = typeof passage === 'object' && passage !== null ? (passage as { n?: unknown }).n : undefined;
+      if (typeof n !== 'number' || !Number.isInteger(n) || n <= 0) continue;
+      const name = passageName(passage);
+      held.set(n, held.has(n) && held.get(n) !== name ? null : name);
+    }
+  }
+  return held;
+}
+
+/** The passage numbers the discussion's answers were given. */
+export function heldPassageNumbers(thread: Pick<FocusThread, 'turns'>): Set<number> {
+  return new Set(heldPassages(thread.turns).keys());
+}
+
+/**
+ * `text` with its citation markers written out as the sources they cite, in words that are
+ * not a citation: "[2]" becomes "(side-discussion source: paper.pdf, p. 3)". Text brought from
+ * a side discussion into another conversation has no passages there, so a marker would read
+ * as a citation of that conversation's passage with the same number. A number `names` does
+ * not name is left out, and a marker left with none goes (with the space before it). Markers
+ * in code, math and fences are not citations and stay.
+ */
+export function citationsAsSourceNames(text: string, names: ReadonlyMap<number, string | null>): string {
+  const markers = citationMarkers(text);
+  if (markers.length === 0) return text;
+  let out = '';
+  let last = 0;
+  for (const marker of markers) {
+    if (marker.start < last) continue;
+    const named: string[] = [];
+    for (const n of marker.numbers) {
+      const name = names.get(n);
+      if (name && !named.includes(name)) named.push(name);
+    }
+    let from = marker.start;
+    if (named.length === 0) {
+      while (from > last && (text[from - 1] === ' ' || text[from - 1] === '\t')) from--;
+    }
+    const written = named.length === 0
+      ? ''
+      : `(side-discussion ${named.length === 1 ? 'source' : 'sources'}: ${named.join('; ')})`;
+    out += text.slice(last, from) + written;
+    last = marker.end;
+  }
+  return out + text.slice(last);
+}
+
+/**
+ * The agent's summary of a discussion made ready to bring back: the summary is written
+ * without sources (its request asks for no search), so a marker citing a passage none of the
+ * discussion's answers holds was made up and goes; a marker of a passage the discussion holds
+ * is written out as that passage's file and page (`citationsAsSourceNames`), so it is never
+ * taken for a citation of the conversation it is brought into.
+ */
+export function summaryWithHeldCitations(text: string, thread: Pick<FocusThread, 'turns'>): string {
+  return citationsAsSourceNames(text, heldPassages(thread.turns));
+}
+
 /** Key of the summary marker inside a message's `metadata`. */
 export const SUMMARY_METADATA_KEY = 'focusSummary';
 
@@ -120,10 +211,12 @@ export function metadataWithSummary(metadata: unknown, ref: SideSummaryRef | nul
 
 /**
  * What the agent reads for a posted summary (as the prompt and in replayed
- * history): the summary introduced as coming from a side discussion.
+ * history): the summary introduced as coming from a side discussion. A citation marker left
+ * in it (typed while editing it, or in a summary posted before markers were written out) cites
+ * no passage of this conversation and goes, so the agent never reads it as one of its own.
  */
 export function summaryPrompt(ref: Pick<SideSummaryRef, 'label'>, text: string): string {
-  return `From a side discussion about "${oneLine(ref.label)}":\n\n${text.trim()}`;
+  return `From a side discussion about "${oneLine(ref.label)}":\n\n${citationsAsSourceNames(text, new Map()).trim()}`;
 }
 
 /**

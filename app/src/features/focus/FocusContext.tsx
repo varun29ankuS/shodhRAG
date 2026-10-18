@@ -16,7 +16,7 @@ import type { FocusExtras, FocusTarget, FocusThread, ThreadAnchor, ThreadTurn } 
 import { canPush, initialStack, stackReducer } from './focusStack';
 import type { StackState } from './focusStack';
 import { splitFollowups } from './followups';
-import { cleanSummary, composeSummaryRequest } from './summary';
+import { cleanSummary, composeSummaryRequest, summaryWithHeldCitations } from './summary';
 import type { SummaryDestination } from './summary';
 import {
   alternateTurns,
@@ -685,7 +685,16 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     if (!thread || !thread.turns.some(t => t.role === 'assistant' && t.content.trim())) {
       return Promise.resolve({ ok: false, reason: 'failed', message: 'There is no answer to summarise yet.' });
     }
-    return new Promise<SummaryResult>(resolve => {
+    return new Promise<SummaryResult>(settleSummary => {
+      // The summary's own citation markers go when they cite no passage the discussion holds.
+      const resolve = (result: SummaryResult) => {
+        if (!('text' in result)) {
+          settleSummary(result);
+          return;
+        }
+        const text = summaryWithHeldCitations(result.text, thread).trim();
+        settleSummary(text ? { ok: true, text } : { ok: false, reason: 'failed' });
+      };
       const live = beginRun(level, 'summary', `summary of ${level.target.label}`, resolve);
       if (!live) {
         resolve({ ok: false, reason: 'busy' });

@@ -84,19 +84,6 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
     }
   };
 
-  const handleCleanupOrphaned = async () => {
-    setLoading(true);
-    try {
-      const result = await invoke<string>('cleanup_orphaned_documents');
-      notify.success(result || 'Orphaned documents cleaned up');
-      await loadStats();
-    } catch (err) {
-      notify.error(`Cleanup failed: ${err}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleResetDatabase = async () => {
     setConfirmAction(null);
     setLoading(true);
@@ -250,21 +237,6 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
         <label className="text-xs font-medium block mb-1" style={{ color: colors.textSecondary }}>
           Maintenance
         </label>
-
-        <button
-          onClick={handleCleanupOrphaned}
-          disabled={loading}
-          className="w-full text-left text-[11px] px-3 py-2 rounded-md border transition-colors flex items-center gap-2"
-          style={{
-            borderColor: colors.border,
-            color: colors.text,
-            opacity: loading ? 0.5 : 1,
-          }}
-        >
-          <RefreshCw className="w-3 h-3" style={{ color: colors.primary }} />
-          Clean Up Orphaned Documents
-          <span className="ml-auto text-[10px]" style={{ color: colors.textMuted }}>Safe</span>
-        </button>
 
         <button
           onClick={() => setConfirmAction('clear_docs')}

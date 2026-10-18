@@ -294,8 +294,10 @@ test('a discussion brought back does not carry its flagged citations up', async 
   assert.equal(discussionText(thread), `Q: And closure?\n\nA: ${cleaned}`);
   const request = composeSummaryRequest(thread, { kind: 'conversation' });
   assert.ok(request.includes(cleaned) && !request.includes('[3]'), request);
-  // The excerpt offered when no summary could be written.
-  assert.equal(threadSummary(thread), `**Asked:** And closure?\n\n${cleaned}`);
+  // The excerpt offered when no summary could be written: without the flagged citation, and
+  // without the supported one too, whose passage this transcript did not keep (a marker
+  // brought into another conversation would cite its passages).
+  assert.equal(threadSummary(thread), '**Asked:** And closure?\n\nCentroids stay in memory. Posting lists are expanded with the closure points.');
 });
 
 test("the main conversation replayed into a fresh session drops an answer's flagged citations", async () => {

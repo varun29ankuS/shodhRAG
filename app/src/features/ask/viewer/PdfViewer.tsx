@@ -22,6 +22,8 @@ import { cssToSnippetRect, rectToRegion, type CssBox } from '../../research/snip
 import { renderSnippet, snippetText } from '../../research/snippetRender';
 import type { SnippetRect } from '../../research/types';
 import { countOf } from '../../../lib/plural';
+import { useDevicePixelRatio } from './useDevicePixelRatio';
+import { leavesSnippetMode } from '../../../lib/escapeScope';
 
 type TextContent = Awaited<ReturnType<PDFPageProxy['getTextContent']>>;
 type TextLayerInstance = InstanceType<Awaited<ReturnType<typeof loadPdfJs>>['TextLayer']>;
@@ -128,6 +130,8 @@ interface PdfPageViewProps {
   doc: PDFDocumentProxy | null;
   pageNumber: number;
   scale: number;
+  /** The window's device pixel ratio: pages are drawn again at a new one. */
+  pixelRatio: number;
   size: PageSize;
   active: boolean;
   /** Draw a low-resolution pass first (read when rendering starts). */
@@ -147,6 +151,7 @@ function PdfPageView({
   doc,
   pageNumber,
   scale,
+  pixelRatio,
   size,
   active,
   quick,
@@ -209,7 +214,7 @@ function PdfPageView({
       const viewport = page.getViewport({ scale });
       const sharpRatio = Math.max(
         0.5,
-        Math.min(window.devicePixelRatio || 1, Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, viewport.width * viewport.height))),
+        Math.min(pixelRatio, Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, viewport.width * viewport.height))),
       );
       // A fresh canvas per render: pdf.js refuses concurrent renders on one
       // canvas, and swapping on completion avoids a blank flash while zooming.
@@ -287,7 +292,7 @@ function PdfPageView({
       (renderTask as RenderTask | null)?.cancel();
       textLayer?.cancel();
     };
-  }, [active, doc, pageNumber, scale, getText, onPainted]);
+  }, [active, doc, pageNumber, scale, pixelRatio, getText, onPainted]);
 
   useLayoutEffect(() => {
     const pageEl = pageRef.current;
@@ -487,6 +492,7 @@ export function PdfViewer({
   const viewKey = pathKey(filePath);
   const pageInputId = useId();
   const findInputId = useId();
+  const pixelRatio = useDevicePixelRatio();
 
   // Where to start: the remembered position when browsing a file; nothing
   // when a citation decides the page.
@@ -1291,19 +1297,23 @@ export function PdfViewer({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    // Esc leaves snippet mode only; the surrounding view's Esc must not also
+    // fire. Checked before `isDefaultPrevented`: a focus pop-out marks Esc
+    // handled first for its data-esc-local content (this viewer while
+    // snipping). The find field closes itself.
+    const inFindBar = e.target instanceof Element && e.target.closest('[role="search"]') !== null;
+    if (leavesSnippetMode({ key: e.key, snipping: snipping || marquee !== null, inFindBar })) {
+      e.preventDefault();
+      e.stopPropagation();
+      setMarquee(null);
+      setSnipping(false);
+      return;
+    }
     if (e.isDefaultPrevented()) return;
     const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
     if (plain && (e.key === 's' || e.key === 'S') && !isEditableTarget(e.target) && doc) {
       e.preventDefault();
       toggleSnipping();
-      return;
-    }
-    if (e.key === 'Escape' && (snipping || marquee)) {
-      // Leaves snippet mode only; the surrounding view's Esc must not also fire.
-      e.preventDefault();
-      e.stopPropagation();
-      setMarquee(null);
-      setSnipping(false);
       return;
     }
     const command = viewerCommand({
@@ -1343,7 +1353,14 @@ export function PdfViewer({
   }
 
   return (
-    <div ref={rootRef} data-pdf-viewer="" className="flex-1 min-h-0 flex flex-col" onKeyDown={handleKeyDown}>
+    <div
+      ref={rootRef}
+      data-pdf-viewer=""
+      // Snippet mode cancels itself on Esc (see `escapeScope`).
+      data-esc-local={snipping || marquee ? '' : undefined}
+      className="flex-1 min-h-0 flex flex-col"
+      onKeyDown={handleKeyDown}
+    >
       <div role="toolbar" aria-label="PDF controls" className="flex items-center gap-1 px-3 py-1.5 border-b border-shodh-border-subtle text-[12.5px] text-shodh-text-secondary">
         <button type="button" className={toolButton} onClick={() => goToPage(currentPage - 1)} disabled={!doc || currentPage <= 1} aria-label="Previous page" title="Previous page (PageUp)">
           <ChevronUp className="w-4 h-4" aria-hidden="true" />
@@ -1440,7 +1457,17 @@ export function PdfViewer({
       )}
 
       {findOpen && (
-        <div role="search" className="flex items-center gap-1.5 px-3 py-1.5 border-b border-shodh-border-subtle text-[12.5px] text-shodh-text-secondary">
+        <div
+          role="search"
+          // Esc anywhere in the find bar (field or buttons) closes find only;
+          // the surrounding viewer's Esc (close file or preview) must not also fire.
+          onKeyDown={e => {
+            if (e.key !== 'Escape') return;
+            e.preventDefault();
+            closeFind();
+          }}
+          className="flex items-center gap-1.5 px-3 py-1.5 border-b border-shodh-border-subtle text-[12.5px] text-shodh-text-secondary"
+        >
           <label htmlFor={findInputId} className="sr-only">
             Find in document
           </label>
@@ -1454,10 +1481,6 @@ export function PdfViewer({
               if (e.key === 'Enter') {
                 e.preventDefault();
                 stepFind(e.shiftKey ? -1 : 1);
-              } else if (e.key === 'Escape') {
-                // Closes find only; the browser's Esc (close file) must not also fire.
-                e.preventDefault();
-                closeFind();
               }
             }}
             placeholder="Find in document"
@@ -1513,6 +1536,7 @@ export function PdfViewer({
                   doc={doc}
                   pageNumber={pageNumber}
                   scale={scale}
+                  pixelRatio={pixelRatio}
                   size={{ width: Math.floor(size.width * scale), height: Math.floor(size.height * scale) }}
                   active={visible.has(pageNumber) || isTarget}
                   quick={!firstPainted && pageNumber === initialPage}

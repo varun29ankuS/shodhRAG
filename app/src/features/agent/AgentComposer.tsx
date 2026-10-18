@@ -2,6 +2,7 @@ import React, { forwardRef, useCallback, useImperativeHandle, useLayoutEffect, u
 import { ArrowUp, CornerDownRight, Folder, ImagePlus, Mic, MicOff, Square } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useVoiceInput } from '../ask/useVoiceInput';
+import { pasteDecision } from '../ask/imageNotice';
 
 /** The engine grows the field with its content (no per-keystroke measuring). */
 const NATIVE_FIELD_SIZING = typeof CSS !== 'undefined' && CSS.supports('field-sizing', 'content');
@@ -17,6 +18,9 @@ const MAX_COMPACT_HEIGHT = 120;
 export interface AgentComposerHandle {
   focus: () => void;
 }
+
+/** An image pasted into the composer: a file the webview exposes, or the system clipboard's bitmap. */
+export type PastedImage = { kind: 'file'; file: File } | { kind: 'clipboard' };
 
 interface AgentComposerProps {
   /** Distinguishes the Ask and dock inputs (label/description ids). */
@@ -51,6 +55,10 @@ interface AgentComposerProps {
   /** A control next to the scope chip (e.g. "Search all my library" in a workspace). */
   scopeAction?: React.ReactNode;
   onPickImage?: () => void;
+  /** An image (with no text) was pasted; the paste itself is cancelled. Text pastes are untouched. */
+  onPasteImage?: (image: PastedImage) => void;
+  /** Shown above the input: what goes out with the next question (image text chips). */
+  attachments?: React.ReactNode;
   autoFocus?: boolean;
   /** Dense variant for the conversation dock: no chips, smaller type. */
   compact?: boolean;
@@ -83,6 +91,8 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     onOpenLibrary,
     scopeAction,
     onPickImage,
+    onPasteImage,
+    attachments,
     autoFocus = false,
     compact = false,
     runningPlaceholder,
@@ -128,6 +138,16 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     }
   };
 
+  // Decided while the event runs, so the default paste can still be cancelled.
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (!onPasteImage) return;
+    const files = Array.from(e.clipboardData.files);
+    const decision = pasteDecision(e.clipboardData.getData('text/plain'), files.map(f => f.type));
+    if (decision.kind === 'text') return;
+    e.preventDefault();
+    onPasteImage(decision.kind === 'file' ? { kind: 'file', file: files[decision.index] } : { kind: 'clipboard' });
+  };
+
   const effectivePlaceholder = running
     ? approvalPending
       ? onApprove
@@ -159,6 +179,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
         compact ? 'rounded-[14px]' : 'rounded-[22px] shadow-[0_12px_40px_rgba(0,0,0,0.35)]',
       )}
     >
+      {attachments}
       <label htmlFor={inputId} className="sr-only">
         {running ? 'Steer the running answer' : 'Message Shodh'}
       </label>
@@ -169,6 +190,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
         value={value}
         onChange={e => onChange(e.target.value)}
         onKeyDown={handleKeyDown}
+        onPaste={handlePaste}
         placeholder={effectivePlaceholder}
         autoFocus={autoFocus}
         aria-describedby={blockedReason ? blockedId : undefined}
@@ -183,8 +205,8 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
           <button
             type="button"
             onClick={onPickImage}
-            aria-label="Add an image: extract its text and index it"
-            title="Add an image (text is extracted and indexed)"
+            aria-label="Add an image: its text is attached to your next question"
+            title="Add an image (its text is attached to your next question)"
             className={iconButton}
           >
             <ImagePlus className="w-[17px] h-[17px]" aria-hidden="true" />

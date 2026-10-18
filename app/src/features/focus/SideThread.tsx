@@ -343,9 +343,15 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
     }
     setPosting(true);
     try {
-      await session.send(text, { spaceId: null, spaceName: null }, {
+      const accepted = session.send(text, { spaceId: null, spaceName: null }, {
         sideSummary: { threadId: open.threadId, label, parentMessageId: open.parentMessageId },
       });
+      if (!accepted) {
+        notify.error('The summary was not added', {
+          description: 'An answer is still being written, or the conversation is not open. Try again once it finishes.',
+        });
+        return;
+      }
       notify.success('Added to the conversation');
       setSummary(null);
       onDone();

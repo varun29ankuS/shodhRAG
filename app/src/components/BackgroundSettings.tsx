@@ -4,6 +4,10 @@ import { notify } from '../lib/notify';
 import { onAppSettingsChanged } from '../lib/appSettings';
 import { SwitchRow } from './PrivacySettings';
 import { cn } from '../lib/utils';
+import { desktopPlatform, startupText } from '../lib/startupText';
+
+/** The start-at-login switch's wording on this system. */
+const STARTUP_TEXT = startupText(desktopPlatform(typeof navigator !== 'undefined' ? navigator.platform : ''));
 
 /** `background.rs::BackgroundStatus`. */
 interface BackgroundStatus {
@@ -84,8 +88,8 @@ export default function BackgroundSettings() {
         onChange={enabled => void save(() => invoke('set_close_to_tray', { enabled }), 'The setting was not saved')}
       />
       <SwitchRow
-        label="Start Shodh when Windows starts"
-        description="Starts hidden in the tray so reminders ring after a restart. Windows can also turn this off in Task Manager → Startup apps."
+        label={STARTUP_TEXT.label}
+        description={STARTUP_TEXT.description}
         checked={status.startWithWindows}
         disabled={saving}
         onChange={enabled => void save(() => invoke('set_start_with_windows', { enabled }), 'The startup setting was not changed')}

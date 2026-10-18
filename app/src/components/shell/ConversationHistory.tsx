@@ -17,6 +17,10 @@ const REGROUP_INTERVAL_MS = 60_000;
 
 interface ConversationHistoryProps {
   conversations: Conversation[];
+  /** The saved conversations were read: an empty list is empty, not loading. */
+  loaded: boolean;
+  /** Show the archived workspaces, whose chats the list hides. */
+  onShowArchived: () => void;
   activeConversationId: string | null;
   /** The Ask view is showing, so the active conversation is the current page. */
   askActive: boolean;
@@ -70,6 +74,8 @@ function useNow(intervalMs: number): Date {
  */
 export function ConversationHistory({
   conversations,
+  loaded,
+  onShowArchived,
   activeConversationId,
   askActive,
   onOpen,
@@ -127,12 +133,28 @@ export function ConversationHistory({
       >
         Chats
       </h2>
-      {groups.length === 0 && named.length === 0 ? (
-        // The list always holds at least one conversation once loaded, so empty means loading.
+      {!loaded ? (
         <div className="px-5 py-2 flex flex-col gap-2.5" role="status" aria-label="Loading conversations">
           {[72, 54, 64].map(w => (
             <span key={w} className="shell-skeleton h-3.5 rounded" style={{ width: `${w}%` }} aria-hidden="true" />
           ))}
+        </div>
+      ) : groups.length === 0 && named.length === 0 ? (
+        // Loaded and nothing to list: every chat is in an archived workspace (or there is none).
+        <div className="px-5 py-2 flex flex-col items-start gap-1.5 text-[12.5px] text-shodh-text-muted">
+          <p className="m-0">{conversations.length > 0 ? 'No chats outside archived workspaces.' : 'No chats yet.'}</p>
+          {conversations.length > 0 && (
+            <button
+              type="button"
+              onClick={onShowArchived}
+              className={cn(
+                'text-shodh-accent-text underline-offset-2 hover:underline rounded-sm',
+                FOCUS_RING,
+              )}
+            >
+              Show archived workspaces
+            </button>
+          )}
         </div>
       ) : (
         <div

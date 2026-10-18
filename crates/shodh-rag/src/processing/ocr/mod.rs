@@ -405,6 +405,8 @@ pub struct OcrPages {
     pub texts: Vec<String>,
     /// The pages (1-based) that could not be rendered or read.
     pub failed: Vec<usize>,
+    /// Why the first of them could not be read.
+    pub first_error: Option<String>,
 }
 
 /// Reads `count` pages of the file at `path` with `read_page` (given the
@@ -419,7 +421,7 @@ pub fn read_each_page(
 ) -> OcrPages {
     let mut read = OcrPages {
         texts: Vec::with_capacity(count),
-        failed: Vec::new(),
+        ..OcrPages::default()
     };
     for index in 0..count {
         on_page(index + 1, count);
@@ -434,6 +436,9 @@ pub fn read_each_page(
                 );
                 read.texts.push(String::new());
                 read.failed.push(index + 1);
+                if read.first_error.is_none() {
+                    read.first_error = Some(format!("{e:#}"));
+                }
             }
         }
     }
@@ -501,6 +506,10 @@ mod tests {
             },
         );
         assert_eq!(read.failed, [4, 9]);
+        assert_eq!(
+            read.first_error.as_deref(),
+            Some("page 4 could not be rendered")
+        );
         assert_eq!(read.texts.len(), 10);
         assert_eq!(read.texts[0], "text of page 1");
         assert_eq!(read.texts[3], "");

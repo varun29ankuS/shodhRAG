@@ -84,6 +84,8 @@ struct ScanRead {
     engine: &'static str,
     pages: usize,
     failed: Vec<usize>,
+    /// Why the first failed page could not be read.
+    first_error: Option<String>,
 }
 
 impl ScanRead {
@@ -93,6 +95,7 @@ impl ScanRead {
             engine,
             pages: pages.texts.len(),
             failed: pages.failed,
+            first_error: pages.first_error,
         }
     }
 }
@@ -662,6 +665,7 @@ impl DocumentParser {
         // Why OCR read nothing: its error, or the pages it could not read.
         let mut ocr_error = None;
         let mut unread = Vec::new();
+        let mut unread_error = None;
         match read {
             Ok(Some(mut scan)) => {
                 if scan.doc.text_chars() > 0 || !forms.fields.is_empty() {
@@ -691,6 +695,7 @@ impl DocumentParser {
                     });
                 }
                 unread = scan.failed;
+                unread_error = scan.first_error;
             }
             Ok(None) => {
                 tracing::warn!("No OCR engine is available for {}", path.display());
@@ -714,8 +719,11 @@ impl DocumentParser {
             )));
         }
         if !unread.is_empty() {
+            let why = unread_error
+                .map(|e| format!(" (page {}: {e})", unread[0]))
+                .unwrap_or_default();
             return Err(anyhow::anyhow!(
-                "OCR could not read {} of this scanned PDF: {}",
+                "OCR could not read {} of this scanned PDF{why}: {}",
                 page_list(&unread),
                 path.display()
             ));

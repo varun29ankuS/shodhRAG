@@ -86,6 +86,9 @@ pub enum Reply {
         pages: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         failed_pages: Vec<usize>,
+        /// Why the first failed page could not be read.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        first_error: Option<String>,
     },
     Failed {
         id: u64,
@@ -135,6 +138,7 @@ pub fn serve(input: impl BufRead, mut output: impl Write) -> Result<()> {
                 id,
                 pages: pages_read.texts,
                 failed_pages: pages_read.failed,
+                first_error: pages_read.first_error,
             },
             Err(e) => Reply::Failed {
                 id,
@@ -223,7 +227,7 @@ fn read(
                 }
                 FileKind::Image => Ok(OcrPages {
                     texts: vec![super::read_image(ocr, &request.path)?],
-                    failed: Vec::new(),
+                    ..OcrPages::default()
                 }),
             }
         }
@@ -238,7 +242,7 @@ fn read_system(request: &Request, on_page: &dyn Fn(usize, usize)) -> Result<OcrP
         FileKind::Pdf => windows_ocr::ocr_pdf_pages(&request.path, request.system_dpi, on_page),
         FileKind::Image => Ok(OcrPages {
             texts: vec![windows_ocr::ocr_image(&request.path)?],
-            failed: Vec::new(),
+            ..OcrPages::default()
         }),
     }
 }
@@ -556,10 +560,12 @@ impl OcrWorker {
                     id: reply,
                     pages,
                     failed_pages,
+                    first_error,
                 }) if reply == id => {
                     return Ok(OcrPages {
                         texts: pages,
                         failed: failed_pages,
+                        first_error,
                     })
                 }
                 Ok(Reply::Failed { id: reply, error }) if reply == id => {
@@ -788,6 +794,7 @@ mod tests {
             id: 7,
             pages: vec!["one".to_string(), String::new()],
             failed_pages: vec![2],
+            first_error: Some("page 2 could not be rendered".to_string()),
         };
         let line = serde_json::to_string(&done).unwrap();
         assert_eq!(serde_json::from_str::<Reply>(&line).unwrap(), done);
@@ -797,6 +804,7 @@ mod tests {
                 id: 7,
                 pages: vec!["one".to_string()],
                 failed_pages: Vec::new(),
+                first_error: None,
             }
         );
     }

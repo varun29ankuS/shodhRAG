@@ -13,8 +13,10 @@ import {
   composeSummaryRequest,
   discussionText,
   hardBreaks,
+  heldPassageNumbers,
   metadataWithSummary,
   readSideSummary,
+  summaryWithHeldCitations,
   wantsMarkdown,
 } from '../src/features/focus/summary.ts';
 import { METADATA_KEY, metadataWithThreads, metadataWithoutThreads } from '../src/features/focus/threadStore.ts';
@@ -110,6 +112,35 @@ test('summary request: rules, no followups, discussion fenced and capped', () =>
 
 test('cleanSummary strips followups and caps safely', () => {
   assert.equal(cleanSummary('  Sum $x$.\n```followups\n["a"]\n```  '), 'Sum $x$.');
+});
+
+test('a summary keeps only citations of passages the discussion holds', () => {
+  const answer = (id: string, numbers: number[]): FocusThread['turns'][number] => ({
+    id,
+    role: 'assistant',
+    content: 'An answer that cites its passages [1].',
+    timestamp: id,
+    transcript: { passages: numbers.map(n => ({ n, file: 'paper.pdf', path: 'c:/papers/paper.pdf', page: '3', heading: null, score: 0.9, text: 'Passage text.' })) },
+  });
+  const t = thread([
+    { id: '1', role: 'user', content: 'Why a spline?', timestamp: '1' },
+    answer('2', [1, 2]),
+    { id: '3', role: 'user', content: 'And the knots?', timestamp: '3' },
+    answer('4', [3]),
+    // A question's turn holds no passages, whatever it carries.
+    { id: '5', role: 'user', content: 'Thanks', timestamp: '5', transcript: { passages: [{ n: 9 }] } },
+  ]);
+  assert.deepEqual([...heldPassageNumbers(t)].sort(), [1, 2, 3]);
+  assert.equal(
+    summaryWithHeldCitations('Splines are smooth [1]. Knots set the pieces [3], see [7]. Both [2, 9] and [8-9].', t),
+    'Splines are smooth [1]. Knots set the pieces [3], see. Both [2] and.',
+  );
+  // Code is text: a bracket in it is not a citation.
+  assert.equal(summaryWithHeldCitations('Index `a[7]` is read.', t), 'Index `a[7]` is read.');
+  assert.equal(summaryWithHeldCitations('No citations here.', t), 'No citations here.');
+  // A discussion whose answers kept no passages (older transcripts): every marker goes.
+  assert.equal(summaryWithHeldCitations('Smooth [1].', thread([answer('a', [])])), 'Smooth.');
+  assert.equal(summaryWithHeldCitations('Smooth [1].', thread([{ id: 'b', role: 'assistant', content: 'x', timestamp: 'b' }])), 'Smooth.');
 });
 
 test('summary marker round-trips through metadata alongside threads', () => {

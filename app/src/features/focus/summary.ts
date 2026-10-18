@@ -9,7 +9,7 @@
 import { fenced } from './contextBlock.ts';
 import type { FocusThread } from './focusTypes.ts';
 import { stripFollowups } from './followups.ts';
-import { answerAsContext } from '../agent/grounding.ts';
+import { answerAsContext, parseCitationMarkers } from '../agent/grounding.ts';
 import { safeTruncate } from './markdownSafe.ts';
 
 /** Characters of the discussion placed in one summary request (latest turns kept). */
@@ -79,6 +79,48 @@ export function composeSummaryRequest(thread: Pick<FocusThread, 'turns' | 'ancho
 /** The agent's summary made ready to edit: followups removed, trimmed, length-capped safely. */
 export function cleanSummary(text: string): string {
   return safeTruncate(stripFollowups(text).trim(), MAX_SUMMARY_CHARS);
+}
+
+/** The passage numbers the discussion's answers were given (from their stored transcripts). */
+export function heldPassageNumbers(thread: Pick<FocusThread, 'turns'>): Set<number> {
+  const held = new Set<number>();
+  for (const turn of thread.turns) {
+    if (turn.role !== 'assistant') continue;
+    const passages = turn.transcript?.passages;
+    if (!Array.isArray(passages)) continue;
+    for (const passage of passages) {
+      const n = typeof passage === 'object' && passage !== null ? (passage as { n?: unknown }).n : undefined;
+      if (typeof n === 'number' && Number.isInteger(n) && n > 0) held.add(n);
+    }
+  }
+  return held;
+}
+
+/**
+ * The agent's summary of a discussion with its own citations checked before it is brought
+ * back: the summary is written without sources (its request asks for no search), so a marker
+ * citing a passage none of the discussion's answers holds was made up. Such a marker goes, or
+ * keeps only the numbers the discussion holds, so it is not taken for a citation of a passage
+ * of the conversation it is brought into. Markers in code are text and stay.
+ */
+export function summaryWithHeldCitations(text: string, thread: Pick<FocusThread, 'turns'>): string {
+  const markers = parseCitationMarkers(text);
+  if (markers.length === 0) return text;
+  const held = heldPassageNumbers(thread);
+  let out = '';
+  let last = 0;
+  for (const marker of markers) {
+    if (marker.start < last) continue;
+    const kept = marker.numbers.filter(n => held.has(n));
+    if (kept.length === marker.numbers.length) continue;
+    let from = marker.start;
+    if (kept.length === 0) {
+      while (from > last && (text[from - 1] === ' ' || text[from - 1] === '\t')) from--;
+    }
+    out += text.slice(last, from) + (kept.length > 0 ? `[${kept.join(', ')}]` : '');
+    last = marker.end;
+  }
+  return out + text.slice(last);
 }
 
 /** Key of the summary marker inside a message's `metadata`. */

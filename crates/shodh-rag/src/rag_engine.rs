@@ -264,10 +264,56 @@ fn chunk_in_context(
 /// is stored (`context`) for the reranker and for rebuilding the keyword index.
 /// 3: contexts name a file by its name, never its folders ([`source_label`]),
 /// and carry only the names in the document's opening, on every chunk.
+///
+/// A change to the chunk text itself (what is read from a file and how it
+/// is cut) raises [`CHUNKER_VERSION`] instead: a chunk of an older format is
+/// brought up to date from its stored text where it can be
+/// ([`RAGEngine::upgrade_in_place`]), which a change of the text cannot be.
 pub const INDEX_FORMAT: u32 = 3;
 
 /// Chunk metadata key: the [`INDEX_FORMAT`] a chunk was indexed with.
 pub const INDEX_FORMAT_KEY: &str = "index_format";
+
+/// Version of how a file's text is read and cut into chunks (the parsers,
+/// [`TextChunker`] and [`StructureChunker`]). Stored with every chunk
+/// (`chunker_version`); chunks without it are version 1. Raise it whenever
+/// the chunk text made from the same file changes: files whose chunks are of
+/// an older version are read and chunked again in full
+/// ([`RAGEngine::rechunk_sources`]), never upgraded in place from their old
+/// text.
+///
+/// 1: the chunkers before the parsing fixes (labelled `structure-v1`).
+/// 2: chunking always makes progress and never drops short text, CJK or
+/// one-word units; a page too short for a chunk joins its neighbour; no
+/// redundant tail chunks; HTML is read on byte offsets with comments, CDATA
+/// and C1 references handled; `.htm` files are indexed.
+pub const CHUNKER_VERSION: u32 = 2;
+
+/// Chunk metadata key: the [`CHUNKER_VERSION`] a chunk was made with, or,
+/// for a chunk kept on purpose ([`CHUNKS_KEPT_FROM_KEY`]), the version it was
+/// last looked at under.
+pub const CHUNKER_VERSION_KEY: &str = "chunker_version";
+
+/// Chunk metadata key: on the chunks of a document kept from an older
+/// chunker on purpose ([`RAGEngine::keep_chunks_of_older_chunker`]), the
+/// [`CHUNKER_VERSION`] their text was made with. They are not re-read until
+/// their file changes or the version is raised again.
+pub const CHUNKS_KEPT_FROM_KEY: &str = "chunks_kept_from";
+
+/// The file, in the data directory, that lists the replacements of files a
+/// commit began and has not finished ([`RAGEngine::commit_file`]).
+pub const REPLACED_CHUNKS_FILE: &str = "replaced_chunks.json";
+
+/// A replacement of a file's chunks in progress: written down before the new
+/// chunks are stored, dropped once the old ones are gone
+/// ([`RAGEngine::settle_replaced`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct Replacement {
+    /// The file (its index identity).
+    source: String,
+    /// The ids of the chunks it had before.
+    previous_ids: Vec<String>,
+}
 
 /// Chunk metadata key: the context the chunk was embedded and keyword-indexed
 /// with (see [`ContextualChunkResult::context`]).
@@ -328,6 +374,12 @@ fn current_format_excluded() -> String {
     format!("metadata_json NOT LIKE '%\"{INDEX_FORMAT_KEY}\":\"{INDEX_FORMAT}\"%'")
 }
 
+/// A LanceDB filter for the chunks not made with [`CHUNKER_VERSION`], matched
+/// as [`current_format_excluded`] matches the format.
+fn current_chunker_excluded() -> String {
+    format!("metadata_json NOT LIKE '%\"{CHUNKER_VERSION_KEY}\":\"{CHUNKER_VERSION}\"%'")
+}
+
 /// Embed chunks and build the storage records for one document without
 /// touching the stores. Fails (with nothing written) if embedding fails.
 fn prepare_chunks(
@@ -374,6 +426,7 @@ fn prepare_chunks(
 
         let mut per_chunk_meta = metadata.clone();
         per_chunk_meta.insert(INDEX_FORMAT_KEY.to_string(), INDEX_FORMAT.to_string());
+        per_chunk_meta.insert(CHUNKER_VERSION_KEY.to_string(), CHUNKER_VERSION.to_string());
         per_chunk_meta.insert(CHUNK_CONTEXT_KEY.to_string(), chunk.context.clone());
         if let Some(heading) = &chunk.heading {
             per_chunk_meta.insert("chunk_type".to_string(), heading.clone());
@@ -1164,6 +1217,14 @@ pub struct RAGEngine {
     source_ranker: Option<Arc<dyn crate::search::graph_fusion::SourceRanker>>,
     /// [`Self::stale_sources`] found every chunk in the current [`INDEX_FORMAT`].
     no_stale_chunks: Arc<std::sync::atomic::AtomicBool>,
+    /// [`Self::rechunk_sources`] found every chunk of the current [`CHUNKER_VERSION`].
+    no_rechunk_chunks: Arc<std::sync::atomic::AtomicBool>,
+    /// Tests: the next [`Self::commit_file`] fails before it stores anything.
+    #[cfg(test)]
+    fail_next_store: std::sync::atomic::AtomicBool,
+    /// Tests: removing replaced chunks fails while set.
+    #[cfg(test)]
+    fail_replaced_removal: std::sync::atomic::AtomicBool,
 }
 
 impl RAGEngine {
@@ -1241,6 +1302,11 @@ impl RAGEngine {
             scan_reader_queue: None,
             source_ranker: None,
             no_stale_chunks: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            no_rechunk_chunks: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            #[cfg(test)]
+            fail_next_store: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            fail_replaced_removal: std::sync::atomic::AtomicBool::new(false),
         };
         if let Some(models) = models {
             if let Err(e) = engine.attach_search_models(models) {
@@ -1261,6 +1327,10 @@ impl RAGEngine {
                     tracing::error!(error = %e, "Failed to rebuild Tantivy index from LanceDB");
                 }
             }
+        }
+        // Chunks a commit replaced just before the app last closed.
+        if let Err(e) = engine.settle_replaced().await {
+            tracing::warn!(error = %format!("{e:#}"), "replaced chunks not removed yet");
         }
 
         Ok(engine)
@@ -1419,10 +1489,10 @@ impl RAGEngine {
     /// Ingest a document from a file path.
     ///
     /// The file is parsed, chunked and embedded *before* any previously indexed
-    /// chunks for the same source are removed, so a file that fails to parse or
-    /// embed leaves its existing index entries intact. Once the replacement is
-    /// ready, old chunks are deleted and the new ones inserted, which keeps
-    /// re-indexing idempotent (no duplicate copies of the same file).
+    /// chunks for the same source are touched, so a file that fails to parse or
+    /// embed leaves its existing index entries intact. The replacement is then
+    /// stored as [`Self::commit_file`] stores it: the new chunks first, the old
+    /// ones removed after, so the file never has no chunks in between.
     ///
     /// This parses and embeds while the caller holds the engine. Indexing that
     /// shares the engine prepares with [`Self::file_preparer`] instead and stores
@@ -1453,17 +1523,69 @@ impl RAGEngine {
 
     /// Stores a prepared file, replacing its previous chunks, and queues it for the
     /// table model when it has table-candidate pages.
+    ///
+    /// The new chunks are stored first; only then are the previous ones
+    /// removed (by id, in LanceDB and the keyword index), so a failure or a
+    /// quit at any point never leaves the file without chunks. A failure
+    /// while storing leaves the previous chunks as they were. The file and
+    /// its previous chunk ids are written down before anything is stored
+    /// ([`REPLACED_CHUNKS_FILE`]): a quit or a failure before the old chunks
+    /// are gone leaves both copies until the next commit or the next start
+    /// removes the old ones ([`Self::settle_replaced`]), or keeps them when
+    /// nothing new was stored. Rows
+    /// written before paths were canonicalized may carry another spelling of
+    /// the same file; they are replaced too, so nothing duplicates.
     pub async fn commit_file(&mut self, file: PreparedFile) -> Result<Vec<Uuid>> {
-        // Replacement is fully prepared — now drop the previous version of this file.
-        // Rows written before paths were canonicalized may carry another
-        // spelling of the same file; remove those too so nothing duplicates.
         let store_started = std::time::Instant::now();
-        self.remove_source_chunks(&file.source).await?;
-        for legacy in legacy_source_spellings(&file.path, &file.source) {
-            self.remove_source_chunks(&legacy).await?;
+        if let Err(e) = self.settle_replaced().await {
+            tracing::warn!(error = %format!("{e:#}"), "replaced chunks not removed yet");
         }
-
-        let ids = self.store_prepared(file.document).await?;
+        let mut previous = self.chunk_ids_of(&file.source).await?;
+        for legacy in legacy_source_spellings(&file.path, &file.source) {
+            previous.extend(self.chunk_ids_of(&legacy).await?);
+        }
+        // Written down before anything is stored, so a quit or a failure at
+        // any later point is finished by `settle_replaced`.
+        let written = !previous.is_empty() && self.begin_replacement(&file.source, &previous);
+        if !previous.is_empty() && !written {
+            // Without the record a quit after storing would leave both copies
+            // for good: keep the previous chunks and let the file be retried.
+            anyhow::bail!(
+                "could not record the replacement of {}'s chunks; its index entries are unchanged",
+                file.source
+            );
+        }
+        let ids = match self.store_document(file.document).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                // Nothing was stored: the previous chunks are the file's still.
+                if written {
+                    self.end_replacement(&file.source);
+                }
+                return Err(e);
+            }
+        };
+        let kept: std::collections::HashSet<String> = ids.iter().map(Uuid::to_string).collect();
+        previous.retain(|id| !kept.contains(id));
+        let removed = if previous.is_empty() {
+            true
+        } else {
+            match self.delete_chunk_ids(&previous).await {
+                Ok(()) => true,
+                Err(e) if written => {
+                    tracing::warn!(
+                        error = %format!("{e:#}"),
+                        chunks = previous.len(),
+                        "replaced chunks not removed yet; they are removed at the next commit or start"
+                    );
+                    false
+                }
+                Err(e) => return Err(e.context("the replaced chunks could not be removed")),
+            }
+        };
+        if written && removed {
+            self.end_replacement(&file.source);
+        }
         tracing::info!(
             source = %file.source,
             chunks = ids.len(),
@@ -1624,6 +1746,147 @@ impl RAGEngine {
         })
     }
 
+    /// The ids of the chunks stored under `source`.
+    async fn chunk_ids_of(&self, source: &str) -> Result<Vec<String>> {
+        self.store.ids_where(&source_predicate(source)).await
+    }
+
+    /// Where the replacements in progress are written down until their old
+    /// chunks are removed ([`Self::commit_file`]).
+    fn replaced_chunks_path(&self) -> std::path::PathBuf {
+        self.config.data_dir.join(REPLACED_CHUNKS_FILE)
+    }
+
+    /// The replacements written down and not finished yet.
+    fn replaced_chunks(&self) -> Result<Vec<Replacement>> {
+        match std::fs::read_to_string(self.replaced_chunks_path()) {
+            Ok(text) => Ok(serde_json::from_str(&text)?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Writes `replacements` as the replacements not finished yet (none: the
+    /// record goes): to a temporary file, renamed over the previous record.
+    fn write_replaced(&self, replacements: &[Replacement]) -> Result<()> {
+        let path = self.replaced_chunks_path();
+        if replacements.is_empty() {
+            return match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+                _ => Ok(()),
+            };
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp = path.with_extension("json.tmp");
+        {
+            use std::io::Write;
+            let mut out = std::fs::File::create(&tmp)?;
+            out.write_all(&serde_json::to_vec(replacements)?)?;
+            // On disk before the rename, so a power loss can't leave an empty record.
+            out.sync_all()?;
+        }
+        std::fs::rename(&tmp, &path)?;
+        #[cfg(unix)]
+        if let Some(parent) = path.parent() {
+            std::fs::File::open(parent)?.sync_all()?;
+        }
+        Ok(())
+    }
+
+    /// Writes down that `source` is about to be replaced and that `previous`
+    /// are its chunks now, before anything is stored. Returns whether it was
+    /// written.
+    fn begin_replacement(&self, source: &str, previous: &[String]) -> bool {
+        let mut pending = self.replaced_chunks().unwrap_or_else(|e| {
+            tracing::warn!(error = %format!("{e:#}"), "replacements record unreadable");
+            Vec::new()
+        });
+        pending.retain(|r| r.source != source);
+        pending.push(Replacement {
+            source: source.to_string(),
+            previous_ids: previous.to_vec(),
+        });
+        match self.write_replaced(&pending) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "replacement not written down");
+                false
+            }
+        }
+    }
+
+    /// The replacement of `source` is finished (its old chunks are gone) or
+    /// was given up (nothing was stored): its record goes.
+    fn end_replacement(&self, source: &str) {
+        let ended = self.replaced_chunks().and_then(|mut pending| {
+            let before = pending.len();
+            pending.retain(|r| r.source != source);
+            if pending.len() == before {
+                return Ok(());
+            }
+            self.write_replaced(&pending)
+        });
+        if let Err(e) = ended {
+            tracing::warn!(error = %format!("{e:#}"), "replacements record not updated");
+        }
+    }
+
+    /// Removes the chunks `ids` from the keyword index and LanceDB. Ids that
+    /// are gone already are no matter.
+    async fn delete_chunk_ids(&mut self, ids: &[String]) -> Result<()> {
+        #[cfg(test)]
+        if self
+            .fail_replaced_removal
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            anyhow::bail!("removing the replaced chunks failed (injected)");
+        }
+        for id in ids {
+            self.text_search.delete_by_id(id)?;
+        }
+        self.text_search.commit()?;
+        for batch in ids.chunks(500) {
+            let quoted: Vec<String> = batch
+                .iter()
+                .map(|id| format!("'{}'", id.replace('\'', "''")))
+                .collect();
+            self.store
+                .delete_where(&format!("id IN ({})", quoted.join(", ")))
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Finishes the replacements written down and not finished (a quit or a
+    /// failure came first). Where the source has chunks other than its
+    /// previous ones, the new ones were stored: the previous ones are
+    /// removed. Where it has none, nothing was stored: the previous ones are
+    /// its chunks still, and the record is dropped. Runs at the start of
+    /// every commit and when the engine opens. Returns the chunks removed.
+    pub async fn settle_replaced(&mut self) -> Result<usize> {
+        let pending = self.replaced_chunks()?;
+        if pending.is_empty() {
+            return Ok(0);
+        }
+        let mut removed = 0;
+        for replacement in &pending {
+            let previous: std::collections::HashSet<&String> =
+                replacement.previous_ids.iter().collect();
+            let stored = self.chunk_ids_of(&replacement.source).await?;
+            if stored.iter().any(|id| !previous.contains(id)) {
+                self.delete_chunk_ids(&replacement.previous_ids).await?;
+                removed += replacement.previous_ids.len();
+            }
+        }
+        self.write_replaced(&[])?;
+        if removed > 0 {
+            tracing::info!(chunks = removed, "replaced chunks removed");
+        }
+        Ok(removed)
+    }
+
     /// Remove every stored chunk for `source` from both LanceDB and Tantivy.
     async fn remove_source_chunks(&mut self, source: &str) -> Result<()> {
         if let Err(e) = self.store.delete_by_source(source).await {
@@ -1636,6 +1899,18 @@ impl RAGEngine {
         self.text_search.delete_by_source(source)?;
         self.text_search.commit()?;
         Ok(())
+    }
+
+    /// [`Self::store_prepared`] for a commit (tests can make it fail).
+    async fn store_document(&mut self, prepared: PreparedDocument) -> Result<Vec<Uuid>> {
+        #[cfg(test)]
+        if self
+            .fail_next_store
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            anyhow::bail!("storing the chunks failed (injected)");
+        }
+        self.store_prepared(prepared).await
     }
 
     /// Write prepared records to LanceDB and Tantivy.
@@ -2479,6 +2754,44 @@ impl RAGEngine {
         Ok(stale)
     }
 
+    /// The indexed documents with chunks of an older [`CHUNKER_VERSION`]
+    /// than this build makes: their text was read or cut another way, so
+    /// each is read and chunked again in full by whatever indexed it (folder
+    /// sync, the Library's file sources, the calendar). An upgrade in place
+    /// cannot help them ([`Self::upgrade_in_place`]).
+    pub async fn rechunk_sources(&self) -> Result<Vec<crate::storage::DocumentSourceRow>> {
+        // Nothing writes an older version, so once none is left none comes back.
+        if self
+            .no_rechunk_chunks
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Ok(Vec::new());
+        }
+        let outdated = self
+            .store
+            .document_sources_where(Some(&current_chunker_excluded()))
+            .await?;
+        if outdated.is_empty() {
+            self.no_rechunk_chunks
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(outdated)
+    }
+
+    /// The indexed documents to index again: those of [`Self::stale_sources`]
+    /// and of [`Self::rechunk_sources`], each once.
+    pub async fn outdated_sources(&self) -> Result<Vec<crate::storage::DocumentSourceRow>> {
+        let mut rows = self.stale_sources().await?;
+        let mut seen: std::collections::HashSet<String> =
+            rows.iter().map(|row| row.doc_id.clone()).collect();
+        for row in self.rechunk_sources().await? {
+            if seen.insert(row.doc_id.clone()) {
+                rows.push(row);
+            }
+        }
+        Ok(rows)
+    }
+
     /// The indexed documents with chunks that name no OCR engine
     /// ([`crate::processing::parser::OCR_ENGINE_KEY`]): every document that
     /// was not read by OCR, and scans indexed before the engine was recorded.
@@ -2511,7 +2824,112 @@ impl RAGEngine {
     /// their OCR was cached are not read by OCR again. Possible for structure
     /// chunks only, whose context depends on nothing else; returns false,
     /// changing nothing, when a chunk is of another kind or there are none.
+    /// Also false when a chunk is of an older [`CHUNKER_VERSION`]: its text
+    /// is what the file is to be read and chunked again for, not kept.
     pub async fn upgrade_in_place(&mut self, source: &str) -> Result<bool> {
+        self.upgrade_in_place_with(source, false).await
+    }
+
+    /// Records the chunks of `source` that are of an older [`CHUNKER_VERSION`]
+    /// as kept on purpose (a scan that could be chunked again only by reading
+    /// it with OCR again): their version becomes the current one, so they are
+    /// no longer listed by [`Self::rechunk_sources`], and
+    /// [`CHUNKS_KEPT_FROM_KEY`] records the version their text was made with
+    /// (kept from an earlier keep when they have it). Only the metadata
+    /// changes: text, vectors and ids stay. Returns the chunks marked.
+    pub async fn keep_chunks_of_older_chunker(&mut self, source: &str) -> Result<u64> {
+        // serde_json writes keys without spaces and escapes a quote inside a
+        // value, so an entry appears verbatim and only as an entry. The
+        // entries of version 1 go in front of the first one: the object's
+        // opening `{` is replaced by the new entries (it is the first
+        // character; one that is empty, `{}`, is never marked).
+        let quote = |text: &str| format!("'{}'", text.replace('\'', "''"));
+        let of_source = source_predicate(source);
+        let current = format!("\"{CHUNKER_VERSION_KEY}\":\"{CHUNKER_VERSION}\"");
+        let kept_marker = format!("%\"{CHUNKS_KEPT_FROM_KEY}\":\"%");
+        let version_one = format!(
+            "{{\"{CHUNKER_VERSION_KEY}\":\"{CHUNKER_VERSION}\",\"{CHUNKS_KEPT_FROM_KEY}\":\"1\","
+        );
+        // Version 1: no version entry at all.
+        let mut marked = self
+            .store
+            .update_metadata_where(
+                &format!(
+                    "{of_source} AND metadata_json NOT LIKE {} AND metadata_json LIKE {}",
+                    quote(&format!("%\"{CHUNKER_VERSION_KEY}\":\"%")),
+                    quote("{\"%"),
+                ),
+                &format!("concat({}, substr(metadata_json, 2))", quote(&version_one)),
+            )
+            .await?;
+        for older in (1..CHUNKER_VERSION).skip(1) {
+            let entry = format!("\"{CHUNKER_VERSION_KEY}\":\"{older}\"");
+            let has_entry = format!(
+                "{of_source} AND metadata_json LIKE {}",
+                quote(&format!("%{entry}%"))
+            );
+            // Kept before: the version their text is from is recorded already.
+            marked += self
+                .store
+                .update_metadata_where(
+                    &format!("{has_entry} AND metadata_json LIKE {}", quote(&kept_marker)),
+                    &format!(
+                        "replace(metadata_json, {}, {})",
+                        quote(&entry),
+                        quote(&current)
+                    ),
+                )
+                .await?;
+            marked += self
+                .store
+                .update_metadata_where(
+                    &format!(
+                        "{has_entry} AND metadata_json NOT LIKE {}",
+                        quote(&kept_marker)
+                    ),
+                    &format!(
+                        "replace(metadata_json, {}, {})",
+                        quote(&entry),
+                        quote(&format!("{current},\"{CHUNKS_KEPT_FROM_KEY}\":\"{older}\""))
+                    ),
+                )
+                .await?;
+        }
+        tracing::info!(
+            source,
+            chunks = marked,
+            "chunks of an older chunker kept: re-chunking would read the file with OCR again"
+        );
+        Ok(marked)
+    }
+
+    /// The source (`space_id`) the chunks of `source` belong to, from its
+    /// first chunk; `None` when it has none.
+    pub async fn source_owner(&self, source: &str) -> Result<Option<String>> {
+        Ok(self
+            .store
+            .list_chunks(Some(&source_predicate(source)), 1)
+            .await?
+            .into_iter()
+            .next()
+            .map(|hit| hit.space_id))
+    }
+
+    /// [`Self::upgrade_in_place`] for a document whose chunks of an older
+    /// [`CHUNKER_VERSION`] are kept on purpose: a scan that could be chunked
+    /// again only by reading it with OCR again (its reading is not in the OCR
+    /// cache). Their contexts are brought to the current [`INDEX_FORMAT`];
+    /// their text and their chunker version stay as they are.
+    pub async fn upgrade_format_keeping_chunks(&mut self, source: &str) -> Result<bool> {
+        self.upgrade_in_place_with(source, true).await
+    }
+
+    async fn upgrade_in_place_with(
+        &mut self,
+        source: &str,
+        older_chunks_kept: bool,
+    ) -> Result<bool> {
+        let current_chunker = CHUNKER_VERSION.to_string();
         let embedder = self
             .embeddings
             .clone()
@@ -2543,6 +2961,9 @@ impl RAGEngine {
             for hit in document {
                 let meta: HashMap<String, String> = serde_json::from_str(&hit.metadata_json)
                     .with_context(|| format!("chunk {} has unreadable metadata", hit.id))?;
+                if !older_chunks_kept && meta.get(CHUNKER_VERSION_KEY) != Some(&current_chunker) {
+                    return Ok(false);
+                }
                 let section_path: Vec<String> = meta
                     .get("section_path")
                     .map(|path| path.split(" > ").map(str::to_string).collect())
@@ -2903,8 +3324,9 @@ impl RAGEngine {
 #[cfg(test)]
 impl RAGEngine {
     /// Stores `file` as a build of [`INDEX_FORMAT`] 1 did: chunks without a
-    /// format or a stored context, keyword-indexed with their text only.
-    /// For tests of the upgrade from an index made by an earlier version.
+    /// format or a stored context, keyword-indexed with their text only. The
+    /// chunker version is kept: for tests of an upgrade from an index made by
+    /// an earlier version whose chunk text needs no change, only the context.
     pub(crate) async fn commit_file_as_format_one(
         &mut self,
         mut file: PreparedFile,
@@ -2926,6 +3348,49 @@ impl RAGEngine {
         self.no_stale_chunks
             .store(false, std::sync::atomic::Ordering::Relaxed);
         self.commit_file(file).await
+    }
+
+    /// Stores `file` as a build before [`CHUNKER_VERSION`] 2 did: chunks
+    /// without a chunker version, in the current [`INDEX_FORMAT`], each with
+    /// the text `old_text` makes of the text chunked now (an earlier chunker
+    /// that lost part of it). For tests of the re-chunking of such an index.
+    pub(crate) async fn commit_file_as_chunker_one(
+        &mut self,
+        mut file: PreparedFile,
+        old_text: impl Fn(&str) -> String,
+    ) -> Result<Vec<Uuid>> {
+        for record in &mut file.document.records {
+            let mut metadata: HashMap<String, String> =
+                serde_json::from_str(&record.metadata_json)?;
+            metadata.remove(CHUNKER_VERSION_KEY);
+            record.metadata_json = serde_json::to_string(&metadata)?;
+            record.text = old_text(&record.text);
+        }
+        self.no_rechunk_chunks
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.commit_file(file).await
+    }
+}
+
+#[cfg(test)]
+impl RAGEngine {
+    /// Whether [`Self::rechunk_sources`] found nothing to re-chunk and skips
+    /// its scan over every chunk's metadata from now on.
+    pub(crate) fn rechunk_latched(&self) -> bool {
+        self.no_rechunk_chunks
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+impl PreparedFile {
+    /// The text of each chunk prepared, in order.
+    pub(crate) fn chunk_texts(&self) -> Vec<String> {
+        self.document
+            .records
+            .iter()
+            .map(|record| record.text.clone())
+            .collect()
     }
 }
 
@@ -3646,6 +4111,10 @@ Language models trained on long documents reach lower perplexity.
         let first = chunks.iter().find(|c| c.text.contains("Saffron")).unwrap();
         let metadata: HashMap<String, String> = serde_json::from_str(&first.metadata_json).unwrap();
         assert!(metadata[CHUNK_CONTEXT_KEY].starts_with("Document: \"lease\". Opening: Lessor:"));
+        assert_eq!(
+            metadata.get(CHUNKER_VERSION_KEY),
+            Some(&CHUNKER_VERSION.to_string())
+        );
         assert!(engine.stale_sources().await.unwrap().is_empty());
     }
 
@@ -3737,6 +4206,275 @@ Language models trained on long documents reach lower perplexity.
         assert_eq!(old_ids, new_ids);
         assert!(engine.stale_sources().await.unwrap().is_empty());
         assert!(!engine.upgrade_in_place("no such source").await.unwrap());
+    }
+
+    /// A commit stores the new chunks before it removes the old ones. A
+    /// failure while storing leaves the old chunks; a failure while removing
+    /// them leaves both copies, written down, until the next commit or start
+    /// removes the old ones.
+    #[tokio::test]
+    async fn a_replacement_never_leaves_a_file_without_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let lease = dir.path().join("lease.md");
+        std::fs::write(&lease, LEASE).unwrap();
+        let stored =
+            |chunks: Vec<crate::storage::SearchHit>| -> std::collections::BTreeSet<String> {
+                chunks.into_iter().map(|c| c.id).collect()
+            };
+        let as_set = |ids: &[Uuid]| -> std::collections::BTreeSet<String> {
+            ids.iter().map(Uuid::to_string).collect()
+        };
+        let first = as_set(
+            &engine
+                .add_document_from_file(&lease, HashMap::new())
+                .await
+                .unwrap(),
+        );
+        assert!(!first.is_empty());
+
+        // Storing fails: the old chunks are as they were.
+        engine
+            .fail_next_store
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(engine
+            .add_document_from_file(&lease, HashMap::new())
+            .await
+            .is_err());
+        assert_eq!(
+            stored(engine.store.list_chunks(None, 100).await.unwrap()),
+            first
+        );
+
+        // Removing the old chunks fails after the new ones are stored: both
+        // copies stay, and the old ones are written down.
+        engine
+            .fail_replaced_removal
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let second = as_set(
+            &engine
+                .add_document_from_file(&lease, HashMap::new())
+                .await
+                .unwrap(),
+        );
+        assert!(second.is_disjoint(&first));
+        let both: std::collections::BTreeSet<String> = first.union(&second).cloned().collect();
+        assert_eq!(
+            stored(engine.store.list_chunks(None, 100).await.unwrap()),
+            both
+        );
+        assert_eq!(engine.text_search.count().unwrap(), both.len());
+        let pending = engine.replaced_chunks().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].source, normalize_source_path(&lease));
+        assert_eq!(
+            pending[0]
+                .previous_ids
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            first
+        );
+
+        // The next start (or commit) removes them.
+        engine
+            .fail_replaced_removal
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(engine.settle_replaced().await.unwrap(), first.len());
+        assert_eq!(
+            stored(engine.store.list_chunks(None, 100).await.unwrap()),
+            second
+        );
+        assert_eq!(engine.text_search.count().unwrap(), second.len());
+        assert!(!engine.replaced_chunks_path().exists());
+        assert_eq!(engine.settle_replaced().await.unwrap(), 0);
+
+        // A quit after the intent was written but before anything was
+        // stored: the file still has only its previous chunks, which stay.
+        assert!(engine.begin_replacement(
+            &normalize_source_path(&lease),
+            &second.iter().cloned().collect::<Vec<_>>()
+        ));
+        assert_eq!(engine.settle_replaced().await.unwrap(), 0);
+        assert_eq!(
+            stored(engine.store.list_chunks(None, 100).await.unwrap()),
+            second
+        );
+        assert!(!engine.replaced_chunks_path().exists());
+
+        // A quit after the new chunks were stored, before the record of the
+        // removal: the intent written first removes the previous ones.
+        let prepared = engine
+            .file_preparer()
+            .unwrap()
+            .prepare(&lease, HashMap::new())
+            .unwrap();
+        let source = normalize_source_path(&lease);
+        let before: Vec<String> = second.iter().cloned().collect();
+        assert!(engine.begin_replacement(&source, &before));
+        let third = as_set(&engine.store_prepared(prepared.document).await.unwrap());
+        let both: std::collections::BTreeSet<String> = second.union(&third).cloned().collect();
+        assert_eq!(
+            stored(engine.store.list_chunks(None, 100).await.unwrap()),
+            both
+        );
+        assert_eq!(engine.settle_replaced().await.unwrap(), second.len());
+        assert_eq!(
+            stored(engine.store.list_chunks(None, 100).await.unwrap()),
+            third
+        );
+    }
+
+    /// The chunks of version 1 are marked from the start of their metadata:
+    /// a value holding `{"` (or ending in `{`) is left as it is.
+    #[tokio::test]
+    async fn marking_kept_chunks_leaves_values_as_they_are() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let lease = dir.path().join("lease.md");
+        std::fs::write(&lease, LEASE).unwrap();
+        let source = normalize_source_path(&lease);
+        let odd = "a brace at the end {";
+        let quoted = "{\"key\": \"value\"}";
+        let metadata = HashMap::from([
+            ("note".to_string(), odd.to_string()),
+            ("raw".to_string(), quoted.to_string()),
+        ]);
+        let prepared = engine
+            .file_preparer()
+            .unwrap()
+            .prepare(&lease, metadata)
+            .unwrap();
+        engine
+            .commit_file_as_chunker_one(prepared, str::to_string)
+            .await
+            .unwrap();
+        let marked = engine.keep_chunks_of_older_chunker(&source).await.unwrap();
+        let chunks = engine.store.list_chunks(None, 100).await.unwrap();
+        assert_eq!(marked as usize, chunks.len());
+        for chunk in &chunks {
+            let metadata: HashMap<String, String> =
+                serde_json::from_str(&chunk.metadata_json).expect("still JSON");
+            assert_eq!(metadata.get("note").map(String::as_str), Some(odd));
+            assert_eq!(metadata.get("raw").map(String::as_str), Some(quoted));
+            assert_eq!(
+                metadata.get(CHUNKS_KEPT_FROM_KEY).map(String::as_str),
+                Some("1")
+            );
+            assert_eq!(
+                metadata.get(CHUNKER_VERSION_KEY),
+                Some(&CHUNKER_VERSION.to_string())
+            );
+        }
+    }
+
+    /// Chunks record the chunker version they were made with. Chunks of an
+    /// older version are listed for re-chunking and are never upgraded in
+    /// place (their text is what changed), unless kept on purpose: then only
+    /// their contexts change, and their text and version stay.
+    #[tokio::test]
+    async fn chunks_of_an_older_chunker_are_rechunked_never_upgraded_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let lease = dir.path().join("lease.md");
+        std::fs::write(&lease, LEASE).unwrap();
+        let source = normalize_source_path(&lease);
+        engine
+            .add_document_from_file(&lease, HashMap::new())
+            .await
+            .unwrap();
+        let chunks = engine.store.list_chunks(None, 100).await.unwrap();
+        assert!(!chunks.is_empty());
+        for chunk in &chunks {
+            let metadata: HashMap<String, String> =
+                serde_json::from_str(&chunk.metadata_json).unwrap();
+            assert_eq!(
+                metadata.get(CHUNKER_VERSION_KEY),
+                Some(&CHUNKER_VERSION.to_string())
+            );
+        }
+        assert!(engine.rechunk_sources().await.unwrap().is_empty());
+        assert!(engine.outdated_sources().await.unwrap().is_empty());
+
+        let prepared = engine
+            .file_preparer()
+            .unwrap()
+            .prepare(&lease, HashMap::new())
+            .unwrap();
+        engine
+            .commit_file_as_chunker_one(prepared, |text| format!("{text} (as chunked before)"))
+            .await
+            .unwrap();
+        let rechunk = engine.rechunk_sources().await.unwrap();
+        assert_eq!(rechunk.len(), 1);
+        assert_eq!(rechunk[0].source, source);
+        assert!(
+            engine.stale_sources().await.unwrap().is_empty(),
+            "the format is current"
+        );
+        assert_eq!(engine.outdated_sources().await.unwrap().len(), 1);
+        assert!(
+            !engine.upgrade_in_place(&source).await.unwrap(),
+            "never upgraded in place"
+        );
+
+        // Kept on purpose: the text and the version stay, the contexts move on.
+        let before = engine.store.list_chunks(None, 100).await.unwrap();
+        assert!(engine.upgrade_format_keeping_chunks(&source).await.unwrap());
+        let kept = engine.store.list_chunks(None, 100).await.unwrap();
+        let texts = |chunks: &[crate::storage::SearchHit]| -> Vec<String> {
+            let mut texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
+            texts.sort();
+            texts
+        };
+        assert_eq!(texts(&kept), texts(&before));
+        assert!(kept.iter().all(|c| c.text.ends_with("(as chunked before)")));
+        assert_eq!(engine.rechunk_sources().await.unwrap().len(), 1);
+
+        // Recorded as kept: no longer listed, so the scan over every chunk's
+        // metadata latches off; the text, ids and vectors stay.
+        let marked = engine.keep_chunks_of_older_chunker(&source).await.unwrap();
+        assert_eq!(marked as usize, kept.len());
+        assert!(engine.rechunk_sources().await.unwrap().is_empty());
+        assert!(engine.rechunk_latched());
+        let recorded = engine.store.list_chunks(None, 100).await.unwrap();
+        assert_eq!(texts(&recorded), texts(&before));
+        for chunk in &recorded {
+            let metadata: HashMap<String, String> =
+                serde_json::from_str(&chunk.metadata_json).unwrap();
+            assert_eq!(
+                metadata.get(CHUNKER_VERSION_KEY),
+                Some(&CHUNKER_VERSION.to_string())
+            );
+            assert_eq!(
+                metadata.get(CHUNKS_KEPT_FROM_KEY).map(String::as_str),
+                Some("1")
+            );
+            assert_eq!(
+                metadata.get(INDEX_FORMAT_KEY),
+                Some(&INDEX_FORMAT.to_string()),
+                "the rest of the metadata is kept"
+            );
+        }
+        assert_eq!(
+            engine.keep_chunks_of_older_chunker(&source).await.unwrap(),
+            0,
+            "nothing older is left to mark"
+        );
+
+        // Indexed again from the file: the text of the chunker now.
+        engine
+            .add_document_from_file(&lease, HashMap::new())
+            .await
+            .unwrap();
+        assert!(engine.rechunk_sources().await.unwrap().is_empty());
+        let fresh = engine.store.list_chunks(None, 100).await.unwrap();
+        assert!(fresh
+            .iter()
+            .all(|c| !c.text.contains("(as chunked before)")));
+        assert!(fresh
+            .iter()
+            .all(|c| !c.metadata_json.contains(CHUNKS_KEPT_FROM_KEY)));
     }
 
     /// No context names a file's folders: not for plain text (window chunks),

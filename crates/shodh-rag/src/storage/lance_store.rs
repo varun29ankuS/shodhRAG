@@ -313,6 +313,22 @@ impl LanceStore {
         Ok(moved.rows_updated)
     }
 
+    /// Sets the `metadata_json` of the chunks matching `predicate` (a LanceDB
+    /// filter) to `metadata` (a SQL expression over the column, such as a
+    /// `replace(metadata_json, ..)`), in one update: one new table version.
+    /// Text, vectors and ids are untouched. Returns the chunks updated.
+    pub async fn update_metadata_where(&self, predicate: &str, metadata: &str) -> Result<u64> {
+        let table = self.db.open_table(&self.table_name).execute().await?;
+        let updated = table
+            .update()
+            .only_if(predicate)
+            .column("metadata_json", metadata)
+            .execute()
+            .await
+            .context("Failed to update chunk metadata")?;
+        Ok(updated.rows_updated)
+    }
+
     pub async fn clear(&self) -> Result<()> {
         let names = self.db.table_names().execute().await?;
         if names.contains(&self.table_name) {
@@ -362,6 +378,30 @@ impl LanceStore {
     /// Reads only the `doc_id`, `source` and `space_id` columns.
     pub async fn document_sources(&self) -> Result<Vec<DocumentSourceRow>> {
         self.document_sources_where(None).await
+    }
+
+    /// The ids of the chunks `predicate` (a LanceDB filter) selects. Reads
+    /// only the `id` column.
+    pub async fn ids_where(&self, predicate: &str) -> Result<Vec<String>> {
+        let table = self.db.open_table(&self.table_name).execute().await?;
+        let results = table
+            .query()
+            .select(lancedb::query::Select::columns(&["id"]))
+            .only_if(predicate)
+            .execute()
+            .await
+            .context("Failed to query chunk ids")?;
+        let batches: Vec<RecordBatch> = futures::TryStreamExt::try_collect(results).await?;
+        let mut ids = Vec::new();
+        for batch in &batches {
+            if let Some(column) = batch
+                .column_by_name("id")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            {
+                ids.extend((0..batch.num_rows()).map(|i| column.value(i).to_string()));
+            }
+        }
+        Ok(ids)
     }
 
     /// [`Self::document_sources`] counting only the chunks that match

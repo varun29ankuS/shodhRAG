@@ -30,7 +30,7 @@ import { explainFailure, groupFailures } from './indexingAdvice';
 import { FailureDetails } from './FailureDetails';
 import type { IndexingAction, IndexingAdvice } from './indexingAdvice';
 import { useSearchModels } from '../setup/SearchModelsContext';
-import { groupSourcesByKind, progressPercent } from './sources';
+import { groupSourcesByKind, progressPercent, syncProgressLine } from './sources';
 import type { LibrarySource } from './sources';
 import { NOT_ADDED_REASON } from './reconcile';
 import type { Reconciliation } from './reconcile';
@@ -488,6 +488,11 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
           {`${(source.fileCount || 0).toLocaleString()} file${source.fileCount === 1 ? '' : 's'}`}
           {source.indexedAt && <span className="text-shodh-text-faint">{` · indexed ${relativeTime(source.indexedAt)}`}</span>}
         </p>
+        {source.syncProgress && (
+          <p className="m-0 text-[12px] text-shodh-text-secondary tabular-nums" role="status">
+            {syncProgressLine(source.syncProgress)}
+          </p>
+        )}
         {source.syncError && (
           <p className="m-0 text-[12px] text-shodh-warning flex items-start gap-1.5">
             <AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0" aria-hidden="true" />

@@ -73,9 +73,9 @@ function writeDurable(key: DurableKey, value: unknown): Promise<void> {
 }
 
 // Core components
-import { applyFolderSync, applyLibraryChange, indexedFileCount, indexedNotice, removedSourceIds, parseStoredSources, readIndexingResult, scannedPagesStep, serializeSources, SOURCES_STORAGE_KEY, syncedFolders, withPathCase } from './features/library/sources';
+import { applyFolderSync, applyFolderSyncProgress, applyLibraryChange, indexedFileCount, indexedNotice, removedSourceIds, parseStoredSources, readIndexingResult, scannedPagesStep, serializeSources, SOURCES_STORAGE_KEY, syncedFolders, withPathCase } from './features/library/sources';
 import { explainFailure } from './features/library/indexingAdvice';
-import type { FolderSyncOutcome, LibraryChange, LibrarySource } from './features/library/sources';
+import type { FolderSyncOutcome, FolderSyncProgress, LibraryChange, LibrarySource } from './features/library/sources';
 import { addableFolders, indexedFilePaths, librarySourcesChip, nativePath, NOT_ADDED_REASON, reconcileSources, searchedSources } from './features/library/reconcile';
 import type { FileNode } from './features/library/fileTree';
 import { errorMessage as searchErrorMessage } from './features/setup/searchModels';
@@ -284,6 +284,22 @@ function AppSplitView() {
     let disposed = false;
     listen<FolderSyncOutcome>('folder-sync', event => {
       setSources(prev => prev.map(s => applyFolderSync(s, event.payload)));
+    }).then(fn => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+  // A sync reading and chunking again files indexed under an older chunker
+  // shows how far it is on its card; the sync's outcome clears it.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    listen<FolderSyncProgress>('folder-sync-progress', event => {
+      setSources(prev => prev.map(s => applyFolderSyncProgress(s, event.payload)));
     }).then(fn => {
       if (disposed) fn();
       else unlisten = fn;
@@ -1235,7 +1251,7 @@ function AppSplitView() {
   const indexSource = async (source: Source, kind: 'folder' | 'file' = 'folder', adopt = false) => {
     setCurrentlyIndexing(source.id);
     setSources(prev => prev.map(s => s.id === source.id
-      ? { ...s, status: 'indexing' as const, progress: 0, processedCount: 0, currentFile: undefined, currentStep: undefined, lastError: undefined }
+      ? { ...s, status: 'indexing' as const, progress: 0, processedCount: 0, currentFile: undefined, currentStep: undefined, lastError: undefined, syncProgress: undefined }
       : s));
     try {
       const raw = kind === 'file'

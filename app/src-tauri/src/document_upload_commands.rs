@@ -21,6 +21,9 @@ pub struct UploadResult {
     pub file_size_mb: f64,
     pub processing_time_ms: u64,
     pub error: Option<String>,
+    /// What the user should know about how an indexed file was read: pages
+    /// of a scan OCR could not read ("pages 4, 9 could not be read").
+    pub notice: Option<String>,
 }
 
 /// Upload and index a document file (PDF, DOCX, XLSX, etc.) added in a
@@ -28,6 +31,11 @@ pub struct UploadResult {
 /// added ([`chat_uploads_source`]), not to a Library folder, so removing a
 /// folder never removes it, and only that workspace's chats (or the main
 /// Ask) search it (see `agent_session_commands::scope_for_workspace`).
+///
+/// The file is parsed, read by OCR and embedded on a blocking thread
+/// without the engine lock ([`shodh_rag::indexing::index_file_with_notice`]);
+/// only storing its chunks takes the lock, so searches and answers run while
+/// it is read. A panic while it is read is reported as the upload's error.
 #[tauri::command]
 pub async fn upload_document_file(
     state: State<'_, RagState>,
@@ -93,17 +101,13 @@ pub async fn upload_document_file(
         page_numbers: None,
     };
 
-    // Process the file
-    let mut rag_guard = state.rag.write().await;
-    let rag = &mut *rag_guard;
-
-    match rag.add_document_from_file(path, metadata).await {
-        Ok(chunk_ids) => {
+    match shodh_rag::indexing::index_file_with_notice(&state.rag, path, metadata, None).await {
+        Ok(indexed) => {
             let processing_time = start_time.elapsed().as_millis() as u64;
 
             tracing::info!(
                 "✅ Indexed {} chunks in {}ms",
-                chunk_ids.len(),
+                indexed.ids.len(),
                 processing_time
             );
 
@@ -111,14 +115,14 @@ pub async fn upload_document_file(
                 success: true,
                 file_name,
                 file_type: file_type.to_string(),
-                chunks_created: chunk_ids.len(),
+                chunks_created: indexed.ids.len(),
                 file_size_mb: file_size,
                 processing_time_ms: processing_time,
                 error: None,
+                notice: indexed.notice,
             })
         }
-        Err(e) => {
-            let error_msg = e.to_string();
+        Err(error_msg) => {
             tracing::info!("❌ Upload failed: {}", error_msg);
 
             Ok(UploadResult {
@@ -129,6 +133,7 @@ pub async fn upload_document_file(
                 file_size_mb: file_size,
                 processing_time_ms: start_time.elapsed().as_millis() as u64,
                 error: Some(error_msg),
+                notice: None,
             })
         }
     }

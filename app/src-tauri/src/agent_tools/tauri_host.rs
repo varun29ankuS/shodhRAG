@@ -276,15 +276,16 @@ impl HostEffects for TauriEffects {
                 tracing::warn!(target: "shodh::harness", source_id = %job.source_id, error = %e, "agent-started indexing failed");
             }
             // A folder index runs in the background and can finish long
-            // after the answer that started it, so its success is announced too.
-            crate::notifications::announce(
-                &app,
-                crate::notifications::indexing_result_outcome(
-                    format!("indexing:{}", job.source_id),
-                    &job.folder,
-                    &result,
-                ),
-            );
+            // after the answer that started it, so its success is announced
+            // too; a run its source's removal cut short or refused is not.
+            if let Some(outcome) = crate::notifications::agent_run_outcome(
+                indexing_state.is_removed(&job.source_id),
+                format!("indexing:{}", job.source_id),
+                &job.folder,
+                &result,
+            ) {
+                crate::notifications::announce(&app, outcome);
+            }
             ctx.audit(
                 AuditEventType::SourceChange,
                 source_change(

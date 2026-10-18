@@ -100,6 +100,9 @@ pub struct SyncReport {
     /// Files of the folder that could not be indexed (this sync or before,
     /// and unchanged since).
     pub failures: Vec<FileFailure>,
+    /// Of `failures`, files that failed in this sync and had not failed
+    /// before: what a sync that only re-chunked has newly to report.
+    pub new_failures: usize,
     /// Folders and files the sync could not read ([`FolderScan::unreadable`]):
     /// what the index holds of them was left as it was.
     pub unreadable: Vec<FileFailure>,
@@ -1581,7 +1584,12 @@ async fn sync_folder_scanned(
             }
             Err(reason) => {
                 let file = path.display().to_string();
-                failures.insert(key.clone(), FileFailure { file, reason });
+                if failures
+                    .insert(key.clone(), FileFailure { file, reason })
+                    .is_none()
+                {
+                    report.new_failures += 1;
+                }
                 // Its chunks of an older chunker, if any, stay, recorded as
                 // kept; it is tried again once it changes (its stamp).
                 if healing {
@@ -2685,7 +2693,15 @@ mod tests {
         let retried = sync_folder(&folder_text, "s1", &store, &rag, || false)
             .await
             .expect("sync");
-        assert_eq!((retried.indexed, retried.failures.len()), (0, 1));
+        assert_eq!(
+            (
+                retried.indexed,
+                retried.failures.len(),
+                retried.new_failures
+            ),
+            (0, 1, 0),
+            "it had failed before"
+        );
         assert_ne!(
             retried.failures[0].reason, "Panic: the old chunker looped",
             "tried again under this chunker"
@@ -2716,6 +2732,18 @@ mod tests {
         assert_ne!(
             changed.failures[0].reason, "recorded",
             "tried once it changed"
+        );
+        assert_eq!(changed.new_failures, 0, "it had failed before");
+
+        // A file that fails for the first time is a new failure.
+        std::fs::write(folder.join("torn.pdf"), "not a pdf either").expect("torn");
+        let torn = sync_folder(&folder_text, "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!(
+            (torn.indexed, torn.failures.len(), torn.new_failures),
+            (0, 2, 1),
+            "{torn:?}"
         );
     }
 

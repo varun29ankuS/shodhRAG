@@ -581,8 +581,17 @@ fn is_routine(item: &NewInboxItem) -> bool {
     item.data.get("announce").and_then(|a| a.as_bool()) == Some(false)
 }
 
+/// Whether an Inbox item has nothing to tell, not even as a first sync
+/// (`data.quiet: true`): a sync that only chunked files again for this
+/// build's chunker and had no file newly fail (failures it lists failed
+/// before), or indexing its source's removal cut short.
+fn is_quiet(item: &NewInboxItem) -> bool {
+    item.data.get("quiet").and_then(|q| q.as_bool()) == Some(true)
+}
+
 /// What the folders' indexing told the user so far, so routine syncs stay
-/// quiet. Indexing the user started is always announced. A watcher sync is
+/// quiet. A quiet item ([`is_quiet`]) is never announced; other indexing
+/// the user started is always announced. A watcher sync is
 /// announced only while it is the first sync after the folder started to be
 /// watched ([`first_sync`]); after that its successes are silent (the Inbox
 /// has them) and its failure is announced only when the folder's previous
@@ -608,6 +617,14 @@ impl IndexingMemory {
     pub fn outcome(&mut self, item: &NewInboxItem) -> Option<Outcome> {
         let outcome = inbox_outcome(item)?;
         let failed = item.status == InboxStatus::Failed;
+        // A quiet item told the user nothing: a quiet success clears the
+        // folder's failure, a quiet failure does not count as announced.
+        if is_quiet(item) {
+            if !failed {
+                self.failed.remove(&item.id);
+            }
+            return None;
+        }
         let was_failed = if failed {
             !self.failed.insert(item.id.clone())
         } else {
@@ -672,6 +689,19 @@ pub fn agent_indexing_outcome(
         problem @ Outcome::Problem { .. } => Some(problem),
         Outcome::Finished(_) => None,
     }
+}
+
+/// What a folder index the assistant started announces when it ends
+/// ([`indexing_result_outcome`]): nothing when its source was removed
+/// (`removed`), which cut the run short or refused it: the user removed the
+/// folder.
+pub fn agent_run_outcome(
+    removed: bool,
+    source: String,
+    folder: &str,
+    result: &Result<IndexingResult, String>,
+) -> Option<Outcome> {
+    (!removed).then(|| indexing_result_outcome(source, folder, result))
 }
 
 /// What indexing outside the Inbox announces (it has no Inbox item):
@@ -1442,6 +1472,32 @@ mod tests {
             Outcome::Problem { notice, .. } => assert_eq!(notice.body, "Papers was not indexed."),
             other => panic!("problem: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_folder_index_of_a_removed_source_announces_nothing() {
+        let done = IndexingResult {
+            files_processed: 3,
+            failures: Vec::new(),
+            total_chunks: 0,
+            failed_files: Vec::new(),
+            files_unchanged: 0,
+            duration: 0,
+        };
+        let refused: Result<IndexingResult, String> =
+            Err("C:/data/Papers was removed from the Library and is not indexed".into());
+        let run = |removed: bool, result: &Result<IndexingResult, String>| {
+            agent_run_outcome(removed, "indexing:s".into(), "C:/data/Papers", result)
+        };
+        // Cut short part way, or refused before it started.
+        assert_eq!(run(true, &Ok(done.clone())), None);
+        assert_eq!(run(true, &refused), None);
+        // Not removed: announced as before.
+        assert!(matches!(run(false, &Ok(done)), Some(Outcome::Finished(_))));
+        assert!(matches!(
+            run(false, &refused),
+            Some(Outcome::Problem { .. })
+        ));
     }
 
     #[test]

@@ -9,7 +9,7 @@ use crate::rag_commands::RagState;
 use shodh_rag::audit::payload::{indexing_outcome, source_change, ChangeOrigin};
 use shodh_rag::audit::{AuditEventType, AuditRecord};
 use shodh_rag::folder_sync::Adoption;
-use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus};
+use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus, NewInboxItem};
 use tauri::{AppHandle, State};
 
 // Re-export backend types so existing callers don't break
@@ -74,10 +74,23 @@ pub async fn link_folder_enhanced(
             indexing_outcome(&result),
         ),
     ));
-    // A run cut short because its source was removed did not index the folder.
     let removed = indexing_state.is_removed(&space_id);
-    let (status, title, detail) = match &result {
-        Ok(_) if removed => (
+    inbox_commands::post(&app, finished_item(inbox_id, &name, link, removed, &result)).await;
+    result
+}
+
+/// The Inbox item of a folder's indexing that ended. A run cut short, or
+/// refused, because its source was removed (`removed`) did not index the
+/// folder and is `quiet`: the user removed it, so nothing is announced.
+fn finished_item(
+    inbox_id: String,
+    name: &str,
+    link: Option<InboxLink>,
+    removed: bool,
+    result: &Result<IndexingResult, String>,
+) -> NewInboxItem {
+    let (status, title, detail) = match result {
+        _ if removed => (
             InboxStatus::Done,
             format!("{name} was removed from the Library"),
             "Indexing stopped when the folder was removed.".to_string(),
@@ -98,19 +111,18 @@ pub async fn link_folder_enhanced(
             e.clone(),
         ),
     };
-    inbox_commands::post(
-        &app,
-        inbox_commands::work_item(
-            inbox_id,
-            InboxKind::Indexing,
-            status,
-            title,
-            Some(detail),
-            link,
-        ),
-    )
-    .await;
-    result
+    let mut item = inbox_commands::work_item(
+        inbox_id,
+        InboxKind::Indexing,
+        status,
+        title,
+        Some(detail),
+        link,
+    );
+    if removed {
+        item.data = serde_json::json!({ "quiet": true });
+    }
+    item
 }
 
 /// What a folder's indexing did, for its Inbox item: "3 files indexed,
@@ -215,6 +227,46 @@ mod tests {
             files_unchanged: unchanged,
             duration: 0,
         }
+    }
+
+    #[test]
+    fn indexing_its_source_removal_cut_short_is_not_announced() {
+        let mut memory = crate::notifications::IndexingMemory::default();
+        let removed = |result: Result<IndexingResult, String>| {
+            finished_item("indexing:s1".to_string(), "Papers", None, true, &result)
+        };
+        // Cut short part way, or refused before it started: the Inbox says the
+        // folder was removed, and nothing is announced.
+        for item in [
+            removed(Ok(done(3, 0, 0))),
+            removed(Err(
+                "Papers was removed from the Library and is not indexed".to_string(),
+            )),
+        ] {
+            assert_eq!(item.status, InboxStatus::Done);
+            assert_eq!(item.title, "Papers was removed from the Library");
+            assert_eq!(item.data["quiet"], true);
+            assert_eq!(memory.outcome(&item), None);
+        }
+        // Indexing that ran to its end is announced.
+        let finished = finished_item(
+            "indexing:s1".to_string(),
+            "Papers",
+            None,
+            false,
+            &Ok(done(3, 0, 0)),
+        );
+        assert_eq!(finished.title, "Papers is indexed");
+        assert!(memory.outcome(&finished).is_some());
+        let failed = finished_item(
+            "indexing:s1".to_string(),
+            "Papers",
+            None,
+            false,
+            &Err("disk full".to_string()),
+        );
+        assert_eq!(failed.status, InboxStatus::Failed);
+        assert!(memory.outcome(&failed).is_some());
     }
 
     #[test]

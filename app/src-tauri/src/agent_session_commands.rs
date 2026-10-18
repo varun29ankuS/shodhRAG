@@ -371,14 +371,15 @@ impl Drop for StartingGuard<'_> {
     }
 }
 
-/// Emits the session counts when a start ends without emitting them although the live
-/// sessions changed under it: a failed start may already have replaced a stale session
-/// or evicted idle ones to make room, and the tray must not keep showing them. A start
-/// that emits the counts itself marks it [`emitted`](Self::emitted).
+/// Emits the session counts when a start that stopped sessions ends without emitting
+/// them: a failed start may already have replaced a stale session or evicted idle ones
+/// to make room, and the tray must not keep showing them. The start marks what it
+/// stopped ([`stopped`](Self::stopped)) and, when it emits the counts itself,
+/// [`emitted`](Self::emitted).
 struct CountsGuard<'a> {
     app: &'a AppHandle,
     sessions: &'a AgentSessions,
-    before: SessionCounts,
+    stopped: bool,
     emitted: bool,
 }
 
@@ -387,9 +388,14 @@ impl<'a> CountsGuard<'a> {
         Self {
             app,
             sessions,
-            before: sessions.counts(),
+            stopped: false,
             emitted: false,
         }
+    }
+
+    /// The start stopped `n` sessions (a replaced stale one, evicted idle ones).
+    fn stopped(&mut self, n: usize) {
+        self.stopped |= n > 0;
     }
 
     /// The counts were emitted on the way out: nothing is left to do on drop.
@@ -400,16 +406,16 @@ impl<'a> CountsGuard<'a> {
 
 impl Drop for CountsGuard<'_> {
     fn drop(&mut self) {
-        if counts_need_emit(self.emitted, self.before, self.sessions.counts()) {
+        if counts_need_emit(self.emitted, self.stopped) {
             emit_counts(self.app, self.sessions);
         }
     }
 }
 
-/// Whether a start that ends with the live sessions at `now` must still emit them: it did
-/// not emit them itself and they are not what they were when it began.
-fn counts_need_emit(emitted: bool, before: SessionCounts, now: SessionCounts) -> bool {
-    !emitted && before != now
+/// Whether a start must still emit the session counts on its way out: it stopped
+/// sessions and did not emit the counts itself.
+fn counts_need_emit(emitted: bool, stopped: bool) -> bool {
+    stopped && !emitted
 }
 
 impl AgentSessions {
@@ -465,7 +471,9 @@ impl AgentSessions {
     /// Stop idle sessions so that, with the ones being launched, at most
     /// [`MAX_LIVE_SESSIONS`] remain (see [`eviction_order`]) and at most
     /// [`MAX_SIDE_SESSIONS`] side-thread sessions (see [`side_evictions`]).
-    async fn evict_idle(&self, keep: &[&str]) {
+    /// Returns how many sessions it stopped.
+    async fn evict_idle(&self, keep: &[&str]) -> usize {
+        let mut stopped = 0;
         let side = side_evictions(
             &self.candidates(),
             keep,
@@ -473,18 +481,27 @@ impl AgentSessions {
             self.starting_side.load(Ordering::SeqCst),
         );
         for session_id in side {
-            self.stop_if_idle(&session_id, "side-thread session stopped (cap)", |_| true)
-                .await;
+            if self
+                .stop_if_idle(&session_id, "side-thread session stopped (cap)", |_| true)
+                .await
+            {
+                stopped += 1;
+            }
         }
         let live = self.sessions.len() + self.starting.load(Ordering::SeqCst);
         let excess = live.saturating_sub(MAX_LIVE_SESSIONS);
         if excess == 0 {
-            return;
+            return stopped;
         }
         for session_id in eviction_order(&self.candidates(), keep, excess) {
-            self.stop_if_idle(&session_id, "idle agent session stopped", |_| true)
-                .await;
+            if self
+                .stop_if_idle(&session_id, "idle agent session stopped", |_| true)
+                .await
+            {
+                stopped += 1;
+            }
         }
+        stopped
     }
 
     /// Stop a session unless an answer is running in it or `still` no longer holds.
@@ -1453,6 +1470,7 @@ async fn start_attempt(
             _ => {
                 if let Some(stale) = sessions.remove(&session_id) {
                     stale.session.shutdown().await;
+                    counts.stopped(1);
                 }
             }
         }
@@ -1464,7 +1482,8 @@ async fn start_attempt(
     let keep: Vec<&str> = std::iter::once(conversation_id.as_str())
         .chain(parent_conversation_id.as_deref())
         .collect();
-    sessions.evict_idle(&keep).await;
+    let evicted = sessions.evict_idle(&keep).await;
+    counts.stopped(evicted);
 
     let extra_tools = extra.map(|e| e.tools).unwrap_or_default();
     let extra_names: Vec<String> = extra_tools.iter().map(|t| t.name().to_string()).collect();
@@ -2742,14 +2761,13 @@ mod tests {
 
     #[test]
     fn a_failed_start_that_stopped_sessions_still_updates_the_tray() {
-        let counts = |main, side| SessionCounts { main, side };
         // A stale session was replaced, or idle ones evicted, and the start failed.
-        assert!(counts_need_emit(false, counts(3, 1), counts(2, 1)));
-        assert!(counts_need_emit(false, counts(2, 2), counts(2, 0)));
-        // Nothing changed (a reused session, a busy one, a failure before any stop).
-        assert!(!counts_need_emit(false, counts(2, 1), counts(2, 1)));
+        assert!(counts_need_emit(false, true));
+        // Nothing was stopped (a reused session, a busy one, a failure before any stop).
+        assert!(!counts_need_emit(false, false));
         // The start emitted the counts itself.
-        assert!(!counts_need_emit(true, counts(1, 0), counts(2, 0)));
+        assert!(!counts_need_emit(true, true));
+        assert!(!counts_need_emit(true, false));
     }
 
     #[test]

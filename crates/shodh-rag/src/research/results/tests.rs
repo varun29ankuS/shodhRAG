@@ -8,6 +8,14 @@ use crate::statements::testing::{t0, FixedEmbedder, TestClock, WordEmbedder};
 use crate::statements::DynamicsStore;
 
 async fn service(dir: &std::path::Path) -> (ResultService, Arc<TestClock>) {
+    service_with(dir, Arc::new(WordEmbedder::default())).await
+}
+
+/// [`service`] over `embedder`.
+async fn service_with(
+    dir: &std::path::Path,
+    embedder: Arc<dyn crate::embeddings::EmbeddingModel>,
+) -> (ResultService, Arc<TestClock>) {
     let clock = TestClock::at(t0());
     let ontology = Arc::new(shodh_ontology::Ontology::builtin_with_packs(&["research"]).unwrap());
     let dynamics = Arc::new(DynamicsStore::open(&dir.join("shodh.db"), None).unwrap());
@@ -16,7 +24,7 @@ async fn service(dir: &std::path::Path) -> (ResultService, Arc<TestClock>) {
         crate::statements::testing::DIM,
         ontology,
         dynamics,
-        Arc::new(FixedEmbedder(Arc::new(WordEmbedder::default()))),
+        Arc::new(FixedEmbedder(embedder)),
         clock.clone(),
     )
     .await
@@ -744,7 +752,12 @@ fn stored_result(service: &ResultService, path: &str, i: usize) -> Statement {
 #[tokio::test]
 async fn a_paper_s_results_are_read_whatever_else_is_stored() {
     let dir = tempfile::tempdir().unwrap();
-    let (service, _clock) = service(dir.path()).await;
+    // 5,100 distinct methods outgrow the word embedder's vocabulary; hashing has none.
+    let (service, _clock) = service_with(
+        dir.path(),
+        Arc::new(crate::statements::testing::HashEmbedder),
+    )
+    .await;
     let others: Vec<(Statement, Scope)> = (0..5_100)
         .map(|i| {
             let path = format!("C:/papers/other-{}.pdf", i % 40);

@@ -253,10 +253,12 @@ mod tests {
         dir: tempfile::TempDir,
         store: Arc<StatementStore>,
         snippets: SnippetService,
+        clock: Arc<TestClock>,
     }
 
     async fn stores() -> Stores {
         let dir = tempfile::tempdir().unwrap();
+        let clock = TestClock::at(t0());
         let ontology =
             Arc::new(shodh_ontology::Ontology::builtin_with_packs(&["research"]).unwrap());
         let dynamics = Arc::new(DynamicsStore::open(&dir.path().join("shodh.db"), None).unwrap());
@@ -267,7 +269,7 @@ mod tests {
                 ontology,
                 dynamics,
                 Arc::new(FixedEmbedder(Arc::new(WordEmbedder::default()))),
-                TestClock::at(t0()),
+                clock.clone(),
             )
             .await
             .unwrap(),
@@ -277,6 +279,7 @@ mod tests {
             snippets: SnippetService::new(store.clone(), db, "test"),
             store,
             dir,
+            clock,
         }
     }
 
@@ -335,7 +338,9 @@ mod tests {
             ))
             .await
             .unwrap();
-        // A revision: the history moves with the snippet.
+        // A revision, a day later (at the same instant both versions would be current):
+        // the history moves with the snippet.
+        s.clock.advance_days(1);
         let revised = s
             .snippets
             .update(
@@ -474,6 +479,13 @@ mod tests {
         let ids: BTreeSet<&str> = history.iter().map(|h| h.id()).collect();
         assert!(ids.contains(saved.statement_id.as_str()), "{ids:?}");
         assert!(ids.contains(revised.statement_id.as_str()), "{ids:?}");
+        // The move keeps the supersede chain: the old version is still history.
+        let old = s.store.get(&saved.statement_id).await.unwrap();
+        assert_eq!(
+            old.superseded_by.as_deref(),
+            Some(revised.statement_id.as_str())
+        );
+        assert!(!old.is_current_at(s.store.now()));
         // A global snippet is listed from the workspace that holds its file.
         let listed = s
             .snippets

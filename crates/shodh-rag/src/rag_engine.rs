@@ -71,6 +71,9 @@ pub struct PreparedFile {
     /// The file is a scan the system OCR read because the scan reader is not
     /// installed.
     scan_reader_missing: bool,
+    /// What the user should know about how the file was read (pages OCR
+    /// could not read), when anything.
+    notice: Option<String>,
     parse_ms: u128,
     chunk_ms: u128,
     embed_ms: u128,
@@ -81,6 +84,12 @@ impl PreparedFile {
     /// installed.
     pub fn scan_reader_missing(&self) -> bool {
         self.scan_reader_missing
+    }
+
+    /// What the user should know about how the file was read: "pages 4, 9
+    /// could not be read" for a scan with pages OCR could not read.
+    pub fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
     }
 }
 
@@ -114,6 +123,7 @@ impl FilePreparer {
         let refine = parsed.metadata.contains_key(TABLE_CANDIDATES_KEY)
             && !parsed.metadata.contains_key(TABLE_MODEL_KEY);
         let scan_reader_missing = parsed.metadata.contains_key(OCR_READER_MISSING_KEY);
+        let notice = crate::processing::parser::ocr_failed_pages_notice(&parsed.metadata);
         let source = normalize_source_path(path);
         let mut merged_metadata = parsed.metadata;
         for (k, v) in metadata {
@@ -218,6 +228,7 @@ impl FilePreparer {
             document,
             refine,
             scan_reader_missing,
+            notice,
             parse_ms,
             chunk_ms,
             embed_ms: embed_started.elapsed().as_millis(),

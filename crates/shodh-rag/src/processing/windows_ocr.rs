@@ -6,6 +6,8 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
+use super::ocr::OcrPages;
+
 use windows::core::HSTRING;
 use windows::Data::Pdf::{PdfDocument, PdfPageRenderOptions};
 use windows::Graphics::Imaging::{BitmapDecoder, BitmapPixelFormat, SoftwareBitmap};
@@ -112,58 +114,69 @@ fn engine() -> Result<OcrEngine> {
 /// `dpi` when given (lowered where the page would exceed the engine's largest
 /// image size), else at the page size in DIPs (96 dpi). Returns one string per
 /// page, in page order (empty for blank pages). `on_page(page, pages)` is
-/// called before each page is read (1-based).
+/// called before each page is read (1-based). A page that cannot be rendered
+/// or read is logged, reads as empty and is listed as failed; the other
+/// pages are kept ([`super::ocr::read_each_page`]).
 pub fn ocr_pdf_pages(
     path: &Path,
     dpi: Option<u32>,
     on_page: &dyn Fn(usize, usize),
-) -> Result<Vec<String>> {
+) -> Result<OcrPages> {
     let pdf = WindowsPdf::open(path)?;
     let engine = engine()?;
     let max_side = OcrEngine::MaxImageDimension().context("Failed to get the OCR image limit")?;
     let page_count = pdf.page_count()?;
-    let mut pages = Vec::with_capacity(page_count);
+    Ok(super::ocr::read_each_page(
+        page_count,
+        path,
+        on_page,
+        |index| read_pdf_page(&pdf, &engine, max_side, index, dpi),
+    ))
+}
 
-    for i in 0..page_count {
-        on_page(i + 1, page_count);
-        let dpi = match dpi {
-            Some(dpi) => {
-                let cap = (max_side as f64 / pdf.longer_side_inches(i)?).floor() as u32;
-                Some(dpi.min(cap.max(1)))
-            }
-            None => None,
-        };
-        let stream = pdf.render_stream(i, dpi)?;
+/// Page `index` (0-based) of `pdf` rendered and read by `engine` (see
+/// [`ocr_pdf_pages`]).
+fn read_pdf_page(
+    pdf: &WindowsPdf,
+    engine: &OcrEngine,
+    max_side: u32,
+    index: usize,
+    dpi: Option<u32>,
+) -> Result<String> {
+    let page = index + 1;
+    let dpi = match dpi {
+        Some(dpi) => {
+            let cap = (max_side as f64 / pdf.longer_side_inches(index)?).floor() as u32;
+            Some(dpi.min(cap.max(1)))
+        }
+        None => None,
+    };
+    let stream = pdf.render_stream(index, dpi)?;
 
-        let decoder = BitmapDecoder::CreateAsync(&stream)
-            .context("Failed to create bitmap decoder async op")?
-            .get()
-            .with_context(|| format!("Failed to decode rendered page {}", i))?;
+    let decoder = BitmapDecoder::CreateAsync(&stream)
+        .context("Failed to create bitmap decoder async op")?
+        .get()
+        .with_context(|| format!("Failed to decode rendered page {page}"))?;
 
-        let bitmap = decoder
-            .GetSoftwareBitmapAsync()
-            .context("Failed to create bitmap async op")?
-            .get()
-            .with_context(|| format!("Failed to get bitmap for page {}", i))?;
+    let bitmap = decoder
+        .GetSoftwareBitmapAsync()
+        .context("Failed to create bitmap async op")?
+        .get()
+        .with_context(|| format!("Failed to get bitmap for page {page}"))?;
 
-        let converted = SoftwareBitmap::Convert(&bitmap, BitmapPixelFormat::Bgra8)
-            .with_context(|| format!("Failed to convert bitmap for page {}", i))?;
+    let converted = SoftwareBitmap::Convert(&bitmap, BitmapPixelFormat::Bgra8)
+        .with_context(|| format!("Failed to convert bitmap for page {page}"))?;
 
-        let result = engine
-            .RecognizeAsync(&converted)
-            .context("Failed to create OCR async op")?
-            .get()
-            .with_context(|| format!("OCR failed on page {}", i))?;
+    let result = engine
+        .RecognizeAsync(&converted)
+        .context("Failed to create OCR async op")?
+        .get()
+        .with_context(|| format!("OCR failed on page {page}"))?;
 
-        let page_text = result
-            .Text()
-            .with_context(|| format!("Failed to get OCR text for page {}", i))?
-            .to_string();
-
-        pages.push(page_text);
-    }
-
-    Ok(pages)
+    Ok(result
+        .Text()
+        .with_context(|| format!("Failed to get OCR text for page {page}"))?
+        .to_string())
 }
 
 /// OCR an image file (PNG, JPG, BMP, TIFF) using Windows OCR API.

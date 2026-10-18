@@ -45,6 +45,9 @@ pub const OCR_ENGINE_SYSTEM: &str = "windows-ocr";
 /// scan reader (the PP-OCRv6 model) is not installed: it is read again once
 /// the reader is installed.
 pub const OCR_READER_MISSING_KEY: &str = "ocr_reader_missing";
+/// Metadata key listing the pages (1-based, comma-separated) of a scan that
+/// OCR could not read: they read as empty ([`ocr_failed_pages_notice`]).
+pub const OCR_FAILED_PAGES_KEY: &str = "ocr_failed_pages";
 
 /// A PDF that needs a password to open: its text cannot be read, by OCR
 /// either, so it is not treated as a scan.
@@ -70,6 +73,28 @@ struct PdfParse {
     document: Option<StructuredDocument>,
     tables: Option<TableReport>,
     ocr: Option<OcrUse>,
+    /// Pages (1-based) of a scan that OCR could not read.
+    ocr_failed_pages: Vec<usize>,
+}
+
+/// A scanned PDF as OCR read it: its pages as a document, the engine that
+/// read it, its page count, and the pages (1-based) OCR could not read.
+struct ScanRead {
+    doc: StructuredDocument,
+    engine: &'static str,
+    pages: usize,
+    failed: Vec<usize>,
+}
+
+impl ScanRead {
+    fn of(pages: super::ocr::OcrPages, engine: &'static str) -> Self {
+        Self {
+            doc: ocr_pages_to_document(&pages.texts),
+            engine,
+            pages: pages.texts.len(),
+            failed: pages.failed,
+        }
+    }
 }
 
 /// How a scan was read: the engine, and whether the scan reader was missing
@@ -269,18 +294,14 @@ impl DocumentParser {
     }
 
     /// A scanned PDF read by OCR page by page (at below-normal priority),
-    /// with the engine that read it and its page count, `None` when no engine
-    /// could read it; and whether the scan reader was missing for it.
-    #[allow(clippy::type_complexity)]
+    /// `None` when no engine could read it; and whether the scan reader was
+    /// missing for it.
     fn ocr_pdf(
         &self,
         path: &Path,
         bytes: &[u8],
         progress: OcrProgress<'_>,
-    ) -> (
-        Result<Option<(StructuredDocument, &'static str, usize)>>,
-        bool,
-    ) {
+    ) -> (Result<Option<ScanRead>>, bool) {
         let unrendered = super::ocr::raster::uses_unrendered_codecs(bytes);
         let (route, reader_missing) = self.ocr_route(unrendered);
         let _below_normal = super::ocr::priority::BelowNormal::new();
@@ -290,7 +311,6 @@ impl DocumentParser {
         )
     }
 
-    #[allow(clippy::type_complexity)]
     fn read_scan(
         &self,
         route: OcrRoute,
@@ -298,7 +318,7 @@ impl DocumentParser {
         bytes: &[u8],
         unrendered: bool,
         progress: OcrProgress<'_>,
-    ) -> Result<Option<(StructuredDocument, &'static str, usize)>> {
+    ) -> Result<Option<ScanRead>> {
         let read = match route {
             OcrRoute::PpOcr(model) => {
                 if unrendered {
@@ -308,9 +328,9 @@ impl DocumentParser {
                         path.display()
                     );
                 }
-                let texts =
+                let pages =
                     super::ocr::read_pdf(&model, bytes, self.ocr.render_dpi, path, progress)?;
-                Some((ocr_pages_to_document(&texts), OCR_ENGINE_PPOCR, texts.len()))
+                Some(ScanRead::of(pages, OCR_ENGINE_PPOCR))
             }
             #[cfg(windows)]
             OcrRoute::System => {
@@ -322,11 +342,7 @@ impl DocumentParser {
                 }
                 let pages =
                     super::windows_ocr::ocr_pdf_pages(path, self.ocr.system_render_dpi, progress)?;
-                Some((
-                    ocr_pages_to_document(&pages),
-                    OCR_ENGINE_SYSTEM,
-                    pages.len(),
-                ))
+                Some(ScanRead::of(pages, OCR_ENGINE_SYSTEM))
             }
             #[cfg(not(windows))]
             OcrRoute::System => None,
@@ -335,7 +351,7 @@ impl DocumentParser {
                     .ocr_worker
                     .as_ref()
                     .context("no OCR process is configured")?;
-                let texts = worker.read(
+                let pages = worker.read_pages(
                     FileKind::Pdf,
                     path,
                     engine,
@@ -343,11 +359,7 @@ impl DocumentParser {
                     self.ocr.system_render_dpi,
                     progress,
                 )?;
-                Some((
-                    ocr_pages_to_document(&texts),
-                    worker_engine_name(engine),
-                    texts.len(),
-                ))
+                Some(ScanRead::of(pages, worker_engine_name(engine)))
             }
             OcrRoute::None => None,
         };
@@ -440,6 +452,14 @@ impl DocumentParser {
                     }
                     if let Some(ocr) = parsed.ocr {
                         record_ocr(ocr, &mut metadata);
+                    }
+                    if !parsed.ocr_failed_pages.is_empty() {
+                        let pages: Vec<String> = parsed
+                            .ocr_failed_pages
+                            .iter()
+                            .map(|p| p.to_string())
+                            .collect();
+                        metadata.insert(OCR_FAILED_PAGES_KEY.to_string(), pages.join(","));
                     }
                     parsed.text
                 }
@@ -575,6 +595,7 @@ impl DocumentParser {
                         document: Some(doc),
                         tables: Some(parsed.tables),
                         ocr: None,
+                        ocr_failed_pages: Vec::new(),
                     });
                 }
                 tracing::info!(
@@ -597,6 +618,7 @@ impl DocumentParser {
                     document: None,
                     tables: None,
                     ocr: None,
+                    ocr_failed_pages: Vec::new(),
                 });
             }
         }
@@ -614,26 +636,46 @@ impl DocumentParser {
         };
 
         let (read, reader_missing) = self.ocr_pdf(path, &bytes, progress);
+        // Why OCR read nothing: its error, or the pages it could not read.
+        let mut ocr_error = None;
+        let mut unread = Vec::new();
         match read {
-            Ok(Some((mut doc, engine, pages))) => {
-                if doc.text_chars() > 0 || !forms.fields.is_empty() {
-                    insert_form_fields(&mut doc, &forms.fields);
-                    tracing::info!(pages, engine, "Using OCR text: {}", path.display());
+            Ok(Some(mut scan)) => {
+                if scan.doc.text_chars() > 0 || !forms.fields.is_empty() {
+                    insert_form_fields(&mut scan.doc, &forms.fields);
+                    tracing::info!(
+                        pages = scan.pages,
+                        engine = scan.engine,
+                        "Using OCR text: {}",
+                        path.display()
+                    );
+                    if !scan.failed.is_empty() {
+                        tracing::warn!(
+                            "OCR could not read {}: {}",
+                            page_list(&scan.failed),
+                            path.display()
+                        );
+                    }
                     return Ok(PdfParse {
-                        text: doc.plain_text(),
-                        document: Some(doc),
+                        text: scan.doc.plain_text(),
+                        document: Some(scan.doc),
                         tables: None,
                         ocr: Some(OcrUse {
-                            engine,
+                            engine: scan.engine,
                             reader_missing,
                         }),
+                        ocr_failed_pages: scan.failed,
                     });
                 }
+                unread = scan.failed;
             }
             Ok(None) => {
                 tracing::warn!("No OCR engine is available for {}", path.display());
             }
-            Err(e) => tracing::warn!("OCR failed for {}: {:#}", path.display(), e),
+            Err(e) => {
+                tracing::warn!("OCR failed for {}: {:#}", path.display(), e);
+                ocr_error = Some(e);
+            }
         }
         if let Some(reason) = damaged {
             return Err(anyhow::Error::new(PdfDamaged(reason)).context(path.display().to_string()));
@@ -641,6 +683,19 @@ impl DocumentParser {
         // The scan reader may read what nothing here could.
         if reader_missing {
             return Err(anyhow::Error::new(ScanReaderMissing).context(path.display().to_string()));
+        }
+        if let Some(e) = ocr_error {
+            return Err(e.context(format!(
+                "OCR could not read this scanned PDF: {}",
+                path.display()
+            )));
+        }
+        if !unread.is_empty() {
+            return Err(anyhow::anyhow!(
+                "OCR could not read {} of this scanned PDF: {}",
+                page_list(&unread),
+                path.display()
+            ));
         }
 
         Err(anyhow::anyhow!(
@@ -1012,6 +1067,43 @@ fn system_ocr_available() -> bool {
     {
         false
     }
+}
+
+/// Pages shown in a list of pages before the rest are counted.
+const PAGES_LISTED: usize = 10;
+
+/// `pages` (1-based) in words: "page 4", "pages 4, 9"; past
+/// [`PAGES_LISTED`] pages, the rest are counted ("… 10 and 5 more").
+fn page_list(pages: &[usize]) -> String {
+    let listed: Vec<String> = pages
+        .iter()
+        .take(PAGES_LISTED)
+        .map(|p| p.to_string())
+        .collect();
+    let mut list = format!(
+        "{} {}",
+        if pages.len() == 1 { "page" } else { "pages" },
+        listed.join(", ")
+    );
+    if pages.len() > PAGES_LISTED {
+        list.push_str(&format!(" and {} more", pages.len() - PAGES_LISTED));
+    }
+    list
+}
+
+/// What to tell the user about a file whose `metadata` lists pages OCR
+/// could not read ([`OCR_FAILED_PAGES_KEY`]): "pages 4, 9 could not be
+/// read". `None` when every page was read.
+pub fn ocr_failed_pages_notice(metadata: &HashMap<String, String>) -> Option<String> {
+    let pages: Vec<usize> = metadata
+        .get(OCR_FAILED_PAGES_KEY)?
+        .split(',')
+        .filter_map(|p| p.trim().parse().ok())
+        .collect();
+    if pages.is_empty() {
+        return None;
+    }
+    Some(format!("{} could not be read", page_list(&pages)))
 }
 
 /// Records how a scan was read: the engine, and that the scan reader was
@@ -2180,5 +2272,42 @@ pub(crate) mod tests {
         );
         assert_eq!(strip_html_tags("&#157;"), "\u{9d}");
         assert_eq!(strip_html_tags("&#160;x&#8211;"), "x\u{2013}");
+    }
+
+    /// OCR that fails says why, instead of reporting a scan with no text.
+    #[test]
+    fn an_ocr_failure_is_reported_with_its_reason() {
+        use crate::processing::ocr::worker::WorkerCommand;
+        use crate::processing::pdf_fixtures::build_pdf;
+        let worker = OcrWorker::new(WorkerCommand {
+            program: std::path::PathBuf::from("this-ocr-worker-does-not-exist"),
+            args: Vec::new(),
+            env: Vec::new(),
+        });
+        let dir = tempfile::tempdir().unwrap();
+        worker.set_model_dir(Some(dir.path().join("pp-ocrv6")));
+        let parser = DocumentParser::new().with_ocr_worker(Arc::new(worker));
+        let scan = dir.path().join("scan.pdf");
+        std::fs::write(&scan, build_pdf(&[vec![]], None)).unwrap();
+        let err = format!("{:#}", parser.parse_file(&scan).expect_err("OCR failed"));
+        assert!(err.contains("OCR could not read this scanned PDF"), "{err}");
+        assert!(err.contains("starting the OCR process"), "{err}");
+        assert!(!err.contains("no extractable text"), "{err}");
+    }
+
+    #[test]
+    fn unread_pages_are_named() {
+        assert_eq!(page_list(&[4]), "page 4");
+        assert_eq!(page_list(&[4, 9]), "pages 4, 9");
+        assert_eq!(
+            page_list(&(1..=15).collect::<Vec<_>>()),
+            "pages 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 and 5 more"
+        );
+        let metadata = HashMap::from([(OCR_FAILED_PAGES_KEY.to_string(), "4,9".to_string())]);
+        assert_eq!(
+            ocr_failed_pages_notice(&metadata).as_deref(),
+            Some("pages 4, 9 could not be read")
+        );
+        assert_eq!(ocr_failed_pages_notice(&HashMap::new()), None);
     }
 }

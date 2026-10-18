@@ -23,7 +23,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::priority::BelowNormal;
-use super::PpOcr;
+use super::{OcrPages, PpOcr};
 
 /// The argument that starts an executable as the OCR child (see the app's
 /// `main`).
@@ -79,10 +79,13 @@ pub enum Reply {
         page: usize,
         pages: usize,
     },
-    /// The text of every page, in order (one for an image).
+    /// The text of every page, in order (one for an image), and the pages
+    /// (1-based) that could not be read, which read as empty.
     Done {
         id: u64,
         pages: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        failed_pages: Vec<usize>,
     },
     Failed {
         id: u64,
@@ -128,7 +131,11 @@ pub fn serve(input: impl BufRead, mut output: impl Write) -> Result<()> {
             read(&request, &mut model, &on_page)
         };
         let reply = match result {
-            Ok(pages) => Reply::Done { id, pages },
+            Ok(pages_read) => Reply::Done {
+                id,
+                pages: pages_read.texts,
+                failed_pages: pages_read.failed,
+            },
             Err(e) => Reply::Failed {
                 id,
                 error: format!("{e:#}"),
@@ -196,7 +203,7 @@ fn read(
     request: &Request,
     model: &mut Option<(PathBuf, PpOcr)>,
     on_page: &dyn Fn(usize, usize),
-) -> Result<Vec<String>> {
+) -> Result<OcrPages> {
     match request.engine {
         WorkerEngine::PpOcr => {
             let dir = request
@@ -214,7 +221,10 @@ fn read(
                         .with_context(|| format!("reading {}", request.path.display()))?;
                     super::read_pdf(ocr, &bytes, request.dpi, &request.path, on_page)
                 }
-                FileKind::Image => Ok(vec![super::read_image(ocr, &request.path)?]),
+                FileKind::Image => Ok(OcrPages {
+                    texts: vec![super::read_image(ocr, &request.path)?],
+                    failed: Vec::new(),
+                }),
             }
         }
         WorkerEngine::System => read_system(request, on_page),
@@ -222,16 +232,19 @@ fn read(
 }
 
 #[cfg(windows)]
-fn read_system(request: &Request, on_page: &dyn Fn(usize, usize)) -> Result<Vec<String>> {
+fn read_system(request: &Request, on_page: &dyn Fn(usize, usize)) -> Result<OcrPages> {
     use crate::processing::windows_ocr;
     match request.kind {
         FileKind::Pdf => windows_ocr::ocr_pdf_pages(&request.path, request.system_dpi, on_page),
-        FileKind::Image => Ok(vec![windows_ocr::ocr_image(&request.path)?]),
+        FileKind::Image => Ok(OcrPages {
+            texts: vec![windows_ocr::ocr_image(&request.path)?],
+            failed: Vec::new(),
+        }),
     }
 }
 
 #[cfg(not(windows))]
-fn read_system(_request: &Request, _on_page: &dyn Fn(usize, usize)) -> Result<Vec<String>> {
+fn read_system(_request: &Request, _on_page: &dyn Fn(usize, usize)) -> Result<OcrPages> {
     bail!("the system OCR exists only on Windows")
 }
 
@@ -423,7 +436,8 @@ impl OcrWorker {
 
     /// Reads the file at `path` in the child with `engine`; the text of each
     /// page in order (one for an image). `on_page` is called before each
-    /// page of a PDF.
+    /// page of a PDF. A page that could not be read reads as empty
+    /// ([`Self::read_pages`] says which).
     pub fn read(
         &self,
         kind: FileKind,
@@ -433,6 +447,20 @@ impl OcrWorker {
         system_dpi: Option<u32>,
         on_page: &dyn Fn(usize, usize),
     ) -> Result<Vec<String>> {
+        self.read_pages(kind, path, engine, dpi, system_dpi, on_page)
+            .map(|pages_read| pages_read.texts)
+    }
+
+    /// [`Self::read`], with the pages that could not be read.
+    pub fn read_pages(
+        &self,
+        kind: FileKind,
+        path: &Path,
+        engine: WorkerEngine,
+        dpi: u32,
+        system_dpi: Option<u32>,
+        on_page: &dyn Fn(usize, usize),
+    ) -> Result<OcrPages> {
         let model_dir = match engine {
             WorkerEngine::PpOcr => {
                 Some(self.model_dir().context("the OCR model is not installed")?)
@@ -488,7 +516,7 @@ impl OcrWorker {
         state: &mut State,
         id: u64,
         on_page: &dyn Fn(usize, usize),
-    ) -> Result<Vec<String>> {
+    ) -> Result<OcrPages> {
         loop {
             let running = state
                 .running
@@ -524,7 +552,16 @@ impl OcrWorker {
                     page,
                     pages,
                 }) if reply == id => on_page(page, pages),
-                Ok(Reply::Done { id: reply, pages }) if reply == id => return Ok(pages),
+                Ok(Reply::Done {
+                    id: reply,
+                    pages,
+                    failed_pages,
+                }) if reply == id => {
+                    return Ok(OcrPages {
+                        texts: pages,
+                        failed: failed_pages,
+                    })
+                }
                 Ok(Reply::Failed { id: reply, error }) if reply == id => {
                     return Err(anyhow!(error))
                 }
@@ -746,6 +783,22 @@ mod tests {
         })
         .unwrap();
         assert_eq!(page, r#"{"reply":"page","id":7,"page":2,"pages":9}"#);
+        // Failed pages cross to the parent; a reply without them reads as none.
+        let done = Reply::Done {
+            id: 7,
+            pages: vec!["one".to_string(), String::new()],
+            failed_pages: vec![2],
+        };
+        let line = serde_json::to_string(&done).unwrap();
+        assert_eq!(serde_json::from_str::<Reply>(&line).unwrap(), done);
+        assert_eq!(
+            serde_json::from_str::<Reply>(r#"{"reply":"done","id":7,"pages":["one"]}"#).unwrap(),
+            Reply::Done {
+                id: 7,
+                pages: vec!["one".to_string()],
+                failed_pages: Vec::new(),
+            }
+        );
     }
 
     /// The child's loop: progress and the result of each request, an error

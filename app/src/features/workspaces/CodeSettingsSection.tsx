@@ -11,9 +11,13 @@ export const APPROVAL_LEVELS: readonly { id: ApprovalLevel; label: string; hint:
   {
     id: 'autoApplyEdits',
     label: 'Auto-apply edits',
-    hint: "Edits and new files apply by themselves on the conversation's branch (Discard changes undoes them). Commands still ask.",
+    hint: "Edits and new files apply by themselves on the conversation's branch (Discard changes undoes them). Files git ignores, which Discard cannot restore, and files that can run programs (.vscode, .envrc, package.json, ...) still ask, and so do commands.",
   },
-  { id: 'trusted', label: 'Trusted', hint: 'Edits apply by themselves, and commands starting with one of the lines below run without asking.' },
+  {
+    id: 'trusted',
+    label: 'Trusted',
+    hint: 'As Auto-apply edits, and a command that is exactly one of the lines below runs without asking.',
+  },
 ];
 
 const linesOf = (text: string) => text.split('\n').map(l => l.trim()).filter(Boolean);
@@ -119,7 +123,7 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
               className={cn(TEXTAREA, 'font-mono text-[12.5px]')}
             />
             <p className="m-0 text-[12px] text-shodh-text-muted">
-              A command runs by itself when its words start with a line here and it has no ; | &amp; &gt; $ or backticks. Tests run code the assistant may have changed.
+              A command runs by itself only when it is exactly a line here, with nothing added, and has no ; | &amp; &gt; $ or backticks. Tests still run code the assistant may have changed.
             </p>
           </div>
         )}

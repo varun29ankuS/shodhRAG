@@ -277,8 +277,9 @@ pub struct SkillInstaller {
     staged: Mutex<HashMap<String, Staged>>,
 }
 
-/// Run git with hooks, templates, symbolic links, prompts and local or
-/// `ext::` transports off. Returns stdout.
+/// Run git with hooks, the file system monitor, the untracked cache,
+/// templates, symbolic links, prompts and local or `ext::` transports off.
+/// Returns stdout.
 async fn git(dest: &Path, args: &[&str]) -> Result<String, String> {
     let hooks = dest.with_extension("nohooks");
     let mut command = tokio::process::Command::new("git");
@@ -286,6 +287,10 @@ async fn git(dest: &Path, args: &[&str]) -> Result<String, String> {
         .arg("-c")
         .arg(format!("core.hooksPath={}", hooks.display()))
         .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
             "-c",
             "core.symlinks=false",
             "-c",

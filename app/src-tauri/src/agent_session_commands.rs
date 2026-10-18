@@ -2061,6 +2061,15 @@ pub async fn agent_send(
         passages_block.as_deref(),
         memory_turn.as_ref().map(|t| t.note.as_str()),
     );
+    // What the web tools may send away unasked: only the user's own words, and only
+    // while the session has seen nothing private (memories, instructions, carried
+    // passages, the replayed conversation, a side thread's composed message).
+    scope.own_words = own_words.map(str::to_string);
+    scope.private_context = memories.is_some()
+        || workspace_block.is_some()
+        || passages_block.is_some()
+        || entry.parent_conversation_id.is_some()
+        || (replay && history.as_ref().is_some_and(|h| !h.is_empty()));
     let scoped = !scope.is_empty();
     // Registered before prompting: the run id is `request_id`, and the first events may
     // arrive before `prompt_scoped` returns.
@@ -2185,18 +2194,25 @@ pub async fn agent_abort(
     Ok(session.abort().await?)
 }
 
-/// Approve or decline a pending write/destructive step.
+/// Approve or decline a pending write/destructive step. `for_conversation`
+/// approves it and gives the yes its prompt offered (`allowForConversation`)
+/// for the rest of the session; a prompt that offered none is not approved.
 #[tauri::command]
 pub async fn agent_approve(
     session_id: String,
     step_id: String,
     approved: bool,
+    for_conversation: Option<bool>,
     app: AppHandle,
     sessions: State<'_, AgentSessions>,
 ) -> CommandResult<()> {
     check_id("step id", &step_id)?;
     let session = sessions.get(&session_id)?;
-    session.approve(&step_id, approved)?;
+    if approved && for_conversation == Some(true) {
+        session.approve_for_conversation(&step_id)?;
+    } else {
+        session.approve(&step_id, approved)?;
+    }
     // Answered here (the chat or the Inbox): the Inbox item is done with.
     inbox_commands::resolve(&app, inbox_commands::approval_id(&session_id, &step_id)).await;
     Ok(())

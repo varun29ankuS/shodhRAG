@@ -84,6 +84,11 @@ pub trait AgentHarness: Send + Sync {
     /// Resolve a pending approval.
     fn approve(&self, step_id: &str, approved: bool) -> Result<(), HarnessError>;
 
+    /// Approve a pending step and give the yes its prompt offered
+    /// (`allowForConversation`) for the rest of this session: kept in memory
+    /// only, and audited. Returns what was allowed.
+    fn approve_for_conversation(&self, step_id: &str) -> Result<String, HarnessError>;
+
     /// Stop the sidecar. Idempotent.
     async fn shutdown(&self);
 }

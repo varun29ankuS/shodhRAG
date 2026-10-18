@@ -42,7 +42,7 @@ interface TranscriptProps {
   hits: readonly SearchHit[];
   activeCitation?: number | null;
   onOpenCitation: (hit: SearchHit, trigger: HTMLElement) => void;
-  onDecide?: (stepId: string, approved: boolean) => void;
+  onDecide?: (stepId: string, approved: boolean, forConversation?: boolean) => void;
   onRuntimeInstalled: () => void;
   onOpenSettings: () => void;
   artifacts?: any[];

@@ -232,6 +232,15 @@ fn guard_requests_are_recognised_only_for_change_tools() {
     assert_eq!(request.tool_call_id, "call-1");
     assert_eq!(request.tool, "edit");
     assert_eq!(request.input["path"], "a.rs");
+    assert_eq!(request.target, None);
+    let with_target =
+        r#"{"toolCallId":"call-1","tool":"write","input":{"path":"a.rs"},"target":"/code/a.rs"}"#;
+    assert_eq!(
+        parse_guard_request("ui-1", Some(APPROVAL_TITLE), Some(with_target))
+            .unwrap()
+            .target,
+        Some(PathBuf::from("/code/a.rs"))
+    );
 
     assert_eq!(
         parse_guard_request("ui-1", Some("Confirm"), Some(payload)),
@@ -356,10 +365,12 @@ fn approvals_show_what_will_change_and_how_to_undo_it() {
         tool_call_id: "call".into(),
         tool: tool.into(),
         input,
+        target: None,
     };
     let bash = approval_for(
         &request("bash", json!({"command": "cargo test"})),
         Some("On branch shodh/1"),
+        ChangeTarget::Unknown,
     );
     assert_eq!(bash.label, "Run: cargo test");
     assert_eq!(bash.tier, RiskTier::Write);
@@ -370,6 +381,7 @@ fn approvals_show_what_will_change_and_how_to_undo_it() {
     let wipe = approval_for(
         &request("bash", json!({"command": "git reset --hard", "cwd": "sub"})),
         None,
+        ChangeTarget::Unknown,
     );
     assert_eq!(wipe.tier, RiskTier::Destructive);
     assert_eq!(wipe.preview["warning"], "Discards uncommitted changes.");
@@ -380,8 +392,11 @@ fn approvals_show_what_will_change_and_how_to_undo_it() {
     let write = approval_for(
         &request("write", json!({"path": "src/new.rs", "content": long})),
         None,
+        ChangeTarget::Plain,
     );
     assert_eq!(write.label, "Write src/new.rs");
+    assert_eq!(write.tier, RiskTier::Write);
+    assert!(write.preview.get("warning").is_none());
     let content = write.preview["content"].as_str().unwrap();
     assert!(content.ends_with("(3000 more characters)"), "{content}");
 
@@ -391,11 +406,356 @@ fn approvals_show_what_will_change_and_how_to_undo_it() {
             json!({"path": "src/lib.rs", "old_string": "a", "new_string": "b", "replace_all": true}),
         ),
         None,
+        ChangeTarget::Plain,
     );
     assert_eq!(edit.label, "Edit src/lib.rs");
     assert_eq!(edit.preview["replace"], "a");
     assert_eq!(edit.preview["with"], "b");
     assert_eq!(edit.preview["every_match"], true);
+
+    // A file that can run programs: destructive, with the reason.
+    let risky = approval_for(
+        &request("write", json!({"path": ".envrc", "content": "x"})),
+        Some(UNTRACKED_UNDO),
+        ChangeTarget::RunsPrograms {
+            risk: "direnv runs .envrc in the shell before each command.",
+            untracked: true,
+        },
+    );
+    assert_eq!(risky.tier, RiskTier::Destructive);
+    assert!(risky.preview["warning"]
+        .as_str()
+        .unwrap()
+        .contains("direnv"));
+    assert_eq!(risky.preview["undo"], UNTRACKED_UNDO);
+}
+
+#[test]
+fn files_that_can_run_programs_are_recognised() {
+    for risky in [
+        ".git/config",
+        ".GIT/hooks/post-checkout",
+        "sub/.git/config",
+        ".vscode/tasks.json",
+        ".VSCode/settings.json",
+        "web/.vscode/tasks.json",
+        ".envrc",
+        "app/.envrc",
+        "mcp-arch.yaml",
+        ".github/workflows/ci.yml",
+        "package.json",
+        "app/Package.json",
+        ".cargo/config.toml",
+        "crates/x/.cargo/config",
+        ".npmrc",
+        ".husky/pre-commit",
+        "web/.githooks/post-checkout",
+        ".pre-commit-config.yaml",
+        "lefthook.yml",
+        "app/.lefthook.yaml",
+    ] {
+        assert!(execution_risk(Path::new(risky)).is_some(), "{risky}");
+    }
+    for plain in [
+        "src/lib.rs",
+        ".gitignore",
+        ".github/CODEOWNERS",
+        "docs/vscode.md",
+        "config.toml",
+        "package-lock.json.md",
+        "src/.vscode-notes",
+    ] {
+        assert_eq!(execution_risk(Path::new(plain)), None, "{plain}");
+    }
+}
+
+#[test]
+fn changes_are_classified_by_the_file_they_land_in() {
+    let dir = repo();
+    std::fs::write(dir.path().join(".gitignore"), ".env\nbuild/\n.envrc\n").unwrap();
+    git_ok(dir.path(), &["add", "--all"]);
+    git_ok(dir.path(), &["commit", "--quiet", "-m", "ignore"]);
+    let folder = CodeFolder::open(dir.path()).unwrap();
+    let root = folder.root();
+    let at = |path: Option<PathBuf>| GuardRequest {
+        target: path,
+        ..guarded("write", json!({"path": "x", "content": "x"}))
+    };
+    assert_eq!(
+        change_target(root, &at(Some(root.join("lib.rs"))), true),
+        ChangeTarget::Plain
+    );
+    assert_eq!(
+        change_target(root, &at(Some(root.join("src").join("new.rs"))), true),
+        ChangeTarget::Plain
+    );
+    // Ignored files are not in Discard's commit, existing or not.
+    assert_eq!(
+        change_target(root, &at(Some(root.join(".env"))), true),
+        ChangeTarget::Untracked
+    );
+    assert_eq!(
+        change_target(root, &at(Some(root.join("build").join("out.txt"))), true),
+        ChangeTarget::Untracked
+    );
+    // Outside git there is no Discard to promise; the plan asks anyway.
+    assert_eq!(
+        change_target(root, &at(Some(root.join(".env"))), false),
+        ChangeTarget::Plain
+    );
+    assert!(matches!(
+        change_target(root, &at(Some(root.join("package.json"))), true),
+        ChangeTarget::RunsPrograms {
+            untracked: false,
+            ..
+        }
+    ));
+    // A file that can run programs and that git ignores: both are said.
+    let envrc = change_target(root, &at(Some(root.join(".envrc"))), true);
+    assert!(matches!(
+        envrc,
+        ChangeTarget::RunsPrograms {
+            untracked: true,
+            ..
+        }
+    ));
+    assert!(envrc.untracked());
+    assert!(!ChangeTarget::Plain.untracked());
+    // A .gitignore decides what Discard restores: it always asks.
+    for rules in [root.join(".gitignore"), root.join("src").join(".GitIgnore")] {
+        assert_eq!(
+            change_target(root, &at(Some(rules.clone())), true),
+            ChangeTarget::IgnoreRules,
+            "{rules:?}"
+        );
+    }
+    // The repository's own hooks folder runs its files as programs.
+    git_ok(dir.path(), &["config", "core.hooksPath", "tools/hooks"]);
+    assert!(matches!(
+        change_target(
+            root,
+            &at(Some(root.join("tools").join("hooks").join("pre-push"))),
+            true
+        ),
+        ChangeTarget::RunsPrograms { .. }
+    ));
+    assert_eq!(
+        change_target(root, &at(Some(root.join("tools").join("x.rs"))), true),
+        ChangeTarget::Plain
+    );
+    // A file git includes as configuration (relative to the git folder).
+    std::fs::write(root.join("shared.gitconfig"), "[core]\n").unwrap();
+    git_ok(
+        dir.path(),
+        &["config", "include.path", "../shared.gitconfig"],
+    );
+    git_ok(
+        dir.path(),
+        &[
+            "config",
+            "includeIf.onbranch:main.path",
+            "../branch.gitconfig",
+        ],
+    );
+    for included in ["shared.gitconfig", "branch.gitconfig"] {
+        assert!(
+            matches!(
+                change_target(root, &at(Some(root.join(included))), true),
+                ChangeTarget::RunsPrograms { .. }
+            ),
+            "{included}"
+        );
+    }
+    assert_eq!(
+        change_target(root, &at(Some(root.join("tools").join("y.rs"))), true),
+        ChangeTarget::Plain
+    );
+    assert_eq!(
+        change_target(root, &at(Some(root.join(".git").join("config"))), true),
+        ChangeTarget::GitFolder
+    );
+    // No target, the folder itself, a path outside it or with `..`: unknown.
+    for unknown in [
+        None,
+        Some(root.to_path_buf()),
+        Some(root.parent().unwrap().join("x.rs")),
+        Some(root.join("..").join("x.rs")),
+    ] {
+        assert_eq!(
+            change_target(root, &at(unknown.clone()), true),
+            ChangeTarget::Unknown,
+            "{unknown:?}"
+        );
+    }
+}
+
+#[test]
+fn every_git_command_runs_without_hooks_monitor_or_untracked_cache() {
+    let command = git(Path::new("/code")).unwrap();
+    let args: Vec<String> = command
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let settings: Vec<&str> = args
+        .windows(2)
+        .filter(|pair| pair[0] == "-c")
+        .map(|pair| pair[1].as_str())
+        .collect();
+    assert!(settings.contains(&"core.fsmonitor=false"), "{args:?}");
+    assert!(settings.contains(&"core.untrackedCache=false"), "{args:?}");
+    let hooks = settings
+        .iter()
+        .find_map(|s| s.strip_prefix("core.hooksPath="))
+        .expect("a hooks path");
+    let hooks = Path::new(hooks);
+    assert!(hooks.is_dir());
+    assert_eq!(std::fs::read_dir(hooks).unwrap().count(), 0);
+}
+
+#[test]
+fn the_git_subcommand_is_found_after_global_options() {
+    assert_eq!(git_subcommand(&["status", "--porcelain"]), Some("status"));
+    assert_eq!(
+        git_subcommand(&["-c", "user.name=Shodh", "-c", "x=y", "commit", "-m", "m"]),
+        Some("commit")
+    );
+    assert_eq!(git_subcommand(&["-C", "dir", "add", "--all"]), Some("add"));
+    assert_eq!(git_subcommand(&["-c"]), Some("-c"));
+    assert_eq!(git_subcommand(&[]), None);
+}
+
+#[test]
+fn only_the_repositorys_own_filters_are_switched_off() {
+    let listed =
+        "filter.leak.clean\nfilter.leak.required\nfilter.a.b.process\nfilter.tree.smudge\n";
+    assert_eq!(repository_filter_names(listed), ["a.b", "leak", "tree"]);
+    assert!(repository_filter_names("").is_empty());
+    // Read from the repository's own config only: a filter there is listed.
+    let dir = repo();
+    git_ok(dir.path(), &["config", "filter.leak.clean", "cat"]);
+    let off = filters_off(dir.path()).unwrap();
+    assert!(off.contains(&"filter.leak.clean=".to_string()), "{off:?}");
+    assert!(
+        off.contains(&"filter.leak.required=false".to_string()),
+        "{off:?}"
+    );
+}
+
+#[test]
+fn a_status_git_cannot_give_is_reported_not_taken_for_changes() {
+    // What an old git says about an option it does not know.
+    let old = "error: unknown option `show-scope'".to_string();
+    let state = repo_state(Some("main".into()), Some("abc".into()), Err(old.clone()));
+    assert_eq!(state, GitState::Unreadable(old.clone()));
+    match plan_change(&state, None, "/code") {
+        ChangePlan::Refuse(reason) => {
+            assert!(reason.contains(&old), "{reason}");
+            assert!(!reason.contains("uncommitted"), "{reason}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert!(matches!(
+        repo_state(None, None, Err(" ".into())),
+        GitState::Unreadable(e) if e.contains("without saying why")
+    ));
+    assert_eq!(
+        repo_state(Some("main".into()), None, Ok(String::new())),
+        GitState::Repo {
+            branch: Some("main".into()),
+            head: None,
+            dirty: false
+        }
+    );
+}
+
+#[test]
+fn discard_restores_files_changed_without_asking_even_once_ignored() {
+    let dir = repo();
+    let folder = CodeFolder::open(dir.path()).unwrap();
+    let mut record = create_branch(&folder, "now").unwrap();
+    // A file written without asking, then hidden by a later .gitignore.
+    std::fs::write(dir.path().join("out.txt"), "agent\n").unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "out.txt\n").unwrap();
+    record.auto_applied = vec!["out.txt".to_string(), "gone.txt".to_string()];
+    discard_changes(&record).unwrap();
+    assert!(!dir.path().join("out.txt").exists());
+    assert!(!dir.path().join(".gitignore").exists());
+    let committed = git_ok(
+        dir.path(),
+        &["show", "--name-only", "--format=", &record.branch],
+    );
+    assert!(
+        committed.lines().any(|l| l.trim() == "out.txt"),
+        "{committed}"
+    );
+}
+
+/// Make `path` a script git can run as a hook or command.
+fn executable(path: &Path, script: &str) {
+    std::fs::write(path, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+#[test]
+fn files_in_the_folder_cannot_make_shodhs_git_run_programs() {
+    let dir = repo();
+    let marker = |name: &str| dir.path().join(name);
+    // Every way a repository can make `git status`, `add`, `commit` and
+    // `checkout` run a program: hooks, a file system monitor, a filter.
+    let hooks = dir.path().join(".git").join("hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    for hook in [
+        "post-checkout",
+        "post-commit",
+        "pre-commit",
+        "reference-transaction",
+    ] {
+        executable(
+            &hooks.join(hook),
+            &format!("#!/bin/sh\necho ran > \"$(git rev-parse --show-toplevel)/{hook}.ran\"\n"),
+        );
+    }
+    git_ok(
+        dir.path(),
+        &["config", "core.fsmonitor", "echo ran > fsmonitor.ran; true"],
+    );
+    git_ok(
+        dir.path(),
+        &["config", "filter.leak.clean", "echo ran > filter.ran; cat"],
+    );
+    git_ok(dir.path(), &["config", "filter.leak.smudge", "cat"]);
+    git_ok(dir.path(), &["config", "filter.leak.required", "true"]);
+    std::fs::write(dir.path().join(".gitattributes"), "*.txt filter=leak\n").unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "secret\n").unwrap();
+    git_ok(dir.path(), &["add", "--all"]);
+    git_ok(dir.path(), &["commit", "--quiet", "-m", "attributes"]);
+
+    let folder = CodeFolder::open(dir.path()).unwrap();
+    assert!(matches!(
+        git_state(folder.root()),
+        GitState::Repo { dirty: false, .. }
+    ));
+    let record = create_branch(&folder, "now").unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "changed\n").unwrap();
+    discard_changes(&record).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("notes.txt")).unwrap(),
+        "secret\n"
+    );
+    for name in [
+        "fsmonitor.ran",
+        "filter.ran",
+        "post-checkout.ran",
+        "post-commit.ran",
+        "pre-commit.ran",
+        "reference-transaction.ran",
+    ] {
+        assert!(!marker(name).exists(), "{name} ran");
+    }
 }
 
 fn branch(folder: &str, name: &str) -> CodeBranch {
@@ -405,6 +765,7 @@ fn branch(folder: &str, name: &str) -> CodeBranch {
         base: "main".into(),
         base_is_commit: false,
         created_at: "2026-10-07T00:00:00Z".into(),
+        auto_applied: Vec::new(),
     }
 }
 
@@ -571,24 +932,37 @@ fn guarded(tool: &str, input: Value) -> GuardRequest {
         tool_call_id: "call".into(),
         tool: tool.into(),
         input,
+        target: None,
     }
 }
 
 #[test]
-fn allowlisted_commands_match_whole_words_without_shell_tricks() {
+fn allowlisted_commands_match_exactly_without_shell_tricks() {
     let settings = CodeSettings {
         approval: ApprovalLevel::Trusted,
-        allowlist: vec!["cargo test".into(), "npm test".into(), "pytest".into()],
+        allowlist: vec![
+            "cargo test".into(),
+            "npm test".into(),
+            "pytest".into(),
+            "cargo test -p shodh-rag --lib".into(),
+        ],
     };
     for allowed in [
         "cargo test",
-        "cargo  test -p shodh-rag --lib",
-        "pytest tests/test_a.py -k slow",
-        "npm test",
+        "cargo  test",
+        " npm\ttest ",
+        "pytest",
+        "cargo test -p shodh-rag  --lib",
     ] {
         assert!(settings.allows(allowed), "{allowed}");
     }
     for refused in [
+        // Extra words can make a listed command run any program.
+        "cargo test --config build.rustc-wrapper=/tmp/x",
+        "npm test --script-shell=/tmp/x",
+        "pytest -p evil_plugin",
+        "pytest tests/test_a.py -k slow",
+        "cargo test -p shodh-rag",
         "cargo testx",
         "cargo",
         "cargo build",
@@ -637,32 +1011,67 @@ fn approval_levels_decide_what_runs_without_asking() {
     let continuing = ChangePlan::Continue(branch("/a", "shodh/1"));
     let refuse = ChangePlan::Refuse("dirty".into());
 
+    let plain = ChangeTarget::Plain;
+    let none = ChangeTarget::Unknown;
+
     let ask = level(ApprovalLevel::AskEveryTime);
     for request in [&edit, &write, &test] {
-        assert_eq!(auto_approval(&ask, request, &continuing), None);
+        assert_eq!(auto_approval(&ask, request, &continuing, plain), None);
     }
 
     let edits = level(ApprovalLevel::AutoApplyEdits);
-    assert!(auto_approval(&edits, &edit, &continuing).is_some());
-    assert!(auto_approval(&edits, &write, &ChangePlan::CreateBranch).is_some());
+    assert!(auto_approval(&edits, &edit, &continuing, plain).is_some());
+    assert!(auto_approval(&edits, &write, &ChangePlan::CreateBranch, plain).is_some());
     // Without git nothing can undo an edit, so it asks.
-    assert_eq!(auto_approval(&edits, &edit, &ChangePlan::NotRepo), None);
-    assert_eq!(auto_approval(&edits, &edit, &refuse), None);
-    assert_eq!(auto_approval(&edits, &test, &continuing), None);
+    assert_eq!(
+        auto_approval(&edits, &edit, &ChangePlan::NotRepo, plain),
+        None
+    );
+    assert_eq!(auto_approval(&edits, &edit, &refuse, plain), None);
+    assert_eq!(auto_approval(&edits, &test, &continuing, none), None);
+    // Files that can run programs, files Discard cannot restore and files
+    // the guard did not name always ask.
+    for target in [
+        ChangeTarget::RunsPrograms {
+            risk: "x",
+            untracked: false,
+        },
+        ChangeTarget::GitFolder,
+        ChangeTarget::Untracked,
+        ChangeTarget::Unknown,
+    ] {
+        for approval in [ApprovalLevel::AutoApplyEdits, ApprovalLevel::Trusted] {
+            assert_eq!(
+                auto_approval(&level_of(approval), &edit, &continuing, target),
+                None,
+                "{target:?}"
+            );
+        }
+    }
 
     let trusted = level(ApprovalLevel::Trusted);
-    assert!(auto_approval(&trusted, &edit, &continuing).is_some());
-    assert!(auto_approval(&trusted, &test, &continuing).is_some());
-    assert!(auto_approval(&trusted, &test, &ChangePlan::NotRepo).is_some());
-    assert_eq!(auto_approval(&trusted, &test, &refuse), None);
+    assert!(auto_approval(&trusted, &edit, &continuing, plain).is_some());
+    assert!(auto_approval(&trusted, &test, &continuing, none).is_some());
+    assert!(auto_approval(&trusted, &test, &ChangePlan::NotRepo, none).is_some());
+    assert_eq!(auto_approval(&trusted, &test, &refuse, none), None);
     // Destructive commands always ask, even when the user listed them.
-    assert_eq!(auto_approval(&trusted, &wipe, &continuing), None);
+    assert_eq!(auto_approval(&trusted, &wipe, &continuing, none), None);
     for approval in [
         ApprovalLevel::AskEveryTime,
         ApprovalLevel::AutoApplyEdits,
         ApprovalLevel::Trusted,
     ] {
-        assert_eq!(auto_approval(&level(approval), &delete, &continuing), None);
+        assert_eq!(
+            auto_approval(&level(approval), &delete, &continuing, none),
+            None
+        );
+    }
+}
+
+fn level_of(approval: ApprovalLevel) -> CodeSettings {
+    CodeSettings {
+        approval,
+        ..CodeSettings::default()
     }
 }
 

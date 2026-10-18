@@ -18,7 +18,7 @@ use super::client::{CallResult, McpClient, McpError, ToolInfo};
 use super::config::{Approval, Mode, ServerConfig};
 use crate::harness::events::RiskTier;
 use crate::harness::protocol::ToolLoadMode;
-use crate::harness::tools::{HostTool, ToolContext, ToolError, ToolOutput};
+use crate::harness::tools::{ApprovalPreview, HostTool, ToolContext, ToolError, ToolOutput};
 use crate::harness::truncate_chars;
 
 /// Separates the server and tool parts of a host tool name.
@@ -100,6 +100,9 @@ pub enum Verified {
     },
     /// Writes files or runs programs.
     Writes,
+    /// As [`Verified::Writes`], and runs programs the code folder names
+    /// (not the server's own): its approval prompt carries `warning`.
+    RunsFolderPrograms { warning: &'static str },
 }
 
 /// The verified classification of `tool` in `verified`, if listed.
@@ -115,7 +118,7 @@ pub fn verified_for(verified: &[(&str, Verified)], tool: &str) -> Option<Verifie
 pub fn effective_read_only(info: &ToolInfo, verified: Option<Verified>) -> bool {
     match verified {
         Some(Verified::ReadOnly | Verified::ReadOnlyUnless { .. }) => true,
-        Some(Verified::Writes) => false,
+        Some(Verified::Writes | Verified::RunsFolderPrograms { .. }) => false,
         None => info.read_only(),
     }
 }
@@ -132,6 +135,13 @@ pub struct McpTool {
     /// An argument that makes an otherwise automatic call ask (and the
     /// values it may have without asking).
     ask_when: Option<(&'static str, &'static [&'static str])>,
+    /// Shown on the approval prompt ([`Verified::RunsFolderPrograms`]).
+    warning: Option<&'static str>,
+    /// The call reaches nothing beyond the server: Shodh verified it
+    /// read-only, or the tool says it is closed-world. A server on this
+    /// computer can still reach the network. Otherwise a call asks once the
+    /// session has had private content it could carry away.
+    closed_world: bool,
     destructive: bool,
     load_mode: ToolLoadMode,
     caller: Arc<dyn McpCaller>,
@@ -193,6 +203,19 @@ impl HostTool for McpTool {
                 _ => true,
             })
         }))
+    }
+    async fn must_confirm_in(&self, args: &Value, ctx: &ToolContext) -> Result<bool, ToolError> {
+        Ok(self.must_confirm(args).await? || (!self.closed_world && ctx.private_content()))
+    }
+    async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
+        let mut details = args.clone();
+        if let (Some(warning), Some(map)) = (self.warning, details.as_object_mut()) {
+            map.insert("warning".to_string(), json!(warning));
+        }
+        Ok(ApprovalPreview {
+            label: None,
+            details,
+        })
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         ctx.progress(format!("Asking {}", self.server));
@@ -262,6 +285,14 @@ pub fn server_tools(
                 (Some(Verified::ReadOnlyUnless { arg, allowed }), None) => Some((arg, allowed)),
                 _ => None,
             };
+            let warning = match checked {
+                Some(Verified::RunsFolderPrograms { warning }) => Some(warning),
+                _ => None,
+            };
+            let closed_world = matches!(
+                checked,
+                Some(Verified::ReadOnly | Verified::ReadOnlyUnless { .. })
+            ) || info.closed_world();
             McpTool {
                 name,
                 label: truncate_chars(&format!("{}: {title}", server.name), 80),
@@ -271,6 +302,8 @@ pub fn server_tools(
                 tool: info.name.clone(),
                 approval: server.approval_for(&info.name, read_only, mode),
                 ask_when,
+                warning,
+                closed_world,
                 destructive: !read_only && info.destructive(),
                 load_mode,
                 caller: caller.clone(),
@@ -530,6 +563,100 @@ mod tests {
             .must_confirm(&json!({"baseline": "C:/elsewhere"}))
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn tools_that_run_the_folders_programs_say_so_when_they_ask() {
+        const VERIFIED: [(&str, Verified); 1] = [(
+            "snapshot",
+            Verified::RunsFolderPrograms {
+                warning: "Runs the folder's providers.",
+            },
+        )];
+        let fake: Arc<dyn McpCaller> = Arc::new(Fake {
+            calls: Mutex::default(),
+            reply: CallResult {
+                text: "ok".into(),
+                is_error: false,
+            },
+        });
+        let tools = server_tools(
+            &server(json!({})),
+            &[info("snapshot", Some(true)), info("explore", Some(true))],
+            fake,
+            ToolLoadMode::Essential,
+            Mode::Code,
+            &VERIFIED,
+            &mut HashSet::new(),
+        );
+        assert_eq!(tools[0].approval(), Approval::Ask);
+        let shown = tools[0].preview(&json!({"path": "."})).await.unwrap();
+        assert_eq!(shown.details["warning"], "Runs the folder's providers.");
+        assert_eq!(shown.details["path"], ".");
+        let plain = tools[1].preview(&json!({})).await.unwrap();
+        assert!(plain.details.get("warning").is_none());
+    }
+
+    #[tokio::test]
+    async fn open_world_tools_ask_once_the_session_has_private_content() {
+        const VERIFIED: [(&str, Verified); 1] = [("explore", Verified::ReadOnly)];
+        let fake: Arc<dyn McpCaller> = Arc::new(Fake {
+            calls: Mutex::default(),
+            reply: CallResult {
+                text: "ok".into(),
+                is_error: false,
+            },
+        });
+        let closed: ToolInfo = serde_json::from_value(json!({
+            "name": "local_lookup",
+            "inputSchema": {"type": "object"},
+            "annotations": {"readOnlyHint": true, "openWorldHint": false}
+        }))
+        .unwrap();
+        let tools = server_tools(
+            &server(json!({})),
+            &[info("lookup", Some(true)), info("explore", None), closed],
+            fake.clone(),
+            ToolLoadMode::Essential,
+            Mode::Code,
+            &VERIFIED,
+            &mut HashSet::new(),
+        );
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let passages = Arc::new(crate::harness::tools::RunPassages::new());
+        let ctx = ToolContext::new("run-1", "step-1", tx).with_run_passages(passages.clone());
+        let args = json!({"q": "x"});
+        for tool in &tools {
+            assert_eq!(tool.approval(), Approval::Auto, "{}", tool.tool());
+            assert!(!tool.must_confirm_in(&args, &ctx).await.unwrap());
+        }
+        passages.mark_private();
+        let asks: Vec<bool> = futures::future::join_all(
+            tools
+                .iter()
+                .map(|t| async { t.must_confirm_in(&args, &ctx).await.unwrap() }),
+        )
+        .await;
+        // An unverified stdio tool can send what it is given anywhere; a
+        // verified one and a closed-world one cannot.
+        assert_eq!(asks, [true, false, false]);
+
+        // A server on this computer can still reach the network.
+        let local = super::super::config::parse_server(
+            "local",
+            &json!({"url": "http://127.0.0.1:9000/mcp"}),
+        )
+        .unwrap();
+        let tools = server_tools(
+            &local,
+            &[info("lookup", Some(true))],
+            fake,
+            ToolLoadMode::Essential,
+            Mode::Code,
+            &[],
+            &mut HashSet::new(),
+        );
+        assert!(tools[0].must_confirm_in(&args, &ctx).await.unwrap());
     }
 
     #[tokio::test]

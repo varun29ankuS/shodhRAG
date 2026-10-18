@@ -21,7 +21,15 @@
 //! - Undo: before the first change of a session in a git repository the
 //!   session switches to a new branch `shodh/<id>` ([`plan_change`],
 //!   [`create_branch`]); "discard changes" commits the work on that branch
-//!   and returns to the original one ([`discard_changes`]).
+//!   and returns to the original one ([`discard_changes`]). Files git
+//!   ignores are not in that commit, so changes to them always ask
+//!   ([`change_target`]).
+//! - Files that can run programs by themselves (`.vscode/`, `.envrc`,
+//!   `package.json`, ...: [`execution_risk`]) always ask, with a warning;
+//!   the guard refuses edits and writes in `.git/`.
+//! - Shodh's own git commands run without hooks, the file system monitor or
+//!   content filters ([`git`], [`run_git`]), so files in the folder cannot
+//!   make them run programs.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -397,6 +405,9 @@ pub struct GuardRequest {
     pub tool_call_id: String,
     pub tool: String,
     pub input: Value,
+    /// The file an edit or write lands in, resolved by the guard exactly as
+    /// it checked it (`None` for commands, or when the guard sent none).
+    pub target: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -406,6 +417,8 @@ struct GuardPayload {
     tool: String,
     #[serde(default)]
     input: Value,
+    #[serde(default)]
+    target: Option<String>,
 }
 
 /// The guard's approval request, if `title`/`payload` are one. Only change
@@ -427,6 +440,10 @@ pub fn parse_guard_request(
         tool_call_id: parsed.tool_call_id,
         tool: parsed.tool,
         input: parsed.input,
+        target: parsed
+            .target
+            .filter(|t| !t.trim().is_empty())
+            .map(PathBuf::from),
     })
 }
 
@@ -442,8 +459,8 @@ pub enum ApprovalLevel {
     /// Edits and writes run by themselves while the conversation's branch is
     /// their undo; commands still ask.
     AutoApplyEdits,
-    /// As [`ApprovalLevel::AutoApplyEdits`], and commands matching the
-    /// allowlist run by themselves.
+    /// As [`ApprovalLevel::AutoApplyEdits`], and commands that are exactly
+    /// one of the allowlist's run by themselves.
     Trusted,
 }
 
@@ -461,7 +478,8 @@ pub const MAX_ALLOWLIST_CHARS: usize = 120;
 #[serde(rename_all = "camelCase", default)]
 pub struct CodeSettings {
     pub approval: ApprovalLevel,
-    /// Command prefixes that run without asking at [`ApprovalLevel::Trusted`].
+    /// Commands that run without asking at [`ApprovalLevel::Trusted`], each
+    /// exactly as listed (words separated by any whitespace).
     pub allowlist: Vec<String>,
 }
 
@@ -505,9 +523,11 @@ impl CodeSettings {
         self
     }
 
-    /// Whether `command` is one of the allowlisted commands: its words start
-    /// with an entry's words, and it has no shell special characters or
-    /// leading variable assignment that could make it run something else.
+    /// Whether `command` is one of the allowlisted commands: exactly an
+    /// entry's words, with no shell special characters or leading variable
+    /// assignment. Extra words are never allowed: flags such as
+    /// `--config build.rustc-wrapper=<program>` or `--script-shell=<program>`
+    /// make a test command run any program.
     pub fn allows(&self, command: &str) -> bool {
         if has_shell_special(command) {
             return false;
@@ -517,11 +537,8 @@ impl CodeSettings {
             return false;
         }
         self.allowlist.iter().any(|entry| {
-            let prefix: Vec<&str> = entry.split_whitespace().collect();
-            !prefix.is_empty()
-                && !has_shell_special(entry)
-                && words.len() >= prefix.len()
-                && words.iter().zip(&prefix).all(|(w, p)| w == p)
+            let listed: Vec<&str> = entry.split_whitespace().collect();
+            !listed.is_empty() && !has_shell_special(entry) && words == listed
         })
     }
 
@@ -558,17 +575,301 @@ impl CodeSettings {
     }
 }
 
+/// What Shodh knows about the file an edit or write lands in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeTarget {
+    /// A file inside the code folder that "Discard changes" can restore.
+    Plain,
+    /// A file whose change can run programs by itself ([`execution_risk`]);
+    /// `untracked` when git also ignores it.
+    RunsPrograms { risk: &'static str, untracked: bool },
+    /// A file of the repository's `.git` folder: never changed.
+    GitFolder,
+    /// A `.gitignore`: it decides what "Discard changes" can restore.
+    IgnoreRules,
+    /// A file git ignores: "Discard changes" does not restore it.
+    Untracked,
+    /// The file is unknown or outside the code folder (always asks).
+    Unknown,
+}
+
+impl ChangeTarget {
+    /// Whether git ignores the file, so "Discard changes" cannot restore it.
+    pub fn untracked(self) -> bool {
+        matches!(
+            self,
+            ChangeTarget::Untracked
+                | ChangeTarget::RunsPrograms {
+                    untracked: true,
+                    ..
+                }
+        )
+    }
+}
+
+const GIT_FOLDER_RISK: &str = "Changes git's own files, which can make git run programs.";
+
+/// The undo note of a change to a `.gitignore`.
+pub const IGNORE_RULES_UNDO: &str = "This changes which files git ignores, so \"Discard changes\" \
+     may not restore every file this conversation changed.";
+
+/// Why changing the file at `relative` (a path inside the code folder) can
+/// run programs without a command being approved, or `None`. Names are
+/// compared without case, the way Windows and macOS find files.
+pub fn execution_risk(relative: &Path) -> Option<&'static str> {
+    let parts: Vec<String> = relative
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(name) => Some(name.to_string_lossy().to_lowercase()),
+            _ => None,
+        })
+        .collect();
+    let name = parts.last().map(String::as_str).unwrap_or("");
+    let parent = parts
+        .len()
+        .checked_sub(2)
+        .and_then(|i| parts.get(i))
+        .map(String::as_str);
+    if parts.iter().any(|p| p == ".git") {
+        return Some(GIT_FOLDER_RISK);
+    }
+    if parts.iter().any(|p| p == ".vscode") {
+        return Some("Editor settings and tasks can run commands when the folder is opened.");
+    }
+    if parts.iter().any(|p| p == ".husky" || p == ".githooks") {
+        return Some("git hooks run programs on commits, checkouts and pushes.");
+    }
+    if parts.len() >= 3 && parts[0] == ".github" && parts[1] == "workflows" {
+        return Some("CI workflows run commands when the change is pushed.");
+    }
+    match name {
+        ".envrc" => Some("direnv runs .envrc in the shell before each command."),
+        "mcp-arch.yaml" | "mcp-arch.yml" => {
+            Some("enola runs the programs mcp-arch.yaml names when it builds a snapshot.")
+        }
+        "package.json" => Some("Its scripts run with npm commands, tests included."),
+        ".npmrc" => Some("npm settings can choose the program that runs scripts."),
+        ".pre-commit-config.yaml" | ".pre-commit-config.yml" => {
+            Some("pre-commit runs the hooks this file names on every commit.")
+        }
+        "lefthook.yml"
+        | "lefthook.yaml"
+        | ".lefthook.yml"
+        | ".lefthook.yaml"
+        | "lefthook-local.yml"
+        | "lefthook-local.yaml" => {
+            Some("lefthook runs the commands this file names on git events.")
+        }
+        "config" | "config.toml" if parent == Some(".cargo") => {
+            Some("Cargo settings can run programs with every cargo command.")
+        }
+        _ => None,
+    }
+}
+
+/// `target` relative to `root`, when it is inside it. Compared without
+/// case on Windows, where the guard and Rust may spell a folder differently.
+fn inside(root: &Path, target: &Path) -> Option<PathBuf> {
+    let mut rest = target.components();
+    for part in root.components() {
+        let next = rest.next()?;
+        let same = if cfg!(windows) {
+            part.as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&next.as_os_str().to_string_lossy())
+        } else {
+            part == next
+        };
+        if !same {
+            return None;
+        }
+    }
+    let relative: PathBuf = rest.collect();
+    (!relative.as_os_str().is_empty()
+        && relative
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_))))
+    .then_some(relative)
+}
+
+/// The file `request` changes, relative to `folder`, when the guard named
+/// one inside it.
+pub fn target_in_folder(folder: &Path, request: &GuardRequest) -> Option<PathBuf> {
+    request
+        .target
+        .as_deref()
+        .and_then(|target| inside(folder, target))
+}
+
+const HOOKS_PATH_RISK: &str =
+    "This is the repository's hooks folder (core.hooksPath): git runs its files as programs.";
+
+/// Classify the file `request` changes in `folder` (blocking: asks git
+/// whether it ignores the file, and where the repository keeps its hooks,
+/// when `in_repo`).
+pub fn change_target(folder: &Path, request: &GuardRequest, in_repo: bool) -> ChangeTarget {
+    let (Some(relative), Some(target)) =
+        (target_in_folder(folder, request), request.target.as_deref())
+    else {
+        return ChangeTarget::Unknown;
+    };
+    let mut risk = execution_risk(&relative);
+    if risk == Some(GIT_FOLDER_RISK) {
+        return ChangeTarget::GitFolder;
+    }
+    if in_repo && risk.is_none() {
+        // A hooks folder the repository configured, or one git cannot name.
+        let hooked = configured_hooks_dirs(folder).map_or(true, |dirs| {
+            dirs.iter()
+                .any(|dir| target == dir.as_path() || inside(dir, target).is_some())
+        });
+        if hooked {
+            risk = Some(HOOKS_PATH_RISK);
+        }
+    }
+    if in_repo && risk.is_none() {
+        // A file git reads as configuration (`include.path`), or any file
+        // when git cannot list them.
+        let included = configured_includes(folder).map_or(true, |files| {
+            files.iter().any(|file| same_path(file, target))
+        });
+        if included {
+            risk = Some(INCLUDED_CONFIG_RISK);
+        }
+    }
+    let untracked = in_repo && !matches!(git_takes_changes(folder, &relative), Ok(true));
+    let ignore_rules = relative
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case(".gitignore"));
+    match risk {
+        Some(risk) => ChangeTarget::RunsPrograms { risk, untracked },
+        None if untracked => ChangeTarget::Untracked,
+        None if ignore_rules => ChangeTarget::IgnoreRules,
+        None => ChangeTarget::Plain,
+    }
+}
+
+const INCLUDED_CONFIG_RISK: &str =
+    "git reads this file as configuration (include.path), which can make git run programs.";
+
+/// Whether `a` and `b` name the same path (without case on Windows).
+fn same_path(a: &Path, b: &Path) -> bool {
+    let (a, b): (Vec<_>, Vec<_>) = (a.components().collect(), b.components().collect());
+    a.len() == b.len()
+        && a.iter().zip(&b).all(|(x, y)| {
+            if cfg!(windows) {
+                x.as_os_str()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&y.as_os_str().to_string_lossy())
+            } else {
+                x == y
+            }
+        })
+}
+
+/// The files git's configuration includes (`include.path` and
+/// `includeIf.<condition>.path` in any config scope, read without Shodh's
+/// overrides), each in every place it may name: as given when absolute,
+/// else relative to the git folder (a repository config's base), the work
+/// tree and `folder`; `~/` against the home folder.
+fn configured_includes(folder: &Path) -> Result<Vec<PathBuf>, String> {
+    let listed = config_values(folder, &["--get-regexp", r"^include(if)?\."])?;
+    let top = PathBuf::from(run_git(folder, &["rev-parse", "--show-toplevel"])?);
+    let git_dir = PathBuf::from(run_git(folder, &["rev-parse", "--absolute-git-dir"])?);
+    let home = dirs::home_dir();
+    let mut files = Vec::new();
+    for line in listed.lines() {
+        let Some((key, value)) = line.split_once(' ') else {
+            continue;
+        };
+        let value = value.trim();
+        if !key.ends_with(".path") || value.is_empty() {
+            continue;
+        }
+        let bases: Vec<PathBuf> = if let Some(rest) = value.strip_prefix("~/") {
+            home.iter().map(|h| h.join(rest)).collect()
+        } else if Path::new(value).is_absolute() {
+            vec![PathBuf::from(value)]
+        } else {
+            [&git_dir, &top, &folder.to_path_buf()]
+                .iter()
+                .map(|base| base.join(value))
+                .collect()
+        };
+        for file in bases {
+            // A file that does not exist yet: its folder resolved, its name kept.
+            let resolved = std::fs::canonicalize(&file).ok().or_else(|| {
+                let name = file.file_name()?;
+                std::fs::canonicalize(file.parent()?)
+                    .ok()
+                    .map(|dir| dir.join(name))
+            });
+            files.push(resolved.map(strip_verbatim).unwrap_or(file));
+        }
+    }
+    Ok(files)
+}
+
+/// The hooks folders the repository holding `folder` configures
+/// (`core.hooksPath` in any of its config files, read without Shodh's own
+/// override), resolved against the work tree.
+fn configured_hooks_dirs(folder: &Path) -> Result<Vec<PathBuf>, String> {
+    let top = PathBuf::from(run_git(folder, &["rev-parse", "--show-toplevel"])?);
+    let values = config_values(folder, &["--get-all", "core.hooksPath"])?;
+    Ok(values
+        .lines()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            let dir = Path::new(value);
+            let dir = if dir.is_absolute() {
+                dir.to_path_buf()
+            } else {
+                top.join(dir)
+            };
+            std::fs::canonicalize(&dir)
+                .map(strip_verbatim)
+                .unwrap_or(dir)
+        })
+        .collect())
+}
+
+/// Whether "Discard changes" (`git add --all`) takes in a change to
+/// `relative`: true unless git ignores the file. `Err` when git cannot tell.
+fn git_takes_changes(folder: &Path, relative: &Path) -> Result<bool, String> {
+    let output = git(folder)?
+        .arg("check-ignore")
+        .arg("--quiet")
+        .arg("--")
+        .arg(relative)
+        .output()
+        .map_err(|e| format!("git could not be started: {e}"))?;
+    match output.status.code() {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
+        _ => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
+    }
+}
+
+/// The undo note of a change to a file git ignores.
+pub const UNTRACKED_UNDO: &str =
+    "This file is not tracked by git; this change cannot be undone by Discard.";
+
 /// Why a guarded call may run without asking under `settings`, or `None`
-/// when the user decides. Destructive commands always ask, and edits run by
-/// themselves only while a branch can undo them.
+/// when the user decides. Destructive commands always ask; edits run by
+/// themselves only while a branch can undo them, and only in files that
+/// cannot run programs (`target`, [`change_target`]).
 pub fn auto_approval(
     settings: &CodeSettings,
     request: &GuardRequest,
     plan: &ChangePlan,
+    target: ChangeTarget,
 ) -> Option<&'static str> {
     let undoable = matches!(plan, ChangePlan::Continue(_) | ChangePlan::CreateBranch);
     match request.tool.as_str() {
-        "edit" | "write" => (undoable && settings.approval != ApprovalLevel::AskEveryTime)
+        "edit" | "write" => (undoable
+            && settings.approval != ApprovalLevel::AskEveryTime
+            && target == ChangeTarget::Plain)
             .then_some("the workspace applies edits automatically"),
         "bash" => {
             let command = str_arg(&request.input, "command");
@@ -617,15 +918,25 @@ fn str_arg<'a>(input: &'a Value, key: &str) -> &'a str {
 }
 
 /// The prompt for `request`. `undo` says what happens to the change if the
-/// user wants it back (a branch is created first, or nothing can undo it).
-pub fn approval_for(request: &GuardRequest, undo: Option<&str>) -> CodeApproval {
+/// user wants it back (a branch is created first, or nothing can undo it);
+/// `target` is the file an edit or write changes ([`change_target`]): one
+/// that can run programs makes the prompt destructive, with the reason.
+pub fn approval_for(
+    request: &GuardRequest,
+    undo: Option<&str>,
+    target: ChangeTarget,
+) -> CodeApproval {
     let input = &request.input;
+    let file_tier = match target {
+        ChangeTarget::RunsPrograms { .. } => RiskTier::Destructive,
+        _ => RiskTier::Write,
+    };
     let (label, tier, mut preview) = match request.tool.as_str() {
         "write" => {
             let path = str_arg(input, "path");
             (
                 format!("Write {}", one_line(path, MAX_LABEL_CHARS)),
-                RiskTier::Write,
+                file_tier,
                 json!({
                     "file": path,
                     "content": clipped(str_arg(input, "content"), MAX_PREVIEW_CHARS),
@@ -636,7 +947,7 @@ pub fn approval_for(request: &GuardRequest, undo: Option<&str>) -> CodeApproval 
             let path = str_arg(input, "path");
             (
                 format!("Edit {}", one_line(path, MAX_LABEL_CHARS)),
-                RiskTier::Write,
+                file_tier,
                 json!({
                     "file": path,
                     "replace": clipped(str_arg(input, "old_string"), MAX_PREVIEW_CHARS / 2),
@@ -668,8 +979,15 @@ pub fn approval_for(request: &GuardRequest, undo: Option<&str>) -> CodeApproval 
             )
         }
     };
-    if let (Some(undo), Some(map)) = (undo, preview.as_object_mut()) {
-        map.insert("undo".to_string(), json!(undo));
+    if let Some(map) = preview.as_object_mut() {
+        if let (ChangeTarget::RunsPrograms { risk, .. }, "edit" | "write") =
+            (target, request.tool.as_str())
+        {
+            map.insert("warning".to_string(), json!(risk));
+        }
+        if let Some(undo) = undo {
+            map.insert("undo".to_string(), json!(undo));
+        }
     }
     CodeApproval {
         label,
@@ -874,6 +1192,8 @@ pub enum GitState {
         /// Uncommitted changes, untracked files included.
         dirty: bool,
     },
+    /// A git repository whose state git could not report (its message).
+    Unreadable(String),
 }
 
 /// The branch a conversation's Code work happens on.
@@ -888,6 +1208,11 @@ pub struct CodeBranch {
     #[serde(default)]
     pub base_is_commit: bool,
     pub created_at: String,
+    /// Files edits and writes changed without asking, relative to the folder
+    /// (`/`-separated): "Discard changes" commits them even if a later
+    /// `.gitignore` change hid them from git.
+    #[serde(default)]
+    pub auto_applied: Vec<String>,
 }
 
 /// What must happen before a guarded change may run.
@@ -908,6 +1233,10 @@ pub enum ChangePlan {
 pub fn plan_change(state: &GitState, recorded: Option<&CodeBranch>, folder: &str) -> ChangePlan {
     match state {
         GitState::NotRepo => ChangePlan::NotRepo,
+        GitState::Unreadable(error) => ChangePlan::Refuse(format!(
+            "Shodh could not read the code folder's git state, so it changes nothing. \
+             git said: {error}"
+        )),
         GitState::Repo {
             branch,
             head,
@@ -937,11 +1266,88 @@ pub fn plan_change(state: &GitState, recorded: Option<&CodeBranch>, folder: &str
     }
 }
 
-fn git(folder: &Path) -> Command {
+/// The empty folder Shodh's git commands take their hooks from, so no hook
+/// of the repository (or of a `core.hooksPath` in its config) ever runs.
+/// Created on first use; `Err` when it cannot be, or has files in it.
+fn empty_hooks_dir() -> Result<PathBuf, String> {
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    let dir = DIR
+        .get_or_init(|| dirs::data_local_dir().map(|base| base.join("shodh").join("git-no-hooks")))
+        .clone()
+        .ok_or_else(|| "The app data folder for git is not known.".to_string())?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("{} could not be created: {e}", dir.display()))?;
+    let mut entries =
+        std::fs::read_dir(&dir).map_err(|e| format!("{} could not be read: {e}", dir.display()))?;
+    if entries.next().is_some() {
+        return Err(format!(
+            "{} must be empty (Shodh runs git without hooks); remove what is in it.",
+            dir.display()
+        ));
+    }
+    Ok(dir)
+}
+
+/// Configuration every git command of Shodh's runs with: no hooks, no file
+/// system monitor (a `core.fsmonitor` command in the repository's config
+/// runs on every `git status`) and no untracked cache.
+fn hardening(hooks: &Path) -> [String; 3] {
+    [
+        format!("core.hooksPath={}", hooks.display()),
+        "core.fsmonitor=false".to_string(),
+        "core.untrackedCache=false".to_string(),
+    ]
+}
+
+/// git in `folder` with [`hardening`]; [`run_git`] also switches content
+/// filters off.
+fn git(folder: &Path) -> Result<Command, String> {
+    let hooks = empty_hooks_dir()?;
+    let mut command = Command::new("git");
+    command.arg("-C").arg(folder);
+    for setting in hardening(&hooks) {
+        command.arg("-c").arg(setting);
+    }
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    Ok(command)
+}
+
+/// git commands that may pass file contents through the repository's clean
+/// or smudge filters (programs its config names).
+const FILTERED_COMMANDS: [&str; 4] = ["status", "add", "commit", "checkout"];
+
+/// The git subcommand of `args`: the first word after global `-c key=value`
+/// and `-C dir` options.
+fn git_subcommand<'a>(args: &[&'a str]) -> Option<&'a str> {
+    let mut rest = args;
+    while let [flag, _, tail @ ..] = rest {
+        if *flag != "-c" && *flag != "-C" {
+            break;
+        }
+        rest = tail;
+    }
+    rest.first().copied()
+}
+
+/// git config, read without Shodh's `-c` settings (reading config runs no
+/// program). Used only for `git config` reads.
+fn config_git(folder: &Path) -> Command {
     let mut command = Command::new("git");
     command
         .arg("-C")
         .arg(folder)
+        .arg("config")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(Stdio::null())
@@ -956,9 +1362,71 @@ fn git(folder: &Path) -> Command {
     command
 }
 
+/// `git config <args>`: its output, empty when nothing matched (exit 1),
+/// `Err` with git's message otherwise.
+fn config_values(folder: &Path, args: &[&str]) -> Result<String, String> {
+    let output = config_git(folder)
+        .args(args)
+        .output()
+        .map_err(|e| format!("git could not be started: {e}"))?;
+    match output.status.code() {
+        Some(0) => Ok(String::from_utf8_lossy(&output.stdout).into_owned()),
+        Some(1) => Ok(String::new()),
+        _ => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
+    }
+}
+
+/// The filter names in `git config --name-only --get-regexp '^filter\.'`
+/// output (`filter.<name>.<key>` per line).
+fn repository_filter_names(output: &str) -> Vec<String> {
+    let mut names: Vec<String> = output
+        .lines()
+        .filter_map(|key| key.trim().strip_prefix("filter."))
+        .filter_map(|rest| rest.rsplit_once('.').map(|(name, _)| name.to_string()))
+        .filter(|name| !name.is_empty())
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
+/// `-c` settings that switch off every content filter the repository's own
+/// config names (`.git/config` with its includes, and the work tree's config
+/// when `extensions.worktreeConfig` is on): an empty command is no filter,
+/// and a filter marked `required` would then fail the command. The user's
+/// and the system's filters (Git LFS) are theirs and keep working.
+fn filters_off(folder: &Path) -> Result<Vec<String>, String> {
+    const LIST: [&str; 4] = ["--includes", "--name-only", "--get-regexp", r"^filter\."];
+    let mut listed = config_values(folder, &[&["--local"][..], &LIST[..]].concat())?;
+    let worktree = config_values(
+        folder,
+        &["--local", "--bool", "--get", "extensions.worktreeConfig"],
+    )?;
+    if worktree.trim() == "true" {
+        listed.push_str(&config_values(
+            folder,
+            &[&["--worktree"][..], &LIST[..]].concat(),
+        )?);
+    }
+    let names = repository_filter_names(&listed);
+    Ok(names
+        .iter()
+        .flat_map(|name| {
+            ["clean=", "smudge=", "process=", "required=false"]
+                .map(|setting| format!("filter.{name}.{setting}"))
+        })
+        .collect())
+}
+
 /// Run git; `Ok(stdout)` on success, `Err(stderr)` otherwise.
 fn run_git(folder: &Path, args: &[&str]) -> Result<String, String> {
-    let output = git(folder)
+    let mut command = git(folder)?;
+    if git_subcommand(args).is_some_and(|a| FILTERED_COMMANDS.contains(&a)) {
+        for setting in filters_off(folder)? {
+            command.arg("-c").arg(setting);
+        }
+    }
+    let output = command
         .args(args)
         .output()
         .map_err(|e| format!("git could not be started: {e}"))?;
@@ -982,17 +1450,31 @@ pub fn git_state(folder: &Path) -> GitState {
     }
     let branch = run_git(folder, &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok();
     let head = run_git(folder, &["rev-parse", "--verify", "--quiet", "HEAD"]).ok();
-    let dirty = run_git(
+    let status = run_git(
         folder,
         &["status", "--porcelain", "--untracked-files=normal"],
-    )
-    .map(|out| !out.is_empty())
-    // Unknown status counts as dirty: never risk mixing changes.
-    .unwrap_or(true);
-    GitState::Repo {
-        branch,
-        head,
-        dirty,
+    );
+    repo_state(branch, head, status)
+}
+
+/// The state of a repository from its branch, HEAD and `git status`
+/// output. A status git could not give is reported as such, never guessed.
+fn repo_state(
+    branch: Option<String>,
+    head: Option<String>,
+    status: Result<String, String>,
+) -> GitState {
+    match status {
+        Ok(out) => GitState::Repo {
+            branch,
+            head,
+            dirty: !out.is_empty(),
+        },
+        Err(e) => GitState::Unreadable(if e.trim().is_empty() {
+            "git status failed without saying why".to_string()
+        } else {
+            e
+        }),
     }
 }
 
@@ -1085,6 +1567,7 @@ pub fn create_branch(folder: &CodeFolder, now_rfc3339: &str) -> Result<CodeBranc
         base,
         base_is_commit,
         created_at: now_rfc3339.to_string(),
+        auto_applied: Vec::new(),
     })
 }
 
@@ -1098,10 +1581,29 @@ pub fn discard_changes(record: &CodeBranch) -> Result<(), String> {
             dirty,
             ..
         } if current == record.branch => {
+            // Files changed without asking go into the commit even when git
+            // now ignores them, so checking out the base removes or restores
+            // them like every other change.
+            let auto: Vec<&str> = record
+                .auto_applied
+                .iter()
+                .map(String::as_str)
+                .filter(|p| root.join(p).symlink_metadata().is_ok())
+                .collect();
+            let dirty = if auto.is_empty() {
+                dirty
+            } else {
+                let mut add = vec!["add", "--force", "--"];
+                add.extend(&auto);
+                run_git(root, &add)?;
+                !run_git(root, &["status", "--porcelain", "--untracked-files=normal"])?.is_empty()
+            };
             if dirty {
                 run_git(root, &["add", "--all"])?;
-                // A snapshot of the agent's work on its own branch: the user's
-                // commit hooks and signing do not apply to it.
+                // A snapshot of the agent's work on its own branch. No hook
+                // runs (`--no-verify` alone skips only pre-commit and
+                // commit-msg; [`git`] points hooks at an empty folder), and
+                // it is not signed.
                 run_git(
                     root,
                     &[
@@ -1138,6 +1640,10 @@ pub fn discard_changes(record: &CodeBranch) -> Result<(), String> {
             record.branch
         )),
         GitState::NotRepo => Err("The code folder is no longer a git repository.".to_string()),
+        GitState::Unreadable(error) => Err(format!(
+            "Shodh could not read the code folder's git state, so nothing was changed. \
+             git said: {error}"
+        )),
     }
 }
 

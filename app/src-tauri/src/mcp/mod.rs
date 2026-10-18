@@ -62,20 +62,8 @@ pub fn is_valid_workspace_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// Whether a URL's host is this computer.
-pub fn is_loopback_url(url: &str) -> bool {
-    url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
-        .is_some_and(|host| {
-            host == "localhost"
-                || host == "[::1]"
-                || host == "::1"
-                || host
-                    .parse::<std::net::Ipv4Addr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-        })
-}
+/// Whether a URL's host is this computer (one check for the whole app).
+pub use shodh_rag::harness::catalog_fetch::is_loopback_url;
 
 /// A running server and the tools it listed.
 struct Live {

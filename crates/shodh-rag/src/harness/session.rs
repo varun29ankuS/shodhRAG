@@ -27,9 +27,10 @@ use tokio::task::AbortHandle;
 use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 
 use super::code_mode::{
-    approval_for, auto_approval, code_catalog, create_branch, git_state, inventory_matches,
-    parse_guard_request, plan_change, ApprovalLevel, ChangePlan, CodeBranch, CodeBranchStore,
-    CodeFolder, CodeSettings, GuardRequest, ALLOW_ANSWER, CODE_TOOLS, GUARD_COMMAND,
+    approval_for, auto_approval, change_target, code_catalog, create_branch, git_state,
+    inventory_matches, parse_guard_request, plan_change, target_in_folder, ApprovalLevel,
+    ChangePlan, ChangeTarget, CodeBranch, CodeBranchStore, CodeFolder, CodeSettings, GuardRequest,
+    ALLOW_ANSWER, CODE_TOOLS, GUARD_COMMAND, IGNORE_RULES_UNDO, UNTRACKED_UNDO,
 };
 use super::error::HarnessError;
 use super::events::{
@@ -154,6 +155,46 @@ impl CodeRuntime {
         })
         .await
         .unwrap_or_else(|e| ChangePlan::Refuse(format!("Checking the code folder failed: {e}")))
+    }
+
+    /// The file an edit or write of `request` lands in, classified
+    /// ([`change_target`]; git is asked off the runtime). Commands have none.
+    async fn target(&self, request: &GuardRequest, plan: &ChangePlan) -> ChangeTarget {
+        if !matches!(request.tool.as_str(), "edit" | "write") {
+            return ChangeTarget::Unknown;
+        }
+        let root = self.folder.root().to_path_buf();
+        let request = request.clone();
+        let in_repo = !matches!(plan, ChangePlan::NotRepo);
+        tokio::task::spawn_blocking(move || change_target(&root, &request, in_repo))
+            .await
+            .unwrap_or(ChangeTarget::Unknown)
+    }
+
+    /// Record that `request`'s file changed without asking, so "Discard
+    /// changes" commits it even if git later ignores it.
+    async fn remember_auto_applied(&self, request: &GuardRequest) -> Result<(), String> {
+        let relative = target_in_folder(self.folder.root(), request)
+            .ok_or_else(|| "the changed file is not known".to_string())?;
+        let relative = relative
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        let store = self.branches.clone();
+        let conversation = self.conversation_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut record = store
+                .get(&conversation)?
+                .ok_or_else(|| "the conversation has no branch".to_string())?;
+            if !record.auto_applied.contains(&relative) {
+                record.auto_applied.push(relative);
+                store.put(&conversation, record)?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| format!("recording the change did not finish: {e}"))?
     }
 
     /// Switch to a new branch and record it for the conversation.
@@ -565,7 +606,7 @@ impl Inner {
                     AuditEventType::Approval,
                     json!({
                         "tool": request.tool,
-                        "label": approval_for(request, None).label,
+                        "label": approval_for(request, None, ChangeTarget::Unknown).label,
                         "decision": "refused",
                         "who": SYSTEM_PRINCIPAL,
                         "reason": reason,
@@ -584,8 +625,32 @@ impl Inner {
                 "Not possible: the code folder is not a git repository.".to_string()
             }
         };
-        let approval = approval_for(request, Some(&undo));
-        if let Some(reason) = auto_approval(&code.settings(), request, &plan) {
+        let target = code.target(request, &plan).await;
+        if target == ChangeTarget::GitFolder {
+            let reason = "Code mode does not change files in the repository's .git folder.";
+            self.audit(
+                &run_id,
+                AuditEventType::Approval,
+                json!({
+                    "tool": request.tool,
+                    "label": approval_for(request, None, target).label,
+                    "decision": "refused",
+                    "who": SYSTEM_PRINCIPAL,
+                    "reason": reason,
+                }),
+            );
+            return Err(reason.to_string());
+        }
+        // An ignored file is not in the branch's commit: Discard cannot restore
+        // it. A .gitignore decides what the commit takes in.
+        let undo = match target {
+            _ if plan == ChangePlan::NotRepo => undo,
+            _ if target.untracked() => UNTRACKED_UNDO.to_string(),
+            ChangeTarget::IgnoreRules => IGNORE_RULES_UNDO.to_string(),
+            _ => undo,
+        };
+        let approval = approval_for(request, Some(&undo), target);
+        if let Some(reason) = auto_approval(&code.settings(), request, &plan, target) {
             self.audit(
                 &run_id,
                 AuditEventType::Approval,
@@ -604,6 +669,14 @@ impl Inner {
                     )
                 })?;
                 self.announce_branch(&run_id, &branch);
+            }
+            if matches!(request.tool.as_str(), "edit" | "write") {
+                code.remember_auto_applied(request).await.map_err(|e| {
+                    format!(
+                        "Shodh could not record the change for \"Discard changes\", so it was \
+                         not made: {e}"
+                    )
+                })?;
             }
             return Ok(());
         }
@@ -847,6 +920,12 @@ impl Inner {
             self.passages_in_run.reset();
             self.passages_in_run
                 .seed(&scope.carried, scope.carried_through);
+            // A message the app composed, or one carrying memories, history or
+            // instructions, is private content the web tools must not send
+            // away unasked; the session keeps that for its later runs.
+            if scope.private_context || scope.own_words.is_none() {
+                self.passages_in_run.mark_private();
+            }
             self.plan_in_run.reset();
             let question = scope
                 .question
@@ -1519,6 +1598,12 @@ impl OmpSession {
             })
             .collect();
 
+        // A Code session reads the user's code with omp's own tools, which no
+        // passage records: it holds private content from the start.
+        let passages_in_run = Arc::new(RunPassages::new());
+        if code.is_some() {
+            passages_in_run.mark_private();
+        }
         let inner = Arc::new(Inner {
             session_id: launch.session_id.clone(),
             model: launch.model.model_arg.clone(),
@@ -1546,7 +1631,7 @@ impl OmpSession {
             inflight: Mutex::new(HashMap::new()),
             calls_in_run: AtomicU32::new(0),
             tools_ok_in_run: Mutex::new(HashSet::new()),
-            passages_in_run: Arc::new(RunPassages::new()),
+            passages_in_run,
             plan_in_run: Arc::new(RunPlan::new()),
             grounding,
             grounding_run: Mutex::new(GroundingRun::default()),
@@ -1803,8 +1888,10 @@ impl AgentHarness for OmpSession {
             // answer (a workspace chat stays limited to the workspace's sources).
             None => {
                 let mut scope = RunScope::clone(&lock(&inner.scope));
-                // The steer text is this run's question, not the last one's.
+                // The steer text is this run's question, not the last one's,
+                // and the app has not said it is the user's own words.
                 scope.question = None;
+                scope.own_words = None;
                 inner.start_run(message, None, scope)
             }
         }
@@ -1839,6 +1926,31 @@ impl AgentHarness for OmpSession {
             .map_err(|_| HarnessError::NoPendingApproval(step_id.to_string()))?;
         tracing::info!(target: "shodh::audit", event = "approval", session = %self.inner.session_id, step_id, approved, "approval decision");
         Ok(())
+    }
+
+    fn approve_for_conversation(&self, step_id: &str) -> Result<String, HarnessError> {
+        let grant = self
+            .inner
+            .approvals
+            .resolve_for_session(step_id)
+            .map_err(|_| HarnessError::NoPendingApproval(step_id.to_string()))?;
+        let run_id = lock(&self.inner.state)
+            .active_run_id()
+            .map(str::to_string)
+            .unwrap_or_default();
+        self.inner.audit(
+            &run_id,
+            AuditEventType::Approval,
+            json!({
+                "step_id": step_id,
+                "decision": "allowed_for_conversation",
+                "grant": grant.label,
+                "key": grant.key,
+                "who": self.inner.principal(),
+            }),
+        );
+        tracing::info!(target: "shodh::audit", event = "approval", session = %self.inner.session_id, step_id, grant = %grant.key, "allowed for the conversation");
+        Ok(grant.label)
     }
 
     async fn shutdown(&self) {
@@ -3192,12 +3304,28 @@ mod tests {
         tool: &str,
         input: serde_json::Value,
     ) -> String {
+        guard_dialog_at(ui_id, tool_call_id, tool, input, None)
+    }
+
+    /// A guard request whose edit or write lands in `target` (as the guard
+    /// resolves it).
+    fn guard_dialog_at(
+        ui_id: &str,
+        tool_call_id: &str,
+        tool: &str,
+        input: serde_json::Value,
+        target: Option<&std::path::Path>,
+    ) -> String {
+        let mut request = json!({"toolCallId": tool_call_id, "tool": tool, "input": input});
+        if let Some(target) = target {
+            request["target"] = json!(target.display().to_string());
+        }
         json!({
             "type": "extension_ui_request",
             "id": ui_id,
             "method": "input",
             "title": "shodh-approval",
-            "placeholder": json!({"toolCallId": tool_call_id, "tool": tool, "input": input}).to_string(),
+            "placeholder": request.to_string(),
         })
         .to_string()
     }
@@ -3340,15 +3468,17 @@ mod tests {
         git(&["config", "user.email", "test@example.com"]);
         git(&["config", "commit.gpgsign", "false"]);
         std::fs::write(folder.path().join("lib.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(folder.path().join(".gitignore"), ".env\n").unwrap();
         git(&["add", "--all"]);
         git(&["commit", "--quiet", "-m", "first"]);
         CodeSettings {
             approval: ApprovalLevel::Trusted,
-            allowlist: vec!["cargo test".into()],
+            allowlist: vec!["cargo test -p app".into()],
         }
         .save(data.path())
         .unwrap();
         let code = code_runtime(folder.path(), data.path());
+        let root = code.folder.root().to_path_buf();
         let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
         inner
             .start_run("Fix the build", Some("run-1".into()), RunScope::default())
@@ -3357,17 +3487,25 @@ mod tests {
 
         // An allowlisted command and an edit run without a prompt; the edit
         // switches to the conversation's branch first.
-        for (n, tool, input) in [
-            ("1", "bash", json!({"command": "cargo test -p app"})),
+        let lib = root.join("lib.rs");
+        for (n, tool, input, target) in [
+            ("1", "bash", json!({"command": "cargo test -p app"}), None),
             (
                 "2",
                 "edit",
                 json!({"path": "lib.rs", "old_string": "a", "new_string": "b"}),
+                Some(lib.as_path()),
             ),
         ] {
             feed(
                 &inner,
-                &guard_dialog(&format!("ui-{n}"), &format!("call-{n}"), tool, input),
+                &guard_dialog_at(
+                    &format!("ui-{n}"),
+                    &format!("call-{n}"),
+                    tool,
+                    input,
+                    target,
+                ),
             );
             match next_frame(&mut out).await {
                 OutboundFrame::ExtensionUiResponse { id, value, .. } => {
@@ -3381,25 +3519,76 @@ mod tests {
         assert!(branch.branch.starts_with("shodh/"));
 
         // A destructive command asks even when it starts like an allowed one,
-        // and so does one that is not on the list.
-        for (n, command) in [("3", "cargo test; rm -rf src"), ("4", "cargo build")] {
+        // and so do one that is not on the list, one with more words than the
+        // listed one, an edit whose file can run programs, an edit of a file
+        // git ignores (Discard cannot restore it) and an edit the guard named
+        // no file for.
+        let changes = [
+            (
+                "3",
+                "bash",
+                json!({"command": "cargo test; rm -rf src"}),
+                None,
+            ),
+            ("4", "bash", json!({"command": "cargo build"}), None),
+            (
+                "5",
+                "bash",
+                json!({"command": "cargo test -p app --config build.rustc-wrapper=x"}),
+                None,
+            ),
+            (
+                "6",
+                "write",
+                json!({"path": "package.json", "content": "{}"}),
+                Some(root.join("package.json")),
+            ),
+            (
+                "7",
+                "write",
+                json!({"path": ".env", "content": "A=1"}),
+                Some(root.join(".env")),
+            ),
+            (
+                "8",
+                "edit",
+                json!({"path": "lib.rs", "old_string": "b", "new_string": "c"}),
+                None,
+            ),
+        ];
+        for (n, tool, input, target) in changes {
             feed(
                 &inner,
-                &guard_dialog(
+                &guard_dialog_at(
                     &format!("ui-{n}"),
                     &format!("call-{n}"),
-                    "bash",
-                    json!({ "command": command }),
+                    tool,
+                    input,
+                    target.as_deref(),
                 ),
             );
             let seen = events_until(&mut events, |e| {
                 matches!(e, AgentEvent::ApprovalRequested { .. })
             })
             .await;
-            assert!(matches!(
-                seen.last(),
-                Some(AgentEvent::ApprovalRequested { step_id, .. }) if *step_id == format!("call-{n}")
-            ));
+            match seen.last() {
+                Some(AgentEvent::ApprovalRequested {
+                    step_id,
+                    tier,
+                    preview,
+                    ..
+                }) => {
+                    assert_eq!(*step_id, format!("call-{n}"));
+                    if n == "6" {
+                        assert_eq!(*tier, RiskTier::Destructive);
+                        assert!(preview["warning"].as_str().unwrap().contains("npm"));
+                    }
+                    if n == "7" {
+                        assert_eq!(preview["undo"], UNTRACKED_UNDO);
+                    }
+                }
+                other => panic!("expected an approval prompt, got {other:?}"),
+            }
             inner
                 .approvals
                 .resolve(&format!("call-{n}"), false)

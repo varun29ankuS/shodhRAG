@@ -90,6 +90,8 @@ export function useConversations() {
   // window shows why until the user acknowledges it.
   const [loadFailure, setLoadFailure] = useState<LoadFailureNotice | null>(null);
   const [loadFailureSeen, setLoadFailureSeen] = useState(false);
+  // The saved conversations were read (or could not be): the list is final.
+  const [loaded, setLoaded] = useState(false);
   // A store that keeps refusing saves is reported once, not on every save.
   const [saveFailures] = useState(() => new FailureLatch());
   // One debounce timer per conversation (a save for conversation A must not
@@ -153,11 +155,12 @@ export function useConversations() {
     loadedRef.current = true;
 
     invoke<Conversation[]>('load_conversations')
-      .then((loaded) => {
+      .then((saved) => {
         markStartup('conversations-loaded');
-        if (loaded.length > 0) {
-          setList(loaded);
-          setActiveConversationId(loaded[0].id);
+        setLoaded(true);
+        if (saved.length > 0) {
+          setList(saved);
+          setActiveConversationId(saved[0].id);
         } else {
           const id = generateId();
           const now = new Date().toISOString();
@@ -176,6 +179,7 @@ export function useConversations() {
       })
       .catch((err) => {
         markStartup('conversations-loaded');
+        setLoaded(true);
         console.error('Failed to load conversations:', err);
         // Nothing may overwrite the file the history is still in: saving
         // stays paused for this session, and the window says so.
@@ -446,6 +450,8 @@ export function useConversations() {
 
   return {
     conversations,
+    /** The saved conversations were read (or failed to be): an empty view is not loading. */
+    loaded,
     /** Why the saved conversations could not be loaded (saving is paused); null when they loaded. */
     loadFailure,
     /** The user saw the load failure notice; saving stays paused. */

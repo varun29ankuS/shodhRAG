@@ -193,16 +193,27 @@ fn store(app: &AppHandle) -> Result<ConversationStore, String> {
 
 /// The saved conversations, pinned first, then most recently updated. Conversations saved
 /// with a legacy space are assigned to the workspace made from it first (once), so the UI
-/// reads and saves records that already carry their workspace.
+/// reads and saves records that already carry their workspace. Once that import is done,
+/// statements no workspace run can see are made global in the background
+/// ([`crate::workspace_commands::settle_statement_scopes`]).
 #[tauri::command]
 pub async fn load_conversations(
     app: AppHandle,
     workspaces: tauri::State<'_, crate::workspace_commands::WorkspaceState>,
     rag: tauri::State<'_, crate::rag_commands::RagState>,
+    memory: tauri::State<'_, crate::memory_commands::MemoryState>,
 ) -> Result<Vec<ConversationRecord>, String> {
     let dir = crate::profile::app_data_dir(&app)
         .map_err(|e| format!("Failed to get app data directory: {e}"))?;
-    match crate::workspace_commands::import_legacy_spaces(&workspaces, &dir, &rag.rag).await {
+    let imported =
+        crate::workspace_commands::import_legacy_spaces(&workspaces, &dir, &rag.rag).await;
+    if imported.is_ok() {
+        crate::workspace_commands::settle_statement_scopes_in_background(
+            workspaces.inner().clone(),
+            memory.inner().clone(),
+        );
+    }
+    match imported {
         Ok(0) => {}
         // Views that listed workspaces before the import refresh.
         Ok(_) => crate::workspace_commands::broadcast_change(&app, None),

@@ -243,6 +243,13 @@ impl HostEffects for TauriEffects {
         }
         // A reminder may have been set, moved or removed.
         crate::reminders::wake(&self.app);
+        // A reminder that rang for a task now done or deleted waits on nothing.
+        if let Some(id) = settled_reminder(&change) {
+            let app = self.app.clone();
+            tauri::async_runtime::spawn(async move {
+                crate::inbox_commands::resolve(&app, id).await;
+            });
+        }
     }
 
     /// Folder indexing takes minutes, so it runs in the background instead of
@@ -300,9 +307,50 @@ impl HostEffects for TauriEffects {
     }
 }
 
+/// The Inbox reminder a calendar change settles (`reminders::inbox_item` ids it
+/// `reminder:{task id}`): its task was completed or deleted.
+fn settled_reminder(change: &CalendarChange) -> Option<String> {
+    match change {
+        CalendarChange::TaskSaved(task) if task.status == "completed" => {
+            Some(format!("reminder:{}", task.id))
+        }
+        CalendarChange::TaskRemoved(id) => Some(format!("reminder:{id}")),
+        CalendarChange::TaskSaved(_)
+        | CalendarChange::EventSaved(_)
+        | CalendarChange::EventRemoved(_) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_done_or_deleted_task_settles_its_reminder() {
+        let task = |status: &str| {
+            serde_json::from_value::<crate::calendar_store::TodoItem>(json!({
+                "id": "t1", "title": "Read", "status": status,
+                "createdAt": "2026-10-01T00:00:00Z", "updatedAt": "2026-10-01T00:00:00Z"
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            settled_reminder(&CalendarChange::TaskSaved(task("completed"))),
+            Some("reminder:t1".to_string())
+        );
+        assert_eq!(
+            settled_reminder(&CalendarChange::TaskRemoved("t2".to_string())),
+            Some("reminder:t2".to_string())
+        );
+        assert_eq!(
+            settled_reminder(&CalendarChange::TaskSaved(task("pending"))),
+            None
+        );
+        assert_eq!(
+            settled_reminder(&CalendarChange::EventRemoved("e1".to_string())),
+            None
+        );
+    }
 
     #[test]
     fn library_events_name_the_source_and_what_was_removed() {

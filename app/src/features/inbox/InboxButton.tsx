@@ -12,6 +12,7 @@ import { parseTarget, publishTarget } from '../agent/navigation';
 import { announceApproval } from './approvalBus';
 import { normalizeViewTab } from '../../lib/viewTabs';
 import type { ViewTab } from '../../lib/viewTabs';
+import { requestSettingsSection } from '../memory/navigation';
 import {
   STATUS_LABEL,
   STATUS_TONE,
@@ -20,6 +21,7 @@ import {
   keepSelection,
   moveSelection,
   parseItems,
+  settingsSectionOf,
   waitingCount,
 } from './model';
 import type { InboxItem, PrimaryAction } from './model';
@@ -73,7 +75,12 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
 
   useEffect(() => {
     void load();
-    const unlisten = [listen('inbox-changed', () => void load()), listen('memory-suggestions-changed', () => void load())];
+    // A task done or deleted settles its reminder (`inbox_list` drops it).
+    const unlisten = [
+      listen('inbox-changed', () => void load()),
+      listen('memory-suggestions-changed', () => void load()),
+      listen('calendar-changed', () => void load()),
+    ];
     const openFromPalette = () => setOpen(true);
     window.addEventListener(OPEN_INBOX_EVENT, openFromPalette);
     return () => {
@@ -139,6 +146,8 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
       return;
     }
     if (target) publishTarget(target);
+    const section = settingsSectionOf(item);
+    if (section) requestSettingsSection(section);
     if (tab) onNavigate(tab);
   };
 

@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   answerScope,
+  deleteWorkspaceQuestion,
   groupChatsByWorkspace,
   lineDiff,
   orderTemplates,
@@ -148,4 +149,13 @@ test('paths are matched to folders across separators', () => {
   assert.ok(!pathWithin('C:/Docs/Thesis-old/a.pdf', 'C:/Docs/Thesis', true));
   assert.ok(!pathWithin('/home/a/Docs/x.pdf', '/home/a/docs', false));
   assert.ok(!pathWithin('/x', '', false));
+});
+
+test('deleting a workspace says its memories, snippets and results become global', () => {
+  const one = deleteWorkspaceQuestion('Thesis', 1);
+  assert.match(one, /^Delete the workspace “Thesis”\?/);
+  assert.match(one, /Its 1 chat moves to No workspace, and so do its tasks\./);
+  assert.match(one, /memories, snippets and results are kept and become global/);
+  assert.match(deleteWorkspaceQuestion('Thesis', 3), /Its 3 chats move to No workspace/);
+  assert.match(deleteWorkspaceQuestion('Thesis', 0), /Its 0 chats move to No workspace/);
 });

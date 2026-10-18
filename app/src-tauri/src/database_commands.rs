@@ -120,53 +120,6 @@ pub async fn get_database_stats(state: State<'_, RagState>) -> Result<DatabaseSt
     Ok(stats)
 }
 
-/// Clean up orphaned documents (documents not associated with any space)
-#[tauri::command]
-pub async fn cleanup_orphaned_documents(state: State<'_, RagState>) -> Result<String, String> {
-    tracing::info!("=== Cleaning up orphaned documents ===");
-
-    let rag_guard = state.rag.read().await;
-    let rag = &*rag_guard;
-
-    // List all documents by metadata (not search)
-    let all_docs = rag
-        .list_documents(None, 100000)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // Get all valid space IDs
-    let space_manager = state.space_manager.lock().map_err(|e| e.to_string())?;
-    let valid_space_ids: Vec<String> = space_manager
-        .get_spaces()
-        .map_err(|e| format!("Failed to get spaces: {}", e))?
-        .iter()
-        .map(|s| s.id.clone())
-        .collect();
-
-    let mut orphaned_count = 0;
-    for doc in all_docs.iter() {
-        // Check if document has a space_id that exists
-        if let Some(space_id) = doc.metadata.get("space_id") {
-            if !valid_space_ids.contains(space_id) {
-                orphaned_count += 1;
-                // Note: Need delete_document method in ComprehensiveRAG
-                tracing::info!(
-                    "Found orphaned document with invalid space_id: {}",
-                    space_id
-                );
-            }
-        } else {
-            orphaned_count += 1;
-            tracing::info!("Found orphaned document with no space_id");
-        }
-    }
-
-    Ok(format!(
-        "Found {} orphaned documents. Manual cleanup required for now.",
-        orphaned_count
-    ))
-}
-
 #[derive(serde::Serialize, Default)]
 pub struct DatabaseStats {
     pub total_spaces: usize,

@@ -59,6 +59,14 @@ export function parseItems(value: unknown): InboxItem[] {
   return Array.isArray(value) ? value.map(parseItem).filter((i): i is InboxItem => i !== null) : [];
 }
 
+/**
+ * The Settings section an item's "Open" shows, when its link goes to Settings: a
+ * memory suggestion is decided in Settings → Memory (the link names the view only).
+ */
+export function settingsSectionOf(item: Pick<InboxItem, 'kind' | 'link'>): 'memory' | null {
+  return item.kind === 'memory' && item.link?.view === 'settings' ? 'memory' : null;
+}
+
 export type PrimaryAction = 'approve' | 'accept' | 'install';
 
 /** `data.action` of the Install item that offers the scan reader (OCR model). */

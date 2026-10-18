@@ -50,9 +50,9 @@ pub use engine::{CallBudget, ConsolidationReport, Learner, TurnReport};
 pub use explicit::{memory_request, MemoryRequest};
 pub use extract::TurnInput;
 pub use inbox::{
-    rejection_reason, AppliedOutcome, Inbox, Proposal, ProposalAction, ProposalKind,
-    ProposalOrigin, ProposalStatus, ProposalView, Rejection, RejectionCount, RequestedOutcome,
-    StatusEvent, Undo, UsageToday,
+    rejection_reason, AppliedOutcome, ForgottenMemories, Inbox, Proposal, ProposalAction,
+    ProposalKind, ProposalOrigin, ProposalStatus, ProposalView, Rejection, RejectionCount,
+    RequestedOutcome, StatusEvent, Undo, UsageToday,
 };
 pub use sensitivity::SensitiveReason;
 

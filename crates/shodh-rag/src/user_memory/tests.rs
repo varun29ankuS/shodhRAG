@@ -717,3 +717,38 @@ async fn the_default_floor_separates_related_from_unrelated_questions_with_e5() 
         );
     }
 }
+
+#[tokio::test]
+async fn maintenance_purges_only_when_an_erase_waits_and_erases_old_forgets_once() {
+    let m = mem().await;
+    let lance = m.f.dir.path().join("lance_data");
+    let kept = m.note("Keep the wombatkettle", Scope::Global).await;
+    // Forgotten by a version before forgetting erased: soft-deleted only.
+    let old = m.note("The old dingoladder code", Scope::Global).await;
+    m.f.store.forget(&old).await.unwrap();
+
+    // The first start erases it once and purges the history.
+    let first = m.service.maintain().await.unwrap();
+    assert_eq!(first.legacy_erased, 1, "{first:?}");
+    assert!(first.purged);
+    assert!(crate::statements::testing::files_containing(&lance, "dingoladder").is_empty());
+    assert!(m.f.store.dynamics().get(&old).unwrap().is_none());
+    assert!(m.service.get(&kept).await.is_ok());
+
+    // Nothing waits: a later start compacts and prunes nothing.
+    let versions = m.f.store.table_versions().await.unwrap();
+    let again = m.service.maintain().await.unwrap();
+    assert_eq!(again, Maintenance::default(), "{again:?}");
+    assert_eq!(m.f.store.table_versions().await.unwrap(), versions);
+
+    // An erase whose purge never ran (the app closed first): the marker survives in
+    // shodh.db and the next start purges.
+    m.f.store.erase(&[kept.clone()]).await.unwrap();
+    assert!(m.f.store.purge_pending().unwrap());
+    assert!(!crate::statements::testing::files_containing(&lance, "wombatkettle").is_empty());
+    let after_crash = m.service.maintain().await.unwrap();
+    assert!(after_crash.purged && after_crash.legacy_erased == 0);
+    assert!(!m.f.store.purge_pending().unwrap());
+    assert!(crate::statements::testing::files_containing(&lance, "wombatkettle").is_empty());
+    assert_eq!(m.f.store.table_versions().await.unwrap().len(), 1);
+}

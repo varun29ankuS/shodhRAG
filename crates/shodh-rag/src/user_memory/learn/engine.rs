@@ -853,7 +853,11 @@ impl Learner {
             Err(LearnError::Memory(MemoryError::NotFound(missing))) => {
                 self.inbox
                     .restore_status(id, ProposalStatus::Undone, proposal.status)?;
-                self.inbox.forget_memories(&[missing], &[], self.now())?;
+                let forgotten = super::inbox::ForgottenMemories {
+                    ids: vec![missing],
+                    ..Default::default()
+                };
+                self.inbox.forget_memories(&forgotten, self.now())?;
                 Ok(self.inbox.get(id)?.into())
             }
             Err(e) => {

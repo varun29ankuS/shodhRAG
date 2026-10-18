@@ -246,6 +246,24 @@ impl std::fmt::Debug for MemoryService {
 
 const DEFAULT_LIST_LIMIT: usize = 500;
 
+/// `statement_state` key: the one-time erase of memories and snippets only soft-deleted
+/// by versions before forgetting erased them ran.
+const LEGACY_ERASE_KEY: &str = "legacy_forgotten_erased";
+/// `memory_learn_state` key: the one-time clearing of suggestions about memories
+/// forgotten before forgetting cleared suggestions ran.
+const SUGGESTION_SWEEP_KEY: &str = "forgotten_suggestions_cleared";
+
+/// What [`MemoryService::maintain`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Maintenance {
+    /// Memories and snippets only soft-deleted before, erased now (once).
+    pub legacy_erased: usize,
+    /// Suggestions cleared of memories forgotten before suggestions were cleared (once).
+    pub suggestions_cleared: usize,
+    /// Whether the statement table's history was purged.
+    pub purged: bool,
+}
+
 impl MemoryService {
     /// Memory over `store`, auditing to `audit` when given.
     pub fn new(
@@ -447,15 +465,26 @@ impl MemoryService {
             .filter(is_memory)
             .collect();
         let ids: Vec<String> = versions.iter().map(|v| v.id().to_string()).collect();
-        let turns: Vec<String> = versions
-            .iter()
-            .filter_map(turn_of)
-            .collect::<BTreeSet<String>>()
-            .into_iter()
-            .collect();
+        let distinct = |values: Vec<String>| -> Vec<String> {
+            values
+                .into_iter()
+                .collect::<BTreeSet<String>>()
+                .into_iter()
+                .collect()
+        };
+        let forgotten_memories = learn::ForgottenMemories {
+            ids: ids.clone(),
+            turns: distinct(versions.iter().filter_map(turn_of).collect()),
+            sources: distinct(
+                versions
+                    .iter()
+                    .filter_map(|v| v.statement.provenance.as_ref().map(|p| p.source.clone()))
+                    .collect(),
+            ),
+        };
         if let Some(inbox) = &self.inbox {
-            let (inbox, ids, now) = (inbox.clone(), ids.clone(), self.store.now());
-            tokio::task::spawn_blocking(move || inbox.forget_memories(&ids, &turns, now))
+            let (inbox, now) = (inbox.clone(), self.store.now());
+            tokio::task::spawn_blocking(move || inbox.forget_memories(&forgotten_memories, now))
                 .await
                 .map_err(|e| MemoryError::Statement(StatementError::Task(e.to_string())))?
                 .map_err(|e| MemoryError::Statement(StatementError::Sqlite(e.to_string())))?;
@@ -490,6 +519,85 @@ impl MemoryService {
             }),
         );
         Ok(forgotten)
+    }
+
+    /// Starts [`MemoryService::maintain`] in the background (when the memory opens), so
+    /// nothing waits for it. Failures are logged; the next start tries again.
+    pub fn start_maintenance(self: &Arc<Self>) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(target: "shodh::memory", "no runtime: memory maintenance skipped");
+            return;
+        };
+        let service = Arc::clone(self);
+        runtime.spawn(async move {
+            match service.maintain().await {
+                Ok(done) => {
+                    tracing::info!(target: "shodh::memory", legacy_erased = done.legacy_erased, suggestions_cleared = done.suggestions_cleared, purged = done.purged, "memory maintenance done")
+                }
+                Err(e) => {
+                    tracing::warn!(target: "shodh::memory", error = %e, "memory maintenance failed; the next start retries")
+                }
+            }
+        });
+    }
+
+    /// The cleanups that finish what forgetting started, for data an earlier run (or an
+    /// earlier version) left:
+    /// 1. once: memories and snippets only soft-deleted by versions before forgetting
+    ///    erased them are erased ([`StatementStore::erase_forgotten`]);
+    /// 2. once, with an inbox and an audit log: suggestions about memories forgotten before
+    ///    suggestions were cleared lose their words. The ids come from the audit log's
+    ///    `memory_forget` events (they always carried them); a forget whose event retention
+    ///    removed is cleared when the user presses Undo on its suggestion instead;
+    /// 3. the statement table's history is purged when an erase still waits for it (the
+    ///    marker [`StatementStore::purge_pending`], also set by a crash between an erase
+    ///    and its purge) or the one-time erase had not run before; otherwise nothing is
+    ///    compacted.
+    pub async fn maintain(&self) -> MemoryResult<Maintenance> {
+        let mut done = Maintenance::default();
+        let dynamics = self.store.dynamics().clone();
+        let legacy_ran = blocking({
+            let dynamics = dynamics.clone();
+            move || dynamics.state(LEGACY_ERASE_KEY)
+        })
+        .await?
+        .is_some();
+        if !legacy_ran {
+            done.legacy_erased = self
+                .store
+                .erase_forgotten(&memory_source_prefixes(), &[])
+                .await?
+                + self
+                    .store
+                    .erase_forgotten(&[], &[crate::research::snippets::SNIPPET_CLASS])
+                    .await?;
+            let at = self.store.now().to_rfc3339();
+            blocking(move || dynamics.set_state(LEGACY_ERASE_KEY, &at)).await?;
+        }
+        if let (Some(inbox), Some(log)) = (self.inbox.clone(), self.audit.clone()) {
+            let now = self.store.now();
+            done.suggestions_cleared =
+                tokio::task::spawn_blocking(move || -> learn::LearnResult<usize> {
+                    if inbox.state(SUGGESTION_SWEEP_KEY)?.is_some() {
+                        return Ok(0);
+                    }
+                    let forgotten = learn::ForgottenMemories {
+                        ids: forgotten_ids(&log)?,
+                        ..Default::default()
+                    };
+                    let cleared = inbox.forget_memories(&forgotten, now)?;
+                    inbox.set_state(SUGGESTION_SWEEP_KEY, &now.to_rfc3339())?;
+                    Ok(cleared)
+                })
+                .await
+                .map_err(|e| MemoryError::Statement(StatementError::Task(e.to_string())))?
+                .map_err(|e| MemoryError::Statement(StatementError::Sqlite(e.to_string())))?;
+        }
+        if !legacy_ran || self.store.purge_pending()? {
+            self.store.purge_history().await?;
+            done.purged = true;
+        }
+        Ok(done)
     }
 
     /// Whether the audit log still holds words of memory `id` (of any of its versions):
@@ -1121,6 +1229,36 @@ pub(crate) fn snippet(text: &str) -> String {
 /// (no hash: a short memory could be guessed from one).
 pub(crate) fn text_chars(text: &str) -> usize {
     text.chars().count()
+}
+
+/// Ids of every memory version a `memory_forget` event in `log` names.
+fn forgotten_ids(log: &AuditLog) -> Result<Vec<String>, crate::audit::AuditError> {
+    let mut ids = BTreeSet::new();
+    let mut offset = 0;
+    loop {
+        let rows = log.query(&AuditQuery {
+            types: vec![AuditEventType::MemoryForget],
+            limit: Some(1_000),
+            offset,
+            ..Default::default()
+        })?;
+        if rows.is_empty() {
+            break;
+        }
+        offset += u32::try_from(rows.len()).unwrap_or(u32::MAX);
+        for row in &rows {
+            let named = row.payload.get("ids").and_then(JsonValue::as_array);
+            ids.extend(
+                named
+                    .into_iter()
+                    .flatten()
+                    .chain(row.payload.get("id"))
+                    .filter_map(JsonValue::as_str)
+                    .map(str::to_string),
+            );
+        }
+    }
+    Ok(ids.into_iter().collect())
 }
 
 /// Whether `stored` is a memory (written by or for the user), not a statement extracted

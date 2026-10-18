@@ -137,10 +137,14 @@ impl MemoryState {
                 )
                 .await
                 .map_err(|e| format!("Opening memory failed: {e}"))?;
-                Ok(Arc::new(
+                let service = Arc::new(
                     MemoryService::new(Arc::new(store), deps.audit.clone(), APP_VERSION)
                         .with_inbox(Arc::new(inbox)),
-                ))
+                );
+                // Finishes what earlier runs left (erased rows still in the table's history,
+                // memories forgotten before forgetting erased everything), in the background.
+                service.start_maintenance();
+                Ok(service)
             })
             .await
             .cloned()

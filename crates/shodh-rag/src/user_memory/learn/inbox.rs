@@ -402,6 +402,10 @@ pub enum ProposalAction {
         at: DateTime<Utc>,
         /// Provenance source of the triggering memory.
         source: String,
+        /// The memory that triggered the revision (its reason may quote it). Suggestions
+        /// filed before it was recorded have none.
+        #[serde(default)]
+        trigger: Option<String>,
     },
     /// Link two memories that belong together.
     Link {
@@ -463,9 +467,12 @@ impl ProposalAction {
                 | Decision::Update { target } => vec![target.as_str()],
                 Decision::Historical { current } => vec![current.as_str()],
             },
-            ProposalAction::Revise { target, .. } | ProposalAction::Archive { target, .. } => {
-                vec![target.as_str()]
-            }
+            ProposalAction::Revise {
+                target, trigger, ..
+            } => std::iter::once(target.as_str())
+                .chain(trigger.as_deref())
+                .collect(),
+            ProposalAction::Archive { target, .. } => vec![target.as_str()],
             ProposalAction::Link { a, b, .. } => vec![a.as_str(), b.as_str()],
             ProposalAction::Resolve { keep, retire, .. } => vec![keep.as_str(), retire.as_str()],
         }
@@ -554,6 +561,17 @@ fn clear_changes(changes: &mut [super::ValueChange]) {
         change.from.clear();
         change.to.clear();
     }
+}
+
+/// What a forget erased, for [`Inbox::forget_memories`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ForgottenMemories {
+    /// The id of every version.
+    pub ids: Vec<String>,
+    /// The runs (turns) they were learned or approved in.
+    pub turns: Vec<String>,
+    /// Their provenance sources.
+    pub sources: Vec<String>,
 }
 
 /// How to undo an applied suggestion.
@@ -1378,22 +1396,27 @@ impl Inbox {
         Ok(())
     }
 
-    /// Forgets memories `ids` (every version of a forgotten memory) in the suggestions:
-    /// each suggestion that stored, superseded or is about one of them loses the memory's
-    /// words (texts, the quote "You said: ..." shows, values, reasons, the subject) and is
-    /// marked forgotten; waiting ones go stale, so they are neither shown nor applied. The rows stay (ids, class, the hashed fingerprint), so the same
-    /// suggestion is not made again. Why the learning model's answers about turns `turns`
-    /// (the turns the memories came from) were not used is deleted too: those excerpts may
-    /// quote the same words. Rejections without a turn are linked to no memory and stay
-    /// until they age out ([`REJECTION_LOG_DAYS`]). Deleted and overwritten content is
-    /// zeroed in the database file (`secure_delete`). Returns how many suggestions changed.
+    /// Forgets memories in the suggestions. Each suggestion that stored, superseded or is
+    /// about one of `forgotten.ids` (every version of a forgotten memory), or was
+    /// triggered by one, loses the memory's words (texts, the quote "You said: ..."
+    /// shows, values, reasons, the subject) and its fingerprint (a hash of the text, now
+    /// derived from the suggestion's id), and is marked forgotten; waiting ones go stale,
+    /// so they are neither shown nor applied. Waiting revisions filed before revisions
+    /// recorded their trigger are matched by the trigger's source instead
+    /// (`forgotten.sources`): every such revision from a memory of that source goes, as
+    /// the trigger cannot be told apart. The rows stay (ids, class), so "Recently learned"
+    /// can say what happened. Why the learning model's answers about the turns the
+    /// memories came from (`forgotten.turns`) were not used is deleted too: those excerpts
+    /// may quote the same words. Rejections without a turn are linked to no memory and
+    /// stay until they age out ([`REJECTION_LOG_DAYS`]). Deleted and overwritten content
+    /// is zeroed in the database file (`secure_delete`). Returns how many suggestions
+    /// changed.
     pub fn forget_memories(
         &self,
-        ids: &[String],
-        turns: &[String],
+        forgotten: &ForgottenMemories,
         now: DateTime<Utc>,
     ) -> LearnResult<usize> {
-        if ids.is_empty() && turns.is_empty() {
+        if forgotten.ids.is_empty() && forgotten.turns.is_empty() && forgotten.sources.is_empty() {
             return Ok(0);
         }
         let mut conn = self.lock();
@@ -1406,7 +1429,7 @@ impl Inbox {
                 "SELECT {COLUMNS} FROM memory_proposals
                  WHERE payload_json LIKE ?1 ESCAPE '!' OR outcome_json LIKE ?1 ESCAPE '!'"
             ))?;
-            for id in ids {
+            for id in &forgotten.ids {
                 let pattern = format!("%{}%", like_literal(id));
                 for proposal in stmt.query_map(params![pattern], read_proposal)? {
                     let proposal = proposal?;
@@ -1416,7 +1439,19 @@ impl Inbox {
                 }
             }
         }
-        let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        if !forgotten.sources.is_empty() {
+            let mut stmt = tx.prepare(&format!(
+                "SELECT {COLUMNS} FROM memory_proposals
+                 WHERE kind = 'revise' AND origin = 'evolve' AND status IN ('pending', 'failed')"
+            ))?;
+            for proposal in stmt.query_map([], read_proposal)? {
+                let proposal = proposal?;
+                if !candidates.iter().any(|c| c.id == proposal.id) {
+                    candidates.push(proposal);
+                }
+            }
+        }
+        let wanted: HashSet<&str> = forgotten.ids.iter().map(String::as_str).collect();
         let mut changed = 0;
         for proposal in &candidates {
             let about = proposal
@@ -1425,27 +1460,37 @@ impl Inbox {
                 .into_iter()
                 .chain(proposal.outcome.iter().flat_map(AppliedOutcome::memory_ids))
                 .any(|id| wanted.contains(id));
-            if !about {
+            let waiting = matches!(
+                proposal.status,
+                ProposalStatus::Pending | ProposalStatus::Failed
+            );
+            let untraced_revision = waiting
+                && matches!(
+                    &proposal.action,
+                    ProposalAction::Revise { trigger: None, source, .. }
+                        if forgotten.sources.contains(source)
+                );
+            if !about && !untraced_revision {
                 // The id only appears inside a text (a reason quoting it).
                 continue;
             }
             let payload = serde_json::to_string(&proposal.action.redacted())
                 .map_err(|e| LearnError::Database(e.to_string()))?;
-            let (status, decided_at) = match proposal.status {
-                ProposalStatus::Pending | ProposalStatus::Failed => {
-                    (ProposalStatus::Stale, Some(ts(now)))
-                }
-                other => (other, proposal.decided_at.map(ts)),
+            let (status, decided_at) = if waiting {
+                (ProposalStatus::Stale, Some(ts(now)))
+            } else {
+                (proposal.status, proposal.decided_at.map(ts))
             };
             tx.execute(
                 "UPDATE memory_proposals SET payload_json = ?1, status = ?2, decided_at = ?3,
-                    error = NULL, forgotten_at = COALESCE(forgotten_at, ?4)
+                    error = NULL, forgotten_at = COALESCE(forgotten_at, ?4),
+                    fingerprint = 'forgotten:' || id
                  WHERE id = ?5",
                 params![payload, status.as_str(), decided_at, ts(now), proposal.id],
             )?;
             changed += 1;
         }
-        for chunk in turns.chunks(400) {
+        for chunk in forgotten.turns.chunks(400) {
             let placeholders = vec!["?"; chunk.len()].join(", ");
             tx.execute(
                 &format!("DELETE FROM memory_learn_rejections WHERE turn_id IN ({placeholders})"),

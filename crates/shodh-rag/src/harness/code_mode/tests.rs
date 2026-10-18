@@ -448,6 +448,11 @@ fn files_that_can_run_programs_are_recognised() {
         ".cargo/config.toml",
         "crates/x/.cargo/config",
         ".npmrc",
+        ".husky/pre-commit",
+        "web/.githooks/post-checkout",
+        ".pre-commit-config.yaml",
+        "lefthook.yml",
+        "app/.lefthook.yaml",
     ] {
         assert!(execution_risk(Path::new(risky)).is_some(), "{risky}");
     }
@@ -516,6 +521,28 @@ fn changes_are_classified_by_the_file_they_land_in() {
     ));
     assert!(envrc.untracked());
     assert!(!ChangeTarget::Plain.untracked());
+    // A .gitignore decides what Discard restores: it always asks.
+    for rules in [root.join(".gitignore"), root.join("src").join(".GitIgnore")] {
+        assert_eq!(
+            change_target(root, &at(Some(rules.clone())), true),
+            ChangeTarget::IgnoreRules,
+            "{rules:?}"
+        );
+    }
+    // The repository's own hooks folder runs its files as programs.
+    git_ok(dir.path(), &["config", "core.hooksPath", "tools/hooks"]);
+    assert!(matches!(
+        change_target(
+            root,
+            &at(Some(root.join("tools").join("hooks").join("pre-push"))),
+            true
+        ),
+        ChangeTarget::RunsPrograms { .. }
+    ));
+    assert_eq!(
+        change_target(root, &at(Some(root.join("tools").join("x.rs"))), true),
+        ChangeTarget::Plain
+    );
     assert_eq!(
         change_target(root, &at(Some(root.join(".git").join("config"))), true),
         ChangeTarget::GitFolder
@@ -556,6 +583,48 @@ fn every_git_command_runs_without_hooks_monitor_or_untracked_cache() {
     let hooks = Path::new(hooks);
     assert!(hooks.is_dir());
     assert_eq!(std::fs::read_dir(hooks).unwrap().count(), 0);
+}
+
+#[test]
+fn the_git_subcommand_is_found_after_global_options() {
+    assert_eq!(git_subcommand(&["status", "--porcelain"]), Some("status"));
+    assert_eq!(
+        git_subcommand(&["-c", "user.name=Shodh", "-c", "x=y", "commit", "-m", "m"]),
+        Some("commit")
+    );
+    assert_eq!(git_subcommand(&["-C", "dir", "add", "--all"]), Some("add"));
+    assert_eq!(git_subcommand(&["-c"]), Some("-c"));
+    assert_eq!(git_subcommand(&[]), None);
+}
+
+#[test]
+fn only_the_repositorys_own_filters_are_switched_off() {
+    let listed = "global\tfilter.lfs.clean\nglobal\tfilter.lfs.process\nlocal\tfilter.leak.clean\n\
+                  worktree\tfilter.tree.smudge\nlocal\tfilter.a.b.process\ncommand\tfilter.c.clean\n";
+    assert_eq!(repository_filter_names(listed), ["a.b", "leak", "tree"]);
+    assert!(repository_filter_names("").is_empty());
+}
+
+#[test]
+fn discard_restores_files_changed_without_asking_even_once_ignored() {
+    let dir = repo();
+    let folder = CodeFolder::open(dir.path()).unwrap();
+    let mut record = create_branch(&folder, "now").unwrap();
+    // A file written without asking, then hidden by a later .gitignore.
+    std::fs::write(dir.path().join("out.txt"), "agent\n").unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "out.txt\n").unwrap();
+    record.auto_applied = vec!["out.txt".to_string(), "gone.txt".to_string()];
+    discard_changes(&record).unwrap();
+    assert!(!dir.path().join("out.txt").exists());
+    assert!(!dir.path().join(".gitignore").exists());
+    let committed = git_ok(
+        dir.path(),
+        &["show", "--name-only", "--format=", &record.branch],
+    );
+    assert!(
+        committed.lines().any(|l| l.trim() == "out.txt"),
+        "{committed}"
+    );
 }
 
 /// Make `path` a script git can run as a hook or command.
@@ -633,6 +702,7 @@ fn branch(folder: &str, name: &str) -> CodeBranch {
         base: "main".into(),
         base_is_commit: false,
         created_at: "2026-10-07T00:00:00Z".into(),
+        auto_applied: Vec::new(),
     }
 }
 

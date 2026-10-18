@@ -28,9 +28,9 @@ use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 
 use super::code_mode::{
     approval_for, auto_approval, change_target, code_catalog, create_branch, git_state,
-    inventory_matches, parse_guard_request, plan_change, ApprovalLevel, ChangePlan, ChangeTarget,
-    CodeBranch, CodeBranchStore, CodeFolder, CodeSettings, GuardRequest, ALLOW_ANSWER, CODE_TOOLS,
-    GUARD_COMMAND, UNTRACKED_UNDO,
+    inventory_matches, parse_guard_request, plan_change, target_in_folder, ApprovalLevel,
+    ChangePlan, ChangeTarget, CodeBranch, CodeBranchStore, CodeFolder, CodeSettings, GuardRequest,
+    ALLOW_ANSWER, CODE_TOOLS, GUARD_COMMAND, IGNORE_RULES_UNDO, UNTRACKED_UNDO,
 };
 use super::error::HarnessError;
 use super::events::{
@@ -169,6 +169,32 @@ impl CodeRuntime {
         tokio::task::spawn_blocking(move || change_target(&root, &request, in_repo))
             .await
             .unwrap_or(ChangeTarget::Unknown)
+    }
+
+    /// Record that `request`'s file changed without asking, so "Discard
+    /// changes" commits it even if git later ignores it.
+    async fn remember_auto_applied(&self, request: &GuardRequest) -> Result<(), String> {
+        let relative = target_in_folder(self.folder.root(), request)
+            .ok_or_else(|| "the changed file is not known".to_string())?;
+        let relative = relative
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        let store = self.branches.clone();
+        let conversation = self.conversation_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut record = store
+                .get(&conversation)?
+                .ok_or_else(|| "the conversation has no branch".to_string())?;
+            if !record.auto_applied.contains(&relative) {
+                record.auto_applied.push(relative);
+                store.put(&conversation, record)?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| format!("recording the change did not finish: {e}"))?
     }
 
     /// Switch to a new branch and record it for the conversation.
@@ -615,11 +641,13 @@ impl Inner {
             );
             return Err(reason.to_string());
         }
-        // An ignored file is not in the branch's commit: Discard cannot restore it.
-        let undo = if target.untracked() && plan != ChangePlan::NotRepo {
-            UNTRACKED_UNDO.to_string()
-        } else {
-            undo
+        // An ignored file is not in the branch's commit: Discard cannot restore
+        // it. A .gitignore decides what the commit takes in.
+        let undo = match target {
+            _ if plan == ChangePlan::NotRepo => undo,
+            _ if target.untracked() => UNTRACKED_UNDO.to_string(),
+            ChangeTarget::IgnoreRules => IGNORE_RULES_UNDO.to_string(),
+            _ => undo,
         };
         let approval = approval_for(request, Some(&undo), target);
         if let Some(reason) = auto_approval(&code.settings(), request, &plan, target) {
@@ -641,6 +669,14 @@ impl Inner {
                     )
                 })?;
                 self.announce_branch(&run_id, &branch);
+            }
+            if matches!(request.tool.as_str(), "edit" | "write") {
+                code.remember_auto_applied(request).await.map_err(|e| {
+                    format!(
+                        "Shodh could not record the change for \"Discard changes\", so it was \
+                         not made: {e}"
+                    )
+                })?;
             }
             return Ok(());
         }

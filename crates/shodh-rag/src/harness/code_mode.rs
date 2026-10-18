@@ -585,6 +585,8 @@ pub enum ChangeTarget {
     RunsPrograms { risk: &'static str, untracked: bool },
     /// A file of the repository's `.git` folder: never changed.
     GitFolder,
+    /// A `.gitignore`: it decides what "Discard changes" can restore.
+    IgnoreRules,
     /// A file git ignores: "Discard changes" does not restore it.
     Untracked,
     /// The file is unknown or outside the code folder (always asks).
@@ -606,6 +608,10 @@ impl ChangeTarget {
 }
 
 const GIT_FOLDER_RISK: &str = "Changes git's own files, which can make git run programs.";
+
+/// The undo note of a change to a `.gitignore`.
+pub const IGNORE_RULES_UNDO: &str = "This changes which files git ignores, so \"Discard changes\" \
+     may not restore every file this conversation changed.";
 
 /// Why changing the file at `relative` (a path inside the code folder) can
 /// run programs without a command being approved, or `None`. Names are
@@ -630,6 +636,9 @@ pub fn execution_risk(relative: &Path) -> Option<&'static str> {
     if parts.iter().any(|p| p == ".vscode") {
         return Some("Editor settings and tasks can run commands when the folder is opened.");
     }
+    if parts.iter().any(|p| p == ".husky" || p == ".githooks") {
+        return Some("git hooks run programs on commits, checkouts and pushes.");
+    }
     if parts.len() >= 3 && parts[0] == ".github" && parts[1] == "workflows" {
         return Some("CI workflows run commands when the change is pushed.");
     }
@@ -640,6 +649,17 @@ pub fn execution_risk(relative: &Path) -> Option<&'static str> {
         }
         "package.json" => Some("Its scripts run with npm commands, tests included."),
         ".npmrc" => Some("npm settings can choose the program that runs scripts."),
+        ".pre-commit-config.yaml" | ".pre-commit-config.yml" => {
+            Some("pre-commit runs the hooks this file names on every commit.")
+        }
+        "lefthook.yml"
+        | "lefthook.yaml"
+        | ".lefthook.yml"
+        | ".lefthook.yaml"
+        | "lefthook-local.yml"
+        | "lefthook-local.yaml" => {
+            Some("lefthook runs the commands this file names on git events.")
+        }
         "config" | "config.toml" if parent == Some(".cargo") => {
             Some("Cargo settings can run programs with every cargo command.")
         }
@@ -672,26 +692,90 @@ fn inside(root: &Path, target: &Path) -> Option<PathBuf> {
     .then_some(relative)
 }
 
-/// Classify the file `request` changes in `folder` (blocking: asks git
-/// whether it ignores the file when `in_repo`).
-pub fn change_target(folder: &Path, request: &GuardRequest, in_repo: bool) -> ChangeTarget {
-    let Some(relative) = request
+/// The file `request` changes, relative to `folder`, when the guard named
+/// one inside it.
+pub fn target_in_folder(folder: &Path, request: &GuardRequest) -> Option<PathBuf> {
+    request
         .target
         .as_deref()
         .and_then(|target| inside(folder, target))
+}
+
+const HOOKS_PATH_RISK: &str =
+    "This is the repository's hooks folder (core.hooksPath): git runs its files as programs.";
+
+/// Classify the file `request` changes in `folder` (blocking: asks git
+/// whether it ignores the file, and where the repository keeps its hooks,
+/// when `in_repo`).
+pub fn change_target(folder: &Path, request: &GuardRequest, in_repo: bool) -> ChangeTarget {
+    let (Some(relative), Some(target)) =
+        (target_in_folder(folder, request), request.target.as_deref())
     else {
         return ChangeTarget::Unknown;
     };
-    let risk = execution_risk(&relative);
+    let mut risk = execution_risk(&relative);
     if risk == Some(GIT_FOLDER_RISK) {
         return ChangeTarget::GitFolder;
     }
+    if in_repo && risk.is_none() {
+        // A hooks folder the repository configured, or one git cannot name.
+        let hooked = configured_hooks_dirs(folder).map_or(true, |dirs| {
+            dirs.iter()
+                .any(|dir| target == dir.as_path() || inside(dir, target).is_some())
+        });
+        if hooked {
+            risk = Some(HOOKS_PATH_RISK);
+        }
+    }
     let untracked = in_repo && !matches!(git_takes_changes(folder, &relative), Ok(true));
+    let ignore_rules = relative
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case(".gitignore"));
     match risk {
         Some(risk) => ChangeTarget::RunsPrograms { risk, untracked },
         None if untracked => ChangeTarget::Untracked,
+        None if ignore_rules => ChangeTarget::IgnoreRules,
         None => ChangeTarget::Plain,
     }
+}
+
+/// The hooks folders the repository holding `folder` configures
+/// (`core.hooksPath` in its own or the user's config, not Shodh's override),
+/// resolved against the work tree.
+fn configured_hooks_dirs(folder: &Path) -> Result<Vec<PathBuf>, String> {
+    let top = PathBuf::from(run_git(folder, &["rev-parse", "--show-toplevel"])?);
+    let output = git(folder)?
+        .args([
+            "config",
+            "--includes",
+            "--show-scope",
+            "--get-all",
+            "core.hooksPath",
+        ])
+        .output()
+        .map_err(|e| format!("git could not be started: {e}"))?;
+    // Exit 1: the key is not set.
+    if !output.status.success() && output.status.code() != Some(1) {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .filter(|(scope, _)| *scope != "command")
+        .map(|(_, value)| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            let dir = Path::new(value);
+            let dir = if dir.is_absolute() {
+                dir.to_path_buf()
+            } else {
+                top.join(dir)
+            };
+            std::fs::canonicalize(&dir)
+                .map(strip_verbatim)
+                .unwrap_or(dir)
+        })
+        .collect())
 }
 
 /// Whether "Discard changes" (`git add --all`) takes in a change to
@@ -1066,6 +1150,11 @@ pub struct CodeBranch {
     #[serde(default)]
     pub base_is_commit: bool,
     pub created_at: String,
+    /// Files edits and writes changed without asking, relative to the folder
+    /// (`/`-separated): "Discard changes" commits them even if a later
+    /// `.gitignore` change hid them from git.
+    #[serde(default)]
+    pub auto_applied: Vec<String>,
 }
 
 /// What must happen before a guarded change may run.
@@ -1176,26 +1265,57 @@ fn git(folder: &Path) -> Result<Command, String> {
 /// or smudge filters (programs its config names).
 const FILTERED_COMMANDS: [&str; 4] = ["status", "add", "commit", "checkout"];
 
-/// `-c` settings that switch off every content filter `folder`'s config
-/// names: an empty command is no filter, and a filter marked `required`
-/// would then fail the command.
+/// The git subcommand of `args`: the first word after global `-c key=value`
+/// and `-C dir` options.
+fn git_subcommand<'a>(args: &[&'a str]) -> Option<&'a str> {
+    let mut rest = args;
+    while let [flag, _, tail @ ..] = rest {
+        if *flag != "-c" && *flag != "-C" {
+            break;
+        }
+        rest = tail;
+    }
+    rest.first().copied()
+}
+
+/// The filter names in `git config --show-scope --name-only --get-regexp`
+/// output that the repository itself configures (its own or its work tree's
+/// config, includes followed). The user's and the system's filters (Git LFS)
+/// are theirs and keep working.
+fn repository_filter_names(output: &str) -> Vec<String> {
+    let mut names: Vec<String> = output
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .filter(|(scope, _)| matches!(*scope, "local" | "worktree"))
+        .filter_map(|(_, key)| key.trim().strip_prefix("filter."))
+        .filter_map(|rest| rest.rsplit_once('.').map(|(name, _)| name.to_string()))
+        .filter(|name| !name.is_empty())
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
+/// `-c` settings that switch off every content filter the repository's own
+/// config names ([`repository_filter_names`]): an empty command is no
+/// filter, and a filter marked `required` would then fail the command.
 fn filters_off(folder: &Path) -> Result<Vec<String>, String> {
     let output = git(folder)?
-        .args(["config", "--name-only", "--get-regexp", r"^filter\."])
+        .args([
+            "config",
+            "--includes",
+            "--show-scope",
+            "--name-only",
+            "--get-regexp",
+            r"^filter\.",
+        ])
         .output()
         .map_err(|e| format!("git could not be started: {e}"))?;
     // Exit 1: no filter is configured.
     if !output.status.success() && output.status.code() != Some(1) {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
-    let mut names: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|key| key.trim().strip_prefix("filter."))
-        .filter_map(|rest| rest.rsplit_once('.').map(|(name, _)| name.to_string()))
-        .filter(|name| !name.is_empty())
-        .collect();
-    names.sort_unstable();
-    names.dedup();
+    let names = repository_filter_names(&String::from_utf8_lossy(&output.stdout));
     Ok(names
         .iter()
         .flat_map(|name| {
@@ -1208,7 +1328,7 @@ fn filters_off(folder: &Path) -> Result<Vec<String>, String> {
 /// Run git; `Ok(stdout)` on success, `Err(stderr)` otherwise.
 fn run_git(folder: &Path, args: &[&str]) -> Result<String, String> {
     let mut command = git(folder)?;
-    if args.first().is_some_and(|a| FILTERED_COMMANDS.contains(a)) {
+    if git_subcommand(args).is_some_and(|a| FILTERED_COMMANDS.contains(&a)) {
         for setting in filters_off(folder)? {
             command.arg("-c").arg(setting);
         }
@@ -1340,6 +1460,7 @@ pub fn create_branch(folder: &CodeFolder, now_rfc3339: &str) -> Result<CodeBranc
         base,
         base_is_commit,
         created_at: now_rfc3339.to_string(),
+        auto_applied: Vec::new(),
     })
 }
 
@@ -1353,6 +1474,23 @@ pub fn discard_changes(record: &CodeBranch) -> Result<(), String> {
             dirty,
             ..
         } if current == record.branch => {
+            // Files changed without asking go into the commit even when git
+            // now ignores them, so checking out the base removes or restores
+            // them like every other change.
+            let auto: Vec<&str> = record
+                .auto_applied
+                .iter()
+                .map(String::as_str)
+                .filter(|p| root.join(p).symlink_metadata().is_ok())
+                .collect();
+            let dirty = if auto.is_empty() {
+                dirty
+            } else {
+                let mut add = vec!["add", "--force", "--"];
+                add.extend(&auto);
+                run_git(root, &add)?;
+                !run_git(root, &["status", "--porcelain", "--untracked-files=normal"])?.is_empty()
+            };
             if dirty {
                 run_git(root, &["add", "--all"])?;
                 // A snapshot of the agent's work on its own branch. No hook

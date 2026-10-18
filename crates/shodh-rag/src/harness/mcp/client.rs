@@ -74,21 +74,6 @@ const SERVER_USER_VARS: [&str; 21] = [
     "XDG_RUNTIME_DIR",
 ];
 
-/// Whether `url`'s host is this computer.
-pub fn is_loopback_url(url: &str) -> bool {
-    url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
-        .is_some_and(|host| {
-            host == "localhost"
-                || host == "[::1]"
-                || host == "::1"
-                || host
-                    .parse::<std::net::Ipv4Addr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-        })
-}
-
 /// The redirect policy of an HTTP server's client: a redirect is followed
 /// (up to 5) only when it stays on the configured scheme, host and port, so
 /// the address the user configured (and Local-only mode checked) is the only

@@ -14,8 +14,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use super::client::{is_loopback_url, CallResult, McpClient, McpError, ToolInfo};
-use super::config::{Approval, Mode, ServerConfig, Transport};
+use super::client::{CallResult, McpClient, McpError, ToolInfo};
+use super::config::{Approval, Mode, ServerConfig};
 use crate::harness::events::RiskTier;
 use crate::harness::protocol::ToolLoadMode;
 use crate::harness::tools::{ApprovalPreview, HostTool, ToolContext, ToolError, ToolOutput};
@@ -137,9 +137,9 @@ pub struct McpTool {
     ask_when: Option<(&'static str, &'static [&'static str])>,
     /// Shown on the approval prompt ([`Verified::RunsFolderPrograms`]).
     warning: Option<&'static str>,
-    /// The call reaches nothing beyond this computer and the server: Shodh
-    /// verified it read-only, the server is on this computer over HTTP, or
-    /// it says the tool is closed-world. Otherwise a call asks once the
+    /// The call reaches nothing beyond the server: Shodh verified it
+    /// read-only, or the tool says it is closed-world. A server on this
+    /// computer can still reach the network. Otherwise a call asks once the
     /// session has had private content it could carry away.
     closed_world: bool,
     destructive: bool,
@@ -292,8 +292,7 @@ pub fn server_tools(
             let closed_world = matches!(
                 checked,
                 Some(Verified::ReadOnly | Verified::ReadOnlyUnless { .. })
-            ) || matches!(&server.transport, Transport::Http { url, .. } if is_loopback_url(url))
-                || info.closed_world();
+            ) || info.closed_world();
             McpTool {
                 name,
                 label: truncate_chars(&format!("{}: {title}", server.name), 80),
@@ -642,7 +641,7 @@ mod tests {
         // verified one and a closed-world one cannot.
         assert_eq!(asks, [true, false, false]);
 
-        // A server on this computer over HTTP reaches nothing else either.
+        // A server on this computer can still reach the network.
         let local = super::super::config::parse_server(
             "local",
             &json!({"url": "http://127.0.0.1:9000/mcp"}),
@@ -657,7 +656,7 @@ mod tests {
             &[],
             &mut HashSet::new(),
         );
-        assert!(!tools[0].must_confirm_in(&args, &ctx).await.unwrap());
+        assert!(tools[0].must_confirm_in(&args, &ctx).await.unwrap());
     }
 
     #[tokio::test]

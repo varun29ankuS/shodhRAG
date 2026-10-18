@@ -361,19 +361,13 @@ async fn http_redirects_on_the_same_server_are_followed() {
         while let Ok((mut stream, _)) = listener.accept().await {
             let (request, _, body) = read_http(&mut stream).await;
             let response = if request.starts_with("POST /mcp ") {
-                http_response(
-                    "308 Permanent Redirect",
-                    "Location: /mcp/
-",
-                    "",
-                )
+                http_response("308 Permanent Redirect", "Location: /mcp/\r\n", "")
             } else if body["method"] == "initialize" {
                 let json = json!({"jsonrpc": "2.0", "id": body["id"], "result": {
                     "protocolVersion": "2025-03-26", "serverInfo": {"name": "web"}}});
                 http_response(
                     "200 OK",
-                    "Content-Type: application/json
-",
+                    "Content-Type: application/json\r\n",
                     &json.to_string(),
                 )
             } else {

@@ -633,7 +633,12 @@ impl Writer {
     /// carry an older `ts` than its predecessors. Deleting by `ts` alone would
     /// then remove events that are still inside the window; stopping at the
     /// first in-window row keeps them, and the checkpoint names the last row
-    /// actually deleted.
+    /// actually deleted. A row at the cutoff itself is inside the window.
+    ///
+    /// The other way round, an event written while the clock ran ahead
+    /// carries a future `ts`: it and every event after it are kept until that
+    /// `ts` falls out of the window, so retention deletes nothing past it
+    /// until then. Kept too long, never deleted early.
     fn retention(&mut self, days: u32, now: DateTime<Utc>) -> AuditResult<u64> {
         check_retention(days)?;
         let cutoff = now - chrono::Duration::days(i64::from(days));
@@ -1491,6 +1496,42 @@ mod tests {
         let report = log.verify().unwrap();
         assert!(report.ok, "{report:?}");
         assert_eq!(report.checked, 4);
+
+        // The skewed survivor is still covered by the chain: changing it is detected.
+        raw(&dir)
+            .execute(
+                "UPDATE audit_events SET payload_json = '{}' WHERE id = 4",
+                [],
+            )
+            .unwrap();
+        let report = log.verify().unwrap();
+        assert!(!report.ok);
+        assert_eq!(report.first_bad_id, Some(4));
+    }
+
+    #[test]
+    fn retention_keeps_an_event_at_the_cutoff_and_everything_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shodh.db");
+        drop(AuditLog::open(&path, None).unwrap());
+        let now = Utc::now();
+        let day = chrono::Duration::days(1);
+        let mut writer = Writer::new(raw(&dir)).unwrap();
+        // Out of the window, exactly at the cutoff, then back-dated again.
+        for (i, ts) in [now - day * 40, now - day * 30, now - day * 38]
+            .iter()
+            .enumerate()
+        {
+            append_at(&mut writer, &question(i + 1), *ts);
+        }
+        assert_eq!(writer.retention(30, now).unwrap(), 1);
+        let first: i64 = writer
+            .conn
+            .query_row("SELECT MIN(id) FROM audit_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(first, 2);
+        drop(writer);
+        assert!(AuditLog::open(&path, None).unwrap().verify().unwrap().ok);
     }
 
     fn fill_more(log: &AuditLog, n: usize) {

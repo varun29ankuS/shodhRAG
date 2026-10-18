@@ -33,6 +33,10 @@ pub enum PdfLayoutError {
     NoPages,
     #[error("PDF layout extraction panicked")]
     Panicked,
+    /// More pages than are indexed ([`super::limits::MAX_PDF_PAGES`]): none
+    /// were read.
+    #[error("PDF has {0} pages, more than are indexed")]
+    TooManyPages(usize),
 }
 
 /// Parse a PDF into a [`StructuredDocument`]. Pages that fail to extract are
@@ -135,6 +139,10 @@ fn parse_inner(bytes: Vec<u8>, mode: TableMode<'_>) -> Result<ParsedLayout, PdfL
         .map_err(|e| PdfLayoutError::Open(e.to_string()))?;
     if page_count == 0 {
         return Err(PdfLayoutError::NoPages);
+    }
+    // Refused before any page is read.
+    if page_count > super::limits::MAX_PDF_PAGES {
+        return Err(PdfLayoutError::TooManyPages(page_count));
     }
 
     let mut pages: Vec<PageLines> = Vec::with_capacity(page_count);

@@ -243,7 +243,7 @@ fn read_file(engine: &EngineHandle, path: &Path, dpi: Option<u32>) -> Result<Vec
             use shodh_rag::processing::windows_ocr;
             let started = Instant::now();
             let texts = if is_pdf {
-                windows_ocr::ocr_pdf_pages(path, dpi, &|_, _| {})?
+                windows_ocr::ocr_pdf_pages(path, dpi, &|_, _| {})?.texts
             } else {
                 vec![windows_ocr::ocr_image(path)?]
             };

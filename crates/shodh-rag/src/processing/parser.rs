@@ -9,7 +9,7 @@ use super::ocr::worker::{FileKind, OcrWorker, WorkerEngine};
 use super::ocr::{ScanReaderMissing, SharedOcrModel};
 use super::pdf_layout::{TableMode, TableReport};
 use super::table_model::{TableModel, TABLE_MODEL_ID};
-use super::{pdf_forms, pdf_layout, tabular, text_structure};
+use super::{limits, office_xml, pdf_forms, pdf_layout, tabular, text_structure};
 use crate::config::{OcrConfig, OcrEngineChoice};
 use crate::types::{DocumentFormat, DocumentSection};
 
@@ -45,6 +45,9 @@ pub const OCR_ENGINE_SYSTEM: &str = "windows-ocr";
 /// scan reader (the PP-OCRv6 model) is not installed: it is read again once
 /// the reader is installed.
 pub const OCR_READER_MISSING_KEY: &str = "ocr_reader_missing";
+/// Metadata key listing the pages (1-based, comma-separated) of a scan that
+/// OCR could not read: they read as empty ([`ocr_failed_pages_notice`]).
+pub const OCR_FAILED_PAGES_KEY: &str = "ocr_failed_pages";
 
 /// A PDF that needs a password to open: its text cannot be read, by OCR
 /// either, so it is not treated as a scan.
@@ -70,6 +73,31 @@ struct PdfParse {
     document: Option<StructuredDocument>,
     tables: Option<TableReport>,
     ocr: Option<OcrUse>,
+    /// Pages (1-based) of a scan that OCR could not read.
+    ocr_failed_pages: Vec<usize>,
+}
+
+/// A scanned PDF as OCR read it: its pages as a document, the engine that
+/// read it, its page count, and the pages (1-based) OCR could not read.
+struct ScanRead {
+    doc: StructuredDocument,
+    engine: &'static str,
+    pages: usize,
+    failed: Vec<usize>,
+    /// Why the first failed page could not be read.
+    first_error: Option<String>,
+}
+
+impl ScanRead {
+    fn of(pages: super::ocr::OcrPages, engine: &'static str) -> Self {
+        Self {
+            doc: ocr_pages_to_document(&pages.texts),
+            engine,
+            pages: pages.texts.len(),
+            failed: pages.failed,
+            first_error: pages.first_error,
+        }
+    }
 }
 
 /// How a scan was read: the engine, and whether the scan reader was missing
@@ -269,18 +297,14 @@ impl DocumentParser {
     }
 
     /// A scanned PDF read by OCR page by page (at below-normal priority),
-    /// with the engine that read it and its page count, `None` when no engine
-    /// could read it; and whether the scan reader was missing for it.
-    #[allow(clippy::type_complexity)]
+    /// `None` when no engine could read it; and whether the scan reader was
+    /// missing for it.
     fn ocr_pdf(
         &self,
         path: &Path,
         bytes: &[u8],
         progress: OcrProgress<'_>,
-    ) -> (
-        Result<Option<(StructuredDocument, &'static str, usize)>>,
-        bool,
-    ) {
+    ) -> (Result<Option<ScanRead>>, bool) {
         let unrendered = super::ocr::raster::uses_unrendered_codecs(bytes);
         let (route, reader_missing) = self.ocr_route(unrendered);
         let _below_normal = super::ocr::priority::BelowNormal::new();
@@ -290,7 +314,6 @@ impl DocumentParser {
         )
     }
 
-    #[allow(clippy::type_complexity)]
     fn read_scan(
         &self,
         route: OcrRoute,
@@ -298,7 +321,7 @@ impl DocumentParser {
         bytes: &[u8],
         unrendered: bool,
         progress: OcrProgress<'_>,
-    ) -> Result<Option<(StructuredDocument, &'static str, usize)>> {
+    ) -> Result<Option<ScanRead>> {
         let read = match route {
             OcrRoute::PpOcr(model) => {
                 if unrendered {
@@ -308,9 +331,9 @@ impl DocumentParser {
                         path.display()
                     );
                 }
-                let texts =
+                let pages =
                     super::ocr::read_pdf(&model, bytes, self.ocr.render_dpi, path, progress)?;
-                Some((ocr_pages_to_document(&texts), OCR_ENGINE_PPOCR, texts.len()))
+                Some(ScanRead::of(pages, OCR_ENGINE_PPOCR))
             }
             #[cfg(windows)]
             OcrRoute::System => {
@@ -322,11 +345,7 @@ impl DocumentParser {
                 }
                 let pages =
                     super::windows_ocr::ocr_pdf_pages(path, self.ocr.system_render_dpi, progress)?;
-                Some((
-                    ocr_pages_to_document(&pages),
-                    OCR_ENGINE_SYSTEM,
-                    pages.len(),
-                ))
+                Some(ScanRead::of(pages, OCR_ENGINE_SYSTEM))
             }
             #[cfg(not(windows))]
             OcrRoute::System => None,
@@ -335,7 +354,7 @@ impl DocumentParser {
                     .ocr_worker
                     .as_ref()
                     .context("no OCR process is configured")?;
-                let texts = worker.read(
+                let pages = worker.read_pages(
                     FileKind::Pdf,
                     path,
                     engine,
@@ -343,11 +362,7 @@ impl DocumentParser {
                     self.ocr.system_render_dpi,
                     progress,
                 )?;
-                Some((
-                    ocr_pages_to_document(&texts),
-                    worker_engine_name(engine),
-                    texts.len(),
-                ))
+                Some(ScanRead::of(pages, worker_engine_name(engine)))
             }
             OcrRoute::None => None,
         };
@@ -404,17 +419,17 @@ impl DocumentParser {
 
         let format = DocumentFormat::from_extension(&extension);
         // Use file stem (without extension) for a cleaner display title
-        let title = path
-            .file_stem()
-            .and_then(|n| n.to_str())
-            .unwrap_or("untitled")
-            .to_string();
+        let stem = path.file_stem().and_then(|n| n.to_str());
+        let mut title = stem.unwrap_or("untitled").to_string();
 
         let mut metadata = HashMap::new();
         metadata.insert("file_path".to_string(), path.display().to_string());
         metadata.insert("file_extension".to_string(), extension.clone());
 
         if let Ok(meta) = std::fs::metadata(path) {
+            // Refused before it is read: see [`limits`].
+            limits::check_file_size(&extension, meta.len())
+                .map_err(|e| anyhow::Error::new(e).context(path.display().to_string()))?;
             metadata.insert("file_size".to_string(), meta.len().to_string());
         }
 
@@ -429,6 +444,7 @@ impl DocumentParser {
         };
 
         let mut document: Option<StructuredDocument> = None;
+        let mut docx_sections = Vec::new();
         let content = match &tables {
             Some(tables) => tabular::tables_to_text(tables),
             None => match extension.as_str() {
@@ -440,6 +456,14 @@ impl DocumentParser {
                     }
                     if let Some(ocr) = parsed.ocr {
                         record_ocr(ocr, &mut metadata);
+                    }
+                    if !parsed.ocr_failed_pages.is_empty() {
+                        let pages: Vec<String> = parsed
+                            .ocr_failed_pages
+                            .iter()
+                            .map(|p| p.to_string())
+                            .collect();
+                        metadata.insert(OCR_FAILED_PAGES_KEY.to_string(), pages.join(","));
                     }
                     parsed.text
                 }
@@ -456,7 +480,11 @@ impl DocumentParser {
                     document = Some(doc);
                     raw
                 }
-                "docx" => self.parse_docx(path)?,
+                "docx" => {
+                    let (text, sections) = self.parse_docx(path)?;
+                    docx_sections = sections;
+                    text
+                }
                 "pptx" => self.parse_pptx(path)?,
                 "html" | "htm" => self.parse_html(path)?,
                 "png" | "jpg" | "jpeg" | "bmp" | "tiff" | "tif" => {
@@ -473,6 +501,13 @@ impl DocumentParser {
             if !doc.pages.is_empty() {
                 metadata.insert("page_count".to_string(), doc.pages.len().to_string());
             }
+            // A file named by an id ("1706.03762v7.pdf") is titled by the
+            // title printed in it.
+            if let Some(printed) = document_title(doc) {
+                if stem.is_none_or(is_identifier_stem) {
+                    title = printed;
+                }
+            }
         }
 
         // Extract structured sections for formats with tabular/form data. A PDF
@@ -484,9 +519,9 @@ impl DocumentParser {
                 tabular::tables_to_sections(tables)
             }
             None if format == DocumentFormat::PDF && document.is_none() => {
-                self.extract_pdf_structure(path, &content)
+                self.extract_pdf_structure(path, &content)?
             }
-            None => Vec::new(),
+            None => docx_sections,
         };
 
         if !structured_sections.is_empty() {
@@ -545,6 +580,11 @@ impl DocumentParser {
                 (pdf_forms::FormExtraction::default(), Some(e))
             }
         };
+        let too_many_pages = |pages: usize| {
+            limits::check_pdf_pages(pages)
+                .map_err(|e| anyhow::Error::new(e).context(path.display().to_string()))
+        };
+        too_many_pages(forms.pages)?;
         if !forms.fields.is_empty() {
             tracing::info!(
                 fields = forms.fields.len(),
@@ -563,6 +603,7 @@ impl DocumentParser {
         match pdf_layout::parse_pdf_layout_with(&bytes, mode) {
             Ok(parsed) => {
                 let mut doc = parsed.document;
+                too_many_pages(doc.pages.len())?;
                 for error in &parsed.tables.model_errors {
                     tracing::warn!(error = %error, "table model page skipped: {}", path.display());
                 }
@@ -575,6 +616,7 @@ impl DocumentParser {
                         document: Some(doc),
                         tables: Some(parsed.tables),
                         ocr: None,
+                        ocr_failed_pages: Vec::new(),
                     });
                 }
                 tracing::info!(
@@ -583,6 +625,11 @@ impl DocumentParser {
                     "PDF has no text layer; trying OCR: {}",
                     path.display()
                 );
+            }
+            Err(pdf_layout::PdfLayoutError::TooManyPages(pages)) => {
+                // Over the limit, so refused here; read no further.
+                too_many_pages(pages)?;
+                layout_failed = true;
             }
             Err(e) => {
                 layout_failed = true;
@@ -597,6 +644,7 @@ impl DocumentParser {
                     document: None,
                     tables: None,
                     ocr: None,
+                    ocr_failed_pages: Vec::new(),
                 });
             }
         }
@@ -614,26 +662,48 @@ impl DocumentParser {
         };
 
         let (read, reader_missing) = self.ocr_pdf(path, &bytes, progress);
+        // Why OCR read nothing: its error, or the pages it could not read.
+        let mut ocr_error = None;
+        let mut unread = Vec::new();
+        let mut unread_error = None;
         match read {
-            Ok(Some((mut doc, engine, pages))) => {
-                if doc.text_chars() > 0 || !forms.fields.is_empty() {
-                    insert_form_fields(&mut doc, &forms.fields);
-                    tracing::info!(pages, engine, "Using OCR text: {}", path.display());
+            Ok(Some(mut scan)) => {
+                if scan.doc.text_chars() > 0 || !forms.fields.is_empty() {
+                    insert_form_fields(&mut scan.doc, &forms.fields);
+                    tracing::info!(
+                        pages = scan.pages,
+                        engine = scan.engine,
+                        "Using OCR text: {}",
+                        path.display()
+                    );
+                    if !scan.failed.is_empty() {
+                        tracing::warn!(
+                            "OCR could not read {}: {}",
+                            page_list(&scan.failed),
+                            path.display()
+                        );
+                    }
                     return Ok(PdfParse {
-                        text: doc.plain_text(),
-                        document: Some(doc),
+                        text: scan.doc.plain_text(),
+                        document: Some(scan.doc),
                         tables: None,
                         ocr: Some(OcrUse {
-                            engine,
+                            engine: scan.engine,
                             reader_missing,
                         }),
+                        ocr_failed_pages: scan.failed,
                     });
                 }
+                unread = scan.failed;
+                unread_error = scan.first_error;
             }
             Ok(None) => {
                 tracing::warn!("No OCR engine is available for {}", path.display());
             }
-            Err(e) => tracing::warn!("OCR failed for {}: {:#}", path.display(), e),
+            Err(e) => {
+                tracing::warn!("OCR failed for {}: {:#}", path.display(), e);
+                ocr_error = Some(e);
+            }
         }
         if let Some(reason) = damaged {
             return Err(anyhow::Error::new(PdfDamaged(reason)).context(path.display().to_string()));
@@ -641,6 +711,22 @@ impl DocumentParser {
         // The scan reader may read what nothing here could.
         if reader_missing {
             return Err(anyhow::Error::new(ScanReaderMissing).context(path.display().to_string()));
+        }
+        if let Some(e) = ocr_error {
+            return Err(e.context(format!(
+                "OCR could not read this scanned PDF: {}",
+                path.display()
+            )));
+        }
+        if !unread.is_empty() {
+            let why = unread_error
+                .map(|e| format!(" (page {}: {e})", unread[0]))
+                .unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "OCR could not read {} of this scanned PDF{why}: {}",
+                page_list(&unread),
+                path.display()
+            ));
         }
 
         Err(anyhow::anyhow!(
@@ -650,14 +736,21 @@ impl DocumentParser {
     }
 
     /// Sections of a PDF the layout parser could not read: its form fields and
-    /// comments grouped by page, then per-page text from the fallback reader (or the
-    /// whole-document text, unpaged, when that reader finds none).
-    fn extract_pdf_structure(&self, path: &Path, fallback_content: &str) -> Vec<DocumentSection> {
+    /// comments grouped by page, then its text from the fallback readers
+    /// ([`fallback_text_sections`]); `fallback_content` is `pdf_extract`'s
+    /// text of the whole document.
+    /// A PDF with more pages than are indexed is refused here too: the
+    /// layout parser could not count them.
+    fn extract_pdf_structure(
+        &self,
+        path: &Path,
+        fallback_content: &str,
+    ) -> Result<Vec<DocumentSection>> {
         let bytes = match std::fs::read(path) {
             Ok(bytes) => bytes,
             Err(e) => {
                 tracing::debug!("PDF re-read failed for {}: {}", path.display(), e);
-                return Vec::new();
+                return Ok(Vec::new());
             }
         };
         let mut sections = Vec::new();
@@ -674,64 +767,71 @@ impl DocumentParser {
                 sections.push(DocumentSection::FormFields { fields, page });
             }
         }
-        match super::lopdf_parser::LoPdfParser::parse_bytes(&bytes) {
+        let (lopdf_pages, page_count) = match super::lopdf_parser::LoPdfParser::parse_bytes(&bytes)
+        {
             Ok(doc) => {
-                for page in &doc.pages {
-                    let text = page.text.trim();
-                    if !text.is_empty() {
-                        sections.push(DocumentSection::Text {
-                            content: text.to_string(),
-                            page: page.page_number,
-                            heading: None,
-                        });
-                    }
-                }
+                let count = doc.pages.len();
+                limits::check_pdf_pages(count)
+                    .map_err(|e| anyhow::Error::new(e).context(path.display().to_string()))?;
+                let pages: Vec<(usize, String)> = doc
+                    .pages
+                    .into_iter()
+                    .map(|page| (page.page_number, page.text))
+                    .collect();
+                (pages, Some(count))
             }
-            Err(e) => tracing::debug!("lopdf extraction failed for {}: {}", path.display(), e),
-        }
-        // The fallback content is whole-document text with no page boundaries, so it
-        // is recorded as unpaged (page 0) rather than attributed to page 1.
-        let has_text_sections = sections
-            .iter()
-            .any(|s| matches!(s, DocumentSection::Text { .. }));
-        if !has_text_sections && !fallback_content.trim().is_empty() {
-            sections.push(DocumentSection::Text {
-                content: fallback_content.to_string(),
-                page: 0,
-                heading: None,
-            });
-        }
-        sections
+            Err(e) => {
+                tracing::debug!("lopdf extraction failed for {}: {}", path.display(), e);
+                (Vec::new(), None)
+            }
+        };
+        sections.extend(fallback_text_sections(
+            &lopdf_pages,
+            fallback_content,
+            || page_count.and_then(|count| pdf_extract_pages(&bytes, count)),
+        ));
+        Ok(sections)
     }
 
-    fn parse_docx(&self, path: &Path) -> Result<String> {
+    /// The text of a DOCX and, when it has tables, its sections in reading
+    /// order: the text between tables and each table (its first row as the
+    /// header), so the tables are chunked as tables. A DOCX without tables
+    /// has no sections; its text is chunked as it is.
+    fn parse_docx(&self, path: &Path) -> Result<(String, Vec<DocumentSection>)> {
         let file = std::fs::File::open(path)
             .with_context(|| format!("Failed to open DOCX: {}", path.display()))?;
 
         let mut archive = zip::ZipArchive::new(file)
             .with_context(|| format!("Failed to read DOCX as ZIP: {}", path.display()))?;
 
-        let mut xml_content = String::new();
-        {
+        let xml_content = {
             let mut document_xml = archive
                 .by_name("word/document.xml")
                 .with_context(|| format!("DOCX missing word/document.xml: {}", path.display()))?;
-            use std::io::Read;
-            document_xml
-                .read_to_string(&mut xml_content)
-                .with_context(|| "Failed to read document.xml from DOCX")?;
-        }
+            let declared = document_xml.size();
+            let mut read = 0;
+            read_office_part(&mut document_xml, "word/document.xml", declared, &mut read)
+                .with_context(|| {
+                    format!("Failed to read document.xml from DOCX: {}", path.display())
+                })?
+        };
 
-        let text = extract_docx_text(&xml_content);
+        let blocks = office_xml::docx_blocks(&xml_content).with_context(|| {
+            format!(
+                "DOCX word/document.xml could not be read: {}",
+                path.display()
+            )
+        })?;
+        let text = office_xml::docx_text(&blocks);
 
-        if text.is_empty() {
+        if text.trim().is_empty() {
             return Err(anyhow::anyhow!(
                 "DOCX contains no extractable text: {}",
                 path.display()
             ));
         }
 
-        Ok(text)
+        Ok((text, docx_sections(blocks)))
     }
 
     /// An image file read by OCR (at below-normal priority) as page 1, and
@@ -796,6 +896,8 @@ impl DocumentParser {
             .with_context(|| format!("Failed to read PPTX as ZIP: {}", path.display()))?;
 
         let mut slides: Vec<(usize, String)> = Vec::new();
+        // Decompressed XML read so far, of all slides together.
+        let mut read = 0;
 
         for i in 0..archive.len() {
             let mut entry = match archive.by_index(i) {
@@ -816,13 +918,13 @@ impl DocumentParser {
                 .parse::<usize>()
                 .unwrap_or(0);
 
-            let mut xml = String::new();
-            use std::io::Read;
-            if entry.read_to_string(&mut xml).is_ok() {
-                let text = extract_pptx_slide_text(&xml);
-                if !text.is_empty() {
-                    slides.push((slide_num, text));
-                }
+            let declared = entry.size();
+            let xml = read_office_part(&mut entry, &name, declared, &mut read)
+                .with_context(|| format!("Failed to read {name} from PPTX: {}", path.display()))?;
+            let text = office_xml::pptx_slide_text(&xml)
+                .with_context(|| format!("PPTX {name} could not be read: {}", path.display()))?;
+            if !text.trim().is_empty() {
+                slides.push((slide_num, text));
             }
         }
 
@@ -905,6 +1007,8 @@ pub fn needs_ocr(path: &Path) -> bool {
         Ok(parsed) => {
             is_effectively_scanned(parsed.document.text_chars(), parsed.document.pages.len())
         }
+        // Not indexed at all, so not read by OCR either.
+        Err(pdf_layout::PdfLayoutError::TooManyPages(_)) => false,
         Err(_) => pdf_extract_text(&bytes).is_none(),
     }
 }
@@ -948,16 +1052,100 @@ fn pdf_extract_text(bytes: &[u8]) -> Option<String> {
             return None;
         }
     };
-    let cleaned = text
-        .lines()
+    let cleaned = clean_extracted(&text);
+    (!cleaned.is_empty()).then_some(cleaned)
+}
+
+/// `pdf_extract` text without blank lines and with each line trimmed.
+fn clean_extracted(text: &str) -> String {
+    text.lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
         .join(
             "
 ",
-        );
-    (!cleaned.is_empty()).then_some(cleaned)
+        )
+}
+
+/// `pdf_extract`'s text of each page (cleaned as [`pdf_extract_text`]'s),
+/// or `None` when it fails, panics, reads nothing, or reads other than
+/// `pages` pages: it stops at the first page it cannot read, so a short list
+/// would put the text of later pages on no page at all.
+fn pdf_extract_pages(bytes: &[u8], pages: usize) -> Option<Vec<String>> {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pdf_extract::extract_text_from_mem_by_pages(bytes)
+    }));
+    let texts = match result {
+        Ok(Ok(texts)) => texts,
+        Ok(Err(e)) => {
+            tracing::debug!("pdf_extract failed by page: {:?}", e);
+            return None;
+        }
+        Err(_) => {
+            tracing::warn!("pdf_extract panicked by page");
+            return None;
+        }
+    };
+    if texts.len() != pages {
+        return None;
+    }
+    let texts: Vec<String> = texts.iter().map(|text| clean_extracted(text)).collect();
+    texts.iter().any(|text| !text.is_empty()).then_some(texts)
+}
+
+/// Characters of `text` other than whitespace.
+fn visible_chars(text: &str) -> usize {
+    text.chars().filter(|c| !c.is_whitespace()).count()
+}
+
+/// The text sections of a PDF the layout parser could not read, from one of
+/// the two fallback readers: lopdf's pages (`lopdf_pages`: page number and
+/// text), or `pdf_extract`'s text (`extract_text`, the whole document).
+/// `pdf_extract` decodes fonts, hex strings and ToUnicode maps that lopdf's
+/// reader does not, so its text is used unless lopdf's reads about as much
+/// (nine tenths of its characters other than whitespace, or more). Its text
+/// is put on pages by `extract_pages` (asked only then) when those hold
+/// about all of it, else it is one unpaged section (page 0).
+fn fallback_text_sections(
+    lopdf_pages: &[(usize, String)],
+    extract_text: &str,
+    extract_pages: impl FnOnce() -> Option<Vec<String>>,
+) -> Vec<DocumentSection> {
+    let section = |content: &str, page: usize| DocumentSection::Text {
+        content: content.to_string(),
+        page,
+        heading: None,
+    };
+    let lopdf_chars: usize = lopdf_pages
+        .iter()
+        .map(|(_, text)| visible_chars(text))
+        .sum();
+    let extract_chars = visible_chars(extract_text);
+    if lopdf_chars > 0 && lopdf_chars * 10 >= extract_chars * 9 {
+        return lopdf_pages
+            .iter()
+            .map(|(page, text)| (*page, text.trim()))
+            .filter(|(_, text)| !text.is_empty())
+            .map(|(page, text)| section(text, page))
+            .collect();
+    }
+    if extract_chars == 0 {
+        return Vec::new();
+    }
+    if let Some(pages) = extract_pages() {
+        let paged: usize = pages.iter().map(|text| visible_chars(text)).sum();
+        if paged * 10 >= extract_chars * 9 {
+            return pages
+                .iter()
+                .enumerate()
+                .map(|(index, text)| (index + 1, text.trim()))
+                .filter(|(_, text)| !text.is_empty())
+                .map(|(page, text)| section(text, page))
+                .collect();
+        }
+    }
+    vec![section(extract_text, 0)]
 }
 
 /// Places form fields into a structured document as [`BlockKind::FormField`]
@@ -1012,6 +1200,76 @@ fn system_ocr_available() -> bool {
     {
         false
     }
+}
+
+/// The title printed in `doc`: its title block unless that reads as a
+/// heading, else the first line of its first page that reads as a title (as
+/// the citation graph reads it, [`crate::research::citations::identity`]).
+pub fn document_title(doc: &StructuredDocument) -> Option<String> {
+    crate::research::citations::identity::title_from_block(doc)
+}
+
+/// Whether a file name (its stem) is an identifier rather than a title: an
+/// arXiv id ("1706.03762v7"), a number or date ("20231015", "2023-10-15"),
+/// a hash or UUID, or a code such as "PMC1234567" or "IMG_0042": four
+/// digits or more and no run of more than three letters.
+pub fn is_identifier_stem(stem: &str) -> bool {
+    let stem = stem.trim();
+    if stem.is_empty() {
+        return true;
+    }
+    let digits = stem.chars().filter(|c| c.is_ascii_digit()).count();
+    let hash = stem.chars().filter(|c| *c != '-').count() >= 8
+        && digits > 0
+        && stem.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+    let mut longest_letters = 0;
+    let mut letters = 0;
+    for c in stem.chars() {
+        if c.is_alphabetic() {
+            letters += 1;
+            longest_letters = longest_letters.max(letters);
+        } else {
+            letters = 0;
+        }
+    }
+    hash || (digits >= 4 && longest_letters <= 3)
+}
+
+/// Pages shown in a list of pages before the rest are counted.
+const PAGES_LISTED: usize = 10;
+
+/// `pages` (1-based) in words: "page 4", "pages 4, 9"; past
+/// [`PAGES_LISTED`] pages, the rest are counted ("… 10 and 5 more").
+fn page_list(pages: &[usize]) -> String {
+    let listed: Vec<String> = pages
+        .iter()
+        .take(PAGES_LISTED)
+        .map(|p| p.to_string())
+        .collect();
+    let mut list = format!(
+        "{} {}",
+        if pages.len() == 1 { "page" } else { "pages" },
+        listed.join(", ")
+    );
+    if pages.len() > PAGES_LISTED {
+        list.push_str(&format!(" and {} more", pages.len() - PAGES_LISTED));
+    }
+    list
+}
+
+/// What to tell the user about a file whose `metadata` lists pages OCR
+/// could not read ([`OCR_FAILED_PAGES_KEY`]): "pages 4, 9 could not be
+/// read". `None` when every page was read.
+pub fn ocr_failed_pages_notice(metadata: &HashMap<String, String>) -> Option<String> {
+    let pages: Vec<usize> = metadata
+        .get(OCR_FAILED_PAGES_KEY)?
+        .split(',')
+        .filter_map(|p| p.trim().parse().ok())
+        .collect();
+    if pages.is_empty() {
+        return None;
+    }
+    Some(format!("{} could not be read", page_list(&pages)))
 }
 
 /// Records how a scan was read: the engine, and that the scan reader was
@@ -1084,56 +1342,72 @@ fn record_table_metadata(
     }
 }
 
-/// Extract text from PPTX slide XML by parsing <a:t> elements within <a:p> paragraphs.
-fn extract_pptx_slide_text(xml: &str) -> String {
-    let mut result = String::new();
-    let mut pos = 0;
+/// An XML part of a Word or PowerPoint file (`name`, `declared` bytes once
+/// decompressed by its archive entry). `read` counts the decompressed bytes
+/// of the file's parts read so far, this one included once it returns: the
+/// file is refused when they come to more than
+/// [`limits::MAX_OFFICE_XML_BYTES`], whatever its entries say.
+fn read_office_part(
+    part: impl std::io::Read,
+    name: &str,
+    declared: u64,
+    read: &mut u64,
+) -> Result<String> {
+    use std::io::Read;
+    limits::check_office_xml(name, read.saturating_add(declared))?;
+    let room = limits::MAX_OFFICE_XML_BYTES.saturating_sub(*read);
+    let mut bytes = Vec::new();
+    part.take(room + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("Failed to decompress {name}"))?;
+    *read += bytes.len() as u64;
+    limits::check_office_xml(name, *read)?;
+    String::from_utf8(bytes).with_context(|| format!("{name} is not UTF-8 text"))
+}
 
-    while pos < xml.len() {
-        if let Some(p_start) = xml[pos..].find("<a:p") {
-            let abs_p_start = pos + p_start;
-            let p_end = xml[abs_p_start..]
-                .find("</a:p>")
-                .map(|e| abs_p_start + e + 6)
-                .unwrap_or(xml.len());
-
-            let paragraph = &xml[abs_p_start..p_end];
-            let mut para_text = String::new();
-            let mut t_pos = 0;
-
-            while t_pos < paragraph.len() {
-                if let Some(t_start) = paragraph[t_pos..].find("<a:t") {
-                    let abs_t_start = t_pos + t_start;
-                    if let Some(tag_end) = paragraph[abs_t_start..].find('>') {
-                        let content_start = abs_t_start + tag_end + 1;
-                        if let Some(t_end) = paragraph[content_start..].find("</a:t>") {
-                            para_text.push_str(&paragraph[content_start..content_start + t_end]);
-                            t_pos = content_start + t_end + 6;
-                        } else {
-                            t_pos = content_start;
-                        }
-                    } else {
-                        t_pos = abs_t_start + 4;
-                    }
-                } else {
-                    break;
-                }
+/// The sections of a DOCX with tables ([`DocumentParser::parse_docx`]):
+/// the paragraphs between tables as one text section each, and every table
+/// of two rows or more with its first row as the header. A table of one row
+/// is text. No sections when there is no such table.
+fn docx_sections(blocks: Vec<office_xml::DocxBlock>) -> Vec<DocumentSection> {
+    use office_xml::DocxBlock;
+    let has_table = blocks
+        .iter()
+        .any(|b| matches!(b, DocxBlock::Table(rows) if rows.len() >= 2));
+    if !has_table {
+        return Vec::new();
+    }
+    let mut sections = Vec::new();
+    let mut text: Vec<String> = Vec::new();
+    let flush = |text: &mut Vec<String>, sections: &mut Vec<DocumentSection>| {
+        if !text.is_empty() {
+            sections.push(DocumentSection::Text {
+                content: std::mem::take(text).join("\n"),
+                page: 0,
+                heading: None,
+            });
+        }
+    };
+    for block in blocks {
+        match block {
+            DocxBlock::Paragraph(line) => text.push(line),
+            DocxBlock::Table(rows) if rows.len() < 2 => {
+                text.extend(rows.iter().map(|row| row.join("\t")));
             }
-
-            if !para_text.is_empty() {
-                if !result.is_empty() {
-                    result.push('\n');
-                }
-                result.push_str(&para_text);
+            DocxBlock::Table(mut rows) => {
+                flush(&mut text, &mut sections);
+                let headers = rows.remove(0);
+                sections.push(DocumentSection::Table {
+                    headers,
+                    rows,
+                    page: 0,
+                    caption: None,
+                });
             }
-
-            pos = p_end;
-        } else {
-            break;
         }
     }
-
-    result
+    flush(&mut text, &mut sections);
+    sections
 }
 
 /// Elements that start a new line in the text: their opening and closing tags.
@@ -1474,60 +1748,6 @@ fn decode_html_entity(text: &str) -> Option<(char, usize)> {
         }
     };
     Some((ch, semicolon + 1))
-}
-
-/// Extract text from DOCX XML by parsing <w:t> elements within <w:p> paragraphs
-fn extract_docx_text(xml: &str) -> String {
-    let mut result = String::new();
-    let mut pos = 0;
-
-    while pos < xml.len() {
-        if let Some(p_start) = xml[pos..].find("<w:p") {
-            let abs_p_start = pos + p_start;
-
-            let p_end = if let Some(end) = xml[abs_p_start..].find("</w:p>") {
-                abs_p_start + end + 6
-            } else {
-                xml.len()
-            };
-
-            let paragraph = &xml[abs_p_start..p_end];
-            let mut para_text = String::new();
-            let mut t_pos = 0;
-
-            while t_pos < paragraph.len() {
-                if let Some(t_start) = paragraph[t_pos..].find("<w:t") {
-                    let abs_t_start = t_pos + t_start;
-                    if let Some(tag_end) = paragraph[abs_t_start..].find('>') {
-                        let content_start = abs_t_start + tag_end + 1;
-                        if let Some(t_end) = paragraph[content_start..].find("</w:t>") {
-                            para_text.push_str(&paragraph[content_start..content_start + t_end]);
-                            t_pos = content_start + t_end + 6;
-                        } else {
-                            t_pos = content_start;
-                        }
-                    } else {
-                        t_pos = abs_t_start + 4;
-                    }
-                } else {
-                    break;
-                }
-            }
-
-            if !para_text.is_empty() {
-                if !result.is_empty() {
-                    result.push('\n');
-                }
-                result.push_str(&para_text);
-            }
-
-            pos = p_end;
-        } else {
-            break;
-        }
-    }
-
-    result
 }
 
 #[cfg(test)]
@@ -2180,5 +2400,363 @@ pub(crate) mod tests {
         );
         assert_eq!(strip_html_tags("&#157;"), "\u{9d}");
         assert_eq!(strip_html_tags("&#160;x&#8211;"), "x\u{2013}");
+    }
+
+    /// A ZIP archive with `parts` (name, content), as Word and PowerPoint
+    /// files are.
+    fn office_file(path: &Path, parts: &[(&str, &str)]) {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, content) in parts {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+        }
+        let bytes = zip.finish().unwrap().into_inner();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    const W_DOC: &str = "xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" \
+                         xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" \
+                         xmlns:wps=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\" \
+                         xmlns:v=\"urn:schemas-microsoft-com:vml\"";
+
+    fn docx_paragraph(text: &str) -> String {
+        format!("<w:p><w:r><w:t xml:space=\"preserve\">{text}</w:t></w:r></w:p>")
+    }
+
+    fn docx_cell(text: &str) -> String {
+        format!("<w:tc><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:tc>")
+    }
+
+    /// DOCX text holds no XML: tab stops in paragraph properties, text
+    /// boxes stored twice and entities are read as Word shows them, and a
+    /// table is chunked as a table between the text around it.
+    #[test]
+    fn docx_text_is_the_document_text_and_its_tables_are_tables() {
+        let text_box = "<w:txbxContent><w:p><w:r><w:t>Callout: budget approved</w:t></w:r></w:p></w:txbxContent>";
+        let body = format!(
+            "<w:p><w:pPr><w:tabs><w:tab w:val=\"left\" w:pos=\"720\"/></w:tabs></w:pPr>\
+             <w:r><w:t>Owner</w:t></w:r><w:r><w:tab/><w:t>R&amp;D department</w:t></w:r></w:p>\
+             {}\
+             <w:p><w:r><mc:AlternateContent>\
+             <mc:Choice Requires=\"wps\"><w:drawing><wps:wsp><wps:txbx>{text_box}</wps:txbx></wps:wsp></w:drawing></mc:Choice>\
+             <mc:Fallback><w:pict><v:shape><v:textbox>{text_box}</v:textbox></v:shape></w:pict></mc:Fallback>\
+             </mc:AlternateContent></w:r></w:p>\
+             <w:tbl><w:tblPr><w:tblW w:w=\"0\"/></w:tblPr><w:tr>{}{}</w:tr><w:tr>{}{}</w:tr><w:tr>{}{}</w:tr></w:tbl>\
+             {}",
+            docx_paragraph("The research budget for the coming year covers the laboratory, two new hires and the travel to three conferences."),
+            docx_cell("Item"),
+            docx_cell("Cost"),
+            docx_cell("Laboratory"),
+            docx_cell("120,000"),
+            docx_cell("Travel &amp; stay"),
+            docx_cell("18,500"),
+            docx_paragraph("The board reviews these figures again in the spring, once the grant decisions are known."),
+        );
+        let xml = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><w:document {W_DOC}><w:body>{body}</w:body></w:document>"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("budget.docx");
+        office_file(&path, &[("word/document.xml", &xml)]);
+
+        let parsed = DocumentParser::new().parse_file(&path).expect("parsed");
+        let content = &parsed.content;
+        assert!(
+            !content.contains('<') && !content.contains("w:"),
+            "{content}"
+        );
+        assert!(content.starts_with("Owner\tR&D department\n"), "{content}");
+        assert_eq!(
+            content.matches("Callout: budget approved").count(),
+            1,
+            "{content}"
+        );
+        assert!(content.contains("Travel & stay\t18,500"), "{content}");
+
+        let tables: Vec<(&Vec<String>, &Vec<Vec<String>>)> = parsed
+            .structured_sections
+            .iter()
+            .filter_map(|s| match s {
+                DocumentSection::Table { headers, rows, .. } => Some((headers, rows)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tables.len(), 1, "{:?}", parsed.structured_sections);
+        assert_eq!(tables[0].0, &["Item", "Cost"]);
+        assert_eq!(tables[0].1[1], ["Travel & stay", "18,500"]);
+        let texts: Vec<(usize, &str)> = parsed
+            .structured_sections
+            .iter()
+            .filter_map(|s| match s {
+                DocumentSection::Text { content, page, .. } => Some((*page, content.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts.len(), 2, "{texts:?}");
+        assert!(texts.iter().all(|(page, _)| *page == 0));
+        assert!(texts[0].1.contains("research budget") && texts[0].1.contains("Callout"));
+        assert!(texts[1].1.contains("board reviews"));
+
+        // Without a table the text is all there is.
+        let plain = dir.path().join("plain.docx");
+        let prose = docx_paragraph(
+            "Only prose here, long enough to be a document of its own with nothing tabular in it at all.",
+        );
+        office_file(
+            &plain,
+            &[(
+                "word/document.xml",
+                &format!("<w:document {W_DOC}><w:body>{prose}</w:body></w:document>"),
+            )],
+        );
+        let parsed = DocumentParser::new().parse_file(&plain).expect("parsed");
+        assert!(parsed.structured_sections.is_empty());
+        assert!(parsed.content.starts_with("Only prose here"));
+
+        // Broken XML is reported, not read as no text.
+        let broken = dir.path().join("broken.docx");
+        office_file(
+            &broken,
+            &[("word/document.xml", "<w:document><w:body><w:p>")],
+        );
+        let err = format!(
+            "{:#}",
+            DocumentParser::new()
+                .parse_file(&broken)
+                .expect_err("broken")
+        );
+        assert!(err.contains("not valid XML"), "{err}");
+    }
+
+    /// PPTX text holds no tab lists or tags, and entities are decoded.
+    #[test]
+    fn pptx_text_is_the_slide_text() {
+        let slide = |text: &str| {
+            format!(
+                "<p:sld xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\" \
+                 xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><p:cSld><p:spTree><p:sp><p:txBody>\
+                 <a:bodyPr/><a:p><a:pPr><a:tabLst><a:tab pos=\"914400\" algn=\"l\"/></a:tabLst></a:pPr>\
+                 <a:r><a:rPr lang=\"en-US\"/><a:t>{text}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>"
+            )
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("talk.pptx");
+        let second = slide("Results &amp; next steps for the field trial in the coastal districts");
+        let first = slide("Why we measured rainfall &lt;daily&gt; across forty stations this year");
+        office_file(
+            &path,
+            &[
+                ("ppt/slides/slide2.xml", &second),
+                ("ppt/slides/slide1.xml", &first),
+            ],
+        );
+        let parsed = DocumentParser::new().parse_file(&path).expect("parsed");
+        assert_eq!(
+            parsed.content,
+            "--- Slide 1 ---\nWhy we measured rainfall <daily> across forty stations this year\n\n\
+             --- Slide 2 ---\nResults & next steps for the field trial in the coastal districts"
+        );
+    }
+
+    /// A file over its kind's limit is refused before it is read.
+    #[test]
+    fn a_file_over_its_limit_is_too_large_to_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.txt");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(limits::MAX_TEXT_BYTES + 1).unwrap();
+        drop(file);
+        let err = DocumentParser::new()
+            .parse_file(&path)
+            .expect_err("too large");
+        assert!(err.is::<limits::TooLarge>(), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("too large to index (limit 50 MB for text files)"),
+            "{err:#}"
+        );
+    }
+
+    /// A PDF with more pages than are indexed is refused before its pages
+    /// are read.
+    #[test]
+    fn a_pdf_over_the_page_limit_is_too_large_to_index() {
+        use crate::processing::pdf_fixtures::{build_pdf, Text};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("archive.pdf");
+        let pages: Vec<Vec<Text>> = vec![Vec::new(); limits::MAX_PDF_PAGES + 1];
+        std::fs::write(&path, build_pdf(&pages, None)).unwrap();
+        let err = DocumentParser::new()
+            .parse_file(&path)
+            .expect_err("too many pages");
+        assert!(err.is::<limits::TooLarge>(), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("This PDF has 2,001 pages, too large to index"),
+            "{err:#}"
+        );
+    }
+
+    fn text_pages(sections: &[DocumentSection]) -> Vec<(usize, String)> {
+        sections
+            .iter()
+            .filter_map(|s| match s {
+                DocumentSection::Text { content, page, .. } => Some((*page, content.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// When the layout parser cannot read a PDF, `pdf_extract`'s text is
+    /// used unless lopdf's reads about as much.
+    #[test]
+    fn the_fallback_prefers_the_reader_that_reads_more() {
+        let lopdf: Vec<(usize, String)> = vec![(1, "Inv 1".to_string()), (2, String::new())];
+        let extract = "Invoice 1 for the supply of steel rods, payable within thirty days.";
+        let paged = || {
+            Some(vec![
+                "Invoice 1 for the supply of steel rods,".to_string(),
+                "payable within thirty days.".to_string(),
+            ])
+        };
+        // pdf_extract reads more: its pages.
+        assert_eq!(
+            text_pages(&fallback_text_sections(&lopdf, extract, paged)),
+            [
+                (1, "Invoice 1 for the supply of steel rods,".to_string()),
+                (2, "payable within thirty days.".to_string())
+            ]
+        );
+        // Without pages, or with pages that miss text: unpaged.
+        assert_eq!(
+            text_pages(&fallback_text_sections(&lopdf, extract, || None)),
+            [(0, extract.to_string())]
+        );
+        assert_eq!(
+            text_pages(&fallback_text_sections(&lopdf, extract, || {
+                Some(vec!["Invoice 1".to_string()])
+            })),
+            [(0, extract.to_string())]
+        );
+        // lopdf reads about as much: its pages; pdf_extract's are not asked for.
+        let full: Vec<(usize, String)> = vec![(1, extract.to_string())];
+        assert_eq!(
+            text_pages(&fallback_text_sections(&full, extract, || {
+                panic!("pdf_extract pages are not needed")
+            })),
+            [(1, extract.to_string())]
+        );
+        assert_eq!(
+            text_pages(&fallback_text_sections(&lopdf, "", || None)),
+            [(1, "Inv 1".to_string())]
+        );
+        assert!(fallback_text_sections(&[], "", || None).is_empty());
+    }
+
+    #[test]
+    fn pdf_extract_reads_pages_only_when_it_reads_them_all() {
+        use crate::processing::pdf_fixtures::{build_pdf, column};
+        let bytes = build_pdf(
+            &[
+                column(72.0, 700.0, "first", 2),
+                column(72.0, 700.0, "second", 2),
+            ],
+            None,
+        );
+        let pages = pdf_extract_pages(&bytes, 2).expect("two pages");
+        assert!(
+            pages[0].contains("first") && !pages[0].contains("second"),
+            "{pages:?}"
+        );
+        assert!(
+            pages[1].contains("second") && !pages[1].contains("first"),
+            "{pages:?}"
+        );
+        assert_eq!(pdf_extract_pages(&bytes, 3), None);
+    }
+
+    #[test]
+    fn file_names_that_are_ids_are_told_from_titles() {
+        for id in [
+            "1706.03762v7",
+            "2310.06825",
+            "20231015",
+            "2023-10-15",
+            "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+            "a3f9c2e1b4d5e6f7",
+            "PMC1234567",
+            "IMG_0042",
+            "",
+        ] {
+            assert!(is_identifier_stem(id), "{id:?}");
+        }
+        for title in [
+            "attention",
+            "report2023",
+            "My thesis draft",
+            "notes",
+            "Q3 results 2023",
+            "deadbeef",
+            "lease-scan",
+        ] {
+            assert!(!is_identifier_stem(title), "{title:?}");
+        }
+    }
+
+    /// A PDF named by its arXiv id is titled by the title printed on it; a
+    /// PDF with a name keeps it.
+    #[test]
+    fn a_pdf_named_by_an_id_is_titled_by_its_printed_title() {
+        use crate::processing::pdf_fixtures::{bold, build_pdf, column};
+        let mut page = vec![bold(72.0, 740.0, 18.0, "Attention Is All You Need")];
+        page.push(bold(72.0, 700.0, 12.0, "1 Introduction"));
+        page.extend(column(72.0, 684.0, "intro", 8));
+        let bytes = build_pdf(&[page], None);
+        let dir = tempfile::tempdir().unwrap();
+        let arxiv = dir.path().join("1706.03762v7.pdf");
+        std::fs::write(&arxiv, &bytes).unwrap();
+        let parsed = DocumentParser::new().parse_file(&arxiv).expect("parsed");
+        assert_eq!(parsed.title, "Attention Is All You Need");
+        let named = dir.path().join("transformer-paper.pdf");
+        std::fs::write(&named, &bytes).unwrap();
+        let parsed = DocumentParser::new().parse_file(&named).expect("parsed");
+        assert_eq!(parsed.title, "transformer-paper");
+    }
+
+    /// OCR that fails says why, instead of reporting a scan with no text.
+    #[test]
+    fn an_ocr_failure_is_reported_with_its_reason() {
+        use crate::processing::ocr::worker::WorkerCommand;
+        use crate::processing::pdf_fixtures::build_pdf;
+        let worker = OcrWorker::new(WorkerCommand {
+            program: std::path::PathBuf::from("this-ocr-worker-does-not-exist"),
+            args: Vec::new(),
+            env: Vec::new(),
+        });
+        let dir = tempfile::tempdir().unwrap();
+        worker.set_model_dir(Some(dir.path().join("pp-ocrv6")));
+        let parser = DocumentParser::new().with_ocr_worker(Arc::new(worker));
+        let scan = dir.path().join("scan.pdf");
+        std::fs::write(&scan, build_pdf(&[vec![]], None)).unwrap();
+        let err = format!("{:#}", parser.parse_file(&scan).expect_err("OCR failed"));
+        assert!(err.contains("OCR could not read this scanned PDF"), "{err}");
+        assert!(err.contains("starting the OCR process"), "{err}");
+        assert!(!err.contains("no extractable text"), "{err}");
+    }
+
+    #[test]
+    fn unread_pages_are_named() {
+        assert_eq!(page_list(&[4]), "page 4");
+        assert_eq!(page_list(&[4, 9]), "pages 4, 9");
+        assert_eq!(
+            page_list(&(1..=15).collect::<Vec<_>>()),
+            "pages 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 and 5 more"
+        );
+        let metadata = HashMap::from([(OCR_FAILED_PAGES_KEY.to_string(), "4,9".to_string())]);
+        assert_eq!(
+            ocr_failed_pages_notice(&metadata).as_deref(),
+            Some("pages 4, 9 could not be read")
+        );
+        assert_eq!(ocr_failed_pages_notice(&HashMap::new()), None);
     }
 }

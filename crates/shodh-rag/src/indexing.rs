@@ -757,6 +757,30 @@ pub async fn index_file_with_progress(
     metadata: HashMap<String, String>,
     on_page: Option<&ScannedPageFn<'_>>,
 ) -> Result<Vec<uuid::Uuid>, String> {
+    index_file_with_notice(rag, path, metadata, on_page)
+        .await
+        .map(|indexed| indexed.ids)
+}
+
+/// A file indexed by [`index_file_with_notice`]: its chunks, and what the
+/// user should know about how it was read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedFile {
+    pub ids: Vec<uuid::Uuid>,
+    /// Pages of a scan OCR could not read ("pages 4, 9 could not be read"),
+    /// when there were any.
+    pub notice: Option<String>,
+}
+
+/// [`index_file_with_progress`], with what the user should know about how
+/// the file was read. A panic while the file is parsed, chunked or embedded
+/// is an error, not a panic of the caller.
+pub async fn index_file_with_notice(
+    rag: &RwLock<RAGEngine>,
+    path: &Path,
+    metadata: HashMap<String, String>,
+    on_page: Option<&ScannedPageFn<'_>>,
+) -> Result<IndexedFile, String> {
     let preparer = rag
         .read()
         .await
@@ -791,7 +815,8 @@ pub async fn index_file_with_progress(
     let prepared = match prepared {
         Ok(prepared) => prepared,
         Err(e) => {
-            if e.is::<crate::processing::ocr::ScanReaderMissing>() {
+            if e.is::<crate::processing::ocr::ScanReaderMissing>() && queued_when_refused(&reported)
+            {
                 rag.read().await.report_scan_reader_missing(path, reported);
             }
             return Err(format!("{e:#}"));
@@ -800,11 +825,27 @@ pub async fn index_file_with_progress(
     if prepared.scan_reader_missing() {
         rag.read().await.report_scan_reader_missing(path, reported);
     }
-    rag.write()
+    let notice = prepared.notice().map(str::to_string);
+    if let Some(notice) = &notice {
+        tracing::warn!(file = %path.display(), "Indexed with pages missing: {notice}");
+    }
+    let ids = rag
+        .write()
         .await
         .commit_file(prepared)
         .await
-        .map_err(|e| format!("{e:#}"))
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(IndexedFile { ids, notice })
+}
+
+/// Whether a file refused for want of the scan reader, indexed with
+/// `metadata`, is queued to be read once the reader is installed. A Library
+/// file is; a file added in a chat is not: the chat discards it, and the
+/// chat's notice says why it was refused.
+fn queued_when_refused(metadata: &HashMap<String, String>) -> bool {
+    !metadata
+        .get("space_id")
+        .is_some_and(|owner| crate::rag_engine::is_chat_uploads(owner))
 }
 
 fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
@@ -899,6 +940,17 @@ mod tests {
             assert!(is_supported_file_type(ext), "{} should be supported", ext);
         }
         assert!(!is_supported_file_type("exe"));
+    }
+
+    #[test]
+    fn refused_chat_uploads_are_not_queued_for_the_scan_reader() {
+        let owned = |owner: &str| HashMap::from([("space_id".to_string(), owner.to_string())]);
+        assert!(queued_when_refused(&owned("space-1")));
+        assert!(queued_when_refused(&HashMap::new()));
+        assert!(!queued_when_refused(&owned(
+            crate::rag_engine::CHAT_UPLOADS_MAIN
+        )));
+        assert!(!queued_when_refused(&owned("chat-uploads:ws-1")));
     }
 
     /// The parser reads `.htm` as HTML; indexing takes it too.
@@ -1027,12 +1079,19 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn searches_run_while_a_folder_is_indexed() {
-        let dir = tempfile::tempdir().expect("temp dir");
+    /// An engine holding a lease, whose embedder holds a document batch
+    /// containing `HOLD` until released: the engine, the receiver told when
+    /// the hold starts, and the sender that releases it.
+    async fn gated_engine(
+        dir: &Path,
+    ) -> (
+        Arc<RwLock<RAGEngine>>,
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
         let mut config = crate::config::RAGConfig::default();
-        config.data_dir = dir.path().join("data");
-        config.embedding.model_dir = dir.path().join("models");
+        config.data_dir = dir.join("data");
+        config.embedding.model_dir = dir.join("models");
         config.embedding.use_e5 = false;
         config.embedding.dimension = crate::statements::testing::DIM;
         config.search.min_score_threshold = 0.0;
@@ -1057,7 +1116,13 @@ mod tests {
             )
             .await
             .expect("indexed");
-        let rag = Arc::new(RwLock::new(engine));
+        (Arc::new(RwLock::new(engine)), entered_rx, release_tx)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn searches_run_while_a_folder_is_indexed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (rag, entered_rx, release_tx) = gated_engine(dir.path()).await;
 
         let folder = dir.path().join("folder");
         std::fs::create_dir_all(&folder).expect("folder");
@@ -1104,6 +1169,56 @@ mod tests {
             .await
             .expect("search");
         assert!(after.iter().any(|r| r.text.contains("HOLD")));
+    }
+
+    /// A file added in a chat is read and embedded without the engine lock
+    /// (as the upload command indexes it), so searches run meanwhile; it is
+    /// stored under its chat's owner.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn searches_run_while_a_chat_upload_is_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (rag, entered_rx, release_tx) = gated_engine(dir.path()).await;
+        let upload = dir.path().join("chat_uploads").join("u1").join("notes.txt");
+        std::fs::create_dir_all(upload.parent().expect("folder")).expect("folder");
+        std::fs::write(
+            &upload,
+            "HOLD this upload in embedding. It lists the rooms of the house: a kitchen facing the garden, two bedrooms upstairs and a study by the stairs.",
+        )
+        .expect("file");
+        let owner = crate::rag_engine::chat_uploads_source(Some("ws-1")).expect("owner");
+        let job = {
+            let rag = rag.clone();
+            let upload = upload.clone();
+            let metadata = HashMap::from([("space_id".to_string(), owner.clone())]);
+            tokio::spawn(async move { index_file_with_notice(&rag, &upload, metadata, None).await })
+        };
+        tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(60)))
+            .await
+            .expect("join")
+            .expect("the upload reached embedding");
+
+        let search = async { rag.read().await.search("lease notice period", 3).await };
+        let found = tokio::time::timeout(Duration::from_secs(10), search)
+            .await
+            .expect("search waited for the upload")
+            .expect("search");
+        assert!(found.iter().any(|r| r.text.contains("sixty days")));
+
+        release_tx.send(()).expect("release");
+        let indexed = job.await.expect("join").expect("indexed");
+        assert!(!indexed.ids.is_empty());
+        assert_eq!(indexed.notice, None);
+        let after = rag
+            .read()
+            .await
+            .search("HOLD upload rooms kitchen", 3)
+            .await
+            .expect("search");
+        assert!(
+            after.iter().any(|r| r.text.contains("HOLD this upload")
+                && r.metadata.get("space_id") == Some(&owner)),
+            "{after:?}"
+        );
     }
 
     #[tokio::test]

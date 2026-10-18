@@ -1056,6 +1056,60 @@ mod tests {
     }
 
     #[test]
+    fn a_quiet_failure_does_not_silence_the_next_new_one() {
+        let source = FolderSourceRef {
+            id: "s1".into(),
+            path: "C:/library/Papers".into(),
+        };
+        let broken = FileFailure {
+            file: "C:/library/Papers/broken.pdf".into(),
+            reason: "not a pdf".into(),
+        };
+        let mut memory = crate::notifications::IndexingMemory::default();
+        // The launch after an upgrade: the heal-only first sync lists the
+        // failure of before, quietly.
+        memory.begin_first_sync("indexing:s1");
+        let healed = inbox_item(
+            &source,
+            &Ok(SyncReport {
+                indexed: 40,
+                rechunked: 40,
+                files: 41,
+                failures: vec![broken.clone()],
+                ..SyncReport::default()
+            }),
+        )
+        .expect("recorded");
+        assert_eq!(healed.status, InboxStatus::Failed);
+        assert_eq!(memory.outcome(&healed), None);
+        memory.end_first_sync("indexing:s1");
+        // Later a file dropped into the folder fails: announced.
+        let torn = inbox_item(
+            &source,
+            &Ok(SyncReport {
+                files: 42,
+                failures: vec![
+                    broken,
+                    FileFailure {
+                        file: "C:/library/Papers/torn.pdf".into(),
+                        reason: "not a pdf".into(),
+                    },
+                ],
+                new_failures: 1,
+                ..SyncReport::default()
+            }),
+        )
+        .expect("recorded");
+        assert!(
+            matches!(
+                memory.outcome(&torn),
+                Some(crate::notifications::Outcome::Problem { .. })
+            ),
+            "a new failure is a problem"
+        );
+    }
+
+    #[test]
     fn a_sync_that_rechunked_and_indexed_changes_counts_only_the_changes() {
         let source = FolderSourceRef {
             id: "s1".into(),

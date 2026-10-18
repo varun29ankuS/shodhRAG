@@ -617,15 +617,20 @@ impl IndexingMemory {
     pub fn outcome(&mut self, item: &NewInboxItem) -> Option<Outcome> {
         let outcome = inbox_outcome(item)?;
         let failed = item.status == InboxStatus::Failed;
+        // A quiet item told the user nothing: a quiet success clears the
+        // folder's failure, a quiet failure does not count as announced.
+        if is_quiet(item) {
+            if !failed {
+                self.failed.remove(&item.id);
+            }
+            return None;
+        }
         let was_failed = if failed {
             !self.failed.insert(item.id.clone())
         } else {
             self.failed.remove(&item.id);
             false
         };
-        if is_quiet(item) {
-            return None;
-        }
         let routine = is_routine(item) && !self.first_syncs.contains(&item.id);
         match (routine, failed) {
             (false, _) => Some(outcome),

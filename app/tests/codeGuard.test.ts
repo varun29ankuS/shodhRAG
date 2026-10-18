@@ -14,9 +14,12 @@ import guard, {
   GUARD_COMMAND,
   HOST_TOOLS_ENV,
   ROOT_ENV,
+  checkPath,
   filePart,
   hostTools,
+  inGitFolder,
   isWithin,
+  pathParts,
   pathProblem,
   toolCallProblem,
 } from '../../crates/shodh-rag/src/harness/code_guard.js';
@@ -45,8 +48,8 @@ test('paths inside the code folder are allowed, including files that do not exis
 test('paths that leave the code folder are blocked', () => {
   const { base, root, cleanup } = fixture();
   try {
-    // Backslash separators and UNC paths only mean something on Windows; on
-    // other systems a backslash is part of a file name inside the folder.
+    // Backslash separators and UNC paths only mean something on Windows;
+    // elsewhere a backslash is refused (see the omp forms test).
     const windowsOnly = process.platform === 'win32' ? ['..\\secret.txt', '\\\\server\\share\\x'] : [];
     for (const p of [
       '../secret.txt',
@@ -118,13 +121,140 @@ test('only the Code tools run, each with its paths checked', () => {
   }
 });
 
-test('selectors and copied tags are not part of the file path', () => {
+test('selectors and copied tags are not part of the file path; other colons are not checked', () => {
   assert.equal(filePart('src/a.rs:10-20'), 'src/a.rs');
-  assert.equal(filePart('C:\\code\\a.rs:5'), 'C:\\code\\a.rs');
+  assert.equal(filePart('src/a.rs:raw:1-50'), 'src/a.rs');
+  assert.equal(filePart('src/a.rs:-40'), 'src/a.rs');
   assert.equal(filePart('[src/a.rs#00FF]'), 'src/a.rs');
-  assert.equal(filePart('archive.zip:inner/file.txt'), 'archive.zip');
+  // omp splits at the last colon, and only before a selector: anything else
+  // (archive members, NTFS streams, a colon inside the path) has no file part.
+  assert.equal(filePart('archive.zip:inner/file.txt'), null);
+  assert.equal(filePart('src/a.rs:../../x'), null);
+  assert.equal(filePart('a:b/../../x'), null);
+  assert.equal(filePart(':10'), null);
+  if (process.platform === 'win32') {
+    assert.equal(filePart('C:\\code\\a.rs:5'), 'C:\\code\\a.rs');
+    assert.equal(filePart('C:\\code\\a.rs::$DATA'), null);
+  } else {
+    assert.equal(filePart('C:/code/a.rs:5'), null);
+  }
   assert.equal(isWithin('/code/app', '/code/app'), true);
   assert.equal(isWithin('/code/app', '/code/app-old/x'), false);
+});
+
+test('forms omp reads differently from their text are refused (omp 18.4.10 expandPath)', () => {
+  const { base, root, cleanup } = fixture();
+  try {
+    const refused = [
+      // omp drops a leading ':' or '@' before it resolves the rest.
+      ':../secret.txt',
+      ':' + path.join(base, 'secret.txt'),
+      ':C:\\x',
+      '@/etc/passwd',
+      '@C:\\x',
+      '@' + path.join(base, 'secret.txt'),
+      '@src/lib.rs',
+      // omp strips quotes from list entries; "" leaves no file at all.
+      '""',
+      '"../secret.txt"',
+      // A colon that is not a selector: omp opens the whole text.
+      'src/lib.rs:../../secret.txt',
+      'src:x/../../../secret.txt',
+      'archive.zip:inner/file.txt',
+      // omp reads Unicode spaces as spaces.
+      '~\u00A0/x',
+    ];
+    if (process.platform === 'win32') {
+      refused.push('C:secret.txt', 'src\\..\\.. \\secret.txt', '..\u2002\\secret.txt', '.git.\\config', 'src\\lib.rs::$DATA');
+    } else {
+      // omp's search tools turn backslashes into slashes and its reads undo
+      // shell escapes: neither is a plain file name here.
+      refused.push('\\.\\./secret.txt', '..\\secret.txt', 'src\\ dir/x');
+    }
+    for (const p of refused) {
+      assert.ok(pathProblem(root, root, p), p);
+    }
+    // A path of only slashes is the code folder for omp.
+    for (const p of ['src/lib.rs', 'src/lib.rs:10-20', '/']) {
+      assert.equal(pathProblem(root, root, p), null, p);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+test('on Windows, /c/... names a drive as omp reads it', { skip: process.platform !== 'win32' }, () => {
+  const { base, root, cleanup } = fixture();
+  try {
+    const alias = (p: string) => '/' + p[0].toLowerCase() + p.slice(2).replace(/\\/g, '/');
+    assert.equal(pathProblem(root, root, alias(path.join(root, 'src', 'lib.rs'))), null);
+    assert.match(pathProblem(root, root, alias(path.join(base, 'secret.txt'))) ?? '', /outside/);
+    assert.match(pathProblem(root, root, '/mnt' + alias(path.join(base, 'secret.txt'))) ?? '', /outside/);
+  } finally {
+    cleanup();
+  }
+});
+
+test('every way omp may split a path list is checked', () => {
+  const { root, cleanup } = fixture();
+  try {
+    assert.deepEqual(pathParts('src, tests'), ['src', 'tests', 'src,']);
+    assert.deepEqual(pathParts('src/lib.rs'), []);
+    assert.ok(pathParts('a;b c,d').includes('c'));
+    for (const value of ['src, ../', 'src ../', 'src\t../secret.txt', 'src,"../secret.txt"', 'src;../']) {
+      assert.match(toolCallProblem(root, root, 'grep', { pattern: 'x', path: value }) ?? '', /outside|quotes/, value);
+      assert.match(toolCallProblem(root, root, 'glob', { path: value }) ?? '', /outside|quotes/, value);
+    }
+    // read splits a ';' list when the whole text is not a file.
+    assert.match(toolCallProblem(root, root, 'read', { path: 'src/lib.rs;../secret.txt' }) ?? '', /outside/);
+    assert.equal(toolCallProblem(root, root, 'grep', { pattern: 'fn', path: 'src, src/lib.rs' }), null);
+  } finally {
+    cleanup();
+  }
+});
+
+test('reads and edits need an existing file; writes may create one', () => {
+  const { root, cleanup } = fixture();
+  try {
+    // omp looks for a missing file elsewhere in the folder (by its suffix),
+    // which the guard cannot follow.
+    assert.match(toolCallProblem(root, root, 'read', { path: 'lib.rs' }) ?? '', /does not exist/);
+    assert.match(toolCallProblem(root, root, 'edit', { path: 'nope.rs', old_string: 'a', new_string: 'b' }) ?? '', /does not exist/);
+    assert.equal(toolCallProblem(root, root, 'read', { path: 'src/lib.rs:1-5' }), null);
+    assert.equal(toolCallProblem(root, root, 'write', { path: 'src/new/file.rs', content: 'x' }), null);
+    assert.equal(checkPath(root, root, 'src/lib.rs').resolved, path.join(root, 'src', 'lib.rs'));
+  } finally {
+    cleanup();
+  }
+});
+
+test('edits and writes never touch the .git folder; other files report their target', () => {
+  const { root, cleanup } = fixture();
+  try {
+    mkdirSync(path.join(root, '.git', 'hooks'), { recursive: true });
+    writeFileSync(path.join(root, '.git', 'config'), '[core]');
+    for (const p of ['.git/config', '.GIT/hooks/post-checkout', 'src/../.git/config', '.git', 'sub/.Git/x']) {
+      assert.match(toolCallProblem(root, root, 'write', { path: p, content: 'x' }) ?? '', /\.git folder/, p);
+    }
+    assert.match(toolCallProblem(root, root, 'edit', { path: '.git/config', old_string: 'a', new_string: 'b' }) ?? '', /\.git folder/);
+    // Reading git's files is allowed.
+    assert.equal(toolCallProblem(root, root, 'read', { path: '.git/config' }), null);
+    assert.equal(inGitFolder(root, path.join(root, '.gitignore')), false);
+    // Files that can run programs pass here with their target: Shodh's
+    // approval decides (code_mode.rs `execution_risk`).
+    for (const p of ['.vscode/tasks.json', '.envrc', 'package.json']) {
+      let target: string | undefined;
+      const problem = toolCallProblem(root, root, 'write', { path: p, content: 'x' }, (t: string) => {
+        target = t;
+      });
+      assert.equal(problem, null, p);
+      assert.equal(target, path.join(root, p));
+    }
+    assert.match(toolCallProblem(root, root, 'edit', { path: 'src/lib.rs', _input: '[../secret.txt#1A2B]' }) ?? '', /single-file replace/);
+    assert.match(toolCallProblem(root, root, 'edit', { path: 'src/lib.rs', _path: '../secret.txt', old_string: 'a', new_string: 'b' }) ?? '', /one file/);
+  } finally {
+    cleanup();
+  }
 });
 
 /** The hook registered with a fake omp. */
@@ -169,6 +299,11 @@ test('changes wait for the approval answer; reads do not ask', async () => {
     assert.equal(allowed.asked.length, 1);
     assert.equal(allowed.asked[0].title, APPROVAL_TITLE);
     assert.deepEqual(JSON.parse(allowed.asked[0].text), { toolCallId: 'call-1', tool: 'bash', input: { command: 'cargo test' } });
+
+    // An edit or a write tells Shodh the file it lands in.
+    assert.equal(await allowed.call(root, 'write', { path: 'src/new.rs', content: 'x' }), undefined);
+    assert.equal(JSON.parse(allowed.asked[1].text).target, path.join(root, 'src', 'new.rs'));
+    allowed.asked.length = 1;
 
     const declined = loadGuard(async () => 'The user declined this.');
     assert.deepEqual(await declined.call(root, 'write', { path: 'a.txt', content: 'x' }), { block: true, reason: 'The user declined this.' });

@@ -42,6 +42,10 @@ const INDEX_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// `workspace_state` key of the one-time import of legacy spaces.
 const LEGACY_IMPORT_KEY: &str = "legacy_spaces_v1";
 
+/// `workspace_state` key of the one-time repair of workspaces an earlier import left
+/// without their folder ([`repair_legacy_folders`]).
+const LEGACY_REPAIR_KEY: &str = "legacy_spaces_repair_v1";
+
 /// Description of a workspace imported from a legacy space.
 const LEGACY_DESCRIPTION: &str =
     "Chats that were asked about this folder before workspaces existed.";
@@ -711,19 +715,17 @@ pub struct LegacySpace {
     pub folder: String,
 }
 
-/// What the import does: the workspaces to create, the ones an interrupted import already
-/// created (each gets its folder again if that run stopped before adding it) and, per
-/// conversation, the workspace it joins. Conversations whose space is not an indexed folder
-/// any more stay in "No workspace" (their space fields are kept as they were).
+/// What the import does: the workspaces to create and, per conversation, the workspace it
+/// joins. Conversations whose space is not an indexed folder any more stay in "No
+/// workspace" (their space fields are kept as they were).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LegacyPlan {
     pub create: Vec<LegacySpace>,
-    pub repair: Vec<LegacySpace>,
     pub assign: BTreeMap<String, String>,
 }
 
 /// Plans the import. `existing` holds the ids of workspaces that already exist (an earlier,
-/// interrupted import created them; they are reused, not created again, and repaired).
+/// interrupted import created them; they are reused, not created again).
 pub fn plan_legacy_import(
     conversations: &[ConversationRecord],
     folders: &[KnownFolder],
@@ -748,7 +750,7 @@ pub fn plan_legacy_import(
         let Some(folder) = by_id.get(space) else {
             continue;
         };
-        if planned.insert(space.to_string()) {
+        if !existing.contains(space) && planned.insert(space.to_string()) {
             let name = c
                 .space_name
                 .as_deref()
@@ -761,29 +763,65 @@ pub fn plan_legacy_import(
                         .map(|n| n.to_string_lossy().into_owned())
                 })
                 .unwrap_or_else(|| folder.folder.clone());
-            let legacy = LegacySpace {
+            plan.create.push(LegacySpace {
                 id: space.to_string(),
                 name: name
                     .chars()
                     .take(shodh_rag::workspaces::MAX_NAME_CHARS)
                     .collect(),
                 folder: folder.folder.clone(),
-            };
-            if existing.contains(space) {
-                plan.repair.push(legacy);
-            } else {
-                plan.create.push(legacy);
-            }
+            });
         }
         plan.assign.insert(c.id.clone(), space.to_string());
     }
     plan
 }
 
+/// The Library's indexed folders, as the index lists them. Indexing may hold the index for
+/// a while: the conversations load without waiting for it, and the caller is retried on
+/// the next load.
+async fn known_folders(rag: &RwLock<RAGEngine>) -> WorkspaceCommandResult<Vec<KnownFolder>> {
+    let engine = tokio::time::timeout(INDEX_WAIT, rag.read())
+        .await
+        .map_err(|_| WorkspaceCommandError::unavailable("the index is busy"))?;
+    Ok(load_sources(&engine)
+        .await
+        .map_err(|e| WorkspaceCommandError::unavailable(e.to_string()))?
+        .into_iter()
+        .filter(|s| s.kind == IndexKind::Folder)
+        .filter_map(|s| {
+            s.folder.map(|folder| KnownFolder {
+                source_id: s.source_id,
+                folder,
+            })
+        })
+        .collect())
+}
+
 /// Runs the import once: creates a workspace per legacy space that is still an indexed
 /// folder and assigns its conversations. Idempotent and resumable (a partial run is
-/// completed by the next call); marked done only after the conversations were saved.
+/// completed by the next call); marked done only after the conversations were saved. Then,
+/// once, gives back their folders to workspaces an earlier import left without them
+/// ([`repair_legacy_folders`]).
 pub async fn import_legacy_spaces(
+    state: &WorkspaceState,
+    data_dir: &Path,
+    rag: &RwLock<RAGEngine>,
+) -> WorkspaceCommandResult<usize> {
+    let imported = import_legacy_spaces_once(state, data_dir, rag).await?;
+    // Retried on the next load; what the import changed is reported either way.
+    let repaired = match repair_legacy_folders(state, rag).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(target: "shodh::workspaces", error = %e, "legacy workspaces not repaired yet");
+            0
+        }
+    };
+    Ok(imported + repaired)
+}
+
+/// The import itself, run until it is marked done.
+async fn import_legacy_spaces_once(
     state: &WorkspaceState,
     data_dir: &Path,
     rag: &RwLock<RAGEngine>,
@@ -806,25 +844,7 @@ pub async fn import_legacy_spaces(
             .await?;
         return Ok(0);
     }
-    let folders: Vec<KnownFolder> = {
-        // Indexing may hold the index for a while; the conversations load without
-        // waiting for it, and the import is retried on the next load.
-        let engine = tokio::time::timeout(INDEX_WAIT, rag.read())
-            .await
-            .map_err(|_| WorkspaceCommandError::unavailable("the index is busy"))?;
-        load_sources(&engine)
-            .await
-            .map_err(|e| WorkspaceCommandError::unavailable(e.to_string()))?
-            .into_iter()
-            .filter(|s| s.kind == IndexKind::Folder)
-            .filter_map(|s| {
-                s.folder.map(|folder| KnownFolder {
-                    source_id: s.source_id,
-                    folder,
-                })
-            })
-            .collect()
-    };
+    let folders = known_folders(rag).await?;
     let existing: HashSet<String> = state
         .run(|s| s.list(true))
         .await?
@@ -835,70 +855,53 @@ pub async fn import_legacy_spaces(
     apply_legacy_plan(state, data_dir, &plan).await
 }
 
-/// Applies an import plan: creates each workspace with its folder (keeping the space id),
-/// gives a workspace an interrupted run created without its folder that folder, assigns the
-/// conversations that are still in no workspace, and marks the import done. A space whose
-/// workspace cannot be made from what it holds (an invalid folder or name) is skipped and
-/// logged, and its conversations stay in no workspace: it never blocks the others. Returns
-/// the workspaces planned plus the conversations moved (non-zero: open views should
-/// refresh).
+/// Applies an import plan: creates each workspace with its folder in one transaction
+/// (keeping the space id; one that already exists, from an interrupted run, is kept as it
+/// is), assigns the conversations that are still in no workspace, and marks the import
+/// done. A space whose workspace cannot be made from what it holds (an invalid folder or
+/// name) is skipped and logged, and its conversations stay in no workspace: it never
+/// blocks the others. Returns the workspaces created plus the conversations moved
+/// (non-zero: open views should refresh).
 pub async fn apply_legacy_plan(
     state: &WorkspaceState,
     data_dir: &Path,
     plan: &LegacyPlan,
 ) -> WorkspaceCommandResult<usize> {
-    let spaces: Vec<LegacySpace> = plan.create.iter().chain(&plan.repair).cloned().collect();
-    let skipped: HashSet<String> = state
+    let create = plan.create.clone();
+    let (created, skipped) = state
         .run(move |s| {
-            let mut skipped = HashSet::new();
-            for space in &spaces {
-                let folder = [NewSource {
-                    kind: SourceKind::Folder,
-                    reference: space.id.clone(),
-                    label: space.name.clone(),
-                    path: Some(space.folder.clone()),
-                }];
-                let exists = match s.get(&space.id) {
-                    Ok(_) => true,
-                    Err(WorkspaceError::NotFound(_)) => false,
-                    Err(e) => return Err(e),
-                };
-                let done = if exists {
-                    // Added only when missing (a source is never duplicated): an earlier
-                    // run that stopped between the two steps left the workspace without it.
-                    s.add_sources(&space.id, &folder, WorkspaceAuthor::Migration)
-                        .map(|report| {
-                            if report.added > 0 {
-                                tracing::info!(target: "shodh::workspaces", workspace = %space.id, "legacy workspace given back its folder");
-                            }
-                        })
-                } else {
-                    // The workspace and its folder are created together.
-                    s.create_with_sources(
-                        &space.id,
-                        &NewWorkspace {
-                            name: space.name.clone(),
-                            description: LEGACY_DESCRIPTION.to_string(),
-                            ..NewWorkspace::default()
-                        },
-                        &folder,
-                        WorkspaceAuthor::Migration,
-                    )
-                    .map(|_| ())
-                };
-                match done {
-                    Ok(()) => {}
-                    // Retrying cannot fix what the space holds: skip it, import the rest.
+            let mut created = 0usize;
+            let mut skipped: HashSet<String> = HashSet::new();
+            for space in &create {
+                if workspace_exists(s, &space.id)? {
+                    continue;
+                }
+                let made = s.create_with_sources(
+                    &space.id,
+                    &NewWorkspace {
+                        name: space.name.clone(),
+                        description: LEGACY_DESCRIPTION.to_string(),
+                        ..NewWorkspace::default()
+                    },
+                    &[legacy_folder(&space.id, &space.name, &space.folder)],
+                    WorkspaceAuthor::Migration,
+                );
+                match made {
+                    Ok(_) => created += 1,
                     Err(WorkspaceError::Invalid(reason)) => {
-                        tracing::warn!(target: "shodh::workspaces", space = %space.id, %reason, "legacy space not imported as a workspace");
-                        if !exists {
-                            skipped.insert(space.id.clone());
+                        // Made meanwhile (its id was taken): kept as it is, like one an
+                        // interrupted run made.
+                        if workspace_exists(s, &space.id)? {
+                            continue;
                         }
+                        // Retrying cannot fix what the space holds: skip it, import the rest.
+                        tracing::warn!(target: "shodh::workspaces", space = %space.id, %reason, "legacy space not imported as a workspace");
+                        skipped.insert(space.id.clone());
                     }
                     Err(e) => return Err(e),
                 }
             }
-            Ok(skipped)
+            Ok((created, skipped))
         })
         .await?;
     let mut assign = plan.assign.clone();
@@ -921,12 +924,98 @@ pub async fn apply_legacy_plan(
             code: "storage",
             message,
         })?;
-    let note = format!("{} workspaces, {assigned} conversations", plan.create.len());
+    let note = format!("{created} workspaces, {assigned} conversations");
     state
         .run(move |s| s.set_state(LEGACY_IMPORT_KEY, &note))
         .await?;
-    tracing::info!(target: "shodh::workspaces", workspaces = plan.create.len(), conversations = assigned, "legacy spaces imported as workspaces");
-    Ok(assigned + plan.create.len())
+    tracing::info!(target: "shodh::workspaces", workspaces = created, skipped = skipped.len(), conversations = assigned, "legacy spaces imported as workspaces");
+    Ok(assigned + created)
+}
+
+/// Whether workspace `id` exists.
+fn workspace_exists(store: &WorkspaceStore, id: &str) -> WorkspaceResult<bool> {
+    match store.get(id) {
+        Ok(_) => Ok(true),
+        Err(WorkspaceError::NotFound(_)) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// The folder source of a workspace made from a legacy space (its id is the space id, the
+/// folder source's id).
+fn legacy_folder(id: &str, name: &str, folder: &str) -> NewSource {
+    NewSource {
+        kind: SourceKind::Folder,
+        reference: id.to_string(),
+        label: name.to_string(),
+        path: Some(folder.to_string()),
+    }
+}
+
+/// Gives back its folder, once, to each workspace an earlier import left without it: before
+/// a workspace and its folder were created together, a run that stopped between the two
+/// left the workspace with no source, and the next run kept it as it was and marked the
+/// import done. Only a workspace with no source at all whose id is an indexed folder's
+/// source id (the legacy space id it was made from) is given that folder. Marked done once
+/// it ran; a workspace whose folder cannot be added is logged and left as it is. Returns
+/// the workspaces given their folder.
+async fn repair_legacy_folders(
+    state: &WorkspaceState,
+    rag: &RwLock<RAGEngine>,
+) -> WorkspaceCommandResult<usize> {
+    if state.run(|s| s.state(LEGACY_REPAIR_KEY)).await?.is_some() {
+        return Ok(0);
+    }
+    let any_empty = state
+        .run(|s| s.list(true))
+        .await?
+        .iter()
+        .any(|w| w.source_counts.total() == 0);
+    // Without a workspace to repair, the index is not read.
+    let folders = if any_empty {
+        known_folders(rag).await?
+    } else {
+        Vec::new()
+    };
+    apply_legacy_repair(state, folders).await
+}
+
+/// [`repair_legacy_folders`] with the indexed `folders`, and marked done.
+pub async fn apply_legacy_repair(
+    state: &WorkspaceState,
+    folders: Vec<KnownFolder>,
+) -> WorkspaceCommandResult<usize> {
+    let repaired = state
+        .run(move |s| {
+            let mut repaired = 0usize;
+            for workspace in s.list(true)? {
+                if workspace.source_counts.total() != 0 {
+                    continue;
+                }
+                let Some(folder) = folders.iter().find(|f| f.source_id == workspace.id) else {
+                    continue;
+                };
+                let source = legacy_folder(&workspace.id, &workspace.name, &folder.folder);
+                match s.add_sources(&workspace.id, &[source], WorkspaceAuthor::Migration) {
+                    Ok(report) if report.added > 0 => repaired += 1,
+                    Ok(_) => {}
+                    Err(WorkspaceError::Invalid(reason)) => {
+                        tracing::warn!(target: "shodh::workspaces", workspace = %workspace.id, %reason, "legacy workspace not given its folder");
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(repaired)
+        })
+        .await?;
+    let note = format!("{repaired} workspaces given their folder");
+    state
+        .run(move |s| s.set_state(LEGACY_REPAIR_KEY, &note))
+        .await?;
+    if repaired > 0 {
+        tracing::info!(target: "shodh::workspaces", workspaces = repaired, "legacy workspaces given back their folders");
+    }
+    Ok(repaired)
 }
 
 #[cfg(test)]
@@ -1054,9 +1143,6 @@ The {name} notes describe the river, the bridge and the mill at dawn.
         let existing: HashSet<String> = ["src-1".to_string()].into();
         let resumed = plan_legacy_import(&conversations, &folders, &existing);
         assert_eq!(resumed.create.len(), 1);
-        assert_eq!(resumed.repair.len(), 1);
-        assert_eq!(resumed.repair[0].id, "src-1");
-        assert_eq!(resumed.repair[0].folder, "C:/Docs/Contracts");
         assert_eq!(resumed.assign.len(), 3);
     }
 
@@ -1170,10 +1256,11 @@ The {name} notes describe the river, the bridge and the mill at dawn.
             .await
             .unwrap()
             .is_some());
-        // Applying again (an interrupted run resumed) neither duplicates nor fails.
+        // Applying again (an interrupted run resumed) neither duplicates nor fails, and
+        // creates and moves nothing.
         assert_eq!(
             apply_legacy_plan(&state, dir.path(), &plan).await.unwrap(),
-            1
+            0
         );
         assert_eq!(state.run(|s| s.list(true)).await.unwrap().len(), 1);
         assert_eq!(
@@ -1208,9 +1295,10 @@ The {name} notes describe the river, the bridge and the mill at dawn.
         let folders = vec![known("src-1", "C:/Docs/Contracts"), known("src-bad", "  ")];
         let plan = plan_legacy_import(&saved, &folders, &HashSet::new());
         assert_eq!(plan.create.len(), 2);
+        // One workspace created, one conversation moved.
         assert_eq!(
             apply_legacy_plan(&state, dir.path(), &plan).await.unwrap(),
-            3
+            2
         );
         assert!(matches!(
             state.run(|s| s.get("src-bad")).await,
@@ -1244,57 +1332,64 @@ The {name} notes describe the river, the bridge and the mill at dawn.
             .is_some());
     }
 
-    /// An interrupted import that created a workspace but not its folder (before the two
-    /// were created together): the next run gives it the folder, once.
+    /// An import that stopped between creating a workspace and adding its folder, before the
+    /// two were created together, and was then marked done: the one-time repair gives that
+    /// workspace its folder, and only a workspace with no source whose id is an indexed
+    /// folder's source id.
     #[tokio::test]
-    async fn a_workspace_left_without_its_folder_is_repaired() {
+    async fn the_repair_gives_a_folder_only_to_an_empty_legacy_workspace() {
         let dir = tempfile::tempdir().unwrap();
         let state = WorkspaceState::at(Some((dir.path().join("shodh.db"), None)));
-        let store = ConversationStore::in_dir(dir.path());
-        let saved = vec![conversation("a", Some(("src-1", "Contracts")), None)];
-        store
-            .update(|all| {
-                all.extend(saved.clone());
-                Ok(())
-            })
-            .unwrap();
+        let named = |name: &str| NewWorkspace {
+            name: name.into(),
+            ..NewWorkspace::default()
+        };
+        let broken = named("Contracts");
+        let mine = named("Mine");
+        let kept = named("Tax");
         state
-            .run(|s| {
-                s.create_with_id(
-                    "src-1",
-                    &NewWorkspace {
-                        name: "Contracts".into(),
-                        ..NewWorkspace::default()
-                    },
+            .run(move |s| {
+                // Left without its folder by an interrupted import, now marked done.
+                s.create_with_id("src-1", &broken, WorkspaceAuthor::Migration)?;
+                // The user's own workspace, empty: its id is no folder's.
+                s.create_with_id("ws-mine", &mine, WorkspaceAuthor::User)?;
+                // A legacy workspace that has a source: left as it is.
+                s.create_with_sources(
+                    "src-2",
+                    &kept,
+                    &[NewSource {
+                        kind: SourceKind::File,
+                        reference: "C:/Docs/Tax 2026/return.pdf".into(),
+                        label: String::new(),
+                        path: None,
+                    }],
                     WorkspaceAuthor::Migration,
-                )
+                )?;
+                s.set_state(LEGACY_IMPORT_KEY, "1 workspaces, 1 conversations")
             })
             .await
             .unwrap();
-        let folders = vec![known("src-1", "C:/Docs/Contracts")];
-        let existing: HashSet<String> = ["src-1".to_string()].into();
-        let plan = plan_legacy_import(&saved, &folders, &existing);
-        assert!(plan.create.is_empty());
-        assert_eq!(plan.repair.len(), 1);
-        apply_legacy_plan(&state, dir.path(), &plan).await.unwrap();
+        let folders = vec![
+            known("src-1", "C:/Docs/Contracts"),
+            known("src-2", "C:/Docs/Tax 2026"),
+        ];
+        assert_eq!(apply_legacy_repair(&state, folders).await.unwrap(), 1);
         let detail = state.run(|s| s.detail("src-1")).await.unwrap();
         assert_eq!(detail.sources.len(), 1);
         assert_eq!(detail.sources[0].kind, SourceKind::Folder);
+        assert_eq!(detail.sources[0].reference, "src-1");
         assert_eq!(detail.sources[0].added_by, WorkspaceAuthor::Migration);
         assert_eq!(detail.sources[0].path.as_deref(), Some("C:/Docs/Contracts"));
-        // Applying again neither duplicates the folder nor fails.
-        apply_legacy_plan(&state, dir.path(), &plan).await.unwrap();
-        assert_eq!(
-            state
-                .run(|s| s.detail("src-1"))
-                .await
-                .unwrap()
-                .sources
-                .len(),
-            1
-        );
-        let after = store.load().unwrap();
-        assert_eq!(after[0].workspace_id.as_deref(), Some("src-1"));
+        let mine = state.run(|s| s.detail("ws-mine")).await.unwrap();
+        assert!(mine.sources.is_empty());
+        let tax = state.run(|s| s.detail("src-2")).await.unwrap().sources;
+        assert_eq!(tax.len(), 1);
+        assert_eq!(tax[0].kind, SourceKind::File);
+        assert!(state
+            .run(|s| s.state(LEGACY_REPAIR_KEY))
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[test]

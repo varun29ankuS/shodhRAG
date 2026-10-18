@@ -1147,12 +1147,6 @@ impl ToolRegistry {
 
         interrupted.armed = false;
         drop(interrupted);
-        // What a tool returns (history, memories, files, calendar, sources,
-        // MCP servers...) is private unless it came from the public web;
-        // the web tools then ask before sending anything away.
-        if outcome.ok && !PUBLIC_RESULT_TOOLS.contains(&call.tool.as_str()) {
-            ctx.mark_private();
-        }
         ctx.audit(
             AuditEventType::ToolCall,
             audit_payload::tool_call(
@@ -1314,6 +1308,15 @@ impl ToolRegistry {
             }
         }
 
+        // What a tool returns, its errors included (history, memories,
+        // files, calendar, sources, MCP servers...), is private unless it
+        // comes from the public web; the web tools then ask before sending
+        // anything away. Marked once the call is decided, so its own
+        // decision is not affected, and before it runs, so a call that
+        // fails or is stopped counts too.
+        if !PUBLIC_RESULT_TOOLS.contains(&name) {
+            ctx.mark_private();
+        }
         tool.execute(args, ctx).await
     }
 }
@@ -2368,6 +2371,69 @@ mod tests {
         assert!(!task.await.unwrap().ok);
         // Nothing to grant for a step that offered nothing.
         assert!(fresh.resolve_for_session("step-9").is_err());
+    }
+
+    /// Always fails.
+    struct Failing;
+
+    #[async_trait]
+    impl HostTool for Failing {
+        fn name(&self) -> &'static str {
+            "failing"
+        }
+        fn label(&self) -> &'static str {
+            "Failing"
+        }
+        fn label_template(&self) -> &'static str {
+            "Failing"
+        }
+        fn description(&self) -> &'static str {
+            "Test tool"
+        }
+        fn schema(&self) -> Value {
+            json!({"type": "object", "additionalProperties": false})
+        }
+        fn tier(&self) -> RiskTier {
+            RiskTier::Read
+        }
+        async fn execute(&self, _args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+            Err(ToolError::Failed("private file text in an error".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failing_tool_still_makes_the_next_unknown_fetch_ask() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(Failing)).unwrap();
+        let (ctx, _rx) = ctx();
+        assert!(!ctx.private_content());
+        // A call refused before it runs reveals nothing.
+        let refused = reg
+            .dispatch(
+                call("failing", json!({})),
+                &profile(&[]),
+                &ApprovalGate::default(),
+                &ctx,
+            )
+            .await;
+        assert!(!refused.ok);
+        assert!(!ctx.private_content());
+        let out = reg
+            .dispatch(
+                call("failing", json!({})),
+                &profile(&["failing"]),
+                &ApprovalGate::default(),
+                &ctx,
+            )
+            .await;
+        assert!(!out.ok);
+        assert!(ctx.private_content());
+        assert!(web::fetch_needs_confirmation(
+            "https://x.example/?q=error",
+            ctx.private_content(),
+            &ctx.web_sources(),
+            None
+        ));
     }
 
     #[tokio::test]

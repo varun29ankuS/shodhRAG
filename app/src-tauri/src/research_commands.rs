@@ -17,6 +17,7 @@ use shodh_rag::audit::payload::{is_cloud, provider_id};
 use shodh_rag::audit::AuditKey;
 use shodh_rag::llm::{ApiProvider, LLMMode};
 use shodh_rag::processing::table_model::SharedTableModel;
+use shodh_rag::rag_engine::{canonical_path, normalize_source_path};
 use shodh_rag::research::citations::{CitationService, GraphSlot};
 use shodh_rag::research::objects::{tex_candidates, PaperObjects, PaperParts};
 use shodh_rag::research::pdf_text::PageRect;
@@ -37,6 +38,7 @@ use crate::app_settings::SettingsStore;
 use crate::audit_commands::AuditState;
 use crate::llm_commands::LLMState;
 use crate::memory_commands::{MemoryState, APP_VERSION};
+use crate::workspace_commands::WorkspaceState;
 
 /// Emitted with `{ "kind": "snippet" | "result" | "graph", "filePath": ... }` after a write.
 pub const RESEARCH_CHANGED_EVENT: &str = "research-changed";
@@ -229,6 +231,30 @@ pub fn scopes_for(workspace: Option<&str>) -> Vec<Scope> {
     }
 }
 
+/// The scope of a snippet or result the user makes: the workspace `workspace` names (one
+/// that exists, archived or not), or global without one. The Library belongs to no
+/// workspace, so what is made there is global and every workspace run over its file sees
+/// it. An id that names no workspace (older versions passed the Library source id) is
+/// refused rather than filed under a scope no run looks in.
+pub async fn owned_scope(
+    workspaces: &WorkspaceState,
+    workspace: Option<&str>,
+) -> ResearchCommandResult<Scope> {
+    let scope = Scope::for_workspace(workspace);
+    let id = match &scope {
+        Scope::Global => return Ok(scope),
+        Scope::Workspace(id) => id.clone(),
+    };
+    let wanted = id.clone();
+    match workspaces.run(move |s| s.get(&wanted)).await {
+        Ok(_) => Ok(scope),
+        Err(e) if e.code == "not_found" => Err(ResearchCommandError::invalid(format!(
+            "No workspace has id `{id}`; snippets and results made outside a workspace are kept for every workspace."
+        ))),
+        Err(e) => Err(ResearchCommandError::unavailable(e.message)),
+    }
+}
+
 fn decode_png(base64_png: &str) -> ResearchCommandResult<Vec<u8>> {
     let text = base64_png.trim();
     let text = text.strip_prefix("data:image/png;base64,").unwrap_or(text);
@@ -256,14 +282,30 @@ fn require_pdf(path: &str) -> ResearchCommandResult<String> {
             p.display()
         )));
     }
-    Ok(std::fs::canonicalize(p)
-        .map(|real| {
-            let text = real.display().to_string();
-            text.strip_prefix(r"\\?\")
-                .map(str::to_string)
-                .unwrap_or(text)
-        })
-        .unwrap_or_else(|_| path.trim().to_string()))
+    Ok(disk_spelling(path))
+}
+
+/// `path` as the file system spells it, for reading the file and showing its name: on
+/// Windows the case the file and its folders have on disk (citations carry the index's
+/// lower-cased spelling), and never a verbatim path (`\\?\C:\…` is `C:\…`, and
+/// `\\?\UNC\server\share\…` is `\\server\share\…`). A file the system reaches under
+/// another name (a mapped drive it resolves to `\\server\share`, a junction, a short 8.3
+/// name) keeps the spelling it was given, so its `path_key` still matches the index's.
+pub fn disk_spelling(path: &str) -> String {
+    let path = path.trim();
+    spelling_on_disk(path, std::fs::canonicalize(path).ok().as_deref())
+}
+
+/// [`disk_spelling`] of `path`, given what the file system resolved it to (`None`: it
+/// could not be resolved).
+fn spelling_on_disk(path: &str, resolved: Option<&Path>) -> String {
+    let given = canonical_path(Path::new(path));
+    match resolved.map(canonical_path) {
+        Some(real) if normalize_source_path(&real) == normalize_source_path(&given) => {
+            real.display().to_string()
+        }
+        _ => given.display().to_string(),
+    }
 }
 
 /// Input of [`snippets_create`].
@@ -307,10 +349,12 @@ pub struct SnippetListQuery {
 pub async fn snippets_create(
     app: AppHandle,
     state: State<'_, ResearchState>,
+    workspaces: State<'_, WorkspaceState>,
     input: NewSnippetInput,
 ) -> ResearchCommandResult<Snippet> {
     let file_path = require_pdf(&input.file_path)?;
     let image = input.image_png.as_deref().map(decode_png).transpose()?;
+    let scope = owned_scope(&workspaces, input.workspace.as_deref()).await?;
     let services = state.services().await?;
     let snippet = services
         .snippets
@@ -324,7 +368,7 @@ pub async fn snippets_create(
             note: input.note,
             tags: input.tags,
             kind: input.kind.unwrap_or_default(),
-            scope: Scope::for_workspace(input.workspace.as_deref()),
+            scope,
             author: SnippetAuthor::User,
         })
         .await?;
@@ -344,6 +388,7 @@ pub async fn snippets_list(
             file_path: query.file_path,
             text: query.text,
             scopes: scopes_for(query.workspace.as_deref()),
+            within: None,
             limit: query.limit,
         })
         .await?)
@@ -560,11 +605,13 @@ pub async fn results_extract(
     app: AppHandle,
     state: State<'_, ResearchState>,
     llm: State<'_, LLMState>,
+    workspaces: State<'_, WorkspaceState>,
     file_path: String,
     workspace: Option<String>,
     use_model: Option<bool>,
 ) -> ResearchCommandResult<ExtractionReport> {
     let file_path = require_pdf(&file_path)?;
+    let scope = owned_scope(&workspaces, workspace.as_deref()).await?;
     let model = if use_model.unwrap_or(false) {
         let dir = crate::profile::app_data_dir(&app)
             .map_err(|e| ResearchCommandError::unavailable(e.to_string()))?;
@@ -576,14 +623,7 @@ pub async fn results_extract(
         None
     };
     let services = state.services().await?;
-    let report = services
-        .results
-        .extract(
-            &file_path,
-            Scope::for_workspace(workspace.as_deref()),
-            model,
-        )
-        .await?;
+    let report = services.results.extract(&file_path, scope, model).await?;
     broadcast_change(&app, "result", Some(&report.file_path));
     Ok(report)
 }
@@ -783,5 +823,44 @@ mod tests {
         assert_eq!(decode_png("***").unwrap_err().code, "invalid");
         assert!(scopes_for(None).is_empty());
         assert_eq!(scopes_for(Some("s1")).len(), 2);
+    }
+
+    /// Paths are read and shown as the file system spells them, never as a verbatim or a
+    /// relative `UNC\…` path, and a mapped drive keeps its letter (the index's key).
+    #[test]
+    fn files_are_spelled_as_on_disk_and_as_indexed() {
+        use shodh_rag::research::path_key;
+        let unc = r"\\?\UNC\server\share\Papers\a.pdf";
+        assert_eq!(
+            spelling_on_disk(r"\\?\C:\Papers\a.pdf", None),
+            r"C:\Papers\a.pdf"
+        );
+        assert_eq!(spelling_on_disk(unc, None), r"\\server\share\Papers\a.pdf");
+        // A file on a share, resolved by the system to its verbatim UNC form.
+        assert_eq!(
+            spelling_on_disk(r"\\server\share\Papers\a.pdf", Some(Path::new(unc))),
+            r"\\server\share\Papers\a.pdf"
+        );
+        // A mapped drive resolves to the share: the drive letter stays.
+        let mapped = spelling_on_disk(r"Z:\Papers\a.pdf", Some(Path::new(unc)));
+        assert_eq!(mapped, r"Z:\Papers\a.pdf");
+        if cfg!(windows) {
+            assert_eq!(path_key(&mapped), path_key("z:/papers/a.pdf"));
+            // The index's lower-cased spelling gets the file's case back.
+            let real = Path::new(r"\\?\C:\Papers\Attention.pdf");
+            assert_eq!(
+                spelling_on_disk("c:/papers/attention.pdf", Some(real)),
+                r"C:\Papers\Attention.pdf"
+            );
+            assert_eq!(
+                spelling_on_disk(r"c:\papers\attention.pdf", Some(real)),
+                r"C:\Papers\Attention.pdf"
+            );
+        }
+        // Unresolvable: the given spelling, without a verbatim prefix.
+        assert_eq!(
+            disk_spelling(r"\\?\C:\does-not-exist\gone.pdf"),
+            r"C:\does-not-exist\gone.pdf"
+        );
     }
 }

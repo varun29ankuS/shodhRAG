@@ -15,10 +15,12 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::json;
-use shodh_rag::audit::AuditKey;
+use shodh_rag::audit::{AuditKey, AuditLog, AuditRecord};
 use shodh_rag::harness::tools::sources::{load_sources, SourceKind as IndexKind};
 use shodh_rag::harness::tools::ScopedSnippet;
+use shodh_rag::research::scopes::{move_to_global, settle_scopes, MoveReason, SettledScopes};
 use shodh_rag::research::ResearchError;
+use shodh_rag::statements::Scope;
 use shodh_rag::workspaces::{
     AddReport, InstructionVersion, NewSource, NewWorkspace, SourceKind, Workspace, WorkspaceAuthor,
     WorkspaceDetail, WorkspaceError, WorkspacePatch, WorkspaceResult, WorkspaceSource,
@@ -30,6 +32,7 @@ use tokio::sync::{OnceCell, RwLock};
 
 use crate::audit_commands::AuditState;
 use crate::conversation_commands::{ConversationRecord, ConversationStore};
+use crate::memory_commands::MemoryState;
 use crate::research_commands::ResearchState;
 
 /// Emitted with `{ "workspaceId": ... }` (null when several changed) after a workspace was
@@ -384,12 +387,14 @@ pub async fn workspaces_remove_source(
 
 /// Deletes a workspace (its instructions history and source list; never the sources).
 /// Its chats and tasks are kept and move to "No workspace", and so do the files added in
-/// its chats ([`keep_workspace_uploads`]).
+/// its chats ([`keep_workspace_uploads`]); its memories, snippets and results are kept and
+/// become global ([`release_workspace_statements`]).
 #[tauri::command]
 pub async fn workspaces_delete(
     app: AppHandle,
     state: State<'_, WorkspaceState>,
     rag: State<'_, crate::rag_commands::RagState>,
+    memory: State<'_, MemoryState>,
     id: String,
 ) -> WorkspaceCommandResult<bool> {
     let dir = data_dir(&app)?;
@@ -407,6 +412,18 @@ pub async fn workspaces_delete(
     if removed {
         crate::mcp_commands::forget_workspace(&app, &workspace_id);
     }
+    // In the background (opening the memory store may wait for the index), and not fatal:
+    // the workspace is gone either way, and what is left in its scope becomes global at
+    // the next start (`settle_statement_scopes`).
+    if removed {
+        let memory = memory.inner().clone();
+        let released = workspace_id.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(message) = release_workspace_statements(&memory, &released).await {
+                tracing::warn!(target: "shodh::workspaces", workspace_id = %released, %message, "the workspace's memories, snippets and results were not made global");
+            }
+        });
+    }
     let detached = detach_conversations(&dir, &workspace_id);
     // Whatever happened to the chats: not fatal, the workspace is gone either
     // way, and uploads left behind go to the main Ask at the next start (see
@@ -419,6 +436,137 @@ pub async fn workspaces_delete(
         broadcast_change(&app, Some(&workspace_id));
     }
     Ok(removed)
+}
+
+/// Moves the statements of `workspace_id`, a workspace being deleted, to global: its
+/// memories, the snippets made in its chats and any results, with their history. Deleting
+/// a workspace keeps its chats and tasks, and so keeps what was learned and saved in them;
+/// they are then recalled and listed everywhere, like everything outside a workspace.
+/// Returns the statements moved.
+pub(crate) async fn release_workspace_statements(
+    memory: &MemoryState,
+    workspace_id: &str,
+) -> Result<u64, String> {
+    let scope = Scope::for_workspace(Some(workspace_id));
+    if scope == Scope::Global {
+        return Ok(0);
+    }
+    let service = memory.service().await?;
+    let moved = move_to_global(service.store(), &scope)
+        .await
+        .map_err(|e| e.to_string())?;
+    record_scope_moves(
+        service.audit_log(),
+        moved.audit_record(MoveReason::WorkspaceDeleted),
+    )
+    .await;
+    let total = moved.moved.total();
+    if total > 0 {
+        tracing::info!(target: "shodh::workspaces", workspace_id, moved = total, "a deleted workspace's statements moved to global");
+    }
+    Ok(total)
+}
+
+/// Appends `records` (scope moves) to the audit log, waiting until each is written. The
+/// statements have moved already; a record that cannot be written is logged.
+async fn record_scope_moves(
+    log: Option<&Arc<AuditLog>>,
+    records: impl IntoIterator<Item = AuditRecord>,
+) {
+    let records: Vec<AuditRecord> = records.into_iter().collect();
+    if records.is_empty() {
+        return;
+    }
+    let Some(log) = log.cloned() else {
+        tracing::warn!(target: "shodh::audit", events = records.len(), "no audit log: scope moves not recorded");
+        return;
+    };
+    let written = tokio::task::spawn_blocking(move || {
+        records
+            .into_iter()
+            .try_for_each(|record| log.append(record).map(|_| ()))
+    })
+    .await;
+    match written {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::error!(target: "shodh::audit", error = %e, "a scope move was not recorded")
+        }
+        Err(e) => {
+            tracing::error!(target: "shodh::audit", error = %e, "a scope move was not recorded")
+        }
+    }
+}
+
+/// `workspace_state` key of the one-time move of the snippets and results the Library made
+/// (filed under a Library source id by older versions) to global.
+const LIBRARY_RESEARCH_KEY: &str = "library_research_global_v1";
+
+/// Settles where statements are visible (see [`shodh_rag::research::scopes`]): the
+/// snippets and results the Library made become global (once), and so do the statements
+/// of scopes that name no workspace (on every call: a Library source id, a workspace
+/// deleted by an older version or whose statements could not be moved when it was).
+/// Called after the legacy import, whose workspaces keep the Library source ids they were
+/// made from. Fails, changing nothing more, when the workspaces cannot be read.
+pub async fn settle_statement_scopes(
+    state: &WorkspaceState,
+    memory: &MemoryState,
+) -> Result<SettledScopes, String> {
+    let service = memory.service().await?;
+    let store = service.store();
+    // The scopes before the workspaces: a workspace created in between is then listed.
+    let scopes = store.scopes().await.map_err(|e| e.to_string())?;
+    let workspaces: HashSet<String> = state
+        .run(|s| s.list(true))
+        .await
+        .map_err(|e| e.message)?
+        .into_iter()
+        .map(|w| w.id)
+        .collect();
+    let library = state
+        .run(|s| s.state(LIBRARY_RESEARCH_KEY))
+        .await
+        .map_err(|e| e.message)?
+        .is_none();
+    let (settled, outcome) = settle_scopes(store, &scopes, &workspaces, library).await;
+    // What moved before a failure is recorded too: it is global now either way.
+    record_scope_moves(service.audit_log(), settled.audit_records()).await;
+    outcome.map_err(|e| e.to_string())?;
+    if settled.sweep_skipped {
+        return Ok(settled);
+    }
+    if library {
+        let note = format!("{} statements", settled.library.moved.total());
+        state
+            .run(move |s| s.set_state(LIBRARY_RESEARCH_KEY, &note))
+            .await
+            .map_err(|e| e.message)?;
+    }
+    if library || settled.moved() > 0 {
+        tracing::info!(
+            target: "shodh::workspaces",
+            library = settled.library.moved.total(),
+            orphaned = settled.orphaned.moved.total(),
+            "statements no workspace run could see moved to global"
+        );
+    }
+    Ok(settled)
+}
+
+/// [`settle_statement_scopes`] once per run of the app, in the background (opening the
+/// memory store may wait for the index). A failure is logged and retried on the next call.
+pub fn settle_statement_scopes_in_background(state: WorkspaceState, memory: MemoryState) {
+    static SETTLED: OnceCell<()> = OnceCell::const_new();
+    tauri::async_runtime::spawn(async move {
+        let settled = SETTLED
+            .get_or_try_init(|| async {
+                settle_statement_scopes(&state, &memory).await.map(|_| ())
+            })
+            .await;
+        if let Err(message) = settled {
+            tracing::warn!(target: "shodh::workspaces", %message, "statement scopes not settled yet");
+        }
+    });
 }
 
 /// The files added in the chats of `workspace_id`, a workspace being deleted, go to the main
@@ -972,6 +1120,161 @@ The {name} notes describe the river, the bridge and the mill at dawn.
             source_id: id.into(),
             folder: folder.into(),
         }
+    }
+
+    fn saved_snippet(
+        scope: Scope,
+        author: shodh_rag::research::snippets::SnippetAuthor,
+        text: &str,
+    ) -> shodh_rag::research::snippets::NewSnippet {
+        shodh_rag::research::snippets::NewSnippet {
+            file_path: "C:/papers/ann.pdf".into(),
+            page: 2,
+            rect: shodh_rag::research::pdf_text::PageRect {
+                x: 10.0,
+                y: 20.0,
+                width: 200.0,
+                height: 40.0,
+            },
+            text: text.into(),
+            image_png: None,
+            title: None,
+            note: None,
+            tags: Vec::new(),
+            kind: shodh_rag::research::snippets::SnippetKind::Passage,
+            scope,
+            author,
+        }
+    }
+
+    /// Deleting a workspace makes its memories, snippets and results global, so nothing
+    /// it held is lost or stranded. At the next start, what older versions filed under a
+    /// Library source id (or a workspace deleted before) becomes global too, while a live
+    /// workspace keeps the assistant's snippets; the one-time step runs once.
+    #[tokio::test]
+    async fn statements_no_workspace_run_could_see_become_global() {
+        use shodh_rag::research::snippets::SnippetAuthor;
+        let t = crate::agent_tools::testing::host().await;
+        let services = t.host.research.services().await.unwrap();
+        let store = t.host.memory.service().await.unwrap().store().clone();
+        let create = |name: &str| {
+            let new = NewWorkspace {
+                name: name.to_string(),
+                ..NewWorkspace::default()
+            };
+            move |s: &WorkspaceStore| s.create(&new, WorkspaceAuthor::User)
+        };
+        let thesis = t.host.workspaces.run(create("Thesis")).await.unwrap();
+        let draft = t.host.workspaces.run(create("Draft")).await.unwrap();
+        let agent = || SnippetAuthor::Agent {
+            model: "assistant".into(),
+        };
+        let from_library = services
+            .snippets
+            .create(saved_snippet(
+                Scope::Workspace("src-papers".into()),
+                SnippetAuthor::User,
+                "Graph indexes reach a recall of 95 percent on SIFT1M at ten neighbours.",
+            ))
+            .await
+            .unwrap();
+        let in_thesis = services
+            .snippets
+            .create(saved_snippet(
+                Scope::Workspace(thesis.id.clone()),
+                agent(),
+                "Quantisation trades recall for memory: IVF-PQ keeps 71 percent at ten.",
+            ))
+            .await
+            .unwrap();
+        let in_draft = services
+            .snippets
+            .create(saved_snippet(
+                Scope::Workspace(draft.id.clone()),
+                agent(),
+                "The draft compares graph and quantisation indexes on two datasets.",
+            ))
+            .await
+            .unwrap();
+        let scope_of = |id: String| {
+            let store = store.clone();
+            async move { store.get(&id).await.unwrap().scope }
+        };
+
+        // Deleting Draft: its snippet becomes global.
+        let draft_id = draft.id.clone();
+        assert!(t
+            .host
+            .workspaces
+            .run(move |s| s.delete(&draft_id))
+            .await
+            .unwrap());
+        assert_eq!(
+            release_workspace_statements(&t.host.memory, &draft.id)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(scope_of(in_draft.statement_id.clone()).await, Scope::Global);
+
+        // The next start: the Library-made snippet becomes global, Thesis keeps its own.
+        let settled = settle_statement_scopes(&t.host.workspaces, &t.host.memory)
+            .await
+            .unwrap();
+        assert_eq!(settled.moved(), 1, "{settled:?}");
+        assert_eq!(
+            scope_of(from_library.statement_id.clone()).await,
+            Scope::Global
+        );
+        assert_eq!(
+            scope_of(in_thesis.statement_id.clone()).await,
+            Scope::Workspace(thesis.id.clone())
+        );
+        assert!(t
+            .host
+            .workspaces
+            .run(|s| s.state(LIBRARY_RESEARCH_KEY))
+            .await
+            .unwrap()
+            .is_some());
+        let again = settle_statement_scopes(&t.host.workspaces, &t.host.memory)
+            .await
+            .unwrap();
+        assert_eq!(again.moved(), 0);
+        // Each move that moved something is one audit event: scopes and counts, no text.
+        let log = t.host.audit.clone().unwrap();
+        let mut events = log
+            .query(&shodh_rag::audit::AuditQuery {
+                types: vec![shodh_rag::audit::AuditEventType::ScopeChange],
+                ..Default::default()
+            })
+            .unwrap();
+        events.reverse();
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[0].principal, shodh_rag::audit::LOCAL_OWNER);
+        assert_eq!(
+            events[0].payload,
+            json!({
+                "reason": "workspace deleted",
+                "from": [format!("workspace:{}", draft.id)],
+                "to": "global",
+                "moved": {"memories": 0, "snippets": 1, "results": 0, "others": 0},
+                "total": 1,
+            })
+        );
+        assert_eq!(events[1].principal, shodh_rag::audit::SYSTEM_PRINCIPAL);
+        assert_eq!(events[1].payload["reason"], "orphan scope sweep");
+        assert_eq!(events[1].payload["from"], json!(["workspace:src-papers"]));
+        assert!(!events
+            .iter()
+            .any(|e| e.payload.to_string().contains("recall")));
+        // Releasing the global scope moves nothing.
+        assert_eq!(
+            release_workspace_statements(&t.host.memory, " ")
+                .await
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

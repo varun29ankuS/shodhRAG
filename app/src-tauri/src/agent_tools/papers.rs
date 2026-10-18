@@ -7,7 +7,6 @@
 //! claim — and every number of a comparison — against the snippet or table cell it cites.
 //! Editing, deleting and reviewing snippets and results is the user's and has no tool.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -25,7 +24,6 @@ use shodh_rag::research::snippets::{
 };
 use shodh_rag::statements::Scope;
 
-use super::sources::strip_verbatim;
 use super::{invalid, limit_arg, str_arg, AgentHost};
 use crate::research_commands::{indexed_pdfs, scopes_for, ResearchCommandError, ResultFilterInput};
 
@@ -151,14 +149,13 @@ impl HostTool for ListSnippetsTool {
                     file_path: str_arg(&args, "file").map(str::to_string),
                     text: str_arg(&args, "query").map(str::to_string),
                     scopes: run_scopes(ctx),
+                    // In a workspace chat, only snippets of the workspace's files, filtered
+                    // before the limit so newer snippets of other files never crowd them out.
+                    within: ctx.scope().restricted.then(|| ctx.scope().clone()),
                     limit: Some(limit_arg(&args, DEFAULT_SNIPPETS, MAX_SNIPPETS)),
                 })
                 .await
-                .map_err(research_error)?
-                .into_iter()
-                // In a workspace chat, only snippets of the workspace's files.
-                .filter(|s| ctx.scope().allows_path(&s.file_path))
-                .collect(),
+                .map_err(research_error)?,
         };
         if snippets.is_empty() {
             return Ok(ToolOutput {
@@ -315,9 +312,8 @@ impl CreateSnippetTool {
                 "Snippets are taken from indexed PDF files.".to_string(),
             ));
         }
-        Ok(std::fs::canonicalize(Path::new(&source))
-            .map(|p| strip_verbatim(&p).display().to_string())
-            .unwrap_or(source))
+        // A mapped drive keeps its letter, so the snippet's file matches the index.
+        Ok(crate::research_commands::disk_spelling(&source))
     }
 }
 
@@ -870,6 +866,270 @@ mod tests {
         assert!(matches!(err, ToolError::InvalidArguments { .. }));
         assert_eq!(create.tier(), RiskTier::Write);
         assert_eq!(list.tier(), RiskTier::Read);
+    }
+
+    /// A snippet saved in the Library (no workspace: global) is listed in a workspace chat
+    /// whose workspace holds its file, and not in one whose workspace does not; a snippet
+    /// another workspace's chat made stays that workspace's.
+    #[tokio::test]
+    async fn library_snippets_are_seen_from_every_workspace_holding_their_file() {
+        use shodh_rag::harness::tools::RunScope;
+        use shodh_rag::workspaces::{NewWorkspace, WorkspaceAuthor, WorkspaceStore};
+        let t = testing::host().await;
+        let services = t.host.research.services().await.unwrap();
+        let pdf = t.dir.path().join("ann.pdf");
+        std::fs::write(&pdf, b"%PDF-1.4").unwrap();
+        let pdf = pdf.display().to_string();
+        let create_workspace = |name: &str| {
+            let new = NewWorkspace {
+                name: name.to_string(),
+                ..NewWorkspace::default()
+            };
+            move |s: &WorkspaceStore| s.create(&new, WorkspaceAuthor::User)
+        };
+        let thesis = t
+            .host
+            .workspaces
+            .run(create_workspace("Thesis"))
+            .await
+            .unwrap();
+        let other = t
+            .host
+            .workspaces
+            .run(create_workspace("Other"))
+            .await
+            .unwrap();
+        // What the Library's viewer stores: it names no workspace.
+        let library_scope = crate::research_commands::owned_scope(&t.host.workspaces, None)
+            .await
+            .unwrap();
+        assert_eq!(library_scope, Scope::Global);
+        // An id that names no workspace (a Library source id) is refused, a workspace's kept.
+        let refused = crate::research_commands::owned_scope(&t.host.workspaces, Some("src-1"))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, "invalid");
+        assert_eq!(
+            crate::research_commands::owned_scope(&t.host.workspaces, Some(other.id.as_str()))
+                .await
+                .unwrap(),
+            Scope::Workspace(other.id.clone())
+        );
+        let snippet = |scope: Scope, author: SnippetAuthor, text: &str| NewSnippet {
+            file_path: pdf.clone(),
+            page: 2,
+            rect: PageRect {
+                x: 10.0,
+                y: 20.0,
+                width: 100.0,
+                height: 30.0,
+            },
+            text: text.into(),
+            image_png: None,
+            title: None,
+            note: None,
+            tags: vec![],
+            kind: SnippetKind::Passage,
+            scope,
+            author,
+        };
+        services
+            .snippets
+            .create(snippet(
+                library_scope,
+                SnippetAuthor::User,
+                "Graph indexes reach a recall of 95 percent on SIFT1M at ten neighbours.",
+            ))
+            .await
+            .unwrap();
+        services
+            .snippets
+            .create(snippet(
+                Scope::Workspace(other.id.clone()),
+                SnippetAuthor::Agent {
+                    model: "assistant".into(),
+                },
+                "Quantisation keeps 71 percent recall at ten neighbours with IVF-PQ.",
+            ))
+            .await
+            .unwrap();
+        let in_workspace = |id: &str, name: &str, files: Vec<String>| {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let ctx = ToolContext::new("run-1", "step-1", tx).with_scope(Arc::new(RunScope {
+                workspace: Some(id.to_string()),
+                workspace_name: Some(name.to_string()),
+                restricted: true,
+                files,
+                ..RunScope::default()
+            }));
+            (ctx, rx)
+        };
+        let list = ListSnippetsTool {
+            host: t.host.clone(),
+        };
+        let (ctx, _rx) = in_workspace(&thesis.id, &thesis.name, vec![pdf.clone()]);
+        let out = list.execute(json!({}), &ctx).await.unwrap();
+        assert!(
+            out.text_for_model.contains("recall of 95 percent"),
+            "{}",
+            out.text_for_model
+        );
+        assert!(
+            !out.text_for_model.contains("IVF-PQ"),
+            "{}",
+            out.text_for_model
+        );
+        assert_eq!(ctx.passages_issued(), 1);
+
+        // A workspace that does not hold the file sees none of it.
+        let elsewhere = t.dir.path().join("lm.pdf").display().to_string();
+        let (ctx, _rx) = in_workspace(&other.id, &other.name, vec![elsewhere]);
+        let out = list.execute(json!({}), &ctx).await.unwrap();
+        assert!(
+            out.text_for_model.starts_with("No saved snippets match"),
+            "{}",
+            out.text_for_model
+        );
+    }
+
+    /// A restricted run filters by its files before the limit: more than `limit` newer
+    /// global snippets of other files never crowd out the workspace's own older one.
+    #[tokio::test]
+    async fn a_workspace_s_older_snippet_is_listed_past_newer_ones_elsewhere() {
+        use shodh_rag::harness::tools::RunScope;
+        let t = testing::host().await;
+        let services = t.host.research.services().await.unwrap();
+        let ours = t.dir.path().join("ours.pdf").display().to_string();
+        let theirs = t.dir.path().join("theirs.pdf").display().to_string();
+        let snippet = |file: &str, text: String| NewSnippet {
+            file_path: file.to_string(),
+            page: 1,
+            rect: PageRect {
+                x: 10.0,
+                y: 20.0,
+                width: 100.0,
+                height: 30.0,
+            },
+            text,
+            image_png: None,
+            title: None,
+            note: None,
+            tags: vec![],
+            kind: SnippetKind::Passage,
+            scope: Scope::Global,
+            author: SnippetAuthor::User,
+        };
+        services
+            .snippets
+            .create(snippet(
+                &ours,
+                "The workspace's own finding: recall rises with the graph degree.".into(),
+            ))
+            .await
+            .unwrap();
+        for i in 0..(DEFAULT_SNIPPETS + 3) {
+            services
+                .snippets
+                .create(snippet(
+                    &theirs,
+                    format!("Another paper's passage number {i} about quantisation."),
+                ))
+                .await
+                .unwrap();
+        }
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let ctx = ToolContext::new("run-1", "step-1", tx).with_scope(Arc::new(RunScope {
+            workspace: Some("ws-1".into()),
+            workspace_name: Some("Thesis".into()),
+            restricted: true,
+            files: vec![ours.clone()],
+            ..RunScope::default()
+        }));
+        let list = ListSnippetsTool {
+            host: t.host.clone(),
+        };
+        let out = list.execute(json!({}), &ctx).await.unwrap();
+        assert!(
+            out.text_for_model
+                .contains("recall rises with the graph degree"),
+            "{}",
+            out.text_for_model
+        );
+        assert!(!out.text_for_model.contains("quantisation"));
+        assert_eq!(ctx.passages_issued(), 1);
+        // A search reads past the limit the same way.
+        let out = list
+            .execute(json!({ "query": "graph degree recall" }), &ctx)
+            .await
+            .unwrap();
+        assert!(out
+            .text_for_model
+            .contains("recall rises with the graph degree"));
+    }
+
+    /// A result extracted in the Library (global) is compared in a workspace chat whose
+    /// workspace holds its paper, and not in one whose workspace does not.
+    #[tokio::test]
+    async fn library_results_are_compared_from_workspaces_holding_their_paper() {
+        use shodh_rag::harness::tools::RunScope;
+        // An index that can index: the deterministic embedder.
+        let t = testing::host_with_search_models().await;
+        let host = t.host.clone();
+        let pdf = t.dir.path().join("ann.pdf");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+                "../../crates/shodh-eval/data/synthetic/corpus/contracts/nda-orchid-kestrel.pdf",
+            ),
+            &pdf,
+        )
+        .unwrap();
+        host.rag
+            .write()
+            .await
+            .add_document_from_file(&pdf, std::collections::HashMap::new())
+            .await
+            .unwrap();
+        let pdf = pdf.display().to_string();
+        let library_scope = crate::research_commands::owned_scope(&host.workspaces, None)
+            .await
+            .unwrap();
+        host.research
+            .services()
+            .await
+            .unwrap()
+            .results
+            .extract_document(&pdf, &table_doc(), library_scope, None)
+            .await
+            .unwrap();
+        let tool = QueryResultsTool { host: host.clone() };
+        let in_workspace = |files: Vec<String>| {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let ctx = ToolContext::new("run-1", "step-1", tx).with_scope(Arc::new(RunScope {
+                workspace: Some("ws-1".into()),
+                workspace_name: Some("Thesis".into()),
+                restricted: true,
+                files,
+                ..RunScope::default()
+            }));
+            (ctx, rx)
+        };
+        let args = json!({ "metric": "recall@10", "dataset": "SIFT1M" });
+        let (ctx, _rx) = in_workspace(vec![pdf.clone()]);
+        let out = tool.execute(args.clone(), &ctx).await.unwrap();
+        assert!(
+            out.text_for_model.contains("HNSW — R@10 on SIFT1M: 95.3"),
+            "{}",
+            out.text_for_model
+        );
+        let other = t.dir.path().join("other.pdf").display().to_string();
+        let (ctx, _rx) = in_workspace(vec![other]);
+        let out = tool.execute(args, &ctx).await.unwrap();
+        assert!(
+            !out.text_for_model.contains("95.3"),
+            "{}",
+            out.text_for_model
+        );
+        assert_eq!(out.summary_for_ui, "No results in this workspace");
     }
 
     fn saved_snippet(text: &str) -> Snippet {

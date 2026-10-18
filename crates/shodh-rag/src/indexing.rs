@@ -815,7 +815,8 @@ pub async fn index_file_with_notice(
     let prepared = match prepared {
         Ok(prepared) => prepared,
         Err(e) => {
-            if e.is::<crate::processing::ocr::ScanReaderMissing>() {
+            if e.is::<crate::processing::ocr::ScanReaderMissing>() && queued_when_refused(&reported)
+            {
                 rag.read().await.report_scan_reader_missing(path, reported);
             }
             return Err(format!("{e:#}"));
@@ -835,6 +836,16 @@ pub async fn index_file_with_notice(
         .await
         .map_err(|e| format!("{e:#}"))?;
     Ok(IndexedFile { ids, notice })
+}
+
+/// Whether a file refused for want of the scan reader, indexed with
+/// `metadata`, is queued to be read once the reader is installed. A Library
+/// file is; a file added in a chat is not: the chat discards it, and the
+/// chat's notice says why it was refused.
+fn queued_when_refused(metadata: &HashMap<String, String>) -> bool {
+    !metadata
+        .get("space_id")
+        .is_some_and(|owner| crate::rag_engine::is_chat_uploads(owner))
 }
 
 fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
@@ -932,6 +943,17 @@ mod tests {
     }
 
     /// The parser reads `.htm` as HTML; indexing takes it too.
+    #[test]
+    fn refused_chat_uploads_are_not_queued_for_the_scan_reader() {
+        let owned = |owner: &str| HashMap::from([("space_id".to_string(), owner.to_string())]);
+        assert!(queued_when_refused(&owned("space-1")));
+        assert!(queued_when_refused(&HashMap::new()));
+        assert!(!queued_when_refused(&owned(
+            crate::rag_engine::CHAT_UPLOADS_MAIN
+        )));
+        assert!(!queued_when_refused(&owned("chat-uploads:ws-1")));
+    }
+
     #[test]
     fn both_html_extensions_are_supported() {
         assert!(is_supported_file_type("html"));

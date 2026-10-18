@@ -683,8 +683,12 @@ async fn sync_once(app: &AppHandle, source: &FolderSourceRef) {
     if let Err(e) = &result {
         tracing::warn!(source_id = %source.id, error = %e, "folder sync failed");
     }
-    if let Some(item) = inbox_item(source, &result) {
-        crate::inbox_commands::post(app, item).await;
+    // A sync its source's removal cut short has nothing to tell: the user
+    // removed the folder.
+    if state.is_watched(source) {
+        if let Some(item) = inbox_item(source, &result) {
+            crate::inbox_commands::post(app, item).await;
+        }
     }
     let (report, error) = match result {
         Ok(report) => {

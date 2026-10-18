@@ -1926,6 +1926,15 @@ pub async fn agent_send(
         passages_block.as_deref(),
         memory_turn.as_ref().map(|t| t.note.as_str()),
     );
+    // What the web tools may send away unasked: only the user's own words, and only
+    // while the session has seen nothing private (memories, instructions, carried
+    // passages, the replayed conversation, a side thread's composed message).
+    scope.own_words = own_words.map(str::to_string);
+    scope.private_context = memories.is_some()
+        || workspace_block.is_some()
+        || passages_block.is_some()
+        || entry.parent_conversation_id.is_some()
+        || (replay && history.as_ref().is_some_and(|h| !h.is_empty()));
     let scoped = !scope.is_empty();
     // Registered before prompting: the run id is `request_id`, and the first events may
     // arrive before `prompt_scoped` returns.

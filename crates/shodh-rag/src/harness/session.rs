@@ -899,19 +899,10 @@ impl Inner {
         &self,
         text: &str,
         run_id: Option<String>,
-        mut scope: RunScope,
+        scope: RunScope,
     ) -> Result<String, HarnessError> {
         self.ensure_open()?;
         let message = Self::validate_message(text)?;
-        // Without a separate question the sent message is the user's words
-        // (the web tools ask before sending anything else away).
-        if scope
-            .question
-            .as_deref()
-            .is_none_or(|q| q.trim().is_empty())
-        {
-            scope.question = Some(message.to_string());
-        }
         let prompt_id = self.next_id("p");
         let run_id = run_id
             .map(|r| r.trim().to_string())
@@ -929,6 +920,12 @@ impl Inner {
             self.passages_in_run.reset();
             self.passages_in_run
                 .seed(&scope.carried, scope.carried_through);
+            // A message the app composed, or one carrying memories, history or
+            // instructions, is private content the web tools must not send
+            // away unasked; the session keeps that for its later runs.
+            if scope.private_context || scope.own_words.is_none() {
+                self.passages_in_run.mark_private();
+            }
             self.plan_in_run.reset();
             let question = scope
                 .question
@@ -1885,8 +1882,10 @@ impl AgentHarness for OmpSession {
             // answer (a workspace chat stays limited to the workspace's sources).
             None => {
                 let mut scope = RunScope::clone(&lock(&inner.scope));
-                // The steer text is this run's question, not the last one's.
+                // The steer text is this run's question, not the last one's,
+                // and the app has not said it is the user's own words.
                 scope.question = None;
+                scope.own_words = None;
                 inner.start_run(message, None, scope)
             }
         }

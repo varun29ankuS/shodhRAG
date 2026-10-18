@@ -20,7 +20,7 @@ pub mod sources;
 pub mod web;
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -90,6 +90,10 @@ pub struct RunPassages {
     cited: Mutex<BTreeMap<u32, CitedPassage>>,
     /// Text read with `open_document` this run, by file path, in order.
     opened: Mutex<Vec<(String, String)>>,
+    /// The session has had private content (a passage, opened document
+    /// text, or a message the app composed): kept across runs, since the
+    /// model's conversation keeps it ([`RunPassages::private_seen`]).
+    private: AtomicBool,
 }
 
 impl RunPassages {
@@ -105,7 +109,20 @@ impl RunPassages {
         self.opened.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Forget every number (a new run starts).
+    /// Note that the session holds private content ([`Self::private_seen`]).
+    pub fn mark_private(&self) {
+        self.private.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether this session has had private content in any run so far:
+    /// numbered passages, opened document text, or a run marked private.
+    /// [`Self::reset`] keeps it: the model still has the earlier turns.
+    pub fn private_seen(&self) -> bool {
+        self.private.load(Ordering::SeqCst)
+    }
+
+    /// Forget every number (a new run starts). What the session has seen
+    /// ([`Self::private_seen`]) is kept.
     pub fn reset(&self) {
         self.issued.store(0, Ordering::SeqCst);
         self.lock().clear();
@@ -123,6 +140,7 @@ impl RunPassages {
         }
         let kept: String = text.chars().take(room).collect();
         opened.push((path.to_string(), kept));
+        self.mark_private();
     }
 
     /// Every passage of the run, by number.
@@ -137,10 +155,14 @@ impl RunPassages {
 
     /// Reserve `count` consecutive numbers and return the first (1-based).
     pub fn reserve(&self, count: u32) -> u32 {
+        if count > 0 {
+            self.mark_private();
+        }
         self.issued.fetch_add(count, Ordering::SeqCst) + 1
     }
 
     pub fn record(&self, passage: CitedPassage) {
+        self.mark_private();
         self.lock().insert(passage.n, passage);
     }
 
@@ -180,6 +202,7 @@ impl RunPassages {
         if highest == 0 {
             return;
         }
+        self.mark_private();
         let mut cited = self.lock();
         for passage in passages {
             cited.insert(passage.n, passage.clone());
@@ -254,6 +277,16 @@ pub struct RunScope {
     /// conversation the side question continues still cites a left-out
     /// passage by its number, so the run's own numbers start after this one.
     pub carried_through: u32,
+    /// The user's own words in this run's message (what they typed), when
+    /// the app knows them; `None` for a message it composed (a side thread,
+    /// a summary). The web tools send text away without asking only when it
+    /// is in these words.
+    pub own_words: Option<String>,
+    /// The sent message carries private content besides the user's words
+    /// (recalled memories, workspace instructions, carried passages, the
+    /// conversation replayed): the session counts as having seen private
+    /// content ([`RunPassages::private_seen`]).
+    pub private_context: bool,
     /// The user's question as they asked it, without the blocks the sent
     /// message adds in front of it (workspace instructions, memories, the
     /// conversation replayed into a new session). The answer check searches
@@ -551,6 +584,12 @@ impl ToolContext {
         self.passages.issued()
     }
 
+    /// Whether the session has had private content ([`RunPassages::private_seen`],
+    /// [`RunScope::private_context`]) that a call could send away.
+    pub fn private_content(&self) -> bool {
+        self.passages.private_seen() || self.scope.private_context
+    }
+
     /// The URLs of this run's web passages (search results and pages read).
     pub fn web_sources(&self) -> Vec<String> {
         self.passages
@@ -561,10 +600,10 @@ impl ToolContext {
             .collect()
     }
 
-    /// The user's own words for this run (their question as they typed
-    /// it), when the session knows them.
+    /// The user's own words for this run ([`RunScope::own_words`]), when the
+    /// app knows them.
     pub fn user_words(&self) -> Option<&str> {
-        self.scope.question.as_deref()
+        self.scope.own_words.as_deref()
     }
 
     fn audit_principal(&self) -> &str {

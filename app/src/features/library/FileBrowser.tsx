@@ -632,7 +632,6 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
             onClose={() => { closePreview(); focusRow(activeIndex, false); }}
             onAsk={() => onAskAboutFile(previewFile, source)}
             onFirstPageVisible={handleFirstPageVisible}
-            workspace={source.id}
           />
         )}
       </div>
@@ -962,8 +961,6 @@ interface OpenFilePaneProps {
   onClose: () => void;
   onAsk: () => void;
   onFirstPageVisible: () => void;
-  /** The source (workspace) the file belongs to. */
-  workspace: string;
 }
 
 type PaneTab = 'document' | 'snippets' | 'results';
@@ -979,7 +976,7 @@ const PANE_TABS: { id: PaneTab; label: string }[] = [
  * animation plays when it first appears, not on every selection); only the
  * header text and the viewer swap when the selection moves.
  */
-function OpenFilePane({ paneRef, file, shownPath, focusMode, onToggleFocus, onClose, onAsk, onFirstPageVisible, workspace }: OpenFilePaneProps) {
+function OpenFilePane({ paneRef, file, shownPath, focusMode, onToggleFocus, onClose, onAsk, onFirstPageVisible }: OpenFilePaneProps) {
   const titleId = useId();
   const tabsId = useId();
   const isPdf = file.extension === 'pdf';
@@ -1107,13 +1104,13 @@ function OpenFilePane({ paneRef, file, shownPath, focusMode, onToggleFocus, onCl
         className="flex-1 min-h-0"
       >
         {tab === 'document' || !isPdf ? (
-          <FileViewer path={file.path} onFirstPageVisible={onFirstPageVisible} workspace={workspace} highlight={highlight} />
+          <FileViewer path={file.path} onFirstPageVisible={onFirstPageVisible} highlight={highlight} />
         ) : (
           <div className="h-full overflow-y-auto scrollbar-thin px-4 py-4">
             {tab === 'snippets' ? (
               <SnippetShelf filePath={file.path} emptyText="No snippets from this paper yet. In the document, press S (or the scissors button) and drag a rectangle." />
             ) : (
-              <ResultsView filePath={file.path} workspace={workspace} />
+              <ResultsView filePath={file.path} />
             )}
           </div>
         )}

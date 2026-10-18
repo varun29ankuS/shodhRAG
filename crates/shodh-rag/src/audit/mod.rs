@@ -117,10 +117,14 @@ pub enum AuditEventType {
     /// grounding check found supporting it ("Cite N instead"). Numbers and
     /// counts only, never answer text.
     CitationCorrected,
+    /// Statements (memories, snippets, results) moved from one visibility scope to
+    /// another: a workspace was deleted, or the app settled scopes no run could see.
+    /// Scopes, classes and counts only, never statement text.
+    ScopeChange,
 }
 
 impl AuditEventType {
-    pub const ALL: [AuditEventType; 15] = [
+    pub const ALL: [AuditEventType; 16] = [
         AuditEventType::Question,
         AuditEventType::ToolCall,
         AuditEventType::Approval,
@@ -136,6 +140,7 @@ impl AuditEventType {
         AuditEventType::ModelChange,
         AuditEventType::CodeChange,
         AuditEventType::CitationCorrected,
+        AuditEventType::ScopeChange,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -155,6 +160,7 @@ impl AuditEventType {
             AuditEventType::ModelChange => "model_change",
             AuditEventType::CodeChange => "code_change",
             AuditEventType::CitationCorrected => "citation_corrected",
+            AuditEventType::ScopeChange => "scope_change",
         }
     }
 }
@@ -377,6 +383,14 @@ mod tests {
         assert_eq!(
             serde_json::to_value(AuditEventType::CitationCorrected).unwrap(),
             Value::String("citation_corrected".into())
+        );
+        assert_eq!(
+            "scope_change".parse::<AuditEventType>().unwrap(),
+            AuditEventType::ScopeChange
+        );
+        assert_eq!(
+            serde_json::to_value(AuditEventType::ScopeChange).unwrap(),
+            Value::String("scope_change".into())
         );
     }
 

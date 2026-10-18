@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
 use shodh_ontology::{
-    Cardinality, Ontology, PropertyChange, RawValue, Statement, SupersedeDecision, ValidStatement,
+    Cardinality, Ontology, PropertyChange, Range, RawValue, Statement, SupersedeDecision,
+    ValidStatement,
 };
 
 use super::dynamics::{self, DynamicsState};
@@ -207,6 +208,26 @@ impl StatementStore {
     #[cfg(test)]
     pub(crate) async fn table_version(&self) -> StatementResult<u64> {
         self.table.version().await
+    }
+
+    /// Stores validated statements as new current rows in one append, without supersede
+    /// decisions: for tests that need many independent rows quickly.
+    #[cfg(test)]
+    pub(crate) async fn append_independent(
+        &self,
+        items: Vec<(Statement, Scope)>,
+    ) -> StatementResult<()> {
+        let _guard = self.write_lock.lock().await;
+        let now = self.clock.now();
+        let mut pending = Pending::default();
+        for (statement, scope) in items {
+            let valid = self
+                .ontology
+                .validate(&statement)
+                .map_err(StatementError::Invalid)?;
+            self.stage(&statement, &valid, &scope, None, None, now, &mut pending)?;
+        }
+        self.flush(&mut pending, now).await
     }
 
     /// The dynamics store (strength, use, links).
@@ -749,6 +770,89 @@ impl StatementStore {
         Ok(out)
     }
 
+    /// Every statement matching `query`, newest first, however many there are (its
+    /// `limit` does not apply): for readers that must see all of them, such as every
+    /// result reported in one paper or every result a comparison covers.
+    pub async fn query_all(&self, query: &StatementQuery) -> StatementResult<Vec<StoredStatement>> {
+        let predicate = self.predicate(query);
+        let mut rows = self.table.scan_all(Some(&predicate)).await?;
+        rows.sort_by(|a, b| b.valid_from.cmp(&a.valid_from).then(a.id.cmp(&b.id)));
+        let mut out = Vec::new();
+        for row in rows {
+            if self.matches_properties(&row, query) {
+                out.push(stored(&row)?);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The scopes statements are stored in: every scope a row has, current or not.
+    /// Scopes this version cannot read are left out (and logged).
+    pub async fn scopes(&self) -> StatementResult<BTreeSet<Scope>> {
+        let mut out = BTreeSet::new();
+        for key in self.table.scope_keys().await? {
+            match key.parse::<Scope>() {
+                Ok(scope) => {
+                    out.insert(scope);
+                }
+                Err(e) => tracing::warn!(scope = %key, error = %e, "unknown statement scope"),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Moves the statements of scope `from` to scope `to`: every row, with its history
+    /// (superseded, archived and forgotten versions), so a fact's versions stay together,
+    /// and the scope its dynamics record. Only rows of `classes` (exactly these; empty
+    /// means every class) and, when given, written by the `extractor` kind (its label,
+    /// `user`, `llm`, ...) move. Statements are never merged with ones already in `to`:
+    /// the same fact in both is then current twice until a write supersedes one. Returns
+    /// the rows moved per class.
+    pub async fn rescope(
+        &self,
+        from: &Scope,
+        to: &Scope,
+        classes: &[&str],
+        extractor: Option<&str>,
+    ) -> StatementResult<BTreeMap<String, u64>> {
+        let mut moved: BTreeMap<String, u64> = BTreeMap::new();
+        if from == to {
+            return Ok(moved);
+        }
+        let _guard = self.write_lock.lock().await;
+        let mut parts = vec![format!("scope = {}", quote(&from.as_key()))];
+        if !classes.is_empty() {
+            parts.push(format!(
+                "class IN ({})",
+                classes
+                    .iter()
+                    .map(|c| quote(c))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if let Some(extractor) = extractor {
+            parts.push(format!("extractor = {}", quote(extractor)));
+        }
+        let predicate = parts.join(" AND ");
+        let rows = self.table.id_classes(&predicate).await?;
+        if rows.is_empty() {
+            return Ok(moved);
+        }
+        self.table.set_scope(&predicate, &to.as_key()).await?;
+        let mut ids = Vec::with_capacity(rows.len());
+        for (id, class) in rows {
+            *moved.entry(class).or_default() += 1;
+            ids.push(id);
+        }
+        // The rows have moved: a failure to record their dynamics' scope (read by
+        // nothing) must not hide the move from the caller that audits it.
+        if let Err(e) = self.dynamics.set_scope(&ids, &to.as_key()) {
+            tracing::error!(error = %e, rows = ids.len(), "moved statements keep their old scope in the dynamics table");
+        }
+        Ok(moved)
+    }
+
     /// Hybrid search: vector (cosine) ranking over the text renderings and full-text (BM25)
     /// ranking over the values (`terms`), fused by reciprocal rank. Only statements matching
     /// `query` (current ones by default) are searched. Best first, at most `k`.
@@ -1133,6 +1237,16 @@ impl StatementStore {
                     .join(", ")
             ));
         }
+        // Filters on an entity property narrow the read; `matches_properties` still decides.
+        for filter in &query.properties {
+            let refers = self
+                .ontology
+                .property(&filter.property)
+                .is_some_and(|p| matches!(p.range, Range::Class(_)));
+            if let Some(pattern) = entity_like(&filter.equals).filter(|_| refers) {
+                parts.push(format!("properties_json LIKE {}", quote(&pattern)));
+            }
+        }
         parts.join(" AND ")
     }
 
@@ -1150,6 +1264,19 @@ impl StatementStore {
                 .any(|v| v.to_string() == filter.equals)
         })
     }
+}
+
+/// A `LIKE` pattern on `properties_json` that every row holding the entity `equals`
+/// (`@id`, a property filter's canonical form of an entity) matches: the stored JSON of
+/// an entity value carries `"id":"<id>"`. It only narrows the rows read; the exact
+/// property filter is applied to what it returns. `None` for any other value, and for ids
+/// whose JSON form would be escaped.
+fn entity_like(equals: &str) -> Option<String> {
+    let id = equals.strip_prefix('@')?;
+    if id.is_empty() || id.chars().any(|c| c == '"' || c == '\\' || c.is_control()) {
+        return None;
+    }
+    Some(format!("%\"id\":\"{}\"%", like_escape(id)))
 }
 
 /// Rows current at `at`: started, not superseded, not expired.

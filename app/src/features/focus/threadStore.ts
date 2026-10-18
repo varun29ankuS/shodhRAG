@@ -31,6 +31,7 @@ import type { AnswerScope } from '../agent/useAgentSession.ts';
 import { answerAsContext } from '../agent/grounding.ts';
 import { readFollowups, stripFollowups } from './followups.ts';
 import { safeTruncate } from './markdownSafe.ts';
+import { citationsAsSourceNames, heldPassages } from './summary.ts';
 import { SVG_MAX_CHARS } from '../ask/visual/svgSanitize.ts';
 import { PLOT_MAX_CHARS } from '../ask/visual/plotSpec.ts';
 import { SIMULATION_MAX_CHARS } from '../ask/visual/simulationSpec.ts';
@@ -588,7 +589,12 @@ export function threadSummary(thread: Pick<FocusThread, 'turns'>): string {
     }
   }
   const last = thread.turns[lastAnswerIndex];
-  const answer = stripFollowups(answerAsContext(last.content, last.transcript)).trim();
+  // Its citations written out as the files and pages of its own passages: in the
+  // conversation it is brought into, a marker would cite that conversation's passages.
+  const answer = citationsAsSourceNames(
+    stripFollowups(answerAsContext(last.content, last.transcript)),
+    heldPassages([last]),
+  ).trim();
   // Never cut inside an equation or a fenced block: they would render as raw source.
   const excerpt = safeTruncate(answer, SUMMARY_ANSWER_CHARS);
   return [question ? `**Asked:** ${question}` : '', excerpt].filter(Boolean).join('\n\n');

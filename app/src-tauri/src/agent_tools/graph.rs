@@ -259,11 +259,14 @@ impl HostTool for PaperGraphTool {
         let summary;
         match op {
             "most_cited" => {
-                let hits: Vec<PaperHit> = graph.most_cited(limit, 2);
-                if hits.is_empty() {
-                    lines.push("No work is cited by two or more library papers.".to_string());
-                }
+                // In a workspace chat a work counts only through the workspace's papers:
+                // every candidate is read, then the first `limit` with a shown citer kept.
+                let hits: Vec<PaperHit> = graph.most_cited(usize::MAX, 2);
+                let mut listed = 0;
                 for hit in &hits {
+                    if listed == limit {
+                        break;
+                    }
                     let citers: Vec<&PaperNode> = graph
                         .citers(&hit.paper.id)
                         .into_iter()
@@ -272,6 +275,7 @@ impl HostTool for PaperGraphTool {
                     if citers.is_empty() {
                         continue;
                     }
+                    listed += 1;
                     let first = citers.iter().find_map(|c| {
                         graph
                             .evidence(&c.id, &hit.paper.id)
@@ -290,7 +294,10 @@ impl HostTool for PaperGraphTool {
                         names.join(", ")
                     ));
                 }
-                summary = format!("{} works the library builds on", hits.len());
+                if listed == 0 {
+                    lines.push("No work is cited by two or more library papers.".to_string());
+                }
+                summary = format!("{listed} works the library builds on");
             }
             "cited" | "citers" | "neighbors" => {
                 let paper = find_paper(
@@ -344,8 +351,9 @@ impl HostTool for PaperGraphTool {
                     }
                 }
                 if op == "neighbors" {
-                    let mut related = graph.related(&paper.id, limit.min(10));
+                    let mut related = graph.related(&paper.id, usize::MAX);
                     related.retain(|r| shown(ctx, &r.paper));
+                    related.truncate(limit.min(10));
                     if !related.is_empty() {
                         lines.push("Library papers sharing references:".to_string());
                         for r in related {
@@ -618,6 +626,7 @@ impl HostTool for GetPaperTool {
                     file_path: Some(file.clone()),
                     text: None,
                     scopes: super::papers::run_scopes(ctx),
+                    within: None,
                     limit: Some(10),
                 })
                 .await
@@ -724,8 +733,9 @@ impl HostTool for FindPapersTool {
             return Err(ToolError::Failed(NOT_BUILT.to_string()));
         }
         let limit = limit_arg(&args, DEFAULT_LIMIT, MAX_LIMIT);
-        let mut found = find(&graph, &filter, limit);
+        let mut found = find(&graph, &filter, usize::MAX);
         found.retain(|p| shown(ctx, p));
+        found.truncate(limit);
         let mut passages = Vec::new();
         let mut lines = Vec::new();
         if found.is_empty() {

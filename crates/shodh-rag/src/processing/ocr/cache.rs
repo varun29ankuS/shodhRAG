@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 
 use crate::processing::document_model::StructuredDocument;
 use crate::processing::parser::{
-    ParsedDocument, OCR_ENGINE_KEY, OCR_ENGINE_SYSTEM, OCR_READER_MISSING_KEY,
+    ParsedDocument, OCR_ENGINE_KEY, OCR_ENGINE_SYSTEM, OCR_FAILED_PAGES_KEY, OCR_READER_MISSING_KEY,
 };
 use crate::types::DocumentFormat;
 
@@ -63,9 +63,15 @@ pub struct CachedScan {
 
 impl CachedScan {
     /// The cacheable part of `parsed`: a document read by OCR (it has no
-    /// structured sections, which are not stored). `None` for other parses.
+    /// structured sections, which are not stored). `None` for other parses,
+    /// and for a scan with pages OCR could not read
+    /// ([`OCR_FAILED_PAGES_KEY`]): those are tried again the next time the
+    /// file is read rather than kept empty until it changes.
     pub fn of(source: &str, stamp: FileStamp, parsed: &ParsedDocument) -> Option<Self> {
-        if !parsed.metadata.contains_key(OCR_ENGINE_KEY) || !parsed.structured_sections.is_empty() {
+        if !parsed.metadata.contains_key(OCR_ENGINE_KEY)
+            || !parsed.structured_sections.is_empty()
+            || parsed.metadata.contains_key(OCR_FAILED_PAGES_KEY)
+        {
             return None;
         }
         Some(Self {
@@ -226,6 +232,17 @@ mod tests {
         cache.put(&entry).unwrap();
         cache.clear();
         assert!(cache.get("c:/docs/a.pdf").is_none());
+    }
+
+    #[test]
+    fn a_scan_with_unread_pages_is_not_cached() {
+        let read = scan("a", STAMP, "pp-ocrv6-small", false).into_parsed();
+        assert!(CachedScan::of("a", STAMP, &read).is_some());
+        let mut partial = read;
+        partial
+            .metadata
+            .insert(OCR_FAILED_PAGES_KEY.to_string(), "4,9".to_string());
+        assert!(CachedScan::of("a", STAMP, &partial).is_none());
     }
 
     #[test]

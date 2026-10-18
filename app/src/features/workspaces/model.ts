@@ -288,3 +288,13 @@ export function pathWithin(path: string, folder: string, caseInsensitive: boolea
   if (!f) return false;
   return p === f || p.startsWith(f.endsWith('/') ? f : `${f}/`);
 }
+
+/**
+ * What deleting a workspace asks: what is deleted, and where the rest goes. Chats and tasks
+ * move to No workspace; memories, snippets and results become global (every chat and
+ * workspace sees them), as `workspaces_delete` moves them.
+ */
+export function deleteWorkspaceQuestion(name: string, chatCount: number): string {
+  const chats = `${plural(chatCount, 'chat', 'chats')} ${chatCount === 1 ? 'moves' : 'move'}`;
+  return `Delete the workspace “${name}”? Its instructions and their history and its list of sources are deleted. Its ${chats} to No workspace, and so do its tasks. Its memories, snippets and results are kept and become global: every chat and workspace can use them. Your files are not touched.`;
+}

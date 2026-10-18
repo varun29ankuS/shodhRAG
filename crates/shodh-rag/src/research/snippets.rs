@@ -21,6 +21,7 @@ use shodh_ontology::{EntityRef, Extractor, ExtractorKind, Provenance, RawValue, 
 use super::db::{hash_of_uri, ResearchDb};
 use super::pdf_text::PageRect;
 use super::{blocking, canonical_file, document_entity, file_name, ResearchError, ResearchResult};
+use crate::harness::tools::RunScope;
 use crate::processing::document_model::{BBox, BlockKind};
 use crate::statements::{
     PropertyFilter, PutIntent, Scope, StatementQuery, StatementStore, StoredStatement,
@@ -122,6 +123,10 @@ pub struct SnippetQuery {
     pub text: Option<String>,
     /// Only these scopes; empty means every scope.
     pub scopes: Vec<Scope>,
+    /// Only snippets of files this (restricted) answer scope may read
+    /// ([`RunScope::allows_path`]). Applied before `limit`: a workspace's older snippets
+    /// are listed however many newer ones other files have.
+    pub within: Option<RunScope>,
     pub limit: Option<usize>,
 }
 
@@ -437,6 +442,8 @@ impl SnippetService {
                 equals: format!("@{}", document_entity(path).id),
             });
         }
+        // With a path restriction every candidate is read, then filtered, then cut.
+        let within = query.within.as_ref();
         let rows: Vec<StoredStatement> = match query
             .text
             .as_deref()
@@ -445,17 +452,29 @@ impl SnippetService {
         {
             Some(text) => self
                 .store
-                .search(text, &statements, limit)
+                .search(
+                    text,
+                    &statements,
+                    if within.is_some() { MAX_LIMIT } else { limit },
+                )
                 .await?
                 .into_iter()
                 .map(|hit| hit.stored)
                 .collect(),
+            None if within.is_some() => self.store.query_all(&statements).await?,
             None => self.store.query(&statements).await?,
         };
         let mut out = Vec::new();
-        for row in rows.iter().take(limit) {
+        for row in &rows {
+            if out.len() == limit {
+                break;
+            }
             match snippet_from(row) {
-                Ok(snippet) => out.push(snippet),
+                Ok(snippet) => {
+                    if within.is_none_or(|scope| scope.allows_path(&snippet.file_path)) {
+                        out.push(snippet);
+                    }
+                }
                 Err(e) => {
                     tracing::warn!(target: "shodh::research", error = %e, "unreadable snippet skipped")
                 }

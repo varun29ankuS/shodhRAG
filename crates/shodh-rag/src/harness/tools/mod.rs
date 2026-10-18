@@ -310,7 +310,9 @@ impl RunScope {
     pub fn outside_message(&self, what: &str) -> String {
         match &self.workspace_name {
             Some(name) => format!(
-                "{what} is outside the workspace \"{name}\". This chat only uses the workspace's                  sources; the user can add it to the workspace, or ask again with \"search all my                  library\" turned on."
+                "{what} is outside the workspace \"{name}\". This chat only uses the workspace's \
+                 sources; the user can add it to the workspace, or ask again with \"search all my \
+                 library\" turned on."
             ),
             None => format!("{what} is outside the sources the user limited this answer to."),
         }

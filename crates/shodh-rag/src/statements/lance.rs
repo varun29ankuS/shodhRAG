@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use futures::TryStreamExt;
 use lancedb::index::scalar::FullTextSearchQuery;
 use lancedb::index::Index;
-use lancedb::query::{ExecutableQuery, QueryBase};
+use lancedb::query::{ExecutableQuery, QueryBase, Select};
 use lancedb::table::{CompactionOptions, Duration as LanceDuration, OptimizeAction};
 use lancedb::DistanceType;
 
@@ -43,6 +43,30 @@ pub(crate) struct Row {
     pub forgotten_at: Option<i64>,
     pub created_at: i64,
 }
+
+/// Every column but the embedding: what [`rows`] decodes.
+const CONTENT_COLUMNS: &[&str] = &[
+    "id",
+    "class",
+    "subject",
+    "identity",
+    "scope",
+    "text",
+    "terms",
+    "statement_json",
+    "properties_json",
+    "provenance_json",
+    "extractor",
+    "source",
+    "ontology_source",
+    "ontology_version",
+    "valid_from",
+    "valid_to",
+    "superseded_by",
+    "expires_at",
+    "forgotten_at",
+    "created_at",
+];
 
 /// Microseconds since the epoch.
 pub(crate) fn micros(at: DateTime<Utc>) -> i64 {
@@ -375,6 +399,97 @@ impl StatementTable {
         }
         let batches: Vec<RecordBatch> = query.execute().await?.try_collect().await?;
         Ok(rows(&batches)?.into_iter().map(|(row, _)| row).collect())
+    }
+
+    /// Every row matching `predicate`, however many, read in one query of one table
+    /// version. The embedding column is not read: callers of a full read need the
+    /// content, and the vectors would multiply its size.
+    pub(crate) async fn scan_all(&self, predicate: Option<&str>) -> StatementResult<Vec<Row>> {
+        let _files = self.files.read().await;
+        let mut query = self.table.query().select(Select::columns(CONTENT_COLUMNS));
+        if let Some(predicate) = predicate {
+            query = query.only_if(predicate);
+        }
+        let batches: Vec<RecordBatch> = query.execute().await?.try_collect().await?;
+        Ok(rows(&batches)?.into_iter().map(|(row, _)| row).collect())
+    }
+
+    /// The id and class of every row matching `predicate`.
+    pub(crate) async fn id_classes(
+        &self,
+        predicate: &str,
+    ) -> StatementResult<Vec<(String, String)>> {
+        let _files = self.files.read().await;
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .select(Select::columns(&["id", "class"]))
+            .only_if(predicate)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+        let mut out = Vec::new();
+        for batch in &batches {
+            let text = |name: &str| -> StatementResult<&StringArray> {
+                batch
+                    .column_by_name(name)
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                    .ok_or_else(|| StatementError::Lance(format!("column `{name}` is missing")))
+            };
+            let (ids, classes) = (text("id")?, text("class")?);
+            out.extend(
+                (0..batch.num_rows())
+                    .map(|i| (ids.value(i).to_string(), classes.value(i).to_string())),
+            );
+        }
+        Ok(out)
+    }
+
+    /// The distinct scopes stored, of every row (forgotten and superseded ones too).
+    pub(crate) async fn scope_keys(&self) -> StatementResult<Vec<String>> {
+        let mut keys = self.column_values("scope", "scope IS NOT NULL").await?;
+        keys.sort();
+        keys.dedup();
+        Ok(keys)
+    }
+
+    async fn column_values(&self, column: &str, predicate: &str) -> StatementResult<Vec<String>> {
+        let _files = self.files.read().await;
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .select(Select::columns(&[column]))
+            .only_if(predicate)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+        let mut out = Vec::new();
+        for batch in &batches {
+            let values = batch
+                .column_by_name(column)
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .ok_or_else(|| StatementError::Lance(format!("column `{column}` is missing")))?;
+            out.extend(
+                (0..values.len())
+                    .filter(|&i| !values.is_null(i))
+                    .map(|i| values.value(i).to_string()),
+            );
+        }
+        Ok(out)
+    }
+
+    /// Gives every row matching `predicate` the scope `scope` (its stored form). Only the
+    /// scope column is written, never the content.
+    pub(crate) async fn set_scope(&self, predicate: &str, scope: &str) -> StatementResult<()> {
+        self.table
+            .update()
+            .only_if(predicate)
+            .column("scope", quote(scope))
+            .execute()
+            .await?;
+        Ok(())
     }
 
     /// Nearest rows by cosine distance, prefiltered. Returns `(row, similarity)`.

@@ -47,11 +47,12 @@ async fn run_ocr_on_file(path: std::path::PathBuf) -> Result<(String, f32), Stri
         use windows::Storage::{FileAccessMode, StorageFile};
 
         let abs_path = std::fs::canonicalize(&path).map_err(|e| format!("Path error: {}", e))?;
-        let path_str = abs_path.to_string_lossy().to_string();
-        // Strip \\?\ prefix that canonicalize adds on Windows
-        let clean_path = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
+        // Without the \\?\ prefix canonicalize adds (a share's \\?\UNC\ as \\server\share).
+        let clean_path = shodh_rag::rag_engine::canonical_path(&abs_path)
+            .to_string_lossy()
+            .to_string();
 
-        let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(clean_path))
+        let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(clean_path.as_str()))
             .map_err(|e| format!("GetFileFromPath failed: {}", e))?
             .get()
             .map_err(|e| format!("GetFileFromPath get failed: {}", e))?;
@@ -120,10 +121,11 @@ fn rgba_to_png_data_uri(rgba: Vec<u8>, width: u32, height: u32) -> Result<String
 }
 
 /// The image on the system clipboard as a PNG data URI, or `None` when there
-/// is no image to process. Used by the global Ctrl+V image paste, which runs
-/// on every paste: copies from Excel, Word or a browser put a bitmap next to
-/// their text, so a clipboard that also holds text is treated as a text
-/// paste and left to the focused input.
+/// is no image to process. Used when a paste into the Ask composer carries
+/// neither text nor an image file the webview exposes. Copies from Excel,
+/// Word or a browser put a bitmap next to their text, so a clipboard that
+/// also holds text is treated as a text paste (the composer applies the
+/// same rule) and left to the input.
 #[tauri::command]
 pub async fn read_clipboard_image(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_clipboard_manager::ClipboardExt;

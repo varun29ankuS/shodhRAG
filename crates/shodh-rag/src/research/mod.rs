@@ -26,6 +26,7 @@ pub mod figures;
 pub mod objects;
 pub mod pdf_text;
 pub mod results;
+pub mod scopes;
 pub mod snippets;
 pub mod vision;
 

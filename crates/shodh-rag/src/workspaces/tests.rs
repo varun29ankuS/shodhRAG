@@ -287,6 +287,64 @@ fn a_legacy_space_keeps_its_id_and_ids_are_unique() {
 }
 
 #[test]
+fn a_workspace_and_its_first_sources_are_created_together_or_not_at_all() {
+    let (dir, store) = store();
+    // A folder without its path is invalid: nothing is created.
+    let invalid = NewSource {
+        kind: SourceKind::Folder,
+        reference: "src-2".into(),
+        label: "Broken".into(),
+        path: None,
+    };
+    assert!(store
+        .create_with_sources(
+            "src-legacy",
+            &named("Contracts"),
+            &[folder("src-legacy", "C:/Docs/Contracts"), invalid],
+            WorkspaceAuthor::Migration,
+        )
+        .is_err());
+    assert!(matches!(
+        store.get("src-legacy"),
+        Err(WorkspaceError::NotFound(_))
+    ));
+    // The source insert fails in the database: the workspace row is rolled back with it.
+    let raw = rusqlite::Connection::open(dir.path().join("shodh.db")).unwrap();
+    raw.execute_batch(
+        "CREATE TRIGGER fail_source BEFORE INSERT ON workspace_sources
+         BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+    )
+    .unwrap();
+    assert!(store
+        .create_with_sources(
+            "src-legacy",
+            &named("Contracts"),
+            &[folder("src-legacy", "C:/Docs/Contracts")],
+            WorkspaceAuthor::Migration,
+        )
+        .is_err());
+    assert!(matches!(
+        store.get("src-legacy"),
+        Err(WorkspaceError::NotFound(_))
+    ));
+    raw.execute_batch("DROP TRIGGER fail_source;").unwrap();
+
+    let ws = store
+        .create_with_sources(
+            "src-legacy",
+            &named("Contracts"),
+            &[folder("src-legacy", "C:/Docs/Contracts")],
+            WorkspaceAuthor::Migration,
+        )
+        .unwrap();
+    assert_eq!(ws.source_counts.folders, 1);
+    let detail = store.detail("src-legacy").unwrap();
+    assert_eq!(detail.sources.len(), 1);
+    assert_eq!(detail.sources[0].added_by, WorkspaceAuthor::Migration);
+    assert_eq!(detail.sources[0].path.as_deref(), Some("C:/Docs/Contracts"));
+}
+
+#[test]
 fn line_diff_marks_added_and_removed_lines() {
     let lines = line_diff("a\nb\nc", "a\nc\nd");
     let ops: Vec<(DiffOp, &str)> = lines.iter().map(|l| (l.op, l.text.as_str())).collect();
@@ -327,6 +385,70 @@ fn paths_compare_across_separators_and_folders() {
     assert!(!path_within("C:/Docs/PapersOld/a.pdf", "C:/Docs/Papers"));
     assert!(!path_within("C:/Docs/a.pdf", ""));
     assert_eq!(normalize_path(r"\\?\C:\Docs\"), normalize_path("C:/Docs"));
+}
+
+/// A file on a share, as canonicalize spells it (`\\?\UNC\…`), is the share's file, never
+/// a relative `UNC/…` path; a mapped drive keeps its letter, as the index stores it.
+#[test]
+fn share_and_mapped_drive_paths_compare_as_indexed() {
+    let verbatim = r"\\?\UNC\server\share\Papers\a.pdf";
+    assert_eq!(
+        normalize_path(verbatim),
+        normalize_path(r"\\server\share\Papers\a.pdf")
+    );
+    assert!(normalize_path(verbatim).starts_with("//server/share/"));
+    assert!(path_within(verbatim, r"\\server\share\Papers"));
+    assert!(path_within(
+        r"\\server\share\Papers\deep\b.pdf",
+        r"\\?\UNC\server\share\Papers\"
+    ));
+    assert!(!path_within(verbatim, r"\\server\share\Other"));
+    assert!(!path_within(verbatim, "UNC/server/share/Papers"));
+    assert!(path_within(r"Z:\Papers\a.pdf", "Z:/Papers"));
+    if cfg!(windows) {
+        assert!(path_within(r"z:\papers\a.pdf", r"Z:\Papers"));
+        assert_eq!(normalize_path(r"Z:\Papers\a.pdf"), "z:/papers/a.pdf");
+    }
+    assert_eq!(normalize_path("  "), "");
+}
+
+/// A workspace run over a folder on a share reads the share's files however they are
+/// spelled, and nothing outside its folders; a mapped drive's files match by its letter.
+#[test]
+fn a_workspace_run_reads_share_and_mapped_drive_files() {
+    use crate::harness::tools::RunScope;
+    let share = RunScope {
+        restricted: true,
+        folders: vec![r"\\server\share\Papers".to_string()],
+        files: vec![r"\\?\UNC\server\share\Notes\n.pdf".to_string()],
+        ..RunScope::default()
+    };
+    assert!(share.allows_path(r"\\?\UNC\server\share\Papers\a.pdf"));
+    assert!(share.allows_path(r"\\server\share\Papers\a.pdf"));
+    assert!(share.allows_path(r"\\server\share\Notes\n.pdf"));
+    assert!(!share.allows_path(r"\\?\UNC\server\share\Other\a.pdf"));
+    assert!(!share.allows_path(r"UNC\server\share\Other\a.pdf"));
+    let mapped = RunScope {
+        restricted: true,
+        folders: vec![r"Z:\Papers".to_string()],
+        ..RunScope::default()
+    };
+    assert!(mapped.allows_path(r"Z:\Papers\a.pdf"));
+    assert!(mapped.allows_path("Z:/Papers/deep/b.pdf"));
+    assert!(!mapped.allows_path(r"Z:\Other\a.pdf"));
+    if cfg!(windows) {
+        assert!(mapped.allows_path("z:/papers/a.pdf"));
+    }
+    // `..` leaves the folder: refused, however the path starts.
+    let ws = RunScope {
+        restricted: true,
+        folders: vec![r"C:\ws".to_string()],
+        ..RunScope::default()
+    };
+    assert!(ws.allows_path(r"C:\ws\a.pdf"));
+    assert!(!ws.allows_path(r"C:\ws\..\other\a.pdf"));
+    assert!(!ws.allows_path("C:/ws/../other/a.pdf"));
+    assert!(!ws.allows_path(r"\\?\C:\ws\..\other\a.pdf"));
 }
 
 #[test]

@@ -581,8 +581,17 @@ fn is_routine(item: &NewInboxItem) -> bool {
     item.data.get("announce").and_then(|a| a.as_bool()) == Some(false)
 }
 
+/// Whether an Inbox item has nothing to tell, not even as a first sync
+/// (`data.quiet: true`): a sync that only chunked files again for this
+/// build's chunker and had no file newly fail (failures it lists failed
+/// before), or indexing its source's removal cut short.
+fn is_quiet(item: &NewInboxItem) -> bool {
+    item.data.get("quiet").and_then(|q| q.as_bool()) == Some(true)
+}
+
 /// What the folders' indexing told the user so far, so routine syncs stay
-/// quiet. Indexing the user started is always announced. A watcher sync is
+/// quiet. A quiet item ([`is_quiet`]) is never announced; other indexing
+/// the user started is always announced. A watcher sync is
 /// announced only while it is the first sync after the folder started to be
 /// watched ([`first_sync`]); after that its successes are silent (the Inbox
 /// has them) and its failure is announced only when the folder's previous
@@ -614,6 +623,9 @@ impl IndexingMemory {
             self.failed.remove(&item.id);
             false
         };
+        if is_quiet(item) {
+            return None;
+        }
         let routine = is_routine(item) && !self.first_syncs.contains(&item.id);
         match (routine, failed) {
             (false, _) => Some(outcome),

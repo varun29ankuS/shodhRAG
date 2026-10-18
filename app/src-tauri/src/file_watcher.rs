@@ -560,6 +560,13 @@ async fn keep_in_sync(
 
 /// The Inbox item of a sync that changed the index or failed; a sync that found
 /// nothing to do adds none.
+///
+/// A sync whose only work was chunking unchanged files again for this build's
+/// chunker ([`SyncReport::rechunked`]) is `quiet`: its item is the record,
+/// and it is not announced, not even as the first sync after Shodh started
+/// (else every launch after an upgrade would announce every folder), unless a
+/// file failed that had not failed before. A sync that also indexed changes
+/// counts only those.
 fn inbox_item(
     source: &FolderSourceRef,
     result: &Result<SyncReport, String>,
@@ -568,15 +575,24 @@ fn inbox_item(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| source.path.clone());
+    let mut quiet = false;
     let (status, title, detail) = match result {
-        Ok(report) if report.indexed + report.removed == 0 => return None,
+        Ok(report) if report.indexed + report.removed + report.new_failures == 0 => return None,
         Ok(report) => {
+            let changed = report.indexed.saturating_sub(report.rechunked);
+            quiet = changed + report.removed + report.new_failures == 0;
             let mut parts = Vec::new();
-            if report.indexed > 0 {
-                parts.push(format!("{} indexed", report.indexed));
+            if changed > 0 {
+                parts.push(format!("{changed} indexed"));
             }
             if report.removed > 0 {
                 parts.push(format!("{} removed", report.removed));
+            }
+            if quiet {
+                parts.push(format!(
+                    "{} updated for improved text extraction",
+                    report.rechunked
+                ));
             }
             if !report.failures.is_empty() {
                 parts.push(format!("{} could not be read", report.failures.len()));
@@ -614,6 +630,7 @@ fn inbox_item(
         data: serde_json::json!({
             "sourceId": source.id,
             "announce": false,
+            "quiet": quiet,
             "folder": name,
             "failure": result.is_err().then_some("sync"),
         }),
@@ -933,6 +950,148 @@ mod tests {
         let json = serde_json::to_value(&failed).unwrap();
         assert_eq!(json["error"], "D:/papers is not available");
         assert!(json.get("files").is_none());
+    }
+
+    /// What a sync's Inbox item announces as the first sync after Shodh
+    /// started, when the heal of an upgrade re-chunked unchanged files.
+    fn first_sync_outcome(
+        source: &FolderSourceRef,
+        report: SyncReport,
+    ) -> (Option<NewInboxItem>, Option<crate::notifications::Outcome>) {
+        let mut memory = crate::notifications::IndexingMemory::default();
+        let key = format!("indexing:{}", source.id);
+        memory.begin_first_sync(&key);
+        let item = inbox_item(source, &Ok(report));
+        let outcome = item.as_ref().and_then(|item| memory.outcome(item));
+        memory.end_first_sync(&key);
+        (item, outcome)
+    }
+
+    #[test]
+    fn a_sync_that_only_rechunked_is_recorded_but_not_announced() {
+        let failure = |file: &str| FileFailure {
+            file: file.into(),
+            reason: "not a pdf".into(),
+        };
+        // The first launch after an upgrade: every folder's first sync
+        // re-chunks its files, and none of them is announced.
+        for id in ["s1", "s2", "s3"] {
+            let source = FolderSourceRef {
+                id: id.into(),
+                path: format!("C:/library/{id}"),
+            };
+            let (item, outcome) = first_sync_outcome(
+                &source,
+                SyncReport {
+                    indexed: 40,
+                    rechunked: 40,
+                    files: 40,
+                    ..SyncReport::default()
+                },
+            );
+            let item = item.expect("the Inbox keeps a record");
+            assert_eq!(item.status, InboxStatus::Done);
+            assert_eq!(
+                item.detail.as_deref(),
+                Some("40 updated for improved text extraction")
+            );
+            assert_eq!(item.data["quiet"], true);
+            assert_eq!(outcome, None, "{id}");
+        }
+        let source = FolderSourceRef {
+            id: "s1".into(),
+            path: "C:/library/Papers".into(),
+        };
+        // Failures that are not new (they failed before, folders that could
+        // not be opened before) do not make it a problem either.
+        let (item, outcome) = first_sync_outcome(
+            &source,
+            SyncReport {
+                indexed: 40,
+                rechunked: 40,
+                files: 42,
+                failures: vec![failure("C:/library/Papers/broken.pdf")],
+                unreadable: vec![failure("C:/library/Papers/private")],
+                ..SyncReport::default()
+            },
+        );
+        assert_eq!(item.expect("recorded").status, InboxStatus::Failed);
+        assert_eq!(outcome, None);
+        // A file that newly failed is a problem.
+        let (item, outcome) = first_sync_outcome(
+            &source,
+            SyncReport {
+                indexed: 39,
+                rechunked: 39,
+                files: 40,
+                failures: vec![failure("C:/library/Papers/torn.pdf")],
+                new_failures: 1,
+                ..SyncReport::default()
+            },
+        );
+        assert_eq!(item.expect("recorded").data["quiet"], false);
+        assert!(
+            matches!(outcome, Some(crate::notifications::Outcome::Problem { .. })),
+            "{outcome:?}"
+        );
+        // Even when nothing else was indexed.
+        let (item, outcome) = first_sync_outcome(
+            &source,
+            SyncReport {
+                files: 40,
+                failures: vec![failure("C:/library/Papers/torn.pdf")],
+                new_failures: 1,
+                ..SyncReport::default()
+            },
+        );
+        assert_eq!(item.expect("recorded").status, InboxStatus::Failed);
+        assert!(matches!(
+            outcome,
+            Some(crate::notifications::Outcome::Problem { .. })
+        ));
+    }
+
+    #[test]
+    fn a_sync_that_rechunked_and_indexed_changes_counts_only_the_changes() {
+        let source = FolderSourceRef {
+            id: "s1".into(),
+            path: "C:/library/Papers".into(),
+        };
+        let (item, outcome) = first_sync_outcome(
+            &source,
+            SyncReport {
+                indexed: 43,
+                rechunked: 40,
+                removed: 1,
+                files: 42,
+                ..SyncReport::default()
+            },
+        );
+        let item = item.expect("recorded");
+        assert_eq!(item.detail.as_deref(), Some("3 indexed, 1 removed"));
+        assert_eq!(item.data["quiet"], false);
+        match outcome {
+            Some(crate::notifications::Outcome::Finished(done)) => {
+                assert_eq!(done.notice.title, "Indexing finished");
+                assert_eq!(
+                    done.notice.body,
+                    "Papers is up to date · 3 indexed, 1 removed"
+                );
+            }
+            other => panic!("finished work: {other:?}"),
+        }
+        // A routine sync (not the first) that did the same stays quiet.
+        let mut memory = crate::notifications::IndexingMemory::default();
+        let item = inbox_item(
+            &source,
+            &Ok(SyncReport {
+                indexed: 3,
+                files: 42,
+                ..SyncReport::default()
+            }),
+        )
+        .expect("recorded");
+        assert_eq!(memory.outcome(&item), None);
     }
 
     #[test]

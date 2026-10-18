@@ -145,7 +145,7 @@ The core of Shodh is free and open source (Apache-2.0), and it stays that way. P
 **Memory**
 - Start a message with "Remember …" (or "Keep in mind …", "From now on …") and Shodh files a note card for you to accept, without a model call.
 - Shodh also suggests memories from your conversations, within a daily cap of model calls (10 by default). You accept or dismiss each one.
-- **Settings → Memory** lists them, with search, edit, pin, history, export and forget. Forget removes a memory and all its earlier versions, and the audit log records it.
+- **Settings → Memory** lists them, with search, edit, pin, history, export and forget. Forget erases a memory and all its earlier versions: from the memory store and its older versions on disk, from suggestions that quoted it, and from new Activity entries, which record ids and counts, never the words. The conversation where you said it, and Activity entries from before this release, still hold the words.
 
 **Tasks and calendar**
 - **Tasks** shows tasks and events as a list or a calendar, with reminders. A task can belong to a workspace, and each workspace has a task board.
@@ -156,6 +156,7 @@ The core of Shodh is free and open source (Apache-2.0), and it stays that way. P
 - Desktop notifications on Windows and macOS for reminders, approvals that wait for you, finished work (answers, indexing, extracted results) and problems (failed indexing or sync, a failed background model call, a data file that had to be recovered).
 - They appear only while the Shodh window is not in front. They name titles and counts, never document or answer text.
 - **Settings → Notifications** has a switch per category, **Send a test notification**, and **Open system notification settings**.
+- Routine folder syncs stay quiet, including the one-time update of an existing library after an upgrade; indexing you start, and new failures, are announced.
 
 **Inbox and Activity**
 - **Inbox** collects what waits on you, such as approvals, memory suggestions and reminders, and background work that finished or failed.
@@ -168,9 +169,10 @@ The core of Shodh is free and open source (Apache-2.0), and it stays that way. P
   - **Install agent runtime** downloads it once from GitHub. Shodh checks its SHA-256 before every launch.
 - Every tool runs in Rust and is permission-checked. Each answer has a budget of tool calls, and writes and deletions wait for your approval.
 - **Built-in tools:** library search and documents, web search and pages, paper search, tasks and calendar, memory, workspaces, conversations, settings and exports.
+- **Web lookups after private content:** once a conversation has read your documents, memories or other private content, a web search, paper search or page fetch that could carry that content out asks first. You can allow web search, or one site, for the rest of that conversation.
 - **More tools:** add MCP servers and skills in **Settings → Tools & connections**.
 - **Code mode:** the **Research | Code** switch in Ask lets a conversation read, change and run commands in a workspace's code folder.
-  - File tools are confined to that folder. Shell commands cannot be confined by path, so each one needs approval unless you allow it.
+  - File tools are confined to that folder: Shodh checks the path the tool will actually open and refuses ambiguous ones. Files that can run programs (`.git`, editor tasks, hooks, CI workflows, `package.json` and similar) are never changed without asking, and `.git` cannot be edited. Shell commands cannot be confined by path, so each one needs approval unless you allow it exactly.
   - In a git repository, changes go on a branch of their own and can be discarded.
 
 **Models**
@@ -316,6 +318,7 @@ Run one instance per folder. WebView storage is separated on Windows, Linux and 
 - **Audit chain without a key:** the hash chain shows edited, deleted or reordered events. Someone who can write to `shodh.db` could still rebuild the whole chain.
 - **Agent runtime egress:** the pinned runtime's catalog fetch cannot be turned off yet (see [ADR 0001](docs/adr/0001-agent-harness-omp.md)).
 - **Code mode commands run as you:** approved shell commands run with your user account's permissions, without a sandbox.
+- **Provider keys in Code mode:** a command run in Code mode can read the model provider's API key from its environment. A local key proxy that keeps the key out of commands is planned for the next release.
 - **No messaging channels or Google Drive sync:** the old WhatsApp, Telegram and Discord bot backends and the Google Drive connector have been removed. They ran unauthenticated local HTTP servers.
 
 ## Architecture

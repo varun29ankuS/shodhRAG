@@ -583,15 +583,11 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       live.sessionId = sessionId;
       setRuntimeInstalled(true);
       const workspaceId = conversation?.workspaceId ?? null;
-      await api.send(
-        sessionId,
-        prompt,
-        runId,
-        historyOf(history),
-        scopeOf(options, workspaceId),
+      await api.send(sessionId, prompt, runId, historyOf(history), {
+        scope: scopeOf(options, workspaceId),
         textOrigin,
-        attachedContext.length > 0 ? attachedContext : null,
-      );
+        attachedContext,
+      });
     } catch (error) {
       const failure = toAgentError(error);
       if (failure.code === 'runtime_missing') setRuntimeInstalled(false);

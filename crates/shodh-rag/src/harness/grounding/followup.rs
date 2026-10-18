@@ -190,6 +190,32 @@ fn without_sources(check: &ClaimCheck) -> bool {
     }
 }
 
+/// Longest answer that can be an acknowledgement ([`is_acknowledgement`]).
+pub const MAX_ACKNOWLEDGEMENT_CHARS: usize = 300;
+
+/// Whether `answer` is only an acknowledgement ("Noted, I'll remember that you use
+/// DiskANN."): no tool was called in its run, it cites nothing, and it is at most
+/// [`MAX_ACKNOWLEDGEMENT_CHARS`] characters in at most two sentences. A run that only
+/// asked to remember something may skip the forced search of the documents for such an
+/// answer; any other answer gets the usual follow-ups.
+pub fn is_acknowledgement(answer: &str, tool_calls: u32) -> bool {
+    let answer = answer.trim();
+    let cites = answer.char_indices().any(|(at, c)| {
+        c == '['
+            && answer[at + 1..].split_once(']').is_some_and(|(inside, _)| {
+                !inside.is_empty() && inside.chars().all(|c| c.is_ascii_digit())
+            })
+    });
+    let sentences = answer
+        .split(['.', '!', '?'])
+        .filter(|s| s.chars().any(char::is_alphanumeric))
+        .count();
+    tool_calls == 0
+        && !cites
+        && answer.chars().count() <= MAX_ACKNOWLEDGEMENT_CHARS
+        && sentences <= 2
+}
+
 /// Decide what follows a check.
 ///
 /// `auto_repair` is the user's setting; `calls_left` is the answer's
@@ -711,6 +737,31 @@ mod tests {
         assert!(replaces_previous(1_000, 600, 0));
         assert!(!replaces_previous(1_000, 40, 0));
         assert!(!replaces_previous(1_000, 0, 0));
+    }
+
+    #[test]
+    fn only_a_short_uncited_answer_without_tools_is_an_acknowledgement() {
+        assert!(is_acknowledgement(
+            "Noted, I'll remember that you use DiskANN.",
+            0
+        ));
+        assert!(is_acknowledgement(
+            "Got it. I'll keep that in mind for your thesis.",
+            0
+        ));
+        // A tool call, a citation, a third sentence or a long answer is an answer.
+        assert!(!is_acknowledgement("Noted, you use DiskANN.", 1));
+        assert!(!is_acknowledgement(
+            "Noted. DiskANN keeps the graph on SSD [1].",
+            0
+        ));
+        assert!(!is_acknowledgement(
+            "Noted. You use DiskANN. It is fast.",
+            0
+        ));
+        assert!(!is_acknowledgement(&"word ".repeat(70), 0));
+        // Brackets that are not citation numbers do not count.
+        assert!(is_acknowledgement("Noted [as asked], you use DiskANN.", 0));
     }
 
     const NOT_SEARCHED: Retrieval = Retrieval {

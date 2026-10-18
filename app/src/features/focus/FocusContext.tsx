@@ -670,7 +670,9 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       const withPassages = carried.length > 0
         ? { ...(scope ?? { sourceIds: [], sourceFiles: [] }), passages: toWire(carried) }
         : scope;
-      await api.send(sessionId, message, live.runId, history, withPassages);
+      // The question is the user's own words (learning and "Remember that ..." use them);
+      // the context composed around it is not.
+      await api.send(sessionId, message, live.runId, history, { scope: withPassages, textOrigin: 'composed', typedText: text });
     } catch (error) {
       const failure = toAgentError(error);
       enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);
@@ -698,7 +700,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
           if (live.settled) return;
           live.sessionId = sessionId;
           setRuntimeInstalled(true);
-          await api.send(sessionId, composeSummaryRequest(thread, destination), live.runId, [], answerScope(null, workspaceOf(level.conversationId), false));
+          await api.send(sessionId, composeSummaryRequest(thread, destination), live.runId, [], { scope: answerScope(null, workspaceOf(level.conversationId), false) });
         } catch (error) {
           const failure = toAgentError(error);
           enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);
@@ -742,7 +744,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
           if (live.settled) return;
           live.sessionId = sessionId;
           setRuntimeInstalled(true);
-          await api.send(sessionId, request, live.runId, [], answerScope(null, workspaceOf(level.conversationId), false));
+          await api.send(sessionId, request, live.runId, [], { scope: answerScope(null, workspaceOf(level.conversationId), false) });
         } catch (error) {
           const failure = toAgentError(error);
           enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);

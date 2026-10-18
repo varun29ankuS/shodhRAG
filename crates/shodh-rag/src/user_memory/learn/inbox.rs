@@ -1,5 +1,6 @@
-//! The suggestions inbox (`memory_proposals` in `shodh.db`, schema version 4) and the
-//! learning model's daily usage.
+//! The suggestions inbox (`memory_proposals` in `shodh.db`, schema version 4), the
+//! learning model's daily usage and why its answers were not used
+//! (`memory_learn_rejections`, schema version 10).
 //!
 //! Status transitions ([`ProposalStatus::after`]):
 //!
@@ -23,13 +24,152 @@ use serde::{Deserialize, Serialize};
 
 use super::decide::{DecidedBy, Decision};
 use super::sensitivity::SensitiveReason;
-use super::{day_key, LearnCaps, LearnError, LearnResult};
+use super::{day_key, normalise_text, LearnCaps, LearnError, LearnResult};
 use crate::audit::{open_shared_connection, AuditKey};
 use crate::statements::{PutOutcome, Scope};
 use crate::user_memory::MemoryContent;
 
 /// How long a rejected (or undone) suggestion suppresses the same suggestion.
 pub const REJECTION_MEMORY_DAYS: i64 = 180;
+
+/// Model calls the import of the removed legacy memory store may make, once, ever: its
+/// own allowance, so the import never spends the day's calls (it runs at start, before
+/// the user types anything).
+pub const LEGACY_IMPORT_CALLS: u32 = 8;
+/// State key counting the legacy import's model calls.
+const LEGACY_CALLS_KEY: &str = "legacy_import_calls";
+
+/// How long the reasons the learning model's answers were not used are kept.
+pub const REJECTION_LOG_DAYS: i64 = 14;
+/// Most bytes of the model's answer kept with one rejection.
+pub const MAX_EXCERPT_BYTES: usize = 2_048;
+/// Most bytes of a rejection's detail.
+const MAX_DETAIL_BYTES: usize = 500;
+/// Most rejections kept from one model answer.
+const MAX_REJECTIONS_PER_ANSWER: usize = 32;
+
+/// Why a model answer, or one memory in it, was not used.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rejection {
+    /// Reason code (`invalid_json`, `truncated`, `malformed`, `ungrounded`, an ontology
+    /// violation code such as `subject_class_mismatch`, ...).
+    pub code: String,
+    /// What exactly was wrong (a parser or validation message). It may quote the model's
+    /// answer, so it is checked like the excerpt, unless the app wrote all of it.
+    pub detail: String,
+    /// The part of the answer it is about (masked and cut before it is stored).
+    pub excerpt: String,
+    /// The turn it was learned from, when known.
+    pub turn_id: Option<String>,
+    /// `detail` is the app's own text, quoting nothing of the answer ("the model stopped
+    /// at its 4000-token limit"): only keys and bearer tokens are masked in it.
+    pub app_detail: bool,
+}
+
+impl Rejection {
+    /// A rejection of `excerpt` for `code`; `detail` may quote the model's answer.
+    pub fn new(code: &str, detail: impl Into<String>, excerpt: impl Into<String>) -> Self {
+        Self {
+            code: code.to_string(),
+            detail: detail.into(),
+            excerpt: excerpt.into(),
+            turn_id: None,
+            app_detail: false,
+        }
+    }
+
+    /// A rejection whose `detail` the app wrote whole, quoting nothing of the answer.
+    pub fn with_app_detail(
+        code: &str,
+        detail: impl Into<String>,
+        excerpt: impl Into<String>,
+    ) -> Self {
+        Self {
+            app_detail: true,
+            ..Self::new(code, detail, excerpt)
+        }
+    }
+
+    /// The same rejection, about `turn_id` unless it already names a turn.
+    pub fn about(mut self, turn_id: Option<&str>) -> Self {
+        if self.turn_id.is_none() {
+            self.turn_id = turn_id.map(str::to_string);
+        }
+        self
+    }
+}
+
+/// How many answers or memories were not used today for one reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RejectionCount {
+    /// Reason code.
+    pub code: String,
+    /// The reason in plain words ([`rejection_reason`]).
+    pub reason: String,
+    /// How many.
+    pub count: u32,
+}
+
+/// A rejection code in plain words, for Settings → Memory ("1 invalid: subject did not
+/// fit the class").
+pub fn rejection_reason(code: &str) -> &'static str {
+    match code {
+        "invalid_json" => "the answer was not JSON in the expected shape",
+        "truncated" => "the answer was cut off at the length limit",
+        "malformed" => "a memory was not in the expected shape",
+        "ungrounded" => "it did not quote your words",
+        "outside_slice" => "a kind of memory Shodh did not ask for",
+        "invalid_confidence" => "its confidence was not between 0 and 1",
+        "invalid_subject" => "its subject was not a valid id",
+        "invalid_statement" => "the memory could not be built",
+        "subject_class_mismatch" => "subject did not fit the class",
+        "unknown_class" => "an unknown kind of memory",
+        "unknown_property" => "a field Shodh does not know",
+        "not_in_domain" => "a field that does not belong to that kind of memory",
+        "cardinality_exceeded" => "several values for a single-valued field",
+        "missing_required" => "a required field was missing",
+        "type_mismatch" => "a value of the wrong type",
+        "invalid_value" | "pattern_mismatch" => "a value in the wrong format",
+        "not_in_enum" => "a value outside the allowed choices",
+        "range_class_mismatch" => "a link to the wrong kind of thing",
+        "invalid_judgement" => "an unreadable decision about similar memories",
+        "invalid_revision" => "an unreadable revision of a memory",
+        "steps_mismatch" => "steps that do not follow what you did",
+        "missing_provenance" | "invalid_provenance" | "invalid_id" | "incompatible_version" => {
+            "an internal check failed"
+        }
+        _ => "another reason",
+    }
+}
+
+/// `text` fit to keep: anything shaped like a key or bearer token masked (as provider
+/// errors are), withheld whole when it looks like a password, secret or financial
+/// identifier, and cut to `max_bytes` on a character boundary.
+fn masked(text: &str, max_bytes: usize) -> String {
+    let sensitive = super::sensitivity::classify_text(text);
+    if sensitive.iter().any(|r| {
+        matches!(
+            r,
+            SensitiveReason::Credential | SensitiveReason::FinancialIdentifier
+        )
+    }) {
+        return "[withheld: it looks like a secret or a financial identifier]".to_string();
+    }
+    safe_cut(text, max_bytes)
+}
+
+/// `text` with anything shaped like a key or bearer token masked (as provider errors
+/// are), cut to `max_bytes` on a character boundary. For the app's own detail of a
+/// rejection, which never holds the model's answer.
+fn safe_cut(text: &str, max_bytes: usize) -> String {
+    let safe = crate::harness::provider_error::safe_detail(text, None, max_bytes);
+    let mut end = safe.len().min(max_bytes);
+    while !safe.is_char_boundary(end) {
+        end -= 1;
+    }
+    safe[..end].to_string()
+}
 
 /// What a suggestion changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,6 +377,11 @@ pub enum ProposalAction {
         at: DateTime<Utc>,
         /// Provenance source (`conversation://<id>/turn/<run>`).
         source: String,
+        /// The user formulated it: their own words, filed when they asked Shodh to
+        /// remember something (`model` is then the app version). Stored with extractor
+        /// `user`, and only on the user's Accept.
+        #[serde(default)]
+        by_user: bool,
     },
     /// A new version of `target`.
     Revise {
@@ -626,11 +771,10 @@ impl Inbox {
         if duplicate {
             return Ok(None);
         }
-        let day = day_key(now);
         let made: u32 = tx
             .query_row(
                 "SELECT proposals FROM memory_learn_usage WHERE day = ?1",
-                params![day],
+                params![day_key(now)],
                 |r| r.get(0),
             )
             .optional()?
@@ -641,47 +785,85 @@ impl Inbox {
                 caps.max_proposals_per_day
             )));
         }
-        let id = format!("sug-{}", uuid::Uuid::new_v4());
-        let payload =
-            serde_json::to_string(&new.action).map_err(|e| LearnError::Database(e.to_string()))?;
-        let sensitive = serde_json::to_string(&new.sensitive)
-            .map_err(|e| LearnError::Database(e.to_string()))?;
-        tx.execute(
-            "INSERT INTO memory_proposals(id, kind, origin, status, fingerprint, scope,
-                conversation_id, turn_id, payload_json, confidence, sensitive_json, created_at)
-             VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                id,
-                new.action.kind().as_str(),
-                new.origin.as_str(),
-                new.fingerprint,
-                new.scope.as_key(),
-                new.conversation_id,
-                new.turn_id,
-                payload,
-                new.confidence.clamp(0.0, 1.0),
-                sensitive,
-                ts(now),
-            ],
-        )?;
-        bump(&tx, &day, "proposals", 1)?;
+        let proposal = write_proposal(&tx, new, now)?;
         tx.commit()?;
-        Ok(Some(Proposal {
-            id,
-            origin: new.origin,
-            status: ProposalStatus::Pending,
-            fingerprint: new.fingerprint,
-            scope: new.scope,
-            conversation_id: new.conversation_id,
-            turn_id: new.turn_id,
-            action: new.action,
-            confidence: new.confidence.clamp(0.0, 1.0),
-            sensitive: new.sensitive,
-            outcome: None,
-            error: None,
-            created_at: now,
-            decided_at: None,
-        }))
+        Ok(Some(proposal))
+    }
+
+    /// Memories that applied suggestions with `fingerprint` (accepted or learned) stored.
+    /// They may have been forgotten since: the suggestions are not changed by a forget.
+    pub fn applied_memories(&self, fingerprint: &str) -> LearnResult<Vec<String>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT outcome_json FROM memory_proposals
+             WHERE fingerprint = ?1 AND status IN ('accepted', 'learned')",
+        )?;
+        let outcomes = stmt
+            .query_map(params![fingerprint], |r| r.get::<_, Option<String>>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(outcomes
+            .into_iter()
+            .flatten()
+            .filter_map(|json| serde_json::from_str::<AppliedOutcome>(&json).ok())
+            .filter_map(|outcome| outcome.memory_id)
+            .collect())
+    }
+
+    /// Stores a suggestion the user asked for in their own words ("Remember that ..."),
+    /// unless the same note is already waiting or saved, or the user rejected or undid it
+    /// in the last [`REJECTION_MEMORY_DAYS`] days: the same fingerprint, or a remembered
+    /// text that reads the same ([`same_note`]; a suggestion of the learner included).
+    /// Today's suggestion cap (a cap on what the model suggests) does not hold it back; it
+    /// is counted in today's suggestions. `applied_kept`: whether a memory an applied
+    /// suggestion of the same note stored still exists ([`Self::applied_memories`]); when
+    /// the user forgot it, asking again files the note again.
+    pub fn insert_requested(
+        &self,
+        new: NewProposal,
+        now: DateTime<Utc>,
+        applied_kept: bool,
+    ) -> LearnResult<RequestedOutcome> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let waiting: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM memory_proposals WHERE fingerprint = ?1
+                AND status IN ('pending', 'failed'))",
+            params![new.fingerprint],
+            |r| r.get(0),
+        )?;
+        let kept = waiting || applied_kept;
+        if kept {
+            return Ok(RequestedOutcome::AlreadyKept);
+        }
+        let text = match &new.action {
+            ProposalAction::Remember { text, .. } => text.clone(),
+            _ => String::new(),
+        };
+        let since = ts(now - Duration::days(REJECTION_MEMORY_DAYS));
+        let declined = {
+            let mut stmt = tx.prepare(
+                "SELECT fingerprint, payload_json FROM memory_proposals
+                 WHERE kind = 'remember' AND status IN ('rejected', 'undone') AND decided_at >= ?1",
+            )?;
+            let rows = stmt
+                .query_map(params![since], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows.iter().any(|(fingerprint, payload)| {
+                *fingerprint == new.fingerprint
+                    || serde_json::from_str::<serde_json::Value>(payload)
+                        .ok()
+                        .and_then(|v| v["text"].as_str().map(|t| same_note(t, &text)))
+                        .unwrap_or(false)
+            })
+        };
+        if declined {
+            return Ok(RequestedOutcome::Declined);
+        }
+        let proposal = write_proposal(&tx, new, now)?;
+        tx.commit()?;
+        Ok(RequestedOutcome::Filed(Box::new(proposal)))
     }
 
     /// One suggestion.
@@ -874,6 +1056,32 @@ impl Inbox {
         Ok(())
     }
 
+    /// Reserves one model call of the legacy import's one-time allowance
+    /// ([`LEGACY_IMPORT_CALLS`]); today's caps are not touched.
+    pub fn reserve_legacy_call(&self) -> LearnResult<()> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let used = legacy_calls(&tx)?;
+        if used >= LEGACY_IMPORT_CALLS {
+            return Err(LearnError::BudgetExhausted(format!(
+                "the {LEGACY_IMPORT_CALLS} model calls for learning from old memories"
+            )));
+        }
+        tx.execute(
+            "INSERT INTO memory_learn_state(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![LEGACY_CALLS_KEY, (used + 1).to_string()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Model calls left of the legacy import's one-time allowance.
+    pub fn legacy_calls_left(&self) -> LearnResult<u32> {
+        let conn = self.lock();
+        Ok(LEGACY_IMPORT_CALLS.saturating_sub(legacy_calls(&conn)?))
+    }
+
     /// Records the size of a model answer.
     pub fn record_output(&self, output_chars: usize, now: DateTime<Utc>) -> LearnResult<()> {
         let conn = self.lock();
@@ -936,6 +1144,75 @@ impl Inbox {
         }))
     }
 
+    /// Keeps why answers of `model`, or memories in them, were not used, and forgets
+    /// those older than [`REJECTION_LOG_DAYS`]. Excerpts are masked ([`masked`]).
+    pub fn record_rejections(
+        &self,
+        model: &str,
+        rejections: &[Rejection],
+        now: DateTime<Utc>,
+    ) -> LearnResult<()> {
+        if rejections.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "DELETE FROM memory_learn_rejections WHERE created_at < ?1",
+            params![ts(now - Duration::days(REJECTION_LOG_DAYS))],
+        )?;
+        let day = day_key(now);
+        let at = ts(now);
+        for rejection in rejections.iter().take(MAX_REJECTIONS_PER_ANSWER) {
+            tx.execute(
+                "INSERT INTO memory_learn_rejections(day, turn_id, model, code, detail,
+                    raw_excerpt, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    day,
+                    rejection.turn_id,
+                    crate::harness::truncate_chars(model, 200),
+                    crate::harness::truncate_chars(&rejection.code, 64),
+                    if rejection.app_detail {
+                        safe_cut(&rejection.detail, MAX_DETAIL_BYTES)
+                    } else {
+                        masked(&rejection.detail, MAX_DETAIL_BYTES)
+                    },
+                    masked(&rejection.excerpt, MAX_EXCERPT_BYTES),
+                    at,
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Today's rejections by reason, most frequent first (forgetting those older than
+    /// [`REJECTION_LOG_DAYS`]).
+    pub fn rejections_today(&self, now: DateTime<Utc>) -> LearnResult<Vec<RejectionCount>> {
+        let conn = self.lock();
+        // Kept 14 days even on a day nothing is rejected.
+        conn.execute(
+            "DELETE FROM memory_learn_rejections WHERE created_at < ?1",
+            params![ts(now - Duration::days(REJECTION_LOG_DAYS))],
+        )?;
+        let mut stmt = conn.prepare(
+            "SELECT code, count(*) FROM memory_learn_rejections WHERE day = ?1
+             GROUP BY code ORDER BY count(*) DESC, code",
+        )?;
+        let rows = stmt
+            .query_map(params![day_key(now)], |r| {
+                let code: String = r.get(0)?;
+                Ok(RejectionCount {
+                    reason: rejection_reason(&code).to_string(),
+                    code,
+                    count: r.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// A small stored value (for example the last consolidation time).
     pub fn state(&self, key: &str) -> LearnResult<Option<String>> {
         let conn = self.lock();
@@ -968,6 +1245,94 @@ impl Inbox {
             params![ts(now)],
         )?)
     }
+}
+
+/// Model calls the legacy import made so far.
+fn legacy_calls(conn: &Connection) -> LearnResult<u32> {
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM memory_learn_state WHERE key = ?1",
+            params![LEGACY_CALLS_KEY],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(value.and_then(|v| v.parse().ok()).unwrap_or(0))
+}
+
+/// What filing the user's own request to remember something did.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RequestedOutcome {
+    /// Stored, waiting for the user.
+    Filed(Box<Proposal>),
+    /// The same note is already waiting or saved.
+    AlreadyKept,
+    /// The user rejected or undid the same note recently: it is not offered again.
+    Declined,
+}
+
+/// Whether two remembered texts say the same: compared case-folded, with whitespace
+/// collapsed and without the closing punctuation or quotes a sentence may carry.
+pub fn same_note(a: &str, b: &str) -> bool {
+    let key = |text: &str| {
+        normalise_text(text)
+            .trim_matches(|c: char| {
+                matches!(
+                    c,
+                    '.' | '!' | ';' | ',' | '"' | '\'' | '\u{201c}' | '\u{201d}'
+                ) || c.is_whitespace()
+            })
+            .to_string()
+    };
+    let a = key(a);
+    !a.is_empty() && a == key(b)
+}
+
+/// Stores `new` as a waiting suggestion and counts it in today's suggestions.
+fn write_proposal(
+    tx: &rusqlite::Transaction<'_>,
+    new: NewProposal,
+    now: DateTime<Utc>,
+) -> LearnResult<Proposal> {
+    let id = format!("sug-{}", uuid::Uuid::new_v4());
+    let payload =
+        serde_json::to_string(&new.action).map_err(|e| LearnError::Database(e.to_string()))?;
+    let sensitive =
+        serde_json::to_string(&new.sensitive).map_err(|e| LearnError::Database(e.to_string()))?;
+    tx.execute(
+        "INSERT INTO memory_proposals(id, kind, origin, status, fingerprint, scope,
+            conversation_id, turn_id, payload_json, confidence, sensitive_json, created_at)
+         VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            id,
+            new.action.kind().as_str(),
+            new.origin.as_str(),
+            new.fingerprint,
+            new.scope.as_key(),
+            new.conversation_id,
+            new.turn_id,
+            payload,
+            new.confidence.clamp(0.0, 1.0),
+            sensitive,
+            ts(now),
+        ],
+    )?;
+    bump(tx, &day_key(now), "proposals", 1)?;
+    Ok(Proposal {
+        id,
+        origin: new.origin,
+        status: ProposalStatus::Pending,
+        fingerprint: new.fingerprint,
+        scope: new.scope,
+        conversation_id: new.conversation_id,
+        turn_id: new.turn_id,
+        action: new.action,
+        confidence: new.confidence.clamp(0.0, 1.0),
+        sensitive: new.sensitive,
+        outcome: None,
+        error: None,
+        created_at: now,
+        decided_at: None,
+    })
 }
 
 /// Adds `n` to one usage column of `day`. `column` is one of a fixed set.

@@ -34,7 +34,7 @@ export interface LearnCaps {
   maxProposalsPerDay: number;
 }
 
-export const DEFAULT_LEARN_CAPS: LearnCaps = { maxCallsPerDay: 60, maxInputCharsPerDay: 400_000, maxProposalsPerDay: 40 };
+export const DEFAULT_LEARN_CAPS: LearnCaps = { maxCallsPerDay: 10, maxInputCharsPerDay: 400_000, maxProposalsPerDay: 40 };
 export const DEFAULT_AUTO_MIN_CONFIDENCE = 0.85;
 
 /** Long-term memory. User-only: the assistant has no tool to change it. */

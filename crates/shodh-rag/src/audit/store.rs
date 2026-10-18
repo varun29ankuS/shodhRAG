@@ -42,8 +42,9 @@ const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 /// generated-visuals gallery (3), learned-memory suggestions (4), research objects (5: snippet
 /// images, Result extraction records and rejections), the citation graph (6: the scholarly
 /// API cache, per-file scans and the build report), the model catalog cache (7) and
-/// workspaces (8: workspaces, their versioned instructions and sources) and the Inbox (9) use one version
-/// sequence, so every component that opens it sees the same schema.
+/// workspaces (8: workspaces, their versioned instructions and sources), the Inbox (9) and
+/// the learning model's rejected answers (10) use one version sequence, so every component
+/// that opens it sees the same schema.
 const MIGRATIONS: &[(i64, &str)] = &[
     (
         1,
@@ -333,6 +334,25 @@ const MIGRATIONS: &[(i64, &str)] = &[
             updated_at TEXT NOT NULL
         );
         CREATE INDEX inbox_items_status ON inbox_items(status, updated_at);",
+    ),
+    (
+        10,
+        // Why the learning model's answers, or memories in them, were not used: one row per
+        // parse failure, cut-off answer and dropped candidate, with a masked excerpt of the
+        // answer (at most 2 kB) so a failure can be explained after the fact. Kept 14 days
+        // (pruned on write); local only. Settings → Memory shows today's reasons.
+        "CREATE TABLE memory_learn_rejections (
+            id INTEGER PRIMARY KEY,
+            day TEXT NOT NULL,
+            turn_id TEXT NULL,
+            model TEXT NOT NULL,
+            code TEXT NOT NULL,
+            detail TEXT NOT NULL,
+            raw_excerpt TEXT NOT NULL CHECK (length(CAST(raw_excerpt AS BLOB)) <= 2048),
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX memory_learn_rejections_day ON memory_learn_rejections(day, code);
+        CREATE INDEX memory_learn_rejections_created ON memory_learn_rejections(created_at);",
     ),
 ];
 
@@ -1666,6 +1686,7 @@ mod tests {
                  DROP TABLE workspace_sources;
                  DROP TABLE workspace_state;
                  DROP TABLE inbox_items;
+                 DROP TABLE memory_learn_rejections;
                  DELETE FROM schema_version WHERE version > 1;",
             )
             .unwrap();
@@ -1687,12 +1708,13 @@ mod tests {
         let learning: i64 = shared
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type = 'table'
-                 AND name IN ('memory_proposals', 'memory_learn_usage', 'memory_learn_state')",
+                 AND name IN ('memory_proposals', 'memory_learn_usage', 'memory_learn_state',
+                              'memory_learn_rejections')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(learning, 3);
+        assert_eq!(learning, 4);
         let research: i64 = shared
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type = 'table'

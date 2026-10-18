@@ -14,16 +14,32 @@ use crate::statements::testing::{fixture, Fixture};
 use crate::statements::{PutIntent, Scope, SELF_ENTITY_ID};
 use crate::user_memory::{Actor, MemoryContent, MemoryService, Origin, WriteAuthority};
 
+/// One scripted answer: the text, or a text the model was cut off in.
+enum Scripted {
+    Answer(String),
+    CutOff(String),
+}
+
 /// Answers prompts from a script, in order, and records every prompt.
 #[derive(Default)]
 struct ScriptedModel {
-    answers: Mutex<VecDeque<String>>,
+    answers: Mutex<VecDeque<Scripted>>,
     prompts: Mutex<Vec<String>>,
 }
 
 impl ScriptedModel {
     fn answer(&self, answer: serde_json::Value) {
-        self.answers.lock().unwrap().push_back(answer.to_string());
+        self.answers
+            .lock()
+            .unwrap()
+            .push_back(Scripted::Answer(answer.to_string()));
+    }
+    /// The next answer stops at the token limit after `partial`.
+    fn cut_off(&self, partial: &str) {
+        self.answers
+            .lock()
+            .unwrap()
+            .push_back(Scripted::CutOff(partial.to_string()));
     }
     fn calls(&self) -> usize {
         self.prompts.lock().unwrap().len()
@@ -45,11 +61,11 @@ impl LearnModel for ScriptedModel {
     }
     async fn complete(&self, prompt: &str, _max: usize) -> Result<String, LearnError> {
         self.prompts.lock().unwrap().push(prompt.to_string());
-        self.answers
-            .lock()
-            .unwrap()
-            .pop_front()
-            .ok_or_else(|| LearnError::Model("no scripted answer".to_string()))
+        match self.answers.lock().unwrap().pop_front() {
+            Some(Scripted::Answer(answer)) => Ok(answer),
+            Some(Scripted::CutOff(partial)) => Err(LearnError::Truncated(partial)),
+            None => Err(LearnError::Model("no scripted answer".to_string())),
+        }
     }
 }
 
@@ -1175,4 +1191,524 @@ fn global_suggestion_fingerprints_are_unchanged_by_workspaces() {
     let b = remember_fingerprint(&Scope::Workspace("b".into()), "Person", "x");
     assert_ne!(a, b);
     assert_ne!(a, remember_fingerprint(&Scope::Global, "Person", "x"));
+}
+
+/// The user's message of conversation `conv-1792237439764-hh9jji`, whose one extraction
+/// of the day was dropped as invalid.
+const THESIS_TURN: &str = "Remember that I'm writing my thesis on disk-based vector search, and memory cost matters most to me.";
+
+#[tokio::test]
+async fn the_user_as_subject_of_a_note_is_dropped_as_subject_and_the_note_kept() {
+    let e = env().await;
+    e.model.answer(json!({"memories": [
+        {"turn": "T1", "class": "Note", "subject": "person:self",
+         "properties": {"noteText": "I'm writing my thesis on disk-based vector search"},
+         "confidence": 0.9, "evidence": "I'm writing my thesis on disk-based vector search"}
+    ]}));
+    let report = e.learn(THESIS_TURN).await;
+    assert!(report.dropped.is_empty(), "{report:?}");
+    assert_eq!(report.proposed.len(), 1, "{report:?}");
+    let usage = e.learner.inbox().usage(e.f.store.now()).unwrap();
+    assert_eq!(usage.invalid, 0);
+    let proposal = e.learner.inbox().get(&report.proposed[0]).unwrap();
+    let ProposalAction::Remember { content, .. } = &proposal.action else {
+        panic!("not a remember suggestion");
+    };
+    let MemoryContent::Fact { class, subject, .. } = content else {
+        panic!("not a typed fact: {content:?}");
+    };
+    assert_eq!(class, "Note");
+    assert!(subject.is_none(), "{subject:?}");
+
+    // The prompt no longer shows an example the validator rejects: the user is a subject
+    // of Person facts only, and the example's class is one the slice offers.
+    let prompt = e.model.last_prompt();
+    assert!(
+        prompt.contains("is \"person:self\" only for class Person"),
+        "{prompt}"
+    );
+    assert!(
+        !prompt.contains("\"subject\": \"person:self\" or null"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("\"subject\": null, \"properties\""),
+        "{prompt}"
+    );
+}
+
+#[tokio::test]
+async fn the_user_stays_the_subject_of_a_person_fact() {
+    let e = env().await;
+    e.model
+        .answer(json!({"memories": [lives_in("pune", "I moved to Pune", 0.9)]}));
+    let report = e.learn("I moved to Pune last month.").await;
+    assert_eq!(report.proposed.len(), 1, "{report:?}");
+    let proposal = e.learner.inbox().get(&report.proposed[0]).unwrap();
+    let ProposalAction::Remember {
+        content: MemoryContent::Fact { subject, .. },
+        ..
+    } = &proposal.action
+    else {
+        panic!("not a typed fact");
+    };
+    assert_eq!(
+        subject.as_ref().map(|s| s.id.as_str()),
+        Some(SELF_ENTITY_ID)
+    );
+}
+
+#[tokio::test]
+async fn an_answer_cut_off_at_the_token_limit_is_refused_and_counted() {
+    let e = env().await;
+    e.model
+        .cut_off("{\"memories\": [{\"turn\": \"T1\", \"class\": \"Person\", \"subj");
+    let result = e
+        .learner
+        .learn_from_turns(&[e.turn("I moved to Pune last month.")])
+        .await;
+    assert!(
+        matches!(result, Err(LearnError::Truncated(_))),
+        "{result:?}"
+    );
+    assert!(e.pending().is_empty());
+    let usage = e.learner.inbox().usage(e.f.store.now()).unwrap();
+    assert_eq!(usage.llm_calls, 1);
+    assert_eq!(usage.invalid, 1);
+    assert!(usage.output_chars > 0);
+}
+
+/// Rows of `memory_learn_rejections`: (code, turn, detail, excerpt), oldest first.
+fn rejection_rows(e: &Env) -> Vec<(String, Option<String>, String, String)> {
+    let conn = rusqlite::Connection::open(e.f.dir.path().join("shodh.db")).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT code, turn_id, detail, raw_excerpt FROM memory_learn_rejections ORDER BY id",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    rows
+}
+
+#[tokio::test]
+async fn every_dropped_candidate_leaves_a_reason_the_user_can_read() {
+    let e = env().await;
+    e.model.answer(json!({"memories": [
+        lives_in("pune", "I moved to Pune", 0.9),
+        {"turn": "T1", "class": "Person", "subject": "person:self", "properties": {"livesIn": "Pune"}, "confidence": 0.9, "evidence": "I moved to Pune"},
+        coffee("espresso", "I love espresso", 0.9),
+        {"turn": "T1", "class": "Note"}
+    ]}));
+    e.learn("I moved to Pune last month.").await;
+    let rows = rejection_rows(&e);
+    let codes: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+    assert_eq!(
+        codes,
+        vec!["malformed", "type_mismatch", "ungrounded"],
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter().all(|r| r.1.as_deref() == Some("r1")),
+        "{rows:?}"
+    );
+    // The excerpt is the item as the model wrote it.
+    assert!(rows[1].3.contains("\"livesIn\":\"Pune\""), "{rows:?}");
+    assert!(rows[0].3.contains("\"class\":\"Note\""), "{rows:?}");
+    let today = e.learner.inbox().rejections_today(e.f.store.now()).unwrap();
+    let type_mismatch = today.iter().find(|r| r.code == "type_mismatch").unwrap();
+    assert_eq!(type_mismatch.count, 1);
+    assert_eq!(type_mismatch.reason, "a value of the wrong type");
+}
+
+#[tokio::test]
+async fn an_unreadable_answer_is_kept_masked_and_short() {
+    let e = env().await;
+    let key = "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX";
+    let answer = format!(
+        "Sure! Here are the memories (Authorization: Bearer abcdefgh12345678, {key}): {}",
+        "x".repeat(5_000)
+    );
+    e.model
+        .answers
+        .lock()
+        .unwrap()
+        .push_back(Scripted::Answer(answer));
+    let result = e
+        .learner
+        .learn_from_turns(&[e.turn("Note that I review papers on Fridays.")])
+        .await;
+    assert!(
+        matches!(result, Err(LearnError::InvalidOutput(_))),
+        "{result:?}"
+    );
+    let rows = rejection_rows(&e);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let (code, turn, _, excerpt) = &rows[0];
+    assert_eq!(code, "invalid_json");
+    assert_eq!(turn.as_deref(), Some("r1"));
+    assert!(
+        excerpt.len() <= inbox::MAX_EXCERPT_BYTES,
+        "{}",
+        excerpt.len()
+    );
+    assert!(
+        !excerpt.contains(key) && !excerpt.contains("abcdefgh12345678"),
+        "{excerpt}"
+    );
+    assert!(excerpt.contains("[REDACTED]"), "{excerpt}");
+}
+
+#[tokio::test]
+async fn rejection_reasons_are_kept_for_two_weeks() {
+    let e = env().await;
+    let inbox = e.learner.inbox();
+    let now = e.f.store.now();
+    let old = Rejection::new("truncated", "cut off", "{\"memories\": [");
+    inbox
+        .record_rejections(
+            "m",
+            &[old],
+            now - Duration::days(inbox::REJECTION_LOG_DAYS + 1),
+        )
+        .unwrap();
+    assert_eq!(rejection_rows(&e).len(), 1);
+    inbox
+        .record_rejections("m", &[Rejection::new("malformed", "x", "{}")], now)
+        .unwrap();
+    let rows = rejection_rows(&e);
+    assert_eq!(rows.len(), 1, "the old reason is forgotten: {rows:?}");
+    assert_eq!(rows[0].0, "malformed");
+    // Something that looks like a password is not kept at all.
+    inbox
+        .record_rejections(
+            "m",
+            &[Rejection::new("malformed", "x", "my password is hunter2")],
+            now,
+        )
+        .unwrap();
+    assert!(!rejection_rows(&e)[1].3.contains("hunter2"));
+}
+
+#[tokio::test]
+async fn a_fact_without_cue_words_reaches_the_model_and_its_preference_is_kept() {
+    let e = env().await;
+    let text =
+        "I'm writing my thesis on disk-based vector search, and memory cost matters most to me.";
+    e.model.answer(json!({"memories": [
+        {"turn": "T1", "class": "Preference", "subject": "person:self",
+         "properties": {"preferenceTopic": "vector search", "preferenceValue": "memory cost matters most"},
+         "confidence": 0.85, "evidence": "memory cost matters most to me"}
+    ]}));
+    let report = e.learn(text).await;
+    assert_eq!(e.model.calls(), 1, "the keyword gate no longer skips it");
+    assert!(report.dropped.is_empty(), "{report:?}");
+    assert_eq!(report.proposed.len(), 1, "{report:?}");
+    let prompt = e.model.last_prompt();
+    for class in extract::PERSONAL_CLASSES {
+        assert!(
+            prompt.contains(&format!("\n{class}")),
+            "{class} offered: {prompt}"
+        );
+    }
+
+    // A question about the documents still costs nothing.
+    let calls = e.model.calls();
+    let report = e
+        .learn("How do FreshDiskANN and SPANN keep search fast while the index grows?")
+        .await;
+    assert_eq!(e.model.calls(), calls);
+    assert_eq!(
+        report.skipped.as_deref(),
+        Some("nothing the user said was about themselves")
+    );
+}
+
+#[test]
+fn learning_makes_ten_model_calls_a_day_by_default() {
+    assert_eq!(LearnCaps::default().max_calls_per_day, 10);
+    assert_eq!(DEFAULT_CALLS_PER_DAY, 10);
+}
+
+impl Env {
+    async fn file_request(&self, text: &str) -> RequestedOutcome {
+        let request = memory_request(text).expect("a request to remember");
+        self.learner
+            .file_user_note(&request, "c1", "r1", self.f.store.now(), Scope::Global)
+            .await
+            .unwrap()
+    }
+
+    async fn filed(&self, text: &str) -> ProposalView {
+        match self.file_request(text).await {
+            RequestedOutcome::Filed(proposal) => ProposalView::from(*proposal),
+            other => panic!("not filed: {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_request_to_remember_becomes_a_note_suggestion_without_a_model() {
+    let e = env().await;
+    // Not learning: filed whatever the mode, and never applied automatically.
+    e.set(|p| p.mode = LearnMode::Off);
+    let view = e.filed(THESIS_TURN).await;
+    assert_eq!(e.model.calls(), 0);
+    assert_eq!(view.status, ProposalStatus::Pending);
+    let ProposalAction::Remember {
+        content,
+        text,
+        evidence,
+        by_user,
+        source,
+        ..
+    } = &view.action
+    else {
+        panic!("not a remember suggestion");
+    };
+    let note =
+        "I'm writing my thesis on disk-based vector search, and memory cost matters most to me.";
+    assert_eq!(content, &MemoryContent::Note { text: note.into() });
+    assert_eq!(text, note);
+    assert_eq!(evidence, THESIS_TURN);
+    assert!(*by_user);
+    assert_eq!(source, "conversation://c1/turn/r1");
+    assert!((view.confidence - 1.0).abs() < 1e-9);
+    // Asked again while it waits: the same suggestion, not a second one.
+    assert_eq!(
+        e.file_request(THESIS_TURN).await,
+        RequestedOutcome::AlreadyKept
+    );
+
+    // The learner's note of the same words is the same suggestion.
+    e.set(|p| p.mode = LearnMode::Auto);
+    e.model.answer(json!({"memories": [
+        {"turn": "T1", "class": "Note", "properties": {"noteText": note},
+         "confidence": 0.95, "evidence": note}
+    ]}));
+    let report = e.learn(THESIS_TURN).await;
+    assert!(report.proposed.is_empty(), "{report:?}");
+    assert_eq!(report.suppressed, 1);
+    assert!(!auto_eligible(
+        &e.learner.inbox().get(&view.id).unwrap(),
+        &e.learner.policy()
+    ));
+
+    // Accepting stores the user's words as the user's memory.
+    let accepted = e
+        .learner
+        .accept(&view.id, None, &Actor::ui())
+        .await
+        .unwrap();
+    let memory = e
+        .service
+        .get(&accepted.outcome.unwrap().memory_id.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(memory.text, note);
+    assert_eq!(memory.extractor, "user");
+    assert_eq!(memory.source, "conversation://c1/turn/r1");
+    let writes = e.memory_writes();
+    assert!(writes
+        .iter()
+        .any(|w| w["authority"] == "user_approval" && w["approval"] == json!(view.id)));
+}
+
+#[tokio::test]
+async fn a_note_the_user_rejected_is_not_offered_again() {
+    let e = env().await;
+    let first = e.filed("Note: I review papers on Fridays").await;
+    e.learner.reject(&first.id).unwrap();
+    // Asked again in other words around the same note: not offered again.
+    assert_eq!(
+        e.file_request("Remember that I review papers on Fridays.")
+            .await,
+        RequestedOutcome::Declined
+    );
+    assert_eq!(e.pending().len(), 0);
+
+    // A note of the learner the user rejected is the same note.
+    e.model.answer(json!({"memories": [
+        {"turn": "T1", "class": "Note", "properties": {"noteText": "I grade exams on Mondays"},
+         "confidence": 0.9, "evidence": "I grade exams on Mondays"}
+    ]}));
+    let report = e.learn("By the way, I grade exams on Mondays").await;
+    e.learner.reject(&report.proposed[0]).unwrap();
+    assert_eq!(
+        e.file_request("Keep in mind that  i grade exams on Mondays!")
+            .await,
+        RequestedOutcome::Declined
+    );
+
+    // Undone counts as declined too; another note is filed.
+    let other = e.filed("Remember that I use DiskANN").await;
+    let accepted = e
+        .learner
+        .accept(&other.id, None, &Actor::ui())
+        .await
+        .unwrap();
+    assert!(accepted.undoable);
+    e.learner.undo(&other.id, &Actor::ui()).await.unwrap();
+    assert_eq!(
+        e.file_request("Remember that I use DiskANN.").await,
+        RequestedOutcome::Declined
+    );
+}
+
+#[tokio::test]
+async fn a_requested_note_is_batch_accepted_as_the_users() {
+    let e = env().await;
+    let view = e.filed("Remember that I review papers on Fridays").await;
+    let results = e
+        .learner
+        .accept_many(std::slice::from_ref(&view.id), &Actor::ui())
+        .await;
+    let accepted = results[0].1.as_ref().unwrap();
+    let memory = e
+        .service
+        .get(
+            accepted
+                .outcome
+                .as_ref()
+                .unwrap()
+                .memory_id
+                .as_deref()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(memory.extractor, "user");
+    assert_eq!(memory.text, "I review papers on Fridays");
+}
+
+#[test]
+fn notes_are_the_same_whatever_their_case_spacing_or_closing_punctuation() {
+    assert!(inbox::same_note("I use DiskANN.", "  i use  diskann"));
+    assert!(inbox::same_note("\u{201c}Call me V\u{201d}", "call me v!"));
+    assert!(!inbox::same_note("I use DiskANN", "I use SPANN"));
+    assert!(!inbox::same_note(".", ""));
+}
+
+#[tokio::test]
+async fn the_legacy_import_has_its_own_one_time_allowance() {
+    let e = env().await;
+    e.set(|p| p.caps.max_calls_per_day = 1);
+    // Today's one call is spent by the user's own conversation.
+    e.model.answer(json!({"memories": []}));
+    e.learn("I moved to Pune last month.").await;
+    assert_eq!(
+        e.learner.inbox().usage(e.f.store.now()).unwrap().llm_calls,
+        1
+    );
+
+    // The import still has its allowance, and never touches today's calls.
+    let left = inbox::LEGACY_IMPORT_CALLS;
+    assert_eq!(e.learner.inbox().legacy_calls_left().unwrap(), left);
+    for _ in 0..left {
+        e.model.answer(json!({"memories": []}));
+        e.learner
+            .learn_from_legacy(&[e.turn("I prefer tea")])
+            .await
+            .unwrap();
+    }
+    assert_eq!(e.learner.inbox().legacy_calls_left().unwrap(), 0);
+    assert_eq!(
+        e.learner.inbox().usage(e.f.store.now()).unwrap().llm_calls,
+        1
+    );
+    let calls = e.model.calls();
+    let spent = e.learner.learn_from_legacy(&[e.turn("I prefer tea")]).await;
+    assert!(
+        matches!(spent, Err(LearnError::BudgetExhausted(_))),
+        "{spent:?}"
+    );
+    assert_eq!(e.model.calls(), calls);
+    // Today's cap still applies to the conversation.
+    let today = e.learner.learn_from_turns(&[e.turn("I prefer tea")]).await;
+    assert!(matches!(today, Err(LearnError::BudgetExhausted(_))));
+}
+
+#[tokio::test]
+async fn a_requested_note_about_someone_else_is_marked_sensitive() {
+    let e = env().await;
+    let view = e
+        .filed("Remember that Asha's email is asha@acme.com and her number is 98200 12345")
+        .await;
+    assert!(
+        view.sensitive
+            .contains(&SensitiveReason::ThirdPartyPersonal),
+        "{:?}",
+        view.sensitive
+    );
+    // The user's own details are not someone else's.
+    let own = e.filed("Remember that my email is varun@example.com").await;
+    assert!(own.sensitive.is_empty(), "{:?}", own.sensitive);
+}
+
+#[tokio::test]
+async fn a_note_saved_and_then_forgotten_can_be_asked_for_again() {
+    let e = env().await;
+    let view = e.filed("Remember that I use DiskANN").await;
+    let accepted = e
+        .learner
+        .accept(&view.id, None, &Actor::ui())
+        .await
+        .unwrap();
+    assert_eq!(
+        e.file_request("Remember that I use DiskANN").await,
+        RequestedOutcome::AlreadyKept,
+        "saved and still there"
+    );
+    let memory = accepted.outcome.unwrap().memory_id.unwrap();
+    e.service.forget(&memory, None, &Actor::ui()).await.unwrap();
+    assert!(matches!(
+        e.file_request("Remember that I use DiskANN").await,
+        RequestedOutcome::Filed(_)
+    ));
+}
+
+#[tokio::test]
+async fn the_apps_own_detail_is_kept_and_old_reasons_go_without_a_new_one() {
+    let e = env().await;
+    let inbox = e.learner.inbox();
+    let now = e.f.store.now();
+    // "token" in the app's own detail is not a secret: it is kept as written.
+    inbox
+        .record_rejections(
+            "m",
+            &[Rejection::with_app_detail(
+                "truncated",
+                "the model stopped at its 4000-token limit",
+                "{\"memories\": [",
+            )],
+            now - Duration::days(inbox::REJECTION_LOG_DAYS + 1),
+        )
+        .unwrap();
+    let rows = rejection_rows(&e);
+    assert_eq!(rows[0].2, "the model stopped at its 4000-token limit");
+    // Reading today's reasons forgets the old one, though nothing new was rejected.
+    assert!(inbox.rejections_today(now).unwrap().is_empty());
+    assert!(rejection_rows(&e).is_empty());
+}
+
+#[tokio::test]
+async fn a_detail_that_quotes_the_answer_is_checked_like_the_answer() {
+    let e = env().await;
+    e.learner
+        .inbox()
+        .record_rejections(
+            "m",
+            &[Rejection::new(
+                "invalid_subject",
+                "subject `my password is hunter2` is not an id like `place:pune`",
+                "{}",
+            )],
+            e.f.store.now(),
+        )
+        .unwrap();
+    let rows = rejection_rows(&e);
+    assert!(!rows[0].2.contains("hunter2"), "{rows:?}");
 }

@@ -396,25 +396,37 @@ impl PpOcr {
     }
 }
 
-/// Each page of the PDF in `bytes` rendered at `dpi` and read by `model`,
-/// in order. `on_page(page, pages)` is called before each page (1-based). A
-/// page that cannot be rendered or read is logged and reads as empty.
-pub fn read_pdf(
-    model: &PpOcr,
-    bytes: &[u8],
-    dpi: u32,
+/// What OCR read from each page of a file, in order, and the pages it could
+/// not read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OcrPages {
+    /// The text of every page, in order: empty for a blank page and for one
+    /// that could not be read.
+    pub texts: Vec<String>,
+    /// The pages (1-based) that could not be rendered or read.
+    pub failed: Vec<usize>,
+    /// Why the first of them could not be read.
+    pub first_error: Option<String>,
+}
+
+/// Reads `count` pages of the file at `path` with `read_page` (given the
+/// 0-based page), in order; `on_page(page, pages)` is called before each
+/// page (1-based). A page that cannot be read is logged, reads as empty and
+/// is listed in [`OcrPages::failed`]; the other pages are kept.
+pub fn read_each_page(
+    count: usize,
     path: &Path,
     on_page: &dyn Fn(usize, usize),
-) -> Result<Vec<String>> {
-    let pages = raster::PdfPages::open(bytes)?;
-    let mut texts = Vec::with_capacity(pages.count());
-    for index in 0..pages.count() {
-        on_page(index + 1, pages.count());
-        match pages
-            .render(index, dpi)
-            .and_then(|img| model.read_page(&img))
-        {
-            Ok(page) => texts.push(page.text()),
+    mut read_page: impl FnMut(usize) -> Result<String>,
+) -> OcrPages {
+    let mut read = OcrPages {
+        texts: Vec::with_capacity(count),
+        ..OcrPages::default()
+    };
+    for index in 0..count {
+        on_page(index + 1, count);
+        match read_page(index) {
+            Ok(text) => read.texts.push(text),
             Err(e) => {
                 tracing::warn!(
                     page = index + 1,
@@ -422,11 +434,34 @@ pub fn read_pdf(
                     "OCR skipped a page: {}",
                     path.display()
                 );
-                texts.push(String::new());
+                read.texts.push(String::new());
+                read.failed.push(index + 1);
+                if read.first_error.is_none() {
+                    read.first_error = Some(format!("{e:#}"));
+                }
             }
         }
     }
-    Ok(texts)
+    read
+}
+
+/// Each page of the PDF in `bytes` rendered at `dpi` and read by `model`,
+/// in order ([`read_each_page`]: a page that cannot be rendered or read
+/// reads as empty and is listed as failed).
+pub fn read_pdf(
+    model: &PpOcr,
+    bytes: &[u8],
+    dpi: u32,
+    path: &Path,
+    on_page: &dyn Fn(usize, usize),
+) -> Result<OcrPages> {
+    let pages = raster::PdfPages::open(bytes)?;
+    Ok(read_each_page(pages.count(), path, on_page, |index| {
+        pages
+            .render(index, dpi)
+            .and_then(|img| model.read_page(&img))
+            .map(|page| page.text())
+    }))
 }
 
 /// The image file at `path` read by `model`.
@@ -456,6 +491,34 @@ mod tests {
         );
         assert!(det_params("PostProcess:\n  name: CTCLabelDecode\n", 1600).is_err());
         assert!(det_params("PostProcess:\n  name: DBPostProcess\n  thresh: x\n", 1600).is_err());
+    }
+
+    #[test]
+    fn a_page_that_cannot_be_read_is_empty_and_the_others_are_kept() {
+        let seen = std::cell::RefCell::new(Vec::new());
+        let read = read_each_page(
+            10,
+            Path::new("scan.pdf"),
+            &|page, pages| seen.borrow_mut().push((page, pages)),
+            |index| match index + 1 {
+                4 | 9 => bail!("page {} could not be rendered", index + 1),
+                page => Ok(format!("text of page {page}")),
+            },
+        );
+        assert_eq!(read.failed, [4, 9]);
+        assert_eq!(
+            read.first_error.as_deref(),
+            Some("page 4 could not be rendered")
+        );
+        assert_eq!(read.texts.len(), 10);
+        assert_eq!(read.texts[0], "text of page 1");
+        assert_eq!(read.texts[3], "");
+        assert_eq!(read.texts[8], "");
+        assert_eq!(read.texts[9], "text of page 10");
+        assert_eq!(
+            seen.into_inner(),
+            (1..=10).map(|p| (p, 10)).collect::<Vec<_>>()
+        );
     }
 
     #[test]

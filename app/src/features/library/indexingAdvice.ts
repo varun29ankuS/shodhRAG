@@ -103,8 +103,9 @@ const RULES: readonly Rule[] = [
     advice: { hint: 'The disk is full. Free some space, then index again.', action: 'reindex', actionLabel: 'Index again' },
   },
   {
-    // EFBIG (27), ERROR_FILE_TOO_LARGE (223), and running out of memory on one file.
-    // The indexer sets no size limit of its own.
+    // EFBIG (27), ERROR_FILE_TOO_LARGE (223), running out of memory on one file, and
+    // the indexer's own limits ("... too large to index (limit 50 MB for text files)",
+    // crates/shodh-rag/src/processing/limits.rs).
     kind: 'too_large',
     test: /os error (27|223)\b|too large|file size|out of memory|memory allocation|capacity overflow/i,
     reason: 'Too large to index',
@@ -126,7 +127,7 @@ const RULES: readonly Rule[] = [
   },
   {
     kind: 'damaged',
-    test: /damaged|incomplete|corrupt|as zip|zip archive|invalid zip|failed to open spreadsheet|malformed|unexpected end of file|cannot open pdf|missing word\/document\.xml|invalid (file )?header/i,
+    test: /damaged|incomplete|corrupt|as zip|zip archive|invalid zip|failed to open spreadsheet|malformed|unexpected end of (file|stream)|not valid xml|nests more than \d+ elements deep|cannot open pdf|missing word\/document\.xml|invalid (file )?header/i,
     reason: 'Damaged or incomplete',
     advice: { hint: 'The file is damaged or was not fully saved or downloaded. Open it in its app to check, save a fresh copy into the folder, then index again.', action: 'show_in_folder', actionLabel: 'Show in folder' },
   },

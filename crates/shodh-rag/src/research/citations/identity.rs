@@ -143,7 +143,9 @@ fn looks_like_heading(text: &str) -> bool {
         .contains(&unnumbered)
 }
 
-fn plausible_title(text: &str) -> bool {
+/// Whether `text` can be a document's title: 2 to 40 words, some letters, no
+/// e-mail, and not a section heading ("1 Introduction", "Abstract").
+pub(crate) fn plausible_title(text: &str) -> bool {
     let words = text.split_whitespace().count();
     (2..=40).contains(&words)
         && text.chars().any(char::is_alphabetic)
@@ -153,8 +155,9 @@ fn plausible_title(text: &str) -> bool {
 
 /// The title: the Title block, unless it reads as a heading; then the first paragraph
 /// of the first page that reads as a title. A title line ending with `,` or `:` takes the
-/// next line too (titles set on two lines).
-fn title_from_block(doc: &StructuredDocument) -> Option<String> {
+/// next line too (titles set on two lines). Also titles a file named by an id
+/// ([`crate::processing::parser::document_title`]).
+pub(crate) fn title_from_block(doc: &StructuredDocument) -> Option<String> {
     let block = doc
         .blocks
         .iter()

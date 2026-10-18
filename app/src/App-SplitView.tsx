@@ -744,6 +744,8 @@ function AppSplitView() {
         fileSizeMb: number;
         processingTimeMs: number;
         error?: string;
+        // Pages of a scan OCR could not read ("pages 4, 9 could not be read").
+        notice?: string | null;
       }>('upload_document_file', {
         // A file added in a chat belongs to where it was added (the chat's
         // workspace, or the main Ask), not to a Library folder.
@@ -756,6 +758,7 @@ function AppSplitView() {
         updateMessage(messageId, { content: `✅ **${result.fileName}** indexed successfully!\n\n` +
                    `📊 **${countOf(result.chunksCreated, 'chunk')}** created in ${result.processingTimeMs}ms\n` +
                    `💾 Size: ${result.fileSizeMb.toFixed(2)} MB\n\n` +
+                   (result.notice ? `⚠️ ${result.notice[0].toUpperCase()}${result.notice.slice(1)}; answers cannot use them.\n\n` : '') +
                    `*Ask me anything about this document!*` });
       } else {
         discardSaved();

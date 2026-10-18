@@ -270,17 +270,14 @@ impl HostEffects for TauriEffects {
             }
             // A folder index runs in the background and can finish long
             // after the answer that started it, so its success is announced
-            // too; a run its source's removal cut short or refused is not:
-            // the user removed the folder.
-            if !indexing_state.is_removed(&job.source_id) {
-                crate::notifications::announce(
-                    &app,
-                    crate::notifications::indexing_result_outcome(
-                        format!("indexing:{}", job.source_id),
-                        &job.folder,
-                        &result,
-                    ),
-                );
+            // too; a run its source's removal cut short or refused is not.
+            if let Some(outcome) = crate::notifications::agent_run_outcome(
+                indexing_state.is_removed(&job.source_id),
+                format!("indexing:{}", job.source_id),
+                &job.folder,
+                &result,
+            ) {
+                crate::notifications::announce(&app, outcome);
             }
             ctx.audit(
                 AuditEventType::SourceChange,

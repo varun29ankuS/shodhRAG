@@ -691,6 +691,19 @@ pub fn agent_indexing_outcome(
     }
 }
 
+/// What a folder index the assistant started announces when it ends
+/// ([`indexing_result_outcome`]): nothing when its source was removed
+/// (`removed`), which cut the run short or refused it: the user removed the
+/// folder.
+pub fn agent_run_outcome(
+    removed: bool,
+    source: String,
+    folder: &str,
+    result: &Result<IndexingResult, String>,
+) -> Option<Outcome> {
+    (!removed).then(|| indexing_result_outcome(source, folder, result))
+}
+
 /// What indexing outside the Inbox announces (it has no Inbox item):
 /// `source` keys it, `path` is the folder or file, named by its last part.
 pub fn indexing_result_outcome(
@@ -1459,6 +1472,32 @@ mod tests {
             Outcome::Problem { notice, .. } => assert_eq!(notice.body, "Papers was not indexed."),
             other => panic!("problem: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_folder_index_of_a_removed_source_announces_nothing() {
+        let done = IndexingResult {
+            files_processed: 3,
+            failures: Vec::new(),
+            total_chunks: 0,
+            failed_files: Vec::new(),
+            files_unchanged: 0,
+            duration: 0,
+        };
+        let refused: Result<IndexingResult, String> =
+            Err("C:/data/Papers was removed from the Library and is not indexed".into());
+        let run = |removed: bool, result: &Result<IndexingResult, String>| {
+            agent_run_outcome(removed, "indexing:s".into(), "C:/data/Papers", result)
+        };
+        // Cut short part way, or refused before it started.
+        assert_eq!(run(true, &Ok(done.clone())), None);
+        assert_eq!(run(true, &refused), None);
+        // Not removed: announced as before.
+        assert!(matches!(run(false, &Ok(done)), Some(Outcome::Finished(_))));
+        assert!(matches!(
+            run(false, &refused),
+            Some(Outcome::Problem { .. })
+        ));
     }
 
     #[test]

@@ -1115,16 +1115,14 @@ mod tests {
             id: "s1".into(),
             path: "C:/library/Papers".into(),
         };
-        let (item, outcome) = first_sync_outcome(
-            &source,
-            SyncReport {
-                indexed: 43,
-                rechunked: 40,
-                removed: 1,
-                files: 42,
-                ..SyncReport::default()
-            },
-        );
+        let mixed = SyncReport {
+            indexed: 43,
+            rechunked: 40,
+            removed: 1,
+            files: 42,
+            ..SyncReport::default()
+        };
+        let (item, outcome) = first_sync_outcome(&source, mixed.clone());
         let item = item.expect("recorded");
         assert_eq!(item.detail.as_deref(), Some("3 indexed, 1 removed"));
         assert_eq!(item.data["quiet"], false);
@@ -1140,15 +1138,8 @@ mod tests {
         }
         // A routine sync (not the first) that did the same stays quiet.
         let mut memory = crate::notifications::IndexingMemory::default();
-        let item = inbox_item(
-            &source,
-            &Ok(SyncReport {
-                indexed: 3,
-                files: 42,
-                ..SyncReport::default()
-            }),
-        )
-        .expect("recorded");
+        let item = inbox_item(&source, &Ok(mixed)).expect("recorded");
+        assert_eq!(item.data["quiet"], false);
         assert_eq!(memory.outcome(&item), None);
     }
 

@@ -143,7 +143,9 @@ fn looks_like_heading(text: &str) -> bool {
         .contains(&unnumbered)
 }
 
-fn plausible_title(text: &str) -> bool {
+/// Whether `text` can be a document's title: 2 to 40 words, some letters, no
+/// e-mail, and not a section heading ("1 Introduction", "Abstract").
+pub(crate) fn plausible_title(text: &str) -> bool {
     let words = text.split_whitespace().count();
     (2..=40).contains(&words)
         && text.chars().any(char::is_alphabetic)

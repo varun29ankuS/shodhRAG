@@ -288,9 +288,10 @@ fn build_units(blocks: &[Block]) -> Vec<Unit> {
             .last()
             .is_some_and(|u| u.section_path == block.section_path);
         match &block.kind {
-            // Opens the first unit of text ([`open_with_title`]).
-            BlockKind::Title => {}
-            BlockKind::Heading { .. } => {
+            // A title opens the first unit of text ([`open_with_title`]).
+            BlockKind::Title if is_title(&block.text) => {}
+            // A heading the layout parser took for the title heads its section.
+            BlockKind::Title | BlockKind::Heading { .. } => {
                 pending_heading = Some(block.text.trim().to_string()).filter(|t| !t.is_empty());
                 glue_next = false;
                 absorbing = false;
@@ -419,15 +420,25 @@ fn build_units(blocks: &[Block]) -> Vec<Unit> {
     units
 }
 
+/// Whether a title block's text reads as a title, not as a heading (as the
+/// citation graph decides, [`crate::research::citations::identity`]).
+fn is_title(text: &str) -> bool {
+    crate::research::citations::identity::plausible_title(
+        &text.split_whitespace().collect::<Vec<_>>().join(" "),
+    )
+}
+
 /// Puts the document's title ([`BlockKind::Title`]) at the start of its
 /// first unit of text, before that unit's heading, so the title is in what
-/// is embedded and keyword-indexed: a paper is found by its title.
+/// is embedded and keyword-indexed: a paper is found by its title. A title
+/// block that reads as a heading ("1 Introduction", which the layout parser
+/// can take for the title) is not one: it heads its section instead.
 fn open_with_title(units: &mut [Unit], blocks: &[Block]) {
     let Some(title) = blocks
         .iter()
         .filter(|b| matches!(b.kind, BlockKind::Title))
         .map(|b| b.text.split_whitespace().collect::<Vec<_>>().join(" "))
-        .find(|t| !t.is_empty())
+        .find(|t| is_title(t))
     else {
         return;
     };
@@ -1414,6 +1425,44 @@ mod tests {
             chunks
                 .iter()
                 .filter(|c| c.text.contains("Attention Is All You Need"))
+                .count(),
+            1
+        );
+    }
+
+    /// A heading the layout parser took for the title heads its section; it
+    /// is not put before the document's first text as a title.
+    #[test]
+    fn a_heading_taken_for_the_title_heads_its_section() {
+        let d = doc(vec![
+            block(
+                BlockKind::Paragraph,
+                "Prepared for the review board by the planning office.",
+                1,
+            ),
+            block(BlockKind::Title, "1 Introduction", 1),
+            block(
+                BlockKind::Paragraph,
+                "The city plans two new bus lines across the river.",
+                1,
+            ),
+        ]);
+        let chunks = StructureChunker::new(300).chunk(&d, &DocumentContext::titled("Doc"), &words);
+        assert!(
+            chunks[0].text.starts_with("Prepared for the review board"),
+            "{}",
+            chunks[0].text
+        );
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c.text.contains("1 Introduction\n\nThe city plans")),
+            "{chunks:?}"
+        );
+        assert_eq!(
+            chunks
+                .iter()
+                .filter(|c| c.text.contains("1 Introduction"))
                 .count(),
             1
         );

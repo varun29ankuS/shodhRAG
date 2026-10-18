@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use serde_json::json;
 use shodh_rag::audit::{AuditEventType, AuditQuery, AuditRecord, AuditScope};
-use shodh_rag::harness::profile::AgentProfile;
+use shodh_rag::harness::profile::{app_tools, AgentProfile};
+use shodh_rag::harness::protocol::ToolLoadMode;
 use shodh_rag::harness::tools::{
     ApprovalGate, DispatchOutcome, RunScope, ToolAudit, ToolCall, ToolContext, ToolRegistry,
 };
@@ -399,4 +400,23 @@ async fn recall_update_and_forget_respect_the_workspace() {
         .await
         .unwrap();
     assert_eq!(left.len(), 1);
+}
+
+#[tokio::test]
+async fn remember_and_recall_are_always_in_the_models_context() {
+    let h = harness().await;
+    let definitions = h.registry.definitions(&AgentProfile::assistant());
+    let mode = |name: &str| {
+        definitions
+            .iter()
+            .find(|d| d.name == name)
+            .map(|d| d.load_mode)
+    };
+    assert_eq!(mode(app_tools::REMEMBER), Some(ToolLoadMode::Essential));
+    assert_eq!(mode(app_tools::RECALL), Some(ToolLoadMode::Essential));
+    assert_eq!(
+        mode(app_tools::UPDATE_MEMORY),
+        Some(ToolLoadMode::Discoverable)
+    );
+    assert_eq!(mode(app_tools::FORGET), Some(ToolLoadMode::Discoverable));
 }

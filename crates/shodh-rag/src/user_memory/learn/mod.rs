@@ -2,13 +2,16 @@
 //! user's policy (Settings → Memory → "Learn from conversations": off / ask / automatic).
 //!
 //! The pipeline, every step bounded in size and cost:
-//! 1. **Extract** ([`extract`]): after a turn completes, the user's own words (never tool
+//! 1. **Extract** ([`extract`]): after a turn completes in which the user said something
+//!    about themselves ([`extract::worth_learning`]), the user's own words (never tool
 //!    results, retrieved passages or web pages — assistant text is context for resolving
 //!    references only) are sent with the ontology slice for that text
 //!    ([`shodh_ontology::Ontology::slice_for`] + `render_prompt`). The model answers in a
 //!    strict JSON schema; every candidate must quote its evidence verbatim from the user's
-//!    text and validate against the ontology. Invalid candidates are dropped and counted,
-//!    never coerced.
+//!    text and validate against the ontology. Invalid candidates are dropped, counted and
+//!    their reasons kept for the user to read; the one repair is that the user named as
+//!    the subject of a class that cannot take a person (a note, a preference) is dropped as
+//!    subject, not the memory.
 //! 2. **Decide** ([`decide`]): ADD / NOOP / SUPERSEDE / UPDATE against similar existing
 //!    memories — deterministically first ([`shodh_ontology::Ontology::supersedes`], exact
 //!    duplicates); the model only judges the ambiguous rest, and only when the user lets
@@ -30,6 +33,7 @@ pub mod consolidate;
 pub mod decide;
 pub mod engine;
 pub mod evolve;
+pub mod explicit;
 pub mod extract;
 pub mod inbox;
 pub mod sensitivity;
@@ -42,11 +46,13 @@ use serde::{Deserialize, Serialize};
 use super::MemoryError;
 
 pub use decide::{DecidedBy, Decision, ValueChange};
-pub use engine::{ConsolidationReport, Learner, TurnReport};
+pub use engine::{CallBudget, ConsolidationReport, Learner, TurnReport};
+pub use explicit::{memory_request, MemoryRequest};
 pub use extract::TurnInput;
 pub use inbox::{
-    AppliedOutcome, Inbox, Proposal, ProposalAction, ProposalKind, ProposalOrigin, ProposalStatus,
-    ProposalView, StatusEvent, Undo, UsageToday,
+    rejection_reason, AppliedOutcome, Inbox, Proposal, ProposalAction, ProposalKind,
+    ProposalOrigin, ProposalStatus, ProposalView, Rejection, RejectionCount, RequestedOutcome,
+    StatusEvent, Undo, UsageToday,
 };
 pub use sensitivity::SensitiveReason;
 
@@ -87,14 +93,19 @@ pub struct LearnCaps {
 }
 
 impl Default for LearnCaps {
+    /// Ten model calls a day: free model tiers allow about 50 requests a day for
+    /// everything the user does, and every turn about the user may now be learned from.
     fn default() -> Self {
         Self {
-            max_calls_per_day: 60,
+            max_calls_per_day: DEFAULT_CALLS_PER_DAY,
             max_input_chars_per_day: 400_000,
             max_proposals_per_day: 40,
         }
     }
 }
+
+/// Default of [`LearnCaps::max_calls_per_day`].
+pub const DEFAULT_CALLS_PER_DAY: u32 = 10;
 
 /// Upper bounds the user may set for [`LearnCaps`].
 pub const MAX_CALLS_PER_DAY_LIMIT: u32 = 1_000;
@@ -154,7 +165,8 @@ pub trait LearnModel: Send + Sync {
     /// Model id recorded as the extractor version (`claude-haiku-4-5`, `qwen3:4b`, ...).
     fn model_id(&self) -> String;
 
-    /// Completes `prompt` with at most `max_output_tokens` tokens.
+    /// Completes `prompt` with at most `max_output_tokens` tokens. An answer the model
+    /// stopped at that limit is [`LearnError::Truncated`], never a (cut-off) answer.
     async fn complete(&self, prompt: &str, max_output_tokens: usize) -> Result<String, LearnError>;
 }
 
@@ -176,6 +188,10 @@ pub enum LearnError {
     /// The model's answer does not follow the schema.
     #[error("the learning model's answer is not valid: {0}")]
     InvalidOutput(String),
+    /// The model stopped at its token limit, so its answer is cut off. Carries the partial
+    /// answer (for the rejection log; never used as an answer).
+    #[error("the learning model's answer was cut off at its length limit")]
+    Truncated(String),
     /// No suggestion with this id.
     #[error("no suggestion with id `{0}`")]
     NotFound(String),

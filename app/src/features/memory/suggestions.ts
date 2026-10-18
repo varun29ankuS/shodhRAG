@@ -5,6 +5,8 @@
  * settings. Pure functions only, so they run under `node --test` without React or Tauri.
  */
 import type { MemoryContent } from './model.ts';
+import { parseRejections } from './learnUsage.ts';
+import type { RejectionCount } from './learnUsage.ts';
 
 export type LearnMode = 'off' | 'ask' | 'auto';
 
@@ -318,10 +320,8 @@ export function contentFromSuggestionEdit(s: Suggestion, draft: Record<string, s
   return { kind: 'fact', class: content.class, subject: content.subject ? { id: content.subject.id } : null, properties };
 }
 
-/** Pending suggestions that can be accepted together (not sensitive). */
-export function batchAcceptable(suggestions: readonly Suggestion[]): Suggestion[] {
-  return suggestions.filter(s => s.status === 'pending' && s.sensitive.length === 0);
-}
+/** Pending suggestions that can be accepted together (not sensitive, not being rejected). */
+export { batchAcceptable } from './batchAccept.ts';
 
 export interface LearnStatus {
   mode: LearnMode;
@@ -331,6 +331,8 @@ export interface LearnStatus {
   model: string | null;
   pending: number;
   usage: { day: string; llmCalls: number; inputChars: number; outputChars: number; proposals: number; invalid: number; refused: number };
+  /** Why answers or memories were not used today, by reason. */
+  rejections: RejectionCount[];
   caps: { maxCallsPerDay: number; maxInputCharsPerDay: number; maxProposalsPerDay: number };
   lastConsolidation: string | null;
 }
@@ -354,6 +356,7 @@ export function parseLearnStatus(value: unknown): LearnStatus | null {
     model: str(v.model) ? v.model : null,
     pending: v.pending,
     usage: u as unknown as LearnStatus['usage'],
+    rejections: parseRejections(v.rejections),
     caps: c as unknown as LearnStatus['caps'],
     lastConsolidation: str(v.lastConsolidation) ? v.lastConsolidation : null,
   };

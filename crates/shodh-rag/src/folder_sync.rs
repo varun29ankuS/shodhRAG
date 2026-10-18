@@ -3071,7 +3071,7 @@ mod tests {
         zip.start_file("word/document.xml", options).expect("entry");
         zip.write_all(
             format!(
-                "<w:document><w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body></w:document>"
+                "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">                 <w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body></w:document>"
             )
             .as_bytes(),
         )

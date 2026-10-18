@@ -719,8 +719,9 @@ impl DocumentParser {
     }
 
     /// Sections of a PDF the layout parser could not read: its form fields and
-    /// comments grouped by page, then per-page text from the fallback reader (or the
-    /// whole-document text, unpaged, when that reader finds none).
+    /// comments grouped by page, then its text from the fallback readers
+    /// ([`fallback_text_sections`]); `fallback_content` is `pdf_extract`'s
+    /// text of the whole document.
     fn extract_pdf_structure(&self, path: &Path, fallback_content: &str) -> Vec<DocumentSection> {
         let bytes = match std::fs::read(path) {
             Ok(bytes) => bytes,
@@ -743,33 +744,27 @@ impl DocumentParser {
                 sections.push(DocumentSection::FormFields { fields, page });
             }
         }
-        match super::lopdf_parser::LoPdfParser::parse_bytes(&bytes) {
+        let (lopdf_pages, page_count) = match super::lopdf_parser::LoPdfParser::parse_bytes(&bytes)
+        {
             Ok(doc) => {
-                for page in &doc.pages {
-                    let text = page.text.trim();
-                    if !text.is_empty() {
-                        sections.push(DocumentSection::Text {
-                            content: text.to_string(),
-                            page: page.page_number,
-                            heading: None,
-                        });
-                    }
-                }
+                let count = doc.pages.len();
+                let pages: Vec<(usize, String)> = doc
+                    .pages
+                    .into_iter()
+                    .map(|page| (page.page_number, page.text))
+                    .collect();
+                (pages, Some(count))
             }
-            Err(e) => tracing::debug!("lopdf extraction failed for {}: {}", path.display(), e),
-        }
-        // The fallback content is whole-document text with no page boundaries, so it
-        // is recorded as unpaged (page 0) rather than attributed to page 1.
-        let has_text_sections = sections
-            .iter()
-            .any(|s| matches!(s, DocumentSection::Text { .. }));
-        if !has_text_sections && !fallback_content.trim().is_empty() {
-            sections.push(DocumentSection::Text {
-                content: fallback_content.to_string(),
-                page: 0,
-                heading: None,
-            });
-        }
+            Err(e) => {
+                tracing::debug!("lopdf extraction failed for {}: {}", path.display(), e);
+                (Vec::new(), None)
+            }
+        };
+        sections.extend(fallback_text_sections(
+            &lopdf_pages,
+            fallback_content,
+            || page_count.and_then(|count| pdf_extract_pages(&bytes, count)),
+        ));
         sections
     }
 
@@ -1026,16 +1021,100 @@ fn pdf_extract_text(bytes: &[u8]) -> Option<String> {
             return None;
         }
     };
-    let cleaned = text
-        .lines()
+    let cleaned = clean_extracted(&text);
+    (!cleaned.is_empty()).then_some(cleaned)
+}
+
+/// `pdf_extract` text without blank lines and with each line trimmed.
+fn clean_extracted(text: &str) -> String {
+    text.lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
         .join(
             "
 ",
-        );
-    (!cleaned.is_empty()).then_some(cleaned)
+        )
+}
+
+/// `pdf_extract`'s text of each page (cleaned as [`pdf_extract_text`]'s),
+/// or `None` when it fails, panics, reads nothing, or reads other than
+/// `pages` pages: it stops at the first page it cannot read, so a short list
+/// would put the text of later pages on no page at all.
+fn pdf_extract_pages(bytes: &[u8], pages: usize) -> Option<Vec<String>> {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pdf_extract::extract_text_from_mem_by_pages(bytes)
+    }));
+    let texts = match result {
+        Ok(Ok(texts)) => texts,
+        Ok(Err(e)) => {
+            tracing::debug!("pdf_extract failed by page: {:?}", e);
+            return None;
+        }
+        Err(_) => {
+            tracing::warn!("pdf_extract panicked by page");
+            return None;
+        }
+    };
+    if texts.len() != pages {
+        return None;
+    }
+    let texts: Vec<String> = texts.iter().map(|text| clean_extracted(text)).collect();
+    texts.iter().any(|text| !text.is_empty()).then_some(texts)
+}
+
+/// Characters of `text` other than whitespace.
+fn visible_chars(text: &str) -> usize {
+    text.chars().filter(|c| !c.is_whitespace()).count()
+}
+
+/// The text sections of a PDF the layout parser could not read, from one of
+/// the two fallback readers: lopdf's pages (`lopdf_pages`: page number and
+/// text), or `pdf_extract`'s text (`extract_text`, the whole document).
+/// `pdf_extract` decodes fonts, hex strings and ToUnicode maps that lopdf's
+/// reader does not, so its text is used unless lopdf's reads about as much
+/// (nine tenths of its characters other than whitespace, or more). Its text
+/// is put on pages by `extract_pages` (asked only then) when those hold
+/// about all of it, else it is one unpaged section (page 0).
+fn fallback_text_sections(
+    lopdf_pages: &[(usize, String)],
+    extract_text: &str,
+    extract_pages: impl FnOnce() -> Option<Vec<String>>,
+) -> Vec<DocumentSection> {
+    let section = |content: &str, page: usize| DocumentSection::Text {
+        content: content.to_string(),
+        page,
+        heading: None,
+    };
+    let lopdf_chars: usize = lopdf_pages
+        .iter()
+        .map(|(_, text)| visible_chars(text))
+        .sum();
+    let extract_chars = visible_chars(extract_text);
+    if lopdf_chars > 0 && lopdf_chars * 10 >= extract_chars * 9 {
+        return lopdf_pages
+            .iter()
+            .map(|(page, text)| (*page, text.trim()))
+            .filter(|(_, text)| !text.is_empty())
+            .map(|(page, text)| section(text, page))
+            .collect();
+    }
+    if extract_chars == 0 {
+        return Vec::new();
+    }
+    if let Some(pages) = extract_pages() {
+        let paged: usize = pages.iter().map(|text| visible_chars(text)).sum();
+        if paged * 10 >= extract_chars * 9 {
+            return pages
+                .iter()
+                .enumerate()
+                .map(|(index, text)| (index + 1, text.trim()))
+                .filter(|(_, text)| !text.is_empty())
+                .map(|(page, text)| section(text, page))
+                .collect();
+        }
+    }
+    vec![section(extract_text, 0)]
 }
 
 /// Places form fields into a structured document as [`BlockKind::FormField`]
@@ -2424,6 +2503,84 @@ pub(crate) mod tests {
             format!("{err:#}").contains("too large to index (limit 50 MB for text files)"),
             "{err:#}"
         );
+    }
+
+    fn text_pages(sections: &[DocumentSection]) -> Vec<(usize, String)> {
+        sections
+            .iter()
+            .filter_map(|s| match s {
+                DocumentSection::Text { content, page, .. } => Some((*page, content.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// When the layout parser cannot read a PDF, `pdf_extract`'s text is
+    /// used unless lopdf's reads about as much.
+    #[test]
+    fn the_fallback_prefers_the_reader_that_reads_more() {
+        let lopdf: Vec<(usize, String)> = vec![(1, "Inv 1".to_string()), (2, String::new())];
+        let extract = "Invoice 1 for the supply of steel rods, payable within thirty days.";
+        let paged = || {
+            Some(vec![
+                "Invoice 1 for the supply of steel rods,".to_string(),
+                "payable within thirty days.".to_string(),
+            ])
+        };
+        // pdf_extract reads more: its pages.
+        assert_eq!(
+            text_pages(&fallback_text_sections(&lopdf, extract, paged)),
+            [
+                (1, "Invoice 1 for the supply of steel rods,".to_string()),
+                (2, "payable within thirty days.".to_string())
+            ]
+        );
+        // Without pages, or with pages that miss text: unpaged.
+        assert_eq!(
+            text_pages(&fallback_text_sections(&lopdf, extract, || None)),
+            [(0, extract.to_string())]
+        );
+        assert_eq!(
+            text_pages(&fallback_text_sections(&lopdf, extract, || {
+                Some(vec!["Invoice 1".to_string()])
+            })),
+            [(0, extract.to_string())]
+        );
+        // lopdf reads about as much: its pages; pdf_extract's are not asked for.
+        let full: Vec<(usize, String)> = vec![(1, extract.to_string())];
+        assert_eq!(
+            text_pages(&fallback_text_sections(&full, extract, || {
+                panic!("pdf_extract pages are not needed")
+            })),
+            [(1, extract.to_string())]
+        );
+        assert_eq!(
+            text_pages(&fallback_text_sections(&lopdf, "", || None)),
+            [(1, "Inv 1".to_string())]
+        );
+        assert!(fallback_text_sections(&[], "", || None).is_empty());
+    }
+
+    #[test]
+    fn pdf_extract_reads_pages_only_when_it_reads_them_all() {
+        use crate::processing::pdf_fixtures::{build_pdf, column};
+        let bytes = build_pdf(
+            &[
+                column(72.0, 700.0, "first", 2),
+                column(72.0, 700.0, "second", 2),
+            ],
+            None,
+        );
+        let pages = pdf_extract_pages(&bytes, 2).expect("two pages");
+        assert!(
+            pages[0].contains("first") && !pages[0].contains("second"),
+            "{pages:?}"
+        );
+        assert!(
+            pages[1].contains("second") && !pages[1].contains("first"),
+            "{pages:?}"
+        );
+        assert_eq!(pdf_extract_pages(&bytes, 3), None);
     }
 
     /// OCR that fails says why, instead of reporting a scan with no text.

@@ -616,7 +616,7 @@ impl Inner {
             return Err(reason.to_string());
         }
         // An ignored file is not in the branch's commit: Discard cannot restore it.
-        let undo = if target == ChangeTarget::Untracked && plan != ChangePlan::NotRepo {
+        let undo = if target.untracked() && plan != ChangePlan::NotRepo {
             UNTRACKED_UNDO.to_string()
         } else {
             undo

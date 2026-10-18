@@ -580,14 +580,29 @@ impl CodeSettings {
 pub enum ChangeTarget {
     /// A file inside the code folder that "Discard changes" can restore.
     Plain,
-    /// A file whose change can run programs by itself ([`execution_risk`]).
-    RunsPrograms(&'static str),
+    /// A file whose change can run programs by itself ([`execution_risk`]);
+    /// `untracked` when git also ignores it.
+    RunsPrograms { risk: &'static str, untracked: bool },
     /// A file of the repository's `.git` folder: never changed.
     GitFolder,
     /// A file git ignores: "Discard changes" does not restore it.
     Untracked,
     /// The file is unknown or outside the code folder (always asks).
     Unknown,
+}
+
+impl ChangeTarget {
+    /// Whether git ignores the file, so "Discard changes" cannot restore it.
+    pub fn untracked(self) -> bool {
+        matches!(
+            self,
+            ChangeTarget::Untracked
+                | ChangeTarget::RunsPrograms {
+                    untracked: true,
+                    ..
+                }
+        )
+    }
 }
 
 const GIT_FOLDER_RISK: &str = "Changes git's own files, which can make git run programs.";
@@ -612,7 +627,7 @@ pub fn execution_risk(relative: &Path) -> Option<&'static str> {
     if parts.iter().any(|p| p == ".git") {
         return Some(GIT_FOLDER_RISK);
     }
-    if parts.first().is_some_and(|p| p == ".vscode") {
+    if parts.iter().any(|p| p == ".vscode") {
         return Some("Editor settings and tasks can run commands when the folder is opened.");
     }
     if parts.len() >= 3 && parts[0] == ".github" && parts[1] == "workflows" {
@@ -667,15 +682,16 @@ pub fn change_target(folder: &Path, request: &GuardRequest, in_repo: bool) -> Ch
     else {
         return ChangeTarget::Unknown;
     };
-    match execution_risk(&relative) {
-        Some(GIT_FOLDER_RISK) => return ChangeTarget::GitFolder,
-        Some(risk) => return ChangeTarget::RunsPrograms(risk),
-        None => {}
+    let risk = execution_risk(&relative);
+    if risk == Some(GIT_FOLDER_RISK) {
+        return ChangeTarget::GitFolder;
     }
-    if in_repo && !matches!(git_takes_changes(folder, &relative), Ok(true)) {
-        return ChangeTarget::Untracked;
+    let untracked = in_repo && !matches!(git_takes_changes(folder, &relative), Ok(true));
+    match risk {
+        Some(risk) => ChangeTarget::RunsPrograms { risk, untracked },
+        None if untracked => ChangeTarget::Untracked,
+        None => ChangeTarget::Plain,
     }
-    ChangeTarget::Plain
 }
 
 /// Whether "Discard changes" (`git add --all`) takes in a change to
@@ -772,7 +788,7 @@ pub fn approval_for(
 ) -> CodeApproval {
     let input = &request.input;
     let file_tier = match target {
-        ChangeTarget::RunsPrograms(_) => RiskTier::Destructive,
+        ChangeTarget::RunsPrograms { .. } => RiskTier::Destructive,
         _ => RiskTier::Write,
     };
     let (label, tier, mut preview) = match request.tool.as_str() {
@@ -824,7 +840,7 @@ pub fn approval_for(
         }
     };
     if let Some(map) = preview.as_object_mut() {
-        if let (ChangeTarget::RunsPrograms(risk), "edit" | "write") =
+        if let (ChangeTarget::RunsPrograms { risk, .. }, "edit" | "write") =
             (target, request.tool.as_str())
         {
             map.insert("warning".to_string(), json!(risk));

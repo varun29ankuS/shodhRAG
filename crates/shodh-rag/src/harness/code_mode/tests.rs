@@ -417,7 +417,10 @@ fn approvals_show_what_will_change_and_how_to_undo_it() {
     let risky = approval_for(
         &request("write", json!({"path": ".envrc", "content": "x"})),
         Some(UNTRACKED_UNDO),
-        ChangeTarget::RunsPrograms("direnv runs .envrc in the shell before each command."),
+        ChangeTarget::RunsPrograms {
+            risk: "direnv runs .envrc in the shell before each command.",
+            untracked: true,
+        },
     );
     assert_eq!(risky.tier, RiskTier::Destructive);
     assert!(risky.preview["warning"]
@@ -435,6 +438,7 @@ fn files_that_can_run_programs_are_recognised() {
         "sub/.git/config",
         ".vscode/tasks.json",
         ".VSCode/settings.json",
+        "web/.vscode/tasks.json",
         ".envrc",
         "app/.envrc",
         "mcp-arch.yaml",
@@ -463,7 +467,7 @@ fn files_that_can_run_programs_are_recognised() {
 #[test]
 fn changes_are_classified_by_the_file_they_land_in() {
     let dir = repo();
-    std::fs::write(dir.path().join(".gitignore"), ".env\nbuild/\n").unwrap();
+    std::fs::write(dir.path().join(".gitignore"), ".env\nbuild/\n.envrc\n").unwrap();
     git_ok(dir.path(), &["add", "--all"]);
     git_ok(dir.path(), &["commit", "--quiet", "-m", "ignore"]);
     let folder = CodeFolder::open(dir.path()).unwrap();
@@ -496,8 +500,22 @@ fn changes_are_classified_by_the_file_they_land_in() {
     );
     assert!(matches!(
         change_target(root, &at(Some(root.join("package.json"))), true),
-        ChangeTarget::RunsPrograms(_)
+        ChangeTarget::RunsPrograms {
+            untracked: false,
+            ..
+        }
     ));
+    // A file that can run programs and that git ignores: both are said.
+    let envrc = change_target(root, &at(Some(root.join(".envrc"))), true);
+    assert!(matches!(
+        envrc,
+        ChangeTarget::RunsPrograms {
+            untracked: true,
+            ..
+        }
+    ));
+    assert!(envrc.untracked());
+    assert!(!ChangeTarget::Plain.untracked());
     assert_eq!(
         change_target(root, &at(Some(root.join(".git").join("config"))), true),
         ChangeTarget::GitFolder
@@ -881,7 +899,10 @@ fn approval_levels_decide_what_runs_without_asking() {
     // Files that can run programs, files Discard cannot restore and files
     // the guard did not name always ask.
     for target in [
-        ChangeTarget::RunsPrograms("x"),
+        ChangeTarget::RunsPrograms {
+            risk: "x",
+            untracked: false,
+        },
         ChangeTarget::GitFolder,
         ChangeTarget::Untracked,
         ChangeTarget::Unknown,

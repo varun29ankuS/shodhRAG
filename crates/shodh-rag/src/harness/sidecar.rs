@@ -503,7 +503,9 @@ pub fn launch_args(
     args
 }
 
-const PASSTHROUGH_VARS: [&str; 18] = [
+/// The variables of the user's environment omp starts with (see
+/// [`child_env`]); MCP servers get these too ([`super::mcp::client`]).
+pub(crate) const PASSTHROUGH_VARS: [&str; 18] = [
     // Windows process essentials.
     "SystemRoot",
     "windir",

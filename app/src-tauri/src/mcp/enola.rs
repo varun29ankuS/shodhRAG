@@ -122,7 +122,13 @@ pub const TOOLS: [(&str, Verified); 22] = [
     ("explore", Verified::ReadOnly),
     ("find_orphans", Verified::ReadOnly),
     ("find_path", Verified::ReadOnly),
-    ("generate_snapshot", Verified::Writes),
+    (
+        "generate_snapshot",
+        Verified::RunsFolderPrograms {
+            warning: "enola runs the programs this folder's mcp-arch.yaml declares as \
+                      providers.",
+        },
+    ),
     ("governing_intent", Verified::ReadOnly),
     ("impact_analysis", Verified::ReadOnly),
     ("package_metrics", Verified::ReadOnly),
@@ -468,7 +474,7 @@ mod tests {
         assert_eq!(names.len(), TOOLS.len());
         let writes: Vec<&str> = TOOLS
             .iter()
-            .filter(|(_, v)| *v == Verified::Writes)
+            .filter(|(_, v)| matches!(v, Verified::Writes | Verified::RunsFolderPrograms { .. }))
             .map(|(n, _)| *n)
             .collect();
         assert_eq!(writes, ["generate_snapshot", "set_baseline"]);

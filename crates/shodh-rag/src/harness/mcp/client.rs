@@ -6,8 +6,14 @@
 //! The server's notifications are ignored and its requests are answered
 //! (`ping` with an empty result, anything else "method not found"), so a
 //! chatty server never stalls a call. Every request has a deadline.
+//!
+//! A stdio server starts with an empty environment plus the variables
+//! [`server_env`] passes on and its own configured ones, so provider keys
+//! and tokens in Shodh's environment never reach it. An HTTP server's
+//! redirects are not followed: the address the user configured (and the
+//! Local-only check made of it) is the only one contacted.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -38,6 +44,51 @@ const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PAGES: usize = 20;
 
 const STDERR_TAIL_LINES: usize = 12;
+
+/// Variables of Shodh's environment a stdio server inherits, besides omp's
+/// ([`crate::harness::sidecar::PASSTHROUGH_VARS`]): the user's folders, which
+/// programs such as `npx`, `uvx` and `python` need to find their caches and
+/// settings. Names only; none holds a secret.
+const SERVER_USER_VARS: [&str; 21] = [
+    "HOME",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "CommonProgramFiles",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "USER",
+    "USERNAME",
+    "LOGNAME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_RUNTIME_DIR",
+];
+
+/// The complete environment of a stdio server: the variables named by
+/// omp's allowlist and [`SERVER_USER_VARS`] that `parent` (Shodh's
+/// environment) has, then the server's own `env`, which wins.
+pub fn server_env(
+    own: &BTreeMap<String, String>,
+    parent: impl Fn(&str) -> Option<String>,
+) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = crate::harness::sidecar::PASSTHROUGH_VARS
+        .iter()
+        .chain(SERVER_USER_VARS.iter())
+        .filter(|name| !own.contains_key(**name))
+        .filter_map(|name| parent(name).map(|value| (name.to_string(), value)))
+        .collect();
+    env.extend(own.iter().map(|(k, v)| (k.clone(), v.clone())));
+    env
+}
 
 /// Why a request failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -258,7 +309,8 @@ impl McpClient {
                 );
                 let mut cmd = tokio::process::Command::new(&program);
                 cmd.args(args)
-                    .envs(env)
+                    .env_clear()
+                    .envs(server_env(env, |name| std::env::var(name).ok()))
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
@@ -292,6 +344,9 @@ impl McpClient {
             Transport::Http { url, headers } => {
                 let client = reqwest::Client::builder()
                     .connect_timeout(Duration::from_secs(15))
+                    // A redirect could lead to another computer than the one
+                    // configured (and checked for Local-only mode).
+                    .redirect(reqwest::redirect::Policy::none())
                     .user_agent(concat!("shodh/", env!("CARGO_PKG_VERSION")))
                     .build()
                     .map_err(|e| McpError::Http(e.to_string()))?;

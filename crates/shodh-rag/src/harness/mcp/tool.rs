@@ -18,7 +18,7 @@ use super::client::{CallResult, McpClient, McpError, ToolInfo};
 use super::config::{Approval, Mode, ServerConfig};
 use crate::harness::events::RiskTier;
 use crate::harness::protocol::ToolLoadMode;
-use crate::harness::tools::{HostTool, ToolContext, ToolError, ToolOutput};
+use crate::harness::tools::{ApprovalPreview, HostTool, ToolContext, ToolError, ToolOutput};
 use crate::harness::truncate_chars;
 
 /// Separates the server and tool parts of a host tool name.
@@ -100,6 +100,9 @@ pub enum Verified {
     },
     /// Writes files or runs programs.
     Writes,
+    /// As [`Verified::Writes`], and runs programs the code folder names
+    /// (not the server's own): its approval prompt carries `warning`.
+    RunsFolderPrograms { warning: &'static str },
 }
 
 /// The verified classification of `tool` in `verified`, if listed.
@@ -115,7 +118,7 @@ pub fn verified_for(verified: &[(&str, Verified)], tool: &str) -> Option<Verifie
 pub fn effective_read_only(info: &ToolInfo, verified: Option<Verified>) -> bool {
     match verified {
         Some(Verified::ReadOnly | Verified::ReadOnlyUnless { .. }) => true,
-        Some(Verified::Writes) => false,
+        Some(Verified::Writes | Verified::RunsFolderPrograms { .. }) => false,
         None => info.read_only(),
     }
 }
@@ -132,6 +135,8 @@ pub struct McpTool {
     /// An argument that makes an otherwise automatic call ask (and the
     /// values it may have without asking).
     ask_when: Option<(&'static str, &'static [&'static str])>,
+    /// Shown on the approval prompt ([`Verified::RunsFolderPrograms`]).
+    warning: Option<&'static str>,
     destructive: bool,
     load_mode: ToolLoadMode,
     caller: Arc<dyn McpCaller>,
@@ -193,6 +198,16 @@ impl HostTool for McpTool {
                 _ => true,
             })
         }))
+    }
+    async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
+        let mut details = args.clone();
+        if let (Some(warning), Some(map)) = (self.warning, details.as_object_mut()) {
+            map.insert("warning".to_string(), json!(warning));
+        }
+        Ok(ApprovalPreview {
+            label: None,
+            details,
+        })
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         ctx.progress(format!("Asking {}", self.server));
@@ -262,6 +277,10 @@ pub fn server_tools(
                 (Some(Verified::ReadOnlyUnless { arg, allowed }), None) => Some((arg, allowed)),
                 _ => None,
             };
+            let warning = match checked {
+                Some(Verified::RunsFolderPrograms { warning }) => Some(warning),
+                _ => None,
+            };
             McpTool {
                 name,
                 label: truncate_chars(&format!("{}: {title}", server.name), 80),
@@ -271,6 +290,7 @@ pub fn server_tools(
                 tool: info.name.clone(),
                 approval: server.approval_for(&info.name, read_only, mode),
                 ask_when,
+                warning,
                 destructive: !read_only && info.destructive(),
                 load_mode,
                 caller: caller.clone(),
@@ -530,6 +550,38 @@ mod tests {
             .must_confirm(&json!({"baseline": "C:/elsewhere"}))
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn tools_that_run_the_folders_programs_say_so_when_they_ask() {
+        const VERIFIED: [(&str, Verified); 1] = [(
+            "snapshot",
+            Verified::RunsFolderPrograms {
+                warning: "Runs the folder's providers.",
+            },
+        )];
+        let fake: Arc<dyn McpCaller> = Arc::new(Fake {
+            calls: Mutex::default(),
+            reply: CallResult {
+                text: "ok".into(),
+                is_error: false,
+            },
+        });
+        let tools = server_tools(
+            &server(json!({})),
+            &[info("snapshot", Some(true)), info("explore", Some(true))],
+            fake,
+            ToolLoadMode::Essential,
+            Mode::Code,
+            &VERIFIED,
+            &mut HashSet::new(),
+        );
+        assert_eq!(tools[0].approval(), Approval::Ask);
+        let shown = tools[0].preview(&json!({"path": "."})).await.unwrap();
+        assert_eq!(shown.details["warning"], "Runs the folder's providers.");
+        assert_eq!(shown.details["path"], ".");
+        let plain = tools[1].preview(&json!({})).await.unwrap();
+        assert!(plain.details.get("warning").is_none());
     }
 
     #[tokio::test]

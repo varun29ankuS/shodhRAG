@@ -277,3 +277,72 @@ fn bare_commands_are_found_with_their_windows_extension() {
         PathBuf::from("missing")
     );
 }
+
+#[test]
+fn stdio_servers_get_only_the_allowlisted_environment_and_their_own() {
+    let parent = |name: &str| match name {
+        "PATH" => Some("/usr/bin".to_string()),
+        "HOME" => Some("/home/me".to_string()),
+        "APPDATA" => Some("C:/Users/me/AppData/Roaming".to_string()),
+        "OPENAI_API_KEY" => Some("sk-secret".to_string()),
+        "GITHUB_TOKEN" => Some("ghp-secret".to_string()),
+        "AWS_SECRET_ACCESS_KEY" => Some("aws-secret".to_string()),
+        _ => None,
+    };
+    let own: BTreeMap<String, String> = [
+        ("ENOLA_NO_UPDATE_CHECK".to_string(), "1".to_string()),
+        ("HOME".to_string(), "/srv/enola".to_string()),
+    ]
+    .into();
+    let env = server_env(&own, parent);
+    let names: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
+    for secret in ["OPENAI_API_KEY", "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY"] {
+        assert!(!names.contains(&secret), "{secret} reached the server");
+    }
+    let value = |name: &str| {
+        env.iter()
+            .filter(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(value("PATH"), ["/usr/bin"]);
+    assert_eq!(value("APPDATA"), ["C:/Users/me/AppData/Roaming"]);
+    // The server's own value wins, once.
+    assert_eq!(value("HOME"), ["/srv/enola"]);
+    assert_eq!(value("ENOLA_NO_UPDATE_CHECK"), ["1"]);
+}
+
+#[tokio::test]
+async fn http_servers_redirects_are_not_followed() {
+    let elsewhere = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let elsewhere_port = elsewhere.local_addr().unwrap().port();
+    let reached = Arc::new(AtomicBool::new(false));
+    let hit = reached.clone();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = elsewhere.accept().await {
+            hit.store(true, Ordering::SeqCst);
+            let _ = read_http(&mut stream).await;
+            let _ = stream
+                .write_all(http_response("200 OK", "", "{}").as_bytes())
+                .await;
+        }
+    });
+    let configured = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = configured.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = configured.accept().await {
+            let _ = read_http(&mut stream).await;
+            let moved = format!("Location: http://127.0.0.1:{elsewhere_port}/mcp\r\n");
+            let _ = stream
+                .write_all(http_response("307 Temporary Redirect", &moved, "").as_bytes())
+                .await;
+        }
+    });
+    let transport = Transport::Http {
+        url: format!("http://127.0.0.1:{port}/mcp"),
+        headers: BTreeMap::new(),
+    };
+    let error = McpClient::connect(&transport).await.err().expect("refused");
+    assert!(error.to_string().contains("307"), "{error}");
+    assert!(!reached.load(Ordering::SeqCst), "the redirect was followed");
+}

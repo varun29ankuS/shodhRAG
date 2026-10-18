@@ -1,6 +1,5 @@
 //! The LanceDB `statements` table: content, embedding, full-text index and validity.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use arrow_array::{
@@ -73,9 +72,6 @@ pub(crate) struct StatementTable {
     /// deletes the files of earlier versions, which a read that started on one of them
     /// may still be reading.
     files: tokio::sync::RwLock<()>,
-    /// Rows were deleted since the full-text index was last rebuilt. Set at open, so the
-    /// first purge after a start also covers deletes a crash left unpurged.
-    deleted: AtomicBool,
 }
 
 /// What [`StatementTable::purge_old_versions`] did.
@@ -117,7 +113,6 @@ impl StatementTable {
             table,
             dimension,
             files: tokio::sync::RwLock::new(()),
-            deleted: AtomicBool::new(true),
         })
     }
 
@@ -273,7 +268,6 @@ impl StatementTable {
     /// [`StatementTable::purge_old_versions`].
     pub(crate) async fn delete(&self, predicate: &str) -> StatementResult<()> {
         self.table.delete(predicate).await?;
-        self.deleted.store(true, Ordering::SeqCst);
         Ok(())
     }
 
@@ -285,9 +279,14 @@ impl StatementTable {
     /// the words of the rows it covers), then prunes every version but the current one, which
     /// deletes the old data, deletion, index and transaction files. Afterwards no version
     /// of the table holds the deleted rows and the table cannot be checked out at an
-    /// earlier version. The caller must keep other writes out while it runs; reads wait
-    /// only while the old files are deleted.
-    pub(crate) async fn purge_old_versions(&self) -> StatementResult<PurgeStats> {
+    /// earlier version. `rows_deleted`: rows were deleted since the last purge (the
+    /// caller's persisted marker); the index is rebuilt then, or when a fragment was
+    /// rewritten. The caller must keep other writes out while it runs; reads wait only
+    /// while the old files are deleted.
+    pub(crate) async fn purge_old_versions(
+        &self,
+        rows_deleted: bool,
+    ) -> StatementResult<PurgeStats> {
         // Compaction commits a new version and leaves the old files in place, so reads
         // of the version before it keep working.
         let compaction = self
@@ -305,9 +304,8 @@ impl StatementTable {
         let fragments_rewritten = compaction.map_or(0, |c| c.fragments_removed);
         // A fragment whose rows were all deleted is dropped by the delete itself, so
         // nothing is rewritten for it, but the index still holds its words.
-        if self.deleted.load(Ordering::SeqCst) || fragments_rewritten > 0 {
+        if rows_deleted || fragments_rewritten > 0 {
             self.rebuild_fts_index().await?;
-            self.deleted.store(false, Ordering::SeqCst);
         }
         // Files no manifest references may belong to a write in progress; the caller
         // keeps writes out, so they are leftovers and deleted too.

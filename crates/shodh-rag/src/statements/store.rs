@@ -35,6 +35,9 @@ const MAX_LIMIT: usize = 5_000;
 const HISTORY_SCAN_LIMIT: usize = 1_000;
 /// Upper bound on supersede candidates examined per write.
 const CANDIDATE_LIMIT: usize = 200;
+/// `statement_state` key set before rows are deleted and cleared after the table's
+/// history was purged: deleted rows may still be in the table's files while it is set.
+const PURGE_PENDING_KEY: &str = "purge_pending";
 
 /// Where the store gets its embedding model. The app's model can be installed after start,
 /// so it is looked up per call.
@@ -994,6 +997,9 @@ impl StatementStore {
         }
         // Dynamics first: a failure after it leaves the rows, so the erase can be retried.
         self.dynamics.remove_statements(ids)?;
+        if !stored.is_empty() {
+            self.dynamics.set_state(PURGE_PENDING_KEY, "1")?;
+        }
         for chunk in ids.chunks(100) {
             if chunk.iter().any(|id| stored.contains(id)) {
                 self.table.delete(&id_list_predicate(chunk)).await?;
@@ -1051,6 +1057,7 @@ impl StatementStore {
             return Ok(0);
         }
         self.dynamics.remove_statements(&ids)?;
+        self.dynamics.set_state(PURGE_PENDING_KEY, "1")?;
         for chunk in ids.chunks(100) {
             self.table.delete(&id_list_predicate(chunk)).await?;
         }
@@ -1063,7 +1070,11 @@ impl StatementStore {
     /// while it runs; reads wait only while the old files are deleted.
     pub async fn purge_history(&self) -> StatementResult<()> {
         let _guard = self.write_lock.lock().await;
-        let stats = self.table.purge_old_versions().await?;
+        let pending = self.dynamics.state(PURGE_PENDING_KEY)?.is_some();
+        let stats = self.table.purge_old_versions(pending).await?;
+        if pending {
+            self.dynamics.clear_state(PURGE_PENDING_KEY)?;
+        }
         tracing::info!(
             target: "shodh::statements",
             fragments = stats.fragments_rewritten,
@@ -1072,6 +1083,13 @@ impl StatementStore {
             "erased statements removed from the table's files and history"
         );
         Ok(())
+    }
+
+    /// Whether erased rows may still be in the table's files: an erase since the last
+    /// successful [`StatementStore::purge_history`], in this run of the app or an
+    /// earlier one (the marker is kept in `shodh.db`).
+    pub fn purge_pending(&self) -> StatementResult<bool> {
+        Ok(self.dynamics.state(PURGE_PENDING_KEY)?.is_some())
     }
 
     /// Runs [`StatementStore::purge_history`] in the background, so whoever erased

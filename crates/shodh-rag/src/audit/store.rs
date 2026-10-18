@@ -43,8 +43,9 @@ const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 /// images, Result extraction records and rejections), the citation graph (6: the scholarly
 /// API cache, per-file scans and the build report), the model catalog cache (7) and
 /// workspaces (8: workspaces, their versioned instructions and sources), the Inbox (9),
-/// the learning model's rejected answers (10) and forgotten suggestions (11) use one version
-/// sequence, so every component that opens it sees the same schema.
+/// the learning model's rejected answers (10), forgotten suggestions (11) and the statement
+/// store's state (12) use one version sequence, so every component that opens it sees the
+/// same schema.
 const MIGRATIONS: &[(i64, &str)] = &[
     (
         1,
@@ -360,6 +361,15 @@ const MIGRATIONS: &[(i64, &str)] = &[
         // texts are cleared then (see `user_memory::learn::inbox`); the row stays so the
         // same suggestion is not made again and "Recently learned" can say it was forgotten.
         "ALTER TABLE memory_proposals ADD COLUMN forgotten_at TEXT NULL;",
+    ),
+    (
+        12,
+        // Small values of the statement store: whether erased rows still wait for a purge
+        // of the statement table's history, and which one-time cleanups ran.
+        "CREATE TABLE statement_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );",
     ),
 ];
 
@@ -1694,6 +1704,7 @@ mod tests {
                  DROP TABLE workspace_state;
                  DROP TABLE inbox_items;
                  DROP TABLE memory_learn_rejections;
+                 DROP TABLE statement_state;
                  DELETE FROM schema_version WHERE version > 1;",
             )
             .unwrap();

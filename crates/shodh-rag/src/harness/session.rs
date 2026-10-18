@@ -863,10 +863,19 @@ impl Inner {
         &self,
         text: &str,
         run_id: Option<String>,
-        scope: RunScope,
+        mut scope: RunScope,
     ) -> Result<String, HarnessError> {
         self.ensure_open()?;
         let message = Self::validate_message(text)?;
+        // Without a separate question the sent message is the user's words
+        // (the web tools ask before sending anything else away).
+        if scope
+            .question
+            .as_deref()
+            .is_none_or(|q| q.trim().is_empty())
+        {
+            scope.question = Some(message.to_string());
+        }
         let prompt_id = self.next_id("p");
         let run_id = run_id
             .map(|r| r.trim().to_string())

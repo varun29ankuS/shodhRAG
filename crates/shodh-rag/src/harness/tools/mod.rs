@@ -401,6 +401,12 @@ pub trait HostTool: Send + Sync {
     async fn must_confirm(&self, _args: &Value) -> Result<bool, ToolError> {
         Ok(false)
     }
+    /// [`HostTool::must_confirm`] with the call's context, for decisions
+    /// that depend on the run (e.g. whether it has read private passages).
+    /// The registry calls this one; the default defers to `must_confirm`.
+    async fn must_confirm_in(&self, args: &Value, _ctx: &ToolContext) -> Result<bool, ToolError> {
+        self.must_confirm(args).await
+    }
     /// What the approval prompt shows. Runs after validation and before the
     /// prompt; an error fails the call without asking the user (e.g. an
     /// unknown id). Defaults to the arguments and the rendered label.
@@ -543,6 +549,22 @@ impl ToolContext {
     /// read documents or web pages, whose content may try to steer the model.
     pub fn passages_issued(&self) -> u32 {
         self.passages.issued()
+    }
+
+    /// The URLs of this run's web passages (search results and pages read).
+    pub fn web_sources(&self) -> Vec<String> {
+        self.passages
+            .all()
+            .into_iter()
+            .filter(|p| p.web)
+            .map(|p| p.path)
+            .collect()
+    }
+
+    /// The user's own words for this run (their question as they typed
+    /// it), when the session knows them.
+    pub fn user_words(&self) -> Option<&str> {
+        self.scope.question.as_deref()
     }
 
     fn audit_principal(&self) -> &str {
@@ -1109,7 +1131,7 @@ impl ToolRegistry {
             RiskTier::Write => !profile.auto_approve_writes,
             RiskTier::Destructive => true,
         };
-        if needs_approval || tool.must_confirm(&args).await? {
+        if needs_approval || tool.must_confirm_in(&args, ctx).await? {
             let preview = tool.preview_in(&args, ctx).await?;
             let label = preview
                 .label

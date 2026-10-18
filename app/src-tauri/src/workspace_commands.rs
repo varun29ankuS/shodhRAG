@@ -711,17 +711,19 @@ pub struct LegacySpace {
     pub folder: String,
 }
 
-/// What the import does: the workspaces to create and, per conversation, the workspace it
-/// joins. Conversations whose space is not an indexed folder any more stay in "No
-/// workspace" (their space fields are kept as they were).
+/// What the import does: the workspaces to create, the ones an interrupted import already
+/// created (each gets its folder again if that run stopped before adding it) and, per
+/// conversation, the workspace it joins. Conversations whose space is not an indexed folder
+/// any more stay in "No workspace" (their space fields are kept as they were).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LegacyPlan {
     pub create: Vec<LegacySpace>,
+    pub repair: Vec<LegacySpace>,
     pub assign: BTreeMap<String, String>,
 }
 
 /// Plans the import. `existing` holds the ids of workspaces that already exist (an earlier,
-/// interrupted import created them; they are reused, not created again).
+/// interrupted import created them; they are reused, not created again, and repaired).
 pub fn plan_legacy_import(
     conversations: &[ConversationRecord],
     folders: &[KnownFolder],
@@ -746,7 +748,7 @@ pub fn plan_legacy_import(
         let Some(folder) = by_id.get(space) else {
             continue;
         };
-        if !existing.contains(space) && planned.insert(space.to_string()) {
+        if planned.insert(space.to_string()) {
             let name = c
                 .space_name
                 .as_deref()
@@ -759,14 +761,19 @@ pub fn plan_legacy_import(
                         .map(|n| n.to_string_lossy().into_owned())
                 })
                 .unwrap_or_else(|| folder.folder.clone());
-            plan.create.push(LegacySpace {
+            let legacy = LegacySpace {
                 id: space.to_string(),
                 name: name
                     .chars()
                     .take(shodh_rag::workspaces::MAX_NAME_CHARS)
                     .collect(),
                 folder: folder.folder.clone(),
-            });
+            };
+            if existing.contains(space) {
+                plan.repair.push(legacy);
+            } else {
+                plan.create.push(legacy);
+            }
         }
         plan.assign.insert(c.id.clone(), space.to_string());
     }
@@ -828,46 +835,74 @@ pub async fn import_legacy_spaces(
     apply_legacy_plan(state, data_dir, &plan).await
 }
 
-/// Applies an import plan: creates each workspace (keeping the space id; one that already
-/// exists, from an interrupted run, is kept as it is), assigns the conversations that are
-/// still in no workspace, and marks the import done. Returns the workspaces planned plus the
-/// conversations moved (non-zero: open views should refresh).
+/// Applies an import plan: creates each workspace with its folder (keeping the space id),
+/// gives a workspace an interrupted run created without its folder that folder, assigns the
+/// conversations that are still in no workspace, and marks the import done. A space whose
+/// workspace cannot be made from what it holds (an invalid folder or name) is skipped and
+/// logged, and its conversations stay in no workspace: it never blocks the others. Returns
+/// the workspaces planned plus the conversations moved (non-zero: open views should
+/// refresh).
 pub async fn apply_legacy_plan(
     state: &WorkspaceState,
     data_dir: &Path,
     plan: &LegacyPlan,
 ) -> WorkspaceCommandResult<usize> {
-    let create = plan.create.clone();
-    state
+    let spaces: Vec<LegacySpace> = plan.create.iter().chain(&plan.repair).cloned().collect();
+    let skipped: HashSet<String> = state
         .run(move |s| {
-            for space in &create {
-                match s.get(&space.id) {
-                    Ok(_) => continue,
-                    Err(WorkspaceError::NotFound(_)) => {}
+            let mut skipped = HashSet::new();
+            for space in &spaces {
+                let folder = [NewSource {
+                    kind: SourceKind::Folder,
+                    reference: space.id.clone(),
+                    label: space.name.clone(),
+                    path: Some(space.folder.clone()),
+                }];
+                let exists = match s.get(&space.id) {
+                    Ok(_) => true,
+                    Err(WorkspaceError::NotFound(_)) => false,
+                    Err(e) => return Err(e),
+                };
+                let done = if exists {
+                    // Added only when missing (a source is never duplicated): an earlier
+                    // run that stopped between the two steps left the workspace without it.
+                    s.add_sources(&space.id, &folder, WorkspaceAuthor::Migration)
+                        .map(|report| {
+                            if report.added > 0 {
+                                tracing::info!(target: "shodh::workspaces", workspace = %space.id, "legacy workspace given back its folder");
+                            }
+                        })
+                } else {
+                    // The workspace and its folder are created together.
+                    s.create_with_sources(
+                        &space.id,
+                        &NewWorkspace {
+                            name: space.name.clone(),
+                            description: LEGACY_DESCRIPTION.to_string(),
+                            ..NewWorkspace::default()
+                        },
+                        &folder,
+                        WorkspaceAuthor::Migration,
+                    )
+                    .map(|_| ())
+                };
+                match done {
+                    Ok(()) => {}
+                    // Retrying cannot fix what the space holds: skip it, import the rest.
+                    Err(WorkspaceError::Invalid(reason)) => {
+                        tracing::warn!(target: "shodh::workspaces", space = %space.id, %reason, "legacy space not imported as a workspace");
+                        if !exists {
+                            skipped.insert(space.id.clone());
+                        }
+                    }
                     Err(e) => return Err(e),
                 }
-                // The workspace and its folder are created together: a run that fails
-                // part way leaves no workspace without its folder for the next run to skip.
-                s.create_with_sources(
-                    &space.id,
-                    &NewWorkspace {
-                        name: space.name.clone(),
-                        description: LEGACY_DESCRIPTION.to_string(),
-                        ..NewWorkspace::default()
-                    },
-                    &[NewSource {
-                        kind: SourceKind::Folder,
-                        reference: space.id.clone(),
-                        label: space.name.clone(),
-                        path: Some(space.folder.clone()),
-                    }],
-                    WorkspaceAuthor::Migration,
-                )?;
             }
-            Ok(())
+            Ok(skipped)
         })
         .await?;
-    let assign = plan.assign.clone();
+    let mut assign = plan.assign.clone();
+    assign.retain(|_, workspace| !skipped.contains(workspace));
     let assigned = ConversationStore::in_dir(data_dir)
         .update(move |conversations| {
             let mut n = 0;
@@ -1019,6 +1054,9 @@ The {name} notes describe the river, the bridge and the mill at dawn.
         let existing: HashSet<String> = ["src-1".to_string()].into();
         let resumed = plan_legacy_import(&conversations, &folders, &existing);
         assert_eq!(resumed.create.len(), 1);
+        assert_eq!(resumed.repair.len(), 1);
+        assert_eq!(resumed.repair[0].id, "src-1");
+        assert_eq!(resumed.repair[0].folder, "C:/Docs/Contracts");
         assert_eq!(resumed.assign.len(), 3);
     }
 
@@ -1147,6 +1185,116 @@ The {name} notes describe the river, the bridge and the mill at dawn.
                 .len(),
             1
         );
+    }
+
+    /// A space whose folder is invalid is skipped (its chats stay in no workspace) and the
+    /// others are imported; the import completes instead of failing on every load.
+    #[tokio::test]
+    async fn an_invalid_legacy_space_is_skipped_and_the_rest_imported() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = WorkspaceState::at(Some((dir.path().join("shodh.db"), None)));
+        let store = ConversationStore::in_dir(dir.path());
+        let saved = vec![
+            conversation("a", Some(("src-1", "Contracts")), None),
+            conversation("bb", Some(("src-bad", "Broken")), None),
+        ];
+        store
+            .update(|all| {
+                all.extend(saved.clone());
+                Ok(())
+            })
+            .unwrap();
+        // A folder without a path cannot be a workspace source.
+        let folders = vec![known("src-1", "C:/Docs/Contracts"), known("src-bad", "  ")];
+        let plan = plan_legacy_import(&saved, &folders, &HashSet::new());
+        assert_eq!(plan.create.len(), 2);
+        assert_eq!(
+            apply_legacy_plan(&state, dir.path(), &plan).await.unwrap(),
+            3
+        );
+        assert!(matches!(
+            state.run(|s| s.get("src-bad")).await,
+            Err(WorkspaceCommandError {
+                code: "not_found",
+                ..
+            })
+        ));
+        assert_eq!(
+            state
+                .run(|s| s.detail("src-1"))
+                .await
+                .unwrap()
+                .sources
+                .len(),
+            1
+        );
+        let after = store.load().unwrap();
+        let workspace_of = |id: &str| {
+            after
+                .iter()
+                .find(|c| c.id == id)
+                .and_then(|c| c.workspace_id.clone())
+        };
+        assert_eq!(workspace_of("a").as_deref(), Some("src-1"));
+        assert_eq!(workspace_of("bb"), None);
+        assert!(state
+            .run(|s| s.state(LEGACY_IMPORT_KEY))
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    /// An interrupted import that created a workspace but not its folder (before the two
+    /// were created together): the next run gives it the folder, once.
+    #[tokio::test]
+    async fn a_workspace_left_without_its_folder_is_repaired() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = WorkspaceState::at(Some((dir.path().join("shodh.db"), None)));
+        let store = ConversationStore::in_dir(dir.path());
+        let saved = vec![conversation("a", Some(("src-1", "Contracts")), None)];
+        store
+            .update(|all| {
+                all.extend(saved.clone());
+                Ok(())
+            })
+            .unwrap();
+        state
+            .run(|s| {
+                s.create_with_id(
+                    "src-1",
+                    &NewWorkspace {
+                        name: "Contracts".into(),
+                        ..NewWorkspace::default()
+                    },
+                    WorkspaceAuthor::Migration,
+                )
+            })
+            .await
+            .unwrap();
+        let folders = vec![known("src-1", "C:/Docs/Contracts")];
+        let existing: HashSet<String> = ["src-1".to_string()].into();
+        let plan = plan_legacy_import(&saved, &folders, &existing);
+        assert!(plan.create.is_empty());
+        assert_eq!(plan.repair.len(), 1);
+        apply_legacy_plan(&state, dir.path(), &plan).await.unwrap();
+        let detail = state.run(|s| s.detail("src-1")).await.unwrap();
+        assert_eq!(detail.sources.len(), 1);
+        assert_eq!(detail.sources[0].kind, SourceKind::Folder);
+        assert_eq!(detail.sources[0].added_by, WorkspaceAuthor::Migration);
+        assert_eq!(detail.sources[0].path.as_deref(), Some("C:/Docs/Contracts"));
+        // Applying again neither duplicates the folder nor fails.
+        apply_legacy_plan(&state, dir.path(), &plan).await.unwrap();
+        assert_eq!(
+            state
+                .run(|s| s.detail("src-1"))
+                .await
+                .unwrap()
+                .sources
+                .len(),
+            1
+        );
+        let after = store.load().unwrap();
+        assert_eq!(after[0].workspace_id.as_deref(), Some("src-1"));
     }
 
     #[test]

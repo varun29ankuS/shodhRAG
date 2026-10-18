@@ -2401,6 +2401,13 @@ mod tests {
             .await;
         assert!(out.ok);
         assert!(ctx.private_content());
+        // ...so a fetch of a URL the run did not find now asks.
+        assert!(web::fetch_needs_confirmation(
+            "https://x.example/?q=history",
+            ctx.private_content(),
+            &ctx.web_sources(),
+            None
+        ));
     }
 
     #[test]

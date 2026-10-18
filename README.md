@@ -37,8 +37,6 @@
 
 ## Watch the 2-minute tour
 
-<img src="docs/media/shodh-tour.png" alt="A frame from the Shodh tour: a passage on page 2 of the SPANN paper, outlined and labelled 'Cited passage · SPANN, page 2', as it opens from an answer's citation." width="100%" />
-
 <!-- TOUR-VIDEO: paste the GitHub video link on the next line -->
 https://github.com/user-attachments/assets/16719eb6-af1b-49a0-8adf-8ee3b34b4fe1
 

@@ -304,7 +304,8 @@ impl DynamicsStore {
             return Ok(0);
         }
         let mut conn = self.lock();
-        conn.execute_batch("PRAGMA secure_delete = ON;")?;
+        // The pragma answers with its new value, so it is read, not executed.
+        conn.query_row("PRAGMA secure_delete = ON", [], |r| r.get::<_, i64>(0))?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut removed = 0;
         for chunk in ids.chunks(LOOKUP_CHUNK) {

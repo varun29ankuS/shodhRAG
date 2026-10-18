@@ -136,8 +136,11 @@ pub enum OfficeXmlError {
 type Walk = Result<(), OfficeXmlError>;
 
 /// The part `xml` parsed, with at most [`limits::MAX_OFFICE_XML_NODES`]
-/// nodes.
+/// nodes. Its nesting is measured first ([`check_nesting`]): roxmltree's
+/// tokenizer recurses once per level of nesting, so a part nested far
+/// deeper than any Office file would overflow the stack inside the parse.
 fn parse(xml: &str) -> Result<Document<'_>, OfficeXmlError> {
+    check_nesting(xml.as_bytes(), MAX_DEPTH)?;
     let options = ParsingOptions {
         allow_dtd: false,
         nodes_limit: limits::MAX_OFFICE_XML_NODES,
@@ -148,6 +151,66 @@ fn parse(xml: &str) -> Result<Document<'_>, OfficeXmlError> {
         }
         e => OfficeXmlError::Invalid(e),
     })
+}
+
+/// Refuses XML whose elements nest more than `max` deep, read without
+/// recursion and without parsing: start tags (`<name ...>`, their quoted
+/// attribute values skipped) open a level, end tags (`</name>`) close one,
+/// and empty-element tags (`<name/>`), comments, CDATA sections,
+/// processing instructions and declarations change nothing. XML the parser
+/// would refuse anyway (unclosed tags, stray brackets) is left to it.
+fn check_nesting(xml: &[u8], max: usize) -> Result<(), OfficeXmlError> {
+    /// The index just past `end` at or after `from`, or the end of `xml`.
+    fn past(xml: &[u8], from: usize, end: &[u8]) -> usize {
+        xml.get(from..)
+            .and_then(|rest| rest.windows(end.len()).position(|w| w == end))
+            .map_or(xml.len(), |at| from + at + end.len())
+    }
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < xml.len() {
+        let Some(at) = xml[i..].iter().position(|&b| b == b'<') else {
+            break;
+        };
+        let start = i + at;
+        let rest = &xml[start..];
+        if rest.starts_with(b"<!--") {
+            i = past(xml, start + 4, b"-->");
+        } else if rest.starts_with(b"<![CDATA[") {
+            i = past(xml, start + 9, b"]]>");
+        } else if rest.starts_with(b"<?") {
+            i = past(xml, start + 2, b"?>");
+        } else if rest.starts_with(b"<!") {
+            i = past(xml, start + 2, b">");
+        } else if rest.starts_with(b"</") {
+            depth = depth.saturating_sub(1);
+            i = past(xml, start + 2, b">");
+        } else {
+            // A start tag: its end is the first `>` outside quotes.
+            let mut j = start + 1;
+            let mut quote: Option<u8> = None;
+            while j < xml.len() {
+                let b = xml[j];
+                match quote {
+                    Some(q) if b == q => quote = None,
+                    Some(_) => {}
+                    None if b == b'"' || b == b'\'' => quote = Some(b),
+                    None if b == b'>' => break,
+                    None => {}
+                }
+                j += 1;
+            }
+            let empty = j > start + 1 && xml[j - 1] == b'/';
+            if !empty {
+                depth += 1;
+                if depth > max {
+                    return Err(OfficeXmlError::TooDeep);
+                }
+            }
+            i = j + 1;
+        }
+    }
+    Ok(())
 }
 
 /// The depth below `depth`, refused past [`MAX_DEPTH`].
@@ -452,9 +515,30 @@ mod tests {
         assert!(pptx_slide_text("<p:sld><a:p>").is_err());
     }
 
+    /// Nesting is measured without parsing: start tags open a level, end
+    /// tags close one; empty tags, comments, CDATA, processing instructions
+    /// and quoted `>` or `<` in attribute values change nothing.
+    #[test]
+    fn nesting_is_measured_before_parsing() {
+        let within = "<?xml version=\"1.0\"?><a x=\"1>2\" y='/'><!-- <b><b><b> --><b/>\
+                      <![CDATA[<c><c><c>]]><d><e>text > here</e></d></a>";
+        assert!(check_nesting(within.as_bytes(), 3).is_ok());
+        assert!(matches!(
+            check_nesting(within.as_bytes(), 2),
+            Err(OfficeXmlError::TooDeep)
+        ));
+        let deep = format!("{}{}", "<a>".repeat(300), "</a>".repeat(300));
+        assert!(check_nesting(deep.as_bytes(), 300).is_ok());
+        assert!(check_nesting(deep.as_bytes(), 299).is_err());
+        // Siblings do not add up.
+        let wide = "<a><b></b><b></b><b/></a>".repeat(1000);
+        assert!(check_nesting(wide.as_bytes(), 2).is_ok());
+    }
+
     /// XML nested far deeper than any Office file (a crafted part: a few
     /// bytes a level, compressing to almost nothing) is refused with a
-    /// reason, not walked until the stack overflows.
+    /// reason, before the parser (which recurses per level) or the walk
+    /// reads it.
     #[test]
     fn deeply_nested_xml_is_refused_not_walked() {
         let levels = 100_000;

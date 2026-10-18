@@ -601,7 +601,6 @@ pub fn run() {
             database_commands::get_database_stats,
             database_commands::list_indexed_sources,
             database_commands::resolve_path_case,
-            database_commands::cleanup_orphaned_documents,
             // Storage commands
             storage_commands::optimize_storage,
             // Source viewer

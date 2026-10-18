@@ -202,7 +202,6 @@
     "check_path_type": { "excluded": "Drag-and-drop helper deciding whether a dropped path is a file or folder; add_folder validates paths itself." },
     "resolve_path_case": { "excluded": "Startup helper that restores the on-disk letter case of the Library's saved folder paths; it changes no source and the assistant names paths as the index lists them." },
     "optimize_storage": { "excluded": "Whole-index maintenance; bulk index operations are user-only." },
-    "cleanup_orphaned_documents": { "excluded": "Bulk deletion across the whole index; the assistant removes single sources with remove_source, with approval." },
     "clear_all_documents": { "excluded": "Deletes every indexed document; bulk destructive operations are user-only." },
     "reset_database": { "excluded": "Deletes the whole index; bulk destructive operations are user-only." },
     "upload_document_file": { "excluded": "Ingests a file the user picked or dropped in the UI; the assistant has no file picker, and fetches files with download_file instead." },

@@ -2876,8 +2876,9 @@ mod tests {
             drop(held);
             removed.notify_one();
         };
+        let listed = BTreeSet::new();
         let (report, ()) = tokio::join!(
-            upgrade_unowned_in_turns(&rag, &BTreeSet::new(), &store, turn),
+            upgrade_unowned_in_turns(&rag, &listed, &store, turn),
             removal
         );
         let report = report.expect("upgrade");

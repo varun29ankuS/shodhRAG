@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   applyFolderSync,
+  applyFolderSyncProgress,
   applyLibraryChange,
   groupSourcesByKind,
   indexedFileCount,
@@ -17,6 +18,7 @@ import {
   scannedPagesStep,
   serializeSources,
   syncedFolders,
+  syncProgressLine,
   withPathCase,
 } from '../src/features/library/sources.ts';
 
@@ -161,6 +163,30 @@ test('a sync updates the count, failures and time of its source only', () => {
   assert.equal(applyFolderSync(source, { sourceId: 'other', at, files: 1 }), source);
   const indexing = { ...source, status: 'indexing' as const };
   assert.equal(applyFolderSync(indexing, { sourceId: 'folder-1', at, files: 1 }), indexing);
+});
+
+test('a sync chunking files again shows how far it is, until its outcome; never stored', () => {
+  const [source] = parseStoredSources(JSON.stringify([stored()]));
+  const at = '2026-10-07T10:00:00.000Z';
+  const healing = applyFolderSyncProgress(source, { sourceId: 'folder-1', done: 120, total: 400 });
+  assert.deepEqual(healing.syncProgress, { done: 120, total: 400 });
+  assert.equal(syncProgressLine({ done: 120, total: 400 }), 'Updating index for improved text extraction · 120 of 400');
+  assert.equal(syncProgressLine({ done: 1200, total: 4000 }), 'Updating index for improved text extraction · 1,200 of 4,000');
+  assert.ok(!serializeSources([healing]).includes('syncProgress'));
+  // The sync's outcome clears it.
+  const done = applyFolderSync(healing, { sourceId: 'folder-1', at, indexed: 400, removed: 0, files: 12, failures: [] });
+  assert.equal(done.syncProgress, undefined);
+  // So does a sync that ended in an error.
+  const failed = applyFolderSync(healing, { sourceId: 'folder-1', at, error: 'The folder manifest could not be saved' });
+  assert.equal(failed.syncProgress, undefined);
+  assert.equal(failed.syncError, 'The folder manifest could not be saved');
+  // Another source's progress, a source being indexed, or counts that do not read are ignored.
+  assert.equal(applyFolderSyncProgress(source, { sourceId: 'other', done: 1, total: 2 }), source);
+  const indexing = { ...source, status: 'indexing' as const };
+  assert.equal(applyFolderSyncProgress(indexing, { sourceId: 'folder-1', done: 1, total: 2 }), indexing);
+  for (const [done, total] of [[3, 2], [-1, 2], [1, 0], [0.5, 2], ['1', 2], [1, undefined]] as const) {
+    assert.equal(applyFolderSyncProgress(source, { sourceId: 'folder-1', done, total }), source, `${done}/${total}`);
+  }
 });
 
 test('a failed sync is shown and cleared by the next one, never stored', () => {

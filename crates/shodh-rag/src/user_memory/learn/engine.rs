@@ -14,8 +14,9 @@ use super::decide::{self, DecidedBy, Decision, DecisionRecord, Deterministic, Ju
 use super::extract::{self, Candidate, SourceText, TurnInput, MAX_SOURCE_CHARS};
 use super::inbox::{
     AppliedOutcome, Inbox, NewProposal, Proposal, ProposalAction, ProposalOrigin, ProposalStatus,
-    ProposalView, PutOutcomeView, StatusEvent, Undo, UsageCounter,
+    ProposalView, PutOutcomeView, Rejection, RequestedOutcome, StatusEvent, Undo, UsageCounter,
 };
+use super::{explicit, sensitivity};
 use super::{
     normalise_text, LearnError, LearnMode, LearnModel, LearnPolicy, LearnResult, PolicySource,
 };
@@ -62,6 +63,21 @@ pub struct ConsolidationReport {
     /// Candidates dropped, by reason.
     pub dropped: BTreeMap<String, usize>,
 }
+
+/// Which allowance a model call is counted against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallBudget {
+    /// Today's caps ([`LearnPolicy::caps`]).
+    Daily,
+    /// The one-time allowance for learning from what the user wrote in the removed legacy
+    /// memory store ([`super::inbox::LEGACY_IMPORT_CALLS`]): never today's calls.
+    LegacyImport,
+}
+
+/// Reason code of an answer the model stopped at its token limit.
+pub const TRUNCATED: &str = "truncated";
+/// Reason code of a judgement that is not a decision on a memory shown.
+pub const INVALID_JUDGEMENT: &str = "invalid_judgement";
 
 /// The learning pipeline over one memory service.
 pub struct Learner {
@@ -125,40 +141,88 @@ impl Learner {
         self.models.model()
     }
 
-    /// Calls the model under the current policy and today's caps.
+    /// Calls the model under the current policy and today's caps. `turn` is the turn the
+    /// call learns from, if any (kept with a cut-off answer).
     pub(crate) async fn call_model(
         &self,
         model: &dyn LearnModel,
         prompt: &str,
         max_tokens: usize,
+        turn: Option<&str>,
+        budget: CallBudget,
     ) -> LearnResult<String> {
         let policy = self.policy();
         if policy.mode == LearnMode::Off {
             return Err(LearnError::Disabled);
         }
-        self.inbox
-            .reserve_call(prompt.chars().count(), &policy.caps, self.now())?;
-        let answer = model.complete(prompt, max_tokens).await?;
+        match budget {
+            CallBudget::Daily => {
+                self.inbox
+                    .reserve_call(prompt.chars().count(), &policy.caps, self.now())?
+            }
+            CallBudget::LegacyImport => self.inbox.reserve_legacy_call()?,
+        }
+        let answer = match model.complete(prompt, max_tokens).await {
+            Ok(answer) => answer,
+            Err(LearnError::Truncated(partial)) => {
+                // Counted here, once, for every step: a cut-off answer is an invalid one.
+                let now = self.now();
+                self.inbox.record_output(partial.chars().count(), now)?;
+                self.inbox.count(UsageCounter::Invalid, 1, now)?;
+                let detail = format!("the model stopped at its {max_tokens}-token limit");
+                self.log_rejections(
+                    &model.model_id(),
+                    &[Rejection::with_app_detail(TRUNCATED, detail, partial.as_str()).about(turn)],
+                );
+                return Err(LearnError::Truncated(partial));
+            }
+            Err(e) => return Err(e),
+        };
         self.inbox
             .record_output(answer.chars().count(), self.now())?;
         Ok(answer)
+    }
+
+    /// Keeps why answers of `model`, or memories in them, were not used (Settings →
+    /// Memory shows the reasons). Failing to keep them is logged, never fatal.
+    pub(crate) fn log_rejections(&self, model: &str, rejections: &[Rejection]) {
+        if let Err(e) = self.inbox.record_rejections(model, rejections, self.now()) {
+            tracing::warn!(target: "shodh::memory", error = %e, "why learning dropped an answer was not kept");
+        }
     }
 
     /// Learns from completed turns of one conversation: extracts candidates from the
     /// user's text, decides each against what is remembered and files suggestions
     /// (applying the eligible ones in automatic mode).
     pub async fn learn_from_turns(&self, turns: &[TurnInput]) -> LearnResult<TurnReport> {
+        self.learn_from(turns, CallBudget::Daily).await
+    }
+
+    /// [`Self::learn_from_turns`] for messages of the removed legacy memory store, counted
+    /// against its one-time allowance ([`super::inbox::LEGACY_IMPORT_CALLS`]) instead of
+    /// today's calls; [`LearnError::BudgetExhausted`] once it is spent.
+    pub async fn learn_from_legacy(&self, turns: &[TurnInput]) -> LearnResult<TurnReport> {
+        self.learn_from(turns, CallBudget::LegacyImport).await
+    }
+
+    async fn learn_from(&self, turns: &[TurnInput], budget: CallBudget) -> LearnResult<TurnReport> {
         let mut report = TurnReport::default();
         let policy = self.policy();
         if policy.mode == LearnMode::Off {
             return Err(LearnError::Disabled);
         }
-        // Newest turns first within the size bound, whole turns only, then in order.
+        // Newest turns first within the size bound, whole turns only, then in order. A
+        // turn with nothing about the user (a question about the documents) is not sent.
         let mut sources: Vec<SourceText> = Vec::new();
         let mut size = 0;
+        let mut wrote = false;
         for (i, turn) in turns.iter().enumerate().rev() {
             let source = SourceText::from_turn(i, turn);
             if source.text.is_empty() {
+                continue;
+            }
+            wrote = true;
+            if !extract::worth_learning(&source.text) {
                 continue;
             }
             let len = source.text.chars().count();
@@ -170,7 +234,14 @@ impl Learner {
         }
         sources.reverse();
         if sources.is_empty() {
-            report.skipped = Some("nothing the user wrote".to_string());
+            report.skipped = Some(
+                if wrote {
+                    "nothing the user said was about themselves"
+                } else {
+                    "nothing the user wrote"
+                }
+                .to_string(),
+            );
             return Ok(report);
         }
         let ontology = self.service.store().ontology();
@@ -179,10 +250,7 @@ impl Learner {
             .map(|s| s.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
-        let Some(slice) = extract::slice_for_learning(ontology, &joined) else {
-            report.skipped = Some("nothing memorable was mentioned".to_string());
-            return Ok(report);
-        };
+        let slice = extract::slice_for_turns(ontology, &joined);
         let slice_classes: BTreeSet<String> = slice
             .matched_classes()
             .into_iter()
@@ -191,13 +259,34 @@ impl Learner {
         let model = self.model().map_err(LearnError::ModelUnavailable)?;
         let today = self.now().format("%Y-%m-%d").to_string();
         let prompt = extract::extraction_prompt(&slice, &sources, &today);
+        // Rejections not about one cited turn are about the newest turn of the batch.
+        let newest = sources.last().map(|s| s.turn_id.clone());
+        let newest = newest.as_deref();
+        let model_id = model.model_id();
         let answer = self
-            .call_model(model.as_ref(), &prompt, extract::EXTRACTION_MAX_TOKENS)
+            .call_model(
+                model.as_ref(),
+                &prompt,
+                extract::EXTRACTION_MAX_TOKENS,
+                newest,
+                budget,
+            )
             .await?;
         let parsed = match extract::parse_answer(&answer) {
             Ok(parsed) => parsed,
             Err(e) => {
                 self.inbox.count(UsageCounter::Invalid, 1, self.now())?;
+                let detail = match &e {
+                    LearnError::InvalidOutput(detail) => detail.clone(),
+                    other => other.to_string(),
+                };
+                self.log_rejections(
+                    &model_id,
+                    &[
+                        Rejection::new(extract::INVALID_JSON, detail, answer.as_str())
+                            .about(newest),
+                    ],
+                );
                 return Err(e);
             }
         };
@@ -206,8 +295,15 @@ impl Learner {
             &slice_classes,
             parsed.candidates,
             &sources,
-            &model.model_id(),
+            &model_id,
         );
+        let rejections: Vec<Rejection> = parsed
+            .rejections
+            .into_iter()
+            .chain(validated.rejections.iter().cloned())
+            .map(|r| r.about(newest))
+            .collect();
+        self.log_rejections(&model_id, &rejections);
         if parsed.malformed > 0 {
             report
                 .dropped
@@ -233,6 +329,7 @@ impl Learner {
                     &mut report.proposed,
                     &mut report.learned,
                     &mut report.suppressed,
+                    budget,
                 )
                 .await
             {
@@ -256,8 +353,9 @@ impl Learner {
         proposed: &mut Vec<String>,
         learned: &mut Vec<String>,
         suppressed: &mut usize,
+        budget: CallBudget,
     ) -> LearnResult<()> {
-        let record = self.decide(candidate, model).await?;
+        let record = self.decide(candidate, model, budget).await?;
         // A new memory goes where it was learned (the conversation's workspace, or global);
         // a change to an existing memory stays in that memory's scope, so a fact learned in
         // a workspace never moves a global memory out of every other chat.
@@ -306,6 +404,7 @@ impl Learner {
             model: model.model_id(),
             at: candidate.source.at,
             source: candidate.source.source.clone(),
+            by_user: false,
         };
         let new = NewProposal {
             origin,
@@ -318,6 +417,71 @@ impl Learner {
             sensitive: candidate.sensitive.clone(),
         };
         self.file(new, proposed, learned, suppressed).await
+    }
+
+    /// Files what the user explicitly asked Shodh to remember (`request`, matched by
+    /// [`explicit::memory_request`] on their message of turn `turn_id`) as a note
+    /// suggestion, without a model. It is the user's own words, so it is stored with
+    /// extractor `user`, and only when the user accepts it. Asking is not learning: it is
+    /// filed whatever the learning mode, is never applied automatically, and the daily caps
+    /// do not hold it back. A note the user already rejected (or undid) is not offered
+    /// again, whether they asked for it or the learner suggested it
+    /// ([`Inbox::insert_requested`]).
+    pub async fn file_user_note(
+        &self,
+        request: &explicit::MemoryRequest,
+        conversation_id: &str,
+        turn_id: &str,
+        at: DateTime<Utc>,
+        scope: Scope,
+    ) -> LearnResult<RequestedOutcome> {
+        let content = MemoryContent::Note {
+            text: request.note.clone(),
+        };
+        let app_version = self.service.app_version().to_string();
+        let origin = Origin::approved_in_conversation(
+            conversation_id,
+            turn_id,
+            "explicit-request",
+            &app_version,
+        );
+        // The text the memory will have, so the learner's own note of the same words is
+        // recognised as the same suggestion.
+        let text = self.service.preview(content.clone(), &origin)?;
+        let mut sensitive = sensitivity::classify_text(&request.note);
+        sensitive.sort();
+        sensitive.dedup();
+        let fingerprint = remember_fingerprint(&scope, "Note", &text);
+        // Saved before, unless the user forgot that memory since.
+        let mut applied_kept = false;
+        for id in self.inbox.applied_memories(&fingerprint)? {
+            if self.service.get(&id).await.is_ok() {
+                applied_kept = true;
+                break;
+            }
+        }
+        let new = NewProposal {
+            origin: ProposalOrigin::Turn,
+            fingerprint,
+            scope,
+            conversation_id: Some(conversation_id.to_string()),
+            turn_id: Some(turn_id.to_string()),
+            action: ProposalAction::Remember {
+                content,
+                text,
+                decision: Decision::Add,
+                decided_by: DecidedBy::Rule,
+                target_text: None,
+                evidence: request.evidence.clone(),
+                model: app_version,
+                at,
+                source: origin.source.clone(),
+                by_user: true,
+            },
+            confidence: 1.0,
+            sensitive,
+        };
+        self.inbox.insert_requested(new, self.now(), applied_kept)
     }
 
     /// Stores a suggestion and applies it automatically when eligible.
@@ -367,6 +531,7 @@ impl Learner {
         &self,
         candidate: &Candidate,
         model: &Arc<dyn LearnModel>,
+        budget: CallBudget,
     ) -> LearnResult<DecisionRecord> {
         let ontology = self.service.store().ontology();
         let neighbours = decide::neighbours(
@@ -396,18 +561,33 @@ impl Learner {
             .map(|(k, &i)| (k.clone(), neighbours[i].stored.text.clone()))
             .collect();
         let prompt = decide::judge_prompt(&candidate.text, &shown);
+        let turn = Some(candidate.source.turn_id.as_str());
         let answer = match self
-            .call_model(model.as_ref(), &prompt, decide::JUDGE_MAX_TOKENS)
+            .call_model(
+                model.as_ref(),
+                &prompt,
+                decide::JUDGE_MAX_TOKENS,
+                turn,
+                budget,
+            )
             .await
         {
             Ok(answer) => answer,
-            Err(LearnError::BudgetExhausted(_)) | Err(LearnError::Model(_)) => {
-                return Ok(decide::undecided())
-            }
+            Err(LearnError::BudgetExhausted(_))
+            | Err(LearnError::Model(_))
+            | Err(LearnError::Truncated(_)) => return Ok(decide::undecided()),
             Err(e) => return Err(e),
         };
         let Some(judged) = decide::parse_judgement(&answer, &keys) else {
             self.inbox.count(UsageCounter::Invalid, 1, self.now())?;
+            let detail = "not a decision on one of the memories shown";
+            self.log_rejections(
+                &model.model_id(),
+                &[
+                    Rejection::with_app_detail(INVALID_JUDGEMENT, detail, answer.as_str())
+                        .about(turn),
+                ],
+            );
             return Ok(decide::undecided());
         };
         let neighbour = match &judged {
@@ -587,19 +767,24 @@ impl Learner {
             at,
             source,
             model,
+            by_user,
             ..
         } = &proposal.action
         else {
             return None;
         };
-        let origin = Origin {
-            source: source.clone(),
-            extractor: ExtractorKind::Llm,
-            extractor_version: model.clone(),
-            confidence: proposal.confidence,
-            authority: WriteAuthority::UserApproval {
-                step_id: proposal.id.clone(),
-            },
+        let origin = if *by_user {
+            user_origin(source, model, &proposal.id)
+        } else {
+            Origin {
+                source: source.clone(),
+                extractor: ExtractorKind::Llm,
+                extractor_version: model.clone(),
+                confidence: proposal.confidence,
+                authority: WriteAuthority::UserApproval {
+                    step_id: proposal.id.clone(),
+                },
+            }
         };
         let content = with_valid_from(content.clone(), *at);
         Some(
@@ -724,12 +909,14 @@ impl Learner {
                 at,
                 source,
                 model,
+                by_user,
                 ..
             } => {
                 let edited = edit.is_some();
                 let content = edit.unwrap_or_else(|| content.clone());
                 let content = with_valid_from(content, *at);
-                let origin = origin_for(source, model, edited);
+                // The user's own words are the user's formulation, as an edit is.
+                let origin = origin_for(source, model, edited || *by_user);
                 let statement = self
                     .service
                     .build_statement_at(content.clone(), &origin, *at)?;
@@ -961,6 +1148,20 @@ fn is_stale(error: &LearnError) -> bool {
     )
 }
 
+/// The origin of a suggestion the user formulated, applied on the user's Accept of
+/// `proposal_id`: extractor `user` at `app_version`, confidence 1.
+fn user_origin(source: &str, app_version: &str, proposal_id: &str) -> Origin {
+    Origin {
+        source: source.to_string(),
+        extractor: ExtractorKind::User,
+        extractor_version: app_version.to_string(),
+        confidence: 1.0,
+        authority: WriteAuthority::UserApproval {
+            step_id: proposal_id.to_string(),
+        },
+    }
+}
+
 /// An LLM origin (for building statements that are only validated or rendered).
 pub(crate) fn llm_origin(source: &str, model: &str, confidence: f64, step: &str) -> Origin {
     Origin {
@@ -999,6 +1200,8 @@ pub fn auto_eligible(proposal: &Proposal, policy: &LearnPolicy) -> bool {
         return false;
     }
     match &proposal.action {
+        // What the user asked to remember is theirs to accept: it always asks.
+        ProposalAction::Remember { by_user: true, .. } => false,
         ProposalAction::Remember {
             decision,
             decided_by,

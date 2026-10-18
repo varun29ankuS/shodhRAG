@@ -175,7 +175,9 @@ export const agentApi = {
   /**
    * `scope` limits what the answer may search (selected sources, or files for "Ask about this file").
    * `textOrigin` is `typed` only when `text` is exactly what the user typed in the main
-   * conversation: only such turns may be learned from (Settings → Memory).
+   * conversation. `typedText` is the question the user typed when `text` is a side-thread
+   * message composed around it. Only the user's own words may be learned from
+   * (Settings → Memory) or kept when they ask Shodh to remember something.
    */
   send: (
     sessionId: string,
@@ -184,7 +186,8 @@ export const agentApi = {
     history: HistoryTurn[],
     scope: AnswerScope | null = null,
     textOrigin: 'typed' | 'composed' = 'composed',
-  ) => call<string>('agent_send', { sessionId, text, requestId, history, scope, textOrigin }),
+    typedText: string | null = null,
+  ) => call<string>('agent_send', { sessionId, text, requestId, history, scope, textOrigin, typedText }),
   steer: (sessionId: string, text: string) => call<string>('agent_steer', { sessionId, text }),
   abort: (sessionId: string) => call<void>('agent_abort', { sessionId }),
   approve: (sessionId: string, stepId: string, approved: boolean) =>

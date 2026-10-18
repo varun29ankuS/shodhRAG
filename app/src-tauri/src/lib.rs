@@ -21,6 +21,7 @@ mod mcp_commands;
 mod memory_commands;
 mod memory_learn;
 mod model_picker_commands;
+mod notifications;
 mod pdf_export;
 mod profile;
 mod rag_commands;
@@ -208,6 +209,8 @@ pub fn run() {
             let audit_state = audit_commands::AuditState::open(&app_data_dir);
             audit_state.spawn_retention();
             app.manage(audit_state);
+            // Desktop notifications, before anything that sends one.
+            app.manage(notifications::NotificationState::load(&app_data_dir));
 
             // Resolve model directory with multi-tier fallback for portability
             let model_dir = resolve_model_dir(&app_data_dir);
@@ -670,6 +673,10 @@ pub fn run() {
             app_settings::set_app_policy,
             app_settings::set_memory_preferences,
             app_settings::set_answer_preferences,
+            // Desktop notifications (Settings → Notifications)
+            notifications::set_notification_preferences,
+            notifications::send_test_notification,
+            notifications::open_notification_settings,
             // Updates (Settings → Privacy)
             updater::get_update_status,
             updater::set_update_checks,

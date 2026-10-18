@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 use shodh_rag::audit::LOCAL_OWNER;
 use shodh_rag::harness::profile::app_tools;
+use shodh_rag::harness::protocol::ToolLoadMode;
 use shodh_rag::harness::tools::{
     ApprovalPreview, HostTool, RegistryError, ToolContext, ToolError, ToolOutput, ToolRegistry,
 };
@@ -273,6 +274,12 @@ impl HostTool for RememberTool {
     fn description(&self) -> &'static str {
         REMEMBER_DESCRIPTION.as_str()
     }
+    /// Always in the model's context: a discoverable tool is reached through a device
+    /// protocol, and a model unsure whether to remember takes the tool it can call
+    /// (`search_documents`) instead. Its schema is small.
+    fn load_mode(&self) -> ToolLoadMode {
+        ToolLoadMode::Essential
+    }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
@@ -369,6 +376,10 @@ impl HostTool for RecallTool {
     }
     fn label_template(&self) -> &'static str {
         "Recalling {query}"
+    }
+    /// Always in the model's context, like `remember`.
+    fn load_mode(&self) -> ToolLoadMode {
+        ToolLoadMode::Essential
     }
     fn description(&self) -> &'static str {
         "Recall what you remember about the user that is relevant to `query`: preferences, \

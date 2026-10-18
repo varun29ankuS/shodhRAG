@@ -187,7 +187,26 @@ impl Default for MemoryPrefs {
     }
 }
 
+/// The learning caps every build wrote into the settings file while the daily default
+/// was 60 model calls. Learning now sends every turn about the user to the model, so
+/// the default is 10 calls (free tiers allow about 50 requests a day for everything);
+/// settings that still hold exactly the old default are read as the new one.
+const PREVIOUS_DEFAULT_CAPS: LearnCaps = LearnCaps {
+    max_calls_per_day: 60,
+    max_input_chars_per_day: 400_000,
+    max_proposals_per_day: 40,
+};
+
 impl MemoryPrefs {
+    /// The old default caps ([`PREVIOUS_DEFAULT_CAPS`]) become the current default; caps
+    /// the user changed are kept.
+    fn with_current_default_caps(mut self) -> Self {
+        if self.learn_caps == PREVIOUS_DEFAULT_CAPS {
+            self.learn_caps = LearnCaps::default();
+        }
+        self
+    }
+
     /// Checks the learning settings' bounds.
     pub fn validate(&self) -> Result<(), SettingsError> {
         let invalid = |key: &str, reason: &str| SettingsError::InvalidValue {
@@ -272,6 +291,37 @@ impl Default for UpdatePrefs {
     }
 }
 
+/// Which desktop notifications Shodh shows (see [`crate::notifications`]).
+/// User-only: whether and how the app interrupts the user is their call.
+/// A notification is shown only while the main window is not in front.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NotificationPrefs {
+    /// Task reminders.
+    pub reminders: bool,
+    /// Something waits for the user: approvals the assistant asked for.
+    pub needs_you: bool,
+    /// New memory suggestions (part of "needs you", off by default).
+    pub memory_suggestions: bool,
+    /// An answer, a folder's indexing or sync, or a result extraction finished.
+    pub work_finished: bool,
+    /// Indexing or a sync failed, a background model call failed, or a data
+    /// file had to be restored.
+    pub problems: bool,
+}
+
+impl Default for NotificationPrefs {
+    fn default() -> Self {
+        Self {
+            reminders: true,
+            needs_you: true,
+            memory_suggestions: false,
+            work_finished: true,
+            problems: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
@@ -284,6 +334,8 @@ pub struct AppSettings {
     /// The model picker: chosen model, fallback, recent and starred models.
     /// User-only (no keys; those stay in the OS keychain).
     pub models: ModelPrefs,
+    /// Desktop notifications by category. User-only.
+    pub notifications: NotificationPrefs,
     /// The UI has copied its earlier local-storage preferences here.
     pub seeded: bool,
 }
@@ -326,7 +378,7 @@ pub const AGENT_WRITABLE: [SettingKey; 2] = [SettingKey::Theme, SettingKey::Sear
 /// these by name (in addition to its schema only listing [`AGENT_WRITABLE`]),
 /// so a prompt-injected request gets a clear refusal rather than a
 /// best-effort match.
-pub const AGENT_DENIED: [(&str, &str); 24] = [
+pub const AGENT_DENIED: [(&str, &str); 25] = [
     ("api_keys", "API keys are secrets; a manipulated agent could leak or replace them."),
     ("provider", "Switching the model provider changes who receives the user's documents."),
     ("model", "Switching the model changes who receives the user's documents and what it costs."),
@@ -351,6 +403,7 @@ pub const AGENT_DENIED: [(&str, &str); 24] = [
     ("fallback_model", "The fallback model receives the user's documents when the main one fails; choosing who receives them is the user's decision."),
     ("always_fall_back", "Switching models without asking changes who receives the user's documents; only the user may allow that."),
     ("check_for_updates", "Whether Shodh contacts the update server, and which version of itself it runs, is the user's decision."),
+    ("notifications", "Whether and when Shodh interrupts the user with desktop notifications is the user's decision."),
 ];
 
 /// Why `key` is withheld from the agent, if it is.
@@ -395,7 +448,14 @@ impl SettingsStore {
     fn read_unlocked(&self) -> Result<Loaded<AppSettings>, SettingsError> {
         let read = durable_file::read_with_backup(
             &self.path,
-            |text| serde_json::from_str::<AppSettings>(text).map_err(|e| e.to_string()),
+            |text| {
+                serde_json::from_str::<AppSettings>(text)
+                    .map(|mut settings| {
+                        settings.memory = settings.memory.with_current_default_caps();
+                        settings
+                    })
+                    .map_err(|e| e.to_string())
+            },
             AppSettings::default,
         );
         match read {
@@ -548,6 +608,7 @@ fn store(app: &AppHandle) -> Result<SettingsStore, String> {
 
 /// Tell open windows the settings changed.
 pub fn broadcast(app: &AppHandle, settings: &AppSettings) {
+    crate::notifications::settings_changed(app, &settings.notifications);
     if let Err(e) = app.emit(APP_SETTINGS_CHANGED_EVENT, settings) {
         tracing::warn!("Failed to emit {}: {}", APP_SETTINGS_CHANGED_EVENT, e);
     }
@@ -754,6 +815,38 @@ mod tests {
         assert_eq!(json["thinkBeforeAnswering"], true);
         assert!(denied_reason("think_before_answering").is_some());
         assert!(SettingKey::parse("think_before_answering").is_none());
+    }
+
+    #[test]
+    fn the_old_default_learning_caps_are_read_as_the_new_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE);
+        let write = |caps: serde_json::Value| {
+            std::fs::write(&path, json!({"memory": {"learnCaps": caps}}).to_string()).unwrap();
+        };
+        let store = SettingsStore::in_dir(dir.path());
+        // Written by a build whose default was 60 calls a day.
+        write(
+            json!({"maxCallsPerDay": 60, "maxInputCharsPerDay": 400000, "maxProposalsPerDay": 40}),
+        );
+        let caps = store.load().unwrap().memory.learn_caps;
+        assert_eq!(caps, LearnCaps::default());
+        assert_eq!(caps.max_calls_per_day, 10);
+        // Caps the user chose are kept, even with 60 calls.
+        write(
+            json!({"maxCallsPerDay": 60, "maxInputCharsPerDay": 500000, "maxProposalsPerDay": 40}),
+        );
+        assert_eq!(
+            store.load().unwrap().memory.learn_caps.max_calls_per_day,
+            60
+        );
+        write(
+            json!({"maxCallsPerDay": 25, "maxInputCharsPerDay": 400000, "maxProposalsPerDay": 40}),
+        );
+        assert_eq!(
+            store.load().unwrap().memory.learn_caps.max_calls_per_day,
+            25
+        );
     }
 
     #[test]
@@ -1022,5 +1115,55 @@ mod tests {
             "the damaged file is kept, not overwritten"
         );
         assert_eq!(std::fs::read_to_string(&damaged[0]).unwrap(), "{not json");
+    }
+
+    #[test]
+    fn notification_preferences_default_round_trip_in_camel_case_and_are_user_only() {
+        let defaults = AppSettings::default().notifications;
+        assert!(defaults.reminders && defaults.needs_you && defaults.work_finished);
+        assert!(defaults.problems);
+        assert!(
+            !defaults.memory_suggestions,
+            "memory suggestions are off by default"
+        );
+        // Settings written before notifications existed get the defaults.
+        let old: AppSettings = serde_json::from_str(r#"{"seeded": true}"#).unwrap();
+        assert_eq!(old.notifications, NotificationPrefs::default());
+        let partial: AppSettings =
+            serde_json::from_str(r#"{"notifications": {"workFinished": false}}"#).unwrap();
+        assert!(!partial.notifications.work_finished);
+        assert!(partial.notifications.reminders);
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::in_dir(dir.path());
+        let chosen = NotificationPrefs {
+            reminders: false,
+            needs_you: true,
+            memory_suggestions: true,
+            work_finished: false,
+            problems: false,
+        };
+        store
+            .update(|s| {
+                s.notifications = chosen;
+                Ok(())
+            })
+            .unwrap();
+        let reloaded = SettingsStore::in_dir(dir.path()).load().unwrap();
+        assert_eq!(reloaded.notifications, chosen);
+        let json = serde_json::to_value(reloaded.notifications).unwrap();
+        assert_eq!(
+            json,
+            json!({
+                "reminders": false,
+                "needsYou": true,
+                "memorySuggestions": true,
+                "workFinished": false,
+                "problems": false,
+            })
+        );
+        assert!(denied_reason("notifications").is_some());
+        assert!(denied_reason("notifications.reminders").is_some());
+        assert!(SettingKey::parse("notifications").is_none());
     }
 }

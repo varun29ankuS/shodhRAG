@@ -544,12 +544,7 @@ fn changes_are_classified_by_the_file_they_land_in() {
         ChangeTarget::Plain
     );
     // A file git includes as configuration (relative to the git folder).
-    std::fs::write(
-        root.join("shared.gitconfig"),
-        "[core]
-",
-    )
-    .unwrap();
+    std::fs::write(root.join("shared.gitconfig"), "[core]\n").unwrap();
     git_ok(
         dir.path(),
         &["config", "include.path", "../shared.gitconfig"],

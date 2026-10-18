@@ -48,13 +48,18 @@ https://github.com/user-attachments/assets/16719eb6-af1b-49a0-8adf-8ee3b34b4fe1
 
 Get the latest installer from [Releases](https://github.com/varun29ankuS/shodhRAG/releases/latest):
 
-- **Windows, 64-bit:** `Shodh_<version>_x64-setup.exe`
+- **Windows 10 or 11, 64-bit:** `Shodh_<version>_x64-setup.exe`
 - **macOS 13.3 or later on Apple Silicon:** `Shodh_<version>_aarch64.dmg`. There is no Intel Mac build.
 
-The installers are not code-signed yet, so the system warns you the first time:
+The installers are not code-signed yet, so the system warns you before the first launch:
 
 - **Windows:** SmartScreen shows "Windows protected your PC". Click **More info**, then **Run anyway**.
-- **macOS:** the first open is blocked. On macOS 13 and 14, right-click Shodh in Applications and choose **Open**. On newer versions, open **System Settings → Privacy & Security** and click **Open Anyway**.
+- **macOS:** drag Shodh into Applications and open it once; macOS refuses it. Then:
+  - **macOS 15 (Sequoia) and later:** open **System Settings → Privacy & Security** and click **Open Anyway** next to the message about Shodh.
+  - **macOS 14 (Sonoma) and earlier:** Control-click (or right-click) Shodh in Applications, choose **Open**, then **Open** again.
+  - If macOS says the app "is damaged", run `xattr -dr com.apple.quarantine /Applications/Shodh.app` in Terminal and open it again.
+
+The release notes on each release give the same steps in more detail.
 
 Shodh checks for updates a few minutes after start and then once a day. An update is downloaded and installed only when you choose to. Updates are signed, and one whose signature does not verify is refused. You can turn the check off in **Settings → Privacy**, and it never runs in Local-only mode.
 
@@ -70,7 +75,7 @@ The core of Shodh is free and open source (Apache-2.0), and it stays that way. P
 - **Stop** (or Esc) cancels the run.
 - **Visuals:** answers can include diagrams, charts, timelines and tables, and the model is asked to lead with one when it fits the question. Marked parts of an answer offer **Go deeper**, which asks a prepared follow-up in a side pane only when you click it.
 - **Reasoning:** **Think before answering** (**Settings → Search**, off by default) lets the model reason first. When a model streams its reasoning, a **Reasoning** button under the answer shows it.
-- **Ask about this:** select text in an answer or a document and click **Ask about this** (Ctrl+Shift+A). This opens a side discussion that keeps the parent answer's passages under the same numbers. It can post a summary back to the main conversation.
+- **Ask about this:** select text in an answer or a document and click **Ask about this** (Ctrl+Shift+A). This opens a side discussion that keeps the parent answer's passages under the same numbers. It can post a summary back to the main conversation, with its citations written out as "(side-discussion source: file, p. N)".
 - **Long chats:** conversations render only the messages on screen. **Ctrl+F** (Cmd+F on macOS) finds text in the whole conversation.
 - **Saving:** a finished answer is saved as soon as it is final, and pending saves are written before the app quits. If the app is killed while an answer is being checked, the answer comes back marked as not checked.
 - **Drafts:** each conversation keeps its unsent question while you switch views, for the session.
@@ -113,6 +118,7 @@ The core of Shodh is free and open source (Apache-2.0), and it stays that way. P
   - PDFs are parsed with their layout: headings, paragraphs, lists, tables and footnotes. A PDF's printed title becomes the document title, so a file named `1706.03762v7.pdf` is found by its title.
   - Word and PowerPoint text is read with an XML parser, so XML markup is not indexed and entities such as `&amp;` are decoded. Word tables become table sections.
   - Text in any script is chunked, including Chinese, Japanese, Devanagari, Cyrillic and Arabic.
+  - HTML pages in any script are read without scripts, styles or comments, and their entities are decoded.
   - PDF, scan, LaTeX and Markdown chunks are sized in tokens and never cross a heading.
 - **Tables in PDFs:** an optional table-structure model (Windows, about 212 MB, **Settings → Search**) re-reads table pages in the background.
 - **Spreadsheets:** `.xlsx`, `.xls`, `.xlsm`, `.xlsb`, `.ods`, plus CSV and TSV. Sheets are indexed row by row, and every chunk repeats the header row.
@@ -140,7 +146,7 @@ The core of Shodh is free and open source (Apache-2.0), and it stays that way. P
 
 **Memory**
 - Start a message with "Remember …" (or "Keep in mind …", "From now on …") and Shodh files a note card for you to accept, without a model call.
-- Shodh also suggests memories from your conversations, within a daily cap of 10 model calls. You accept or dismiss each one.
+- Shodh also suggests memories from your conversations, within a daily cap of model calls (10 by default). You accept or dismiss each one.
 - **Settings → Memory** lists them, with search, edit, pin, history, export and forget. Forget removes a memory and all its earlier versions, and the audit log records it.
 
 **Tasks and calendar**
@@ -155,7 +161,7 @@ The core of Shodh is free and open source (Apache-2.0), and it stays that way. P
 
 **Inbox and Activity**
 - **Inbox** collects what waits on you, such as approvals, memory suggestions and reminders, and background work that finished or failed.
-- **Activity** shows usage and the audit log of questions, tool calls, approvals, retrievals, answers and setting changes. The log can be filtered and exported (JSONL, CSV), and it has a retention setting.
+- **Activity** shows usage and the audit log of questions, tool calls, approvals, retrievals, answers and setting changes. The log can be filtered and exported (JSONL, CSV), and it has a retention setting. Retention deletes only events older than the window, even after the system clock jumps.
   - Each event is hash-chained to the one before it.
   - **Verify integrity** reports the first event that was edited, deleted or reordered.
 
@@ -298,10 +304,11 @@ Run one instance per folder. WebView storage is separated on Windows, Linux and 
 | Data | Where it goes |
 |---|---|
 | Your files, their text, OCR results and embeddings | Stay on this computer. Indexing makes no network calls. |
-| Questions, and the passages retrieved to answer them | Sent to the model provider you choose, together with workspace instructions and any memories recalled for that answer. Memory suggestions are learned by sending your messages to that model. With a local model, and web access off (or Local-only mode on), nothing leaves this computer. |
+| Questions, and the passages retrieved to answer them | Sent to the model provider you choose, together with workspace instructions and any memories recalled for that answer. Memory suggestions are learned by sending your messages to that model. With a local model, and web access off (or Local-only mode on), questions and passages stay on this computer. |
 | Web searches and pages | When web access is on, web searches go through OpenRouter's web plugin, Gemini with Google Search, or your SearXNG (`SHODH_SEARXNG_URL`), and pages are fetched directly. Off in Local-only mode. |
 | Paper lookups | Building the paper graph online looks papers up on OpenAlex, only when you ask for it and the web is allowed. |
 | Downloads | Models come from Hugging Face and the agent runtime from GitHub, each pinned and checked by SHA-256. The update check contacts GitHub once a day; it is off in Local-only mode, and you can turn it off yourself. |
+| Agent runtime | With a cloud provider, the pinned runtime was also observed fetching public model metadata from its catalog (`catalog.stencil.so`). |
 | Notifications | Desktop notifications carry titles and counts only, never document or answer text. |
 | API keys | Stored in the OS credential store (Windows Credential Manager, macOS Keychain, Secret Service on Linux). They are never kept in the app's web storage or shown back in the UI. A key set through an environment variable applies to that session only. Subscription sign-ins are held by the agent runtime's own account store, in Shodh's app data folder. |
 | Audit log | Kept in `shodh.db` on this computer. |
@@ -309,6 +316,7 @@ Run one instance per folder. WebView storage is separated on Windows, Linux and 
 **Known gaps.**
 - **Unencrypted storage:** released builds do not encrypt the local index (LanceDB, Tantivy) or the app database (`shodh.db`). Use OS full-disk encryption (BitLocker or FileVault).
 - **Audit chain without a key:** the hash chain shows edited, deleted or reordered events. Someone who can write to `shodh.db` could still rebuild the whole chain.
+- **Agent runtime egress:** the pinned runtime's catalog fetch cannot be turned off yet (see [ADR 0001](docs/adr/0001-agent-harness-omp.md)).
 - **Code mode commands run as you:** approved shell commands run with your user account's permissions, without a sandbox.
 - **No messaging channels or Google Drive sync:** the old WhatsApp, Telegram and Discord bot backends and the Google Drive connector have been removed. They ran unauthenticated local HTTP servers.
 

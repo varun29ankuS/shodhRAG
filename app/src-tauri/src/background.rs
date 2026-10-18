@@ -19,7 +19,6 @@ use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, State, Window, WindowEvent, Wry};
 use tauri_plugin_autostart::ManagerExt;
-use tauri_plugin_notification::NotificationExt;
 use tokio::sync::Notify;
 
 use crate::app_settings::{broadcast, AppSettings, SettingsStore};
@@ -245,18 +244,14 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
         tracing::warn!(error = %e, "could not hide the main window");
     }
     if !settings.background.close_to_tray_explained {
-        let shown = app
-            .notification()
-            .builder()
-            .title("Shodh is still running")
-            .body(
-                "It stays in the tray so reminders can ring. Use the tray icon to open or quit \
-                 Shodh; turn this off in Settings → General.",
-            )
-            .show();
-        if let Err(e) = shown {
-            tracing::warn!(error = %e, "could not explain close-to-tray");
-        }
+        // Belongs to no notification category: it explains, once, the close the
+        // user just made (a failure is logged by the notification service).
+        crate::notifications::app_notice(
+            app,
+            "Shodh is still running",
+            "It stays in the tray so reminders can ring. Use the tray icon to open or quit \
+             Shodh; turn this off in Settings → General.",
+        );
         match store.update(|s| {
             s.background.close_to_tray_explained = true;
             Ok(())

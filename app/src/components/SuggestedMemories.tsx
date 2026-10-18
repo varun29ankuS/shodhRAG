@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useState } from 'react';
+import React, { useCallback, useEffect, useId, useState, useSyncExternalStore } from 'react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { Check, Pencil, RotateCcw, ShieldAlert, Square, X } from 'lucide-react';
 import { cn } from '../lib/utils';
@@ -18,7 +18,6 @@ import {
   undoSuggestion,
 } from '../features/memory/api';
 import {
-  batchAcceptable,
   contentFromSuggestionEdit,
   describeDecision,
   editableSuggestionFields,
@@ -26,6 +25,9 @@ import {
   suggestionText,
 } from '../features/memory/suggestions';
 import type { LearnStatus, Suggestion } from '../features/memory/suggestions';
+import { invalidSummary } from '../features/memory/learnUsage';
+import { batchAcceptable, withoutRejecting } from '../features/memory/batchAccept';
+import { pendingRejections } from '../features/memory/rejecting';
 import { formatDate, propertyLabel } from '../features/memory/model';
 import { countOf } from '../lib/plural';
 
@@ -209,7 +211,7 @@ function LearningControls({ prefs, saving, onChange, status, onStopped }: Learni
           Today: {status.usage.llmCalls} of {status.caps.maxCallsPerDay} model calls, {status.usage.proposals} of{' '}
           {status.caps.maxProposalsPerDay} suggestions
           {status.usage.refused > 0 ? `, ${status.usage.refused} refused (not in your words)` : ''}
-          {status.usage.invalid > 0 ? `, ${status.usage.invalid} invalid dropped` : ''}.
+          {status.usage.invalid > 0 ? `, ${invalidSummary(status.usage.invalid, status.rejections)}` : ''}.
           {status.lastConsolidation ? ` Last review of memories ${formatDate(status.lastConsolidation)}.` : ''}
         </p>
       )}
@@ -238,9 +240,18 @@ interface SuggestionItemProps {
   run: (action: () => Promise<void>, failure: string) => Promise<void>;
   conversationTitle: (id: string) => string | undefined;
   onOpenConversation: (id: string) => void;
+  /** Its rejection waits out the undo window: hidden, and never in a batch accept. */
+  rejecting: boolean;
 }
 
-function SuggestionItem({ suggestion, busy, run, conversationTitle, onOpenConversation }: SuggestionItemProps) {
+function SuggestionItem({
+  suggestion,
+  busy,
+  run,
+  conversationTitle,
+  onOpenConversation,
+  rejecting,
+}: SuggestionItemProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const formId = useId();
@@ -249,16 +260,14 @@ function SuggestionItem({ suggestion, busy, run, conversationTitle, onOpenConver
   const pending = suggestion.status === 'pending' || suggestion.status === 'failed';
   const sensitive = sensitiveLabel(suggestion.sensitive);
   const conversation = suggestion.conversationId;
-  const [hidden, setHidden] = useState(false);
 
-  // Hidden at once and rejected when the undo window ends; Undo leaves it pending.
+  // Hidden at once and rejected when the undo window ends; Undo leaves it pending. Until
+  // then it is kept out of "Accept N non-sensitive" here and in the Inbox (shared ids).
   const reject = () =>
     removeWithUndo({
       message: 'Suggestion rejected',
       description: suggestionText(suggestion),
-      hide: () => setHidden(true),
-      restore: () => setHidden(false),
-      commit: () => rejectSuggestion(suggestion.id),
+      ...pendingRejections.around(suggestion.id, () => rejectSuggestion(suggestion.id)),
       onError: err => notify.error('The suggestion was not rejected', { description: errorText(err) }),
     });
 
@@ -269,7 +278,7 @@ function SuggestionItem({ suggestion, busy, run, conversationTitle, onOpenConver
       notify.success('Memory saved', { description: suggestionText(suggestion) });
     }, 'The suggestion was not accepted');
 
-  if (hidden) return null;
+  if (rejecting) return null;
 
   return (
     <li className="py-3 flex flex-col gap-1.5">
@@ -416,6 +425,16 @@ export default function SuggestedMemories({
   const [decided, setDecided] = useState<Suggestion[]>([]);
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Suggestions whose rejection waits out its undo window, here or in the Inbox (still
+  // pending in the backend).
+  const rejecting = useSyncExternalStore(pendingRejections.subscribe, pendingRejections.get);
+  // Every waiting suggestion's id (not only this scope's), as last loaded.
+  const [waitingIds, setWaitingIds] = useState<string[]>([]);
+  // After the reloaded list is shown: rejections carried out that it no longer has are
+  // done with (until then they stay hidden and out of the batch).
+  useEffect(() => {
+    pendingRejections.settle(waitingIds);
+  }, [waitingIds]);
 
   const refresh = useCallback(async () => {
     try {
@@ -425,6 +444,7 @@ export default function SuggestedMemories({
         listSuggestions(['learned', 'accepted'], scope ? 200 : 30),
       ]);
       const inScope = (list: Suggestion[]) => (scope ? list.filter(x => x.scope === scope) : list);
+      setWaitingIds(waiting.map(x => x.id));
       setStatus(s);
       setPending(inScope(waiting));
       setDecided(inScope(recent).slice(0, 30));
@@ -456,7 +476,8 @@ export default function SuggestedMemories({
     }
   };
 
-  const batch = batchAcceptable(pending);
+  const shown = withoutRejecting(pending, rejecting);
+  const batch = batchAcceptable(pending, rejecting);
 
   return (
     <div className="flex flex-col gap-5">
@@ -476,11 +497,11 @@ export default function SuggestedMemories({
         </p>
       )}
 
-      {pending.length > 0 && (
+      {shown.length > 0 && (
         <section aria-labelledby="suggested-memories-heading" className="flex flex-col">
           <div className="flex items-center justify-between gap-2">
             <h3 id="suggested-memories-heading" className="m-0 text-[13px] font-bold text-shodh-text-secondary">
-              Suggested memories <span className="font-normal text-shodh-text-muted">({pending.length})</span>
+              Suggested memories <span className="font-normal text-shodh-text-muted">({shown.length})</span>
             </h3>
             {batch.length > 1 && (
               <button
@@ -501,7 +522,7 @@ export default function SuggestedMemories({
             )}
           </div>
           <ul className="m-0 p-0 list-none divide-y divide-shodh-border-subtle">
-            {pending.map(s => (
+            {shown.map(s => (
               <SuggestionItem
                 key={s.id}
                 suggestion={s}
@@ -509,6 +530,7 @@ export default function SuggestedMemories({
                 run={run}
                 conversationTitle={conversationTitle}
                 onOpenConversation={onOpenConversation}
+                rejecting={rejecting.has(s.id)}
               />
             ))}
           </ul>
@@ -529,6 +551,7 @@ export default function SuggestedMemories({
                 run={run}
                 conversationTitle={conversationTitle}
                 onOpenConversation={onOpenConversation}
+                rejecting={rejecting.has(s.id)}
               />
             ))}
           </ul>

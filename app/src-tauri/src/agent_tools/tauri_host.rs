@@ -118,6 +118,15 @@ impl HostEffects for TauriEffects {
             if let Err(e) = &result {
                 tracing::warn!(target: "shodh::harness", path = %job.path, error = %e, "indexing a downloaded file failed");
             }
+            // Tools run inside an answer, whose own notification covers this
+            // file; only a failure is announced (as a problem).
+            if let Some(problem) = crate::notifications::agent_indexing_outcome(
+                format!("indexing-file:{}", job.path),
+                &job.path,
+                &result,
+            ) {
+                crate::notifications::announce(&app, problem);
+            }
             ctx.audit(
                 AuditEventType::SourceChange,
                 source_change(
@@ -259,6 +268,16 @@ impl HostEffects for TauriEffects {
             if let Err(e) = &result {
                 tracing::warn!(target: "shodh::harness", source_id = %job.source_id, error = %e, "agent-started indexing failed");
             }
+            // A folder index runs in the background and can finish long
+            // after the answer that started it, so its success is announced too.
+            crate::notifications::announce(
+                &app,
+                crate::notifications::indexing_result_outcome(
+                    format!("indexing:{}", job.source_id),
+                    &job.folder,
+                    &result,
+                ),
+            );
             ctx.audit(
                 AuditEventType::SourceChange,
                 source_change(

@@ -15,10 +15,10 @@ use std::fmt::Write as _;
 use serde::Deserialize;
 use shodh_ontology::{RawValue, Value};
 
-use super::engine::{fingerprint, llm_origin, Learner};
-use super::inbox::{NewProposal, Proposal, ProposalAction, ProposalOrigin};
+use super::engine::{fingerprint, llm_origin, CallBudget, Learner};
+use super::inbox::{NewProposal, Proposal, ProposalAction, ProposalOrigin, Rejection};
 use super::sensitivity;
-use super::{quotes, strip_fence, LearnResult};
+use super::{quotes, strip_fence, LearnError, LearnResult};
 use crate::statements::{render_text, StatementQuery, StoredStatement, SELF_ENTITY_ID};
 use crate::user_memory::{memory_source_prefixes, MemoryContent};
 
@@ -146,12 +146,34 @@ impl Learner {
             .map(|(k, n)| (k.clone(), n.text.clone()))
             .collect();
         let prompt = evolve_prompt(&stored.text, &shown);
-        let answer = self
-            .call_model(model.as_ref(), &prompt, EVOLVE_MAX_TOKENS)
-            .await?;
+        let turn = trigger.turn_id.as_deref();
+        let answer = match self
+            .call_model(
+                model.as_ref(),
+                &prompt,
+                EVOLVE_MAX_TOKENS,
+                turn,
+                CallBudget::Daily,
+            )
+            .await
+        {
+            Ok(answer) => answer,
+            // Counted as invalid by `call_model`; the links found above stand.
+            Err(LearnError::Truncated(_)) => return Ok(proposed.len()),
+            Err(e) => return Err(e),
+        };
         let Some(revisions) = parse_revisions(&answer) else {
             self.inbox
                 .count(super::inbox::UsageCounter::Invalid, 1, self.now())?;
+            self.log_rejections(
+                &model.model_id(),
+                &[Rejection::with_app_detail(
+                    "invalid_revision",
+                    "not the {\"revisions\": [...]} shape",
+                    answer.as_str(),
+                )
+                .about(turn)],
+            );
             return Ok(proposed.len());
         };
         for revision in revisions {

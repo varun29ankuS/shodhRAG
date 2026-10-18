@@ -260,6 +260,11 @@ pub struct RunScope {
     /// the documents with it when an answer skipped the search. `None`: the
     /// sent message is the question.
     pub question: Option<String>,
+    /// The message only asked to remember something, which the app already filed. Every
+    /// follow-up runs as usual, except that an answer that is only an acknowledgement
+    /// ([`crate::harness::grounding::followup::is_acknowledgement`]) is not sent back to
+    /// search the documents.
+    pub memory_instruction: bool,
 }
 
 /// A snippet an answer may use: the region of a page the user saved.

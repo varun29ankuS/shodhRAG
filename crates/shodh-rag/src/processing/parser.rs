@@ -211,6 +211,27 @@ impl DocumentParser {
         self
     }
 
+    /// Whether reading `path` now would run OCR: the parser reads it with
+    /// OCR ([`needs_ocr`]) and holds no reading of it that is current in the
+    /// OCR cache ([`Self::with_ocr_cache`]), so [`Self::parse_file`] would
+    /// read it with OCR again rather than from the cache. False for a file
+    /// that is not there.
+    pub fn needs_fresh_ocr(&self, path: &Path) -> bool {
+        if !is_ocr_candidate(path) || !path.is_file() {
+            return false;
+        }
+        if let Some(cache) = &self.ocr_cache {
+            let source = crate::rag_engine::normalize_source_path(path);
+            if let (Ok(stamp), Some(entry)) = (FileStamp::of(path), cache.get(&source)) {
+                let system_only = self.ocr.engine == OcrEngineChoice::System;
+                if entry.is_current_for(stamp, system_only, self.reader_installed()) {
+                    return false;
+                }
+            }
+        }
+        needs_ocr(path)
+    }
+
     /// Whether the scan reader (the PP-OCRv6 model) is installed.
     fn reader_installed(&self) -> bool {
         match &self.ocr_worker {

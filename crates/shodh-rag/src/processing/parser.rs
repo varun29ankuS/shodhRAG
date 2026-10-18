@@ -516,7 +516,7 @@ impl DocumentParser {
                 tabular::tables_to_sections(tables)
             }
             None if format == DocumentFormat::PDF && document.is_none() => {
-                self.extract_pdf_structure(path, &content)
+                self.extract_pdf_structure(path, &content)?
             }
             None => docx_sections,
         };
@@ -623,6 +623,11 @@ impl DocumentParser {
                     path.display()
                 );
             }
+            Err(pdf_layout::PdfLayoutError::TooManyPages(pages)) => {
+                // Over the limit, so refused here; read no further.
+                too_many_pages(pages)?;
+                layout_failed = true;
+            }
             Err(e) => {
                 layout_failed = true;
                 tracing::warn!(error = %e, "PDF layout parsing failed: {}", path.display());
@@ -726,12 +731,18 @@ impl DocumentParser {
     /// comments grouped by page, then its text from the fallback readers
     /// ([`fallback_text_sections`]); `fallback_content` is `pdf_extract`'s
     /// text of the whole document.
-    fn extract_pdf_structure(&self, path: &Path, fallback_content: &str) -> Vec<DocumentSection> {
+    /// A PDF with more pages than are indexed is refused here too: the
+    /// layout parser could not count them.
+    fn extract_pdf_structure(
+        &self,
+        path: &Path,
+        fallback_content: &str,
+    ) -> Result<Vec<DocumentSection>> {
         let bytes = match std::fs::read(path) {
             Ok(bytes) => bytes,
             Err(e) => {
                 tracing::debug!("PDF re-read failed for {}: {}", path.display(), e);
-                return Vec::new();
+                return Ok(Vec::new());
             }
         };
         let mut sections = Vec::new();
@@ -752,6 +763,8 @@ impl DocumentParser {
         {
             Ok(doc) => {
                 let count = doc.pages.len();
+                limits::check_pdf_pages(count)
+                    .map_err(|e| anyhow::Error::new(e).context(path.display().to_string()))?;
                 let pages: Vec<(usize, String)> = doc
                     .pages
                     .into_iter()
@@ -769,7 +782,7 @@ impl DocumentParser {
             fallback_content,
             || page_count.and_then(|count| pdf_extract_pages(&bytes, count)),
         ));
-        sections
+        Ok(sections)
     }
 
     /// The text of a DOCX and, when it has tables, its sections in reading
@@ -788,14 +801,16 @@ impl DocumentParser {
                 .by_name("word/document.xml")
                 .with_context(|| format!("DOCX missing word/document.xml: {}", path.display()))?;
             let declared = document_xml.size();
-            read_office_part(&mut document_xml, "word/document.xml", declared).with_context(
-                || format!("Failed to read document.xml from DOCX: {}", path.display()),
-            )?
+            let mut read = 0;
+            read_office_part(&mut document_xml, "word/document.xml", declared, &mut read)
+                .with_context(|| {
+                    format!("Failed to read document.xml from DOCX: {}", path.display())
+                })?
         };
 
         let blocks = office_xml::docx_blocks(&xml_content).with_context(|| {
             format!(
-                "DOCX word/document.xml is not valid XML: {}",
+                "DOCX word/document.xml could not be read: {}",
                 path.display()
             )
         })?;
@@ -873,6 +888,8 @@ impl DocumentParser {
             .with_context(|| format!("Failed to read PPTX as ZIP: {}", path.display()))?;
 
         let mut slides: Vec<(usize, String)> = Vec::new();
+        // Decompressed XML read so far, of all slides together.
+        let mut read = 0;
 
         for i in 0..archive.len() {
             let mut entry = match archive.by_index(i) {
@@ -894,10 +911,10 @@ impl DocumentParser {
                 .unwrap_or(0);
 
             let declared = entry.size();
-            let xml = read_office_part(&mut entry, &name, declared)
+            let xml = read_office_part(&mut entry, &name, declared, &mut read)
                 .with_context(|| format!("Failed to read {name} from PPTX: {}", path.display()))?;
             let text = office_xml::pptx_slide_text(&xml)
-                .with_context(|| format!("PPTX {name} is not valid XML: {}", path.display()))?;
+                .with_context(|| format!("PPTX {name} could not be read: {}", path.display()))?;
             if !text.trim().is_empty() {
                 slides.push((slide_num, text));
             }
@@ -982,6 +999,8 @@ pub fn needs_ocr(path: &Path) -> bool {
         Ok(parsed) => {
             is_effectively_scanned(parsed.document.text_chars(), parsed.document.pages.len())
         }
+        // Not indexed at all, so not read by OCR either.
+        Err(pdf_layout::PdfLayoutError::TooManyPages(_)) => false,
         Err(_) => pdf_extract_text(&bytes).is_none(),
     }
 }
@@ -1316,16 +1335,25 @@ fn record_table_metadata(
 }
 
 /// An XML part of a Word or PowerPoint file (`name`, `declared` bytes once
-/// decompressed by its archive entry), refused when it is larger than
-/// [`limits::MAX_OFFICE_PART_BYTES`] decompressed whatever its entry says.
-fn read_office_part(part: impl std::io::Read, name: &str, declared: u64) -> Result<String> {
+/// decompressed by its archive entry). `read` counts the decompressed bytes
+/// of the file's parts read so far, this one included once it returns: the
+/// file is refused when they come to more than
+/// [`limits::MAX_OFFICE_XML_BYTES`], whatever its entries say.
+fn read_office_part(
+    part: impl std::io::Read,
+    name: &str,
+    declared: u64,
+    read: &mut u64,
+) -> Result<String> {
     use std::io::Read;
-    limits::check_office_part(name, declared)?;
+    limits::check_office_xml(name, read.saturating_add(declared))?;
+    let room = limits::MAX_OFFICE_XML_BYTES.saturating_sub(*read);
     let mut bytes = Vec::new();
-    part.take(limits::MAX_OFFICE_PART_BYTES + 1)
+    part.take(room + 1)
         .read_to_end(&mut bytes)
         .with_context(|| format!("Failed to decompress {name}"))?;
-    limits::check_office_part(name, bytes.len() as u64)?;
+    *read += bytes.len() as u64;
+    limits::check_office_xml(name, *read)?;
     String::from_utf8(bytes).with_context(|| format!("{name} is not UTF-8 text"))
 }
 
@@ -2538,6 +2566,25 @@ pub(crate) mod tests {
         assert!(err.is::<limits::TooLarge>(), "{err:#}");
         assert!(
             format!("{err:#}").contains("too large to index (limit 50 MB for text files)"),
+            "{err:#}"
+        );
+    }
+
+    /// A PDF with more pages than are indexed is refused before its pages
+    /// are read.
+    #[test]
+    fn a_pdf_over_the_page_limit_is_too_large_to_index() {
+        use crate::processing::pdf_fixtures::{build_pdf, Text};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("archive.pdf");
+        let pages: Vec<Vec<Text>> = vec![Vec::new(); limits::MAX_PDF_PAGES + 1];
+        std::fs::write(&path, build_pdf(&pages, None)).unwrap();
+        let err = DocumentParser::new()
+            .parse_file(&path)
+            .expect_err("too many pages");
+        assert!(err.is::<limits::TooLarge>(), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("This PDF has 2,001 pages, too large to index"),
             "{err:#}"
         );
     }

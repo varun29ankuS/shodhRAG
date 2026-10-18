@@ -10,7 +10,9 @@
 //! Elements are matched by namespace and local name, so any prefix the file
 //! binds them to reads, in the transitional and in the strict schema.
 
-use roxmltree::{Document, Node};
+use roxmltree::{Document, Node, ParsingOptions};
+
+use super::limits::{self, TooLarge};
 
 /// WordprocessingML: transitional and strict.
 const W_NS: &[&str] = &[
@@ -111,48 +113,96 @@ impl Lines {
     }
 }
 
+/// Deepest nesting of elements read. Office files nest a few dozen levels;
+/// the walk recurses, so a deeper file (crafted: nesting costs a few bytes a
+/// level and compresses to almost nothing) is refused rather than walked
+/// until the thread's stack runs out.
+pub const MAX_DEPTH: usize = 256;
+
+/// Why a part could not be read.
+#[derive(Debug, thiserror::Error)]
+pub enum OfficeXmlError {
+    #[error("not valid XML: {0}")]
+    Invalid(roxmltree::Error),
+    #[error(
+        "its XML nests more than {} elements deep, which no Office file does",
+        MAX_DEPTH
+    )]
+    TooDeep,
+    #[error(transparent)]
+    TooLarge(#[from] TooLarge),
+}
+
+type Walk = Result<(), OfficeXmlError>;
+
+/// The part `xml` parsed, with at most [`limits::MAX_OFFICE_XML_NODES`]
+/// nodes.
+fn parse(xml: &str) -> Result<Document<'_>, OfficeXmlError> {
+    let options = ParsingOptions {
+        allow_dtd: false,
+        nodes_limit: limits::MAX_OFFICE_XML_NODES,
+    };
+    Document::parse_with_options(xml, options).map_err(|e| match e {
+        roxmltree::Error::NodesLimitReached => {
+            OfficeXmlError::TooLarge(limits::office_xml_nodes_exceeded())
+        }
+        e => OfficeXmlError::Invalid(e),
+    })
+}
+
+/// The depth below `depth`, refused past [`MAX_DEPTH`].
+fn descend(depth: usize) -> Result<usize, OfficeXmlError> {
+    if depth >= MAX_DEPTH {
+        return Err(OfficeXmlError::TooDeep);
+    }
+    Ok(depth + 1)
+}
+
 /// The body of `word/document.xml` in reading order: its paragraphs (with
 /// those of text boxes and content controls) and its tables.
-pub fn docx_blocks(xml: &str) -> Result<Vec<DocxBlock>, roxmltree::Error> {
-    let doc = Document::parse(xml)?;
+pub fn docx_blocks(xml: &str) -> Result<Vec<DocxBlock>, OfficeXmlError> {
+    let doc = parse(xml)?;
     let mut out = Vec::new();
     if let Some(body) = doc.root_element().children().find(|c| is(*c, W_NS, "body")) {
-        docx_block_level(body, &mut out);
+        docx_block_level(body, &mut out, 1)?;
     }
     Ok(out)
 }
 
-/// Paragraphs and tables under `parent`, through content controls, custom
-/// XML and alternate content.
-fn docx_block_level(parent: Node<'_, '_>, out: &mut Vec<DocxBlock>) {
+/// Paragraphs and tables under `parent` (at `depth`), through content
+/// controls, custom XML and alternate content.
+fn docx_block_level(parent: Node<'_, '_>, out: &mut Vec<DocxBlock>, depth: usize) -> Walk {
+    let depth = descend(depth)?;
     for child in parent.children().filter(Node::is_element) {
         if is(child, W_NS, "p") {
             let mut lines = Lines::default();
-            docx_inline(child, &mut lines);
+            docx_inline(child, &mut lines, depth)?;
             out.extend(lines.finish().into_iter().map(DocxBlock::Paragraph));
         } else if is(child, W_NS, "tbl") {
-            let rows = docx_table(child);
+            let rows = docx_table(child, depth)?;
             if !rows.is_empty() {
                 out.push(DocxBlock::Table(rows));
             }
         } else if is(child, MC_NS, "AlternateContent") {
             if let Some(branch) = alternate_branch(child) {
-                docx_block_level(branch, out);
+                docx_block_level(branch, out, depth)?;
             }
         } else if !is_one_of(child, W_NS, W_SKIPPED) {
-            docx_block_level(child, out);
+            docx_block_level(child, out, depth)?;
         }
     }
+    Ok(())
 }
 
-/// The text under `node` within a paragraph, into `lines`. A paragraph
-/// nested in it (a text box's) is a line of its own, and a table nested in
-/// it (in a table cell) a line per row.
-fn docx_inline(node: Node<'_, '_>, lines: &mut Lines) {
+/// The text under `node` (at `depth`) within a paragraph, into `lines`. A
+/// paragraph nested in it (a text box's) is a line of its own, and a table
+/// nested in it (in a table cell) a line per row.
+fn docx_inline(node: Node<'_, '_>, lines: &mut Lines, depth: usize) -> Walk {
+    let depth = descend(depth)?;
     for child in node.children().filter(Node::is_element) {
         if is(child, MC_NS, "AlternateContent") {
             if let Some(branch) = alternate_branch(child) {
-                docx_inline(branch, lines);
+                docx_inline(branch, lines, depth)?;
             }
             continue;
         }
@@ -162,7 +212,7 @@ fn docx_inline(node: Node<'_, '_>, lines: &mut Lines) {
             .is_some_and(|ns| W_NS.contains(&ns))
         {
             // Drawings, shapes and VML: their text boxes hold Word paragraphs.
-            docx_inline(child, lines);
+            docx_inline(child, lines, depth)?;
             continue;
         }
         match child.tag_name().name() {
@@ -172,52 +222,56 @@ fn docx_inline(node: Node<'_, '_>, lines: &mut Lines) {
             "noBreakHyphen" => lines.current.push('-'),
             "p" => {
                 lines.flush();
-                docx_inline(child, lines);
+                docx_inline(child, lines, depth)?;
                 lines.flush();
             }
             "tbl" => {
                 lines.flush();
-                for row in docx_table(child) {
+                for row in docx_table(child, depth)? {
                     lines.current = row.join("\t");
                     lines.flush();
                 }
             }
             name if W_SKIPPED.contains(&name) => {}
-            _ => docx_inline(child, lines),
+            _ => docx_inline(child, lines, depth)?,
         }
     }
+    Ok(())
 }
 
-/// The rows of a Word table, each the text of its cells (a cell's lines
-/// joined by spaces). Rows without text are left out.
-fn docx_table(table: Node<'_, '_>) -> Vec<Vec<String>> {
+/// The rows of a Word table (at `depth`), each the text of its cells (a
+/// cell's lines joined by spaces). Rows without text are left out.
+fn docx_table(table: Node<'_, '_>, depth: usize) -> Result<Vec<Vec<String>>, OfficeXmlError> {
     let mut rows = Vec::new();
-    docx_rows(table, &mut rows);
+    docx_rows(table, &mut rows, depth)?;
     rows.retain(|row| row.iter().any(|cell| !cell.trim().is_empty()));
-    rows
+    Ok(rows)
 }
 
-fn docx_rows(node: Node<'_, '_>, rows: &mut Vec<Vec<String>>) {
+fn docx_rows(node: Node<'_, '_>, rows: &mut Vec<Vec<String>>, depth: usize) -> Walk {
+    let depth = descend(depth)?;
     for child in node.children().filter(Node::is_element) {
         if is(child, W_NS, "tr") {
             let mut cells = Vec::new();
-            docx_cells(child, &mut cells);
+            docx_cells(child, &mut cells, depth)?;
             rows.push(cells);
         } else if is(child, MC_NS, "AlternateContent") {
             if let Some(branch) = alternate_branch(child) {
-                docx_rows(branch, rows);
+                docx_rows(branch, rows, depth)?;
             }
         } else if !is(child, W_NS, "tbl") && !is_one_of(child, W_NS, W_SKIPPED) {
-            docx_rows(child, rows);
+            docx_rows(child, rows, depth)?;
         }
     }
+    Ok(())
 }
 
-fn docx_cells(node: Node<'_, '_>, cells: &mut Vec<String>) {
+fn docx_cells(node: Node<'_, '_>, cells: &mut Vec<String>, depth: usize) -> Walk {
+    let depth = descend(depth)?;
     for child in node.children().filter(Node::is_element) {
         if is(child, W_NS, "tc") {
             let mut lines = Lines::default();
-            docx_inline(child, &mut lines);
+            docx_inline(child, &mut lines, depth)?;
             let text = lines
                 .finish()
                 .iter()
@@ -227,12 +281,13 @@ fn docx_cells(node: Node<'_, '_>, cells: &mut Vec<String>) {
             cells.push(text);
         } else if is(child, MC_NS, "AlternateContent") {
             if let Some(branch) = alternate_branch(child) {
-                docx_cells(branch, cells);
+                docx_cells(branch, cells, depth)?;
             }
         } else if !is_one_of(child, W_NS, W_SKIPPED) {
-            docx_cells(child, cells);
+            docx_cells(child, cells, depth)?;
         }
     }
+    Ok(())
 }
 
 /// The text of `blocks`: a line per paragraph, a line per table row (its
@@ -250,18 +305,19 @@ pub fn docx_text(blocks: &[DocxBlock]) -> String {
 
 /// The text of a slide: a line per paragraph, in the order of the slide's
 /// shapes.
-pub fn pptx_slide_text(xml: &str) -> Result<String, roxmltree::Error> {
-    let doc = Document::parse(xml)?;
+pub fn pptx_slide_text(xml: &str) -> Result<String, OfficeXmlError> {
+    let doc = parse(xml)?;
     let mut lines = Lines::default();
-    pptx_inline(doc.root_element(), &mut lines);
+    pptx_inline(doc.root_element(), &mut lines, 0)?;
     Ok(lines.finish().join("\n"))
 }
 
-fn pptx_inline(node: Node<'_, '_>, lines: &mut Lines) {
+fn pptx_inline(node: Node<'_, '_>, lines: &mut Lines, depth: usize) -> Walk {
+    let depth = descend(depth)?;
     for child in node.children().filter(Node::is_element) {
         if is(child, MC_NS, "AlternateContent") {
             if let Some(branch) = alternate_branch(child) {
-                pptx_inline(branch, lines);
+                pptx_inline(branch, lines, depth)?;
             }
         } else if is(child, A_NS, "t") {
             lines.current.push_str(&run_text(child));
@@ -269,12 +325,13 @@ fn pptx_inline(node: Node<'_, '_>, lines: &mut Lines) {
             lines.current.push('\n');
         } else if is(child, A_NS, "p") {
             lines.flush();
-            pptx_inline(child, lines);
+            pptx_inline(child, lines, depth)?;
             lines.flush();
         } else if !is_one_of(child, A_NS, A_SKIPPED) {
-            pptx_inline(child, lines);
+            pptx_inline(child, lines, depth)?;
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -393,6 +450,54 @@ mod tests {
     fn malformed_xml_is_an_error() {
         assert!(docx_blocks("<w:document><w:body><w:p>").is_err());
         assert!(pptx_slide_text("<p:sld><a:p>").is_err());
+    }
+
+    /// XML nested far deeper than any Office file (a crafted part: a few
+    /// bytes a level, compressing to almost nothing) is refused with a
+    /// reason, not walked until the stack overflows.
+    #[test]
+    fn deeply_nested_xml_is_refused_not_walked() {
+        let levels = 100_000;
+        let deep = format!(
+            "{}<w:p><w:r><w:t>buried</w:t></w:r></w:p>{}",
+            "<w:sdtContent>".repeat(levels),
+            "</w:sdtContent>".repeat(levels)
+        );
+        let err = docx_blocks(&document(&deep)).unwrap_err();
+        assert!(matches!(err, OfficeXmlError::TooDeep), "{err}");
+        assert!(err.to_string().contains("nests more than 256"), "{err}");
+
+        let deep_cell = format!(
+            "<w:tbl><w:tr><w:tc>{}<w:p><w:r><w:t>x</w:t></w:r></w:p>{}</w:tc></w:tr></w:tbl>",
+            "<w:sdtContent>".repeat(levels),
+            "</w:sdtContent>".repeat(levels)
+        );
+        assert!(matches!(
+            docx_blocks(&document(&deep_cell)),
+            Err(OfficeXmlError::TooDeep)
+        ));
+
+        let slide = format!(
+            "<p:sld xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\" \
+             xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\">{}<a:p><a:r><a:t>x</a:t></a:r></a:p>{}</p:sld>",
+            "<p:grpSp>".repeat(levels),
+            "</p:grpSp>".repeat(levels)
+        );
+        assert!(matches!(
+            pptx_slide_text(&slide),
+            Err(OfficeXmlError::TooDeep)
+        ));
+
+        // Nesting an Office file has is read.
+        let nested = format!(
+            "{}<w:p><w:r><w:t>found</w:t></w:r></w:p>{}",
+            "<w:sdtContent>".repeat(40),
+            "</w:sdtContent>".repeat(40)
+        );
+        assert_eq!(
+            docx_blocks(&document(&nested)).unwrap(),
+            [DocxBlock::Paragraph("found".to_string())]
+        );
     }
 
     #[test]

@@ -18,16 +18,21 @@ pub const MAX_TABLE_BYTES: u64 = 100 * MIB;
 /// Word and PowerPoint files (compressed, as stored).
 pub const MAX_OFFICE_BYTES: u64 = 100 * MIB;
 
-/// One XML part of a Word or PowerPoint file once decompressed: the file's
-/// size does not bound it.
-pub const MAX_OFFICE_PART_BYTES: u64 = 256 * MIB;
+/// The XML text read from one Word or PowerPoint file, all its parts
+/// together, once decompressed: the file's size does not bound it.
+pub const MAX_OFFICE_XML_BYTES: u64 = 64 * MIB;
+
+/// The most XML nodes (elements, text, attributes' owners) parsed from one
+/// part of a Word or PowerPoint file, which bounds the memory its parse
+/// takes. A 500-page report holds well under a million.
+pub const MAX_OFFICE_XML_NODES: u32 = 3_000_000;
 
 /// Images read by OCR.
 pub const MAX_IMAGE_BYTES: u64 = 100 * MIB;
 
 /// PDFs are limited by pages ([`MAX_PDF_PAGES`]); this only keeps a file far
 /// larger than any document from being read into memory to count them.
-pub const MAX_PDF_BYTES: u64 = 1024 * MIB;
+pub const MAX_PDF_BYTES: u64 = 512 * MIB;
 
 /// The most pages of a PDF that are indexed.
 pub const MAX_PDF_PAGES: usize = 2_000;
@@ -108,16 +113,28 @@ pub fn check_pdf_pages(pages: usize) -> Result<(), TooLarge> {
     })
 }
 
-/// Refuses an XML part of a Word or PowerPoint file (`name`) whose
-/// decompressed size is over [`MAX_OFFICE_PART_BYTES`].
-pub fn check_office_part(name: &str, size: u64) -> Result<(), TooLarge> {
-    if size <= MAX_OFFICE_PART_BYTES {
+/// Refuses a Word or PowerPoint file whose XML read so far, through its part
+/// `name`, is `total` bytes decompressed, over [`MAX_OFFICE_XML_BYTES`].
+pub fn check_office_xml(name: &str, total: u64) -> Result<(), TooLarge> {
+    if total <= MAX_OFFICE_XML_BYTES {
         return Ok(());
     }
     Err(TooLarge {
-        what: format!("Its part {name} is {} decompressed", megabytes(size)),
-        limit: format!("{} for one part", megabytes(MAX_OFFICE_PART_BYTES)),
+        what: format!("Its XML is {} decompressed (at {name})", megabytes(total)),
+        limit: format!("{} of XML", megabytes(MAX_OFFICE_XML_BYTES)),
     })
+}
+
+/// A part of a Word or PowerPoint file with more than
+/// [`MAX_OFFICE_XML_NODES`] XML nodes.
+pub fn office_xml_nodes_exceeded() -> TooLarge {
+    TooLarge {
+        what: format!(
+            "Its XML has more than {} nodes",
+            thousands(u64::from(MAX_OFFICE_XML_NODES))
+        ),
+        limit: format!("{} nodes", thousands(u64::from(MAX_OFFICE_XML_NODES))),
+    }
 }
 
 /// `bytes` in MB, whole when exact ("50 MB"), else to one decimal ("63.2 MB").
@@ -186,11 +203,19 @@ mod tests {
             err.to_string(),
             "This file is 200 MB, too large to index (limit 100 MB for spreadsheets)"
         );
-        let err = check_office_part("word/document.xml", MAX_OFFICE_PART_BYTES + 1).unwrap_err();
-        assert!(
-            err.to_string()
-                .starts_with("Its part word/document.xml is 256.0 MB decompressed, too large"),
-            "{err}"
+        assert_eq!(
+            check_office_xml("ppt/slides/slide9.xml", MAX_OFFICE_XML_BYTES),
+            Ok(())
+        );
+        let err = check_office_xml("ppt/slides/slide9.xml", 80 * MIB).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Its XML is 80 MB decompressed (at ppt/slides/slide9.xml), too large to index \
+             (limit 64 MB of XML)"
+        );
+        assert_eq!(
+            office_xml_nodes_exceeded().to_string(),
+            "Its XML has more than 3,000,000 nodes, too large to index (limit 3,000,000 nodes)"
         );
     }
 

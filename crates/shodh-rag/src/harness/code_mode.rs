@@ -740,29 +740,14 @@ pub fn change_target(folder: &Path, request: &GuardRequest, in_repo: bool) -> Ch
 }
 
 /// The hooks folders the repository holding `folder` configures
-/// (`core.hooksPath` in its own or the user's config, not Shodh's override),
-/// resolved against the work tree.
+/// (`core.hooksPath` in any of its config files, read without Shodh's own
+/// override), resolved against the work tree.
 fn configured_hooks_dirs(folder: &Path) -> Result<Vec<PathBuf>, String> {
     let top = PathBuf::from(run_git(folder, &["rev-parse", "--show-toplevel"])?);
-    let output = git(folder)?
-        .args([
-            "config",
-            "--includes",
-            "--show-scope",
-            "--get-all",
-            "core.hooksPath",
-        ])
-        .output()
-        .map_err(|e| format!("git could not be started: {e}"))?;
-    // Exit 1: the key is not set.
-    if !output.status.success() && output.status.code() != Some(1) {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
+    let values = config_values(folder, &["--get-all", "core.hooksPath"])?;
+    Ok(values
         .lines()
-        .filter_map(|line| line.split_once('\t'))
-        .filter(|(scope, _)| *scope != "command")
-        .map(|(_, value)| value.trim())
+        .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| {
             let dir = Path::new(value);
@@ -1136,6 +1121,8 @@ pub enum GitState {
         /// Uncommitted changes, untracked files included.
         dirty: bool,
     },
+    /// A git repository whose state git could not report (its message).
+    Unreadable(String),
 }
 
 /// The branch a conversation's Code work happens on.
@@ -1175,6 +1162,10 @@ pub enum ChangePlan {
 pub fn plan_change(state: &GitState, recorded: Option<&CodeBranch>, folder: &str) -> ChangePlan {
     match state {
         GitState::NotRepo => ChangePlan::NotRepo,
+        GitState::Unreadable(error) => ChangePlan::Refuse(format!(
+            "Shodh could not read the code folder's git state, so it changes nothing. \
+             git said: {error}"
+        )),
         GitState::Repo {
             branch,
             head,
@@ -1278,16 +1269,48 @@ fn git_subcommand<'a>(args: &[&'a str]) -> Option<&'a str> {
     rest.first().copied()
 }
 
-/// The filter names in `git config --show-scope --name-only --get-regexp`
-/// output that the repository itself configures (its own or its work tree's
-/// config, includes followed). The user's and the system's filters (Git LFS)
-/// are theirs and keep working.
+/// git config, read without Shodh's `-c` settings (reading config runs no
+/// program). Used only for `git config` reads.
+fn config_git(folder: &Path) -> Command {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(folder)
+        .arg("config")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
+/// `git config <args>`: its output, empty when nothing matched (exit 1),
+/// `Err` with git's message otherwise.
+fn config_values(folder: &Path, args: &[&str]) -> Result<String, String> {
+    let output = config_git(folder)
+        .args(args)
+        .output()
+        .map_err(|e| format!("git could not be started: {e}"))?;
+    match output.status.code() {
+        Some(0) => Ok(String::from_utf8_lossy(&output.stdout).into_owned()),
+        Some(1) => Ok(String::new()),
+        _ => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
+    }
+}
+
+/// The filter names in `git config --name-only --get-regexp '^filter\.'`
+/// output (`filter.<name>.<key>` per line).
 fn repository_filter_names(output: &str) -> Vec<String> {
     let mut names: Vec<String> = output
         .lines()
-        .filter_map(|line| line.split_once('\t'))
-        .filter(|(scope, _)| matches!(*scope, "local" | "worktree"))
-        .filter_map(|(_, key)| key.trim().strip_prefix("filter."))
+        .filter_map(|key| key.trim().strip_prefix("filter."))
         .filter_map(|rest| rest.rsplit_once('.').map(|(name, _)| name.to_string()))
         .filter(|name| !name.is_empty())
         .collect();
@@ -1297,25 +1320,24 @@ fn repository_filter_names(output: &str) -> Vec<String> {
 }
 
 /// `-c` settings that switch off every content filter the repository's own
-/// config names ([`repository_filter_names`]): an empty command is no
-/// filter, and a filter marked `required` would then fail the command.
+/// config names (`.git/config` with its includes, and the work tree's config
+/// when `extensions.worktreeConfig` is on): an empty command is no filter,
+/// and a filter marked `required` would then fail the command. The user's
+/// and the system's filters (Git LFS) are theirs and keep working.
 fn filters_off(folder: &Path) -> Result<Vec<String>, String> {
-    let output = git(folder)?
-        .args([
-            "config",
-            "--includes",
-            "--show-scope",
-            "--name-only",
-            "--get-regexp",
-            r"^filter\.",
-        ])
-        .output()
-        .map_err(|e| format!("git could not be started: {e}"))?;
-    // Exit 1: no filter is configured.
-    if !output.status.success() && output.status.code() != Some(1) {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    const LIST: [&str; 4] = ["--includes", "--name-only", "--get-regexp", r"^filter\."];
+    let mut listed = config_values(folder, &[&["--local"][..], &LIST[..]].concat())?;
+    let worktree = config_values(
+        folder,
+        &["--local", "--bool", "--get", "extensions.worktreeConfig"],
+    )?;
+    if worktree.trim() == "true" {
+        listed.push_str(&config_values(
+            folder,
+            &[&["--worktree"][..], &LIST[..]].concat(),
+        )?);
     }
-    let names = repository_filter_names(&String::from_utf8_lossy(&output.stdout));
+    let names = repository_filter_names(&listed);
     Ok(names
         .iter()
         .flat_map(|name| {
@@ -1357,17 +1379,31 @@ pub fn git_state(folder: &Path) -> GitState {
     }
     let branch = run_git(folder, &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok();
     let head = run_git(folder, &["rev-parse", "--verify", "--quiet", "HEAD"]).ok();
-    let dirty = run_git(
+    let status = run_git(
         folder,
         &["status", "--porcelain", "--untracked-files=normal"],
-    )
-    .map(|out| !out.is_empty())
-    // Unknown status counts as dirty: never risk mixing changes.
-    .unwrap_or(true);
-    GitState::Repo {
-        branch,
-        head,
-        dirty,
+    );
+    repo_state(branch, head, status)
+}
+
+/// The state of a repository from its branch, HEAD and `git status`
+/// output. A status git could not give is reported as such, never guessed.
+fn repo_state(
+    branch: Option<String>,
+    head: Option<String>,
+    status: Result<String, String>,
+) -> GitState {
+    match status {
+        Ok(out) => GitState::Repo {
+            branch,
+            head,
+            dirty: !out.is_empty(),
+        },
+        Err(e) => GitState::Unreadable(if e.trim().is_empty() {
+            "git status failed without saying why".to_string()
+        } else {
+            e
+        }),
     }
 }
 
@@ -1533,6 +1569,10 @@ pub fn discard_changes(record: &CodeBranch) -> Result<(), String> {
             record.branch
         )),
         GitState::NotRepo => Err("The code folder is no longer a git repository.".to_string()),
+        GitState::Unreadable(error) => Err(format!(
+            "Shodh could not read the code folder's git state, so nothing was changed. \
+             git said: {error}"
+        )),
     }
 }
 

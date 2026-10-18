@@ -599,10 +599,46 @@ fn the_git_subcommand_is_found_after_global_options() {
 
 #[test]
 fn only_the_repositorys_own_filters_are_switched_off() {
-    let listed = "global\tfilter.lfs.clean\nglobal\tfilter.lfs.process\nlocal\tfilter.leak.clean\n\
-                  worktree\tfilter.tree.smudge\nlocal\tfilter.a.b.process\ncommand\tfilter.c.clean\n";
+    let listed =
+        "filter.leak.clean\nfilter.leak.required\nfilter.a.b.process\nfilter.tree.smudge\n";
     assert_eq!(repository_filter_names(listed), ["a.b", "leak", "tree"]);
     assert!(repository_filter_names("").is_empty());
+    // Read from the repository's own config only: a filter there is listed.
+    let dir = repo();
+    git_ok(dir.path(), &["config", "filter.leak.clean", "cat"]);
+    let off = filters_off(dir.path()).unwrap();
+    assert!(off.contains(&"filter.leak.clean=".to_string()), "{off:?}");
+    assert!(
+        off.contains(&"filter.leak.required=false".to_string()),
+        "{off:?}"
+    );
+}
+
+#[test]
+fn a_status_git_cannot_give_is_reported_not_taken_for_changes() {
+    // What an old git says about an option it does not know.
+    let old = "error: unknown option `show-scope'".to_string();
+    let state = repo_state(Some("main".into()), Some("abc".into()), Err(old.clone()));
+    assert_eq!(state, GitState::Unreadable(old.clone()));
+    match plan_change(&state, None, "/code") {
+        ChangePlan::Refuse(reason) => {
+            assert!(reason.contains(&old), "{reason}");
+            assert!(!reason.contains("uncommitted"), "{reason}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert!(matches!(
+        repo_state(None, None, Err(" ".into())),
+        GitState::Unreadable(e) if e.contains("without saying why")
+    ));
+    assert_eq!(
+        repo_state(Some("main".into()), None, Ok(String::new())),
+        GitState::Repo {
+            branch: Some("main".into()),
+            head: None,
+            dirty: false
+        }
+    );
 }
 
 #[test]

@@ -9,7 +9,7 @@ use super::ocr::worker::{FileKind, OcrWorker, WorkerEngine};
 use super::ocr::{ScanReaderMissing, SharedOcrModel};
 use super::pdf_layout::{TableMode, TableReport};
 use super::table_model::{TableModel, TABLE_MODEL_ID};
-use super::{limits, pdf_forms, pdf_layout, tabular, text_structure};
+use super::{limits, office_xml, pdf_forms, pdf_layout, tabular, text_structure};
 use crate::config::{OcrConfig, OcrEngineChoice};
 use crate::types::{DocumentFormat, DocumentSection};
 
@@ -444,6 +444,7 @@ impl DocumentParser {
         };
 
         let mut document: Option<StructuredDocument> = None;
+        let mut docx_sections = Vec::new();
         let content = match &tables {
             Some(tables) => tabular::tables_to_text(tables),
             None => match extension.as_str() {
@@ -479,7 +480,11 @@ impl DocumentParser {
                     document = Some(doc);
                     raw
                 }
-                "docx" => self.parse_docx(path)?,
+                "docx" => {
+                    let (text, sections) = self.parse_docx(path)?;
+                    docx_sections = sections;
+                    text
+                }
                 "pptx" => self.parse_pptx(path)?,
                 "html" | "htm" => self.parse_html(path)?,
                 "png" | "jpg" | "jpeg" | "bmp" | "tiff" | "tif" => {
@@ -509,7 +514,7 @@ impl DocumentParser {
             None if format == DocumentFormat::PDF && document.is_none() => {
                 self.extract_pdf_structure(path, &content)
             }
-            None => Vec::new(),
+            None => docx_sections,
         };
 
         if !structured_sections.is_empty() {
@@ -768,34 +773,43 @@ impl DocumentParser {
         sections
     }
 
-    fn parse_docx(&self, path: &Path) -> Result<String> {
+    /// The text of a DOCX and, when it has tables, its sections in reading
+    /// order: the text between tables and each table (its first row as the
+    /// header), so the tables are chunked as tables. A DOCX without tables
+    /// has no sections; its text is chunked as it is.
+    fn parse_docx(&self, path: &Path) -> Result<(String, Vec<DocumentSection>)> {
         let file = std::fs::File::open(path)
             .with_context(|| format!("Failed to open DOCX: {}", path.display()))?;
 
         let mut archive = zip::ZipArchive::new(file)
             .with_context(|| format!("Failed to read DOCX as ZIP: {}", path.display()))?;
 
-        let mut xml_content = String::new();
-        {
+        let xml_content = {
             let mut document_xml = archive
                 .by_name("word/document.xml")
                 .with_context(|| format!("DOCX missing word/document.xml: {}", path.display()))?;
-            use std::io::Read;
-            document_xml
-                .read_to_string(&mut xml_content)
-                .with_context(|| "Failed to read document.xml from DOCX")?;
-        }
+            let declared = document_xml.size();
+            read_office_part(&mut document_xml, "word/document.xml", declared).with_context(
+                || format!("Failed to read document.xml from DOCX: {}", path.display()),
+            )?
+        };
 
-        let text = extract_docx_text(&xml_content);
+        let blocks = office_xml::docx_blocks(&xml_content).with_context(|| {
+            format!(
+                "DOCX word/document.xml is not valid XML: {}",
+                path.display()
+            )
+        })?;
+        let text = office_xml::docx_text(&blocks);
 
-        if text.is_empty() {
+        if text.trim().is_empty() {
             return Err(anyhow::anyhow!(
                 "DOCX contains no extractable text: {}",
                 path.display()
             ));
         }
 
-        Ok(text)
+        Ok((text, docx_sections(blocks)))
     }
 
     /// An image file read by OCR (at below-normal priority) as page 1, and
@@ -880,13 +894,13 @@ impl DocumentParser {
                 .parse::<usize>()
                 .unwrap_or(0);
 
-            let mut xml = String::new();
-            use std::io::Read;
-            if entry.read_to_string(&mut xml).is_ok() {
-                let text = extract_pptx_slide_text(&xml);
-                if !text.is_empty() {
-                    slides.push((slide_num, text));
-                }
+            let declared = entry.size();
+            let xml = read_office_part(&mut entry, &name, declared)
+                .with_context(|| format!("Failed to read {name} from PPTX: {}", path.display()))?;
+            let text = office_xml::pptx_slide_text(&xml)
+                .with_context(|| format!("PPTX {name} is not valid XML: {}", path.display()))?;
+            if !text.trim().is_empty() {
+                slides.push((slide_num, text));
             }
         }
 
@@ -1185,56 +1199,63 @@ fn record_table_metadata(
     }
 }
 
-/// Extract text from PPTX slide XML by parsing <a:t> elements within <a:p> paragraphs.
-fn extract_pptx_slide_text(xml: &str) -> String {
-    let mut result = String::new();
-    let mut pos = 0;
+/// An XML part of a Word or PowerPoint file (`name`, `declared` bytes once
+/// decompressed by its archive entry), refused when it is larger than
+/// [`limits::MAX_OFFICE_PART_BYTES`] decompressed whatever its entry says.
+fn read_office_part(part: impl std::io::Read, name: &str, declared: u64) -> Result<String> {
+    use std::io::Read;
+    limits::check_office_part(name, declared)?;
+    let mut bytes = Vec::new();
+    part.take(limits::MAX_OFFICE_PART_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("Failed to decompress {name}"))?;
+    limits::check_office_part(name, bytes.len() as u64)?;
+    String::from_utf8(bytes).with_context(|| format!("{name} is not UTF-8 text"))
+}
 
-    while pos < xml.len() {
-        if let Some(p_start) = xml[pos..].find("<a:p") {
-            let abs_p_start = pos + p_start;
-            let p_end = xml[abs_p_start..]
-                .find("</a:p>")
-                .map(|e| abs_p_start + e + 6)
-                .unwrap_or(xml.len());
-
-            let paragraph = &xml[abs_p_start..p_end];
-            let mut para_text = String::new();
-            let mut t_pos = 0;
-
-            while t_pos < paragraph.len() {
-                if let Some(t_start) = paragraph[t_pos..].find("<a:t") {
-                    let abs_t_start = t_pos + t_start;
-                    if let Some(tag_end) = paragraph[abs_t_start..].find('>') {
-                        let content_start = abs_t_start + tag_end + 1;
-                        if let Some(t_end) = paragraph[content_start..].find("</a:t>") {
-                            para_text.push_str(&paragraph[content_start..content_start + t_end]);
-                            t_pos = content_start + t_end + 6;
-                        } else {
-                            t_pos = content_start;
-                        }
-                    } else {
-                        t_pos = abs_t_start + 4;
-                    }
-                } else {
-                    break;
-                }
+/// The sections of a DOCX with tables ([`DocumentParser::parse_docx`]):
+/// the paragraphs between tables as one text section each, and every table
+/// of two rows or more with its first row as the header. A table of one row
+/// is text. No sections when there is no such table.
+fn docx_sections(blocks: Vec<office_xml::DocxBlock>) -> Vec<DocumentSection> {
+    use office_xml::DocxBlock;
+    let has_table = blocks
+        .iter()
+        .any(|b| matches!(b, DocxBlock::Table(rows) if rows.len() >= 2));
+    if !has_table {
+        return Vec::new();
+    }
+    let mut sections = Vec::new();
+    let mut text: Vec<String> = Vec::new();
+    let flush = |text: &mut Vec<String>, sections: &mut Vec<DocumentSection>| {
+        if !text.is_empty() {
+            sections.push(DocumentSection::Text {
+                content: std::mem::take(text).join("\n"),
+                page: 0,
+                heading: None,
+            });
+        }
+    };
+    for block in blocks {
+        match block {
+            DocxBlock::Paragraph(line) => text.push(line),
+            DocxBlock::Table(rows) if rows.len() < 2 => {
+                text.extend(rows.iter().map(|row| row.join("\t")));
             }
-
-            if !para_text.is_empty() {
-                if !result.is_empty() {
-                    result.push('\n');
-                }
-                result.push_str(&para_text);
+            DocxBlock::Table(mut rows) => {
+                flush(&mut text, &mut sections);
+                let headers = rows.remove(0);
+                sections.push(DocumentSection::Table {
+                    headers,
+                    rows,
+                    page: 0,
+                    caption: None,
+                });
             }
-
-            pos = p_end;
-        } else {
-            break;
         }
     }
-
-    result
+    flush(&mut text, &mut sections);
+    sections
 }
 
 /// Elements that start a new line in the text: their opening and closing tags.
@@ -1575,60 +1596,6 @@ fn decode_html_entity(text: &str) -> Option<(char, usize)> {
         }
     };
     Some((ch, semicolon + 1))
-}
-
-/// Extract text from DOCX XML by parsing <w:t> elements within <w:p> paragraphs
-fn extract_docx_text(xml: &str) -> String {
-    let mut result = String::new();
-    let mut pos = 0;
-
-    while pos < xml.len() {
-        if let Some(p_start) = xml[pos..].find("<w:p") {
-            let abs_p_start = pos + p_start;
-
-            let p_end = if let Some(end) = xml[abs_p_start..].find("</w:p>") {
-                abs_p_start + end + 6
-            } else {
-                xml.len()
-            };
-
-            let paragraph = &xml[abs_p_start..p_end];
-            let mut para_text = String::new();
-            let mut t_pos = 0;
-
-            while t_pos < paragraph.len() {
-                if let Some(t_start) = paragraph[t_pos..].find("<w:t") {
-                    let abs_t_start = t_pos + t_start;
-                    if let Some(tag_end) = paragraph[abs_t_start..].find('>') {
-                        let content_start = abs_t_start + tag_end + 1;
-                        if let Some(t_end) = paragraph[content_start..].find("</w:t>") {
-                            para_text.push_str(&paragraph[content_start..content_start + t_end]);
-                            t_pos = content_start + t_end + 6;
-                        } else {
-                            t_pos = content_start;
-                        }
-                    } else {
-                        t_pos = abs_t_start + 4;
-                    }
-                } else {
-                    break;
-                }
-            }
-
-            if !para_text.is_empty() {
-                if !result.is_empty() {
-                    result.push('\n');
-                }
-                result.push_str(&para_text);
-            }
-
-            pos = p_end;
-        } else {
-            break;
-        }
-    }
-
-    result
 }
 
 #[cfg(test)]
@@ -2281,6 +2248,164 @@ pub(crate) mod tests {
         );
         assert_eq!(strip_html_tags("&#157;"), "\u{9d}");
         assert_eq!(strip_html_tags("&#160;x&#8211;"), "x\u{2013}");
+    }
+
+    /// A ZIP archive with `parts` (name, content), as Word and PowerPoint
+    /// files are.
+    fn office_file(path: &Path, parts: &[(&str, &str)]) {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, content) in parts {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+        }
+        let bytes = zip.finish().unwrap().into_inner();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    const W_DOC: &str = "xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" \
+                         xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" \
+                         xmlns:wps=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\" \
+                         xmlns:v=\"urn:schemas-microsoft-com:vml\"";
+
+    fn docx_paragraph(text: &str) -> String {
+        format!("<w:p><w:r><w:t xml:space=\"preserve\">{text}</w:t></w:r></w:p>")
+    }
+
+    fn docx_cell(text: &str) -> String {
+        format!("<w:tc><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:tc>")
+    }
+
+    /// DOCX text holds no XML: tab stops in paragraph properties, text
+    /// boxes stored twice and entities are read as Word shows them, and a
+    /// table is chunked as a table between the text around it.
+    #[test]
+    fn docx_text_is_the_document_text_and_its_tables_are_tables() {
+        let text_box = "<w:txbxContent><w:p><w:r><w:t>Callout: budget approved</w:t></w:r></w:p></w:txbxContent>";
+        let body = format!(
+            "<w:p><w:pPr><w:tabs><w:tab w:val=\"left\" w:pos=\"720\"/></w:tabs></w:pPr>\
+             <w:r><w:t>Owner</w:t></w:r><w:r><w:tab/><w:t>R&amp;D department</w:t></w:r></w:p>\
+             {}\
+             <w:p><w:r><mc:AlternateContent>\
+             <mc:Choice Requires=\"wps\"><w:drawing><wps:wsp><wps:txbx>{text_box}</wps:txbx></wps:wsp></w:drawing></mc:Choice>\
+             <mc:Fallback><w:pict><v:shape><v:textbox>{text_box}</v:textbox></v:shape></w:pict></mc:Fallback>\
+             </mc:AlternateContent></w:r></w:p>\
+             <w:tbl><w:tblPr><w:tblW w:w=\"0\"/></w:tblPr><w:tr>{}{}</w:tr><w:tr>{}{}</w:tr><w:tr>{}{}</w:tr></w:tbl>\
+             {}",
+            docx_paragraph("The research budget for the coming year covers the laboratory, two new hires and the travel to three conferences."),
+            docx_cell("Item"),
+            docx_cell("Cost"),
+            docx_cell("Laboratory"),
+            docx_cell("120,000"),
+            docx_cell("Travel &amp; stay"),
+            docx_cell("18,500"),
+            docx_paragraph("The board reviews these figures again in the spring, once the grant decisions are known."),
+        );
+        let xml = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><w:document {W_DOC}><w:body>{body}</w:body></w:document>"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("budget.docx");
+        office_file(&path, &[("word/document.xml", &xml)]);
+
+        let parsed = DocumentParser::new().parse_file(&path).expect("parsed");
+        let content = &parsed.content;
+        assert!(
+            !content.contains('<') && !content.contains("w:"),
+            "{content}"
+        );
+        assert!(content.starts_with("Owner\tR&D department\n"), "{content}");
+        assert_eq!(
+            content.matches("Callout: budget approved").count(),
+            1,
+            "{content}"
+        );
+        assert!(content.contains("Travel & stay\t18,500"), "{content}");
+
+        let tables: Vec<(&Vec<String>, &Vec<Vec<String>>)> = parsed
+            .structured_sections
+            .iter()
+            .filter_map(|s| match s {
+                DocumentSection::Table { headers, rows, .. } => Some((headers, rows)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tables.len(), 1, "{:?}", parsed.structured_sections);
+        assert_eq!(tables[0].0, &["Item", "Cost"]);
+        assert_eq!(tables[0].1[1], ["Travel & stay", "18,500"]);
+        let texts: Vec<(usize, &str)> = parsed
+            .structured_sections
+            .iter()
+            .filter_map(|s| match s {
+                DocumentSection::Text { content, page, .. } => Some((*page, content.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts.len(), 2, "{texts:?}");
+        assert!(texts.iter().all(|(page, _)| *page == 0));
+        assert!(texts[0].1.contains("research budget") && texts[0].1.contains("Callout"));
+        assert!(texts[1].1.contains("board reviews"));
+
+        // Without a table the text is all there is.
+        let plain = dir.path().join("plain.docx");
+        let prose = docx_paragraph(
+            "Only prose here, long enough to be a document of its own with nothing tabular in it at all.",
+        );
+        office_file(
+            &plain,
+            &[(
+                "word/document.xml",
+                &format!("<w:document {W_DOC}><w:body>{prose}</w:body></w:document>"),
+            )],
+        );
+        let parsed = DocumentParser::new().parse_file(&plain).expect("parsed");
+        assert!(parsed.structured_sections.is_empty());
+        assert!(parsed.content.starts_with("Only prose here"));
+
+        // Broken XML is reported, not read as no text.
+        let broken = dir.path().join("broken.docx");
+        office_file(
+            &broken,
+            &[("word/document.xml", "<w:document><w:body><w:p>")],
+        );
+        let err = format!(
+            "{:#}",
+            DocumentParser::new()
+                .parse_file(&broken)
+                .expect_err("broken")
+        );
+        assert!(err.contains("not valid XML"), "{err}");
+    }
+
+    /// PPTX text holds no tab lists or tags, and entities are decoded.
+    #[test]
+    fn pptx_text_is_the_slide_text() {
+        let slide = |text: &str| {
+            format!(
+                "<p:sld xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\" \
+                 xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><p:cSld><p:spTree><p:sp><p:txBody>\
+                 <a:bodyPr/><a:p><a:pPr><a:tabLst><a:tab pos=\"914400\" algn=\"l\"/></a:tabLst></a:pPr>\
+                 <a:r><a:rPr lang=\"en-US\"/><a:t>{text}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>"
+            )
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("talk.pptx");
+        let second = slide("Results &amp; next steps for the field trial in the coastal districts");
+        let first = slide("Why we measured rainfall &lt;daily&gt; across forty stations this year");
+        office_file(
+            &path,
+            &[
+                ("ppt/slides/slide2.xml", &second),
+                ("ppt/slides/slide1.xml", &first),
+            ],
+        );
+        let parsed = DocumentParser::new().parse_file(&path).expect("parsed");
+        assert_eq!(
+            parsed.content,
+            "--- Slide 1 ---\nWhy we measured rainfall <daily> across forty stations this year\n\n\
+             --- Slide 2 ---\nResults & next steps for the field trial in the coastal districts"
+        );
     }
 
     /// A file over its kind's limit is refused before it is read.

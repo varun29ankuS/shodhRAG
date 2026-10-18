@@ -4,6 +4,7 @@ pub mod form_layout;
 pub mod limits;
 pub mod lopdf_parser;
 pub mod ocr;
+pub mod office_xml;
 pub mod parser;
 #[cfg(test)]
 pub(crate) mod pdf_fixtures;

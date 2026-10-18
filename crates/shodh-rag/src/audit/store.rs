@@ -623,15 +623,26 @@ impl Writer {
         Ok(())
     }
 
-    /// Delete every event older than `days` before `now` (a prefix of the
-    /// chain) and append a checkpoint, atomically. Returns rows deleted.
+    /// Delete the oldest events, up to the first one that is still inside the
+    /// `days` window before `now`, and append a checkpoint, atomically.
+    /// Returns rows deleted.
+    ///
+    /// Only the contiguous prefix of the chain (by id) whose `ts` is before the
+    /// cutoff goes. Timestamps come from the wall clock at append time and are
+    /// not monotonic in id: after the clock is set back, a newer event can
+    /// carry an older `ts` than its predecessors. Deleting by `ts` alone would
+    /// then remove events that are still inside the window; stopping at the
+    /// first in-window row keeps them, and the checkpoint names the last row
+    /// actually deleted.
     fn retention(&mut self, days: u32, now: DateTime<Utc>) -> AuditResult<u64> {
         check_retention(days)?;
         let cutoff = now - chrono::Duration::days(i64::from(days));
         let cutoff_ts = format_ts(cutoff);
         let tx = self.conn.transaction()?;
         let last: Option<i64> = tx.query_row(
-            "SELECT MAX(id) FROM audit_events WHERE ts < ?1",
+            "SELECT MAX(id) FROM audit_events WHERE id < COALESCE( \
+             (SELECT MIN(id) FROM audit_events WHERE ts >= ?1), \
+             (SELECT MAX(id) FROM audit_events) + 1)",
             [&cutoff_ts],
             |r| r.get(0),
         )?;
@@ -1411,6 +1422,75 @@ mod tests {
         let report = log.verify().unwrap();
         assert!(report.ok, "{report:?}");
         assert_eq!(report.checked, 3);
+    }
+
+    /// Append `record` through `writer` as if the wall clock read `ts`.
+    fn append_at(writer: &mut Writer, record: &AuditRecord, ts: DateTime<Utc>) -> i64 {
+        let tx = writer.conn.transaction().unwrap();
+        let (id, hash) =
+            Writer::insert(&tx, writer.head_id, &writer.head_hash, record, ts).unwrap();
+        tx.commit().unwrap();
+        writer.head_id = id;
+        writer.head_hash = hash;
+        id
+    }
+
+    #[test]
+    fn retention_after_a_backwards_clock_jump_keeps_in_window_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shodh.db");
+        drop(AuditLog::open(&path, None).unwrap());
+        let now = Utc::now();
+        let day = chrono::Duration::days(1);
+        let mut writer = Writer::new(raw(&dir)).unwrap();
+        // Two old events, one recent one, then the clock is set back 39 days
+        // for event 4, then it is corrected for event 5.
+        let stamps = [
+            now - day * 40,
+            now - day * 35,
+            now - day,
+            now - day * 38,
+            now,
+        ];
+        for (i, ts) in stamps.iter().enumerate() {
+            assert_eq!(append_at(&mut writer, &question(i + 1), *ts), i as i64 + 1);
+        }
+
+        assert_eq!(writer.retention(30, now).unwrap(), 2);
+        let mut stmt = writer
+            .conn
+            .prepare("SELECT id FROM audit_events ORDER BY id")
+            .unwrap();
+        let ids: Vec<i64> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        drop(stmt);
+        // Event 3 is inside the window, so it and everything after it stay,
+        // including event 4 whose timestamp is older than the cutoff.
+        assert_eq!(ids, vec![3, 4, 5, 6]);
+        let checkpoint: String = writer
+            .conn
+            .query_row(
+                "SELECT payload_json FROM audit_events WHERE id = 6",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let checkpoint: Value = serde_json::from_str(&checkpoint).unwrap();
+        assert_eq!(checkpoint["deleted"], 2);
+        assert_eq!(checkpoint["last_deleted_id"], 2);
+
+        // The first surviving row is in the window, so a second pass deletes
+        // nothing and writes no checkpoint.
+        assert_eq!(writer.retention(30, now).unwrap(), 0);
+        drop(writer);
+
+        let log = AuditLog::open(&path, None).unwrap();
+        let report = log.verify().unwrap();
+        assert!(report.ok, "{report:?}");
+        assert_eq!(report.checked, 4);
     }
 
     fn fill_more(log: &AuditLog, n: usize) {

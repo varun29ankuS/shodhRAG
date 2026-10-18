@@ -9,7 +9,7 @@ use super::ocr::worker::{FileKind, OcrWorker, WorkerEngine};
 use super::ocr::{ScanReaderMissing, SharedOcrModel};
 use super::pdf_layout::{TableMode, TableReport};
 use super::table_model::{TableModel, TABLE_MODEL_ID};
-use super::{pdf_forms, pdf_layout, tabular, text_structure};
+use super::{limits, pdf_forms, pdf_layout, tabular, text_structure};
 use crate::config::{OcrConfig, OcrEngineChoice};
 use crate::types::{DocumentFormat, DocumentSection};
 
@@ -427,6 +427,9 @@ impl DocumentParser {
         metadata.insert("file_extension".to_string(), extension.clone());
 
         if let Ok(meta) = std::fs::metadata(path) {
+            // Refused before it is read: see [`limits`].
+            limits::check_file_size(&extension, meta.len())
+                .map_err(|e| anyhow::Error::new(e).context(path.display().to_string()))?;
             metadata.insert("file_size".to_string(), meta.len().to_string());
         }
 
@@ -565,6 +568,11 @@ impl DocumentParser {
                 (pdf_forms::FormExtraction::default(), Some(e))
             }
         };
+        let too_many_pages = |pages: usize| {
+            limits::check_pdf_pages(pages)
+                .map_err(|e| anyhow::Error::new(e).context(path.display().to_string()))
+        };
+        too_many_pages(forms.pages)?;
         if !forms.fields.is_empty() {
             tracing::info!(
                 fields = forms.fields.len(),
@@ -583,6 +591,7 @@ impl DocumentParser {
         match pdf_layout::parse_pdf_layout_with(&bytes, mode) {
             Ok(parsed) => {
                 let mut doc = parsed.document;
+                too_many_pages(doc.pages.len())?;
                 for error in &parsed.tables.model_errors {
                     tracing::warn!(error = %error, "table model page skipped: {}", path.display());
                 }
@@ -2272,6 +2281,24 @@ pub(crate) mod tests {
         );
         assert_eq!(strip_html_tags("&#157;"), "\u{9d}");
         assert_eq!(strip_html_tags("&#160;x&#8211;"), "x\u{2013}");
+    }
+
+    /// A file over its kind's limit is refused before it is read.
+    #[test]
+    fn a_file_over_its_limit_is_too_large_to_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.txt");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(limits::MAX_TEXT_BYTES + 1).unwrap();
+        drop(file);
+        let err = DocumentParser::new()
+            .parse_file(&path)
+            .expect_err("too large");
+        assert!(err.is::<limits::TooLarge>(), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("too large to index (limit 50 MB for text files)"),
+            "{err:#}"
+        );
     }
 
     /// OCR that fails says why, instead of reporting a scan with no text.

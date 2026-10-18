@@ -1,6 +1,7 @@
 pub mod chunker;
 pub mod document_model;
 pub mod form_layout;
+pub mod limits;
 pub mod lopdf_parser;
 pub mod ocr;
 pub mod parser;

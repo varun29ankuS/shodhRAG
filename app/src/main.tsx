@@ -15,10 +15,19 @@ import { Toaster } from "sonner";
 import { MotionConfig } from "framer-motion";
 import { initErrorReporting } from "./lib/errorReporting";
 import { markStartup } from "./lib/startupTiming";
+import { keepsNativeContextMenu, selectionHasText } from "./lib/contextMenu";
 
 markStartup("modules-evaluated");
 
 initErrorReporting();
+
+// The webview's page menu (Reload, Back, Save as, Print) is turned off: Reload
+// would drop unsent drafts and running answers. Its selection menu (Copy) and
+// text fields' menus stay (see lib/contextMenu).
+document.addEventListener("contextmenu", (e) => {
+  const target = e.target instanceof Element ? e.target : null;
+  if (!keepsNativeContextMenu(target, selectionHasText(window.getSelection()))) e.preventDefault();
+});
 
 const path = window.location.pathname;
 

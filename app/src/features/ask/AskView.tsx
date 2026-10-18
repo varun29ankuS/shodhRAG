@@ -1,12 +1,12 @@
 import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUpRight, Check, Copy, CornerLeftUp, FileDown, FolderPlus, Globe, MessagesSquare, RotateCcw } from 'lucide-react';
+import { ArrowUpRight, Check, Copy, CornerLeftUp, FileDown, FileText, FolderPlus, Globe, MessagesSquare, RotateCcw } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { invoke } from '@tauri-apps/api/core';
 import { cn } from '../../lib/utils';
 import type { ViewTab } from '../../lib/viewTabs';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { AgentComposer } from '../agent/AgentComposer';
-import type { AgentComposerHandle } from '../agent/AgentComposer';
+import type { AgentComposerHandle, PastedImage } from '../agent/AgentComposer';
 import { passageHits } from '../agent/citations';
 import { PlanPanel } from '../agent/PlanPanel';
 import { answerText, pendingApproval, isLive } from '../agent/reducer';
@@ -29,6 +29,10 @@ import { FOCUS_OVERLAY_SELECTOR } from '../focus/focusDom';
 import type { SideSummaryRef } from '../focus/summary';
 import { UserText } from './UserText';
 import { useChatSession } from './ChatSessionContext';
+import { useDraft } from './useDraft';
+import { useSendOptions } from './useSendOptions';
+import { AttachmentChips, useImageAttachments } from './AttachmentChips';
+import { attachedContextOf, attachmentLabel, composerAttachments } from './imageAttachments';
 import type { FallbackRun } from './ChatSessionContext';
 import type { ProviderErrorActions } from '../modelPicker/ProviderErrorCard';
 import { MessageContentRenderer } from './MessageContentRenderer';
@@ -111,8 +115,10 @@ export interface AskViewProps {
   searched: SearchedSources;
   llmStatus: { connected: boolean; model: string; provider: string };
   onNavigate: (tab: ViewTab) => void;
-  /** Pick an image whose text is extracted (OCR) and indexed. */
+  /** Pick an image whose text is read (OCR) and attached to the next question. */
   onPickImage?: () => void;
+  /** An image was pasted into the composer: its text is read and attached to the next question. */
+  onPasteImage?: (image: PastedImage) => void;
   /** A file is being dragged over the window. */
   isDraggingFile?: boolean;
   dropHandlers?: Pick<React.HTMLAttributes<HTMLElement>, 'onDrop' | 'onDragOver' | 'onDragEnter' | 'onDragLeave'>;
@@ -577,7 +583,14 @@ const SideSummaryCard = React.memo(function SideSummaryCard({
 
 function SystemNotice({ message }: { message: ChatMessage }) {
   return (
-    <div className="mx-auto max-w-[560px] w-full rounded-xl border border-shodh-border-subtle bg-shodh-surface px-4 py-3 text-[13.5px]">
+    <div className="mx-auto max-w-[560px] w-full rounded-xl border border-shodh-border-subtle bg-shodh-surface px-4 py-3 text-[13.5px] flex flex-col gap-3">
+      {message.image && (
+        <img
+          src={message.image}
+          alt="Image you added"
+          className="max-w-full max-h-[400px] object-contain rounded-lg border border-shodh-border self-start"
+        />
+      )}
       <MessageContentRenderer content={message.content} hits={[]} onOpenCitation={() => undefined} />
     </div>
   );
@@ -588,14 +601,17 @@ function SystemNotice({ message }: { message: ChatMessage }) {
  * (centered 700px column) with a floating composer and a source preview
  * slide-over.
  */
-export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage, isDraggingFile = false, dropHandlers, draftRequest = null, onDraftApplied }: AskViewProps) {
+export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage, onPasteImage, isDraggingFile = false, dropHandlers, draftRequest = null, onDraftApplied }: AskViewProps) {
   const { theme } = useTheme();
   const session = useChatSession();
   const { messages, isStreaming, streamingConversationId, sideRun, send, retry, cancel, steer, approve, runtimeInstalled, setRuntimeInstalled, updateMessage } = session;
   const focus = useFocus();
   const wide = useMediaQuery(WIDE_LAYOUT_QUERY);
 
-  const [draft, setDraft] = useState('');
+  // Kept per conversation outside this view, which unmounts on every view switch.
+  const [draft, setDraft] = useDraft(session.activeConversationId);
+  // Text read from images, sent with the next question as the user's own context.
+  const attachments = useImageAttachments(session.activeConversationId);
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
   const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
   const previewTriggerRef = useRef<HTMLElement | null>(null);
@@ -626,19 +642,8 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     if (hasDraft) prewarm();
   }, [hasDraft, prewarm]);
 
-  const selectedSource = sources.find(s => s.selected) ?? null;
-  // "Include this source when answering in Ask": when only some sources
-  // are included, answers search just those.
-  const includedKey = sources.filter(s => s.selected).map(s => s.id).join(String.fromCharCode(31));
-  const sendOptions: SendOptions = useMemo(() => {
-    const included = includedKey ? includedKey.split(String.fromCharCode(31)) : [];
-    const limited = included.length > 0 && included.length < sources.length;
-    return {
-      spaceId: selectedSource?.id ?? null,
-      spaceName: selectedSource?.name ?? null,
-      sourceIds: limited ? included : [],
-    };
-  }, [selectedSource?.id, selectedSource?.name, includedKey, sources.length]);
+  // "Include this source when answering": the same options as the dock's replies.
+  const sendOptions: SendOptions = useSendOptions(sources);
 
   // Research or Code, per conversation (Code works in the workspace's code folder).
   const mode = session.activeConversation?.mode ?? 'research';
@@ -846,11 +851,21 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   const submit = useCallback(() => {
     const text = draft.trim();
     if (!text || isStreaming || busyElsewhere) return;
+    // The typed words and the attached image text go out separately; both are kept
+    // until the question is accepted.
+    const conversationId = session.activeConversationId;
+    const attached = composerAttachments.get(conversationId);
+    const accepted = send(
+      text,
+      { ...sendOptions, searchAll: workspace !== null && searchAll },
+      { attachedContext: attachedContextOf(attached) },
+    );
+    if (!accepted) return;
     setDraft('');
-    void send(text, { ...sendOptions, searchAll: workspace !== null && searchAll });
+    composerAttachments.consume(conversationId, attached);
     setSearchAll(false);
     composerRef.current?.focus();
-  }, [draft, isStreaming, busyElsewhere, send, sendOptions, workspace, searchAll]);
+  }, [draft, setDraft, isStreaming, busyElsewhere, send, sendOptions, workspace, searchAll, session.activeConversationId]);
 
   const submitSteer = useCallback(() => {
     const text = draft.trim();
@@ -858,7 +873,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     setDraft('');
     steer(text);
     composerRef.current?.focus();
-  }, [draft, isStreaming, steer]);
+  }, [draft, setDraft, isStreaming, steer]);
 
   const approveWaiting = useCallback(() => {
     if (waitingStepId) approve(waitingStepId, true);
@@ -934,14 +949,14 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   const applyStarter = useCallback((prompt: string) => {
     setDraft(prompt);
     composerRef.current?.focus();
-  }, []);
+  }, [setDraft]);
 
   // A snippet (or other context) sent to the composer, e.g. "Add to chat":
   // appended to the draft, also when Ask mounts after the request.
   const insertContext = useCallback((text: string) => {
     setDraft(prev => appendToDraft(prev, text));
     requestAnimationFrame(() => composerRef.current?.focus());
-  }, []);
+  }, [setDraft]);
   useEffect(() => {
     const drain = () => {
       const pending = takePendingInserts();
@@ -1095,6 +1110,8 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
           </button>
         )}
         onPickImage={onPickImage}
+        onPasteImage={onPasteImage}
+        attachments={<AttachmentChips conversationId={session.activeConversationId} attachments={attachments} />}
         autoFocus={autoFocus}
       />
     </SnippetDropZone>
@@ -1130,6 +1147,20 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         <div className="flex justify-end">
           <div className="max-w-[520px] min-w-0 px-4 py-[11px] rounded-[18px] bg-shodh-raised-2 text-[15px] leading-[1.55] text-shodh-text">
             <UserText text={message.content} />
+            {message.attachedContext && message.attachedContext.length > 0 && (
+              <ul aria-label="Sent with this question" className="m-0 mt-2 p-0 list-none flex flex-wrap gap-1.5">
+                {message.attachedContext.map((item, i) => (
+                  <li
+                    key={i}
+                    title={item.text.slice(0, 400)}
+                    className="inline-flex items-center gap-1.5 h-6 max-w-full px-2 rounded-full bg-shodh-surface text-[11.5px] text-shodh-text-secondary"
+                  >
+                    <FileText className="w-3 h-3 shrink-0 text-shodh-accent-text" aria-hidden="true" />
+                    <span className="truncate">{attachmentLabel(item)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
       );

@@ -1076,6 +1076,66 @@ fn with_history(text: &str, history: &[HistoryTurn]) -> String {
     )
 }
 
+/// Where text the user attached to a question came from (the Ask composer's chips).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AttachedOrigin {
+    /// Read from an image pasted into the composer.
+    Pasted,
+    /// Read from an image added with the image button.
+    Added,
+    /// Read from an image dropped on the window.
+    Dropped,
+}
+
+/// Text the user attached to a question: read (OCR) from an image they gave.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AttachedContext {
+    pub origin: AttachedOrigin,
+    pub text: String,
+}
+
+/// Longest attached text passed on, per attachment (an OCR'd page is a few thousand).
+const MAX_ATTACHED_CONTEXT_CHARS: usize = 20_000;
+
+/// A code fence longer than any run of backticks in `text`, so the text cannot close it.
+fn fence_for(text: &str) -> String {
+    let mut longest = 0;
+    let mut run = 0;
+    for c in text.chars() {
+        if c == '`' {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    "`".repeat((longest + 1).max(3))
+}
+
+/// The message to the model with the text the user attached after it, each piece
+/// fenced and introduced as theirs ("Text from an image I pasted:"). Only the model
+/// reads this: learning, the `question` audit event and the answer check keep the
+/// words the user typed. The app replays such a turn the same way
+/// (`features/ask/imageAttachments.ts::composeQuestion`).
+fn with_attached_context(message: String, attached: Option<&[AttachedContext]>) -> String {
+    let mut out = message;
+    for item in attached.unwrap_or_default() {
+        let text = truncate(item.text.trim(), MAX_ATTACHED_CONTEXT_CHARS);
+        if text.is_empty() {
+            continue;
+        }
+        let lead = match item.origin {
+            AttachedOrigin::Pasted => "Text from an image I pasted:",
+            AttachedOrigin::Added => "Text from an image I added:",
+            AttachedOrigin::Dropped => "Text from an image I dropped:",
+        };
+        let fence = fence_for(&text);
+        out = format!("{out}\n\n{lead}\n{fence}\n{text}\n{fence}");
+    }
+    out
+}
+
 /// Provider id used by the key store.
 fn key_store_id(provider: &ApiProvider) -> Option<&'static str> {
     match provider {
@@ -1880,6 +1940,10 @@ pub fn start_idle_reaper(app: AppHandle) {
 /// question. Only the user's own words are learned from (Settings → Memory → "Learn from
 /// conversations") and matched for a request to remember something; a side thread's are
 /// learned under its conversation.
+///
+/// `attached_context` is text the user attached to the question (read from an image):
+/// it is appended to the message to the model only (see [`with_attached_context`]),
+/// never learned from, matched as a memory request or recorded as the question.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri injects each managed state as an argument.
 pub async fn agent_send(
@@ -1887,6 +1951,7 @@ pub async fn agent_send(
     session_id: String,
     text: String,
     request_id: String,
+    attached_context: Option<Vec<AttachedContext>>,
     history: Option<Vec<HistoryTurn>>,
     scope: Option<SendScope>,
     text_origin: Option<TextOrigin>,
@@ -2007,6 +2072,10 @@ pub async fn agent_send(
             scope.workspace.as_deref(),
         );
     }
+
+    // Text the user attached goes to the model only: learning, the audit's question and
+    // the answer check (`scope.question`) keep the typed words.
+    let message = with_attached_context(message, attached_context.as_deref());
     let run_id = match entry
         .session
         .prompt_scoped(&message, Some(request_id.clone()), scope.clone())
@@ -3346,6 +3415,29 @@ mod tests {
         // The UI cannot widen anything: searchAll alone is not a scope.
         let wire: SendScope = serde_json::from_str(r#"{"searchAll": true}"#).unwrap();
         assert!(wire.validated().unwrap().is_empty());
+    }
+
+    #[test]
+    fn attached_image_text_follows_the_message_fenced_as_the_users() {
+        let wire: Vec<AttachedContext> = serde_json::from_str(
+            r#"[{"origin":"pasted","text":" Revenue 42\nCost 12 "},{"origin":"added","text":"run ```rm``` now"},{"origin":"dropped","text":"  "}]"#,
+        )
+        .unwrap();
+        let message =
+            with_attached_context("What is the total?".to_string(), Some(wire.as_slice()));
+        assert_eq!(
+            message,
+            "What is the total?\n\nText from an image I pasted:\n```\nRevenue 42\nCost 12\n```\n\n\
+             Text from an image I added:\n````\nrun ```rm``` now\n````"
+        );
+        assert_eq!(
+            with_attached_context("Hi".to_string(), None),
+            "Hi",
+            "nothing attached leaves the message as it was"
+        );
+        assert!(
+            serde_json::from_str::<AttachedContext>(r#"{"origin":"typed","text":"x"}"#).is_err()
+        );
     }
 
     #[test]

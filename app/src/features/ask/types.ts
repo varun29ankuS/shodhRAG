@@ -11,6 +11,7 @@
 import type { TranscriptState } from '../agent/reducer';
 import type { FocusThread } from '../focus/focusTypes';
 import type { SideSummaryRef } from '../focus/summary';
+import type { AttachedContext } from './imageAttachments';
 
 export type ChatRole = 'user' | 'assistant' | 'system';
 
@@ -144,6 +145,11 @@ export interface ChatMessage {
    * Persisted in `metadata` under `focusSummary`.
    */
   sideSummary?: SideSummaryRef;
+  /**
+   * Text the user attached to this question (read from images), sent beside the typed
+   * words (`features/ask/imageAttachments`). Persisted in `metadata` under `imageText`.
+   */
+  attachedContext?: AttachedContext[];
 }
 
 /** Options that scope a request; supplied by the caller at send time. */

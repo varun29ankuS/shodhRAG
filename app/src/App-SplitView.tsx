@@ -100,6 +100,14 @@ import { quickCreateWorkspace } from './features/tasks/quickCreate';
 import type { NewMenuItemId } from './lib/newMenu';
 import { TableModelPrompt } from './features/setup/TableModelPrompt';
 import { AskView } from './features/ask/AskView';
+import { failureNotice, imageNotice, readImageText } from './features/ask/imageNotice';
+import type { ImageOrigin } from './features/ask/imageNotice';
+import { insideOtherDialog, instructionsEscape } from './lib/escapeScope';
+import { composerAttachments } from './features/ask/imageAttachments';
+import { endsRun, withIndexingProgress } from './features/library/indexingProgress';
+import type { IndexingProgressPayload } from './features/library/indexingProgress';
+import { isIndexableDocument, isIndexableFile, legacyOfficeNotice, legacyOfficeTarget, sortDroppedPaths, unsupportedFilesNotice } from './features/library/dropFiles';
+import type { PastedImage } from './features/agent/AgentComposer';
 import { ChatActionsMenu } from './features/ask/ChatActionsMenu';
 import { useCommandPalette } from './hooks/useCommandPalette';
 import CommandPalette from './components/CommandPalette';
@@ -130,6 +138,19 @@ const debugLog = (...args: any[]) => { if (DEBUG) console.log(...args); };
 /** Unique id for OCR / indexing notices appended to the conversation. */
 const newNoticeId = () => `notice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+/** A pasted image file as a data URI (`process_image_from_base64` takes one). */
+function readFileAsDataUrl(file: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') resolve(reader.result);
+      else reject(new Error('The pasted image could not be read'));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('The pasted image could not be read'));
+    reader.readAsDataURL(file);
+  });
+}
+
 /** A Library source (see features/library/sources). */
 type Source = LibrarySource;
 
@@ -146,6 +167,7 @@ function AppSplitView() {
   // Conversations and the active chat session
   const {
     conversations,
+    conversationsLoaded,
     activeConversationId,
     activeConversation,
     createConversation,
@@ -156,6 +178,7 @@ function AppSplitView() {
     updateConversationMeta,
     messages,
     appendMessage,
+    appendMessageTo,
     updateMessage,
   } = useChatSession();
 
@@ -485,6 +508,44 @@ function AppSplitView() {
   const [newInstructionText, setNewInstructionText] = useState('');
   const [editingInstructionIdx, setEditingInstructionIdx] = useState<number | null>(null);
   const [editingInstructionText, setEditingInstructionText] = useState('');
+  // Focus returns to the Instructions button when its popover closes, and to the
+  // new-instruction field when a row's control it was on goes away (Save, Cancel,
+  // Remove, Clear all), so it never falls to the page body.
+  const instructionsButtonRef = useRef<HTMLButtonElement>(null);
+  const newInstructionInputRef = useRef<HTMLInputElement>(null);
+  const instructionsPopoverRef = useRef<HTMLDivElement>(null);
+  const focusNewInstruction = () => {
+    requestAnimationFrame(() => newInstructionInputRef.current?.focus());
+  };
+  // Esc while the popover is open, wherever focus is (even on the page body after a
+  // row was removed): cancels an edit, else closes the popover, and is marked handled
+  // so a running answer is never interrupted (features/ask/AskView's Esc). Capture
+  // phase, before any other handler sees the key.
+  useEffect(() => {
+    if (!showSystemPromptEditor) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const action = instructionsEscape({
+        key: e.key,
+        handled: e.defaultPrevented,
+        editing: editingInstructionIdx !== null,
+        inOtherDialog: insideOtherDialog<Element>(e.target instanceof Element ? e.target : null, instructionsPopoverRef.current),
+      });
+      if (action === 'ignore') return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (action === 'cancel-edit') {
+        setEditingInstructionIdx(null);
+        setEditingInstructionText('');
+        focusNewInstruction();
+        return;
+      }
+      setShowSystemPromptEditor(false);
+      setEditingInstructionIdx(null);
+      instructionsButtonRef.current?.focus();
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [showSystemPromptEditor, editingInstructionIdx]);
 
   // Derive the system prompt from the active conversation
   const spaceSystemPrompt = activeConversation?.systemPrompt || '';
@@ -698,12 +759,13 @@ function AppSplitView() {
     if (files.length === 0) return;
 
     const file = files[0];
-    const extension = file.name.split('.').pop()?.toLowerCase();
 
-    // Check if it's a document file (PDF, Word, Excel)
-    const documentExtensions = ['pdf', 'docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt', 'txt', 'md'];
-    if (extension && documentExtensions.includes(extension)) {
+    // The documents the indexer reads (features/library/dropFiles); old
+    // .doc/.ppt files are named with what to do.
+    if (isIndexableDocument(file.name)) {
       await handleDocumentUpload(file);
+    } else if (legacyOfficeTarget(file.name)) {
+      notify.error('Old Office files are not indexed', { description: legacyOfficeNotice([file.name]) });
     }
     // If it's an image, Tauri event listener will handle it
   };
@@ -789,8 +851,24 @@ function AppSplitView() {
     // Actual handling is done by Tauri event listener
   };
 
+  // Text read from an image: a notice in the chat, and an attachment of the
+  // next question (features/ask/imageAttachments), sent as the user's own
+  // context. Both go to the conversation that was open when the paste, drop or
+  // pick started, even if another one is open by the time OCR finishes. The
+  // drop listener outlives its render, so the conversation is read through a ref.
+  const activeConversationIdRef = useRef(activeConversationId);
+  activeConversationIdRef.current = activeConversationId;
+  const showImageText = (conversationId: string | null, origin: ImageOrigin, raw: unknown) => {
+    if (!conversationId) return;
+    const result = readImageText(raw);
+    appendMessageTo(conversationId, imageNotice(newNoticeId(), new Date().toISOString(), origin, result));
+    // Only text the notice reports as found (OCR words) is attached.
+    if (result.wordCount > 0) composerAttachments.add(conversationId, { id: newNoticeId(), origin, text: result.text });
+  };
+
   // File picker for images
   const handlePickImage = async () => {
+    const conversationId = activeConversationIdRef.current;
     debugLog('[FILE PICKER] Button clicked');
     try {
       const selected = await open({
@@ -811,30 +889,7 @@ function AppSplitView() {
             filePath: selected
           });
           debugLog('[FILE PICKER] Got result:', result);
-
-          const extractedText = result.extractedText || result.extracted_text || '';
-          const wordCount = result.wordCount || result.word_count || 0;
-          const confidence = result.confidence || 0;
-          const imageData = result.imageData || result.image_data || '';
-
-          debugLog('[FILE PICKER] Adding message');
-          if (extractedText && wordCount > 0) {
-            appendMessage({
-              id: newNoticeId(),
-              role: 'assistant',
-              content: `📸 **[FILE PICKER] Image uploaded and processed successfully!**\n\n**Extracted Text (${wordCount} words, ${(confidence * 100).toFixed(0)}% confidence):**\n\n${extractedText}`,
-              timestamp: new Date().toISOString(),
-              image: imageData
-            });
-          } else {
-            appendMessage({
-              id: newNoticeId(),
-              role: 'assistant',
-              content: `📸 **[FILE PICKER] Image uploaded**\n\nNo text was detected in this image.`,
-              timestamp: new Date().toISOString(),
-              image: imageData
-            });
-          }
+          showImageText(conversationId, 'added', result);
         } catch (error) {
           console.error('Failed to process selected image:', error);
           notify.error('Image processing failed', { description: String(error) });
@@ -875,54 +930,29 @@ function AppSplitView() {
               return;
             }
             lastProcessedImageTimeRef.current = now;
+            const conversationId = activeConversationIdRef.current;
 
             try {
-              // Separate images from documents/folders
-              const imageFiles = files.filter((path: string) =>
-                /\.(png|jpg|jpeg|gif|bmp|webp)$/i.test(path)
-              );
-              const documentFiles = files.filter((path: string) =>
-                /\.(pdf|docx?|txt|md|html|json|csv|xlsx?)$/i.test(path)
-              );
+              // Images are read (OCR); old .doc/.ppt files are named with what
+              // to do; documents, folders and other files go to the Library
+              // (features/library/dropFiles).
+              const dropped = sortDroppedPaths(files);
 
-              // Process image files (OCR)
-              if (imageFiles.length > 0) {
-                for (const imageFile of imageFiles) {
-                  const result = await invoke<any>('process_image_from_file', {
-                    filePath: imageFile
-                  });
-
-                  const extractedText = result.extractedText || result.extracted_text || '';
-                  const wordCount = result.wordCount || result.word_count || 0;
-                  const confidence = result.confidence || 0;
-                  const imageData = result.imageData || result.image_data || '';
-
-                  if (extractedText && wordCount > 0) {
-                    appendMessage({
-                      id: newNoticeId(),
-                      role: 'assistant',
-                      content: `📸 **Image processed successfully!**\n\n**Extracted Text (${wordCount} words, ${(confidence * 100).toFixed(0)}% confidence):**\n\n${extractedText}`,
-                      timestamp: new Date().toISOString(),
-                      image: imageData
-                    });
-                  } else {
-                    appendMessage({
-                      id: newNoticeId(),
-                      role: 'assistant',
-                      content: `📸 **Image dropped**\n\nNo text was detected in this image.`,
-                      timestamp: new Date().toISOString(),
-                      image: imageData
-                    });
-                  }
-                }
+              for (const imageFile of dropped.images) {
+                const result = await invoke<unknown>('process_image_from_file', {
+                  filePath: imageFile
+                });
+                showImageText(conversationId, 'dropped', result);
               }
 
-              // Process document files or folders
-              if (documentFiles.length > 0 || (files.length > 0 && imageFiles.length === 0 && documentFiles.length === 0)) {
-                // Treat all non-image files as documents or folders to be indexed
-                const pathsToIndex = documentFiles.length > 0 ? documentFiles : files;
+              if (dropped.legacy.length > 0) {
+                notify.error('Old Office files are not indexed', { description: legacyOfficeNotice(dropped.legacy) });
+              }
 
-                for (const path of pathsToIndex) {
+              if (dropped.library.length > 0) {
+                // Files of a type the indexer does not read are named once, not added.
+                const unsupported: string[] = [];
+                for (const path of dropped.library) {
                   if (indexingBusyRef.current?.()) break;
                   let isDirectory = false;
                   try {
@@ -930,6 +960,10 @@ function AppSplitView() {
                     isDirectory = stats.isDirectory;
                   } catch (e) {
                     console.warn('Failed to check path type, assuming file:', e);
+                  }
+                  if (!isDirectory && !isIndexableFile(path)) {
+                    unsupported.push(path);
+                    continue;
                   }
                   const known = sourcesRef.current.find(s => s.path.toLowerCase() === path.toLowerCase());
                   const source: Source = known ?? {
@@ -947,15 +981,13 @@ function AppSplitView() {
                   // added by dropping it adopts its indexed files, as when picked.
                   await indexSourceRef.current?.(source, isDirectory ? 'folder' : 'file', !known);
                 }
+                if (unsupported.length > 0) {
+                  notify.error('Some files were not added', { description: unsupportedFilesNotice(unsupported) });
+                }
               }
             } catch (error) {
               console.error('❌ Failed to process dropped files:', error);
-              appendMessage({
-                id: newNoticeId(),
-                role: 'assistant',
-                content: `❌ Failed to process dropped files: ${error}`,
-                timestamp: new Date().toISOString()
-              });
+              appendMessage(failureNotice(newNoticeId(), new Date().toISOString(), 'The dropped files could not be added', String(error)));
             }
           } else if (typeof dragEvent === 'object' && dragEvent.type === 'over') {
             // Drag is hovering over the window
@@ -976,84 +1008,29 @@ function AppSplitView() {
     };
   }, []);
 
-  // Global Ctrl+V handler for image paste
-  useEffect(() => {
-    debugLog('🔧 Setting up global Ctrl+V handler...');
-
-    const handleGlobalPaste = async (e: KeyboardEvent) => {
-      debugLog('[CTRL+V] Key event:', e.key, e.ctrlKey, e.metaKey);
-      // Log all Ctrl/Cmd key combinations for debugging
-      if (e.ctrlKey || e.metaKey) {
-        debugLog(`🔑 Key pressed: ${e.key}, Ctrl: ${e.ctrlKey}, Meta: ${e.metaKey}`);
-      }
-
-      // Only trigger on Ctrl+V or Cmd+V
-      if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
-        debugLog('🌐 Global Ctrl+V detected - attempting clipboard read');
-
-        // Check if there's an image in clipboard first
-        let hasImage = false;
-
-        try {
-          // Read image from clipboard using native Windows API
-          const base64Data = await invoke<string | null>('read_clipboard_image');
-
-          if (base64Data) {
-            hasImage = true;
-            debugLog('✅ Image found in clipboard, processing...');
-
-            // Prevent default paste behavior when we have an image
-            e.preventDefault();
-
-            // Process the image with OCR
-            const result = await invoke<any>('process_image_from_base64', {
-              imageData: base64Data
-            });
-
-            debugLog('📊 OCR Result received:', result);
-            debugLog('📊 Full result object:', JSON.stringify(result, null, 2));
-
-            // Add message to chat showing what was extracted
-            // Note: The Rust struct uses camelCase due to #[serde(rename_all = "camelCase")]
-            // But we'll check both camelCase and snake_case for compatibility
-            const extractedText = result.extractedText || result.extracted_text || '';
-            const wordCount = result.wordCount || result.word_count || 0;
-            const confidence = result.confidence || 0;
-
-            if (extractedText && wordCount > 0) {
-              appendMessage({
-                id: newNoticeId(),
-                role: 'assistant',
-                content: `📸 **Image pasted and processed successfully!**\n\n**Extracted Text (${wordCount} words, ${(confidence * 100).toFixed(0)}% confidence):**\n\n${extractedText}`,
-                timestamp: new Date().toISOString(),
-                image: base64Data
-              });
-            } else {
-              appendMessage({
-                id: newNoticeId(),
-                role: 'assistant',
-                content: `📸 **Image pasted**\n\nNo text was detected in this image.`,
-                timestamp: new Date().toISOString(),
-                image: base64Data
-              });
-            }
-          } else {
-            debugLog('❌ No image in clipboard');
-          }
-        } catch (error) {
-          console.error('❌ Failed to process clipboard image:', error);
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleGlobalPaste, true);
-    debugLog('🌐 Global Ctrl+V listener attached');
-
-    return () => {
-      window.removeEventListener('keydown', handleGlobalPaste, true);
-      debugLog('🌐 Global Ctrl+V listener removed');
-    };
-  }, []);
+  // An image pasted into the Ask composer (AgentComposer decides during the
+  // paste event, so a text paste is never touched): its text is read and shown
+  // as a notice. One at a time: a held Ctrl+V repeats the paste.
+  const pasteInFlightRef = useRef(false);
+  const handlePasteImage = async (image: PastedImage) => {
+    if (pasteInFlightRef.current) return;
+    const conversationId = activeConversationIdRef.current;
+    pasteInFlightRef.current = true;
+    try {
+      const imageData = image.kind === 'file'
+        ? await readFileAsDataUrl(image.file)
+        : await invoke<string | null>('read_clipboard_image');
+      // No image on the system clipboard either: nothing was pasted.
+      if (!imageData) return;
+      const result = await invoke<unknown>('process_image_from_base64', { imageData });
+      showImageText(conversationId, 'pasted', result);
+    } catch (error) {
+      console.error('Failed to process pasted image:', error);
+      notify.error('The pasted image could not be read', { description: String(error) });
+    } finally {
+      pasteInFlightRef.current = false;
+    }
+  };
 
   // Keyboard shortcut for Command Palette (Cmd+K / Ctrl+K)
   useEffect(() => {
@@ -1070,11 +1047,8 @@ function AppSplitView() {
     initializeApp();
   }, []); // Empty dependency array - run only once on mount
 
-  // Setup other event listeners
+  // Tab switches asked for by child components.
   useEffect(() => {
-    let unlistenProg: (() => void) | null = null;
-
-    // Listen for tab switching events from child components
     const handleSwitchTab = (event: Event) => {
       const tab = normalizeViewTab((event as CustomEvent<unknown>).detail);
       if (tab) {
@@ -1082,44 +1056,38 @@ function AppSplitView() {
       }
     };
     window.addEventListener('switchTab', handleSwitchTab);
+    return () => window.removeEventListener('switchTab', handleSwitchTab);
+  }, []);
 
-    // Listen for indexing progress events
-    listen('indexing-progress', (event: any) => {
-      debugLog('=== INDEXING PROGRESS EVENT ===');
-      debugLog('Full event:', event);
-      debugLog('Payload:', event.payload);
-      const { current_file, processed_files, total_files, percentage } = event.payload;
-      const currentStep = scannedPagesStep(event.payload);
+  // Indexing progress on the card of the source it names, while that source is
+  // indexing (features/library/indexingProgress). Registered once; the source
+  // being indexed is read through a ref.
+  const currentlyIndexingRef = useRef(currentlyIndexing);
+  currentlyIndexingRef.current = currentlyIndexing;
+  useEffect(() => {
+    let unlistenProg: (() => void) | null = null;
+    let disposed = false;
 
-      // Update the currently indexing source with progress
-      setSources(prev => prev.map(source => {
-        // Update the source that's currently being indexed
-        if (source.id === currentlyIndexing || source.status === 'indexing') {
-          return {
-            ...source,
-            status: percentage >= 100 ? 'ready' : 'indexing',
-            progress: Math.round(percentage),
-            currentFile: current_file === 'Completed' ? undefined : current_file,
-            currentStep,
-            fileCount: total_files || source.fileCount,
-            processedCount: processed_files
-          };
-        }
-        return source;
-      }));
+    listen<IndexingProgressPayload>('indexing-progress', event => {
+      const payload = event.payload;
+      const currentStep = scannedPagesStep(payload);
+      setSources(prev => prev.map(source => withIndexingProgress(source, payload, currentStep)));
 
-      // If complete, update stats and clear indexing flag
-      if (percentage >= 100 && current_file === 'Completed') {
+      if (endsRun(payload, currentlyIndexingRef.current)) {
         setCurrentlyIndexing(null);
-        updateStats();
+        // The sources as they are now: this listener outlives the render it was made in.
+        void updateStats(sourcesRef.current);
       }
-    }).then(fn => { unlistenProg = fn; });
+    }).then(fn => {
+      if (disposed) fn();
+      else unlistenProg = fn;
+    });
 
     return () => {
-      window.removeEventListener('switchTab', handleSwitchTab);
+      disposed = true;
       unlistenProg?.();
     };
-  }, [currentlyIndexing]);
+  }, []);
 
   useEffect(() => {
     updateSelectedStats();
@@ -1504,6 +1472,7 @@ function AppSplitView() {
         activeView={activeTab}
         onNavigate={setActiveTab}
         conversations={conversations}
+        conversationsLoaded={conversationsLoaded}
         activeConversationId={activeConversationId}
         onOpenConversation={(id: string) => { switchConversation(id); setActiveTab('ask'); }}
         onNewConversation={handleNewConversation}
@@ -1570,6 +1539,10 @@ function AppSplitView() {
             {activeTab === 'ask' && activeConversationId && (
               <div className="relative">
                 <button
+                  ref={instructionsButtonRef}
+                  type="button"
+                  aria-expanded={showSystemPromptEditor}
+                  aria-haspopup="dialog"
                   onClick={() => {
                     setShowSystemPromptEditor(!showSystemPromptEditor);
                     setEditingInstructionIdx(null);
@@ -1589,6 +1562,9 @@ function AppSplitView() {
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => { setShowSystemPromptEditor(false); setEditingInstructionIdx(null); }} />
                     <div
+                      ref={instructionsPopoverRef}
+                      role="dialog"
+                      aria-label="Custom instructions"
                       className="absolute right-0 top-8 z-50 w-96 rounded-lg border shadow-xl"
                       style={{ backgroundColor: colors.bgSecondary, borderColor: colors.border }}
                     >
@@ -1600,11 +1576,14 @@ function AppSplitView() {
                           </p>
                         </div>
                         <button
-                          onClick={() => { setShowSystemPromptEditor(false); setEditingInstructionIdx(null); }}
+                          type="button"
+                          onClick={() => { setShowSystemPromptEditor(false); setEditingInstructionIdx(null); instructionsButtonRef.current?.focus(); }}
                           className="w-5 h-5 rounded flex items-center justify-center"
                           style={{ color: colors.textMuted }}
+                          aria-label="Close instructions"
+                          title="Close (Esc)"
                         >
-                          <X className="w-3.5 h-3.5" />
+                          <X className="w-3.5 h-3.5" aria-hidden="true" />
                         </button>
                       </div>
 
@@ -1632,27 +1611,35 @@ function AppSplitView() {
                                       type="text"
                                       value={editingInstructionText}
                                       onChange={e => setEditingInstructionText(e.target.value)}
+                                      // Esc (cancel the edit) is handled by the popover's window listener.
                                       onKeyDown={e => {
-                                        if (e.key === 'Enter') commitEditInstruction();
-                                        if (e.key === 'Escape') { setEditingInstructionIdx(null); setEditingInstructionText(''); }
+                                        if (e.key === 'Enter') {
+                                          commitEditInstruction();
+                                          focusNewInstruction();
+                                        }
                                       }}
+                                      aria-label="Edit instruction"
                                       autoFocus
                                       className="flex-1 text-[11px] bg-transparent border-b outline-none py-0.5"
                                       style={{ color: colors.text, borderColor: colors.primary }}
                                     />
                                     <button
-                                      onClick={commitEditInstruction}
+                                      type="button"
+                                      onClick={() => { commitEditInstruction(); focusNewInstruction(); }}
                                       className="shrink-0 p-0.5 rounded"
                                       title="Save"
+                                      aria-label="Save instruction"
                                     >
-                                      <Check className="w-3 h-3" style={{ color: colors.success }} />
+                                      <Check className="w-3 h-3" style={{ color: colors.success }} aria-hidden="true" />
                                     </button>
                                     <button
-                                      onClick={() => { setEditingInstructionIdx(null); setEditingInstructionText(''); }}
+                                      type="button"
+                                      onClick={() => { setEditingInstructionIdx(null); setEditingInstructionText(''); focusNewInstruction(); }}
                                       className="shrink-0 p-0.5 rounded"
-                                      title="Cancel"
+                                      title="Cancel (Esc)"
+                                      aria-label="Cancel editing"
                                     >
-                                      <X className="w-3 h-3" style={{ color: colors.textMuted }} />
+                                      <X className="w-3 h-3" style={{ color: colors.textMuted }} aria-hidden="true" />
                                     </button>
                                   </div>
                                 ) : (
@@ -1660,22 +1647,26 @@ function AppSplitView() {
                                     <span className="flex-1 text-[11px] leading-snug" style={{ color: colors.textSecondary }}>
                                       {instruction}
                                     </span>
-                                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity shrink-0">
                                       <button
+                                        type="button"
                                         onClick={() => { setEditingInstructionIdx(idx); setEditingInstructionText(instruction); }}
                                         className="p-0.5 rounded transition-colors"
                                         style={{ color: colors.textMuted }}
                                         title="Edit"
+                                        aria-label={`Edit instruction: ${instruction}`}
                                       >
-                                        <Pencil className="w-3 h-3" />
+                                        <Pencil className="w-3 h-3" aria-hidden="true" />
                                       </button>
                                       <button
-                                        onClick={() => { removeInstruction(idx); notify.success('Instruction removed'); }}
+                                        type="button"
+                                        onClick={() => { removeInstruction(idx); notify.success('Instruction removed'); focusNewInstruction(); }}
                                         className="p-0.5 rounded transition-colors"
                                         style={{ color: colors.error }}
                                         title="Remove"
+                                        aria-label={`Remove instruction: ${instruction}`}
                                       >
-                                        <Trash2 className="w-3 h-3" />
+                                        <Trash2 className="w-3 h-3" aria-hidden="true" />
                                       </button>
                                     </div>
                                   </>
@@ -1690,11 +1681,16 @@ function AppSplitView() {
                       <div className="px-3 py-2 border-t" style={{ borderColor: colors.border }}>
                         <div className="flex items-center gap-1.5">
                           <input
+                            ref={newInstructionInputRef}
                             type="text"
                             value={newInstructionText}
                             onChange={e => setNewInstructionText(e.target.value)}
                             onKeyDown={e => { if (e.key === 'Enter') addInstruction(); }}
                             placeholder="Add an instruction..."
+                            aria-label="New instruction"
+                            // Focus starts here as the popover opens, and comes back here
+                            // after Save, Cancel, Remove or Clear all (focusNewInstruction).
+                            autoFocus
                             className="flex-1 text-[11px] rounded-md border px-2 py-1.5 outline-none"
                             style={{
                               backgroundColor: colors.inputBg,
@@ -1703,19 +1699,24 @@ function AppSplitView() {
                             }}
                           />
                           <button
+                            type="button"
                             onClick={addInstruction}
                             disabled={!newInstructionText.trim()}
                             className="px-2 py-1.5 rounded-md text-[10px] font-medium text-white transition-colors disabled:opacity-40"
                             style={{ backgroundColor: colors.primary }}
+                            aria-label="Add instruction"
+                            title="Add instruction"
                           >
-                            <Plus className="w-3 h-3" />
+                            <Plus className="w-3 h-3" aria-hidden="true" />
                           </button>
                         </div>
                         {instructionsList.length > 0 && (
                           <button
+                            type="button"
                             onClick={() => {
                               saveInstructions([]);
                               notify.success('All instructions cleared');
+                              focusNewInstruction();
                             }}
                             className="text-[10px] mt-1.5 transition-colors"
                             style={{ color: colors.error }}
@@ -1778,6 +1779,7 @@ function AppSplitView() {
               llmStatus={llmStatus}
               onNavigate={setActiveTab}
               onPickImage={handlePickImage}
+              onPasteImage={image => void handlePasteImage(image)}
               draftRequest={askDraft}
               onDraftApplied={clearAskDraft}
               isDraggingFile={isDraggingImage}
@@ -1903,7 +1905,7 @@ function AppSplitView() {
       <TableModelPrompt />
 
       {/* Active conversation while another view is open */}
-      <ConversationDock activeTab={activeTab} onExpand={() => setActiveTab('ask')} />
+      <ConversationDock activeTab={activeTab} sources={sources} onExpand={() => setActiveTab('ask')} />
 
     </div>
   );

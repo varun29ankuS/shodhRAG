@@ -25,6 +25,8 @@ import type { FocusThread } from '../focus/focusTypes';
 import { metadataWithThreads, metadataWithoutThreads, threadsFromMetadata } from '../focus/threadStore';
 import { metadataWithSummary, readSideSummary, summaryPrompt } from '../focus/summary';
 import { replayedContent } from './chatHistory';
+import { metadataWithAttachedContext, readAttachedContext } from './imageAttachments';
+import type { AttachedContext } from './imageAttachments';
 import type { SideSummaryRef } from '../focus/summary';
 import type { ModelOverride } from '../modelPicker/modelTypes';
 import type {
@@ -88,6 +90,11 @@ export interface SendExtra {
   sideSummary?: SideSummaryRef;
   /** Run this answer with a fallback model. */
   fallback?: FallbackRun | null;
+  /**
+   * Text the user attached (read from images): sent beside the typed words, which stay
+   * what is learned from and checked (`agent_send`'s `attachedContext`).
+   */
+  attachedContext?: AttachedContext[];
 }
 
 /** What the rest of the app needs to know about the running answer. */
@@ -109,6 +116,8 @@ export interface AgentNavigation {
 
 export interface ChatSessionValue {
   conversations: ConversationsApi['conversations'];
+  /** The saved conversations were read: `conversations` is no longer loading. */
+  conversationsLoaded: ConversationsApi['loaded'];
   activeConversationId: ConversationsApi['activeConversationId'];
   activeConversation: ConversationsApi['activeConversation'];
   createConversation: ConversationsApi['createConversation'];
@@ -141,9 +150,11 @@ export interface ChatSessionValue {
 
   /**
    * Post a message and run the agent on it. `extra.sideSummary` marks it as
-   * a summary brought back from a side discussion.
+   * a summary brought back from a side discussion. Returns whether the message
+   * was accepted (false: empty, no conversation, or an answer is running);
+   * decided at once, before the agent runs.
    */
-  send: (text: string, options: SendOptions, extra?: SendExtra) => Promise<void>;
+  send: (text: string, options: SendOptions, extra?: SendExtra) => boolean;
   /**
    * Re-run the user prompt that produced `assistantMessageId`; with
    * `fallback`, that one answer runs with the fallback model.
@@ -157,6 +168,11 @@ export interface ChatSessionValue {
   approve: (stepId: string, approved: boolean) => void;
   /** Append a non-chat message (e.g. OCR or upload notices) to the active conversation. */
   appendMessage: (message: ChatMessage) => void;
+  /**
+   * Append a non-chat message to `conversationId`, visible or not (a notice of work
+   * that started there before the person switched away).
+   */
+  appendMessageTo: (conversationId: string, message: ChatMessage) => void;
   updateMessage: (id: string, patch: Partial<ChatMessage>) => void;
 
   /** A side-thread question being answered; blocks main sends until it ends. */
@@ -223,9 +239,10 @@ function readRun(value: unknown): RunRecord | undefined {
 }
 
 function fromStored(m: ConversationMessage): ChatMessage {
-  const metadata = metadataWithSummary(metadataWithoutThreads(m.metadata), null);
+  const metadata = metadataWithAttachedContext(metadataWithSummary(metadataWithoutThreads(m.metadata), null), []);
   const threads = threadsFromMetadata(m.metadata);
   const sideSummary = m.role === 'user' ? readSideSummary(m.metadata) : null;
+  const attachedContext = m.role === 'user' ? readAttachedContext(m.metadata) : [];
   return {
     id: m.id,
     role: m.role,
@@ -238,6 +255,7 @@ function fromStored(m: ConversationMessage): ChatMessage {
     transcript: fromPersisted(m.transcript) ?? undefined,
     threads: threads.length > 0 ? threads : undefined,
     sideSummary: sideSummary ?? undefined,
+    attachedContext: attachedContext.length > 0 ? attachedContext : undefined,
   };
 }
 
@@ -250,7 +268,10 @@ function toStored(m: ChatMessage): ConversationMessage {
   };
   if (m.artifacts && m.artifacts.length > 0) stored.artifacts = m.artifacts;
   if (m.searchResults && m.searchResults.length > 0) stored.searchResults = m.searchResults;
-  const metadata = metadataWithThreads(metadataWithSummary(m.metadata, m.sideSummary ?? null), m.threads ?? []);
+  const metadata = metadataWithAttachedContext(
+    metadataWithThreads(metadataWithSummary(m.metadata, m.sideSummary ?? null), m.threads ?? []),
+    m.attachedContext ?? [],
+  );
   if (metadata) stored.metadata = metadata;
   if (m.run) {
     const { activity: _activity, ...persistable } = m.run;
@@ -523,6 +544,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     options: SendOptions | null,
     textOrigin: 'typed' | 'composed',
     fallback: FallbackRun | null = null,
+    attachedContext: AttachedContext[] = [],
   ) => {
     const runId = newId('run');
     const startedAtMs = Date.now();
@@ -561,7 +583,11 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       live.sessionId = sessionId;
       setRuntimeInstalled(true);
       const workspaceId = conversation?.workspaceId ?? null;
-      await api.send(sessionId, prompt, runId, historyOf(history), scopeOf(options, workspaceId), textOrigin);
+      await api.send(sessionId, prompt, runId, historyOf(history), {
+        scope: scopeOf(options, workspaceId),
+        textOrigin,
+        attachedContext,
+      });
     } catch (error) {
       const failure = toAgentError(error);
       if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
@@ -569,24 +595,28 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     }
   }, [api, enqueue, publish]);
 
-  const send = useCallback(async (text: string, options: SendOptions, extra?: SendExtra) => {
+  const send = useCallback((text: string, options: SendOptions, extra?: SendExtra): boolean => {
     const content = text.trim();
     const conversationId = viewRef.current.conversationId;
-    if (!content || !conversationId || liveRef.current || sideRunRef.current) return;
+    if (!content || !conversationId || liveRef.current || sideRunRef.current) return false;
 
     const history = viewRef.current.messages;
     const sideSummary = extra?.sideSummary;
+    const attachedContext = (extra?.attachedContext ?? []).filter(a => a.text.trim().length > 0);
     const userMessage: ChatMessage = {
       id: newId('msg'),
       role: 'user',
       content,
       timestamp: new Date().toISOString(),
       ...(sideSummary ? { sideSummary } : {}),
+      ...(attachedContext.length > 0 ? { attachedContext } : {}),
     };
     const prompt = sideSummary ? summaryPrompt(sideSummary, content) : content;
     publish(conversationId, userMessage, 'debounced');
 
-    await runAgent(conversationId, prompt, history, options, sideSummary ? 'composed' : 'typed', extra?.fallback ?? null);
+    // runAgent reports its own failures in the answer; acceptance is decided above.
+    void runAgent(conversationId, prompt, history, options, sideSummary ? 'composed' : 'typed', extra?.fallback ?? null, attachedContext);
+    return true;
   }, [publish, runAgent]);
 
   const retry = useCallback((assistantMessageId: string, options: SendOptions, fallback: FallbackRun | null = null) => {
@@ -608,9 +638,13 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     if (index === messages.length - 1) {
       // Latest answer: replace it in place and re-run the same prompt.
       setView(v => changeMessages(v, conversationId, ms => ms.filter(m => m.id !== assistantMessageId), 'debounced'));
-      void runAgent(conversationId, prompt, messages.slice(0, userIndex), options, asked.sideSummary ? 'composed' : 'typed', fallback);
+      void runAgent(conversationId, prompt, messages.slice(0, userIndex), options, asked.sideSummary ? 'composed' : 'typed', fallback, asked.attachedContext ?? []);
     } else {
-      void send(asked.content, options, { ...(asked.sideSummary ? { sideSummary: asked.sideSummary } : {}), fallback });
+      send(asked.content, options, {
+        ...(asked.sideSummary ? { sideSummary: asked.sideSummary } : {}),
+        ...(asked.attachedContext ? { attachedContext: asked.attachedContext } : {}),
+        fallback,
+      });
     }
   }, [runAgent, send]);
 
@@ -691,6 +725,12 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     publish(conversationId, message, 'debounced');
   }, [publish]);
 
+  const appendMessageTo = useCallback((conversationId: string, message: ChatMessage) => {
+    if (publish(conversationId, message, 'debounced')) return;
+    const stored = toStored(message);
+    updateConversationMessages(conversationId, prev => upsertById(prev, stored), { immediate: true });
+  }, [publish, updateConversationMessages]);
+
   const updateMessage = useCallback((id: string, patch: Partial<ChatMessage>) => {
     setView(v => (v.conversationId === null
       ? v
@@ -734,6 +774,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
 
   const value = useMemo<ChatSessionValue>(() => ({
     conversations: conv.conversations,
+    conversationsLoaded: conv.loaded,
     activeConversationId: conv.activeConversationId,
     activeConversation: conv.activeConversation,
     createConversation: conv.createConversation,
@@ -757,13 +798,14 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     cancel,
     approve,
     appendMessage,
+    appendMessageTo,
     updateMessage,
     sideRun,
     claimSideRun,
     releaseSideRun,
     updateThreads,
     updateFocusThreads: conv.updateFocusThreads,
-  }), [conv, view, streamingConversationId, liveRun, navigation, runtimeInstalled, prewarm, send, retry, steer, cancel, approve, appendMessage, updateMessage, sideRun, claimSideRun, releaseSideRun, updateThreads]);
+  }), [conv, view, streamingConversationId, liveRun, navigation, runtimeInstalled, prewarm, send, retry, steer, cancel, approve, appendMessage, appendMessageTo, updateMessage, sideRun, claimSideRun, releaseSideRun, updateThreads]);
 
   return (
     <ChatSessionContext.Provider value={value}>

@@ -14,6 +14,7 @@ import {
   keepSelection,
   moveSelection,
   parseItems,
+  settingsSectionOf,
   waitingCount,
   INSTALL_SCAN_READER,
 } from '../src/features/inbox/model.ts';
@@ -152,4 +153,17 @@ test('irreversible actions still ask first', () => {
   assert.match(read('features/workspaces/WorkspacePage.tsx'), /title: 'Delete workspace'/);
   // Shortening audit retention deletes events for good.
   assert.match(read('features/audit/AuditView.tsx'), /title: 'Shorten audit retention\?'/);
+});
+
+test('Open on a memory suggestion lands on Settings → Memory, other links on their view', () => {
+  const settings = { view: 'settings', target: null };
+  assert.equal(settingsSectionOf({ kind: 'memory', link: settings }), 'memory');
+  assert.equal(settingsSectionOf({ kind: 'memory', link: null }), null);
+  assert.equal(settingsSectionOf({ kind: 'install', link: settings }), null);
+  assert.equal(settingsSectionOf({ kind: 'reminder', link: { view: 'tasks', target: null } }), null);
+});
+
+test('the Inbox reloads when the calendar changes, so a done task stops counting its reminder', () => {
+  const source = readFileSync(new URL('../src/features/inbox/InboxButton.tsx', import.meta.url), 'utf8');
+  assert.match(source, /listen\('calendar-changed', \(\) => void load\(\)\)/);
 });
